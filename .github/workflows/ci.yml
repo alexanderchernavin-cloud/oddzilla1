@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ts:
+    name: TypeScript + Next.js
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile=false
+
+      - run: pnpm typecheck
+
+      - run: pnpm lint
+
+      - run: pnpm build
+
+  go:
+    name: Go services
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - feed-ingester
+          - odds-publisher
+          - settlement
+          - bet-delay
+          - wallet-watcher
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache-dependency-path: services/${{ matrix.service }}/go.sum
+
+      - name: go mod tidy
+        working-directory: services/${{ matrix.service }}
+        run: go mod tidy
+
+      - name: go vet
+        working-directory: services/${{ matrix.service }}
+        run: go vet ./...
+
+      - name: go build
+        working-directory: services/${{ matrix.service }}
+        run: go build ./...
+
+      - name: go test
+        working-directory: services/${{ matrix.service }}
+        run: go test ./...
+
+  migrations:
+    name: Verify migrations apply cleanly
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: oddzilla
+          POSTGRES_PASSWORD: oddzilla
+          POSTGRES_DB: oddzilla
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U oddzilla"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://oddzilla:oddzilla@localhost:5432/oddzilla?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile=false
+
+      - name: Apply migrations
+        run: pnpm db:migrate
+
+      - name: Verify tables exist
+        run: |
+          PGPASSWORD=oddzilla psql -h localhost -U oddzilla -d oddzilla -c '\dt' | tee tables.txt
+          grep -q users tables.txt
+          grep -q tickets tables.txt
+          grep -q ticket_selections tables.txt
+          grep -q markets tables.txt
+          grep -q settlements tables.txt
+          grep -q wallet_ledger tables.txt

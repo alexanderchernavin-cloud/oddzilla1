@@ -1,0 +1,37 @@
+[
+  {
+    "name": "empty",
+    "raw": "",
+    "specifiers": {},
+    "canonical": "",
+    "sha256Hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "name": "single map",
+    "raw": "map=1",
+    "specifiers": { "map": "1" },
+    "canonical": "map=1",
+    "sha256Hex": "3954e7d30e43bfb199a5f195e5a3060385fa96090fb8992eb7f2e72c81ae1702"
+  },
+  {
+    "name": "two keys out of order",
+    "raw": "map=2|handicap=-1.5",
+    "specifiers": { "map": "2", "handicap": "-1.5" },
+    "canonical": "handicap=-1.5|map=2",
+    "sha256Hex": "cb06f2724ac221e4cd06ef816d01d9786132d1d651aa8555f53e4e0329cd6a5e"
+  },
+  {
+    "name": "value with equals",
+    "raw": "note=x=y",
+    "specifiers": { "note": "x=y" },
+    "canonical": "note=x=y",
+    "sha256Hex": "465cab689c836694648678f9ddf49839748e3dd3d5a61af0fcbd8f6034b2800b"
+  },
+  {
+    "name": "variant keyword",
+    "raw": "variant=way:two",
+    "specifiers": { "variant": "way:two" },
+    "canonical": "variant=way:two",
+    "sha256Hex": "b0975e538d66e10e4e2429fcfd3c985811f4f417d01c5267d0ad0f3c577903fb"
+  }
+]

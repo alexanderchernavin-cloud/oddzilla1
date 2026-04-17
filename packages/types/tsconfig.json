@@ -1,0 +1,4 @@
+{
+  "extends": "@oddzilla/tsconfig/node.json",
+  "include": ["src/**/*"]
+}

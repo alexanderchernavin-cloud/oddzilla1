@@ -1,0 +1,24 @@
+{
+  "name": "@oddzilla/types",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./money": "./src/money.ts",
+    "./specifiers": "./src/specifiers.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --import tsx src/specifiers.test.ts",
+    "lint": "eslint . --ext .ts"
+  },
+  "devDependencies": {
+    "@oddzilla/tsconfig": "workspace:*",
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

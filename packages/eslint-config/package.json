@@ -1,0 +1,12 @@
+{
+  "name": "@oddzilla/eslint-config",
+  "version": "0.0.0",
+  "private": true,
+  "main": "./index.cjs",
+  "files": ["index.cjs"],
+  "dependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.18.2",
+    "@typescript-eslint/parser": "^8.18.2",
+    "eslint": "^9.17.0"
+  }
+}

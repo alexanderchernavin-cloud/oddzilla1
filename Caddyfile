@@ -1,0 +1,42 @@
+# Caddy config. For local dev `CADDY_HOST=localhost` disables auto-HTTPS.
+# For production, set `CADDY_HOST=oddzilla.example.com` in `.env` and Caddy
+# will request a Let's Encrypt cert automatically.
+
+{
+	# Global options
+	admin off
+	email admin@{$CADDY_HOST}
+}
+
+{$CADDY_HOST} {
+	encode zstd gzip
+
+	# Security headers
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	# REST API
+	handle_path /api/* {
+		reverse_proxy api:3001
+	}
+
+	# WebSocket gateway
+	@websocket {
+		header Connection *Upgrade*
+		header Upgrade    websocket
+	}
+	handle /ws* {
+		reverse_proxy ws-gateway:3002
+	}
+
+	# Next.js frontend (default)
+	handle {
+		reverse_proxy web:3000
+	}
+}

@@ -1,0 +1,5 @@
+packages:
+  - "apps/*"
+  - "services/api"
+  - "services/ws-gateway"
+  - "packages/*"

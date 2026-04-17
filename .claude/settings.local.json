@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ssh-keygen -E md5 -lf ~/.ssh/id_ed25519.pub)",
+      "Bash(ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -i ~/.ssh/id_ed25519 root@178.104.174.24 \"echo OK; uname -a; lsb_release -a; free -h; df -h /; nproc\")",
+      "Bash(ssh -i ~/.ssh/id_ed25519 root@178.104.174.24 \"set -e; if ! swapon --show | grep -q /swapfile; then fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab; fi; free -h | grep -i swap\")",
+      "Bash(ssh -i ~/.ssh/id_ed25519 root@178.104.174.24 \"DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get upgrade -yq -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold' 2>&1 | tail -5\")",
+      "WebFetch(domain:docs.claude.com)",
+      "Bash(ssh -i ~/.ssh/id_ed25519 root@178.104.174.24 \"install -d -m 0755 /etc/apt/keyrings && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /etc/apt/keyrings/microsoft.gpg && echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/code stable main' > /etc/apt/sources.list.d/vscode.list && apt-get update -qq 2>&1 | tail -3 && DEBIAN_FRONTEND=noninteractive apt-get install -yq code 2>&1 | tail -3 && code --version --no-sandbox --user-data-dir=/tmp/check 2>&1 | head -3\")",
+      "Bash(ssh -i ~/.ssh/id_ed25519 root@178.104.174.24 \"sudo -u team -H code --install-extension anthropic.claude-code 2>&1 | tail -10\")",
+      "Bash(ssh -i ~/.ssh/id_ed25519 root@178.104.174.24 \"sudo -u team -H code --list-extensions --show-versions 2>&1; echo ---; ls /usr/share/applications/code.desktop; free -h\")",
+      "Bash(ssh -i ~/.ssh/id_ed25519 root@178.104.174.24 \"curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg | gpg --dearmor -o /etc/apt/keyrings/packages.mozilla.org.gpg && echo 'deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.gpg] https://packages.mozilla.org/apt mozilla main' > /etc/apt/sources.list.d/mozilla.list && printf 'Package: *\\\\nPin: origin packages.mozilla.org\\\\nPin-Priority: 1000\\\\n' > /etc/apt/preferences.d/mozilla && apt-get update -qq 2>&1 | tail -3 && DEBIAN_FRONTEND=noninteractive apt-get install -yq firefox 2>&1 | tail -3 && firefox --version\")",
+      "Bash(ssh -i ~/.ssh/id_ed25519 root@178.104.174.24 \"sudo -u team -H xdg-settings set default-web-browser firefox.desktop 2>&1; ls /usr/share/applications/firefox.desktop; free -h\")",
+      "Bash(ssh -i ~/.ssh/id_ed25519 root@178.104.174.24 \"systemctl restart tigervncserver@:1.service && sleep 3 && systemctl is-active tigervncserver@:1.service && sudo -u team -H pgrep -af autocutsel\")",
+      "Bash(ssh -i ~/.ssh/id_ed25519 team@178.104.174.24 \"mkdir -p ~/oddzilla && echo CREATED && ls -la ~/oddzilla\")",
+      "Bash(scp -i ~/.ssh/id_ed25519 -r \"/d/AI/Oddzilla/Oddin\" team@178.104.174.24:/home/team/oddzilla/)",
+      "Bash(ssh -i ~/.ssh/id_ed25519 team@178.104.174.24 \"du -sh ~/oddzilla/Oddin && find ~/oddzilla/Oddin -type f | wc -l && ls ~/oddzilla/Oddin/\")"
+    ]
+  }
+}

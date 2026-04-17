@@ -1,0 +1,46 @@
+# Node / pnpm
+node_modules/
+.pnpm-store/
+.pnpm-debug.log
+.turbo/
+dist/
+build/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+
+# Go
+bin/
+*.exe
+*.test
+*.out
+
+# Env & secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Docker & data
+docker-data/
+postgres-data/
+redis-data/
+caddy-data/
+caddy-config/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Claude Code per-user settings
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/

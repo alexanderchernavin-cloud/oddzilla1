@@ -1,0 +1,63 @@
+# Development-only overrides. Applied automatically by `docker compose`
+# when present. For production on Hetzner, run:
+#   docker compose -f docker-compose.yml up -d
+# (omits this file).
+
+services:
+  api:
+    command: ["pnpm", "--filter", "@oddzilla/api", "dev"]
+    volumes:
+      - ./:/app
+      - /app/node_modules
+
+  ws-gateway:
+    command: ["pnpm", "--filter", "@oddzilla/ws-gateway", "dev"]
+    volumes:
+      - ./:/app
+      - /app/node_modules
+
+  web:
+    command: ["pnpm", "--filter", "@oddzilla/web", "dev"]
+    volumes:
+      - ./:/app
+      - /app/node_modules
+      - /app/apps/web/.next
+
+  news-scraper:
+    command: ["pnpm", "--filter", "@oddzilla/news-scraper", "dev"]
+    volumes:
+      - ./:/app
+      - /app/node_modules
+
+  feed-ingester:
+    command: ["go", "run", "./cmd/feed-ingester"]
+    volumes:
+      - ./services/feed-ingester:/app
+      - go-mod-cache:/go/pkg/mod
+
+  odds-publisher:
+    command: ["go", "run", "./cmd/odds-publisher"]
+    volumes:
+      - ./services/odds-publisher:/app
+      - go-mod-cache:/go/pkg/mod
+
+  settlement:
+    command: ["go", "run", "./cmd/settlement"]
+    volumes:
+      - ./services/settlement:/app
+      - go-mod-cache:/go/pkg/mod
+
+  bet-delay:
+    command: ["go", "run", "./cmd/bet-delay"]
+    volumes:
+      - ./services/bet-delay:/app
+      - go-mod-cache:/go/pkg/mod
+
+  wallet-watcher:
+    command: ["go", "run", "./cmd/wallet-watcher"]
+    volumes:
+      - ./services/wallet-watcher:/app
+      - go-mod-cache:/go/pkg/mod
+
+volumes:
+  go-mod-cache:

@@ -1,0 +1,204 @@
+# Oddzilla — single-box Docker Compose (Hetzner CPX22 target).
+# Every service is designed so it can be moved to a separate box by
+# changing hostnames in `.env`; no localhost assumptions in code.
+
+name: oddzilla
+
+x-healthcheck-defaults: &hc
+  interval: 10s
+  timeout: 5s
+  retries: 12
+  start_period: 10s
+
+x-go-service: &go-service
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  env_file: .env
+
+x-ts-service: &ts-service
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  env_file: .env
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-oddzilla}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-strong}
+      POSTGRES_DB: ${POSTGRES_DB:-oddzilla}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"      # localhost-only; Caddy never fronts this
+    healthcheck:
+      <<: *hc
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-oddzilla} -d $${POSTGRES_DB:-oddzilla}"]
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=256MB"
+      - "-c"
+      - "work_mem=8MB"
+      - "-c"
+      - "max_connections=100"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis-data:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "redis-cli", "ping"]
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      CADDY_HOST: ${CADDY_HOST:-localhost}
+    depends_on:
+      - web
+      - api
+      - ws-gateway
+
+  api:
+    <<: *ts-service
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    environment:
+      SERVICE_NAME: api
+      PORT: ${API_PORT:-3001}
+    ports:
+      - "127.0.0.1:${API_PORT:-3001}:${API_PORT:-3001}"
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "wget", "-qO-", "http://localhost:${API_PORT:-3001}/healthz"]
+
+  ws-gateway:
+    <<: *ts-service
+    build:
+      context: .
+      dockerfile: services/ws-gateway/Dockerfile
+    environment:
+      SERVICE_NAME: ws-gateway
+      PORT: ${WS_GATEWAY_PORT:-3002}
+    ports:
+      - "127.0.0.1:${WS_GATEWAY_PORT:-3002}:${WS_GATEWAY_PORT:-3002}"
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "wget", "-qO-", "http://localhost:${WS_GATEWAY_PORT:-3002}/healthz"]
+
+  web:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    env_file: .env
+    environment:
+      PORT: ${WEB_PORT:-3000}
+    ports:
+      - "127.0.0.1:${WEB_PORT:-3000}:${WEB_PORT:-3000}"
+    depends_on:
+      - api
+      - ws-gateway
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "wget", "-qO-", "http://localhost:${WEB_PORT:-3000}"]
+
+  feed-ingester:
+    <<: *go-service
+    build:
+      context: ./services/feed-ingester
+      dockerfile: Dockerfile
+    environment:
+      SERVICE_NAME: feed-ingester
+      HEALTH_PORT: ${FEED_INGESTER_HEALTH_PORT:-8081}
+    ports:
+      - "127.0.0.1:${FEED_INGESTER_HEALTH_PORT:-8081}:${FEED_INGESTER_HEALTH_PORT:-8081}"
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "wget", "-qO-", "http://localhost:${FEED_INGESTER_HEALTH_PORT:-8081}/healthz"]
+
+  odds-publisher:
+    <<: *go-service
+    build:
+      context: ./services/odds-publisher
+      dockerfile: Dockerfile
+    environment:
+      SERVICE_NAME: odds-publisher
+      HEALTH_PORT: ${ODDS_PUBLISHER_HEALTH_PORT:-8082}
+    ports:
+      - "127.0.0.1:${ODDS_PUBLISHER_HEALTH_PORT:-8082}:${ODDS_PUBLISHER_HEALTH_PORT:-8082}"
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "wget", "-qO-", "http://localhost:${ODDS_PUBLISHER_HEALTH_PORT:-8082}/healthz"]
+
+  settlement:
+    <<: *go-service
+    build:
+      context: ./services/settlement
+      dockerfile: Dockerfile
+    environment:
+      SERVICE_NAME: settlement
+      HEALTH_PORT: ${SETTLEMENT_HEALTH_PORT:-8083}
+    ports:
+      - "127.0.0.1:${SETTLEMENT_HEALTH_PORT:-8083}:${SETTLEMENT_HEALTH_PORT:-8083}"
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "wget", "-qO-", "http://localhost:${SETTLEMENT_HEALTH_PORT:-8083}/healthz"]
+
+  bet-delay:
+    <<: *go-service
+    build:
+      context: ./services/bet-delay
+      dockerfile: Dockerfile
+    environment:
+      SERVICE_NAME: bet-delay
+      HEALTH_PORT: ${BET_DELAY_HEALTH_PORT:-8084}
+    ports:
+      - "127.0.0.1:${BET_DELAY_HEALTH_PORT:-8084}:${BET_DELAY_HEALTH_PORT:-8084}"
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "wget", "-qO-", "http://localhost:${BET_DELAY_HEALTH_PORT:-8084}/healthz"]
+
+  wallet-watcher:
+    <<: *go-service
+    build:
+      context: ./services/wallet-watcher
+      dockerfile: Dockerfile
+    environment:
+      SERVICE_NAME: wallet-watcher
+      HEALTH_PORT: ${WALLET_WATCHER_HEALTH_PORT:-8085}
+    ports:
+      - "127.0.0.1:${WALLET_WATCHER_HEALTH_PORT:-8085}:${WALLET_WATCHER_HEALTH_PORT:-8085}"
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "wget", "-qO-", "http://localhost:${WALLET_WATCHER_HEALTH_PORT:-8085}/healthz"]
+
+volumes:
+  postgres-data:
+  redis-data:
+  caddy-data:
+  caddy-config:
