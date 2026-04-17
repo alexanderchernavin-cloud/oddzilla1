@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js",
+    "start": "tsx src/server.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --ext .ts",
     "test": "echo \"(no tests yet)\" && exit 0"
@@ -27,12 +27,12 @@
     "fastify-plugin": "^5.0.1",
     "ioredis": "^5.4.2",
     "pino": "^9.5.0",
+    "tsx": "^4.19.2",
     "zod": "^3.24.1"
   },
   "devDependencies": {
     "@oddzilla/tsconfig": "workspace:*",
     "@types/node": "^22.10.2",
-    "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }
 }

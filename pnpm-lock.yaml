@@ -215,6 +215,9 @@ importers:
       pino:
         specifier: ^9.5.0
         version: 9.14.0
+      tsx:
+        specifier: ^4.19.2
+        version: 4.21.0
       zod:
         specifier: ^3.24.1
         version: 3.25.76
@@ -225,9 +228,6 @@ importers:
       '@types/node':
         specifier: ^22.10.2
         version: 22.19.17
-      tsx:
-        specifier: ^4.19.2
-        version: 4.21.0
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
