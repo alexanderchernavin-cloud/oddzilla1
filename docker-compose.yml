@@ -96,7 +96,7 @@ services:
       - "127.0.0.1:${API_PORT:-3001}:${API_PORT:-3001}"
     healthcheck:
       <<: *hc
-      test: ["CMD", "wget", "-qO-", "http://localhost:${API_PORT:-3001}/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${API_PORT:-3001}/healthz"]
 
   ws-gateway:
     <<: *ts-service
@@ -110,7 +110,7 @@ services:
       - "127.0.0.1:${WS_GATEWAY_PORT:-3002}:${WS_GATEWAY_PORT:-3002}"
     healthcheck:
       <<: *hc
-      test: ["CMD", "wget", "-qO-", "http://localhost:${WS_GATEWAY_PORT:-3002}/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${WS_GATEWAY_PORT:-3002}/healthz"]
 
   web:
     restart: unless-stopped
@@ -127,7 +127,7 @@ services:
       - ws-gateway
     healthcheck:
       <<: *hc
-      test: ["CMD", "wget", "-qO-", "http://localhost:${WEB_PORT:-3000}"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${WEB_PORT:-3000}"]
 
   feed-ingester:
     <<: *go-service
@@ -141,7 +141,7 @@ services:
       - "127.0.0.1:${FEED_INGESTER_HEALTH_PORT:-8081}:${FEED_INGESTER_HEALTH_PORT:-8081}"
     healthcheck:
       <<: *hc
-      test: ["CMD", "wget", "-qO-", "http://localhost:${FEED_INGESTER_HEALTH_PORT:-8081}/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${FEED_INGESTER_HEALTH_PORT:-8081}/healthz"]
 
   odds-publisher:
     <<: *go-service
@@ -155,7 +155,7 @@ services:
       - "127.0.0.1:${ODDS_PUBLISHER_HEALTH_PORT:-8082}:${ODDS_PUBLISHER_HEALTH_PORT:-8082}"
     healthcheck:
       <<: *hc
-      test: ["CMD", "wget", "-qO-", "http://localhost:${ODDS_PUBLISHER_HEALTH_PORT:-8082}/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${ODDS_PUBLISHER_HEALTH_PORT:-8082}/healthz"]
 
   settlement:
     <<: *go-service
@@ -169,7 +169,7 @@ services:
       - "127.0.0.1:${SETTLEMENT_HEALTH_PORT:-8083}:${SETTLEMENT_HEALTH_PORT:-8083}"
     healthcheck:
       <<: *hc
-      test: ["CMD", "wget", "-qO-", "http://localhost:${SETTLEMENT_HEALTH_PORT:-8083}/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${SETTLEMENT_HEALTH_PORT:-8083}/healthz"]
 
   bet-delay:
     <<: *go-service
@@ -183,7 +183,7 @@ services:
       - "127.0.0.1:${BET_DELAY_HEALTH_PORT:-8084}:${BET_DELAY_HEALTH_PORT:-8084}"
     healthcheck:
       <<: *hc
-      test: ["CMD", "wget", "-qO-", "http://localhost:${BET_DELAY_HEALTH_PORT:-8084}/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${BET_DELAY_HEALTH_PORT:-8084}/healthz"]
 
   wallet-watcher:
     <<: *go-service
@@ -197,7 +197,7 @@ services:
       - "127.0.0.1:${WALLET_WATCHER_HEALTH_PORT:-8085}:${WALLET_WATCHER_HEALTH_PORT:-8085}"
     healthcheck:
       <<: *hc
-      test: ["CMD", "wget", "-qO-", "http://localhost:${WALLET_WATCHER_HEALTH_PORT:-8085}/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${WALLET_WATCHER_HEALTH_PORT:-8085}/healthz"]
 
 volumes:
   postgres-data:
