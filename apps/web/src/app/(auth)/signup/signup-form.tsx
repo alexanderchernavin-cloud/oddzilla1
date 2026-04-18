@@ -17,11 +17,25 @@ export function SignupForm() {
     e.preventDefault();
     setSubmitting(true);
     setError(null);
+
+    // Local validation first — clearer message than round-tripping zod.
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail.includes("@")) {
+      setError("Enter a valid email address.");
+      setSubmitting(false);
+      return;
+    }
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters.");
+      setSubmitting(false);
+      return;
+    }
+
     try {
       await clientApi("/auth/signup", {
         method: "POST",
         body: JSON.stringify({
-          email: email.trim(),
+          email: trimmedEmail,
           password,
           displayName: displayName.trim() || undefined,
         }),
@@ -30,15 +44,22 @@ export function SignupForm() {
       router.refresh();
     } catch (err) {
       if (err instanceof ApiFetchError) {
-        setError(
-          err.body.error === "email_in_use"
-            ? "An account with this email already exists."
-            : err.body.error === "validation_error"
-              ? err.body.issues?.[0]?.message ?? "Check your inputs."
-              : err.body.message,
-        );
+        if (err.body.error === "email_in_use") {
+          setError("An account with this email already exists. Try logging in.");
+        } else if (err.body.error === "validation_error") {
+          const first = err.body.issues?.[0];
+          setError(
+            first
+              ? `${first.path}: ${first.message}`
+              : "Check your inputs and try again.",
+          );
+        } else if (err.status === 429) {
+          setError("Too many attempts. Wait a minute and try again.");
+        } else {
+          setError(err.body.message || "Signup failed.");
+        }
       } else {
-        setError("Could not reach the server. Try again.");
+        setError("Could not reach the server. Check your connection.");
       }
     } finally {
       setSubmitting(false);
@@ -70,7 +91,7 @@ export function SignupForm() {
         onChange={(e) => setEmail(e.target.value)}
       />
       <Field
-        label="Password"
+        label="Password (min 8 characters)"
         type="password"
         name="password"
         autoComplete="new-password"
