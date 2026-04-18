@@ -103,6 +103,8 @@ func main() {
 		Resolver: resolver,
 		Bus:      oddsBus,
 		Log:      logger,
+		Rest:     restClient,
+		NodeID:   cfg.Oddin.NodeID,
 	}
 
 	// ── Health server ──────────────────────────────────────────────────
@@ -143,11 +145,15 @@ func runAMQP(ctx context.Context, cfg config.Config, deps handler.Deps, log zero
 			return handler.Handle(ctx, deps, rk, body)
 		},
 		func(ctx context.Context) error {
-			// Snapshot recovery hook. For phase 3 we log only; the REST
-			// client is ready, but wiring per-fixture recovery requires
-			// the market_descriptions + fixtures pre-fetch that lands in
-			// a phase-3 follow-up ticket (flagged in docs/ODDIN.md).
-			log.Info().Msg("amqp (re)connected; snapshot recovery not yet wired")
+			// On (re)connect: ask Oddin to replay any messages we missed
+			// since our last cursor. Per the docs we issue one request
+			// per producer ("pre" + "live"). The replay arrives via AMQP
+			// and ends with a snapshot_complete message we already handle.
+			if deps.Rest == nil {
+				log.Info().Msg("amqp (re)connected; recovery skipped (no rest client)")
+				return nil
+			}
+			handler.TriggerRecovery(ctx, deps, log)
 			return nil
 		},
 		log,

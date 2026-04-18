@@ -177,6 +177,63 @@ func IsNotFound(err error) bool {
 	return ok && he.Status == http.StatusNotFound
 }
 
+// post is a minimal POST helper used by InitiateRecovery. The recovery
+// endpoint takes its parameters via query string and returns an XML body
+// we mostly ignore (the actual recovery messages flow through AMQP).
+func (c *Client) post(ctx context.Context, path string, query url.Values) ([]byte, error) {
+	u := *c.baseURL
+	u.Path = joinURLPath(u.Path, path)
+	if query != nil {
+		u.RawQuery = query.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("oddinrest: build request: %w", err)
+	}
+	req.Header.Set("x-access-token", c.cfg.Token)
+	req.Header.Set("accept", "application/xml,text/xml;q=0.9,*/*;q=0.5")
+	req.Header.Set("user-agent", userAgent)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("oddinrest: read body: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, &HTTPError{Status: resp.StatusCode, Body: body, URL: u.String()}
+	}
+	return body, nil
+}
+
+// InitiateRecovery requests Oddin to re-send all messages since the given
+// timestamp through the AMQP feed. Per the Oddin docs the recovery window
+// is bounded to 3 days; an after of 0 (or a timestamp older than 3 days)
+// returns just the current snapshot for active matches. The flow:
+//
+//	POST /v1/{product}/recovery/initiate_request?after={ms}&request_id={id}&node_id={n}
+//
+// `productName` is "pre" (producer 1) or "live" (producer 2). The caller
+// is responsible for picking a unique `requestID` and watching for the
+// `snapshot_complete` AMQP message before re-opening markets.
+func (c *Client) InitiateRecovery(ctx context.Context, productName string, afterMs int64, requestID, nodeID int) error {
+	q := url.Values{}
+	if afterMs > 0 {
+		q.Set("after", fmt.Sprintf("%d", afterMs))
+	}
+	if requestID > 0 {
+		q.Set("request_id", fmt.Sprintf("%d", requestID))
+	}
+	if nodeID > 0 {
+		q.Set("node_id", fmt.Sprintf("%d", nodeID))
+	}
+	path := fmt.Sprintf("/v1/%s/recovery/initiate_request", productName)
+	_, err := c.post(ctx, path, q)
+	return err
+}
+
 // HTTPError is returned for any non-2xx response the client couldn't
 // recover from.
 type HTTPError struct {

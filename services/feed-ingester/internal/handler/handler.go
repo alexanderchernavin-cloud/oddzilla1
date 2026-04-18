@@ -11,12 +11,14 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"math/rand"
 	"time"
 
 	"github.com/rs/zerolog"
 
 	"github.com/oddzilla/feed-ingester/internal/automap"
 	"github.com/oddzilla/feed-ingester/internal/bus"
+	"github.com/oddzilla/feed-ingester/internal/oddinrest"
 	"github.com/oddzilla/feed-ingester/internal/oddinxml"
 	"github.com/oddzilla/feed-ingester/internal/store"
 )
@@ -26,6 +28,8 @@ type Deps struct {
 	Resolver *automap.Resolver
 	Bus      *bus.Bus
 	Log      zerolog.Logger
+	Rest     *oddinrest.Client // optional; nil disables recovery flow
+	NodeID   int               // identifies this consumer to Oddin's recovery
 }
 
 // Handle is the entry point from the AMQP consumer. Never returns an error
@@ -81,9 +85,15 @@ func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 		return nil
 	}
 
+	// Don't overwrite the match status from odds_change. Per the Oddin
+	// docs, score-correction odds_change messages can arrive AFTER a match
+	// is closed; reactivating the match in that case is a known anti-
+	// pattern. ResolveMatch() will leave the existing status intact when
+	// the URN is already known. For new matches, the REST fetch inside
+	// ResolveMatch will set a more accurate status than the assumption
+	// "live".
 	matchID, err := d.Resolver.ResolveMatch(ctx, automap.MatchContext{
 		MatchURN: msg.EventID,
-		Status:   "live", // presence of odds_change implies in-play (or pre-match live)
 	}, body)
 	if err != nil {
 		return fmt.Errorf("resolve match %s: %w", msg.EventID, err)
@@ -181,13 +191,26 @@ func handleFixtureChange(ctx context.Context, d Deps, body []byte) error {
 		scheduled = time.UnixMilli(*msg.StartTime).UTC()
 	}
 
-	_, err := d.Resolver.ResolveMatch(ctx, automap.MatchContext{
+	newStatus := mapFixtureStatus(msg.ChangeType)
+	matchID, err := d.Resolver.ResolveMatch(ctx, automap.MatchContext{
 		MatchURN:    msg.EventID,
 		ScheduledAt: scheduled,
-		Status:      mapFixtureStatus(msg.ChangeType),
+		Status:      newStatus,
 	}, body)
 	if err != nil {
 		return fmt.Errorf("fixture_change: resolve: %w", err)
+	}
+
+	// ResolveMatch only sets status on insert; for an existing match we
+	// must apply the status change explicitly. Per Oddin docs, change_type
+	// 3 (CANCELLED) is the only fixture_change value that mutates status —
+	// every other type is handled by the next odds_change message or
+	// (post-MVP) a REST re-fetch.
+	if newStatus != "" {
+		if err := store.UpdateMatchStatus(ctx, d.Store.Pool(), matchID, newStatus); err != nil {
+			d.Log.Warn().Err(err).Int64("match_id", matchID).
+				Str("status", newStatus).Msg("update match status failed")
+		}
 	}
 
 	if err := store.BumpAfterTs(ctx, d.Store.Pool(), afterTsKey(msg.Product), msg.Timestamp); err != nil {
@@ -231,8 +254,63 @@ func handleAlive(ctx context.Context, d Deps, body []byte) error {
 		Int("subscribed", msg.Subscribed).
 		Int64("ts", msg.Timestamp).
 		Msg("alive")
+	// subscribed=0 means Oddin's producer just came back up after a
+	// downtime (or we lost our subscription). Per the docs we should
+	// initiate a full recovery immediately and keep markets closed until
+	// snapshot_complete arrives.
+	if msg.Subscribed == 0 && d.Rest != nil {
+		d.Log.Warn().Int("product", msg.Product).
+			Msg("alive subscribed=0; triggering recovery for this producer")
+		go triggerRecoveryForProduct(context.Background(), d, msg.Product)
+	}
 	// Don't bump after_ts from alive — it's a heartbeat, not a data point.
 	return nil
+}
+
+// ─── recovery ─────────────────────────────────────────────────────────────
+
+// TriggerRecovery is called once after each AMQP (re)connect. It walks both
+// producers and asks Oddin to replay any messages since our stored cursor.
+// Errors are logged but never bubble up — the live feed continues either
+// way.
+func TriggerRecovery(ctx context.Context, d Deps, log zerolog.Logger) {
+	for _, p := range []int{1, 2} {
+		triggerRecoveryForProduct(ctx, d, p)
+	}
+}
+
+func triggerRecoveryForProduct(ctx context.Context, d Deps, product int) {
+	if d.Rest == nil {
+		return
+	}
+	productName := producerName(product)
+	if productName == "" {
+		return
+	}
+	afterMs, err := store.ReadAfterTs(ctx, d.Store.Pool(), afterTsKey(product))
+	if err != nil {
+		d.Log.Warn().Err(err).Int("product", product).Msg("recovery: read cursor failed")
+		// Fall through with afterMs=0 so Oddin sends just current state.
+	}
+	requestID := int(rand.Int31n(1_000_000_000)) //nolint:gosec // not security-sensitive
+	if err := d.Rest.InitiateRecovery(ctx, productName, afterMs, requestID, d.NodeID); err != nil {
+		d.Log.Warn().Err(err).Int("product", product).
+			Int64("after_ms", afterMs).Int("request_id", requestID).
+			Msg("recovery: initiate_request failed")
+		return
+	}
+	d.Log.Info().Int("product", product).Int64("after_ms", afterMs).
+		Int("request_id", requestID).Msg("recovery: initiate_request sent")
+}
+
+func producerName(product int) string {
+	switch product {
+	case 1:
+		return "pre"
+	case 2:
+		return "live"
+	}
+	return ""
 }
 
 // ─── snapshot_complete ────────────────────────────────────────────────────
@@ -269,15 +347,21 @@ func nullableOdds(s string) *string {
 	return &s
 }
 
-// mapFixtureStatus translates Oddin change_type values to our enum. When
-// unknown (empty or a value we don't recognize), return "" so the resolver
-// keeps whatever status the match row already has.
+// mapFixtureStatus translates Oddin fixture_change.change_type values to
+// our match_status enum. Per the Oddin docs the change_type is a numeric
+// id, not a name:
+//   1   NEW         — new fixture; status unchanged (REST re-fetch will fill in)
+//   2   DATE_TIME   — start time changed; status unchanged
+//   3   CANCELLED   — fixture cancelled; mark match cancelled
+//   4   FORMAT      — Bo3 → Bo5 etc.; status unchanged
+//   5   COVERAGE    — coverage changed; status unchanged
+//   106 STREAM_URL  — stream URL changed; status unchanged
+// When unknown / unset / "" we return "" so the resolver keeps whatever
+// status the match row already has.
 func mapFixtureStatus(changeType string) string {
 	switch changeType {
-	case "cancelled":
+	case "3", "cancelled":
 		return "cancelled"
-	case "datetime", "new", "":
-		return ""
 	default:
 		return ""
 	}

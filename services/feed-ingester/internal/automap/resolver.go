@@ -112,17 +112,33 @@ func (r *Resolver) ResolveMatch(ctx context.Context, reqCtx MatchContext, rawPay
 	}
 
 	// Enqueue for admin review so an operator can rename or re-categorise
-	// any auto-created entity. Idempotent on (provider, urn, entity_type).
+	// any auto-created entity. raw_payload is jsonb, so we wrap the raw
+	// XML body inside a JSON envelope rather than dumping it directly.
+	matchReview, _ := json.Marshal(map[string]any{
+		"provider_urn":   reqCtx.MatchURN,
+		"tournament_urn": merged.TournamentURN,
+		"home_team":      merged.HomeTeam,
+		"away_team":      merged.AwayTeam,
+		"scheduled_at":   nullableTimeISO(merged.ScheduledAt),
+		"raw_preview":    truncate(string(rawPayload), 1024),
+	})
 	if err := store.EnqueueReview(ctx, r.st.Pool(), store.ReviewEntry{
 		EntityType:      "match",
 		Provider:        "oddin",
 		ProviderURN:     reqCtx.MatchURN,
-		RawPayload:      rawPayload,
+		RawPayload:      matchReview,
 		CreatedEntityID: fmt.Sprintf("%d", id),
 	}); err != nil {
 		return 0, fmt.Errorf("enqueue review (match): %w", err)
 	}
 	return id, nil
+}
+
+func nullableTimeISO(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 // resolveTournament guarantees a tournaments row exists for the supplied

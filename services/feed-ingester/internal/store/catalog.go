@@ -158,6 +158,20 @@ RETURNING id`
 	return id, nil
 }
 
+// UpdateMatchStatus updates only the match_status column on an existing
+// match — used by fixture_change handlers when we need to flip status to
+// 'cancelled' without rewriting the rest of the match row.
+func UpdateMatchStatus(ctx context.Context, db pgxRunner, matchID int64, status string) error {
+	_, err := db.Exec(ctx,
+		`UPDATE matches SET status = $2::match_status, updated_at = NOW() WHERE id = $1`,
+		matchID, status,
+	)
+	if err != nil {
+		return fmt.Errorf("update match status: %w", err)
+	}
+	return nil
+}
+
 // EnsureCategoryForSport returns the categories.id for the auto-mapped
 // category that sits directly under the given sport. Categories from Oddin
 // don't always exist in the source feed — we keep one synthetic "Auto" row
