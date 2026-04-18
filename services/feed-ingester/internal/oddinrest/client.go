@@ -170,6 +170,18 @@ func (c *Client) Sports(ctx context.Context, lang string) ([]byte, error) {
 	return c.Get(ctx, fmt.Sprintf("/v1/sports/%s/sports", lang), nil)
 }
 
+// CompetitorProfile returns a team's metadata (name, abbreviation, icon)
+// plus the active player roster. Players carry their own URN, short
+// name, and full name — which is what the API substitutes into outcome
+// labels for player-prop markets (od:player:N outcome ids).
+//   GET /v1/sports/{lang}/competitors/{urn}/profile
+// The response is small (single team + ~5 players for esports) so we
+// can call it once per match without caching concerns.
+func (c *Client) CompetitorProfile(ctx context.Context, lang, competitorURN string) ([]byte, error) {
+	path := fmt.Sprintf("/v1/sports/%s/competitors/%s/profile", lang, competitorURN)
+	return c.Get(ctx, path, nil)
+}
+
 // MarketDescriptions returns the market + outcome description catalog —
 // name templates, outcome labels, and specifier schema — that turns the
 // numeric market/outcome ids on the odds feed into user-facing names.
