@@ -305,12 +305,47 @@ func (s *Settler) applyMarketCancel(ctx context.Context, eventURN string, ts int
 	if err := store.SetMarketStatus(ctx, tx, marketID, -4, ts); err != nil {
 		return err
 	}
-	if err := store.VoidSelectionsForMarket(ctx, tx, marketID, market.StartTime, market.EndTime); err != nil {
-		return err
-	}
 
 	tickets, err := store.AffectedTicketsForMarket(ctx, tx, marketID)
 	if err != nil {
+		return err
+	}
+
+	// Cancel-after-settle support. Per the Oddin docs:
+	//
+	//   "If a market is cancelled after it has already been settled,
+	//    there won't be any rollback_bet_settlement messages to reverse
+	//    the settlement; the market will just receive the bet_cancel
+	//    message directly. The bet voiding process should be implemented
+	//    in the same way as if the settled market had previously been
+	//    rollbacked."
+	//
+	// Walk every affected ticket; if any are currently 'settled', undo
+	// that settlement (wallet + ledger compensating row) so the cancel
+	// path below can re-resolve the selections as void and refund the
+	// stake exactly as it would for a never-settled ticket.
+	reversedSettled := 0
+	for _, tid := range tickets {
+		ok, err := s.reverseSettledForCancel(ctx, tx, tid)
+		if err != nil {
+			return err
+		}
+		if ok {
+			reversedSettled++
+		}
+	}
+
+	// Clear any pre-existing selection results for THIS market across
+	// every ticket (settled-then-reversed tickets had results we just
+	// undid; tickets that were already 'accepted' had NULL results
+	// already). VoidSelectionsForMarket then marks every NULL selection
+	// on the market as void, so the next settle pass refunds stakes.
+	if reversedSettled > 0 {
+		if err := store.ReverseSelectionsForMarket(ctx, tx, marketID); err != nil {
+			return err
+		}
+	}
+	if err := store.VoidSelectionsForMarket(ctx, tx, marketID, market.StartTime, market.EndTime); err != nil {
 		return err
 	}
 
@@ -334,6 +369,31 @@ func (s *Settler) applyMarketCancel(ctx context.Context, eventURN string, ts int
 		s.publishTicketEvent(ctx, tid, "settled", "market_cancelled")
 	}
 	return nil
+}
+
+// reverseSettledForCancel undoes a prior settlement on a ticket so the
+// cancel handler can re-resolve it as void. Returns true when the ticket
+// was reversed (was previously 'settled'); false when the ticket is in
+// any other state. SKIP-LOCKED misses also return false (another worker
+// holds it; their settle will pick up the cancel on its next pass).
+func (s *Settler) reverseSettledForCancel(ctx context.Context, tx pgx.Tx, ticketID string) (bool, error) {
+	t, locked, err := store.LoadTicketForSettle(ctx, tx, ticketID)
+	if err != nil {
+		return false, err
+	}
+	if !locked || t.Status != "settled" {
+		return false, nil
+	}
+	var prior int64
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(actual_payout_micro, 0) FROM tickets WHERE id = $1`, ticketID,
+	).Scan(&prior); err != nil {
+		return false, fmt.Errorf("read actual_payout for cancel-reverse: %w", err)
+	}
+	if err := store.ReverseSettledTicket(ctx, tx, ticketID, t.UserID, "bet_cancel", t.StakeMicro, prior); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // ─── rollback_bet_settlement ───────────────────────────────────────────────

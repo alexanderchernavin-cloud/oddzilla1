@@ -294,9 +294,13 @@ SELECT odds_at_placement::text,
 // credited back to the user (stake refund on void, 0 on total loss,
 // stake*odds on win, and partials in between).
 //
-// The wallet_ledger unique partial index on (type, ref_type, ref_id)
-// makes this idempotent even if settlement is replayed: a second call
-// with the same ticket + same ledger type is a no-op.
+// The wallet_ledger unique partial index on (type, ref_type, ref_id) is
+// what makes settlement idempotent under replay — a second call with the
+// same key is a no-op. To support the rare-but-real "settle → rollback →
+// re-settle with a different result" flow, we suffix ref_id with a
+// generation number (`<ticketID>:N`) when a previous payout row already
+// exists, so each generation gets its own row instead of being silently
+// dropped by ON CONFLICT.
 func SettleTicket(ctx context.Context, tx pgx.Tx, t TicketForSettle, payoutMicro int64, ledgerType, memo string) error {
 	if _, err := tx.Exec(ctx, `
 UPDATE tickets
@@ -321,15 +325,69 @@ UPDATE wallets
 	// there's no credit to audit (and the -stake from placement is the
 	// final loss entry). This keeps the unique index clean.
 	if payoutMicro > 0 {
+		refID, err := nextPayoutRefID(ctx, tx, t.ID, ledgerType)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `
 INSERT INTO wallet_ledger (user_id, delta_micro, type, ref_type, ref_id, memo)
 VALUES ($1, $2, $3::wallet_tx_type, 'ticket', $4, $5)
 ON CONFLICT (type, ref_type, ref_id) WHERE ref_id IS NOT NULL DO NOTHING`,
-			t.UserID, payoutMicro, ledgerType, t.ID, memo); err != nil {
+			t.UserID, payoutMicro, ledgerType, refID, memo); err != nil {
 			return fmt.Errorf("ledger settle insert: %w", err)
 		}
 	}
 	return nil
+}
+
+// nextPayoutRefID returns the ref_id to use for a new ledger row of
+// `ledgerType`. The first generation is the bare ticket UUID; subsequent
+// generations append ":N" so a re-settle after rollback gets its own row.
+func nextPayoutRefID(ctx context.Context, tx pgx.Tx, ticketID, ledgerType string) (string, error) {
+	var count int
+	err := tx.QueryRow(ctx, `
+SELECT COUNT(*) FROM wallet_ledger
+ WHERE ref_type = 'ticket'
+   AND type = $2::wallet_tx_type
+   AND (ref_id = $1 OR ref_id LIKE $1 || ':%')`,
+		ticketID, ledgerType,
+	).Scan(&count)
+	if err != nil {
+		return "", fmt.Errorf("next payout ref id: %w", err)
+	}
+	if count == 0 {
+		return ticketID, nil
+	}
+	return fmt.Sprintf("%s:%d", ticketID, count+1), nil
+}
+
+// LatestUnreversedPayoutRefID returns the ref_id of the most recent
+// `bet_payout` ledger row for `ticketID` that has NOT been compensated by
+// an `adjustment` row sharing the same ref_id. Returns ("", false, nil)
+// when no such row exists (either no settle ever happened, the prior
+// payout was zero, or every settle has already been reversed).
+func LatestUnreversedPayoutRefID(ctx context.Context, tx pgx.Tx, ticketID string) (string, bool, error) {
+	var refID string
+	err := tx.QueryRow(ctx, `
+SELECT ref_id FROM wallet_ledger p
+ WHERE p.ref_type = 'ticket'
+   AND p.type = 'bet_payout'
+   AND (p.ref_id = $1 OR p.ref_id LIKE $1 || ':%')
+   AND NOT EXISTS (
+       SELECT 1 FROM wallet_ledger r
+        WHERE r.ref_type = 'ticket'
+          AND r.type = 'adjustment'
+          AND r.ref_id = p.ref_id
+   )
+ ORDER BY p.id DESC
+ LIMIT 1`, ticketID).Scan(&refID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("latest unreversed payout: %w", err)
+	}
+	return refID, true, nil
 }
 
 // ─── Rollback support ──────────────────────────────────────────────────────
@@ -368,12 +426,25 @@ UPDATE wallets
 	}
 
 	if priorPayoutMicro > 0 {
-		if _, err := tx.Exec(ctx, `
+		// Find the ref_id of the bet_payout we're compensating. Using the
+		// same ref_id for the adjustment row pairs them up in audit
+		// queries and preserves the per-generation invariant introduced
+		// by SettleTicket. If no unreversed payout row exists (e.g. the
+		// original payout was 0 and we never wrote one) skip the ledger
+		// insert — the wallet update above is the full record of the
+		// reversal in that edge case.
+		refID, found, err := LatestUnreversedPayoutRefID(ctx, tx, ticketID)
+		if err != nil {
+			return err
+		}
+		if found {
+			if _, err := tx.Exec(ctx, `
 INSERT INTO wallet_ledger (user_id, delta_micro, type, ref_type, ref_id, memo)
 VALUES ($1, $2, 'adjustment', 'ticket', $3, $4)
 ON CONFLICT (type, ref_type, ref_id) WHERE ref_id IS NOT NULL DO NOTHING`,
-			userID, -priorPayoutMicro, ticketID, reason); err != nil {
-			return fmt.Errorf("ledger reverse insert: %w", err)
+				userID, -priorPayoutMicro, refID, reason); err != nil {
+				return fmt.Errorf("ledger reverse insert: %w", err)
+			}
 		}
 	}
 	return nil
