@@ -140,8 +140,15 @@ func (p *Publisher) processOne(ctx context.Context, ev bus.Event) error {
 }
 
 // applyMargin divides raw decimal odds by (1 + margin_bp/10000) using
-// big.Float for precision. Returns the result as a 4-decimal string to
-// match the NUMERIC(10,4) column.
+// big.Float for precision. Returns the result as a 2-decimal string —
+// the industry-standard display precision for decimal odds. The DB
+// column is NUMERIC(10,4) (kept for backward compatibility and history
+// rows ingested before this change); Postgres will store e.g. 3.14 as
+// 3.1400, and the API layer trims the trailing zeros for the client.
+//
+// Floor-round (via math truncation by Sprintf) so we never publish odds
+// HIGHER than the margined price — users get the conservative quote and
+// payouts don't exceed what the book mathematically collected for.
 func applyMargin(rawOdds string, marginBp int) (string, error) {
 	if rawOdds == "" {
 		return "", fmt.Errorf("empty raw odds")
@@ -155,10 +162,11 @@ func applyMargin(rawOdds string, marginBp int) (string, error) {
 		big.NewFloat(10000),
 	)
 	pub := new(big.Float).Quo(raw, divisor)
-	// 4 decimal places — floor-round for safety (never publish odds
-	// HIGHER than the margined price).
 	pubF, _ := pub.Float64()
-	return fmt.Sprintf("%.4f", pubF), nil
+	// Truncate to 2 decimals (floor, not round-half-even) by multiplying,
+	// flooring, dividing. fmt %f rounds, so we can't use it directly.
+	truncated := float64(int64(pubF*100)) / 100.0
+	return fmt.Sprintf("%.2f", truncated), nil
 }
 
 // Stats returns a lightweight snapshot used by /healthz.

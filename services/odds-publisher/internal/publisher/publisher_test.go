@@ -9,13 +9,15 @@ func TestApplyMargin(t *testing.T) {
 		marginBp int
 		want     string
 	}{
-		{"no margin, round number", "2.00", 0, "2.0000"},
-		{"no margin, irrational", "1.85", 0, "1.8500"},
-		{"5% margin on evens", "2.00", 500, "1.9048"},
-		{"5% margin on favorite", "1.50", 500, "1.4286"},
-		{"5% margin on dog", "3.00", 500, "2.8571"},
-		{"10% margin", "2.00", 1000, "1.8182"},
-		{"50% margin (cap)", "2.00", 5000, "1.3333"},
+		{"no margin, round number", "2.00", 0, "2.00"},
+		{"no margin, irrational", "1.85", 0, "1.85"},
+		{"5% margin on evens", "2.00", 500, "1.90"},
+		{"5% margin on favorite", "1.50", 500, "1.42"},
+		{"5% margin on dog", "3.00", 500, "2.85"},
+		{"5% margin on user's screenshot (3.30)", "3.30", 500, "3.14"},
+		{"5% margin on user's screenshot (1.28)", "1.28", 500, "1.21"},
+		{"10% margin", "2.00", 1000, "1.81"},
+		{"50% margin (cap)", "2.00", 5000, "1.33"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

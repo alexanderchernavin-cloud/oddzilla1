@@ -24,6 +24,16 @@ const matchListQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
 });
 
+// Postgres returns NUMERIC(10,4) as "3.1400" or "3.1429" (pre-2026-04-18
+// data, before the publisher started truncating to 2 decimals). Trim to
+// the industry-standard 2-decimal display regardless of what's in the row.
+function formatOdds(s: string | null | undefined): string | null {
+  if (s == null) return null;
+  const n = Number.parseFloat(s);
+  if (!Number.isFinite(n)) return null;
+  return (Math.floor(n * 100) / 100).toFixed(2);
+}
+
 export default async function catalogRoutes(app: FastifyInstance) {
   // ── Sports tree ─────────────────────────────────────────────────────
   app.get("/catalog/sports", async () => {
@@ -190,7 +200,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         m.outcomes.push({
           outcomeId: r.outcomeId,
           name: r.outcomeName ?? "",
-          publishedOdds: r.publishedOdds ?? null,
+          publishedOdds: formatOdds(r.publishedOdds),
           active: r.active ?? false,
         });
       }
