@@ -17,5 +17,7 @@ FROM base AS runner
 ENV NODE_ENV=production
 COPY --from=builder /app /app
 WORKDIR /app/services/api
+RUN chown -R node:node /app
+USER node
 EXPOSE 3001
 CMD ["pnpm", "start"]

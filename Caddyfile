@@ -38,8 +38,46 @@
 		reverse_proxy ws-gateway:3002
 	}
 
-	# Next.js frontend (default)
+	# Next.js frontend (default). CSP scoped to HTML responses only —
+	# /api/* has its own strict CSP from @fastify/helmet.
 	handle {
+		header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
+		reverse_proxy web:3000
+	}
+}
+
+# ── Admin backoffice ─────────────────────────────────────────────────────────
+# Same Next.js container, but the root path redirects straight to /admin so
+# operators never land on the public marketing pages. Auth + role checks
+# inside /admin routes remain the real access control.
+{$ADMIN_HOST} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	redir / /admin 302
+
+	handle_path /api/* {
+		reverse_proxy api:3001
+	}
+
+	@websocket {
+		header Connection *Upgrade*
+		header Upgrade    websocket
+	}
+	handle /ws* {
+		reverse_proxy ws-gateway:3002
+	}
+
+	handle {
+		header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
 		reverse_proxy web:3000
 	}
 }
