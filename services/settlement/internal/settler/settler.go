@@ -302,62 +302,22 @@ func (s *Settler) applyMarketCancel(ctx context.Context, eventURN string, ts int
 		return tx.Commit(ctx)
 	}
 
-	if err := store.SetMarketStatus(ctx, tx, marketID, -4, ts); err != nil {
-		return err
+	// Per the Oddin docs (§2.4.4), the bet_cancel time attributes determine
+	// market lifecycle and which bets to void:
+	//   - no times present:      cancel ALL bets; market → -4 (cancelled)
+	//   - start_time only:       cancel bets placed AFTER start; market → -4
+	//   - end_time only:         cancel bets placed BEFORE end; market stays active
+	//   - start_time + end_time: cancel bets placed during window; market stays active
+	deactivateMarket := market.EndTime == nil // true when end_time absent
+	if deactivateMarket {
+		if err := store.SetMarketStatus(ctx, tx, marketID, -4, ts); err != nil {
+			return err
+		}
 	}
 
-	tickets, err := store.AffectedTicketsForMarket(ctx, tx, marketID)
+	settledTickets, err := s.applyCancelToTickets(ctx, tx, marketID, market.StartTime, market.EndTime)
 	if err != nil {
 		return err
-	}
-
-	// Cancel-after-settle support. Per the Oddin docs:
-	//
-	//   "If a market is cancelled after it has already been settled,
-	//    there won't be any rollback_bet_settlement messages to reverse
-	//    the settlement; the market will just receive the bet_cancel
-	//    message directly. The bet voiding process should be implemented
-	//    in the same way as if the settled market had previously been
-	//    rollbacked."
-	//
-	// Walk every affected ticket; if any are currently 'settled', undo
-	// that settlement (wallet + ledger compensating row) so the cancel
-	// path below can re-resolve the selections as void and refund the
-	// stake exactly as it would for a never-settled ticket.
-	reversedSettled := 0
-	for _, tid := range tickets {
-		ok, err := s.reverseSettledForCancel(ctx, tx, tid)
-		if err != nil {
-			return err
-		}
-		if ok {
-			reversedSettled++
-		}
-	}
-
-	// Clear any pre-existing selection results for THIS market across
-	// every ticket (settled-then-reversed tickets had results we just
-	// undid; tickets that were already 'accepted' had NULL results
-	// already). VoidSelectionsForMarket then marks every NULL selection
-	// on the market as void, so the next settle pass refunds stakes.
-	if reversedSettled > 0 {
-		if err := store.ReverseSelectionsForMarket(ctx, tx, marketID); err != nil {
-			return err
-		}
-	}
-	if err := store.VoidSelectionsForMarket(ctx, tx, marketID, market.StartTime, market.EndTime); err != nil {
-		return err
-	}
-
-	settledTickets := make([]string, 0, len(tickets))
-	for _, tid := range tickets {
-		didSettle, err := s.maybeSettleTicket(ctx, tx, tid, "bet_cancel")
-		if err != nil {
-			return err
-		}
-		if didSettle {
-			settledTickets = append(settledTickets, tid)
-		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -369,6 +329,49 @@ func (s *Settler) applyMarketCancel(ctx context.Context, eventURN string, ts int
 		s.publishTicketEvent(ctx, tid, "settled", "market_cancelled")
 	}
 	return nil
+}
+
+// applyCancelToTickets handles the per-ticket void+refund flow for both
+// the windowed and full bet_cancel cases. Per ticket: if currently
+// settled, reverse the settlement first (so wallet/ledger unwind
+// correctly per the cancel-after-settle docs note), then mark its
+// selections on this market as void, then re-settle so the stake is
+// refunded.
+func (s *Settler) applyCancelToTickets(ctx context.Context, tx pgx.Tx, marketID int64, startMs, endMs *int64) ([]string, error) {
+	tickets, err := store.AffectedTicketsForMarketInWindow(ctx, tx, marketID, startMs, endMs)
+	if err != nil {
+		return nil, err
+	}
+
+	settledTickets := make([]string, 0, len(tickets))
+	for _, tid := range tickets {
+		// Reverse if previously settled. SKIP-LOCKED misses inside
+		// reverseSettledForCancel just no-op the ticket — another worker
+		// has it.
+		reversed, err := s.reverseSettledForCancel(ctx, tx, tid)
+		if err != nil {
+			return nil, err
+		}
+		// If we reversed a previously-settled ticket, its selections on
+		// this market still hold the old result. Clear them so the
+		// void-then-resettle below has clean ground.
+		if reversed {
+			if err := store.ReverseSelectionsForTicketOnMarket(ctx, tx, tid, marketID); err != nil {
+				return nil, err
+			}
+		}
+		if err := store.VoidSelectionsForTicketOnMarket(ctx, tx, tid, marketID); err != nil {
+			return nil, err
+		}
+		didSettle, err := s.maybeSettleTicket(ctx, tx, tid, "bet_cancel")
+		if err != nil {
+			return nil, err
+		}
+		if didSettle {
+			settledTickets = append(settledTickets, tid)
+		}
+	}
+	return settledTickets, nil
 }
 
 // reverseSettledForCancel undoes a prior settlement on a ticket so the

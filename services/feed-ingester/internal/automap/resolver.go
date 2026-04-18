@@ -141,6 +141,46 @@ func nullableTimeISO(t time.Time) any {
 	return t.UTC().Format(time.RFC3339)
 }
 
+// RefreshFromFixture fetches the latest fixture metadata from REST and
+// applies it to an EXISTING match row. Called from the fixture_change
+// handler when Oddin signals a NEW or DATE_TIME change for a match we
+// already have. No-op when the REST client isn't configured or the
+// fixture endpoint returns 404. Returns nil on best-effort failures so
+// the caller never errors on metadata refresh.
+func (r *Resolver) RefreshFromFixture(ctx context.Context, matchURN string) error {
+	matchID, ok, err := store.FindMatchByURN(ctx, r.st.Pool(), matchURN)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil // unknown match — odds_change/handler will create it via ResolveMatch
+	}
+	fx, err := r.fetchFixture(ctx, matchURN)
+	if err != nil || fx == nil {
+		// 404 or transient error — log via caller and move on.
+		return err
+	}
+	merged := r.merge(MatchContext{MatchURN: matchURN}, fx)
+
+	// Resolve tournament (creates sport/category/tournament if needed)
+	// so we can update the match's tournament_id when it changed (rare
+	// but documented as a possible NEW/DATE_TIME side effect).
+	tournamentID, err := r.resolveTournament(ctx, merged.TournamentURN, fx, []byte(`{"refresh":true}`))
+	if err != nil {
+		return err
+	}
+	mu := r.matchUpsert(merged, tournamentID)
+	if _, err := store.UpsertMatch(ctx, r.st.Pool(), mu); err != nil {
+		return fmt.Errorf("refresh upsert match: %w", err)
+	}
+	r.log.Info().
+		Str("match_urn", matchURN).
+		Int64("match_id", matchID).
+		Int("tournament_id", tournamentID).
+		Msg("fixture refreshed from REST")
+	return nil
+}
+
 // resolveTournament guarantees a tournaments row exists for the supplied
 // URN. When `fixture` is non-nil and contains a sport, we create the
 // tournament under that sport's auto category. Otherwise the fallback

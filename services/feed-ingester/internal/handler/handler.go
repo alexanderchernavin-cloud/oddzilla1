@@ -12,6 +12,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"math/rand"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -23,6 +24,28 @@ import (
 	"github.com/oddzilla/feed-ingester/internal/store"
 )
 
+// AliveState tracks the last alive-message timestamp per producer so the
+// handler can detect irregular gaps and trigger recovery. Per Oddin docs
+// §2.4.7: alive arrives every 10s; intervals more or less than ~10s
+// indicate either networking issues or a producer-side problem and the
+// client must suspend markets and recover.
+type AliveState struct {
+	lastTsMs sync.Map // int (product) → int64 (last unix ms timestamp)
+}
+
+func NewAliveState() *AliveState { return &AliveState{} }
+
+// observe updates the per-producer last-ts and returns the gap (in ms)
+// since the previous alive for the same producer. Returns (0, false) on
+// the first alive received for a producer (no prior to compare against).
+func (a *AliveState) observe(product int, tsMs int64) (int64, bool) {
+	prev, loaded := a.lastTsMs.Swap(product, tsMs)
+	if !loaded {
+		return 0, false
+	}
+	return tsMs - prev.(int64), true
+}
+
 type Deps struct {
 	Store    *store.Store
 	Resolver *automap.Resolver
@@ -30,6 +53,7 @@ type Deps struct {
 	Log      zerolog.Logger
 	Rest     *oddinrest.Client // optional; nil disables recovery flow
 	NodeID   int               // identifies this consumer to Oddin's recovery
+	Alive    *AliveState       // per-producer alive-gap tracker
 }
 
 // Handle is the entry point from the AMQP consumer. Never returns an error
@@ -203,13 +227,26 @@ func handleFixtureChange(ctx context.Context, d Deps, body []byte) error {
 
 	// ResolveMatch only sets status on insert; for an existing match we
 	// must apply the status change explicitly. Per Oddin docs, change_type
-	// 3 (CANCELLED) is the only fixture_change value that mutates status —
-	// every other type is handled by the next odds_change message or
-	// (post-MVP) a REST re-fetch.
+	// 3 (CANCELLED) is the only fixture_change value that mutates status
+	// directly via this handler.
 	if newStatus != "" {
 		if err := store.UpdateMatchStatus(ctx, d.Store.Pool(), matchID, newStatus); err != nil {
 			d.Log.Warn().Err(err).Int64("match_id", matchID).
 				Str("status", newStatus).Msg("update match status failed")
+		}
+	}
+
+	// Per Oddin docs §2.4.6: "We strongly recommend that you always
+	// re-fetch the fixture information for the affected match if you
+	// receive [a fixture_change]." Do this for the change types that
+	// actually mutate fixture metadata: NEW (1), DATE_TIME (2), FORMAT
+	// (4), and COVERAGE (5). CANCELLED (3) is already handled above and
+	// STREAM_URL (106) doesn't affect bet placement.
+	if shouldRefreshFromREST(msg.ChangeType) {
+		if err := d.Resolver.RefreshFromFixture(ctx, msg.EventID); err != nil {
+			d.Log.Debug().Err(err).Str("match_urn", msg.EventID).
+				Str("change_type", msg.ChangeType).
+				Msg("fixture_change: REST refresh failed (best-effort; continuing)")
 		}
 	}
 
@@ -262,6 +299,30 @@ func handleAlive(ctx context.Context, d Deps, body []byte) error {
 		d.Log.Warn().Int("product", msg.Product).
 			Msg("alive subscribed=0; triggering recovery for this producer")
 		go triggerRecoveryForProduct(context.Background(), d, msg.Product)
+	}
+	// Timestamp-gap detection. Per Oddin docs §2.4.7, alive arrives every
+	// 10s; if consecutive timestamps drift by more than ~5s in either
+	// direction we should treat that as a producer-side issue and
+	// recover. We don't suspend markets here — bet placement already
+	// rejects on market.status != 1 — but we re-issue recovery so any
+	// missed messages stream back through.
+	if d.Alive != nil && d.Rest != nil {
+		const (
+			expectedIntervalMs = int64(10_000)
+			toleranceMs        = int64(5_000)
+		)
+		if gap, ok := d.Alive.observe(msg.Product, msg.Timestamp); ok {
+			drift := gap - expectedIntervalMs
+			if drift < 0 {
+				drift = -drift
+			}
+			if drift > toleranceMs {
+				d.Log.Warn().Int("product", msg.Product).
+					Int64("gap_ms", gap).Int64("expected_ms", expectedIntervalMs).
+					Msg("alive gap exceeds tolerance; triggering recovery")
+				go triggerRecoveryForProduct(context.Background(), d, msg.Product)
+			}
+		}
 	}
 	// Don't bump after_ts from alive — it's a heartbeat, not a data point.
 	return nil
@@ -345,6 +406,17 @@ func nullableOdds(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// shouldRefreshFromREST returns true for fixture_change change_types
+// that materially update match metadata we cache — NEW, DATE_TIME,
+// FORMAT, and COVERAGE per Oddin docs §2.4.6.
+func shouldRefreshFromREST(changeType string) bool {
+	switch changeType {
+	case "1", "2", "4", "5", "new", "datetime", "format", "coverage":
+		return true
+	}
+	return false
 }
 
 // mapFixtureStatus translates Oddin fixture_change.change_type values to

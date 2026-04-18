@@ -105,6 +105,7 @@ func main() {
 		Log:      logger,
 		Rest:     restClient,
 		NodeID:   cfg.Oddin.NodeID,
+		Alive:    handler.NewAliveState(),
 	}
 
 	// ── Health server ──────────────────────────────────────────────────
@@ -120,6 +121,12 @@ func main() {
 		logger.Warn().Msg("Oddin creds absent (ODDIN_TOKEN/ODDIN_CUSTOMER_ID); running idle — health endpoint only")
 	} else {
 		go runAMQP(ctx, cfg, deps, logger)
+		// Background sweeper: any market stuck at status=-2 (handed over
+		// from pre-match to live) for more than 60s gets demoted to -1
+		// (suspended). Per Oddin docs §1.4 — if the live producer doesn't
+		// pick up within "a reasonable time" we should treat the market as
+		// suspended so bet placement keeps rejecting cleanly.
+		go runHandoverSweeper(ctx, st, logger)
 	}
 
 	// ── Wait for signal ────────────────────────────────────────────────
@@ -128,6 +135,34 @@ func main() {
 	<-sigCh
 	logger.Info().Msg("shutting down")
 	cancel()
+}
+
+// runHandoverSweeper polls every 15s and demotes markets stuck at -2
+// for >60s to -1. Single-statement update; no contention with the
+// AMQP-driven UpsertMarket path (any in-flight odds_change would just
+// re-set the status from the latest message anyway).
+func runHandoverSweeper(ctx context.Context, st *store.Store, log zerolog.Logger) {
+	const (
+		sweepEvery        = 15 * time.Second
+		handoverTimeoutMs = int64(60_000) // 60s per Oddin docs
+	)
+	t := time.NewTicker(sweepEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			n, err := store.SweepHandoverTimeouts(ctx, st.Pool(), handoverTimeoutMs)
+			if err != nil {
+				log.Warn().Err(err).Msg("handover sweep failed")
+				continue
+			}
+			if n > 0 {
+				log.Info().Int64("demoted", n).Msg("handover sweep: -2 markets timed out → -1 (suspended)")
+			}
+		}
+	}
 }
 
 func runAMQP(ctx context.Context, cfg config.Config, deps handler.Deps, log zerolog.Logger) {

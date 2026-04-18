@@ -194,23 +194,94 @@ UPDATE ticket_selections
 
 // VoidSelectionsForMarket marks every unresolved selection on a market
 // as void (result=void, void_factor=1) — used by bet_cancel when the
-// whole market is voided. Scoped by time window if provided.
+// whole market is voided. Optionally scoped by ticket placement window:
+//   - startMs only: void selections from tickets placed AT/AFTER startMs
+//   - endMs only:   void selections from tickets placed AT/BEFORE endMs
+//   - both:         void selections from tickets placed within the range
+//   - neither:      void every unresolved selection on the market
+// The placed_at filter joins through tickets so combo bets work correctly
+// once we add them.
 func VoidSelectionsForMarket(ctx context.Context, tx pgx.Tx, marketID int64, startMs, endMs *int64) error {
-	// For MVP we apply to all unresolved selections regardless of placed
-	// window. A proper implementation would filter by tickets.placed_at
-	// against startMs/endMs. Document as a phase-6 follow-up.
-	_ = startMs
-	_ = endMs
-	_, err := tx.Exec(ctx, `
+	const q = `
 UPDATE ticket_selections ts
    SET result = 'void'::outcome_result,
        void_factor = 1,
        settled_at = NOW()
- WHERE ts.market_id = $1 AND ts.result IS NULL`, marketID)
-	if err != nil {
+  FROM tickets t
+ WHERE ts.ticket_id = t.id
+   AND ts.market_id = $1
+   AND ts.result IS NULL
+   AND ($2::bigint IS NULL OR (EXTRACT(EPOCH FROM t.placed_at) * 1000)::bigint >= $2)
+   AND ($3::bigint IS NULL OR (EXTRACT(EPOCH FROM t.placed_at) * 1000)::bigint <= $3)`
+	if _, err := tx.Exec(ctx, q, marketID, nullableInt64(startMs), nullableInt64(endMs)); err != nil {
 		return fmt.Errorf("void selections: %w", err)
 	}
 	return nil
+}
+
+// AffectedTicketsForMarketInWindow returns ticket IDs that touch the
+// market AND fall within the optional placed_at window. Used by the
+// time-windowed bet_cancel path so cancel-after-settle reversal only
+// touches tickets the cancel actually applies to.
+func AffectedTicketsForMarketInWindow(ctx context.Context, tx pgx.Tx, marketID int64, startMs, endMs *int64) ([]string, error) {
+	const q = `
+SELECT DISTINCT ts.ticket_id
+  FROM ticket_selections ts
+  JOIN tickets t ON t.id = ts.ticket_id
+ WHERE ts.market_id = $1
+   AND ($2::bigint IS NULL OR (EXTRACT(EPOCH FROM t.placed_at) * 1000)::bigint >= $2)
+   AND ($3::bigint IS NULL OR (EXTRACT(EPOCH FROM t.placed_at) * 1000)::bigint <= $3)`
+	rows, err := tx.Query(ctx, q, marketID, nullableInt64(startMs), nullableInt64(endMs))
+	if err != nil {
+		return nil, fmt.Errorf("affected tickets in window: %w", err)
+	}
+	defer rows.Close()
+	out := make([]string, 0, 8)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// VoidSelectionsForTicketOnMarket voids the selections of one ticket on
+// one market. Used by the time-windowed cancel path which loops per
+// ticket rather than batching across the whole market.
+func VoidSelectionsForTicketOnMarket(ctx context.Context, tx pgx.Tx, ticketID string, marketID int64) error {
+	_, err := tx.Exec(ctx, `
+UPDATE ticket_selections
+   SET result = 'void'::outcome_result,
+       void_factor = 1,
+       settled_at = NOW()
+ WHERE ticket_id = $1 AND market_id = $2 AND result IS NULL`, ticketID, marketID)
+	if err != nil {
+		return fmt.Errorf("void selections per ticket: %w", err)
+	}
+	return nil
+}
+
+// ReverseSelectionsForTicketOnMarket clears prior result/void_factor on
+// one ticket's selections for one market — paired with
+// VoidSelectionsForTicketOnMarket inside the cancel-after-settle flow.
+func ReverseSelectionsForTicketOnMarket(ctx context.Context, tx pgx.Tx, ticketID string, marketID int64) error {
+	_, err := tx.Exec(ctx, `
+UPDATE ticket_selections
+   SET result = NULL, void_factor = NULL, settled_at = NULL
+ WHERE ticket_id = $1 AND market_id = $2`, ticketID, marketID)
+	if err != nil {
+		return fmt.Errorf("reverse selections per ticket: %w", err)
+	}
+	return nil
+}
+
+func nullableInt64(p *int64) any {
+	if p == nil {
+		return nil
+	}
+	return *p
 }
 
 // ─── Ticket resolution ─────────────────────────────────────────────────────

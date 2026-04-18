@@ -176,3 +176,23 @@ type pgxRunner interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
+
+// SweepHandoverTimeouts demotes any market that's been in pre-match → live
+// "handed over" state (status=-2) for longer than `timeoutMs` to suspended
+// (status=-1). Per Oddin docs §1.4: "if you do not receive live odds within
+// a reasonable time after receiving the handed over state, consider this as
+// an error and suspend all markets". 60s is the documented threshold.
+//
+// Returns the number of markets flipped.
+func SweepHandoverTimeouts(ctx context.Context, db pgxRunner, timeoutMs int64) (int64, error) {
+	tag, err := db.Exec(ctx, `
+UPDATE markets
+   SET status = -1,
+       updated_at = NOW()
+ WHERE status = -2
+   AND last_oddin_ts < (EXTRACT(EPOCH FROM NOW()) * 1000)::bigint - $1`, timeoutMs)
+	if err != nil {
+		return 0, fmt.Errorf("sweep handover timeouts: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
