@@ -13,19 +13,22 @@ Postgres 16 + Redis 7 + Caddy, all on one Hetzner box via Docker Compose.
 | Question | Answer |
 | --- | --- |
 | What sportsbook are we building? | B2C, esports-only for MVP: CS2, DOTA2, LOL, Valorant |
-| Which markets? | Match Winner (`provider_market_id=1`), Map Winner (`provider_market_id=4`, specifier `map={1,2,3}`) |
+| Which markets? | Match Winner (`provider_market_id=1`), Map Winner (`provider_market_id=4`, specifier `map={1,2,3}`). Gated at ingest by `isSupportedMarket` in feed-ingester and at read-time by `/catalog/matches/:id`. |
 | Which feed? | Oddin.gg, **protocol level** (raw AMQP + REST, no SDK) |
 | Which chains? | USDT on TRC20 (Tron) and ERC20 (Ethereum), both from day 1 |
-| Where does it run? | Hetzner CPX22 at `178.104.174.24` (see [`CONNECT.md`](./CONNECT.md)) |
+| Where does it run? | Hetzner CPX22 at `178.104.174.24` (see [`CONNECT.md`](./CONNECT.md)). Public URLs: **`s.oddzilla.cc`** (storefront) + **`sadmin.oddzilla.cc`** (admin; `/` redirects to `/admin`). Let's Encrypt via Caddy. |
 | How is money stored? | `BIGINT micro_usdt` (1 USDT = 1,000,000 micro) everywhere |
-| Auth? | Email + password (argon2id), JWT access (15 min) + refresh cookie (30 d) |
-| UI aesthetic? | Dark `#0A0A0A`, high-contrast type, minimalist. **No emojis.** |
+| Auth? | Email + password (argon2id), JWT access (15 min) + refresh cookie (30 d). `Domain=.oddzilla.cc` so session works on both subdomains. |
+| UI aesthetic? | Premium / quiet editorial: Instrument Serif display + Geist UI + Geist Mono for odds. Dark theme default (`#0b0b0c`), light via `data-theme="light"`. Ported from the Claude Design handoff bundle. **No emojis.** |
 
-Current phase: **Phases 1–8 complete.** News scraper was cancelled during
-Phase 8; the service and `news_articles` table were removed (migration
-0003). Next: pre-launch exit gates (KYC, signer isolation, backups, wallet
-reconciliation, monitoring, runbook). Full roadmap in
-[`docs/PHASES.md`](./docs/PHASES.md).
+Current phase: **Phases 1–8 complete + security hardening + catalog cleanup
++ frontend redesign.** News scraper was cancelled during Phase 8 (migration
+0003). As of 2026-04-18 the site is live at `s.oddzilla.cc` with the new
+design, market whitelist active, and `payback_margin_bp=0` globally (Oddin
+already sends margined odds — see [`docs/OPERATIONS.md`](./docs/OPERATIONS.md)
+before re-enabling). Next: pre-launch exit gates (KYC, signer isolation,
+wallet reconciliation, off-server backup rsync, monitoring, runbook).
+Full roadmap in [`docs/PHASES.md`](./docs/PHASES.md).
 
 ## Architecture map
 
@@ -150,9 +153,9 @@ These rules are load-bearing. Breaking them causes money or data loss.
 
 | Concern | Path |
 | --- | --- |
-| SQL migrations | [`packages/db/migrations/`](./packages/db/migrations/) — `0000_init`, `0001_odds_history_partitions`, `0002_chain_scanner_state`, `0003_drop_news_articles` |
+| SQL migrations | [`packages/db/migrations/`](./packages/db/migrations/) — `0000_init`, `0001_odds_history_partitions`, `0002_chain_scanner_state`, `0003_drop_news_articles`, `0004_unclassified_sport`, `0005_merge_duplicate_sports` |
 | Drizzle schema | [`packages/db/src/schema/`](./packages/db/src/schema/) |
-| Seed script | [`packages/db/src/seed.ts`](./packages/db/src/seed.ts) |
+| Seed script | [`packages/db/src/seed.ts`](./packages/db/src/seed.ts) — seed sport URNs are `od:sport:{3,2,1,13}` matching real Oddin feed (do NOT revert to synthetic `od:sport:cs2` etc. — it breaks auto-mapping) |
 | Money helpers | [`packages/types/src/money.ts`](./packages/types/src/money.ts) |
 | Specifier canonicalization (TS reference) | [`packages/types/src/specifiers.ts`](./packages/types/src/specifiers.ts) |
 | Specifier golden fixture | [`docs/fixtures/specifiers.json`](./docs/fixtures/specifiers.json) |
@@ -171,10 +174,16 @@ These rules are load-bearing. Breaking them causes money or data loss.
 | Bet-delay evaluator + tests | `services/bet-delay/internal/worker/worker.go` |
 | Chain scanners (Go) | `services/wallet-watcher/internal/{ethereum,tron}/`; shared confirmation tick in `internal/deposits/` |
 | Frontend live-odds + ticket WS | [`apps/web/src/lib/use-live-odds.ts`](./apps/web/src/lib/use-live-odds.ts), [`use-ticket-stream.ts`](./apps/web/src/lib/use-ticket-stream.ts) |
-| Frontend bet slip store + UI | [`apps/web/src/lib/bet-slip.tsx`](./apps/web/src/lib/bet-slip.tsx), [`components/bet-slip.tsx`](./apps/web/src/components/bet-slip.tsx) |
+| Frontend bet slip store | [`apps/web/src/lib/bet-slip.tsx`](./apps/web/src/lib/bet-slip.tsx) |
+| Bet slip right-rail UI | [`apps/web/src/components/shell/bet-slip-rail.tsx`](./apps/web/src/components/shell/bet-slip-rail.tsx) |
+| Shell components | [`apps/web/src/components/shell/`](./apps/web/src/components/shell/) — `top-bar.tsx`, `sidebar.tsx`, `bet-slip-rail.tsx`, `theme-toggle.tsx` |
+| UI primitives | [`apps/web/src/components/ui/`](./apps/web/src/components/ui/) — `primitives.tsx` (Button, Pill, LiveDot, Tabs, OddButton, TeamMark, Divider), `icons.tsx`, `monogram.tsx`, `sport-glyph.tsx` |
+| Match-row component | [`apps/web/src/components/match/match-row.tsx`](./apps/web/src/components/match/match-row.tsx) |
 | Server-side fetch (cookie-forwarded) | [`apps/web/src/lib/server-fetch.ts`](./apps/web/src/lib/server-fetch.ts), [`lib/auth.ts`](./apps/web/src/lib/auth.ts) |
-| Dark theme tokens | [`apps/web/src/app/globals.css`](./apps/web/src/app/globals.css) |
-| Admin pages (web) | [`apps/web/src/app/admin/`](./apps/web/src/app/admin/) — `page.tsx` (PnL dashboard), `users/[id]`, `audit`, `mapping`, `margins`, `withdrawals` |
+| Browser API/WS clients | [`apps/web/src/lib/api-client.ts`](./apps/web/src/lib/api-client.ts) (empty `NEXT_PUBLIC_API_URL` → `/api` prefix; in dev set `.env.local`), [`ws-client.ts`](./apps/web/src/lib/ws-client.ts) (empty `NEXT_PUBLIC_WS_URL` → `wss://<host>/ws`) |
+| Design tokens + Tailwind @theme bridge | [`apps/web/src/app/globals.css`](./apps/web/src/app/globals.css) |
+| Route groups | `apps/web/src/app/{(main),(auth)}/` — `(main)` shares the shell, `(auth)` = login/signup, `admin/*` outside both |
+| Admin pages (web) | [`apps/web/src/app/admin/`](./apps/web/src/app/admin/) — `page.tsx` (PnL dashboard), `users/[id]`, `audit`, `mapping`, `margins`, `withdrawals`. Not yet reskinned; uses legacy `--color-*` tokens mapped in `@theme`. |
 | Server access | [`CONNECT.md`](./CONNECT.md) |
 | GitHub repo | https://github.com/alexanderchernavin-cloud/oddzilla1 (private) |
 | Production server | `team@178.104.174.24` (Hetzner CPX22, Ubuntu 24.04). Repo lives at `/home/team/oddzilla`. Docker 29 + pnpm 9.12 + Node 22 installed. |
@@ -239,10 +248,11 @@ post-Phase-8 Oddin-workflow hardening pass; production stack is live at
 
 | Component | Status | Notes |
 | --- | --- | --- |
-| DB schema + migrations | Live | 4 migrations: init, odds_history partitions, chain_scanner_state, drop_news_articles |
-| Auth (signup/login/refresh/me + password change) | Live | argon2id + JOSE JWT (`alg: HS256` pinned) + refresh-rotation; helmet CSP `default-src 'none'`; rate-limited login/signup |
-| Catalog API + sport/match SSR pages | Live | Real Oddin data flowing end-to-end |
-| Bet slip + placement | Live | Singles only; combo math + UI deferred. Withdrawals also block non-active users at request time. |
+| DB schema + migrations | Live | 6 migrations: init, odds_history partitions, chain_scanner_state, drop_news_articles, `0004_unclassified_sport` (hidden fallback sport + move placeholder tournaments), `0005_merge_duplicate_sports` (merge s-N auto-duplicates into seeded rows + align seed URNs with real Oddin URNs `od:sport:{1,2,3,13}`). |
+| Auth (signup/login/refresh/me + password change) | Live | argon2id + JOSE JWT (`alg: HS256` pinned) + refresh-rotation; helmet CSP `default-src 'none'` on `/api/*`; rate-limited login (5/min) + signup (10/min); shared cookie domain `.oddzilla.cc`. Browser uses same-origin `/api/*` through Caddy — `NEXT_PUBLIC_API_URL` is baked **empty** so api-client falls back to `/api`. |
+| Catalog API + sport/match SSR pages | Live | `/catalog/sports` filters `active=true` (hides `unclassified`); `/catalog/sports/:slug` returns inline match-winner odds per row (paired to home/away by team-name); `/catalog/matches/:id` filters to `provider_market_id IN (1, 4)`. Odds formatted to 2 decimals via `formatOdds()`. |
+| Frontend design | Live (2026-04-18) | Ported from Claude Design handoff bundle. Grid shell: top-bar + left sidebar + main + right-rail bet slip. Route groups: `(auth)` = login/signup, `(main)` = home/sport/match/account/bets/wallet, `admin/*` keeps its own layout. Sidebar order: CS2 → Dota 2 → LoL → Valorant → middle (alphabetical) → eFootball Bots → eBasketball Bots. Tokens in `apps/web/src/app/globals.css`; legacy `--color-*` aliases kept for admin/bets/wallet pages. |
+| Bet slip + placement | Live | Singles only; combo math + UI deferred. Always-visible right rail (`apps/web/src/components/shell/bet-slip-rail.tsx`) uses the existing `BetSlipProvider` store. Withdrawals also block non-active users at request time. |
 | bet-delay worker | Live | LISTEN + 1s sweep + 5% drift tolerance |
 | Oddin AMQP feed (feed-ingester + settlement) | Live | AMQPS over `:5672` (not 5671), vhost `/oddinfeed/{customer_id}` URL-assembled by hand to preserve `%2F`. Bookmaker 142 |
 | Recovery flow | Live | `POST /v1/{product}/recovery/initiate_request` triggered on every (re)connect for both producers + on `alive subscribed=0` + on `alive` timestamp drift > 5s |
@@ -261,6 +271,9 @@ post-Phase-8 Oddin-workflow hardening pass; production stack is live at
 | Admin: PnL dashboard | Live | `/admin` with KPIs (today PnL, active users, open tickets, stakes today), 14-day PnL × sport table, top-10 big wins (30d) |
 | Admin: users management | Live | `/admin/users` list + `/admin/users/[id]` edit (status/role/limit/bet-delay) with self-modification guards + audit logging |
 | Admin: audit log viewer | Live | `/admin/audit` paginated with action/target/actor filters |
+| Server security hardening | Live | Non-root inside every container (`node:1000` for TS, `app:100` for Go); SSH `PasswordAuthentication no`, `PermitRootLogin no`, `MaxAuthTries 3`, `X11Forwarding no`; repo dir `chmod 750`; CSP header on Next.js HTML responses via Caddy; `NODE_ENV=production` on server so auth cookies get `Secure` flag. `fail2ban` was installed briefly then removed (kept banning legit operator connections — password auth off makes brute force impossible anyway, see `project_security_hardening.md` memory). |
+| Postgres backups | Live | `/usr/local/bin/oddzilla-pg-backup` (from `infra/hetzner/backup/pg_backup.sh`) runs daily at 03:00 UTC via root cron, `docker exec` into postgres container, writes `/var/backups/oddzilla/*.sql.gz` (root:root 600), 14-day rotation. **Off-server copy is still manual** — pre-launch todo. |
+| Published odds margin | Active but **0 bp globally** | `odds_config` row `scope='global'` has `payback_margin_bp=0` because Oddin already ships odds with margin baked in. `applyMargin()` divides `raw / (1 + bp/10000)` with floor-truncate to 2 decimals. Admin `/admin/margins` still works for per-sport/tournament/market-type overrides when needed. |
 | Wallet HD address derivation | Live | TS, requires `HD_MASTER_MNEMONIC` |
 | Wallet deposit scanners | Live, gated on RPC URLs | Boots idle if `TRON_RPC_URL` / `ETH_RPC_URL` absent |
 | Wallet withdrawal on-chain submission | **Manual** | Admin marks-submitted with tx hash from external signer/wallet. Pre-launch needs a dedicated signer container |
@@ -271,16 +284,20 @@ post-Phase-8 Oddin-workflow hardening pass; production stack is live at
 
 ## Local secrets that exist (DO NOT commit)
 
-`D:\AI\Oddzilla\.env` (gitignored) currently contains:
+`D:\AI\Oddzilla\.env` (gitignored, local dev) and
+`/home/team/oddzilla/.env` on the server (mode 600) hold:
 - `ODDIN_TOKEN=<redacted>` (Sasha's Oddin integration token; in `.env`, never in docs)
 - `ODDIN_CUSTOMER_ID=142` — fetched via `curl -H "x-access-token: $ODDIN_TOKEN" https://api-mq.integration.oddin.gg/v1/users/whoami` (note `/v1/` prefix; the legacy `/users/whoami` returns 404)
 - `ODDIN_AMQP_PORT=5672` (NOT 5671 — Oddin runs AMQPS on 5672 per their docs §2)
 - `ODDIN_AMQP_TLS=true`
 - `JWT_SECRET` + `REFRESH_COOKIE_SECRET` — generated 48-byte secrets
 - `POSTGRES_PASSWORD` — generated 64-char hex
-- `HD_MASTER_MNEMONIC=` **empty** — withdrawal/deposit features inert
-  until set. Generate any BIP39 phrase (`ethers.Mnemonic.entropyToPhrase`
-  / `bip39 generate` / a hardware wallet export).
+- `NODE_ENV=production` (required so auth cookies get `Secure` flag)
+- `FRONTEND_HOST=s.oddzilla.cc`, `ADMIN_HOST=sadmin.oddzilla.cc`, `ACME_EMAIL=alexander.chernavin@oddin.gg` — consumed by Caddy for per-host reverse-proxy + Let's Encrypt
+- `COOKIE_DOMAIN=.oddzilla.cc` — shared cookie across both subdomains
+- `CORS_ORIGINS=https://s.oddzilla.cc,https://sadmin.oddzilla.cc`
+- `NEXT_PUBLIC_API_URL=` and `NEXT_PUBLIC_WS_URL=` — **both empty on prod**. Browser falls back to `/api` and `wss://<host>/ws` via Caddy. Non-empty values bake `http://localhost:3001` into the prod bundle and break in-browser auth. For local `pnpm dev`, put non-empty values in `apps/web/.env.local`.
+- `HD_MASTER_MNEMONIC=` **empty** — withdrawal/deposit features inert until set. Generate any BIP39 phrase.
 - `TRON_RPC_URL` defaults to `https://api.trongrid.io`
 - `ETH_RPC_URL=` **empty** — ERC20 scanner inert until provided
 
@@ -353,3 +370,25 @@ If you're a fresh agent picking this up:
 7. **Auto mode caveat.** The sandbox blocks reading the production
    `.env` over SSH (rightly — would dump secrets to transcript). Patch
    single keys with `sed`; don't `cat .env`.
+8. **Browser auth debugging.** If login/signup fails with "Could not
+   reach the server", first suspect `NEXT_PUBLIC_API_URL` baked into
+   the web bundle. Verify with
+   `curl -s https://s.oddzilla.cc/_next/static/chunks/... | grep localhost:3001`
+   — zero hits means the bundle is clean. The fix is to keep empty
+   defaults in [`apps/web/next.config.ts`](./apps/web/next.config.ts).
+9. **Design system.** Tokens live in
+   [`apps/web/src/app/globals.css`](./apps/web/src/app/globals.css);
+   primitives in
+   [`apps/web/src/components/ui/primitives.tsx`](./apps/web/src/components/ui/primitives.tsx).
+   The shell (`top-bar`, `sidebar`, `bet-slip-rail`) wraps everything
+   under `app/(main)/`. Sports order is hard-pinned in
+   `sidebar.tsx` via `TOP` + `BOTTOM` arrays — tune there if the user
+   wants a different order. Admin / wallet / bets still use legacy
+   Tailwind classes against the `@theme`-bridged color tokens; reskin
+   them when the design gets extended.
+10. **Odds margin.** Globally **0 bp** today — Oddin already margins.
+    If the user asks to add house margin, do it via
+    `/admin/margins` (cascade market_type→tournament→sport→global)
+    rather than touching code. Per-user margin would be a new column
+    (`users.margin_bp_override`) + a branch in
+    `odds-publisher/internal/publisher/publisher.go` `processOne`.
