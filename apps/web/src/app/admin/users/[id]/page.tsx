@@ -3,6 +3,7 @@ import Link from "next/link";
 import { fromMicro } from "@oddzilla/types/money";
 import { serverApi } from "@/lib/server-fetch";
 import { UserEditForm } from "./user-edit-form";
+import { DeleteUserButton } from "./delete-user-button";
 
 interface DetailResponse {
   user: {
@@ -84,6 +85,15 @@ export default async function UserDetailPage({
         </h2>
         <div className="mt-4 card p-6">
           <UserEditForm user={user} />
+        </div>
+      </section>
+
+      <section className="mt-10">
+        <h2 className="text-sm uppercase tracking-[0.18em] text-[var(--color-fg-subtle)]">
+          Danger zone
+        </h2>
+        <div className="mt-4 card p-6">
+          <DeleteUserButton userId={user.id} email={user.email} />
         </div>
       </section>
 

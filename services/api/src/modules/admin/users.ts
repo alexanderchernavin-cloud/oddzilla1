@@ -12,11 +12,16 @@ import { eq, and, or, ilike, desc, sql, type SQL } from "drizzle-orm";
 import {
   users,
   wallets,
+  walletLedger,
   tickets,
+  deposits,
+  withdrawals,
   adminAuditLog,
 } from "@oddzilla/db";
+import { hashPassword } from "@oddzilla/auth";
 import {
   BadRequestError,
+  ConflictError,
   NotFoundError,
 } from "../../lib/errors.js";
 
@@ -26,6 +31,22 @@ const listQuery = z.object({
   role: z.enum(["user", "admin", "support"]).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
+});
+
+const createBody = z.object({
+  email: z.string().email().max(320),
+  password: z.string().min(8).max(256),
+  displayName: z.string().min(1).max(64).optional(),
+  countryCode: z
+    .string()
+    .length(2)
+    .regex(/^[A-Za-z]{2}$/)
+    .transform((s) => s.toUpperCase())
+    .optional(),
+  role: z.enum(["user", "admin", "support"]).default("user"),
+  status: z.enum(["active", "blocked", "pending_kyc"]).default("active"),
+  globalLimitMicro: z.string().regex(/^\d+$/).optional(),
+  betDelaySeconds: z.number().int().min(0).max(300).optional(),
 });
 
 const patchBody = z.object({
@@ -281,5 +302,143 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
     });
 
     return { ok: true, changed: Object.keys(after) };
+  });
+
+  app.post("/admin/users", async (request, reply) => {
+    const admin = request.requireRole("admin");
+    const body = createBody.parse(request.body);
+
+    const email = body.email.toLowerCase();
+    const [dup] = await app.db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, email))
+      .limit(1);
+    if (dup) throw new ConflictError("email_in_use", "email_in_use");
+
+    const passwordHash = await hashPassword(body.password);
+    const globalLimitMicro = body.globalLimitMicro ? BigInt(body.globalLimitMicro) : 0n;
+    const betDelaySeconds = body.betDelaySeconds ?? 0;
+
+    const created = await app.db.transaction(async (tx) => {
+      const [u] = await tx
+        .insert(users)
+        .values({
+          email,
+          passwordHash,
+          displayName: body.displayName ?? null,
+          countryCode: body.countryCode ?? null,
+          status: body.status,
+          role: body.role,
+          kycStatus: "none",
+          globalLimitMicro,
+          betDelaySeconds,
+        })
+        .returning();
+      if (!u) throw new Error("user insert returned no row");
+
+      await tx
+        .insert(wallets)
+        .values({ userId: u.id })
+        .onConflictDoNothing({ target: wallets.userId });
+
+      await tx.insert(adminAuditLog).values({
+        actorUserId: admin.id,
+        action: "user.create",
+        targetType: "user",
+        targetId: u.id,
+        beforeJson: {},
+        afterJson: {
+          email: u.email,
+          role: u.role,
+          status: u.status,
+          globalLimitMicro: u.globalLimitMicro.toString(),
+          betDelaySeconds: u.betDelaySeconds,
+        },
+        ipInet: request.ip ?? null,
+      });
+
+      return u;
+    });
+
+    reply.code(201);
+    return {
+      user: {
+        id: created.id,
+        email: created.email,
+        status: created.status,
+        role: created.role,
+        kycStatus: created.kycStatus,
+        displayName: created.displayName,
+        countryCode: created.countryCode,
+        globalLimitMicro: created.globalLimitMicro.toString(),
+        betDelaySeconds: created.betDelaySeconds,
+        createdAt: created.createdAt.toISOString(),
+      },
+    };
+  });
+
+  app.delete("/admin/users/:id", async (request) => {
+    const admin = request.requireRole("admin");
+    const params = z.object({ id: z.string().uuid() }).parse(request.params);
+
+    if (params.id === admin.id) {
+      throw new BadRequestError("cannot_delete_self", "cannot_delete_self");
+    }
+
+    const [existing] = await app.db
+      .select()
+      .from(users)
+      .where(eq(users.id, params.id))
+      .limit(1);
+    if (!existing) throw new NotFoundError("user_not_found", "user_not_found");
+
+    const [activity] = (await app.db.execute(sql`
+      SELECT
+        (SELECT COUNT(*)::int FROM ${tickets} WHERE user_id = ${params.id}) AS ticket_count,
+        (SELECT COUNT(*)::int FROM ${walletLedger} WHERE user_id = ${params.id}) AS ledger_count,
+        (SELECT COUNT(*)::int FROM ${deposits} WHERE user_id = ${params.id}) AS deposit_count,
+        (SELECT COUNT(*)::int FROM ${withdrawals} WHERE user_id = ${params.id}) AS withdrawal_count,
+        (SELECT COALESCE(balance_micro, 0)::text FROM ${wallets} WHERE user_id = ${params.id}) AS balance_micro
+    `)) as unknown as Array<{
+      ticket_count: number;
+      ledger_count: number;
+      deposit_count: number;
+      withdrawal_count: number;
+      balance_micro: string | null;
+    }>;
+    const hasHistory =
+      (activity?.ticket_count ?? 0) > 0 ||
+      (activity?.ledger_count ?? 0) > 0 ||
+      (activity?.deposit_count ?? 0) > 0 ||
+      (activity?.withdrawal_count ?? 0) > 0 ||
+      BigInt(activity?.balance_micro ?? "0") !== 0n;
+    if (hasHistory) {
+      throw new ConflictError(
+        "user_has_financial_history",
+        "user_has_financial_history",
+      );
+    }
+
+    await app.db.transaction(async (tx) => {
+      await tx.insert(adminAuditLog).values({
+        actorUserId: admin.id,
+        action: "user.delete",
+        targetType: "user",
+        targetId: params.id,
+        beforeJson: {
+          email: existing.email,
+          role: existing.role,
+          status: existing.status,
+        },
+        afterJson: {},
+        ipInet: request.ip ?? null,
+      });
+
+      await tx.delete(wallets).where(eq(wallets.userId, params.id));
+      await tx.delete(users).where(eq(users.id, params.id));
+    });
+
+    return { ok: true };
   });
 }
