@@ -36,6 +36,13 @@
       "when": 1700000004000,
       "tag": "0004_unclassified_sport",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1700000005000,
+      "tag": "0005_merge_duplicate_sports",
+      "breakpoints": true
     }
   ]
 }
