@@ -234,6 +234,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         matches,
         and(eq(matches.tournamentId, tournaments.id), eq(matches.status, "live")),
       )
+      .where(eq(sports.active, true))
       .groupBy(sports.slug);
     const counts: Record<string, number> = {};
     for (const r of rows) counts[r.slug] = Number(r.count);
