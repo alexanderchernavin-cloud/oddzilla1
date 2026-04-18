@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { getSessionClaims } from "@/lib/auth";
+import { Monogram } from "@/components/ui/monogram";
 import { LoginForm } from "./login-form";
 
 export default async function LoginPage({
@@ -15,21 +16,41 @@ export default async function LoginPage({
   }
 
   return (
-    <main className="mx-auto flex min-h-dvh max-w-sm flex-col justify-center px-6 py-12">
-      <h1 className="text-2xl font-semibold tracking-tight">Log in</h1>
-      <p className="mt-2 text-sm text-[var(--color-fg-muted)]">
-        Use the email and password you signed up with.
+    <>
+      <Monogram size={36} />
+      <h1
+        className="display"
+        style={{
+          margin: "20px 0 6px",
+          fontSize: 28,
+          fontWeight: 500,
+          letterSpacing: "-0.02em",
+        }}
+      >
+        Welcome back.
+      </h1>
+      <p style={{ margin: 0, color: "var(--fg-muted)", fontSize: 13.5, lineHeight: 1.5 }}>
+        Log in to place bets and track your history.
       </p>
 
       <LoginForm next={params.next ?? "/account"} />
 
-      <p className="mt-6 text-sm text-[var(--color-fg-muted)]">
-        No account?{" "}
-        <Link href="/signup" className="underline decoration-[var(--color-accent)]">
-          Create one
+      <div
+        style={{
+          marginTop: 24,
+          fontSize: 13,
+          color: "var(--fg-muted)",
+          textAlign: "center",
+        }}
+      >
+        No account yet?{" "}
+        <Link
+          href="/signup"
+          style={{ color: "var(--fg)", textDecoration: "underline" }}
+        >
+          Sign up
         </Link>
-        .
-      </p>
-    </main>
+      </div>
+    </>
   );
 }
