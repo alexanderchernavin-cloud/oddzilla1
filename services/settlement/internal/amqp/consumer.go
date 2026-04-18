@@ -201,16 +201,19 @@ func (c *Consumer) dialURL() string {
 	if c.cfg.TLS {
 		scheme = "amqps"
 	}
-	// Oddin vhost: "/oddinfeed/{customer_id}" — note the leading slash is
-	// part of the vhost NAME, not just a URL separator. amqp091-go's
-	// ParseURI strips one leading "/" then PathUnescapes, so we need to
-	// double-encode the leading slash to preserve it.
+	// Oddin vhost: "/oddinfeed/{customer_id}" — the leading slash is part
+	// of the vhost NAME, not just a URL separator. We assemble the URL
+	// string by hand because net/url's URL.Path field re-escapes any "%"
+	// characters when it serializes — so writing PathEscape(vhost) into
+	// Path produces "%252F..." not "%2F..." and amqp091-go then sees a
+	// vhost with literal "%2F" substrings, which the broker rejects with
+	// "no access to this vhost".
 	vhost := "/oddinfeed/" + c.cfg.CustomerID
-	u := url.URL{
-		Scheme: scheme,
-		User:   url.UserPassword(c.cfg.Token, ""),
-		Host:   fmt.Sprintf("%s:%d", c.cfg.Host, c.cfg.Port),
-		Path:   "/" + url.PathEscape(vhost),
-	}
-	return u.String()
+	return fmt.Sprintf("%s://%s:@%s:%d/%s",
+		scheme,
+		url.QueryEscape(c.cfg.Token),
+		c.cfg.Host,
+		c.cfg.Port,
+		url.QueryEscape(vhost),
+	)
 }
