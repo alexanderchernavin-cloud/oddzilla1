@@ -57,19 +57,16 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
       />
 
       <SectionLabel>Sports</SectionLabel>
-      {sports
-        .slice()
-        .sort((a, b) => (liveCounts[b.slug] ?? 0) - (liveCounts[a.slug] ?? 0))
-        .map((s) => (
-          <Item
-            key={s.slug}
-            href={`/sport/${s.slug}`}
-            icon={<SportGlyph sport={s.slug} size={16} />}
-            active={isActive(`/sport/${s.slug}`)}
-            label={s.name}
-            tag={liveCounts[s.slug] ? String(liveCounts[s.slug]) : undefined}
-          />
-        ))}
+      {orderSports(sports).map((s) => (
+        <Item
+          key={s.slug}
+          href={`/sport/${s.slug}`}
+          icon={<SportGlyph sport={s.slug} size={16} />}
+          active={isActive(`/sport/${s.slug}`)}
+          label={s.name}
+          tag={liveCounts[s.slug] ? String(liveCounts[s.slug]) : undefined}
+        />
+      ))}
 
       <SectionLabel>Account</SectionLabel>
       {signedIn ? (
@@ -129,6 +126,27 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
       </div>
     </aside>
   );
+}
+
+// Explicit sport ordering: flagship esports on top, bot leagues on the bottom,
+// everything else in between sorted alphabetically. Change `TOP` / `BOTTOM`
+// to retune — these are slugs from /catalog/sports.
+const TOP = ["cs2", "dota2", "lol", "valorant"] as const;
+const BOTTOM = ["efootballbots", "ebasketballbots"] as const;
+
+function orderSports(sports: SportItem[]): SportItem[] {
+  const bySlug = new Map(sports.map((s) => [s.slug, s]));
+  const top = TOP.map((s) => bySlug.get(s)).filter(
+    (s): s is SportItem => Boolean(s),
+  );
+  const bottom = BOTTOM.map((s) => bySlug.get(s)).filter(
+    (s): s is SportItem => Boolean(s),
+  );
+  const pinned = new Set<string>([...TOP, ...BOTTOM]);
+  const middle = sports
+    .filter((s) => !pinned.has(s.slug))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return [...top, ...middle, ...bottom];
 }
 
 function SectionLabel({ children }: { children: ReactNode }) {
