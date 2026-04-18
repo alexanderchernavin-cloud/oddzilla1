@@ -2,7 +2,21 @@ package settler
 
 import (
 	"testing"
+
+	"github.com/oddzilla/settlement/internal/store"
 )
+
+func legs(triples ...[3]string) []store.SelectionResult {
+	out := make([]store.SelectionResult, 0, len(triples))
+	for _, t := range triples {
+		out = append(out, store.SelectionResult{
+			OddsAtPlacement: t[0],
+			Result:          t[1],
+			VoidFactor:      t[2],
+		})
+	}
+	return out
+}
 
 func TestEffectiveFactor(t *testing.T) {
 	cases := []struct {
@@ -78,6 +92,115 @@ func TestSinglePayout(t *testing.T) {
 					tc.stake, tc.odds, tc.result, tc.voidFactor, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestComboPayout(t *testing.T) {
+	cases := []struct {
+		name       string
+		stake      int64
+		selections []store.SelectionResult
+		wantMicro  int64
+		wantLedger string
+	}{
+		{
+			name:  "two-leg all won at 2.00 and 3.00 on 10 USDT",
+			stake: 10_000_000,
+			selections: legs(
+				[3]string{"2.00", "won", ""},
+				[3]string{"3.00", "won", ""},
+			),
+			wantMicro:  60_000_000, // 10 * 2 * 3
+			wantLedger: "bet_payout",
+		},
+		{
+			name:  "any leg lost → payout 0",
+			stake: 10_000_000,
+			selections: legs(
+				[3]string{"2.00", "won", ""},
+				[3]string{"3.00", "lost", ""},
+			),
+			wantMicro:  0,
+			wantLedger: "bet_payout",
+		},
+		{
+			name:  "all void → stake refund, bet_refund ledger",
+			stake: 10_000_000,
+			selections: legs(
+				[3]string{"2.00", "void", ""},
+				[3]string{"3.00", "void", ""},
+			),
+			wantMicro:  10_000_000,
+			wantLedger: "bet_refund",
+		},
+		{
+			name:  "won + void → factor ignores the void leg (×1), stays bet_payout",
+			stake: 10_000_000,
+			selections: legs(
+				[3]string{"2.00", "won", ""},
+				[3]string{"3.00", "void", ""},
+			),
+			wantMicro:  20_000_000, // 10 * 2 * 1
+			wantLedger: "bet_payout",
+		},
+		{
+			name:  "half_won + won on 10 USDT",
+			stake: 10_000_000,
+			selections: legs(
+				[3]string{"2.00", "half_won", ""}, // eff = 1.5
+				[3]string{"2.00", "won", ""},      // eff = 2.0
+			),
+			wantMicro:  30_000_000, // 10 * 1.5 * 2
+			wantLedger: "bet_payout",
+		},
+		{
+			name:  "three-leg with half_lost leg zeros to half of stake",
+			stake: 10_000_000,
+			selections: legs(
+				[3]string{"2.00", "won", ""},       // eff = 2
+				[3]string{"3.00", "won", ""},       // eff = 3
+				[3]string{"2.00", "half_lost", ""}, // eff = 0.5
+			),
+			wantMicro:  30_000_000, // 10 * 2 * 3 * 0.5
+			wantLedger: "bet_payout",
+		},
+		{
+			name:  "floor rounding on irrational product",
+			stake: 3_000_000,
+			selections: legs(
+				[3]string{"1.8333333", "won", ""},
+				[3]string{"1.1", "won", ""},
+			),
+			// 3 * 1.8333333 * 1.1 = 6.04999989 → 6049999 micro (floor)
+			wantMicro:  6_049_999,
+			wantLedger: "bet_payout",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payout, ledger, err := ComboPayout(tc.stake, tc.selections)
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			if payout != tc.wantMicro {
+				t.Fatalf("payout = %d, want %d", payout, tc.wantMicro)
+			}
+			if ledger != tc.wantLedger {
+				t.Fatalf("ledger = %q, want %q", ledger, tc.wantLedger)
+			}
+		})
+	}
+}
+
+func TestComboPayout_Errors(t *testing.T) {
+	if _, _, err := ComboPayout(10_000_000, legs([3]string{"2.00", "won", ""})); err == nil {
+		t.Fatal("expected error on <2 selections")
+	}
+	if _, _, err := ComboPayout(10_000_000, legs(
+		[3]string{"2.00", "won", ""},
+		[3]string{"bad", "won", ""},
+	)); err == nil {
+		t.Fatal("expected error on malformed odds")
 	}
 }
 

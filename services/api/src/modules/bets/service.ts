@@ -73,9 +73,18 @@ export class BetsService {
     if (!req.selections.length) {
       throw new BadRequestError("no_selections", "no_selections");
     }
-    if (req.selections.length > 1) {
-      // MVP: singles only. Combo math + validation lands in a later phase.
-      throw new BadRequestError("combos_not_yet_supported", "combos_not_yet_supported");
+    const isCombo = req.selections.length > 1;
+    if (isCombo) {
+      // Same-match combos are a related-contingency (the outcomes aren't
+      // independent) — standard bookmaker rule is to block them. Cheap
+      // front-end check exists too; this is the authoritative one.
+      const seenMarkets = new Set<string>();
+      for (const s of req.selections) {
+        if (seenMarkets.has(s.marketId)) {
+          throw new BadRequestError("duplicate_market", "duplicate_market");
+        }
+        seenMarkets.add(s.marketId);
+      }
     }
     const stake = parseBigIntStrict(req.stakeMicro, "stakeMicro");
     if (stake <= 0n) {
@@ -168,6 +177,7 @@ export class BetsService {
       );
 
       let productOdds = 1;
+      const seenMatchIds = new Set<string>();
       for (const sel of req.selections) {
         const market = marketByID.get(sel.marketId);
         if (!market) {
@@ -178,6 +188,13 @@ export class BetsService {
         }
         if (market.matchStatus !== "not_started" && market.matchStatus !== "live") {
           throw new BadRequestError("match_not_open", "match_not_open");
+        }
+        if (isCombo) {
+          const matchKey = market.matchId.toString();
+          if (seenMatchIds.has(matchKey)) {
+            throw new BadRequestError("combo_same_match", "combo_same_match");
+          }
+          seenMatchIds.add(matchKey);
         }
         const outcome = outcomeByKey.get(`${sel.marketId}:${sel.outcomeId}`);
         if (!outcome) {
@@ -217,7 +234,7 @@ export class BetsService {
         .values({
           userId: ctx.userId,
           status,
-          betType: "single",
+          betType: isCombo ? "combo" : "single",
           stakeMicro: stake,
           potentialPayoutMicro,
           idempotencyKey: req.idempotencyKey,

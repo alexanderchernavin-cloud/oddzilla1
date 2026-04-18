@@ -691,18 +691,22 @@ func unmarshal(body []byte, v any) error {
 }
 
 // computePayout returns (payoutMicro, ledgerType, err) for a ticket.
-// Singles only for MVP — asserts len(selections) == 1.
+// Dispatches by bet_type. `system` tickets aren't supported yet.
 func computePayout(betType string, stakeMicro int64, selections []store.SelectionResult) (int64, string, error) {
-	if betType != "single" {
+	switch betType {
+	case "single":
+		if len(selections) != 1 {
+			return 0, "", fmt.Errorf("single expected exactly 1 selection, got %d", len(selections))
+		}
+		sel := selections[0]
+		payout, err := SinglePayout(stakeMicro, sel.OddsAtPlacement, sel.Result, sel.VoidFactor)
+		if err != nil {
+			return 0, "", err
+		}
+		return payout, LedgerTypeFor(sel.Result), nil
+	case "combo":
+		return ComboPayout(stakeMicro, selections)
+	default:
 		return 0, "", fmt.Errorf("bet_type %q not supported yet", betType)
 	}
-	if len(selections) != 1 {
-		return 0, "", fmt.Errorf("single expected exactly 1 selection, got %d", len(selections))
-	}
-	sel := selections[0]
-	payout, err := SinglePayout(stakeMicro, sel.OddsAtPlacement, sel.Result, sel.VoidFactor)
-	if err != nil {
-		return 0, "", err
-	}
-	return payout, LedgerTypeFor(sel.Result), nil
 }

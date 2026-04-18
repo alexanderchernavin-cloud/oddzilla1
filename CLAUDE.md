@@ -13,7 +13,7 @@ Postgres 16 + Redis 7 + Caddy, all on one Hetzner box via Docker Compose.
 | Question | Answer |
 | --- | --- |
 | What sportsbook are we building? | B2C, esports-only for MVP: CS2, DOTA2, LOL, Valorant |
-| Which markets? | Match Winner (`provider_market_id=1`), Map Winner (`provider_market_id=4`, specifier `map={1,2,3}`) |
+| Which markets? | All Oddin markets — no `provider_market_id` whitelist. Known labels for match-winner (`1`) and map-winner (`4`); others render as "Market #N". |
 | Which feed? | Oddin.gg, **protocol level** (raw AMQP + REST, no SDK) |
 | Which chains? | USDT on TRC20 (Tron) and ERC20 (Ethereum), both from day 1 |
 | Where does it run? | Hetzner CPX22 at `178.104.174.24` (see [`CONNECT.md`](./CONNECT.md)) |
@@ -242,7 +242,7 @@ post-Phase-8 Oddin-workflow hardening pass; production stack is live at
 | DB schema + migrations | Live | 4 migrations: init, odds_history partitions, chain_scanner_state, drop_news_articles |
 | Auth (signup/login/refresh/me + password change) | Live | argon2id + JOSE JWT (`alg: HS256` pinned) + refresh-rotation; helmet CSP `default-src 'none'`; rate-limited login/signup |
 | Catalog API + sport/match SSR pages | Live | Real Oddin data flowing end-to-end |
-| Bet slip + placement | Live | Singles only; combo math + UI deferred. Withdrawals also block non-active users at request time. |
+| Bet slip + placement | Live | Singles + combos (up to 20 legs, cross-match only — same-match combos rejected server-side). Withdrawals also block non-active users at request time. |
 | bet-delay worker | Live | LISTEN + 1s sweep + 5% drift tolerance |
 | Oddin AMQP feed (feed-ingester + settlement) | Live | AMQPS over `:5672` (not 5671), vhost `/oddinfeed/{customer_id}` URL-assembled by hand to preserve `%2F`. Bookmaker 142 |
 | Recovery flow | Live | `POST /v1/{product}/recovery/initiate_request` triggered on every (re)connect for both producers + on `alive subscribed=0` + on `alive` timestamp drift > 5s |
@@ -265,7 +265,8 @@ post-Phase-8 Oddin-workflow hardening pass; production stack is live at
 | Wallet deposit scanners | Live, gated on RPC URLs | Boots idle if `TRON_RPC_URL` / `ETH_RPC_URL` absent |
 | Wallet withdrawal on-chain submission | **Manual** | Admin marks-submitted with tx hash from external signer/wallet. Pre-launch needs a dedicated signer container |
 | News scraper | **Removed** | Service + `news_articles` table deleted via migration 0003; no longer in scope |
-| Combos + cash-out | Not started | Post-MVP |
+| Combos | Live | Frontend slip accumulates selections; Single/Combo toggle; settlement pays stake × product(EffectiveFactor), `bet_refund` ledger only when every leg voids. |
+| Cash-out | Not started | Post-MVP |
 | Outright (tournament-level) markets | Not started | Auto-mapper currently falls back to placeholder for `od:tournament:N` URNs (REST `/sport_events/` only handles match URNs); flagged as Post-MVP |
 | Prometheus + Grafana | Not started | Defer until traffic justifies |
 
