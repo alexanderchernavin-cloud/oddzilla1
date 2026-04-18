@@ -162,6 +162,11 @@ func main() {
 				logger.Warn().Err(err).Msg("initial market descriptions refresh failed; UI will fall back to ids")
 			}
 			go runDescriptionsRefresher(ctx, restClient, st, cfg.Oddin.Lang, logger)
+			// Backfill competitor profiles for any active match whose
+			// teams we haven't fetched yet. Fire-and-forget because
+			// there can be hundreds of URNs — a fresh boot with no
+			// cache shouldn't hold up the main AMQP loop.
+			go backfillCompetitorProfiles(ctx, resolver, st, logger)
 		}
 	}
 
@@ -214,6 +219,34 @@ func runDescriptionsRefresher(ctx context.Context, rc *oddinrest.Client, st *sto
 			}
 		}
 	}
+}
+
+// backfillCompetitorProfiles fetches the competitor profile for every
+// active-match home/away team URN that isn't already cached. Paces the
+// REST calls so we don't burst into Oddin's rate limiter — 20 per second
+// is well under their per-endpoint ceiling.
+func backfillCompetitorProfiles(ctx context.Context, res *automap.Resolver, st *store.Store, log zerolog.Logger) {
+	urns, err := store.MissingCompetitorURNs(ctx, st.Pool())
+	if err != nil {
+		log.Warn().Err(err).Msg("competitor profile backfill query failed")
+		return
+	}
+	if len(urns) == 0 {
+		log.Info().Msg("competitor profile cache already current")
+		return
+	}
+	log.Info().Int("count", len(urns)).Msg("competitor profile backfill starting")
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for _, urn := range urns {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		res.CacheCompetitorProfile(ctx, urn)
+	}
+	log.Info().Int("count", len(urns)).Msg("competitor profile backfill complete")
 }
 
 // runRecoveryListener subscribes to Postgres notifications on the

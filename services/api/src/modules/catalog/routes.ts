@@ -18,6 +18,8 @@ import {
   marketOutcomes,
   marketDescriptions,
   outcomeDescriptions,
+  competitorProfiles,
+  playerProfiles,
 } from "@oddzilla/db";
 import { NotFoundError } from "../../lib/errors.js";
 
@@ -342,6 +344,35 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .where(and(eq(markets.matchId, params.id), eq(markets.status, 1)))
       .orderBy(markets.providerMarketId);
 
+    // Collect URN-style outcome ids (od:competitor:N / od:player:N) so
+    // we can join against our profile cache and substitute human names
+    // on the way out. Outcomes without a matching profile fall through
+    // to their existing `name` / `outcomeId`.
+    const competitorUrns = new Set<string>();
+    const playerUrns = new Set<string>();
+    for (const r of rows) {
+      const id = r.outcomeId;
+      if (!id) continue;
+      if (id.startsWith("od:competitor:")) competitorUrns.add(id);
+      else if (id.startsWith("od:player:")) playerUrns.add(id);
+    }
+    const competitorNameMap = new Map<string, string>();
+    const playerNameMap = new Map<string, string>();
+    if (competitorUrns.size > 0) {
+      const cps = await app.db
+        .select({ urn: competitorProfiles.urn, name: competitorProfiles.name })
+        .from(competitorProfiles)
+        .where(inArray(competitorProfiles.urn, Array.from(competitorUrns)));
+      for (const c of cps) competitorNameMap.set(c.urn, c.name);
+    }
+    if (playerUrns.size > 0) {
+      const pps = await app.db
+        .select({ urn: playerProfiles.urn, name: playerProfiles.name })
+        .from(playerProfiles)
+        .where(inArray(playerProfiles.urn, Array.from(playerUrns)));
+      for (const p of pps) playerNameMap.set(p.urn, p.name);
+    }
+
     const distinctMarketIds = Array.from(new Set(rows.map((r) => r.providerMarketId)));
     const marketDescs = distinctMarketIds.length
       ? await app.db
@@ -433,9 +464,26 @@ export default async function catalogRoutes(app: FastifyInstance) {
           outcomeDescMap.get(`${r.providerMarketId}::${r.outcomeId}`) ??
           r.outcomeName ??
           r.outcomeId;
+        // Player/competitor outcomes come off the feed as bare URNs —
+        // prefer the cached profile name, fall back to whatever the
+        // template resolved (which for team/player outcomes is usually
+        // the same URN again). Non-URN outcome ids use the template.
+        let resolvedName: string;
+        if (r.outcomeId.startsWith("od:competitor:")) {
+          resolvedName = competitorNameMap.get(r.outcomeId) ?? r.outcomeId;
+        } else if (r.outcomeId.startsWith("od:player:")) {
+          resolvedName = playerNameMap.get(r.outcomeId) ?? r.outcomeId;
+        } else {
+          resolvedName = renderOutcomeLabel(
+            outcomeTemplate,
+            m.specifiers,
+            match.homeTeam,
+            match.awayTeam,
+          );
+        }
         m.outcomes.push({
           outcomeId: r.outcomeId,
-          name: renderOutcomeLabel(outcomeTemplate, m.specifiers, match.homeTeam, match.awayTeam),
+          name: resolvedName,
           rawName: r.outcomeName ?? "",
           publishedOdds: formatOdds(r.publishedOdds),
           active: r.active ?? false,
