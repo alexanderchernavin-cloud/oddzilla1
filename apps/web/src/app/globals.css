@@ -220,12 +220,119 @@ body {
 *::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 *::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
 
-/* Responsive shell fallback */
-@media (max-width: 1100px) {
-  .oz-shell { grid-template-columns: 64px 1fr 0 !important; }
-  .oz-shell > aside.oz-rail { display: none !important; }
+/* ─────────── Responsive shell ───────────
+   Desktop (≥1100px): 240px sidebar + main + 340px bet-slip rail.
+   Tablet  (720–1099px): sidebar + main; bet-slip rail hidden (user
+       toggles it via the top-bar "slip" button).
+   Mobile  (<720px): just main; sidebar + rail become slide-in drawers
+       triggered from the top bar. */
+
+.oz-shell {
+  display: grid;
+  grid-template-columns: 240px 1fr 340px;
+  grid-template-rows: 60px 1fr;
+  grid-template-areas: "top top top" "side main rail";
 }
-@media (max-width: 720px) {
-  .oz-shell { grid-template-columns: 1fr !important; grid-template-areas: "top" "main" !important; }
-  .oz-shell > aside.oz-side { display: none !important; }
+
+.oz-main {
+  grid-area: main;
+  overflow: auto;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+}
+.oz-main-inner {
+  width: 100%;
+  max-width: 1200px;
+}
+
+.oz-side { grid-area: side; }
+.oz-rail { grid-area: rail; }
+
+/* Scrim shared by both mobile drawers — hidden (pointer-events:none)
+   until one of them is open. */
+.oz-shell-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  border: 0;
+  padding: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms var(--ease);
+  z-index: 45;
+  display: none;
+}
+
+/* Mobile-only toggle buttons in the top bar; hidden on desktop. */
+.oz-topbar-toggle { display: none !important; }
+
+/* Mobile-only floating bet-slip trigger; hidden until narrow. */
+.oz-mobile-slip-fab { display: none !important; }
+
+@media (max-width: 1099px) {
+  .oz-shell {
+    grid-template-columns: 240px 1fr;
+    grid-template-areas: "top top" "side main";
+  }
+  .oz-rail {
+    position: fixed !important;
+    top: 60px !important;
+    right: 0;
+    width: min(360px, 100vw);
+    height: calc(100dvh - 60px) !important;
+    max-height: none !important;
+    z-index: 60;
+    transform: translateX(100%);
+    transition: transform 200ms var(--ease);
+    box-shadow: -8px 0 32px rgba(0, 0, 0, 0.35);
+  }
+  .oz-shell[data-rail-open="true"] .oz-rail { transform: translateX(0); }
+  .oz-mobile-slip-fab { display: inline-flex !important; }
+}
+
+@media (max-width: 899px) {
+  .oz-topbar-kbd { display: none; }
+  .oz-topbar-wallet-unit { display: none; }
+  .oz-topbar-wallet-deposit { display: none; }
+}
+
+@media (max-width: 719px) {
+  .oz-shell {
+    grid-template-columns: 1fr;
+    grid-template-areas: "top" "main";
+  }
+  .oz-side {
+    position: fixed !important;
+    top: 60px !important;
+    left: 0 !important;
+    width: min(280px, 82vw) !important;
+    height: calc(100dvh - 60px) !important;
+    z-index: 60;
+    background: var(--bg);
+    transform: translateX(-100%);
+    transition: transform 200ms var(--ease);
+    box-shadow: 8px 0 32px rgba(0, 0, 0, 0.35);
+  }
+  .oz-shell[data-sidebar-open="true"] .oz-side { transform: translateX(0); }
+  .oz-topbar-toggle { display: inline-flex !important; }
+  .oz-topbar-search { display: none !important; }
+  .oz-topbar-bell { display: none !important; }
+  .oz-shell-scrim { display: block; }
+  .oz-shell-scrim[data-open="true"] {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  /* Narrow main gets tighter side padding — the per-page paddings
+     (typically 28-32px horizontal) would waste mobile real estate. */
+  .oz-main-inner > * { padding-left: 12px !important; padding-right: 12px !important; }
+  .oz-main-inner .card { border-radius: 10px; }
+}
+
+@media (max-width: 479px) {
+  .oz-topbar-wallet {
+    padding: 0 10px !important;
+    gap: 6px !important;
+  }
+  .oz-topbar-signup { display: none; }
 }

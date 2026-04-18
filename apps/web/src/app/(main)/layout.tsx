@@ -1,6 +1,9 @@
 import { TopBar } from "@/components/shell/top-bar";
 import { Sidebar } from "@/components/shell/sidebar";
 import { BetSlipRail } from "@/components/shell/bet-slip-rail";
+import { MobileDrawersProvider } from "@/components/shell/mobile-drawer-context";
+import { MobileShellOverlay } from "@/components/shell/mobile-shell-overlay";
+import { ShellContainer } from "@/components/shell/shell-container";
 import { getSessionUser } from "@/lib/auth";
 import { serverApi } from "@/lib/server-fetch";
 import { fromMicro } from "@oddzilla/types/money";
@@ -29,48 +32,31 @@ export default async function MainLayout({ children }: { children: React.ReactNo
   const balanceUsd = walletRes ? fromMicro(BigInt(walletRes.availableMicro)) : undefined;
 
   return (
-    <div
-      className="oz-shell"
-      style={{
-        display: "grid",
-        gridTemplateColumns: "240px 1fr 340px",
-        gridTemplateRows: "60px 1fr",
-        gridTemplateAreas: `"top top top" "side main rail"`,
-        minHeight: "100vh",
-        background: "var(--bg)",
-        color: "var(--fg)",
-      }}
-    >
-      <TopBar
-        signedIn={Boolean(user)}
-        user={user ?? undefined}
-        balanceUsd={balanceUsd}
-      />
-      <Sidebar
-        sports={sports}
-        liveCounts={liveCounts}
-        signedIn={Boolean(user)}
-        isAdmin={user?.role === "admin"}
-      />
-      {/*
-        The main cell spans 1fr so the shell fills any viewport, but the
-        inner content is capped + centered so ultra-wide screens get
-        balanced whitespace on both sides instead of pinning the content
-        to the sidebar edge. Pages still apply their own padding + cap
-        where they need something narrower than the default.
-      */}
-      <main
-        style={{
-          gridArea: "main",
-          overflow: "auto",
-          minWidth: 0,
-          display: "flex",
-          justifyContent: "center",
-        }}
-      >
-        <div style={{ width: "100%", maxWidth: 1200 }}>{children}</div>
-      </main>
-      <BetSlipRail />
-    </div>
+    <MobileDrawersProvider>
+      <ShellContainer>
+        <TopBar
+          signedIn={Boolean(user)}
+          user={user ?? undefined}
+          balanceUsd={balanceUsd}
+        />
+        <Sidebar
+          sports={sports}
+          liveCounts={liveCounts}
+          signedIn={Boolean(user)}
+          isAdmin={user?.role === "admin"}
+        />
+        {/*
+          The main cell spans 1fr so the shell fills any viewport, but the
+          inner content is capped + centered so ultra-wide screens get
+          balanced whitespace on both sides. Pages apply their own padding
+          and narrower caps where they need them.
+        */}
+        <main className="oz-main">
+          <div className="oz-main-inner">{children}</div>
+        </main>
+        <BetSlipRail />
+        <MobileShellOverlay />
+      </ShellContainer>
+    </MobileDrawersProvider>
   );
 }
