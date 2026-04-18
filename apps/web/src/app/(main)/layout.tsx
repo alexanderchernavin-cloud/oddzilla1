@@ -52,7 +52,24 @@ export default async function MainLayout({ children }: { children: React.ReactNo
         signedIn={Boolean(user)}
         isAdmin={user?.role === "admin"}
       />
-      <main style={{ gridArea: "main", overflow: "auto", minWidth: 0 }}>{children}</main>
+      {/*
+        The main cell spans 1fr so the shell fills any viewport, but the
+        inner content is capped + centered so ultra-wide screens get
+        balanced whitespace on both sides instead of pinning the content
+        to the sidebar edge. Pages still apply their own padding + cap
+        where they need something narrower than the default.
+      */}
+      <main
+        style={{
+          gridArea: "main",
+          overflow: "auto",
+          minWidth: 0,
+          display: "flex",
+          justifyContent: "center",
+        }}
+      >
+        <div style={{ width: "100%", maxWidth: 1200 }}>{children}</div>
+      </main>
       <BetSlipRail />
     </div>
   );
