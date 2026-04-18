@@ -84,16 +84,76 @@ slugged AS (
     SELECT sport_id, urn, name, pg_temp.slugify(name) AS slug
       FROM match_sides
      WHERE pg_temp.slugify(name) <> ''
+),
+-- Collapse rows that share a provider_urn (same team seen under different
+-- display names across matches). Pick the most-seen name so the row we
+-- keep is the recognisable one. Without this collapse the INSERT would
+-- produce multiple (sport_id, slug) candidates sharing the same URN and
+-- trip the partial unique index on (provider, provider_urn).
+by_urn AS (
+    SELECT sport_id, urn, slug, name, cnt
+      FROM (
+        SELECT sport_id, urn, slug, name, cnt,
+               ROW_NUMBER() OVER (
+                 PARTITION BY urn
+                 ORDER BY cnt DESC, slug
+               ) AS rn
+          FROM (
+            SELECT sport_id, urn, slug, name, COUNT(*) AS cnt
+              FROM slugged
+             WHERE urn IS NOT NULL
+             GROUP BY sport_id, urn, slug, name
+          ) grouped
+      ) ranked
+     WHERE rn = 1
+),
+-- URN-less rows: one row per (sport_id, slug) with the most-seen name.
+by_slug AS (
+    SELECT sport_id, slug, name
+      FROM (
+        SELECT sport_id, slug, name, cnt,
+               ROW_NUMBER() OVER (
+                 PARTITION BY sport_id, slug
+                 ORDER BY cnt DESC, name
+               ) AS rn
+          FROM (
+            SELECT sport_id, slug, name, COUNT(*) AS cnt
+              FROM slugged
+             WHERE urn IS NULL
+             GROUP BY sport_id, slug, name
+          ) grouped
+      ) ranked
+     WHERE rn = 1
+),
+to_insert AS (
+    SELECT sport_id, urn, slug, name FROM by_urn
+    UNION ALL
+    -- Only insert URN-less rows whose slug isn't already claimed by a
+    -- URN-bearing row in the same sport — otherwise we'd hit the
+    -- (sport_id, slug) uniqueness.
+    SELECT bs.sport_id, NULL::text AS urn, bs.slug, bs.name
+      FROM by_slug bs
+     WHERE NOT EXISTS (
+       SELECT 1 FROM by_urn bu
+        WHERE bu.sport_id = bs.sport_id AND bu.slug = bs.slug
+     )
 )
 INSERT INTO competitors (sport_id, provider, provider_urn, slug, name)
-SELECT DISTINCT ON (sport_id, slug)
-       sport_id, 'oddin', urn, slug, name
-  FROM slugged
- ORDER BY sport_id, slug, (urn IS NULL), urn
+SELECT sport_id, 'oddin', urn, slug, name FROM to_insert
 ON CONFLICT (sport_id, slug) DO NOTHING;
 
--- Second pass: link match FKs by (sport_id, slug). Covers both rows we
--- just inserted and any pre-existing rows from a repeat run.
+-- Second pass: link match FKs. Prefer URN (authoritative, survives team
+-- renames) and fall back to (sport_id, slug) for rows that never had a
+-- URN. Two UPDATEs per side keep the logic readable and the WHERE
+-- clauses narrow enough to use indexes.
+UPDATE matches m
+   SET home_competitor_id = c.id
+  FROM competitors c
+ WHERE m.home_competitor_id IS NULL
+   AND m.home_team_urn IS NOT NULL AND m.home_team_urn <> ''
+   AND c.provider = 'oddin'
+   AND c.provider_urn = m.home_team_urn;
+
 UPDATE matches m
    SET home_competitor_id = c.id
   FROM tournaments t
@@ -104,6 +164,14 @@ UPDATE matches m
    AND m.home_competitor_id IS NULL
    AND m.home_team <> '' AND m.home_team <> 'TBD'
    AND pg_temp.slugify(m.home_team) <> '';
+
+UPDATE matches m
+   SET away_competitor_id = c.id
+  FROM competitors c
+ WHERE m.away_competitor_id IS NULL
+   AND m.away_team_urn IS NOT NULL AND m.away_team_urn <> ''
+   AND c.provider = 'oddin'
+   AND c.provider_urn = m.away_team_urn;
 
 UPDATE matches m
    SET away_competitor_id = c.id
