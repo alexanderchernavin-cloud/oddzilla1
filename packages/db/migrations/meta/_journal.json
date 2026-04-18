@@ -64,6 +64,13 @@
       "when": 1700000008000,
       "tag": "0008_competitor_profiles",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1700000009000,
+      "tag": "0009_competitors",
+      "breakpoints": true
     }
   ]
 }

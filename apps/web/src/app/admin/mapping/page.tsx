@@ -11,6 +11,17 @@ interface SummaryResponse {
   rejected: number;
 }
 
+const ENTITY_TYPES = [
+  "sport",
+  "category",
+  "tournament",
+  "match",
+  "competitor",
+  "market_type",
+] as const;
+
+type EntityType = (typeof ENTITY_TYPES)[number];
+
 export default async function MappingPage({
   searchParams,
 }: {
@@ -21,9 +32,9 @@ export default async function MappingPage({
     params.status === "approved" || params.status === "rejected"
       ? params.status
       : "pending";
-  const entityType =
-    params.type && ["sport", "category", "tournament", "match", "market_type"].includes(params.type)
-      ? params.type
+  const entityType: EntityType | undefined =
+    params.type && (ENTITY_TYPES as readonly string[]).includes(params.type)
+      ? (params.type as EntityType)
       : undefined;
 
   const qs = new URLSearchParams({ status, limit: "100" });
@@ -64,9 +75,9 @@ export default async function MappingPage({
         ))}
       </section>
 
-      <section className="mt-8 flex items-center gap-2 text-sm text-[var(--color-fg-muted)]">
+      <section className="mt-8 flex flex-wrap items-center gap-2 text-sm text-[var(--color-fg-muted)]">
         <span className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-          Filter
+          Status
         </span>
         {(["pending", "approved", "rejected"] as const).map((s) => (
           <a
@@ -80,6 +91,37 @@ export default async function MappingPage({
             }
           >
             {s}
+          </a>
+        ))}
+      </section>
+
+      <section className="mt-4 flex flex-wrap items-center gap-2 text-sm text-[var(--color-fg-muted)]">
+        <span className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
+          Type
+        </span>
+        <a
+          href={`/admin/mapping?status=${status}`}
+          className={
+            "rounded-[8px] border px-3 py-1 " +
+            (!entityType
+              ? "border-[var(--color-accent)] text-[var(--color-accent)]"
+              : "border-[var(--color-border-strong)] hover:text-[var(--color-fg)]")
+          }
+        >
+          all
+        </a>
+        {ENTITY_TYPES.map((t) => (
+          <a
+            key={t}
+            href={`/admin/mapping?status=${status}&type=${t}`}
+            className={
+              "rounded-[8px] border px-3 py-1 " +
+              (t === entityType
+                ? "border-[var(--color-accent)] text-[var(--color-accent)]"
+                : "border-[var(--color-border-strong)] hover:text-[var(--color-fg)]")
+            }
+          >
+            {t}
           </a>
         ))}
       </section>

@@ -12,7 +12,9 @@ import {
 
 const listQuery = z.object({
   status: z.enum(["pending", "approved", "rejected"]).default("pending"),
-  entityType: z.enum(["sport", "category", "tournament", "match", "market_type"]).optional(),
+  entityType: z
+    .enum(["sport", "category", "tournament", "match", "competitor", "market_type"])
+    .optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 

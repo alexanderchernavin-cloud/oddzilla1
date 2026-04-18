@@ -106,8 +106,8 @@ type MatchContext struct {
 }
 
 // ResolveMatch returns the matches.id for the supplied URN, creating sport,
-// category, tournament, and match rows on first sight (using REST data when
-// possible, falling back to placeholders when not).
+// category, tournament, competitor, and match rows on first sight (using
+// REST data when possible, falling back to placeholders when not).
 func (r *Resolver) ResolveMatch(ctx context.Context, reqCtx MatchContext, rawPayload []byte) (int64, error) {
 	if existing, ok, err := store.FindMatchByURN(ctx, r.st.Pool(), reqCtx.MatchURN); err != nil {
 		return 0, err
@@ -150,12 +150,14 @@ func (r *Resolver) ResolveMatch(ctx context.Context, reqCtx MatchContext, rawPay
 	// through with whatever the message gave us.
 	merged := r.merge(reqCtx, fixture)
 
-	tournamentID, err := r.resolveTournament(ctx, merged.TournamentURN, fixture, rawPayload)
+	tournamentID, sportID, err := r.resolveTournament(ctx, merged.TournamentURN, fixture, rawPayload)
 	if err != nil {
 		return 0, err
 	}
 
-	mu := r.matchUpsert(merged, tournamentID)
+	homeCompID, awayCompID := r.resolveMatchCompetitors(ctx, sportID, merged)
+
+	mu := r.matchUpsert(merged, tournamentID, homeCompID, awayCompID)
 	id, err := store.UpsertMatch(ctx, r.st.Pool(), mu)
 	if err != nil {
 		return 0, fmt.Errorf("upsert match: %w", err)
@@ -271,11 +273,12 @@ func (r *Resolver) RefreshFromFixture(ctx context.Context, matchURN string) erro
 	// Resolve tournament (creates sport/category/tournament if needed)
 	// so we can update the match's tournament_id when it changed (rare
 	// but documented as a possible NEW/DATE_TIME side effect).
-	tournamentID, err := r.resolveTournament(ctx, merged.TournamentURN, fx, []byte(`{"refresh":true}`))
+	tournamentID, sportID, err := r.resolveTournament(ctx, merged.TournamentURN, fx, []byte(`{"refresh":true}`))
 	if err != nil {
 		return err
 	}
-	mu := r.matchUpsert(merged, tournamentID)
+	homeCompID, awayCompID := r.resolveMatchCompetitors(ctx, sportID, merged)
+	mu := r.matchUpsert(merged, tournamentID, homeCompID, awayCompID)
 	if _, err := store.UpsertMatch(ctx, r.st.Pool(), mu); err != nil {
 		return fmt.Errorf("refresh upsert match: %w", err)
 	}
@@ -295,25 +298,27 @@ func (r *Resolver) RefreshFromFixture(ctx context.Context, matchURN string) erro
 // resolveTournament guarantees a tournaments row exists for the supplied
 // URN. When `fixture` is non-nil and contains a sport, we create the
 // tournament under that sport's auto category. Otherwise the fallback
-// sport/category is used.
+// sport/category is used. Returns (tournamentID, sportID, err) — the sport
+// id is needed downstream by resolveCompetitor.
 func (r *Resolver) resolveTournament(
 	ctx context.Context,
 	tURN string,
 	fixture *oddinxml.FixtureResponse,
 	rawPayload []byte,
-) (int, error) {
+) (int, int, error) {
 	// Edge case: message had no tournament URN AND REST didn't supply one.
 	// This shouldn't happen in practice but we still need a valid FK — fall
 	// back to a synthetic per-sport "unknown" tournament so the matches
 	// insert can succeed.
 	if tURN == "" {
-		return r.ensurePlaceholderTournament(ctx, r.defaultSportID, "unknown", "Unknown tournament")
+		tid, err := r.ensurePlaceholderTournament(ctx, r.defaultSportID, "unknown", "Unknown tournament")
+		return tid, r.defaultSportID, err
 	}
 
-	if tid, _, _, ok, err := store.FindTournamentByURN(ctx, r.st.Pool(), tURN); err != nil {
-		return 0, err
+	if tid, _, sid, ok, err := store.FindTournamentByURN(ctx, r.st.Pool(), tURN); err != nil {
+		return 0, 0, err
 	} else if ok {
-		return tid, nil
+		return tid, sid, nil
 	}
 
 	// Unknown tournament. Decide which sport/category to nest it under.
@@ -335,22 +340,47 @@ func (r *Resolver) resolveTournament(
 		}
 	}
 
-	categoryID, err := store.EnsureCategoryForSport(ctx, r.st.Pool(), sportID)
+	categoryID, categoryCreated, err := store.EnsureCategoryForSport(ctx, r.st.Pool(), sportID)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
+	}
+	if categoryCreated {
+		// Oddin esports ships no category hierarchy; the row we just
+		// created is a synthetic "Auto-mapped" bucket. For future
+		// providers that do supply real categories this will grow into a
+		// real mapping review, so wire the enqueue now. Synthetic URN
+		// keeps the review_queue unique key stable without colliding
+		// with provider-supplied URNs.
+		catPayload, _ := json.Marshal(map[string]any{
+			"sport_id":  sportID,
+			"slug":      "auto",
+			"name":      "Auto-mapped",
+			"is_dummy":  true,
+			"synthetic": true,
+		})
+		catURN := fmt.Sprintf("local:category:auto-sport-%d", sportID)
+		if err := store.EnqueueReview(ctx, r.st.Pool(), store.ReviewEntry{
+			EntityType:      "category",
+			Provider:        "oddin",
+			ProviderURN:     catURN,
+			RawPayload:      catPayload,
+			CreatedEntityID: fmt.Sprintf("%d", categoryID),
+		}); err != nil {
+			return 0, 0, fmt.Errorf("enqueue review (category): %w", err)
+		}
 	}
 
 	tid, err := store.EnsureTournament(ctx, r.st.Pool(), categoryID, tURN, tournamentSlug, tournamentName)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	payload, _ := json.Marshal(map[string]any{
-		"provider_urn":      tURN,
-		"category_id":       categoryID,
-		"sport_id":          sportID,
-		"name":              tournamentName,
-		"raw_preview":       truncate(string(rawPayload), 1024),
+		"provider_urn": tURN,
+		"category_id":  categoryID,
+		"sport_id":     sportID,
+		"name":         tournamentName,
+		"raw_preview":  truncate(string(rawPayload), 1024),
 	})
 	if err := store.EnqueueReview(ctx, r.st.Pool(), store.ReviewEntry{
 		EntityType:      "tournament",
@@ -359,9 +389,105 @@ func (r *Resolver) resolveTournament(
 		RawPayload:      payload,
 		CreatedEntityID: fmt.Sprintf("%d", tid),
 	}); err != nil {
-		return 0, fmt.Errorf("enqueue review (tournament): %w", err)
+		return 0, 0, fmt.Errorf("enqueue review (tournament): %w", err)
 	}
-	return tid, nil
+	return tid, sportID, nil
+}
+
+// resolveMatchCompetitors upserts home/away competitors for the match and
+// returns their local ids. Best-effort: on any resolve error we log and
+// return (null, null) so the match upsert can still proceed with inline
+// team-name fields.
+func (r *Resolver) resolveMatchCompetitors(
+	ctx context.Context,
+	sportID int,
+	m MatchContext,
+) (sql.NullInt32, sql.NullInt32) {
+	home := r.resolveCompetitor(ctx, sportID, m.HomeTeam, m.HomeTeamURN)
+	away := r.resolveCompetitor(ctx, sportID, m.AwayTeam, m.AwayTeamURN)
+	return home, away
+}
+
+// resolveCompetitor upserts a single competitor and enqueues a mapping
+// review row when the competitor was newly created. Returns a NULL
+// sql.NullInt32 when the name is empty or "TBD" — the match row keeps its
+// inline team-name fields but its FK stays null until a real name arrives.
+func (r *Resolver) resolveCompetitor(
+	ctx context.Context,
+	sportID int,
+	name, urn string,
+) sql.NullInt32 {
+	if sportID == 0 {
+		return sql.NullInt32{}
+	}
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" || trimmed == "TBD" {
+		return sql.NullInt32{}
+	}
+	slug := slugify(trimmed)
+	if slug == "" {
+		return sql.NullInt32{}
+	}
+
+	// Fast path: look up by URN or (sport, slug) to skip the write
+	// altogether when we've already mapped this team. Cuts INSERT
+	// attempts on the hot odds_change path.
+	if urn != "" {
+		if id, ok, err := store.FindCompetitorByURN(ctx, r.st.Pool(), urn); err == nil && ok {
+			return sql.NullInt32{Int32: int32(id), Valid: true}
+		}
+	} else {
+		if id, ok, err := store.FindCompetitorBySportSlug(ctx, r.st.Pool(), sportID, slug); err == nil && ok {
+			return sql.NullInt32{Int32: int32(id), Valid: true}
+		}
+	}
+
+	id, created, err := store.EnsureCompetitor(ctx, r.st.Pool(), store.CompetitorUpsert{
+		SportID:     sportID,
+		ProviderURN: urn,
+		Slug:        slug,
+		Name:        trimmed,
+	})
+	if err != nil {
+		r.log.Warn().Err(err).Int("sport_id", sportID).
+			Str("urn", urn).Str("name", trimmed).
+			Msg("competitor upsert failed; match will store inline team name only")
+		return sql.NullInt32{}
+	}
+
+	if created {
+		// Synthetic URN for URN-less competitors: stable per (sport,
+		// slug) so the review-queue unique key doesn't collide across
+		// different teams with missing URNs.
+		reviewURN := urn
+		if reviewURN == "" {
+			reviewURN = fmt.Sprintf("local:competitor:sport-%d:%s", sportID, slug)
+		}
+		payload, _ := json.Marshal(map[string]any{
+			"sport_id":     sportID,
+			"provider_urn": nullableString(urn),
+			"slug":         slug,
+			"name":         trimmed,
+		})
+		if err := store.EnqueueReview(ctx, r.st.Pool(), store.ReviewEntry{
+			EntityType:      "competitor",
+			Provider:        "oddin",
+			ProviderURN:     reviewURN,
+			RawPayload:      payload,
+			CreatedEntityID: fmt.Sprintf("%d", id),
+		}); err != nil {
+			r.log.Warn().Err(err).Int("competitor_id", id).
+				Msg("competitor review enqueue failed")
+		}
+	}
+	return sql.NullInt32{Int32: int32(id), Valid: true}
+}
+
+func nullableString(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // resolveSport upserts a sport keyed by Oddin's URN. Returns 0 + nil when
@@ -413,7 +539,7 @@ func (r *Resolver) resolveSport(ctx context.Context, fs oddinxml.FixtureSport) (
 // under a sport's auto category. Used as a last-resort FK target when both
 // the message AND the REST fallback failed to give us a tournament URN.
 func (r *Resolver) ensurePlaceholderTournament(ctx context.Context, sportID int, slug, name string) (int, error) {
-	categoryID, err := store.EnsureCategoryForSport(ctx, r.st.Pool(), sportID)
+	categoryID, _, err := store.EnsureCategoryForSport(ctx, r.st.Pool(), sportID)
 	if err != nil {
 		return 0, err
 	}
@@ -495,13 +621,15 @@ func (r *Resolver) merge(in MatchContext, fx *oddinxml.FixtureResponse) MatchCon
 	return out
 }
 
-func (r *Resolver) matchUpsert(c MatchContext, tournamentID int) store.MatchUpsert {
+func (r *Resolver) matchUpsert(c MatchContext, tournamentID int, homeCompID, awayCompID sql.NullInt32) store.MatchUpsert {
 	out := store.MatchUpsert{
-		TournamentID: tournamentID,
-		ProviderURN:  c.MatchURN,
-		HomeTeam:     defaultString(c.HomeTeam, "TBD"),
-		AwayTeam:     defaultString(c.AwayTeam, "TBD"),
-		Status:       defaultString(c.Status, "not_started"),
+		TournamentID:     tournamentID,
+		ProviderURN:      c.MatchURN,
+		HomeTeam:         defaultString(c.HomeTeam, "TBD"),
+		AwayTeam:         defaultString(c.AwayTeam, "TBD"),
+		Status:           defaultString(c.Status, "not_started"),
+		HomeCompetitorID: homeCompID,
+		AwayCompetitorID: awayCompID,
 	}
 	if c.HomeTeamURN != "" {
 		out.HomeTeamURN = sql.NullString{String: c.HomeTeamURN, Valid: true}
