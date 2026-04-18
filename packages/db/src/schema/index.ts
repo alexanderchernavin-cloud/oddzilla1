@@ -4,6 +4,7 @@ export * from "./wallet.js";
 export * from "./deposits.js";
 export * from "./catalog.js";
 export * from "./markets.js";
+export * from "./descriptions.js";
 export * from "./odds.js";
 export * from "./tickets.js";
 export * from "./settlements.js";

@@ -13,6 +13,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"net/http"
 	"os"
@@ -28,8 +29,9 @@ import (
 	"github.com/oddzilla/feed-ingester/internal/automap"
 	"github.com/oddzilla/feed-ingester/internal/bus"
 	"github.com/oddzilla/feed-ingester/internal/config"
-	"github.com/oddzilla/feed-ingester/internal/oddinrest"
 	"github.com/oddzilla/feed-ingester/internal/handler"
+	"github.com/oddzilla/feed-ingester/internal/oddinrest"
+	"github.com/oddzilla/feed-ingester/internal/oddinxml"
 	"github.com/oddzilla/feed-ingester/internal/store"
 )
 
@@ -143,6 +145,18 @@ func main() {
 		// pick up within "a reasonable time" we should treat the market as
 		// suspended so bet placement keeps rejecting cleanly.
 		go runHandoverSweeper(ctx, st, logger)
+		if restClient != nil {
+			// Market descriptions refresh. Runs once synchronously on
+			// boot (so the cache is warm before any /match/:id request
+			// lands) and then every few hours. The endpoint returns ~80
+			// KB of XML and changes rarely, so we don't need a tight
+			// cadence. Failures are logged but never fatal — stale
+			// descriptions are better than no descriptions.
+			if err := refreshMarketDescriptions(ctx, restClient, st, cfg.Oddin.Lang, logger); err != nil {
+				logger.Warn().Err(err).Msg("initial market descriptions refresh failed; UI will fall back to ids")
+			}
+			go runDescriptionsRefresher(ctx, restClient, st, cfg.Oddin.Lang, logger)
+		}
 	}
 
 	// ── Wait for signal ────────────────────────────────────────────────
@@ -151,6 +165,49 @@ func main() {
 	<-sigCh
 	logger.Info().Msg("shutting down")
 	cancel()
+}
+
+// refreshMarketDescriptions fetches Oddin's market/outcome description
+// catalog and upserts it to Postgres. Idempotent; safe to call on boot
+// and again on every refresh tick. Errors are wrapped with enough
+// context for the caller to log + proceed.
+func refreshMarketDescriptions(ctx context.Context, rc *oddinrest.Client, st *store.Store, lang string, log zerolog.Logger) error {
+	body, err := rc.MarketDescriptions(ctx, lang)
+	if err != nil {
+		return err
+	}
+	var parsed oddinxml.MarketDescriptions
+	if err := xml.Unmarshal(body, &parsed); err != nil {
+		return err
+	}
+	if err := store.UpsertMarketDescriptions(ctx, st.Pool(), parsed.Markets); err != nil {
+		return err
+	}
+	n, _ := store.CountMarketDescriptions(ctx, st.Pool())
+	log.Info().
+		Int("markets_seen", len(parsed.Markets)).
+		Int("rows_in_cache", n).
+		Msg("market descriptions refreshed")
+	return nil
+}
+
+// runDescriptionsRefresher refreshes the market description cache every
+// 6 hours. First refresh happens in main() before this goroutine starts,
+// so the cache is warm immediately; this loop just keeps it current.
+func runDescriptionsRefresher(ctx context.Context, rc *oddinrest.Client, st *store.Store, lang string, log zerolog.Logger) {
+	const refreshEvery = 6 * time.Hour
+	t := time.NewTicker(refreshEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := refreshMarketDescriptions(ctx, rc, st, lang, log); err != nil {
+				log.Warn().Err(err).Msg("market descriptions refresh failed")
+			}
+		}
+	}
 }
 
 // runHandoverSweeper polls every 15s and demotes markets stuck at -2

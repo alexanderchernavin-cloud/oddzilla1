@@ -16,8 +16,71 @@ import {
   matches,
   markets,
   marketOutcomes,
+  marketDescriptions,
+  outcomeDescriptions,
 } from "@oddzilla/db";
 import { NotFoundError } from "../../lib/errors.js";
+
+// substituteTemplate replaces {specifier} placeholders in an Oddin name
+// template with the supplied specifier values. Unknown placeholders are
+// kept verbatim so broken descriptions degrade visibly rather than
+// silently. E.g.:
+//   "Match handicap {handicap}" + {handicap: "-1.5"} -> "Match handicap -1.5"
+//   "First half winner {way}way - map {map}" + {way: "two", map: "1"}
+//     -> "First half winner twoway - map 1"
+// Trims double spaces and trailing hyphens left over when a specifier is
+// empty (occurs for optional variant specifiers in Oddin's catalog).
+function substituteTemplate(template: string, specs: Record<string, string>): string {
+  const out = template.replace(/\{([a-z0-9_]+)\}/gi, (_, key: string) => {
+    const v = specs[key];
+    return v == null ? `{${key}}` : v;
+  });
+  return out.replace(/\s{2,}/g, " ").replace(/\s-\s$/, "").trim();
+}
+
+// renderOutcomeLabel translates an outcome-template placeholder to the
+// user-facing label. "home"/"away" resolve to team names, "draw" to
+// "Draw", literal values (scores, "under"/"over", numeric outcomes) pass
+// through. Specifier substitution is applied for templates like
+// "{side} wins at least one map" where side ∈ {home, away}.
+function renderOutcomeLabel(
+  template: string,
+  specs: Record<string, string>,
+  homeTeam: string,
+  awayTeam: string,
+): string {
+  const sub = substituteTemplate(template, specs);
+  const lower = sub.trim().toLowerCase();
+  if (lower === "home") return homeTeam;
+  if (lower === "away") return awayTeam;
+  if (lower === "draw") return "Draw";
+  if (lower === "under") return "Under";
+  if (lower === "over") return "Over";
+  // "home / draw", "home / away" — resolve each token, keep separator.
+  if (/^(home|away|draw)(\s*[/&,]\s*(home|away|draw))+$/i.test(lower)) {
+    return lower
+      .split(/\s*([/&,])\s*/)
+      .map((t) =>
+        t === "home" ? homeTeam : t === "away" ? awayTeam : t === "draw" ? "Draw" : t,
+      )
+      .join(" ");
+  }
+  return sub;
+}
+
+// deriveScope reads a market's specifiers and returns a short tag used
+// by the UI to group markets into sections. "match" is the default;
+// "map_N" appears when the market is scoped to a specific map (either
+// via a `map` specifier or, for some markets, a `period` specifier).
+function deriveScope(specs: Record<string, string>): { id: string; label: string; order: number } {
+  if (specs.map) {
+    const n = Number.parseInt(specs.map, 10);
+    if (Number.isFinite(n) && n > 0) {
+      return { id: `map_${n}`, label: `Map ${n}`, order: n };
+    }
+  }
+  return { id: "match", label: "Match", order: 0 };
+}
 
 const matchListQuery = z.object({
   live: z.coerce.boolean().optional(),
@@ -205,10 +268,12 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .limit(1);
     if (!match) throw new NotFoundError("match_not_found", "match_not_found");
 
-    // Only active markets (status=1). All provider_market_ids the
-    // ingester has stored are surfaced; the web UI falls back to a
-    // generic "Market #N" label for ids it doesn't know, and hides
-    // specifier keys other than `map` so nothing internal leaks.
+    // Only active markets (status=1). Join against market_descriptions
+    // so each row carries a human-readable name template, then expand
+    // {specifier} placeholders at render time using the row's own
+    // specifiers_json. Fall back to "Market #N" when a description is
+    // missing (Oddin added a new market type, cache stale, etc.) so the
+    // UI degrades visibly instead of silently.
     const rows = await app.db
       .select({
         marketId: markets.id,
@@ -226,30 +291,73 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .where(and(eq(markets.matchId, params.id), eq(markets.status, 1)))
       .orderBy(markets.providerMarketId);
 
-    const marketMap = new Map<
-      string,
-      {
-        id: string;
-        providerMarketId: number;
-        specifiers: Record<string, string>;
-        status: number;
-        lastOddinTs: string;
-        outcomes: Array<{
-          outcomeId: string;
-          name: string;
-          publishedOdds: string | null;
-          active: boolean;
-        }>;
-      }
-    >();
+    const distinctMarketIds = Array.from(new Set(rows.map((r) => r.providerMarketId)));
+    const marketDescs = distinctMarketIds.length
+      ? await app.db
+          .select({
+            providerMarketId: marketDescriptions.providerMarketId,
+            variant: marketDescriptions.variant,
+            nameTemplate: marketDescriptions.nameTemplate,
+          })
+          .from(marketDescriptions)
+          .where(inArray(marketDescriptions.providerMarketId, distinctMarketIds))
+      : [];
+    const outcomeDescs = distinctMarketIds.length
+      ? await app.db
+          .select({
+            providerMarketId: outcomeDescriptions.providerMarketId,
+            variant: outcomeDescriptions.variant,
+            outcomeId: outcomeDescriptions.outcomeId,
+            nameTemplate: outcomeDescriptions.nameTemplate,
+          })
+          .from(outcomeDescriptions)
+          .where(inArray(outcomeDescriptions.providerMarketId, distinctMarketIds))
+      : [];
+
+    const descKey = (mid: number, variant: string) => `${mid}:${variant ?? ""}`;
+    const marketDescMap = new Map<string, string>();
+    for (const d of marketDescs) marketDescMap.set(descKey(d.providerMarketId, d.variant), d.nameTemplate);
+    const outcomeDescMap = new Map<string, string>();
+    for (const d of outcomeDescs) {
+      outcomeDescMap.set(`${d.providerMarketId}:${d.variant ?? ""}:${d.outcomeId}`, d.nameTemplate);
+    }
+
+    type MarketRow = {
+      id: string;
+      providerMarketId: number;
+      specifiers: Record<string, string>;
+      variant: string;
+      name: string;
+      scope: { id: string; label: string; order: number };
+      status: number;
+      lastOddinTs: string;
+      outcomes: Array<{
+        outcomeId: string;
+        name: string;
+        rawName: string;
+        publishedOdds: string | null;
+        active: boolean;
+      }>;
+    };
+    const marketMap = new Map<string, MarketRow>();
+
     for (const r of rows) {
       const key = r.marketId.toString();
       let m = marketMap.get(key);
       if (!m) {
+        const specs = (r.specifiersJson ?? {}) as Record<string, string>;
+        const variant = specs.variant ?? "";
+        const template =
+          marketDescMap.get(descKey(r.providerMarketId, variant)) ??
+          marketDescMap.get(descKey(r.providerMarketId, "")) ??
+          `Market #${r.providerMarketId}`;
         m = {
           id: key,
           providerMarketId: r.providerMarketId,
-          specifiers: (r.specifiersJson ?? {}) as Record<string, string>,
+          specifiers: specs,
+          variant,
+          name: substituteTemplate(template, specs),
+          scope: deriveScope(specs),
           status: r.status,
           lastOddinTs: r.lastOddinTs.toString(),
           outcomes: [],
@@ -257,13 +365,34 @@ export default async function catalogRoutes(app: FastifyInstance) {
         marketMap.set(key, m);
       }
       if (r.outcomeId) {
+        const outcomeTemplate =
+          outcomeDescMap.get(`${r.providerMarketId}:${m.variant}:${r.outcomeId}`) ??
+          outcomeDescMap.get(`${r.providerMarketId}::${r.outcomeId}`) ??
+          r.outcomeName ??
+          r.outcomeId;
         m.outcomes.push({
           outcomeId: r.outcomeId,
-          name: r.outcomeName ?? "",
+          name: renderOutcomeLabel(outcomeTemplate, m.specifiers, match.homeTeam, match.awayTeam),
+          rawName: r.outcomeName ?? "",
           publishedOdds: formatOdds(r.publishedOdds),
           active: r.active ?? false,
         });
       }
+    }
+
+    // Group markets by scope (Match / Map 1 / Map 2 / …). Within a group
+    // sort by provider_market_id so a given scope's markets arrive in a
+    // stable order on the client.
+    const marketList = Array.from(marketMap.values());
+    const scopeMap = new Map<string, { id: string; label: string; order: number; markets: MarketRow[] }>();
+    for (const m of marketList) {
+      const g = scopeMap.get(m.scope.id) ?? { ...m.scope, markets: [] as MarketRow[] };
+      g.markets.push(m);
+      scopeMap.set(m.scope.id, g);
+    }
+    const groups = Array.from(scopeMap.values()).sort((a, b) => a.order - b.order);
+    for (const g of groups) {
+      g.markets.sort((a, b) => a.providerMarketId - b.providerMarketId);
     }
 
     return {
@@ -286,7 +415,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
           name: match.sportName,
         },
       },
-      markets: Array.from(marketMap.values()),
+      markets: marketList,
+      marketGroups: groups,
     };
   });
 

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { serverApi } from "@/lib/server-fetch";
-import { LiveMarkets, type MarketSnapshot } from "./live-markets";
+import { LiveMarkets, type MarketGroup, type MarketSnapshot } from "./live-markets";
 import { Pill, LiveDot, TeamMark } from "@/components/ui/primitives";
 import { I } from "@/components/ui/icons";
 
@@ -18,6 +18,7 @@ interface MatchResponse {
     sport: { id: number; slug: string; name: string };
   };
   markets: MarketSnapshot[];
+  marketGroups: MarketGroup[];
 }
 
 export default async function MatchPage({
@@ -29,7 +30,7 @@ export default async function MatchPage({
   const data = await serverApi<MatchResponse>(`/catalog/matches/${id}`);
   if (!data) notFound();
 
-  const { match, markets } = data;
+  const { match, markets, marketGroups } = data;
   const isLive = match.status === "live";
   const homeScore = match.liveScore?.home ?? 0;
   const awayScore = match.liveScore?.away ?? 0;
@@ -145,7 +146,7 @@ export default async function MatchPage({
             awayTeam: match.awayTeam,
             sportSlug: match.sport.slug,
           }}
-          initialMarkets={markets}
+          initialGroups={marketGroups}
         />
       )}
     </div>

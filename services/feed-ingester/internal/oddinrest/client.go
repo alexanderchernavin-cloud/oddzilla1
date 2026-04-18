@@ -170,6 +170,16 @@ func (c *Client) Sports(ctx context.Context, lang string) ([]byte, error) {
 	return c.Get(ctx, fmt.Sprintf("/v1/sports/%s/sports", lang), nil)
 }
 
+// MarketDescriptions returns the market + outcome description catalog —
+// name templates, outcome labels, and specifier schema — that turns the
+// numeric market/outcome ids on the odds feed into user-facing names.
+//   GET /v1/descriptions/{lang}/markets
+// The response is ~80 KB of XML and changes rarely; callers should cache
+// it in Postgres and refresh on a schedule (hours-to-days cadence).
+func (c *Client) MarketDescriptions(ctx context.Context, lang string) ([]byte, error) {
+	return c.Get(ctx, fmt.Sprintf("/v1/descriptions/%s/markets", lang), nil)
+}
+
 // IsNotFound returns true when the error is an HTTPError with status 404,
 // which is what Oddin returns for unknown sport events / tournaments.
 func IsNotFound(err error) bool {
