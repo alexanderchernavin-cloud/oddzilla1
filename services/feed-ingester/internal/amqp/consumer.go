@@ -201,8 +201,11 @@ func (c *Consumer) dialURL() string {
 	if c.cfg.TLS {
 		scheme = "amqps"
 	}
-	// Oddin vhost: /oddinfeed/{customer_id}. URL-encode the slash.
-	vhost := "oddinfeed/" + c.cfg.CustomerID
+	// Oddin vhost: "/oddinfeed/{customer_id}" — note the leading slash is
+	// part of the vhost NAME, not just a URL separator. amqp091-go's
+	// ParseURI strips one leading "/" then PathUnescapes, so we need to
+	// double-encode the leading slash to preserve it.
+	vhost := "/oddinfeed/" + c.cfg.CustomerID
 	u := url.URL{
 		Scheme: scheme,
 		User:   url.UserPassword(c.cfg.Token, ""),
