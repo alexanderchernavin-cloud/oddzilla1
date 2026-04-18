@@ -120,6 +120,10 @@ services:
     env_file: .env
     environment:
       PORT: ${WEB_PORT:-3000}
+      # Next.js standalone reads HOSTNAME for the bind address. Default is
+      # the container's hostname (resolves to eth0 only), which makes the
+      # container's loopback healthcheck fail. 0.0.0.0 binds to all ifaces.
+      HOSTNAME: 0.0.0.0
     ports:
       - "127.0.0.1:${WEB_PORT:-3000}:${WEB_PORT:-3000}"
     depends_on:
