@@ -152,6 +152,31 @@ func (c *Client) Fixtures(ctx context.Context, lang string, offset, limit int) (
 	return c.Get(ctx, fmt.Sprintf("/v1/descriptions/%s/fixtures", lang), q)
 }
 
+// SportEventFixture returns the full hierarchy (tournament + sport + teams)
+// for a single match URN. Used by the auto-mapping resolver to build proper
+// catalog rows when an unknown match URN arrives on the feed.
+//   GET /v1/sports/{lang}/sport_events/{eventURN}/fixture
+func (c *Client) SportEventFixture(ctx context.Context, lang, eventURN string) ([]byte, error) {
+	path := fmt.Sprintf("/v1/sports/%s/sport_events/%s/fixture", lang, eventURN)
+	return c.Get(ctx, path, nil)
+}
+
+// Sports lists every sport Oddin exposes. Used to refresh sport metadata
+// after auto-creating one from a fixture (the fixture endpoint returns the
+// sport's name + abbreviation, so this is mainly useful as a slug source for
+// sports that arrive ahead of any fixture call).
+//   GET /v1/sports/{lang}/sports
+func (c *Client) Sports(ctx context.Context, lang string) ([]byte, error) {
+	return c.Get(ctx, fmt.Sprintf("/v1/sports/%s/sports", lang), nil)
+}
+
+// IsNotFound returns true when the error is an HTTPError with status 404,
+// which is what Oddin returns for unknown sport events / tournaments.
+func IsNotFound(err error) bool {
+	he, ok := err.(*HTTPError)
+	return ok && he.Status == http.StatusNotFound
+}
+
 // HTTPError is returned for any non-2xx response the client couldn't
 // recover from.
 type HTTPError struct {

@@ -28,6 +28,7 @@ import (
 	"github.com/oddzilla/feed-ingester/internal/automap"
 	"github.com/oddzilla/feed-ingester/internal/bus"
 	"github.com/oddzilla/feed-ingester/internal/config"
+	"github.com/oddzilla/feed-ingester/internal/oddinrest"
 	"github.com/oddzilla/feed-ingester/internal/handler"
 	"github.com/oddzilla/feed-ingester/internal/store"
 )
@@ -80,7 +81,22 @@ func main() {
 		Int("sport_id", fallbackSportID).
 		Int("category_id", fallbackCategoryID).
 		Msg("fallback sport/category resolved")
-	resolver := automap.New(st, fallbackSportID, fallbackCategoryID)
+
+	// REST client for auto-mapping unknown match URNs. Optional — when
+	// the token is absent the resolver runs in fallback-only mode.
+	var restClient *oddinrest.Client
+	if cfg.Oddin.Token != "" {
+		rc, rerr := oddinrest.New(oddinrest.Config{
+			BaseURL: cfg.Oddin.RESTBaseURL,
+			Token:   cfg.Oddin.Token,
+		})
+		if rerr != nil {
+			logger.Warn().Err(rerr).Msg("oddin rest client init failed; auto-mapping will use placeholders")
+		} else {
+			restClient = rc
+		}
+	}
+	resolver := automap.New(st, restClient, logger.With().Str("component", "automap").Logger(), fallbackSportID, fallbackCategoryID)
 
 	deps := handler.Deps{
 		Store:    st,

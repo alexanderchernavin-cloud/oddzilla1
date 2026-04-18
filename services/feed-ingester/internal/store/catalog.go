@@ -122,6 +122,61 @@ func FindSportBySlug(ctx context.Context, db pgxRunner, slug string) (int, bool,
 	return id, true, nil
 }
 
+// FindSportByURN returns the sport id keyed by Oddin's provider URN
+// (e.g. "od:sport:19"). Returns (0, false, nil) when unseen.
+func FindSportByURN(ctx context.Context, db pgxRunner, providerURN string) (int, bool, error) {
+	var id int
+	err := db.QueryRow(ctx,
+		`SELECT id FROM sports WHERE provider = 'oddin' AND provider_urn = $1`,
+		providerURN,
+	).Scan(&id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("find sport by urn: %w", err)
+	}
+	return id, true, nil
+}
+
+// EnsureSport upserts a sport keyed by (provider, provider_urn). The slug
+// must be unique across all sports — callers derive a stable one (typically
+// from the URN's numeric tail). Returns the sports.id.
+func EnsureSport(ctx context.Context, db pgxRunner, providerURN, slug, name, kind string) (int, error) {
+	const q = `
+INSERT INTO sports (provider, provider_urn, slug, name, kind)
+VALUES ('oddin', $1, $2, $3, $4::sport_kind)
+ON CONFLICT (provider, provider_urn) DO UPDATE
+   SET name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE sports.name END,
+       active = TRUE
+RETURNING id`
+	var id int
+	err := db.QueryRow(ctx, q, providerURN, slug, name, kind).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("ensure sport: %w", err)
+	}
+	return id, nil
+}
+
+// EnsureCategoryForSport returns the categories.id for the auto-mapped
+// category that sits directly under the given sport. Categories from Oddin
+// don't always exist in the source feed — we keep one synthetic "Auto" row
+// per sport to anchor tournaments.
+func EnsureCategoryForSport(ctx context.Context, db pgxRunner, sportID int) (int, error) {
+	const q = `
+INSERT INTO categories (sport_id, provider_urn, slug, name, is_dummy)
+VALUES ($1, NULL, 'auto', 'Auto-mapped', TRUE)
+ON CONFLICT (sport_id, slug) DO UPDATE
+   SET active = TRUE
+RETURNING id`
+	var id int
+	err := db.QueryRow(ctx, q, sportID).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("ensure auto category: %w", err)
+	}
+	return id, nil
+}
+
 // FindDummyCategoryForSport returns the is_dummy category id for a sport
 // (seed guarantees one exists per esport).
 func FindDummyCategoryForSport(ctx context.Context, db pgxRunner, sportID int) (int, error) {
