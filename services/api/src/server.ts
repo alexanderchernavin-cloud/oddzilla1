@@ -24,6 +24,7 @@ import adminWithdrawalsRoutes from "./modules/admin/withdrawals.js";
 import adminDashboardRoutes from "./modules/admin/dashboard.js";
 import adminUsersRoutes from "./modules/admin/users.js";
 import adminAuditRoutes from "./modules/admin/audit.js";
+import adminFeedRoutes from "./modules/admin/feed.js";
 import { ApiError } from "./lib/errors.js";
 
 const env = loadEnv();
@@ -131,6 +132,7 @@ await app.register(adminWithdrawalsRoutes);
 await app.register(adminDashboardRoutes);
 await app.register(adminUsersRoutes);
 await app.register(adminAuditRoutes);
+await app.register(adminFeedRoutes);
 
 app.get("/", async () => ({ service: "oddzilla-api", status: "ok" }));
 

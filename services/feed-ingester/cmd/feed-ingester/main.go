@@ -145,6 +145,12 @@ func main() {
 		// pick up within "a reasonable time" we should treat the market as
 		// suspended so bet placement keeps rejecting cleanly.
 		go runHandoverSweeper(ctx, st, logger)
+		// LISTEN on feed_recovery so an admin can trigger a full Oddin
+		// replay without restarting the container. The API's
+		// POST /admin/feed/recovery rewinds `amqp_state.after_ts` and
+		// fires pg_notify('feed_recovery', ...); TriggerRecovery reads
+		// the fresh cursor and issues InitiateRecovery to Oddin.
+		go runRecoveryListener(ctx, pool, deps, logger)
 		if restClient != nil {
 			// Market descriptions refresh. Runs once synchronously on
 			// boot (so the cache is warm before any /match/:id request
@@ -208,6 +214,52 @@ func runDescriptionsRefresher(ctx context.Context, rc *oddinrest.Client, st *sto
 			}
 		}
 	}
+}
+
+// runRecoveryListener subscribes to Postgres notifications on the
+// `feed_recovery` channel. Each NOTIFY triggers a fresh recovery for
+// both Oddin producers, using whatever cursor timestamp the operator
+// wrote into `amqp_state.after_ts` (the API endpoint handles the
+// rewind). Reconnects with 2 s backoff on error; a dead listener is
+// not fatal for ingest.
+func runRecoveryListener(ctx context.Context, pool *pgxpool.Pool, deps handler.Deps, log zerolog.Logger) {
+	for ctx.Err() == nil {
+		if err := listenRecoveryOnce(ctx, pool, deps, log); err != nil && !errors.Is(err, context.Canceled) {
+			log.Warn().Err(err).Msg("feed_recovery LISTEN errored; reconnecting in 2s")
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(2 * time.Second):
+			}
+		}
+	}
+}
+
+func listenRecoveryOnce(ctx context.Context, pool *pgxpool.Pool, deps handler.Deps, log zerolog.Logger) error {
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, "LISTEN feed_recovery"); err != nil {
+		return err
+	}
+	log.Info().Msg("listening on feed_recovery channel")
+	for ctx.Err() == nil {
+		n, err := conn.Conn().WaitForNotification(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return err
+		}
+		if n == nil {
+			continue
+		}
+		log.Info().Str("payload", n.Payload).Msg("feed_recovery notification received")
+		handler.TriggerRecovery(ctx, deps, log)
+	}
+	return nil
 }
 
 // runHandoverSweeper polls every 15s and demotes markets stuck at -2
