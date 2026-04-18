@@ -11,8 +11,12 @@
 //   effective = (1 - vf) * (result * odds) + vf
 //   where result ∈ {0, 1}
 //
-// For single bets the ticket payout = stake * effective. For combos it
-// would be stake * product(effective_i) — combos aren't in MVP scope.
+// Single ticket payout = stake * effective.
+// Combo  ticket payout = stake * product(effective_i). If every leg is a
+// void the ticket refunds stake and the ledger type switches to
+// bet_refund; any other outcome — including partial voids — still flows
+// through bet_payout so admin dashboards can tell resolved markets from
+// manual voids.
 
 package settler
 
@@ -20,6 +24,8 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+
+	"github.com/oddzilla/settlement/internal/store"
 )
 
 // ResolvedResult is the subset of outcome_result we treat numerically.
@@ -93,6 +99,41 @@ func SinglePayout(stakeMicro int64, oddsStr, result, voidFactor string) (int64, 
 		return 0, fmt.Errorf("payout not finite")
 	}
 	return int64(math.Floor(f + 1e-9)), nil
+}
+
+// ComboPayout returns the payout in micro-USDT for a combo ticket given
+// its stake and the resolved legs. All legs must already be resolved
+// (the caller gates on UnresolvedCount==0). The payout floors so we
+// never over-pay a fractional micro on irrational products of odds.
+func ComboPayout(stakeMicro int64, selections []store.SelectionResult) (int64, string, error) {
+	if len(selections) < 2 {
+		return 0, "", fmt.Errorf("combo needs ≥2 selections, got %d", len(selections))
+	}
+	factor := 1.0
+	allVoid := true
+	for _, sel := range selections {
+		eff, err := EffectiveFactor(sel.OddsAtPlacement, sel.Result, sel.VoidFactor)
+		if err != nil {
+			return 0, "", err
+		}
+		if sel.Result != string(ResultVoid) {
+			allVoid = false
+		}
+		factor *= eff
+	}
+	if factor < 0 {
+		factor = 0
+	}
+	f := float64(stakeMicro) * factor
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, "", fmt.Errorf("combo payout not finite")
+	}
+	payout := int64(math.Floor(f + 1e-9))
+	ledger := "bet_payout"
+	if allVoid {
+		ledger = "bet_refund"
+	}
+	return payout, ledger, nil
 }
 
 // LedgerTypeFor picks the right wallet_tx_type value for the payout.

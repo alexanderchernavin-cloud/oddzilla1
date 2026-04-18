@@ -1,6 +1,6 @@
 // /bets endpoints. All require authentication.
 //
-//   POST /bets                 Place a bet (singles only for MVP)
+//   POST /bets                 Place a bet (single or combo; up to 20 legs)
 //   GET  /bets                 List current user's tickets, newest first
 //   GET  /bets/:id             Fetch one ticket by id (must belong to user)
 

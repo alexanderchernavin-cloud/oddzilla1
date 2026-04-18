@@ -31,14 +31,14 @@ const MARKET_LABELS: Record<number, string> = {
   4: "Map Winner",
 };
 
+// Specifier keys Oddin sometimes attaches for display disambiguation
+// (`way`, `variant`) that we never want to surface to the user — they're
+// internal market-uniqueness hints, not labels. `map` is the only one we
+// render explicitly, and only as "Map N" next to the title.
 function marketTitle(m: MarketSnapshot): string {
   const base = MARKET_LABELS[m.providerMarketId] ?? `Market #${m.providerMarketId}`;
   if (m.specifiers.map) return `${base} — Map ${m.specifiers.map}`;
-  const extras = Object.entries(m.specifiers)
-    .filter(([k]) => k !== "map")
-    .map(([k, v]) => `${k}=${v}`)
-    .join(", ");
-  return extras ? `${base} (${extras})` : base;
+  return base;
 }
 
 export function LiveMarkets({
