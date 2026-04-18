@@ -1,7 +1,6 @@
 # Caddy config — multi-host: public frontend + admin backoffice.
 #
-# For local dev, set `FRONTEND_HOST=localhost` and `ADMIN_HOST=` (empty) —
-# Caddy will serve HTTP-only on localhost and skip the admin site block.
+# For local dev, set `FRONTEND_HOST=localhost` and `ADMIN_HOST=admin.localhost`.
 # For production on Hetzner, set both to real hostnames (e.g.
 # `s.oddzilla.cc` and `sadmin.oddzilla.cc`). Caddy will auto-request
 # Let's Encrypt certificates on first boot.
@@ -11,25 +10,33 @@
 	email {$ACME_EMAIL}
 }
 
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+}
+
+(web_csp) {
+	# CSP applied only to responses from web:3000 (Next.js HTML). /api/* has
+	# its own strict default-src 'none' CSP from @fastify/helmet.
+	# Backticks preserve semicolons/quotes inside the value.
+	header Content-Security-Policy `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests`
+}
+
 # ── Public frontend ──────────────────────────────────────────────────────────
 {$FRONTEND_HOST} {
 	encode zstd gzip
+	import security_headers
 
-	header {
-		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-		X-Content-Type-Options "nosniff"
-		X-Frame-Options "DENY"
-		Referrer-Policy "strict-origin-when-cross-origin"
-		Permissions-Policy "camera=(), microphone=(), geolocation=()"
-		-Server
-	}
-
-	# REST API
 	handle_path /api/* {
 		reverse_proxy api:3001
 	}
 
-	# WebSocket gateway
 	@websocket {
 		header Connection *Upgrade*
 		header Upgrade    websocket
@@ -38,29 +45,19 @@
 		reverse_proxy ws-gateway:3002
 	}
 
-	# Next.js frontend (default). CSP scoped to HTML responses only —
-	# /api/* has its own strict CSP from @fastify/helmet.
 	handle {
-		header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
+		import web_csp
 		reverse_proxy web:3000
 	}
 }
 
 # ── Admin backoffice ─────────────────────────────────────────────────────────
-# Same Next.js container, but the root path redirects straight to /admin so
-# operators never land on the public marketing pages. Auth + role checks
-# inside /admin routes remain the real access control.
+# Same Next.js container, root redirects to /admin so operators never land on
+# marketing pages. Auth + role checks inside /admin routes remain the real
+# access control.
 {$ADMIN_HOST} {
 	encode zstd gzip
-
-	header {
-		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-		X-Content-Type-Options "nosniff"
-		X-Frame-Options "DENY"
-		Referrer-Policy "strict-origin-when-cross-origin"
-		Permissions-Policy "camera=(), microphone=(), geolocation=()"
-		-Server
-	}
+	import security_headers
 
 	redir / /admin 302
 
@@ -77,42 +74,7 @@
 	}
 
 	handle {
-		header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
-		reverse_proxy web:3000
-	}
-}
-
-# ── Admin backoffice ─────────────────────────────────────────────────────────
-# Same Next.js container, but the root path redirects straight to /admin so
-# operators never land on the public marketing pages. Auth + role checks
-# inside /admin routes remain the real access control.
-{$ADMIN_HOST} {
-	encode zstd gzip
-
-	header {
-		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-		X-Content-Type-Options "nosniff"
-		X-Frame-Options "DENY"
-		Referrer-Policy "strict-origin-when-cross-origin"
-		Permissions-Policy "camera=(), microphone=(), geolocation=()"
-		-Server
-	}
-
-	redir / /admin 302
-
-	handle_path /api/* {
-		reverse_proxy api:3001
-	}
-
-	@websocket {
-		header Connection *Upgrade*
-		header Upgrade    websocket
-	}
-	handle /ws* {
-		reverse_proxy ws-gateway:3002
-	}
-
-	handle {
+		import web_csp
 		reverse_proxy web:3000
 	}
 }
