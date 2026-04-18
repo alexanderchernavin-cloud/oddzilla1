@@ -39,6 +39,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
             <Link href="/admin/audit" className="hover:text-[var(--color-fg)]">
               Audit
             </Link>
+            <Link href="/admin/feed" className="hover:text-[var(--color-fg)]">
+              Feed
+            </Link>
             <Link href="/account" className="hover:text-[var(--color-fg)]">
               Exit admin
             </Link>

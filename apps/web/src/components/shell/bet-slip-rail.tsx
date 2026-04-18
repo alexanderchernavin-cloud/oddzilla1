@@ -9,26 +9,36 @@ import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { I } from "@/components/ui/icons";
 import { Button } from "@/components/ui/primitives";
 import { SportGlyph } from "@/components/ui/sport-glyph";
+import type { SlipSelection } from "@oddzilla/types";
 
 export function BetSlipRail() {
   const slip = useBetSlip();
-  const selection = slip.selections[0] ?? null;
+  const selections = slip.selections;
   const router = useRouter();
   const [stakeInput, setStakeInput] = useState("10.00");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [placedTicketId, setPlacedTicketId] = useState<string | null>(null);
 
-  const odds = selection ? Number(selection.odds) : 0;
+  // Combined odds = product of all selection odds (combo accumulator).
+  // With a single selection, this degrades to that selection's odds —
+  // the rail renders the same way for singles and combos.
+  const combinedOdds = useMemo(() => {
+    if (selections.length === 0) return 0;
+    return selections.reduce((acc, s) => acc * Number(s.odds || 0), 1);
+  }, [selections]);
+
   const potentialReturn = useMemo(() => {
     const stake = Number(stakeInput);
-    if (!Number.isFinite(stake) || stake <= 0 || odds <= 0) return 0;
-    return stake * odds;
-  }, [stakeInput, odds]);
+    if (!Number.isFinite(stake) || stake <= 0 || combinedOdds <= 0) return 0;
+    return stake * combinedOdds;
+  }, [stakeInput, combinedOdds]);
+
+  const isCombo = selections.length >= 2;
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (!selection) return;
+    if (selections.length === 0) return;
     setError(null);
     setPlacedTicketId(null);
 
@@ -48,20 +58,21 @@ export function BetSlipRail() {
     setSubmitting(true);
     try {
       const idempotencyKey = crypto.randomUUID();
-      const res = await clientApi<{ ticket: { id: string; status: string } }>("/bets", {
-        method: "POST",
-        body: JSON.stringify({
-          stakeMicro,
-          idempotencyKey,
-          selections: [
-            {
-              marketId: selection.marketId,
-              outcomeId: selection.outcomeId,
-              odds: selection.odds,
-            },
-          ],
-        }),
-      });
+      const res = await clientApi<{ ticket: { id: string; status: string } }>(
+        "/bets",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            stakeMicro,
+            idempotencyKey,
+            selections: selections.map((s) => ({
+              marketId: s.marketId,
+              outcomeId: s.outcomeId,
+              odds: s.odds,
+            })),
+          }),
+        },
+      );
       setPlacedTicketId(res.ticket.id);
       slip.clear();
       router.refresh();
@@ -113,10 +124,10 @@ export function BetSlipRail() {
             color: "var(--fg-muted)",
           }}
         >
-          {slip.selections.length}
+          {selections.length}
         </span>
         <div style={{ flex: 1 }} />
-        {slip.selections.length > 0 && (
+        {selections.length > 0 && (
           <button
             type="button"
             onClick={slip.clear}
@@ -182,7 +193,7 @@ export function BetSlipRail() {
               View in bet history →
             </Link>
           </div>
-        ) : !selection ? (
+        ) : selections.length === 0 ? (
           <div
             style={{
               flex: 1,
@@ -224,81 +235,24 @@ export function BetSlipRail() {
                 lineHeight: 1.5,
               }}
             >
-              Tap any odds button to build your bet.
+              Tap any odds button to build your bet. Add a second match for a
+              combo — multiple markets from the same match replace each other.
             </div>
           </div>
         ) : (
-          <div
-            style={{
-              padding: "12px 14px",
-              background: "var(--surface)",
-              border: "1px solid var(--border)",
-              borderRadius: 10,
-              display: "flex",
-              flexDirection: "column",
-              gap: 6,
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <SportGlyph sport={selection.sportSlug} size={12} />
-              <span
-                className="mono"
-                style={{
-                  fontSize: 10,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  color: "var(--fg-dim)",
-                }}
-              >
-                {selection.marketLabel}
-              </span>
-              <div style={{ flex: 1 }} />
-              <button
-                type="button"
-                onClick={() => slip.remove(selection.marketId, selection.outcomeId)}
-                style={{
-                  background: 0,
-                  border: 0,
-                  color: "var(--fg-dim)",
-                  cursor: "pointer",
-                  padding: 2,
-                }}
-                aria-label="Remove selection"
-              >
-                <I.Close size={12} />
-              </button>
-            </div>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "baseline",
-                justifyContent: "space-between",
-                gap: 10,
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 13.5,
-                  fontWeight: 500,
-                  letterSpacing: "-0.005em",
-                  minWidth: 0,
-                  flex: 1,
-                }}
-              >
-                {selection.outcomeLabel}
-              </div>
-              <div className="mono tnum" style={{ fontSize: 14, fontWeight: 600, flexShrink: 0 }}>
-                {Number(selection.odds).toFixed(2)}
-              </div>
-            </div>
-            <div style={{ fontSize: 11, color: "var(--fg-muted)" }}>
-              {selection.homeTeam} vs {selection.awayTeam}
-            </div>
-          </div>
+          <>
+            {selections.map((s) => (
+              <SelectionCard
+                key={`${s.marketId}:${s.outcomeId}`}
+                selection={s}
+                onRemove={() => slip.remove(s.marketId, s.outcomeId)}
+              />
+            ))}
+          </>
         )}
       </div>
 
-      {selection && !placedTicketId && (
+      {selections.length > 0 && !placedTicketId && (
         <form
           onSubmit={onSubmit}
           style={{
@@ -309,6 +263,23 @@ export function BetSlipRail() {
             gap: 12,
           }}
         >
+          {isCombo && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                justifyContent: "space-between",
+                fontSize: 12,
+                color: "var(--fg-muted)",
+              }}
+            >
+              <span>Combo · {selections.length} legs</span>
+              <span className="mono tnum" style={{ fontSize: 14, fontWeight: 600, color: "var(--fg)" }}>
+                {combinedOdds.toFixed(2)}
+              </span>
+            </div>
+          )}
+
           <div
             style={{
               display: "flex",
@@ -403,7 +374,7 @@ export function BetSlipRail() {
             disabled={submitting}
             style={{ width: "100%" }}
           >
-            {submitting ? "Placing…" : "Place bet"}
+            {submitting ? "Placing…" : isCombo ? "Place combo" : "Place bet"}
           </Button>
 
           <div style={{ fontSize: 11, color: "var(--fg-dim)", textAlign: "center" }}>
@@ -412,6 +383,87 @@ export function BetSlipRail() {
         </form>
       )}
     </aside>
+  );
+}
+
+function SelectionCard({
+  selection,
+  onRemove,
+}: {
+  selection: SlipSelection;
+  onRemove: () => void;
+}) {
+  return (
+    <div
+      style={{
+        padding: "12px 14px",
+        background: "var(--surface)",
+        border: "1px solid var(--border)",
+        borderRadius: 10,
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <SportGlyph sport={selection.sportSlug} size={12} />
+        <span
+          className="mono"
+          style={{
+            fontSize: 10,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            color: "var(--fg-dim)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {selection.marketLabel}
+        </span>
+        <div style={{ flex: 1 }} />
+        <button
+          type="button"
+          onClick={onRemove}
+          style={{
+            background: 0,
+            border: 0,
+            color: "var(--fg-dim)",
+            cursor: "pointer",
+            padding: 2,
+          }}
+          aria-label="Remove selection"
+        >
+          <I.Close size={12} />
+        </button>
+      </div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "baseline",
+          justifyContent: "space-between",
+          gap: 10,
+        }}
+      >
+        <div
+          style={{
+            fontSize: 13.5,
+            fontWeight: 500,
+            letterSpacing: "-0.005em",
+            minWidth: 0,
+            flex: 1,
+          }}
+        >
+          {selection.outcomeLabel}
+        </div>
+        <div className="mono tnum" style={{ fontSize: 14, fontWeight: 600, flexShrink: 0 }}>
+          {Number(selection.odds).toFixed(2)}
+        </div>
+      </div>
+      <div style={{ fontSize: 11, color: "var(--fg-muted)" }}>
+        {selection.homeTeam} vs {selection.awayTeam}
+      </div>
+    </div>
   );
 }
 
@@ -433,8 +485,8 @@ function mapError(err: ApiFetchError): string {
       return "Your account can't place bets right now.";
     case "idempotency_key_collision":
       return "Please retry — collision on submission id.";
-    case "combos_not_yet_supported":
-      return "Combo bets aren't supported yet.";
+    case "combo_same_match":
+      return "Combos can't include two markets from the same match.";
     default:
       return err.body.message || "Placement failed.";
   }

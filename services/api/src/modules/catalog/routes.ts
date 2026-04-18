@@ -146,7 +146,15 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .from(matches)
       .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
       .innerJoin(categories, eq(categories.id, tournaments.categoryId))
-      .where(and(eq(categories.sportId, sport.id), matchStatusCondition))
+      .where(
+        and(
+          eq(categories.sportId, sport.id),
+          matchStatusCondition,
+          // Drop phantom matches that have no active markets — they
+          // leak into the sport page as "LIVE" with no odds otherwise.
+          sql`EXISTS (SELECT 1 FROM markets mk WHERE mk.match_id = ${matches.id} AND mk.status = 1)`,
+        ),
+      )
       .orderBy(desc(matches.status), matches.scheduledAt)
       .limit(q.limit);
 
@@ -420,7 +428,140 @@ export default async function catalogRoutes(app: FastifyInstance) {
     };
   });
 
+  // ── Cross-sport match list (powers /live + /upcoming pages) ───────
+  // status=live → currently-live matches across every allowed sport
+  // status=upcoming → not-started matches sorted by scheduled_at
+  //
+  // Filters out matches with zero active markets. Oddin's integration
+  // broker leaves some matches stuck at status='live' for hours with
+  // no corresponding odds flow — those shouldn't appear in the live
+  // list because the user can't place a bet on them anyway.
+  app.get("/catalog/matches", async (request) => {
+    const q = z
+      .object({
+        status: z.enum(["live", "upcoming"]).default("live"),
+        limit: z.coerce.number().int().min(1).max(200).default(80),
+      })
+      .parse(request.query);
+
+    const cond =
+      q.status === "live"
+        ? eq(matches.status, "live")
+        : eq(matches.status, "not_started");
+
+    const rows = await app.db
+      .select({
+        matchId: matches.id,
+        providerUrn: matches.providerUrn,
+        homeTeam: matches.homeTeam,
+        awayTeam: matches.awayTeam,
+        scheduledAt: matches.scheduledAt,
+        status: matches.status,
+        bestOf: matches.bestOf,
+        liveScore: matches.liveScore,
+        tournamentId: tournaments.id,
+        tournamentName: tournaments.name,
+        sportSlug: sports.slug,
+        sportName: sports.name,
+      })
+      .from(matches)
+      .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
+      .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+      .innerJoin(sports, eq(sports.id, categories.sportId))
+      .where(
+        and(
+          cond,
+          eq(sports.active, true),
+          // Exclude phantoms: matches whose `status` is live/not_started
+          // but whose markets table has no active (status=1) rows.
+          sql`EXISTS (SELECT 1 FROM markets mk WHERE mk.match_id = ${matches.id} AND mk.status = 1)`,
+        ),
+      )
+      .orderBy(
+        q.status === "live" ? desc(matches.id) : matches.scheduledAt,
+      )
+      .limit(q.limit);
+
+    // Reuse the match-winner odds enrichment from /catalog/sports/:slug.
+    const matchIds = rows.map((r) => r.matchId);
+    const oddsByMatch = new Map<
+      string,
+      { homeMarketId: string; homeOutcomeId: string; homePrice: string | null;
+        awayMarketId: string; awayOutcomeId: string; awayPrice: string | null }
+    >();
+    if (matchIds.length > 0) {
+      const oddsRows = await app.db
+        .select({
+          matchId: markets.matchId,
+          marketId: markets.id,
+          outcomeId: marketOutcomes.outcomeId,
+          outcomeName: marketOutcomes.name,
+          publishedOdds: marketOutcomes.publishedOdds,
+          active: marketOutcomes.active,
+        })
+        .from(markets)
+        .innerJoin(marketOutcomes, eq(marketOutcomes.marketId, markets.id))
+        .where(
+          and(
+            inArray(markets.matchId, matchIds),
+            eq(markets.providerMarketId, 1),
+            eq(markets.status, 1),
+          ),
+        );
+      const byMatch = new Map<string, typeof oddsRows>();
+      for (const r of oddsRows) {
+        const key = r.matchId.toString();
+        const arr = byMatch.get(key) ?? [];
+        arr.push(r);
+        byMatch.set(key, arr);
+      }
+      for (const row of rows) {
+        const key = row.matchId.toString();
+        const outs = byMatch.get(key);
+        if (!outs || outs.length === 0) continue;
+        const home = outs.find((o) => o.outcomeName === row.homeTeam) ?? outs[0];
+        const away = outs.find((o) => o.outcomeName === row.awayTeam) ?? outs[1];
+        if (!home || !away) continue;
+        oddsByMatch.set(key, {
+          homeMarketId: home.marketId.toString(),
+          homeOutcomeId: home.outcomeId,
+          homePrice: home.active ? home.publishedOdds : null,
+          awayMarketId: away.marketId.toString(),
+          awayOutcomeId: away.outcomeId,
+          awayPrice: away.active ? away.publishedOdds : null,
+        });
+      }
+    }
+
+    return {
+      matches: rows.map((r) => {
+        const o = oddsByMatch.get(r.matchId.toString());
+        return {
+          id: r.matchId.toString(),
+          providerUrn: r.providerUrn,
+          homeTeam: r.homeTeam,
+          awayTeam: r.awayTeam,
+          scheduledAt: r.scheduledAt?.toISOString() ?? null,
+          status: r.status,
+          bestOf: r.bestOf,
+          liveScore: r.liveScore,
+          tournament: { id: r.tournamentId, name: r.tournamentName },
+          sport: { slug: r.sportSlug, name: r.sportName },
+          matchWinner: o
+            ? {
+                marketId: o.homeMarketId,
+                home: { outcomeId: o.homeOutcomeId, price: formatOdds(o.homePrice) },
+                away: { outcomeId: o.awayOutcomeId, price: formatOdds(o.awayPrice) },
+              }
+            : null,
+        };
+      }),
+    };
+  });
+
   // ── Counts across sports (for homepage live badges) ────────────────
+  // Counts only matches with at least one active market — a bare
+  // status='live' match with no odds flow is not useful for a badge.
   app.get("/catalog/live-counts", async () => {
     const rows = await app.db
       .select({
@@ -432,7 +573,11 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .leftJoin(tournaments, eq(tournaments.categoryId, categories.id))
       .leftJoin(
         matches,
-        and(eq(matches.tournamentId, tournaments.id), eq(matches.status, "live")),
+        and(
+          eq(matches.tournamentId, tournaments.id),
+          eq(matches.status, "live"),
+          sql`EXISTS (SELECT 1 FROM markets mk WHERE mk.match_id = ${matches.id} AND mk.status = 1)`,
+        ),
       )
       .where(eq(sports.active, true))
       .groupBy(sports.slug);
