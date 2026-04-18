@@ -21,9 +21,10 @@ running the production stack:
   feed-ingester, odds-publisher, settlement, bet-delay, wallet-watcher
 - Connected to Oddin integration broker (bookmaker 142) via AMQPS on
   port 5672
-- DNS: `CADDY_HOST=localhost` for now (no public domain yet); set to
-  a real domain when ready, Caddy will auto-provision a Let's Encrypt
-  cert on first hit
+- DNS: `FRONTEND_HOST=s.oddzilla.cc`, `ADMIN_HOST=sadmin.oddzilla.cc`
+  (subdomains on `oddzilla.cc`, registered at Porkbun). A records
+  point to `178.104.174.24`. Caddy auto-provisions Let's Encrypt
+  certs on first hit for both hosts.
 
 ## First-time server setup (reference, only if rebuilding)
 
