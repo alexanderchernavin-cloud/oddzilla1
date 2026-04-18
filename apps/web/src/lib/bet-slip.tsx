@@ -5,8 +5,10 @@
 //   single: place N independent tickets (one per selection)
 //   combo:  place one multi-selection ticket (all must win)
 //
-// Per-market rule: only one outcome per market at a time. Clicking a
-// different outcome of the same market swaps the selection. Clicking the
+// Per-match rule: only one outcome per match at a time. Picking another
+// market or outcome from the same match replaces the previous selection
+// for that match. This keeps combos on DIFFERENT matches only — required
+// until BetBuilder-style same-match parlays are integrated. Clicking the
 // same outcome again removes it (handled by the caller via `has` + `remove`).
 
 import {
@@ -84,14 +86,16 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
 
   const add = useCallback((selection: SlipSelection) => {
     setState((prev) => {
-      // Drop any existing selection on the same market — only one outcome
-      // per market is selectable at a time.
-      const withoutSameMarket = prev.selections.filter(
-        (s) => s.marketId !== selection.marketId,
+      // Drop any existing selection on the same MATCH. We don't allow two
+      // selections from the same match in the slip — clicking a different
+      // market or outcome in a match the user already has in the slip
+      // simply replaces the previous pick for that match.
+      const withoutSameMatch = prev.selections.filter(
+        (s) => s.matchId !== selection.matchId,
       );
       return {
         ...prev,
-        selections: [...withoutSameMarket, selection],
+        selections: [...withoutSameMatch, selection],
         open: true,
       };
     });
