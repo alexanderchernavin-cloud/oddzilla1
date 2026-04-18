@@ -146,7 +146,15 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .from(matches)
       .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
       .innerJoin(categories, eq(categories.id, tournaments.categoryId))
-      .where(and(eq(categories.sportId, sport.id), matchStatusCondition))
+      .where(
+        and(
+          eq(categories.sportId, sport.id),
+          matchStatusCondition,
+          // Drop phantom matches that have no active markets — they
+          // leak into the sport page as "LIVE" with no odds otherwise.
+          sql`EXISTS (SELECT 1 FROM markets mk WHERE mk.match_id = ${matches.id} AND mk.status = 1)`,
+        ),
+      )
       .orderBy(desc(matches.status), matches.scheduledAt)
       .limit(q.limit);
 
@@ -423,6 +431,11 @@ export default async function catalogRoutes(app: FastifyInstance) {
   // ── Cross-sport match list (powers /live + /upcoming pages) ───────
   // status=live → currently-live matches across every allowed sport
   // status=upcoming → not-started matches sorted by scheduled_at
+  //
+  // Filters out matches with zero active markets. Oddin's integration
+  // broker leaves some matches stuck at status='live' for hours with
+  // no corresponding odds flow — those shouldn't appear in the live
+  // list because the user can't place a bet on them anyway.
   app.get("/catalog/matches", async (request) => {
     const q = z
       .object({
@@ -455,7 +468,15 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
       .innerJoin(categories, eq(categories.id, tournaments.categoryId))
       .innerJoin(sports, eq(sports.id, categories.sportId))
-      .where(and(cond, eq(sports.active, true)))
+      .where(
+        and(
+          cond,
+          eq(sports.active, true),
+          // Exclude phantoms: matches whose `status` is live/not_started
+          // but whose markets table has no active (status=1) rows.
+          sql`EXISTS (SELECT 1 FROM markets mk WHERE mk.match_id = ${matches.id} AND mk.status = 1)`,
+        ),
+      )
       .orderBy(
         q.status === "live" ? desc(matches.id) : matches.scheduledAt,
       )
@@ -539,6 +560,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
   });
 
   // ── Counts across sports (for homepage live badges) ────────────────
+  // Counts only matches with at least one active market — a bare
+  // status='live' match with no odds flow is not useful for a badge.
   app.get("/catalog/live-counts", async () => {
     const rows = await app.db
       .select({
@@ -550,7 +573,11 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .leftJoin(tournaments, eq(tournaments.categoryId, categories.id))
       .leftJoin(
         matches,
-        and(eq(matches.tournamentId, tournaments.id), eq(matches.status, "live")),
+        and(
+          eq(matches.tournamentId, tournaments.id),
+          eq(matches.status, "live"),
+          sql`EXISTS (SELECT 1 FROM markets mk WHERE mk.match_id = ${matches.id} AND mk.status = 1)`,
+        ),
       )
       .where(eq(sports.active, true))
       .groupBy(sports.slug);
