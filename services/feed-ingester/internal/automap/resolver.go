@@ -181,7 +181,52 @@ func (r *Resolver) ResolveMatch(ctx context.Context, reqCtx MatchContext, rawPay
 	}); err != nil {
 		return 0, fmt.Errorf("enqueue review (match): %w", err)
 	}
+
+	// Fetch + cache the competitor profiles (team metadata + player
+	// roster) for both sides so player-prop outcomes can be rendered
+	// with real names. Errors are non-fatal — the match is already
+	// persisted, and outcomes just fall back to raw URNs until the
+	// next refresh. Skip URNs we've already cached to avoid wasting
+	// REST quota on every re-fetch.
+	r.CacheCompetitorProfile(ctx, merged.HomeTeamURN)
+	r.CacheCompetitorProfile(ctx, merged.AwayTeamURN)
+
 	return id, nil
+}
+
+// CacheCompetitorProfile pulls a competitor's profile (name + roster)
+// from REST and upserts competitor_profiles + player_profiles. Best-
+// effort: logs warnings but never returns errors, since missing names
+// only affect outcome labels and the rest of the ingest must proceed.
+func (r *Resolver) CacheCompetitorProfile(ctx context.Context, urn string) {
+	if urn == "" || r.rc == nil {
+		return
+	}
+	if exists, err := store.CompetitorProfileExists(ctx, r.st.Pool(), urn); err == nil && exists {
+		return
+	}
+	body, err := r.rc.CompetitorProfile(ctx, restLang, urn)
+	if err != nil {
+		r.log.Debug().Err(err).Str("competitor_urn", urn).Msg("competitor profile fetch failed")
+		return
+	}
+	var p oddinxml.CompetitorProfile
+	if err := xml.Unmarshal(body, &p); err != nil {
+		r.log.Debug().Err(err).Str("competitor_urn", urn).Msg("competitor profile unmarshal failed")
+		return
+	}
+	if p.Competitor.ID == "" {
+		return
+	}
+	if err := store.UpsertCompetitorProfile(ctx, r.st.Pool(), &p); err != nil {
+		r.log.Warn().Err(err).Str("competitor_urn", urn).Msg("competitor profile upsert failed")
+		return
+	}
+	r.log.Debug().
+		Str("competitor_urn", urn).
+		Str("name", p.Competitor.Name).
+		Int("players", len(p.Players)).
+		Msg("competitor profile cached")
 }
 
 func nullableTimeISO(t time.Time) any {
@@ -234,6 +279,11 @@ func (r *Resolver) RefreshFromFixture(ctx context.Context, matchURN string) erro
 	if _, err := store.UpsertMatch(ctx, r.st.Pool(), mu); err != nil {
 		return fmt.Errorf("refresh upsert match: %w", err)
 	}
+	// Keep competitor profiles fresh on fixture_change so roster
+	// updates (new players, renamed teams) flow through to outcome
+	// labels without waiting for match re-creation.
+	r.CacheCompetitorProfile(ctx, merged.HomeTeamURN)
+	r.CacheCompetitorProfile(ctx, merged.AwayTeamURN)
 	r.log.Info().
 		Str("match_urn", matchURN).
 		Int64("match_id", matchID).
