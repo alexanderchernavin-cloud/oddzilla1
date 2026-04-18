@@ -1,10 +1,13 @@
-import { redirect } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import { getSessionClaims } from "@/lib/auth";
+import { isAdminHost } from "@/lib/host";
 import { Monogram } from "@/components/ui/monogram";
 import { SignupForm } from "./signup-form";
 
 export default async function SignupPage() {
+  if (await isAdminHost()) notFound();
+
   const claims = await getSessionClaims();
   if (claims) {
     redirect("/account");

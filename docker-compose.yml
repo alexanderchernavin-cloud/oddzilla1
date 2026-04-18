@@ -124,6 +124,9 @@ services:
       # the container's hostname (resolves to eth0 only), which makes the
       # container's loopback healthcheck fail. 0.0.0.0 binds to all ifaces.
       HOSTNAME: 0.0.0.0
+      # Shared with Caddy so the app can recognize admin-backoffice requests
+      # (e.g. suppress the signup surface there).
+      ADMIN_HOST: ${ADMIN_HOST:-admin.localhost}
     ports:
       - "127.0.0.1:${WEB_PORT:-3000}:${WEB_PORT:-3000}"
     depends_on:
