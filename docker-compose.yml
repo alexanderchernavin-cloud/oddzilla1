@@ -76,7 +76,9 @@ services:
       - caddy-data:/data
       - caddy-config:/config
     environment:
-      CADDY_HOST: ${CADDY_HOST:-localhost}
+      FRONTEND_HOST: ${FRONTEND_HOST:-localhost}
+      ADMIN_HOST: ${ADMIN_HOST:-admin.localhost}
+      ACME_EMAIL: ${ACME_EMAIL:-admin@localhost}
     depends_on:
       - web
       - api

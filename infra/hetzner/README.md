@@ -12,7 +12,7 @@ cd ~/oddzilla
 bash infra/hetzner/bootstrap.sh
 # newgrp docker    # or log out/in so the team user picks up docker group
 cp .env.example .env
-$EDITOR .env       # fill secrets, CADDY_HOST, Oddin token when provisioned
+$EDITOR .env       # fill secrets, FRONTEND_HOST/ADMIN_HOST, Oddin token
 make up
 make migrate
 make seed

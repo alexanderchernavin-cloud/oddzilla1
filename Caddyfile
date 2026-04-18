@@ -1,17 +1,20 @@
-# Caddy config. For local dev `CADDY_HOST=localhost` disables auto-HTTPS.
-# For production, set `CADDY_HOST=oddzilla.example.com` in `.env` and Caddy
-# will request a Let's Encrypt cert automatically.
+# Caddy config — multi-host: public frontend + admin backoffice.
+#
+# For local dev, set `FRONTEND_HOST=localhost` and `ADMIN_HOST=` (empty) —
+# Caddy will serve HTTP-only on localhost and skip the admin site block.
+# For production on Hetzner, set both to real hostnames (e.g.
+# `s.oddzilla.cc` and `sadmin.oddzilla.cc`). Caddy will auto-request
+# Let's Encrypt certificates on first boot.
 
 {
-	# Global options
 	admin off
-	email admin@{$CADDY_HOST}
+	email {$ACME_EMAIL}
 }
 
-{$CADDY_HOST} {
+# ── Public frontend ──────────────────────────────────────────────────────────
+{$FRONTEND_HOST} {
 	encode zstd gzip
 
-	# Security headers
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
@@ -36,6 +39,41 @@
 	}
 
 	# Next.js frontend (default)
+	handle {
+		reverse_proxy web:3000
+	}
+}
+
+# ── Admin backoffice ─────────────────────────────────────────────────────────
+# Same Next.js container, but the root path redirects straight to /admin so
+# operators never land on the public marketing pages. Auth + role checks
+# inside /admin routes remain the real access control.
+{$ADMIN_HOST} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	redir / /admin 302
+
+	handle_path /api/* {
+		reverse_proxy api:3001
+	}
+
+	@websocket {
+		header Connection *Upgrade*
+		header Upgrade    websocket
+	}
+	handle /ws* {
+		reverse_proxy ws-gateway:3002
+	}
+
 	handle {
 		reverse_proxy web:3000
 	}
