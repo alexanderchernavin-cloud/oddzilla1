@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { fromMicro } from "@oddzilla/types/money";
 import { serverApi } from "@/lib/server-fetch";
+import { CreateUserForm } from "./create-user-form";
 
 interface AdminUserRow {
   id: string;
@@ -55,6 +56,10 @@ export default async function AdminUsersPage({
       <p className="mt-1 text-sm text-[var(--color-fg-muted)]">
         Block, adjust limits, or toggle bet-delay. Every write is audited.
       </p>
+
+      <div className="mt-6">
+        <CreateUserForm />
+      </div>
 
       <form className="mt-6 flex flex-wrap items-end gap-3 text-sm" action="/admin/users">
         <label className="flex flex-col gap-1">
