@@ -25,10 +25,13 @@ if (!databaseUrl) {
 }
 
 const seedSports = [
-  { providerUrn: "od:sport:cs2", slug: "cs2", name: "Counter-Strike 2" },
-  { providerUrn: "od:sport:dota2", slug: "dota2", name: "Dota 2" },
-  { providerUrn: "od:sport:lol", slug: "lol", name: "League of Legends" },
-  { providerUrn: "od:sport:valorant", slug: "valorant", name: "Valorant" },
+  // URNs match what Oddin's AMQP feed actually sends — see migration 0005.
+  // Using synthetic URNs like `od:sport:cs2` made the resolver miss the
+  // seeded rows and create `s-N` duplicates on first ingest.
+  { providerUrn: "od:sport:3", slug: "cs2", name: "Counter-Strike 2" },
+  { providerUrn: "od:sport:2", slug: "dota2", name: "Dota 2" },
+  { providerUrn: "od:sport:1", slug: "lol", name: "League of Legends" },
+  { providerUrn: "od:sport:13", slug: "valorant", name: "Valorant" },
 ] as const;
 
 const adminEmail = process.env.SEED_ADMIN_EMAIL ?? "admin@oddzilla.local";
