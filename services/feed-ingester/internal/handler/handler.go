@@ -10,6 +10,7 @@ package handler
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -120,6 +121,15 @@ func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 		MatchURN: msg.EventID,
 	}, body)
 	if err != nil {
+		if errors.Is(err, automap.ErrSportNotAllowed) {
+			// Out-of-scope sport (e.g. efootballbots). Ack + drop without
+			// persisting. Advance the after-ts so recovery doesn't replay
+			// this message forever.
+			if bumpErr := store.BumpAfterTs(ctx, d.Store.Pool(), afterTsKey(msg.Product), msg.Timestamp); bumpErr != nil {
+				d.Log.Warn().Err(bumpErr).Msg("bump after_ts failed on disallowed-sport drop")
+			}
+			return nil
+		}
 		return fmt.Errorf("resolve match %s: %w", msg.EventID, err)
 	}
 
@@ -222,6 +232,12 @@ func handleFixtureChange(ctx context.Context, d Deps, body []byte) error {
 		Status:      newStatus,
 	}, body)
 	if err != nil {
+		if errors.Is(err, automap.ErrSportNotAllowed) {
+			// Out-of-scope sport — ack and drop (no status to apply, no
+			// REST refresh to trigger). Pre-existing matches are handled
+			// inside RefreshFromFixture itself.
+			return nil
+		}
 		return fmt.Errorf("fixture_change: resolve: %w", err)
 	}
 

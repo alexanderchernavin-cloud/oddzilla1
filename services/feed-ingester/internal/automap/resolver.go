@@ -23,6 +23,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -38,6 +39,12 @@ import (
 // our schema is set up for.
 const restLang = "en"
 
+// ErrSportNotAllowed is returned by ResolveMatch when a NEW match maps to
+// a sport outside the configured allowlist. Callers should ack the AMQP
+// message and drop it — no DB rows are written. Existing matches are
+// grandfathered in (the filter only applies on first sight).
+var ErrSportNotAllowed = errors.New("sport not in allowlist")
+
 type Resolver struct {
 	st  *store.Store
 	rc  *oddinrest.Client // may be nil → fallback-only mode
@@ -45,19 +52,41 @@ type Resolver struct {
 
 	defaultSportID    int
 	defaultCategoryID int
+
+	// allowedSports restricts which Oddin sport URNs are permitted to
+	// create rows. nil = no restriction (legacy behavior). Set from
+	// config.OddinConfig.AllowedSportURNs.
+	allowedSports map[string]struct{}
 }
 
 // New builds a Resolver. `rc` may be nil — in that case we never call REST
 // and every unknown match becomes a placeholder under the fallback
-// sport/category.
-func New(st *store.Store, rc *oddinrest.Client, log zerolog.Logger, fallbackSportID, fallbackCategoryID int) *Resolver {
+// sport/category. `allowedSports` may be nil to disable sport filtering.
+func New(
+	st *store.Store,
+	rc *oddinrest.Client,
+	log zerolog.Logger,
+	fallbackSportID, fallbackCategoryID int,
+	allowedSports map[string]struct{},
+) *Resolver {
 	return &Resolver{
 		st:                st,
 		rc:                rc,
 		log:               log,
 		defaultSportID:    fallbackSportID,
 		defaultCategoryID: fallbackCategoryID,
+		allowedSports:     allowedSports,
 	}
+}
+
+// sportAllowed returns true when the given Oddin sport URN should be
+// persisted. An empty allowlist (nil map) permits everything.
+func (r *Resolver) sportAllowed(sportURN string) bool {
+	if r.allowedSports == nil {
+		return true
+	}
+	_, ok := r.allowedSports[sportURN]
+	return ok
 }
 
 // MatchContext describes what we know about a match from an inbound XML
@@ -93,6 +122,27 @@ func (r *Resolver) ResolveMatch(ctx context.Context, reqCtx MatchContext, rawPay
 			Err(fetchErr).
 			Str("match_urn", reqCtx.MatchURN).
 			Msg("fixture lookup failed; using fallback placeholder")
+	}
+
+	// Sport allowlist gate. Apply as soon as we have authoritative sport
+	// data from REST; this prevents bot/test sports (efootballbots,
+	// ebasketballbots, …) from ever creating sport/category/tournament/
+	// match/market rows. When the REST call failed we still apply the gate
+	// conservatively: without a sport URN we can't prove the match is
+	// in-scope, so we drop it rather than lump it under `unclassified`.
+	if r.allowedSports != nil {
+		sportURN := ""
+		if fixture != nil {
+			sportURN = fixture.Fixture.Tournament.Sport.ID
+		}
+		if !r.sportAllowed(sportURN) {
+			r.log.Debug().
+				Str("match_urn", reqCtx.MatchURN).
+				Str("sport_urn", sportURN).
+				Bool("fixture_ok", fixture != nil).
+				Msg("dropping: sport not in allowlist")
+			return 0, ErrSportNotAllowed
+		}
 	}
 
 	// Merge fixture data into the context (fixture wins where both have a
@@ -159,6 +209,17 @@ func (r *Resolver) RefreshFromFixture(ctx context.Context, matchURN string) erro
 	if err != nil || fx == nil {
 		// 404 or transient error — log via caller and move on.
 		return err
+	}
+
+	// Re-apply the sport allowlist on refresh. An existing row for a
+	// disallowed sport stays where it is (grandfathered); we just skip
+	// updating its metadata from this fixture_change.
+	if r.allowedSports != nil && !r.sportAllowed(fx.Fixture.Tournament.Sport.ID) {
+		r.log.Debug().
+			Str("match_urn", matchURN).
+			Str("sport_urn", fx.Fixture.Tournament.Sport.ID).
+			Msg("refresh skipped: sport not in allowlist")
+		return nil
 	}
 	merged := r.merge(MatchContext{MatchURN: matchURN}, fx)
 
