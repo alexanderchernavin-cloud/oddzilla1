@@ -153,7 +153,7 @@ These rules are load-bearing. Breaking them causes money or data loss.
 
 | Concern | Path |
 | --- | --- |
-| SQL migrations | [`packages/db/migrations/`](./packages/db/migrations/) — `0000_init`, `0001_odds_history_partitions`, `0002_chain_scanner_state`, `0003_drop_news_articles`, `0004_unclassified_sport`, `0005_merge_duplicate_sports` |
+| SQL migrations | [`packages/db/migrations/`](./packages/db/migrations/) — `0000_init`, `0001_odds_history_partitions`, `0002_chain_scanner_state`, `0003_drop_news_articles`, `0004_unclassified_sport`, `0005_merge_duplicate_sports`, `0006_market_descriptions`, `0007_purge_non_mvp_sports`, `0008_competitors` (teams as first-class per-sport entities) |
 | Drizzle schema | [`packages/db/src/schema/`](./packages/db/src/schema/) |
 | Seed script | [`packages/db/src/seed.ts`](./packages/db/src/seed.ts) — seed sport URNs are `od:sport:{3,2,1,13}` matching real Oddin feed (do NOT revert to synthetic `od:sport:cs2` etc. — it breaks auto-mapping) |
 | Money helpers | [`packages/types/src/money.ts`](./packages/types/src/money.ts) |

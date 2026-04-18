@@ -70,6 +70,27 @@ export const tournaments = pgTable(
   ],
 );
 
+export const competitors = pgTable(
+  "competitors",
+  {
+    id: serial().primaryKey(),
+    sportId: integer()
+      .notNull()
+      .references(() => sports.id, { onDelete: "cascade" }),
+    provider: text().notNull().default("oddin"),
+    providerUrn: text(),
+    slug: text().notNull(),
+    name: text().notNull(),
+    abbreviation: text(),
+    active: boolean().notNull().default(true),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("competitors_sport_slug").on(t.sportId, t.slug),
+    index("competitors_sport_idx").on(t.sportId),
+  ],
+);
+
 export const matches = pgTable(
   "matches",
   {
@@ -82,6 +103,8 @@ export const matches = pgTable(
     awayTeam: text().notNull(),
     homeTeamUrn: text(),
     awayTeamUrn: text(),
+    homeCompetitorId: integer().references(() => competitors.id),
+    awayCompetitorId: integer().references(() => competitors.id),
     scheduledAt: timestamp({ withTimezone: true }),
     status: matchStatusEnum().notNull().default("not_started"),
     oddinStatusCode: smallint(),
@@ -94,10 +117,13 @@ export const matches = pgTable(
     index("matches_tournament_idx").on(t.tournamentId),
     index("matches_status_sched_idx").on(t.status, t.scheduledAt),
     index("matches_live_idx").on(t.status).where(sql`${t.status} = 'live'`),
+    index("matches_home_competitor_idx").on(t.homeCompetitorId),
+    index("matches_away_competitor_idx").on(t.awayCompetitorId),
   ],
 );
 
 export type Sport = typeof sports.$inferSelect;
 export type Category = typeof categories.$inferSelect;
 export type Tournament = typeof tournaments.$inferSelect;
+export type Competitor = typeof competitors.$inferSelect;
 export type Match = typeof matches.$inferSelect;

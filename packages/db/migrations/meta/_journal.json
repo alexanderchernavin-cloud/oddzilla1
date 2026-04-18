@@ -57,6 +57,13 @@
       "when": 1700000007000,
       "tag": "0007_purge_non_mvp_sports",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1700000008000,
+      "tag": "0008_competitors",
+      "breakpoints": true
     }
   ]
 }

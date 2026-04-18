@@ -51,38 +51,44 @@ SELECT t.id, t.category_id, c.sport_id
 // MatchUpsert is enough to create/update a matches row when we see one in
 // odds_change / fixture_change messages.
 type MatchUpsert struct {
-	TournamentID    int
-	ProviderURN     string
-	HomeTeam        string
-	AwayTeam        string
-	HomeTeamURN     sql.NullString
-	AwayTeamURN     sql.NullString
-	ScheduledAt     sql.NullTime
-	Status          string // normalized: not_started|live|closed|cancelled|suspended
-	OddinStatusCode sql.NullInt16
-	BestOf          sql.NullInt16
+	TournamentID     int
+	ProviderURN      string
+	HomeTeam         string
+	AwayTeam         string
+	HomeTeamURN      sql.NullString
+	AwayTeamURN      sql.NullString
+	HomeCompetitorID sql.NullInt32
+	AwayCompetitorID sql.NullInt32
+	ScheduledAt      sql.NullTime
+	Status           string // normalized: not_started|live|closed|cancelled|suspended
+	OddinStatusCode  sql.NullInt16
+	BestOf           sql.NullInt16
 }
 
 func UpsertMatch(ctx context.Context, db pgxRunner, m MatchUpsert) (int64, error) {
 	const q = `
 INSERT INTO matches (tournament_id, provider_urn, home_team, away_team,
-                     home_team_urn, away_team_urn, scheduled_at, status,
-                     oddin_status_code, best_of, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8::match_status, $9, $10, NOW())
+                     home_team_urn, away_team_urn,
+                     home_competitor_id, away_competitor_id,
+                     scheduled_at, status, oddin_status_code, best_of, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::match_status, $11, $12, NOW())
 ON CONFLICT (provider_urn) DO UPDATE
-   SET home_team         = CASE WHEN EXCLUDED.home_team  <> '' THEN EXCLUDED.home_team  ELSE matches.home_team  END,
-       away_team         = CASE WHEN EXCLUDED.away_team  <> '' THEN EXCLUDED.away_team  ELSE matches.away_team  END,
-       scheduled_at      = COALESCE(EXCLUDED.scheduled_at, matches.scheduled_at),
-       status            = EXCLUDED.status,
-       oddin_status_code = COALESCE(EXCLUDED.oddin_status_code, matches.oddin_status_code),
-       best_of           = COALESCE(EXCLUDED.best_of, matches.best_of),
-       updated_at        = NOW()
+   SET home_team          = CASE WHEN EXCLUDED.home_team  <> '' THEN EXCLUDED.home_team  ELSE matches.home_team  END,
+       away_team          = CASE WHEN EXCLUDED.away_team  <> '' THEN EXCLUDED.away_team  ELSE matches.away_team  END,
+       home_competitor_id = COALESCE(EXCLUDED.home_competitor_id, matches.home_competitor_id),
+       away_competitor_id = COALESCE(EXCLUDED.away_competitor_id, matches.away_competitor_id),
+       scheduled_at       = COALESCE(EXCLUDED.scheduled_at, matches.scheduled_at),
+       status             = EXCLUDED.status,
+       oddin_status_code  = COALESCE(EXCLUDED.oddin_status_code, matches.oddin_status_code),
+       best_of            = COALESCE(EXCLUDED.best_of, matches.best_of),
+       updated_at         = NOW()
 RETURNING id`
 	var id int64
 	err := db.QueryRow(ctx, q,
 		m.TournamentID, m.ProviderURN, m.HomeTeam, m.AwayTeam,
-		m.HomeTeamURN, m.AwayTeamURN, m.ScheduledAt, m.Status,
-		m.OddinStatusCode, m.BestOf,
+		m.HomeTeamURN, m.AwayTeamURN,
+		m.HomeCompetitorID, m.AwayCompetitorID,
+		m.ScheduledAt, m.Status, m.OddinStatusCode, m.BestOf,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("upsert match: %w", err)
@@ -172,23 +178,29 @@ func UpdateMatchStatus(ctx context.Context, db pgxRunner, matchID int64, status 
 	return nil
 }
 
-// EnsureCategoryForSport returns the categories.id for the auto-mapped
+// EnsureCategoryForSport returns (id, inserted, err) for the auto-mapped
 // category that sits directly under the given sport. Categories from Oddin
 // don't always exist in the source feed — we keep one synthetic "Auto" row
-// per sport to anchor tournaments.
-func EnsureCategoryForSport(ctx context.Context, db pgxRunner, sportID int) (int, error) {
+// per sport to anchor tournaments. For other providers (future) that DO
+// supply category URNs we'd want a provider-URN-keyed variant; this helper
+// only handles the esports-style no-category case.
+//
+// `inserted` is true only when a new row was created (xmax trick), so
+// callers can enqueue a mapping review entry exactly once per sport.
+func EnsureCategoryForSport(ctx context.Context, db pgxRunner, sportID int) (int, bool, error) {
 	const q = `
 INSERT INTO categories (sport_id, provider_urn, slug, name, is_dummy)
 VALUES ($1, NULL, 'auto', 'Auto-mapped', TRUE)
 ON CONFLICT (sport_id, slug) DO UPDATE
    SET active = TRUE
-RETURNING id`
+RETURNING id, (xmax = 0) AS inserted`
 	var id int
-	err := db.QueryRow(ctx, q, sportID).Scan(&id)
+	var inserted bool
+	err := db.QueryRow(ctx, q, sportID).Scan(&id, &inserted)
 	if err != nil {
-		return 0, fmt.Errorf("ensure auto category: %w", err)
+		return 0, false, fmt.Errorf("ensure auto category: %w", err)
 	}
-	return id, nil
+	return id, inserted, nil
 }
 
 // FindDummyCategoryForSport returns the is_dummy category id for a sport
@@ -207,10 +219,100 @@ SELECT id FROM categories
 	return id, nil
 }
 
+// ─── Competitor upsert ─────────────────────────────────────────────────────
+
+// FindCompetitorByURN returns the competitor id keyed by Oddin URN.
+func FindCompetitorByURN(ctx context.Context, db pgxRunner, providerURN string) (int, bool, error) {
+	var id int
+	err := db.QueryRow(ctx,
+		`SELECT id FROM competitors WHERE provider = 'oddin' AND provider_urn = $1`,
+		providerURN,
+	).Scan(&id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("find competitor by urn: %w", err)
+	}
+	return id, true, nil
+}
+
+// FindCompetitorBySportSlug returns the competitor id for a (sport, slug)
+// pair. Used as a fallback when an AMQP message gave us a team name but no
+// URN and we need to avoid creating a second row on the next odds_change.
+func FindCompetitorBySportSlug(ctx context.Context, db pgxRunner, sportID int, slug string) (int, bool, error) {
+	var id int
+	err := db.QueryRow(ctx,
+		`SELECT id FROM competitors WHERE sport_id = $1 AND slug = $2`,
+		sportID, slug,
+	).Scan(&id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("find competitor by slug: %w", err)
+	}
+	return id, true, nil
+}
+
+// CompetitorUpsert describes a team we want to persist. ProviderURN may be
+// empty — in that case (sport_id, slug) is the conflict key; otherwise
+// (provider, provider_urn) wins.
+type CompetitorUpsert struct {
+	SportID      int
+	ProviderURN  string // empty = no URN key
+	Slug         string
+	Name         string
+	Abbreviation sql.NullString
+}
+
+// EnsureCompetitor upserts a competitors row. Returns (id, inserted, err)
+// where `inserted` is true when a new row was created (used by the resolver
+// to decide whether to enqueue a mapping review entry).
+func EnsureCompetitor(ctx context.Context, db pgxRunner, c CompetitorUpsert) (int, bool, error) {
+	// xmax = 0 on newly inserted rows; any non-zero value means the row
+	// existed and UPDATE ran. Reliable in single-statement INSERT ... ON
+	// CONFLICT DO UPDATE contexts.
+	const qWithURN = `
+INSERT INTO competitors (sport_id, provider, provider_urn, slug, name, abbreviation)
+VALUES ($1, 'oddin', $2, $3, $4, $5)
+ON CONFLICT (provider, provider_urn) WHERE provider_urn IS NOT NULL DO UPDATE
+   SET name         = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE competitors.name END,
+       abbreviation = COALESCE(EXCLUDED.abbreviation, competitors.abbreviation),
+       active       = TRUE
+RETURNING id, (xmax = 0) AS inserted`
+
+	const qNoURN = `
+INSERT INTO competitors (sport_id, provider, slug, name, abbreviation)
+VALUES ($1, 'oddin', $2, $3, $4)
+ON CONFLICT (sport_id, slug) DO UPDATE
+   SET name         = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE competitors.name END,
+       abbreviation = COALESCE(EXCLUDED.abbreviation, competitors.abbreviation),
+       active       = TRUE
+RETURNING id, (xmax = 0) AS inserted`
+
+	var id int
+	var inserted bool
+	if c.ProviderURN != "" {
+		if err := db.QueryRow(ctx, qWithURN,
+			c.SportID, c.ProviderURN, c.Slug, c.Name, c.Abbreviation,
+		).Scan(&id, &inserted); err != nil {
+			return 0, false, fmt.Errorf("ensure competitor (urn): %w", err)
+		}
+		return id, inserted, nil
+	}
+	if err := db.QueryRow(ctx, qNoURN,
+		c.SportID, c.Slug, c.Name, c.Abbreviation,
+	).Scan(&id, &inserted); err != nil {
+		return 0, false, fmt.Errorf("ensure competitor (slug): %w", err)
+	}
+	return id, inserted, nil
+}
+
 // ─── Mapping review queue ──────────────────────────────────────────────────
 
 type ReviewEntry struct {
-	EntityType      string // "sport" | "tournament" | "match" | "market_type"
+	EntityType      string // "sport" | "category" | "tournament" | "match" | "competitor" | "market_type"
 	Provider        string
 	ProviderURN     string
 	RawPayload      []byte // JSONB — raw XML message or a relevant subset
