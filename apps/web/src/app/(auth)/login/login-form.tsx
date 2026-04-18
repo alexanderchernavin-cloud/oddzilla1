@@ -25,15 +25,17 @@ export function LoginForm({ next }: { next: string }) {
       router.refresh();
     } catch (err) {
       if (err instanceof ApiFetchError) {
-        setError(
-          err.body.error === "invalid_credentials"
-            ? "Incorrect email or password."
-            : err.body.error === "account_blocked"
-              ? "This account is blocked. Contact support."
-              : err.body.message,
-        );
+        if (err.body.error === "invalid_credentials") {
+          setError("Incorrect email or password.");
+        } else if (err.body.error === "account_blocked") {
+          setError("This account is blocked. Contact support.");
+        } else if (err.status === 429) {
+          setError("Too many attempts. Wait a minute and try again.");
+        } else {
+          setError(err.body.message || "Login failed.");
+        }
       } else {
-        setError("Could not reach the server. Try again.");
+        setError("Could not reach the server. Check your connection.");
       }
     } finally {
       setSubmitting(false);
