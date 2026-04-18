@@ -200,14 +200,16 @@ func runAMQP(ctx context.Context, cfg config.Config, deps handler.Deps, log zero
 }
 
 func resolveFallback(ctx context.Context, st *store.Store) (int, int, error) {
-	// CS2 is always seeded. Any other esport works too; we just need *some*
-	// sport id + dummy category id for automap's unknown-tournament path.
-	sportID, ok, err := store.FindSportBySlug(ctx, st.Pool(), "cs2")
+	// Fallback sport for matches whose Oddin fixture lookup fails.
+	// Migration 0004 creates `unclassified` with active=FALSE so these
+	// matches never appear on the public catalog. Previously we used `cs2`
+	// which polluted the CS2 page with soccer/eFootball test data.
+	sportID, ok, err := store.FindSportBySlug(ctx, st.Pool(), "unclassified")
 	if err != nil {
 		return 0, 0, err
 	}
 	if !ok {
-		return 0, 0, errors.New("sport 'cs2' not found — run `make seed` first")
+		return 0, 0, errors.New("sport 'unclassified' not found — run migrations (0004)")
 	}
 	categoryID, err := store.FindDummyCategoryForSport(ctx, st.Pool(), sportID)
 	if err != nil {

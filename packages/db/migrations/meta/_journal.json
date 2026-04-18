@@ -29,6 +29,13 @@
       "when": 1700000003000,
       "tag": "0003_drop_news_articles",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1700000004000,
+      "tag": "0004_unclassified_sport",
+      "breakpoints": true
     }
   ]
 }

@@ -126,6 +126,14 @@ func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 	events := make([]bus.OddsEvent, 0, 32)
 
 	for _, m := range msg.Odds.Markets {
+		if !isSupportedMarket(m.ID) {
+			// Drop markets outside the MVP scope. Oddin sends 100+ market
+			// types (handicaps, totals, both-teams-to-score, etc.); we only
+			// surface match-winner (1) and map-winner (4) per CLAUDE.md.
+			// Ingesting the rest wastes rows in markets/outcomes/odds_history
+			// and confuses the UI (outcome labels like "4"/"5").
+			continue
+		}
 		specs := oddinxml.Parse(m.Specifiers)
 		canonical := oddinxml.Canonical(specs)
 		hash := oddinxml.Hash(specs)
@@ -436,5 +444,19 @@ func mapFixtureStatus(changeType string) string {
 		return "cancelled"
 	default:
 		return ""
+	}
+}
+
+// isSupportedMarket gates which Oddin provider_market_ids we persist. MVP
+// surfaces only match-winner (1) and map-winner (4) to the user; every other
+// market (handicaps, totals, correct score, player props, …) is silently
+// dropped. See CLAUDE.md "Which markets?" and docs/ODDIN.md for the exhaustive
+// Oddin market catalogue — extend this function when adding more to the UI.
+func isSupportedMarket(providerMarketID int) bool {
+	switch providerMarketID {
+	case 1, 4:
+		return true
+	default:
+		return false
 	}
 }
