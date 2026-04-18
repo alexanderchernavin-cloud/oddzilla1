@@ -9,7 +9,7 @@ Deep dive on how Oddzilla's services fit together. For quick reference see
 ```
                    ┌──────────────────────────────┐
                    │  Oddin.gg (external feed)    │
-                   │   AMQPS :5671 + REST HTTPS   │
+                   │   AMQPS :5672 + REST HTTPS   │
                    └──────────────┬───────────────┘
                                   │ XML
                                   ▼
@@ -17,9 +17,12 @@ Deep dive on how Oddzilla's services fit together. For quick reference see
  │  feed-ingester (Go)                                        │
  │   • AMQP consumer — topic exchange, prefetch 256           │
  │   • encoding/xml decoders for odds_change, fixture_change, │
- │     bet_stop, alive, snapshot_complete                      │
- │   • Auto-map unknown sport/tournament/match/market         │
- │   • On disconnect: REST snapshot since amqp_state.after_ts │
+ │     alive, snapshot_complete                                │
+ │   • Auto-map unknown sport/tournament/match via REST        │
+ │     /v1/sports/en/sport_events/{urn}/fixture                │
+ │   • On (re)connect / alive subscribed=0 / alive ts drift:   │
+ │     POST /v1/{product}/recovery/initiate_request            │
+ │   • Background sweeper: status=-2 stuck >60s → -1           │
  │   • Specifier canonicalization (sha256 → specifiers_hash)  │
  │   • Batches: UPSERT market_outcomes, INSERT odds_history   │
  └─────┬────────────────────────────────────────────┬─────────┘
@@ -67,8 +70,11 @@ Deep dive on how Oddzilla's services fit together. For quick reference see
        │                          ┌────────────────────────────┐
        │◄─── Fastify REST ────────│  services/api (TS)         │
        │                          │   /auth /users /wallet     │
-       │                          │   /bets /catalog /admin    │
-       │                          │   /news                    │
+       │                          │   /bets /catalog           │
+       │                          │   /admin/{mapping,margins, │
+       │                          │     tickets,withdrawals,   │
+       │                          │     dashboard,users,audit, │
+       │                          │     odds-config}           │
        │                          └────────────┬───────────────┘
        │                                       │ pg_notify('bet_delay')
        │                                       ▼
@@ -96,12 +102,10 @@ Deep dive on how Oddzilla's services fit together. For quick reference see
        │                          │   deposit.id, dedup unique)│
        │                          └────────────────────────────┘
        │
-       │                          ┌────────────────────────────┐
-       │◄─────INSERT news─────────│  news-scraper (TS cron)    │
-       │                          │   HLTV RSS, Liquipedia     │
-       │                          │   (phase 8)                │
-       │                          └────────────────────────────┘
 ```
+
+(news-scraper was scoped for Phase 8 but cancelled mid-phase; the
+service and `news_articles` table were removed via migration 0003.)
 
 ## Data flow walkthroughs
 
@@ -212,11 +216,39 @@ insert their own `settlements` row (apply-once still applies — replays
 of a rollback are also no-ops), reverse selection results
 (`UPDATE ticket_selections SET result=NULL, void_factor=NULL`), restore
 market status to 1 (active), reverse wallet movements via a compensating
-`wallet_ledger (type='adjustment', ref_id=ticket.id, delta=-prior_payout)`
-row — note the type is `adjustment` so it can coexist with the original
-`bet_payout` row in the unique partial index. An `admin_audit_log` row
-describes the rollback. Processed in 100-ticket chunks per transaction
-to keep lock contention bounded.
+`wallet_ledger (type='adjustment', ref_id=<latest unreversed payout's ref_id>, delta=-prior_payout)`
+row — `type='adjustment'` so it coexists with the original `bet_payout`
+row in the unique partial index, and we look up `LatestUnreversedPayoutRefID`
+so the adjustment pairs with the right generation when there's been more
+than one settle. An `admin_audit_log` row describes the rollback.
+Processed in 100-ticket chunks per transaction to keep lock contention
+bounded.
+
+**Re-settle ledger generation suffix.** When Oddin sends
+`settle → rollback → re-settle` with a different result (rare per docs),
+the second `SettleTicket` would have lost its ledger row to the
+`(type, ref_type, ref_id)` partial unique index. `nextPayoutRefID`
+suffixes `ref_id` with `:N` (generation) on subsequent settles for the
+same ticket — see `services/settlement/internal/store/store.go` and the
+detailed walkthrough in [`ODDIN.md`](./ODDIN.md#ledger-generation-suffix-re-settle-support).
+
+**Cancel-after-settle.** Per Oddin docs §2.4.4, a `bet_cancel` for an
+already-settled market arrives without a preceding `rollback_settle`.
+Our `applyMarketCancel` now does a per-ticket pre-pass: if a ticket is
+in `settled` and falls within the cancel window, reverse the settlement
+first (compensating `adjustment` ledger row), then void its selections,
+then re-settle as void to refund the stake. Wallet sums to a clean
+stake refund.
+
+**Time-window `bet_cancel`.** `start_time` / `end_time` attributes
+filter which tickets get voided based on `tickets.placed_at`:
+- neither: cancel ALL bets; market → `-4`
+- `start_time` only: cancel bets placed AT/AFTER start; market → `-4`
+- `end_time` only: cancel bets placed AT/BEFORE end; market stays active
+- both: cancel bets in `[start, end]`; market stays active
+
+Implemented via `AffectedTicketsForMarketInWindow` +
+`Void/ReverseSelectionsForTicketOnMarket` in the store.
 
 **Manual void** (admin via `POST /admin/tickets/:id/void`) is the
 operator escape hatch for an `accepted` ticket: full stake refund,
@@ -281,22 +313,31 @@ the tx hash for MVP. Pre-launch a dedicated signer container takes over
    status `requested`.
 2. User can `POST /wallet/withdrawals/:id/cancel` while still
    `requested` — releases lock, sets `status='cancelled'`.
-3. Admin reviews via `GET /admin/withdrawals` and chooses:
+3. The `users.status` check now runs in the same transaction —
+   blocked / pending_kyc users get `account_not_active` even with a
+   still-valid JWT (security audit fix; mirrored from bet placement).
+4. Admin reviews via `GET /admin/withdrawals` and chooses:
    - `POST /admin/withdrawals/:id/approve` → `status='approved'` (lock
      still held). Optional `feeMicro` is recorded.
    - `POST /admin/withdrawals/:id/reject` → release lock,
-     `status='failed'`, audit row.
-4. Signer (manual for MVP — admin uses a wallet app + private key)
+     `status='failed'`, audit row. (The withdrawal_status enum has no
+     `rejected` value; the audit log's `action='withdrawal.reject'`
+     preserves the semantic distinction from a downstream signer
+     failure.)
+5. Signer (manual for MVP — admin uses a wallet app + private key)
    broadcasts the tx, then admin posts
    `POST /admin/withdrawals/:id/mark-submitted` with the tx hash →
    `status='submitted'`.
-5. After on-chain confirmation, admin posts
+6. After on-chain confirmation, admin posts
    `POST /admin/withdrawals/:id/mark-confirmed`. One transaction:
-   release lock, debit `wallets.balance_micro -= (amount + fee)`,
-   insert `wallet_ledger (type='withdrawal', ref_type='withdrawal',
-   ref_id=withdrawal.id, delta_micro=-(amount+fee), tx_hash=…)`,
-   `status='confirmed'`.
-6. Failure escape hatch at any approved/submitted state:
+   `SELECT FOR UPDATE` the wallet, assert `balance_micro >= debit`
+   (else clean 400 — avoids the `wallets_balance_nonneg` CHECK
+   constraint surfacing as a generic 500 when admin fees push the debit
+   beyond available balance), release lock, debit
+   `wallets.balance_micro -= (amount + fee)`, insert
+   `wallet_ledger (type='withdrawal', ref_type='withdrawal', ref_id=withdrawal.id,
+   delta_micro=-(amount+fee), tx_hash=…)`, `status='confirmed'`.
+7. Failure escape hatch at any approved/submitted state:
    `POST /admin/withdrawals/:id/mark-failed` releases the lock + audit.
 
 Every admin action writes an `admin_audit_log` row inside the same
@@ -361,7 +402,7 @@ deployment. The `bus` adapter was designed exactly for this day.
 
 ## Observability
 
-What's wired today (end of Phase 7):
+What's wired today (post-Phase-8 hardening):
 
 - All services emit structured JSON logs (`pino` / `zerolog`).
 - `/healthz` on every service pings its deps (DB/Redis where applicable)

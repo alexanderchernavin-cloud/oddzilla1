@@ -11,8 +11,8 @@ decisions we've already made for our stack.
 | --- | --- |
 | AMQP host (integration) | `mq.integration.oddin.gg` |
 | AMQP host (production) | `mq.oddin.gg` |
-| AMQP port | 5671 (AMQPS / TLS) |
-| Virtual host | `/oddinfeed/{customer_id}` — get `customer_id` from `GET /users/whoami` |
+| AMQP port | **5672** (AMQPS / TLS — counterintuitive: Oddin runs TLS on the plain-AMQP port; `5671` is closed at the ELB) |
+| Virtual host | `/oddinfeed/{customer_id}` — note the leading slash is part of the vhost NAME (URL-encode to `%2Foddinfeed%2F{id}`); get `customer_id` from `GET /v1/users/whoami` (the legacy `/users/whoami` returns 404) |
 | AMQP user | the Oddin access token |
 | AMQP password | empty string |
 | Exchange | `oddinfeed` (topic) |
@@ -24,6 +24,12 @@ decisions we've already made for our stack.
 | Concurrent AMQP conns allowed | 10 |
 
 Messages are XML, not JSON. Timestamps are milliseconds since epoch.
+
+> **Vhost URL trap.** Go's `net/url.URL.Path` is the *decoded* path —
+> writing `url.PathEscape("/oddinfeed/142")` into `Path` gets re-escaped on
+> serialization, turning `%2F` into `%252F` and producing
+> `Exception (403) "no access to this vhost"`. We hand-assemble the dial
+> URL with `fmt.Sprintf` in `services/{feed-ingester,settlement}/internal/amqp/consumer.go`.
 
 ## Routing keys (topic-8 format)
 
@@ -93,19 +99,44 @@ way via the `settlements` apply-once dedupe.
 ### `bet_cancel`
 
 Void a market. Optional `start_time` / `end_time` (ms) windows selectively
-void bets placed within the window. Absent window = void all bets.
-`void_reason_id` (1 = not played, 4 = suspended, 5 = other) for audit.
+void bets placed within the window. `void_reason_id` (1 = not played,
+4 = suspended, 5 = other) for audit.
+
+Per Oddin docs §2.4.4, the time-window combinations have specific
+semantics — implemented in `services/settlement/internal/settler/settler.go`:
+
+| Window | Bets voided | Market status |
+| --- | --- | --- |
+| neither | all bets on the market | → `-4` (cancelled) |
+| `start_time` only | bets placed AT/AFTER `start_time` | → `-4` |
+| `end_time` only | bets placed AT/BEFORE `end_time` | unchanged (active) |
+| both | bets placed within `[start_time, end_time]` | unchanged (active) |
+
+If a `bet_cancel` arrives for a market that's **already settled**, there
+will be no preceding `rollback_bet_settlement`. Per the docs the cancel
+must be applied as if a rollback had already happened. Our worker
+implements this in `applyMarketCancel` → `reverseSettledForCancel`:
+reverse each settled ticket inside the window first (compensating
+`adjustment` ledger row), then void the selections, then re-settle as
+void to refund the stake.
 
 ### `rollback_bet_settlement` / `rollback_bet_cancel`
 
 Reverse a prior settle or cancel. Our settlement worker inserts a
 compensating `settlements` row and reverses the ledger entries, resetting
-`tickets.status='accepted'` and `ticket_selections.result=NULL`.
+`tickets.status='accepted'` and `ticket_selections.result=NULL`. Each
+ticket's compensating `adjustment` ledger row uses the same `ref_id` as
+the `bet_payout` it's reversing (see "Ledger generation suffix" below).
 
 ### `alive`
 
-Every 30s-ish. Monitor to detect producer down. Missing alives → trigger
-recovery (snapshot REST call from `amqp_state.after_ts`).
+Every 10s. Carries `subscribed="0"` when the producer is down. Triggers
+in our handler (`handler.handleAlive`):
+
+1. `subscribed=0` → trigger recovery for that producer (via
+   `POST /v1/{product}/recovery/initiate_request`).
+2. Consecutive timestamps drift by more than 5s (target interval is 10s)
+   → trigger recovery for that producer (`AliveState.observe`).
 
 ### `snapshot_complete`
 
@@ -114,21 +145,27 @@ Update `amqp_state.after_ts` to the `timestamp` in this message.
 
 ## REST endpoints we use
 
-| Purpose | Method + path |
-| --- | --- |
-| customer id / vhost | `GET /users/whoami` |
-| sports tree | `GET /v1/descriptions/en/sports` |
-| tournaments for a sport | `GET /v1/descriptions/en/tournaments/{sport_id}` |
-| schedule for tournament | `GET /v1/descriptions/en/tournaments/{tournament_id}/schedule` |
-| fixtures (paginated) | `GET /v1/descriptions/en/fixtures?offset=N&limit=200` |
-| single match | `GET /v1/descriptions/en/fixtures/{fixture_id}` |
-| **recovery snapshot** | `GET /v1/descriptions/en/fixtures/{fixture_id}/odds/{product_id}/{after_ts}` |
-| market descriptions | `GET /v1/descriptions/en/markets` |
-| match status codes | `GET /v1/descriptions/en/match_status` |
-| producers | `GET /v1/descriptions/producers` |
+| Purpose | Method + path | Used in |
+| --- | --- | --- |
+| customer id / vhost | `GET /v1/users/whoami` | bootstrap to discover `bookmaker_id` for the AMQP vhost path |
+| sport-event fixture (sport + tournament + competitors) | `GET /v1/sports/en/sport_events/{matchURN}/fixture` | auto-mapping resolver on first sight of an unknown match URN; fixture_change re-fetch on NEW/DATE_TIME/FORMAT/COVERAGE |
+| sports list | `GET /v1/sports/en/sports` | resolver helper |
+| **recovery initiate** | `POST /v1/{product}/recovery/initiate_request?after={ms}&request_id={n}&node_id={n}` | feed-ingester on every (re)connect for both pre + live; also on `alive subscribed=0` and on alive-timestamp drift > 5s |
+| recovery snapshot (per fixture) | `GET /v1/descriptions/en/fixtures/{fixture_id}/odds/{product_id}/{after_ts}` | not currently used — the broader `initiate_request` endpoint above handles our recovery flow |
+| sports tree (legacy) | `GET /v1/descriptions/en/sports` | available; not currently called |
+| tournaments per sport | `GET /v1/sports/en/sports/{id}/tournaments` | available; not currently called |
+| tournament info | `GET /v1/sports/en/tournaments/{id}/info` | available; not currently called |
+| fixtures (paginated) | `GET /v1/descriptions/en/fixtures?offset=N&limit=200` | available; not currently called |
+| market descriptions | `GET /v1/descriptions/en/markets` | available; not currently called |
+| match status codes | `GET /v1/descriptions/en/match_status` | available; not currently called |
+| producers | `GET /v1/descriptions/producers` | available; not currently called |
 
 Rate limits: 25k req/min overall. Recovery endpoints have stricter tiers
 based on how far back `after_ts` is (see Oddin docs § 3.18).
+
+> **Path quirk.** The whoami endpoint at `/users/whoami` (no `/v1/`) used
+> to work and is referenced in older Oddin docs; the current integration
+> environment returns 404 there. Always use `/v1/users/whoami`.
 
 ## Markets we care about (Phase 1)
 
@@ -169,28 +206,88 @@ has its own `specifiers_test.go`.
 
 ## Recovery protocol
 
-On ingester startup or after an AMQP disconnect:
+Implemented in `services/feed-ingester/internal/handler/handler.go`
+(`TriggerRecovery`, `triggerRecoveryForProduct`) and wired in
+`services/feed-ingester/cmd/feed-ingester/main.go` `runAMQP`'s OnConnect
+hook. Triggers:
 
-1. `SELECT after_ts FROM amqp_state WHERE key = '1'` (for pre-match) and
-   `'2'` (for live).
-2. For each producer, call
-   `GET /v1/descriptions/en/fixtures/{fixture_id}/odds/{product_id}/{after_ts}`.
-   (In practice we'd iterate over active fixtures; Oddin docs describe the
-   exact flow.)
-3. Apply all returned odds updates and settlement messages as if they were
-   real-time.
-4. Wait for the corresponding `snapshot_complete` message on AMQP.
-5. Update `amqp_state.after_ts` to the snapshot timestamp.
-6. Resume live consumption.
+- Every AMQP (re)connect (both producers).
+- `alive subscribed=0` (per-producer).
+- `alive` consecutive-timestamp drift > 5s (per-producer).
 
-Rate-limit the recovery calls per Oddin's tiers: recoveries < 30 min ago are
-lenient (20/10min, 60/hour); > 1 day are strict (2/30min, 4/2hour).
+Each trigger does:
+
+1. `ReadAfterTs(producer:N)` — read the cursor from `amqp_state`.
+2. `POST /v1/{product}/recovery/initiate_request?after={ms}&request_id={rand}&node_id={ODDIN_NODE_ID}`
+   — Oddin replays since the cursor over AMQP.
+3. Replays arrive over AMQP and end with `snapshot_complete`, which our
+   existing handler bumps the cursor on.
+
+Rate limits per Oddin docs § 3.18: recoveries < 30 min are lenient
+(20/10min, 60/hr); > 1 day are strict (2/30min, 4/2hr). Our recovery
+fires at most once per (re)connect or alive-anomaly, so we comfortably
+stay under both tiers.
+
+## Auto-mapping
+
+When an unknown match URN arrives on the feed, `automap.Resolver`
+(`services/feed-ingester/internal/automap/resolver.go`):
+
+1. Calls `GET /v1/sports/en/sport_events/{matchURN}/fixture` to fetch the
+   full hierarchy in one shot.
+2. Upserts `sport` (keyed by `provider_urn` like `od:sport:19`), an "auto"
+   `category` under that sport, the `tournament`, then the `match` — so
+   the `tournament_id` FK is always satisfied before the matches insert.
+3. Inserts a `mapping_review_queue` row for everything created so admins
+   can rename / re-categorize later.
+
+Failures (404 on the fixture endpoint, network errors) fall back to a
+per-sport "Unknown tournament" placeholder under the configured
+fallback sport's auto category. The most common 404 source is outright
+markets — the routing key carries `od:tournament:N` and the `/sport_events/`
+endpoint only handles match URNs. Outright support is post-MVP.
+
+`Resolver.RefreshFromFixture(matchURN)` is the same flow but only
+applies updates to existing matches; called from the fixture_change
+handler on change_types NEW (1), DATE_TIME (2), FORMAT (4), and
+COVERAGE (5).
+
+## Ledger generation suffix (re-settle support)
+
+When Oddin sends `settle → rollback → re-settle (different result)`,
+each settle credits the wallet but the ledger insert was being silently
+dropped by the `(type, ref_type, ref_id)` partial-unique index. We now
+suffix `ref_id` with `:N` (generation number) on the second and later
+settles for the same ticket — see `nextPayoutRefID` and
+`LatestUnreversedPayoutRefID` in `services/settlement/internal/store/store.go`.
+
+So a ticket that goes through three settle/rollback cycles ends up with:
+
+```
+type='bet_stake'    ref_id='T'    delta=-stake
+type='bet_payout'   ref_id='T'    delta=+P1
+type='adjustment'   ref_id='T'    delta=-P1     (rollback 1)
+type='bet_payout'   ref_id='T:2'  delta=+P2
+type='adjustment'   ref_id='T:2'  delta=-P2     (rollback 2)
+type='bet_payout'   ref_id='T:3'  delta=+P3     (final settle)
+```
+
+Sum across the ticket: `P3 - stake` — exactly the user's net change.
+
+## Handover sweeper
+
+Markets stuck at `status=-2` (handed over from pre-match to live) for
+more than 60s get demoted to `status=-1` (suspended) by a 15-second
+ticker in `feed-ingester` (`runHandoverSweeper`). Per Oddin docs §1.4,
+"if you do not receive live odds within a reasonable time after
+receiving the handed over state, consider this as an error and suspend
+all markets". Anchor: `markets.last_oddin_ts`.
 
 ## Gotchas
 
 - **Handover limbo.** When a match goes pre-match → live, the pre-match
-  producer sends `status=-2`. If live odds don't arrive within ~60s, treat
-  as error and suspend all markets. Don't leave UI showing -2.
+  producer sends `status=-2`. If live odds don't arrive within 60s, our
+  sweeper flips to `-1` (suspended). Don't leave UI showing `-2`.
 - **XML quirks.** Some fields are HTML-entity-encoded (`&quot;`, `&lt;`).
   Decode before comparing. Timestamps are ms, not seconds.
 - **Specifier order is arbitrary on the wire.** Always sort before hashing;

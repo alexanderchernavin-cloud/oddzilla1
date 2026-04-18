@@ -1,6 +1,6 @@
 # Phase roadmap
 
-Status: **Phases 1 + 2 + 3 + 4 + 5 + 6 + 7 complete.** Phase 8 (admin dashboard PnL + news scraper) next.
+Status: **Phases 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 complete + post-Phase-8 hardening.** News scraper was cancelled mid-Phase-8; the service and `news_articles` table were removed via migration 0003. Next layer of work is the pre-launch exit gates (last section).
 
 Each phase ends with a concrete acceptance bar. Do not skip ahead without
 explicit user direction — later phases assume earlier invariants hold.
@@ -387,25 +387,134 @@ markets), cash-out, per-user stake limits beyond `global_limit_micro`.
 - Time-window-scoped bet_cancel + combo bet payout (carried over from
   Phase 6).
 
-## Phase 8 — Admin dashboard + news scraper
+## Phase 8 — Admin dashboard ✔ (news scraper cancelled mid-phase)
 
-**Scope:** operator control surface and homepage content.
+**Scope:** operator control surface.
 
-**Deliverables:**
-- `/admin` dashboard: PnL by day/sport (query from `SCHEMA.md`), active
-  users, open tickets, recent big wins.
-- `/admin/users` with filters, `status` toggle, `global_limit_micro` edit,
-  `bet_delay_seconds` toggle, all writes logged to `admin_audit_log`.
-- `services/news-scraper`: HLTV RSS parser, Liquipedia article fetcher
-  with attribution. Polite UA, respects robots.txt. Stores to
-  `news_articles`.
-- Homepage renders latest news.
+**Delivered:**
+- `services/api/src/modules/admin/dashboard.ts` — `/admin/stats/kpis`
+  (today PnL operator-POV: `stake − payout − refund`; active users 7d;
+  open tickets; stakes today), `/admin/stats/pnl-by-day` (14-day grid
+  joining `wallet_ledger → tickets → ticket_selections → markets →
+  matches → tournaments → categories → sports`), `/admin/stats/big-wins`
+  (top 10 payouts in last 30d).
+- `services/api/src/modules/admin/users.ts` — paginated list with
+  email/displayName search, status + role filter; `/admin/users/:id`
+  detail with wallet snapshot + ticket stats + recent tickets; `PATCH
+  /admin/users/:id` mutates status / role / `globalLimitMicro` /
+  `betDelaySeconds`; self-modification guarded (admins can't demote or
+  block themselves); every mutation writes `admin_audit_log`.
+- `services/api/src/modules/admin/audit.ts` — `/admin/audit` paginated
+  read-only viewer with action / target / actor / IP filters.
+- `apps/web/src/app/admin/page.tsx` rewritten — KPI tiles, 14-day PnL ×
+  sport table with operator-POV cell colouring, recent big wins list.
+- `apps/web/src/app/admin/users/[page.tsx + [id]/{page,user-edit-form}.tsx]`
+  — list/filter UI + detail/edit form using the existing dark theme.
+- `apps/web/src/app/admin/audit/page.tsx` — audit log viewer with
+  pretty-printed before/after JSON.
 
-**Acceptance:**
-- Admin sees yesterday's PnL broken down by sport and game.
-- Blocking a user from the UI stops their bet placement.
-- News articles appear on homepage within 2 h of publication; all rows
-  carry source attribution.
+**Cancelled:** news scraper. Removed mid-phase per user direction; the
+service directory, news_articles table (migration 0003), .env.example
+entries, and homepage news card were all removed.
+
+**Acceptance reached:**
+- `pnpm -r typecheck` clean across the 9 TS workspaces.
+- `pnpm audit --prod` reports 0 vulnerabilities (drizzle-orm bumped to
+  ^0.45.2 from ^0.38.3 to clear GHSA-gpj5-g38j-94v9).
+- Admin can see today's operator PnL and the 14-day sport breakdown.
+- Blocking a user via the UI flips `users.status='blocked'` and the
+  next bet placement throws `account_not_active`.
+- Withdrawal endpoints also reject blocked users at request time
+  (this was a security audit finding — the bet-placement check existed
+  but wallet/withdrawal didn't).
+
+## Post-Phase-8 hardening — Oddin workflow audit ✔
+
+After Phase 8 we audited the implementation against the full Oddin Odds
+Feed documentation (2026-04-09 revision). Several latent gaps surfaced
+once the production stack started consuming the live integration feed,
+plus a security audit yielded a small fix list.
+
+**Security audit fixes (commit `fa974f1` initial + later patches):**
+- drizzle-orm ^0.38.3 → ^0.45.2 (CVE GHSA-gpj5-g38j-94v9, SQL injection
+  via identifier escaping).
+- `POST /wallet/withdrawals` now reads `users.status` inside the
+  withdrawal txn and rejects non-active users (mirrors the bet-placement
+  guard; closes a 15-min-after-block window).
+- `POST /admin/withdrawals/:id/mark-confirmed` pre-checks
+  `wallets.balance_micro >= debit` so the `wallets_balance_nonneg`
+  CHECK constraint can't surface as a generic 500 when admin fees push
+  the debit beyond available balance.
+- `verifyAccessToken` pins `algorithms: ["HS256"]` explicitly.
+- Caddyfile drops `auto_https disable_redirects`; HTTP upgrades to HTTPS.
+- helmet CSP set to `default-src 'none'; frame-ancestors 'none'` for the
+  JSON-only API surface (was `contentSecurityPolicy: false`).
+
+**Production deploy fixes (commits `af19aeb`, `c2763b2`, `053ecee`):**
+- `docker-compose.override.yml` had a stale news-scraper block; removed.
+- api container couldn't load `@oddzilla/db` (it ships TypeScript source);
+  changed `services/api` start script to `tsx src/server.ts` and promoted
+  `tsx` to dependencies.
+- Oddin AMQP host `mq.integration.oddin.gg` runs **AMQPS over port 5672**
+  (not 5671 as `.env.example` originally defaulted) — the feed's docs
+  state this explicitly. Updated config.
+- Oddin AMQP vhost is `/oddinfeed/{customer_id}` with a leading slash
+  that's part of the vhost NAME, not just the URL separator. The
+  amqp091-go URL parser strips one leading `/` then `PathUnescape`s, and
+  Go's `net/url.URL.Path` re-escapes any `%` we put in. The dial URL is
+  now hand-assembled with `fmt.Sprintf` to preserve `%2F` correctly.
+
+**Workflow gaps closed (commits `3c09117`, `040a857`, `b35ef2a`,
+`eb278fa`):**
+- **Auto-mapping** — Phase 3's `automap.Resolver.resolveTournament("")`
+  returned `defaultCategoryID` as a tournament_id (FK violation on the
+  matches insert). Rewrote the resolver to call
+  `GET /v1/sports/en/sport_events/{matchURN}/fixture` and walk
+  sport → auto-category → tournament → match in order. `RefreshFromFixture`
+  re-fetches on `fixture_change` types NEW/DATE_TIME/FORMAT/COVERAGE.
+  Falls back to a per-sport "Unknown tournament" placeholder when REST
+  returns 404 (e.g. tournament URNs hitting the sport_events endpoint).
+- **Recovery** — `POST /v1/{product}/recovery/initiate_request` now fires
+  on every (re)connect for both pre + live producers, on `alive
+  subscribed=0`, and on `alive` timestamp drift > 5s. Replays arrive
+  through AMQP and end with `snapshot_complete`.
+- **`odds_change` no-reactivate** — Phase 3 was passing
+  `Status: "live"` into ResolveMatch, which would re-open closed matches
+  on score-correction messages. Now the handler omits status; ResolveMatch
+  preserves the existing match status.
+- **`fixture_change` CANCELLED** — was a no-op for known matches because
+  ResolveMatch only sets status on insert. Now applies the status update
+  via `store.UpdateMatchStatus` for change_type `3`.
+- **Cancel-after-settle** — per Oddin docs §2.4.4, `bet_cancel` for an
+  already-settled market arrives without a preceding `rollback_settle`.
+  `applyMarketCancel` now does a per-ticket pre-pass that reverses any
+  settled tickets in the cancel window before voiding their selections
+  and re-settling as void.
+- **Re-settle ledger drift** — settle → rollback → re-settle with a
+  different result was silently dropping the second `bet_payout` ledger
+  row because the partial unique index on `(type, ref_type, ref_id)`
+  still held the original. `SettleTicket` now uses
+  `nextPayoutRefID(ticketID, ledgerType)` to suffix `ref_id` with `:N`
+  on subsequent generations; `ReverseSettledTicket` pairs its
+  compensating `adjustment` row to the latest unreversed payout via
+  `LatestUnreversedPayoutRefID`.
+- **`bet_cancel` time window** — `start_time` / `end_time` attributes
+  now drive a per-ticket void filter on `placed_at` and a conditional
+  market-status flip (only `-4` when `end_time` is absent). New
+  `AffectedTicketsForMarketInWindow` + per-ticket Void/Reverse helpers.
+- **`-2` handover sweeper** — feed-ingester runs a 15s ticker that
+  flips markets stuck at `status=-2` for >60s to `status=-1` (suspended),
+  per Oddin docs §1.4.
+
+**Post-hardening verification:**
+- 5 Go services pass `go vet ./... && go test ./...` (15 settlement
+  payout tests, 8 bet-delay evaluator tests, 7 odds-publisher margin
+  tests, specifier + URN + XML tests in feed-ingester + settlement).
+- Production stack consuming live Oddin integration feed: thousands of
+  markets / outcomes / matches auto-created from REST; settlement
+  processing real `bet_settlement` and `bet_cancel` messages; recovery
+  flow exchanges `initiate_request` ↔ `snapshot_complete` cleanly on
+  reconnect.
 
 ## Post-MVP candidates (not in scope yet)
 

@@ -5,6 +5,8 @@ Canonical SQL lives in [`../packages/db/migrations/`](../packages/db/migrations/
 - `0000_init.sql` — every domain table.
 - `0001_odds_history_partitions.sql` — pg_partman setup for `odds_history`.
 - `0002_chain_scanner_state.sql` — block cursor for `wallet-watcher`.
+- `0003_drop_news_articles.sql` — drops the news_articles table after the
+  news scraper was cancelled mid-Phase-8.
 
 Drizzle mirror is [`../packages/db/src/schema/`](../packages/db/src/schema/).
 
@@ -87,7 +89,7 @@ satisfy "sum(ledger) = balance". The placement of a bet writes a
 | Settle won | +(payout-stake) | -stake | `(bet_payout, ticket, ticketId, +payout)` |
 | Settle lost | -stake | -stake | (none — the -stake from placement is the final entry) |
 | Settle void | unchanged | -stake | `(bet_refund, ticket, ticketId, +stake)` |
-| Rollback prior win | -(payout-stake) | +stake | `(adjustment, ticket, ticketId, -payout)` |
+| Rollback prior win | -(payout-stake) | +stake | `(adjustment, ticket, <latest payout ref_id>, -payout)` |
 | Manual void (admin) | unchanged | -stake | `(bet_refund, ticket, ticketId, +stake)` |
 | Deposit credited | +amount | unchanged | `(deposit, deposit, depositId, +amount)` |
 | Withdrawal requested | unchanged | +amount | (none — lock only) |
@@ -97,6 +99,19 @@ satisfy "sum(ledger) = balance". The placement of a bet writes a
 The `(type, ref_type, ref_id)` unique partial index distinguishes
 `bet_payout` from `adjustment` so a rollback can coexist with the
 original payout row in the audit trail.
+
+**Generation suffix on `ref_id` (re-settle support).** When Oddin sends
+`settle → rollback → re-settle` with a different result for the same
+ticket, the second `bet_payout` would have collided with the first on
+the partial unique index and been silently dropped. The settlement
+worker now suffixes `ref_id` with `:N` (generation number) on the
+second and later settles for the same ticket, and the matching rollback
+adjustment row reuses that suffix so audit pairs stay clean. The
+`bet_stake` row is always plain `ticketId` (one stake per ticket). See
+`nextPayoutRefID` and `LatestUnreversedPayoutRefID` in
+`services/settlement/internal/store/store.go`. Reconciliation queries
+that look for "all ledger rows for ticket T" should match
+`ref_id = ticketId OR ref_id LIKE ticketId || ':%'`.
 
 **`deposit_addresses`** — one (user, network) pair per row, unique on both
 `(user_id, network)` and `(network, address)`. `derivation_path` recorded
@@ -219,13 +234,6 @@ migration 0002). One row per chain (`TRC20`, `ERC20`).
 a ms timestamp (the column is generic, used for whatever monotonic
 position the chain exposes through its API). The `BumpCursor` helper
 never regresses (`GREATEST(current, new)`).
-
-### News
-
-**`news_articles`** — schema is in place; the `services/news-scraper`
-worker only ticks a stub cron today. Phase 8 fills in the actual
-HLTV / Liquipedia fetchers. `games` is a text[] with GIN index for
-`WHERE 'cs2' = ANY(games)` lookups.
 
 ## Common queries
 

@@ -3,35 +3,78 @@
 Deploy, backup, observability, and incident response for the Hetzner CPX22
 deployment. See [`CONNECT.md`](../CONNECT.md) for server access credentials.
 
-## First-time server setup
+## Server state (current)
+
+The server at `team@178.104.174.24` is **already provisioned** and
+running the production stack:
+
+- Ubuntu 24.04 LTS, Docker 29, Docker Compose v5, Node 22, pnpm 9.12,
+  `git`, `make`, `unzip` installed
+- `team` user is in `docker` and `sudo` groups (use `sg docker -c '…'`
+  in scripts that ssh fresh, or just rely on the implicit group on
+  interactive sessions)
+- Repo clone at `/home/team/oddzilla`, tracking
+  `https://github.com/alexanderchernavin-cloud/oddzilla1` `main`
+- `.env` at `/home/team/oddzilla/.env` (mode 600) with real secrets;
+  `ODDIN_CUSTOMER_ID=142` from `GET /v1/users/whoami`
+- Full Compose stack live: postgres, redis, caddy, api, web, ws-gateway,
+  feed-ingester, odds-publisher, settlement, bet-delay, wallet-watcher
+- Connected to Oddin integration broker (bookmaker 142) via AMQPS on
+  port 5672
+- DNS: `CADDY_HOST=localhost` for now (no public domain yet); set to
+  a real domain when ready, Caddy will auto-provision a Let's Encrypt
+  cert on first hit
+
+## First-time server setup (reference, only if rebuilding)
 
 ```bash
 ssh team@178.104.174.24
-git clone <repo-url> ~/oddzilla
+git clone https://github.com/alexanderchernavin-cloud/oddzilla1 ~/oddzilla
 cd ~/oddzilla
 bash infra/hetzner/bootstrap.sh      # UFW, Docker, swap, team in docker group
-newgrp docker                         # or log out/in
+sudo usermod -aG docker team          # if bootstrap missed it; then re-ssh
 cp .env.example .env
-$EDITOR .env                          # fill real secrets
-make up
-make migrate
-make seed
+$EDITOR .env                          # fill real secrets, set ODDIN_CUSTOMER_ID via /v1/users/whoami
+sg docker -c 'docker compose -f docker-compose.yml build'
+sg docker -c 'docker compose -f docker-compose.yml up -d'
+pnpm install --frozen-lockfile=false
+PGUSER=$(grep ^POSTGRES_USER= .env | cut -d= -f2) \
+  PGPASS=$(grep ^POSTGRES_PASSWORD= .env | cut -d= -f2) \
+  PGDB=$(grep ^POSTGRES_DB= .env | cut -d= -f2) \
+  DATABASE_URL="postgres://${PGUSER}:${PGPASS}@127.0.0.1:5432/${PGDB}?sslmode=disable" \
+  pnpm --filter @oddzilla/db db:migrate
+# pnpm --filter @oddzilla/db db:seed   # optional: 4 sports + admin/test users
 ```
 
-DNS: once `CADDY_HOST` is set to a real domain pointing at the server,
-Caddy auto-provisions a Let's Encrypt cert on first request.
+Production omits the `docker-compose.override.yml` (which is dev-only —
+mounts source for hot reload) by passing `-f docker-compose.yml`
+explicitly.
 
 ## Daily deploy
 
+After pushing to `main`:
+
 ```bash
-ssh team@178.104.174.24 'cd ~/oddzilla && git pull && make build && make up'
-# migrations are additive; apply any new ones:
-ssh team@178.104.174.24 'cd ~/oddzilla && make migrate'
+ssh team@178.104.174.24 "cd /home/team/oddzilla && \
+  git fetch origin main && git reset --hard origin/main && \
+  sg docker -c 'docker compose -f docker-compose.yml build && \
+                docker compose -f docker-compose.yml up -d --force-recreate'"
+```
+
+Migrations are additive — only run when you've shipped one:
+
+```bash
+ssh team@178.104.174.24 "cd /home/team/oddzilla && \
+  PGUSER=\$(grep ^POSTGRES_USER= .env | cut -d= -f2) \
+  PGPASS=\$(grep ^POSTGRES_PASSWORD= .env | cut -d= -f2) \
+  PGDB=\$(grep ^POSTGRES_DB= .env | cut -d= -f2) \
+  DATABASE_URL=\"postgres://\${PGUSER}:\${PGPASS}@127.0.0.1:5432/\${PGDB}?sslmode=disable\" \
+  pnpm --filter @oddzilla/db db:migrate"
 ```
 
 For tighter loops, GitHub Actions can ssh + pull + compose on merge to
 `main` (workflow at [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml)
-— add in Phase 2).
+— not yet added; add when there's a second collaborator).
 
 ## Environment variables
 
@@ -44,7 +87,8 @@ what's sensitive:
 | `JWT_SECRET` | `openssl rand -base64 48` | every 6 months; old tokens invalidate |
 | `REFRESH_COOKIE_SECRET` | `openssl rand -base64 48` | every 6 months |
 | `ODDIN_TOKEN` | from Oddin | when Oddin rotates (~1 yr) |
-| `ODDIN_CUSTOMER_ID` | `GET /users/whoami` with the token | only when Oddin reissues |
+| `ODDIN_CUSTOMER_ID` | `GET /v1/users/whoami` with the token (`/users/whoami` returns 404 — the legacy path is gone) | only when Oddin reissues |
+| `ODDIN_AMQP_PORT` | always **5672** for both integration and production (Oddin runs AMQPS on the plain-AMQP port; 5671 is closed) | n/a |
 | `HD_MASTER_MNEMONIC` | BIP39 12/24-word phrase | never in normal ops — rotating is a customer-facing event |
 | `TRON_RPC_URL` | TronGrid (mainnet `https://api.trongrid.io`, testnet `https://api.shasta.trongrid.io`) | when plan changes |
 | `ETH_RPC_URL` | Alchemy / Infura / QuickNode / self-hosted | when plan changes |
@@ -273,7 +317,9 @@ address derivation) — that's the only process that has it. Notes:
 1. `htop` for top offenders.
 2. Swap use high? See `free -h`.
 3. Check recent deploys — did a new service bloat? `docker compose top`.
-4. Emergency: `docker compose stop news-scraper` (lowest-priority service).
+4. Emergency: `docker compose stop wallet-watcher` (lowest-criticality
+   service — deposit/withdrawal scanners pause; nothing else is
+   affected).
 5. Permanent fix: upgrade Hetzner plan.
 
 ## Access management
