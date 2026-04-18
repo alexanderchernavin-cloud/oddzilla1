@@ -28,7 +28,12 @@ const EnvSchema = z.object({
   CORS_ORIGINS: z.string().default("http://localhost:3000"),
   COOKIE_DOMAIN: z.string().optional(),
 
-  NEXT_PUBLIC_API_URL: z.string().url().optional(),
+  // Empty string means "same origin" — used in prod where Caddy fronts both
+  // hosts and the browser should call relative /api and /ws paths.
+  NEXT_PUBLIC_API_URL: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.string().url().optional(),
+  ),
   NEXT_PUBLIC_WS_URL: z.string().optional(),
 });
 
