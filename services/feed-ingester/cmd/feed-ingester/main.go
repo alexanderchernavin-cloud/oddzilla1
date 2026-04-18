@@ -96,7 +96,23 @@ func main() {
 			restClient = rc
 		}
 	}
-	resolver := automap.New(st, restClient, logger.With().Str("component", "automap").Logger(), fallbackSportID, fallbackCategoryID)
+	resolver := automap.New(
+		st,
+		restClient,
+		logger.With().Str("component", "automap").Logger(),
+		fallbackSportID,
+		fallbackCategoryID,
+		cfg.Oddin.AllowedSportURNs,
+	)
+	if len(cfg.Oddin.AllowedSportURNs) == 0 {
+		logger.Warn().Msg("sport allowlist disabled — every Oddin sport will be persisted")
+	} else {
+		allowed := make([]string, 0, len(cfg.Oddin.AllowedSportURNs))
+		for urn := range cfg.Oddin.AllowedSportURNs {
+			allowed = append(allowed, urn)
+		}
+		logger.Info().Strs("sports", allowed).Msg("sport allowlist active")
+	}
 
 	deps := handler.Deps{
 		Store:    st,

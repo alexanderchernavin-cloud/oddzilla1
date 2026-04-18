@@ -38,6 +38,17 @@ type OddinConfig struct {
 	RESTBaseURL string
 	Lang        string
 	Heartbeat   time.Duration
+
+	// AllowedSportURNs restricts auto-mapping to this set of Oddin sport
+	// URNs. Any odds/fixture message whose sport is outside this set is
+	// dropped before any DB rows are created. Empty means no filter
+	// (legacy behavior — every sport the feed emits is persisted).
+	//
+	// Default is the 4 MVP esports per CLAUDE.md (CS2, Dota2, LoL,
+	// Valorant). Override with the env var ALLOWED_ODDIN_SPORT_URNS,
+	// comma-separated (e.g. "od:sport:3,od:sport:2,od:sport:1,od:sport:13").
+	// Set to "*" to disable filtering entirely.
+	AllowedSportURNs map[string]struct{}
 }
 
 func Load() (Config, error) {
@@ -71,8 +82,34 @@ func Load() (Config, error) {
 		Heartbeat:   30 * time.Second,
 	}
 	cfg.Oddin.Enabled = cfg.Oddin.Token != "" && cfg.Oddin.CustomerID != ""
+	cfg.Oddin.AllowedSportURNs = parseAllowedSports(
+		getEnvDefault("ALLOWED_ODDIN_SPORT_URNS", "od:sport:3,od:sport:2,od:sport:1,od:sport:13"),
+	)
 
 	return cfg, nil
+}
+
+// parseAllowedSports accepts a comma-separated list of Oddin sport URNs.
+// "*" disables filtering (returns nil); empty string also returns nil so
+// misconfiguration doesn't silently drop every message. Returns a set for
+// O(1) lookup.
+func parseAllowedSports(raw string) map[string]struct{} {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "*" {
+		return nil
+	}
+	out := make(map[string]struct{})
+	for _, p := range strings.Split(raw, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		out[p] = struct{}{}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func getEnvDefault(key, fallback string) string {
