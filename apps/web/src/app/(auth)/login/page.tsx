@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { getSessionClaims } from "@/lib/auth";
+import { isAdminHost } from "@/lib/host";
 import { Monogram } from "@/components/ui/monogram";
 import { LoginForm } from "./login-form";
 
@@ -14,6 +15,7 @@ export default async function LoginPage({
   if (claims) {
     redirect(params.next && params.next.startsWith("/") ? params.next : "/account");
   }
+  const adminHost = await isAdminHost();
 
   return (
     <>
@@ -33,24 +35,26 @@ export default async function LoginPage({
         Log in to place bets and track your history.
       </p>
 
-      <LoginForm next={params.next ?? "/account"} />
+      <LoginForm next={params.next ?? (adminHost ? "/admin" : "/account")} />
 
-      <div
-        style={{
-          marginTop: 24,
-          fontSize: 13,
-          color: "var(--fg-muted)",
-          textAlign: "center",
-        }}
-      >
-        No account yet?{" "}
-        <Link
-          href="/signup"
-          style={{ color: "var(--fg)", textDecoration: "underline" }}
+      {!adminHost && (
+        <div
+          style={{
+            marginTop: 24,
+            fontSize: 13,
+            color: "var(--fg-muted)",
+            textAlign: "center",
+          }}
         >
-          Sign up
-        </Link>
-      </div>
+          No account yet?{" "}
+          <Link
+            href="/signup"
+            style={{ color: "var(--fg)", textDecoration: "underline" }}
+          >
+            Sign up
+          </Link>
+        </div>
+      )}
     </>
   );
 }

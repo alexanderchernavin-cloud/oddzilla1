@@ -12,7 +12,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "lint": "eslint . --ext .ts"
+    "lint": "eslint ."
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
