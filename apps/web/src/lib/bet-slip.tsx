@@ -1,8 +1,13 @@
 "use client";
 
-// Bet slip store — React Context + localStorage persistence. No Zustand
-// dependency. Singles only for MVP; the data model accepts more but the
-// UI + API refuse multi-selection.
+// Bet slip store — React Context + localStorage persistence. Accumulates
+// selections across matches. Two placement modes:
+//   single: place N independent tickets (one per selection)
+//   combo:  place one multi-selection ticket (all must win)
+//
+// Per-market rule: only one outcome per market at a time. Clicking a
+// different outcome of the same market swaps the selection. Clicking the
+// same outcome again removes it (handled by the caller via `has` + `remove`).
 
 import {
   createContext,
@@ -15,10 +20,13 @@ import {
 } from "react";
 import type { SlipSelection } from "@oddzilla/types";
 
-const STORAGE_KEY = "oddzilla.betslip.v1";
+const STORAGE_KEY = "oddzilla.betslip.v2";
+
+export type SlipMode = "single" | "combo";
 
 interface SlipState {
   selections: SlipSelection[];
+  mode: SlipMode;
   open: boolean;
 }
 
@@ -27,28 +35,37 @@ interface SlipContextValue extends SlipState {
   remove(marketId: string, outcomeId: string): void;
   clear(): void;
   setOpen(open: boolean): void;
+  setMode(mode: SlipMode): void;
   has(marketId: string, outcomeId: string): boolean;
 }
 
 const SlipContext = createContext<SlipContextValue | null>(null);
 
 function loadFromStorage(): SlipState {
-  if (typeof window === "undefined") return { selections: [], open: false };
+  if (typeof window === "undefined") {
+    return { selections: [], mode: "combo", open: false };
+  }
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { selections: [], open: false };
+    if (!raw) return { selections: [], mode: "combo", open: false };
     const parsed = JSON.parse(raw) as Partial<SlipState>;
+    const mode: SlipMode = parsed.mode === "single" ? "single" : "combo";
     return {
       selections: Array.isArray(parsed.selections) ? parsed.selections : [],
+      mode,
       open: false, // never restore open state — surprising UX otherwise
     };
   } catch {
-    return { selections: [], open: false };
+    return { selections: [], mode: "combo", open: false };
   }
 }
 
 export function BetSlipProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<SlipState>(() => ({ selections: [], open: false }));
+  const [state, setState] = useState<SlipState>(() => ({
+    selections: [],
+    mode: "combo",
+    open: false,
+  }));
 
   useEffect(() => {
     setState(loadFromStorage());
@@ -58,17 +75,25 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
     try {
       window.localStorage.setItem(
         STORAGE_KEY,
-        JSON.stringify({ selections: state.selections }),
+        JSON.stringify({ selections: state.selections, mode: state.mode }),
       );
     } catch {
       // localStorage quota/disabled — slip just won't persist.
     }
-  }, [state.selections]);
+  }, [state.selections, state.mode]);
 
   const add = useCallback((selection: SlipSelection) => {
     setState((prev) => {
-      // Singles only: replace any existing selection with the new one.
-      return { ...prev, selections: [selection], open: true };
+      // Drop any existing selection on the same market — only one outcome
+      // per market is selectable at a time.
+      const withoutSameMarket = prev.selections.filter(
+        (s) => s.marketId !== selection.marketId,
+      );
+      return {
+        ...prev,
+        selections: [...withoutSameMarket, selection],
+        open: true,
+      };
     });
   }, []);
 
@@ -89,6 +114,10 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, open }));
   }, []);
 
+  const setMode = useCallback((mode: SlipMode) => {
+    setState((prev) => ({ ...prev, mode }));
+  }, []);
+
   const has = useCallback(
     (marketId: string, outcomeId: string) => {
       return state.selections.some(
@@ -99,8 +128,8 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo<SlipContextValue>(
-    () => ({ ...state, add, remove, clear, setOpen, has }),
-    [state, add, remove, clear, setOpen, has],
+    () => ({ ...state, add, remove, clear, setOpen, setMode, has }),
+    [state, add, remove, clear, setOpen, setMode, has],
   );
 
   return <SlipContext.Provider value={value}>{children}</SlipContext.Provider>;

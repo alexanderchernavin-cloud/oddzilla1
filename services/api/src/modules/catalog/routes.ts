@@ -205,11 +205,10 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .limit(1);
     if (!match) throw new NotFoundError("match_not_found", "match_not_found");
 
-    // Only active markets (status=1), and only the MVP market types
-    // (1=match-winner, 4=map-winner). Pre-2026-04-18 data may include
-    // dozens of other provider_market_ids that were ingested before the
-    // feed-ingester whitelist existed; those would render as "Market #71"
-    // with numeric outcome labels. Keep them out of the public response.
+    // Only active markets (status=1). All provider_market_ids the
+    // ingester has stored are surfaced; the web UI falls back to a
+    // generic "Market #N" label for ids it doesn't know, and hides
+    // specifier keys other than `map` so nothing internal leaks.
     const rows = await app.db
       .select({
         marketId: markets.id,
@@ -224,13 +223,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
       })
       .from(markets)
       .leftJoin(marketOutcomes, eq(marketOutcomes.marketId, markets.id))
-      .where(
-        and(
-          eq(markets.matchId, params.id),
-          eq(markets.status, 1),
-          inArray(markets.providerMarketId, [1, 4]),
-        ),
-      )
+      .where(and(eq(markets.matchId, params.id), eq(markets.status, 1)))
       .orderBy(markets.providerMarketId);
 
     const marketMap = new Map<

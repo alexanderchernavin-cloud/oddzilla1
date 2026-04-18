@@ -13,7 +13,7 @@ Postgres 16 + Redis 7 + Caddy, all on one Hetzner box via Docker Compose.
 | Question | Answer |
 | --- | --- |
 | What sportsbook are we building? | B2C, esports-only for MVP: CS2, DOTA2, LOL, Valorant |
-| Which markets? | Match Winner (`provider_market_id=1`), Map Winner (`provider_market_id=4`, specifier `map={1,2,3}`). Gated at ingest by `isSupportedMarket` in feed-ingester and at read-time by `/catalog/matches/:id`. |
+| Which markets? | All Oddin markets — the `provider_market_id` whitelist was dropped at both feed-ingester and `/catalog/matches/:id`. Known labels for match-winner (`1`) and map-winner (`4`); others render as "Market #N". |
 | Which feed? | Oddin.gg, **protocol level** (raw AMQP + REST, no SDK) |
 | Which chains? | USDT on TRC20 (Tron) and ERC20 (Ethereum), both from day 1 |
 | Where does it run? | Hetzner CPX22 at `178.104.174.24` (see [`CONNECT.md`](./CONNECT.md)). Public URLs: **`s.oddzilla.cc`** (storefront) + **`sadmin.oddzilla.cc`** (admin; `/` redirects to `/admin`). Let's Encrypt via Caddy. |
@@ -250,9 +250,9 @@ post-Phase-8 Oddin-workflow hardening pass; production stack is live at
 | --- | --- | --- |
 | DB schema + migrations | Live | 6 migrations: init, odds_history partitions, chain_scanner_state, drop_news_articles, `0004_unclassified_sport` (hidden fallback sport + move placeholder tournaments), `0005_merge_duplicate_sports` (merge s-N auto-duplicates into seeded rows + align seed URNs with real Oddin URNs `od:sport:{1,2,3,13}`). |
 | Auth (signup/login/refresh/me + password change) | Live | argon2id + JOSE JWT (`alg: HS256` pinned) + refresh-rotation; helmet CSP `default-src 'none'` on `/api/*`; rate-limited login (5/min) + signup (10/min); shared cookie domain `.oddzilla.cc`. Browser uses same-origin `/api/*` through Caddy — `NEXT_PUBLIC_API_URL` is baked **empty** so api-client falls back to `/api`. |
-| Catalog API + sport/match SSR pages | Live | `/catalog/sports` filters `active=true` (hides `unclassified`); `/catalog/sports/:slug` returns inline match-winner odds per row (paired to home/away by team-name); `/catalog/matches/:id` filters to `provider_market_id IN (1, 4)`. Odds formatted to 2 decimals via `formatOdds()`. |
+| Catalog API + sport/match SSR pages | Live | `/catalog/sports` filters `active=true` (hides `unclassified`); `/catalog/sports/:slug` returns inline match-winner odds per row (paired to home/away by team-name); `/catalog/matches/:id` returns all active (`status=1`) markets — provider-id whitelist removed. Odds formatted to 2 decimals via `formatOdds()`. |
 | Frontend design | Live (2026-04-18) | Ported from Claude Design handoff bundle. Grid shell: top-bar + left sidebar + main + right-rail bet slip. Route groups: `(auth)` = login/signup, `(main)` = home/sport/match/account/bets/wallet, `admin/*` keeps its own layout. Sidebar order: CS2 → Dota 2 → LoL → Valorant → middle (alphabetical) → eFootball Bots → eBasketball Bots. Tokens in `apps/web/src/app/globals.css`; legacy `--color-*` aliases kept for admin/bets/wallet pages. |
-| Bet slip + placement | Live | Singles only; combo math + UI deferred. Always-visible right rail (`apps/web/src/components/shell/bet-slip-rail.tsx`) uses the existing `BetSlipProvider` store. Withdrawals also block non-active users at request time. |
+| Bet slip + placement | Live | Singles + combos (up to 20 legs, cross-match only — same-match legs rejected server-side). Always-visible right rail (`apps/web/src/components/shell/bet-slip-rail.tsx`) drives the `BetSlipProvider` store, with a Single/Combo toggle. Withdrawals also block non-active users at request time. |
 | bet-delay worker | Live | LISTEN + 1s sweep + 5% drift tolerance |
 | Oddin AMQP feed (feed-ingester + settlement) | Live | AMQPS over `:5672` (not 5671), vhost `/oddinfeed/{customer_id}` URL-assembled by hand to preserve `%2F`. Bookmaker 142 |
 | Recovery flow | Live | `POST /v1/{product}/recovery/initiate_request` triggered on every (re)connect for both producers + on `alive subscribed=0` + on `alive` timestamp drift > 5s |
@@ -278,7 +278,8 @@ post-Phase-8 Oddin-workflow hardening pass; production stack is live at
 | Wallet deposit scanners | Live, gated on RPC URLs | Boots idle if `TRON_RPC_URL` / `ETH_RPC_URL` absent |
 | Wallet withdrawal on-chain submission | **Manual** | Admin marks-submitted with tx hash from external signer/wallet. Pre-launch needs a dedicated signer container |
 | News scraper | **Removed** | Service + `news_articles` table deleted via migration 0003; no longer in scope |
-| Combos + cash-out | Not started | Post-MVP |
+| Combos | Live | Frontend slip accumulates selections; Single/Combo toggle; settlement pays stake × product(EffectiveFactor), `bet_refund` ledger only when every leg voids. |
+| Cash-out | Not started | Post-MVP |
 | Outright (tournament-level) markets | Not started | Auto-mapper currently falls back to placeholder for `od:tournament:N` URNs (REST `/sport_events/` only handles match URNs); flagged as Post-MVP |
 | Prometheus + Grafana | Not started | Defer until traffic justifies |
 
