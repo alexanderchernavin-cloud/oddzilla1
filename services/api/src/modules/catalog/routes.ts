@@ -82,6 +82,49 @@ function deriveScope(specs: Record<string, string>): { id: string; label: string
   return { id: "match", label: "Match", order: 0 };
 }
 
+// Oddin specifier names that act as "lines" — i.e. each value produces
+// a separate market row on the feed, but users see them as one market
+// with many thresholds to choose from (Totals, Handicaps, …).
+const LINE_SPECIFIERS = ["threshold", "handicap"] as const;
+type LineSpec = (typeof LINE_SPECIFIERS)[number];
+
+// lineInfo returns the line-specifier present on the market (if any)
+// plus a grouping key that collapses markets that differ only in their
+// line value. Markets with no line specifier get lineKey=null and the
+// client renders them as a single card.
+function lineInfo(
+  providerMarketId: number,
+  variant: string,
+  specs: Record<string, string>,
+): { lineKey: string | null; lineSpec: LineSpec | null; lineValue: string | null } {
+  for (const key of LINE_SPECIFIERS) {
+    const v = specs[key];
+    if (v == null || v === "") continue;
+    // Collapse key = (market, variant, all other specifiers sorted). The
+    // `variant` inner specifier is already part of Oddin's canonical
+    // specifier set, so we just drop the line specifier before hashing.
+    const rest = Object.entries(specs)
+      .filter(([k]) => k !== key)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, val]) => `${k}=${val}`)
+      .join("|");
+    return {
+      lineKey: `${providerMarketId}|${variant}|${rest}|line=${key}`,
+      lineSpec: key,
+      lineValue: v,
+    };
+  }
+  return { lineKey: null, lineSpec: null, lineValue: null };
+}
+
+// stripLinePlaceholder removes the `{threshold}` / `{handicap}` token
+// from a name template so the card header reads as a generic market
+// name ("Total kills - map 1") while each row carries the line value.
+function stripLinePlaceholder(template: string, lineSpec: LineSpec): string {
+  const pattern = new RegExp(`\\{${lineSpec}\\}`, "g");
+  return template.replace(pattern, "").replace(/\s{2,}/g, " ").trim();
+}
+
 const matchListQuery = z.object({
   live: z.coerce.boolean().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -336,9 +379,13 @@ export default async function catalogRoutes(app: FastifyInstance) {
       specifiers: Record<string, string>;
       variant: string;
       name: string;
+      baseName: string;
       scope: { id: string; label: string; order: number };
       status: number;
       lastOddinTs: string;
+      lineKey: string | null;
+      lineSpec: LineSpec | null;
+      lineValue: string | null;
       outcomes: Array<{
         outcomeId: string;
         name: string;
@@ -359,15 +406,23 @@ export default async function catalogRoutes(app: FastifyInstance) {
           marketDescMap.get(descKey(r.providerMarketId, variant)) ??
           marketDescMap.get(descKey(r.providerMarketId, "")) ??
           `Market #${r.providerMarketId}`;
+        const line = lineInfo(r.providerMarketId, variant, specs);
+        const baseTemplate = line.lineSpec
+          ? stripLinePlaceholder(template, line.lineSpec)
+          : template;
         m = {
           id: key,
           providerMarketId: r.providerMarketId,
           specifiers: specs,
           variant,
           name: substituteTemplate(template, specs),
+          baseName: substituteTemplate(baseTemplate, specs),
           scope: deriveScope(specs),
           status: r.status,
           lastOddinTs: r.lastOddinTs.toString(),
+          lineKey: line.lineKey,
+          lineSpec: line.lineSpec,
+          lineValue: line.lineValue,
           outcomes: [],
         };
         marketMap.set(key, m);
