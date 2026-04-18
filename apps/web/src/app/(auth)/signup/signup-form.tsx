@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
+import { Button } from "@/components/ui/primitives";
 
 export function SignupForm() {
   const router = useRouter();
@@ -45,63 +46,97 @@ export function SignupForm() {
   }
 
   return (
-    <form className="mt-8 space-y-4" onSubmit={onSubmit} noValidate>
-      <label className="block">
-        <span className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-          Email
-        </span>
-        <input
-          type="email"
-          name="email"
-          autoComplete="email"
-          required
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          className="mt-2 w-full rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-3 py-2 outline-none focus:border-[var(--color-accent)]"
-        />
-      </label>
-      <label className="block">
-        <span className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-          Display name (optional)
-        </span>
-        <input
-          type="text"
-          name="displayName"
-          autoComplete="nickname"
-          maxLength={64}
-          value={displayName}
-          onChange={(e) => setDisplayName(e.target.value)}
-          className="mt-2 w-full rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-3 py-2 outline-none focus:border-[var(--color-accent)]"
-        />
-      </label>
-      <label className="block">
-        <span className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-          Password
-        </span>
-        <input
-          type="password"
-          name="password"
-          autoComplete="new-password"
-          required
-          minLength={8}
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          className="mt-2 w-full rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-3 py-2 outline-none focus:border-[var(--color-accent)]"
-        />
-      </label>
-
-      {error ? (
+    <form
+      onSubmit={onSubmit}
+      noValidate
+      style={{ marginTop: 28, display: "flex", flexDirection: "column", gap: 10 }}
+    >
+      <Field
+        label="Display name"
+        type="text"
+        name="displayName"
+        autoComplete="nickname"
+        maxLength={64}
+        value={displayName}
+        onChange={(e) => setDisplayName(e.target.value)}
+      />
+      <Field
+        label="Email"
+        type="email"
+        name="email"
+        autoComplete="email"
+        required
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+      />
+      <Field
+        label="Password"
+        type="password"
+        name="password"
+        autoComplete="new-password"
+        required
+        minLength={8}
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+      />
+      {error && (
         <p
           role="alert"
-          className="rounded-[10px] border border-[color:var(--color-negative)]/30 bg-[color:var(--color-negative)]/10 px-3 py-2 text-sm text-[var(--color-negative)]"
+          style={{
+            fontSize: 12.5,
+            color: "var(--negative)",
+            marginTop: 4,
+            lineHeight: 1.45,
+          }}
         >
           {error}
         </p>
-      ) : null}
-
-      <button type="submit" disabled={submitting} className="btn btn-primary w-full">
+      )}
+      <Button
+        variant="primary"
+        size="lg"
+        type="submit"
+        disabled={submitting}
+        style={{ width: "100%", marginTop: 8 }}
+      >
         {submitting ? "Creating account…" : "Create account"}
-      </button>
+      </Button>
     </form>
+  );
+}
+
+function Field({
+  label,
+  ...rest
+}: React.InputHTMLAttributes<HTMLInputElement> & { label: string }) {
+  return (
+    <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <span
+        className="mono"
+        style={{
+          fontSize: 10.5,
+          letterSpacing: "0.1em",
+          textTransform: "uppercase",
+          color: "var(--fg-dim)",
+          fontWeight: 600,
+        }}
+      >
+        {label}
+      </span>
+      <input
+        {...rest}
+        style={{
+          height: 42,
+          padding: "0 14px",
+          background: "var(--surface-2)",
+          border: "1px solid var(--border)",
+          borderRadius: 10,
+          outline: "none",
+          fontFamily: "inherit",
+          fontSize: 14,
+          color: "var(--fg)",
+        }}
+      />
+    </label>
   );
 }

@@ -1,80 +1,231 @@
 @import "tailwindcss";
 
+/* ─────────────────────────────────────────────────────────────────────────
+   Oddzilla design tokens — premium / quiet editorial sportsbook.
+   Ported verbatim from the design bundle (soddzilla/project/src/tokens.css).
+   Dark theme is the default; light is available via [data-theme="light"].
+   ───────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* Type */
+  --font-sans: var(--font-geist, "Söhne", "Inter Tight", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif);
+  --font-mono: var(--font-geist-mono, "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace);
+  --font-display: var(--font-instrument-serif, "GT Sectra", "Tiempos Headline", Georgia, serif);
+
+  /* Radii */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 20px;
+
+  /* Motion */
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Sport accents */
+  --sport-cs2: #f5a524;
+  --sport-lol: #c89b3c;
+  --sport-dota: #a7120f;
+  --sport-val: #ff4655;
+  --sport-rl: #2b8bff;
+  --sport-ow: #f99e1a;
+  --sport-sc: #2dd4bf;
+}
+
+/* ---------- DARK (default) ---------- */
+:root,
+[data-theme="dark"] {
+  --bg: #0b0b0c;
+  --bg-elevated: #131314;
+  --bg-sunken: #050506;
+  --surface: #131314;
+  --surface-2: #1a1a1c;
+  --border: #26262a;
+  --border-strong: #3a3a40;
+  --hairline: #1f1f22;
+
+  --fg: #f2f1ec;
+  --fg-muted: #9a9a98;
+  --fg-dim: #6a6a68;
+  --fg-inverse: #0b0b0c;
+
+  --accent: #f2f1ec;
+  --accent-fg: #0b0b0c;
+  --positive: #6fe09a;
+  --negative: #ff6b5c;
+  --live: #ff5a46;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 24px -8px rgba(0, 0, 0, 0.6), 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 30px 80px -20px rgba(0, 0, 0, 0.7), 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+/* ---------- LIGHT ---------- */
+[data-theme="light"] {
+  --bg: #f4f2ec;
+  --bg-elevated: #ffffff;
+  --bg-sunken: #ecebe5;
+  --surface: #ffffff;
+  --surface-2: #faf8f3;
+  --border: #e4e0d5;
+  --border-strong: #cfc9b8;
+  --hairline: #ebe7dc;
+
+  --fg: #0d0d0c;
+  --fg-muted: #6a6b6a;
+  --fg-dim: #9a9a96;
+  --fg-inverse: #f5f3ec;
+
+  --accent: #0d0d0c;
+  --accent-fg: #f5f3ec;
+  --positive: #0a7c3e;
+  --negative: #b4332a;
+  --live: #d93a2c;
+
+  --shadow-sm: 0 1px 2px rgba(10, 10, 10, 0.04);
+  --shadow-md: 0 4px 20px -6px rgba(10, 10, 10, 0.08), 0 1px 2px rgba(10, 10, 10, 0.04);
+  --shadow-lg: 0 24px 60px -20px rgba(10, 10, 10, 0.18), 0 2px 6px rgba(10, 10, 10, 0.05);
+}
+
+/* Density */
+[data-density="comfortable"] {
+  --row-h: 56px;
+  --gap: 16px;
+  --pad: 20px;
+  --fs-body: 14px;
+}
+[data-density="compact"] {
+  --row-h: 44px;
+  --gap: 10px;
+  --pad: 14px;
+  --fs-body: 13px;
+}
+[data-density="dense"] {
+  --row-h: 36px;
+  --gap: 6px;
+  --pad: 10px;
+  --fs-body: 12.5px;
+}
+:root {
+  --row-h: 56px;
+  --gap: 16px;
+  --pad: 20px;
+  --fs-body: 14px;
+}
+
+/* Card style variants */
+[data-cards="flat"] .card { border: 1px solid transparent; background: var(--surface); box-shadow: none; }
+[data-cards="outline"] .card,
+.card { border: 1px solid var(--border); background: var(--surface); box-shadow: none; }
+[data-cards="shadow"] .card { border: 1px solid var(--hairline); background: var(--surface); box-shadow: var(--shadow-md); }
+
+/* Tailwind @theme bridge — expose design tokens as Tailwind color utilities.
+   Includes legacy `--color-bg-card` / `--color-fg-subtle` aliases so the
+   pages that still use Tailwind-style class names (admin, account forms,
+   wallet, bets) keep rendering while they're migrated to the new system. */
 @theme {
-  --color-bg: #0a0a0a;
-  --color-bg-elevated: #111111;
-  --color-bg-card: #141414;
-  --color-border: #1f1f1f;
-  --color-border-strong: #2a2a2a;
+  --color-bg: var(--bg);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-bg-sunken: var(--bg-sunken);
+  --color-bg-card: var(--surface);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-hairline: var(--hairline);
 
-  --color-fg: #f5f5f5;
-  --color-fg-muted: #9c9c9c;
-  --color-fg-subtle: #5c5c5c;
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-dim: var(--fg-dim);
+  --color-fg-subtle: var(--fg-dim);
+  --color-fg-inverse: var(--fg-inverse);
 
-  --color-accent: #d9ff3b;
-  --color-accent-fg: #0a0a0a;
-
-  --color-positive: #22e37b;
-  --color-negative: #ff4b4b;
-  --color-warning: #ffb83b;
-
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-positive: var(--positive);
+  --color-negative: var(--negative);
+  --color-warning: var(--live);
+  --color-live: var(--live);
 
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 14px;
+  --radius-xl: 20px;
 }
 
-@layer base {
-  :root {
-    color-scheme: dark;
-  }
-
-  html,
-  body {
-    background: var(--color-bg);
-    color: var(--color-fg);
-    font-family: var(--font-sans);
-    -webkit-font-smoothing: antialiased;
-    text-rendering: optimizeLegibility;
-  }
-
-  body {
-    min-height: 100dvh;
-  }
-
-  ::selection {
-    background: var(--color-accent);
-    color: var(--color-accent-fg);
-  }
-}
-
+/* Legacy btn utility classes kept for admin pages still styled with them. */
 @layer components {
   .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-[10px] px-4 py-2 text-sm font-medium
-           transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]
-           disabled:opacity-50 disabled:pointer-events-none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    height: 36px;
+    padding: 0 16px;
+    font-size: 13.5px;
+    font-weight: 500;
+    border-radius: 999px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    font-family: inherit;
+    letter-spacing: -0.005em;
+    white-space: nowrap;
+    transition: background 160ms var(--ease), border-color 160ms var(--ease), color 160ms var(--ease);
   }
-  .btn-primary {
-    background: var(--color-accent);
-    color: var(--color-accent-fg);
-  }
-  .btn-primary:hover {
-    filter: brightness(1.05);
-  }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-primary { background: var(--accent); color: var(--accent-fg); }
   .btn-ghost {
     background: transparent;
-    color: var(--color-fg);
-    border: 1px solid var(--color-border-strong);
+    color: var(--fg);
+    border-color: var(--border);
   }
-  .btn-ghost:hover {
-    background: var(--color-bg-elevated);
-  }
+  .btn-ghost:hover { background: var(--surface-2); }
+}
 
-  .card {
-    background: var(--color-bg-card);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-  }
+/* Keyframes */
+@keyframes oz-pulse {
+  0% { transform: scale(1); opacity: 0.6; }
+  70% { transform: scale(2.4); opacity: 0; }
+  100% { transform: scale(2.4); opacity: 0; }
+}
+
+/* Base */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+html, body, #__next { height: 100%; }
+body {
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--fg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "ss01", "cv11", "tnum";
+  font-size: var(--fs-body, 14px);
+  line-height: 1.45;
+}
+::selection { background: var(--fg); color: var(--bg); }
+
+/* Utilities */
+.mono { font-family: var(--font-mono); font-feature-settings: "tnum", "ss01"; }
+.display { font-family: var(--font-display); letter-spacing: -0.01em; }
+.tnum { font-variant-numeric: tabular-nums; }
+.hairline { border-bottom: 1px solid var(--hairline); }
+.muted { color: var(--fg-muted); }
+.dim { color: var(--fg-dim); }
+
+/* Scrollbars — quiet */
+* { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+*::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+
+/* Responsive shell fallback */
+@media (max-width: 1100px) {
+  .oz-shell { grid-template-columns: 64px 1fr 0 !important; }
+  .oz-shell > aside.oz-rail { display: none !important; }
+}
+@media (max-width: 720px) {
+  .oz-shell { grid-template-columns: 1fr !important; grid-template-areas: "top" "main" !important; }
+  .oz-shell > aside.oz-side { display: none !important; }
 }

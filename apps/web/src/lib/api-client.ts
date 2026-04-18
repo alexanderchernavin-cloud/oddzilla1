@@ -1,7 +1,11 @@
 // Browser fetch wrapper. Client components call this; server components use
 // lib/auth.ts (which forwards cookies via next/headers).
 
-const BROWSER_API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+// Empty NEXT_PUBLIC_API_URL means "same origin"; in prod Caddy reverse-proxies
+// /api/* to the api container. In dev we hit http://localhost:3001 directly.
+const RAW_API_URL = process.env.NEXT_PUBLIC_API_URL;
+const BROWSER_API_URL =
+  RAW_API_URL && RAW_API_URL.length > 0 ? RAW_API_URL : "/api";
 
 export interface ApiErrorBody {
   error: string;
