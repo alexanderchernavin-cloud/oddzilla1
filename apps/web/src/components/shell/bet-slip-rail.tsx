@@ -113,19 +113,24 @@ export function BetSlipRail() {
         >
           Bet slip
         </span>
-        <span
-          className="mono tnum"
-          style={{
-            fontSize: 11,
-            padding: "2px 7px",
-            background: "var(--surface-2)",
-            border: "1px solid var(--border)",
-            borderRadius: 999,
-            color: "var(--fg-muted)",
-          }}
-        >
-          {selections.length}
-        </span>
+        {selections.length > 0 && (
+          <span
+            className="mono"
+            style={{
+              fontSize: 10.5,
+              padding: "2px 8px",
+              background: isCombo ? "var(--fg)" : "var(--surface-2)",
+              color: isCombo ? "var(--bg)" : "var(--fg-muted)",
+              border: isCombo ? "1px solid var(--fg)" : "1px solid var(--border)",
+              borderRadius: 999,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              fontWeight: 600,
+            }}
+          >
+            {isCombo ? `Combo · ${selections.length}` : "Single"}
+          </span>
+        )}
         <div style={{ flex: 1 }} />
         {selections.length > 0 && (
           <button
