@@ -154,13 +154,16 @@ UPDATE matches m
    AND c.provider = 'oddin'
    AND c.provider_urn = m.home_team_urn;
 
+-- Cross-product FROM (not JOIN ... ON) so that `m` — the UPDATE target —
+-- only appears in WHERE. Postgres forbids referencing the UPDATE target
+-- inside a JOIN's ON clause in UPDATE ... FROM.
 UPDATE matches m
    SET home_competitor_id = c.id
-  FROM tournaments t
-  JOIN categories  cat ON cat.id = t.category_id
-  JOIN competitors c   ON c.sport_id = cat.sport_id
-                      AND c.slug     = pg_temp.slugify(m.home_team)
- WHERE m.tournament_id = t.id
+  FROM tournaments t, categories cat, competitors c
+ WHERE m.tournament_id    = t.id
+   AND cat.id             = t.category_id
+   AND c.sport_id         = cat.sport_id
+   AND c.slug             = pg_temp.slugify(m.home_team)
    AND m.home_competitor_id IS NULL
    AND m.home_team <> '' AND m.home_team <> 'TBD'
    AND pg_temp.slugify(m.home_team) <> '';
@@ -175,11 +178,11 @@ UPDATE matches m
 
 UPDATE matches m
    SET away_competitor_id = c.id
-  FROM tournaments t
-  JOIN categories  cat ON cat.id = t.category_id
-  JOIN competitors c   ON c.sport_id = cat.sport_id
-                      AND c.slug     = pg_temp.slugify(m.away_team)
- WHERE m.tournament_id = t.id
+  FROM tournaments t, categories cat, competitors c
+ WHERE m.tournament_id    = t.id
+   AND cat.id             = t.category_id
+   AND c.sport_id         = cat.sport_id
+   AND c.slug             = pg_temp.slugify(m.away_team)
    AND m.away_competitor_id IS NULL
    AND m.away_team <> '' AND m.away_team <> 'TBD'
    AND pg_temp.slugify(m.away_team) <> '';
