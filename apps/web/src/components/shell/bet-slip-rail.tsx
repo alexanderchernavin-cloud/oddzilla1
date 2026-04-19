@@ -201,14 +201,12 @@ export function BetSlipRail() {
         ) : selections.length === 0 ? (
           <div
             style={{
-              flex: 1,
               display: "flex",
               flexDirection: "column",
               alignItems: "center",
-              justifyContent: "center",
               gap: 8,
               textAlign: "center",
-              padding: 20,
+              padding: "12px 20px 20px",
               color: "var(--fg-muted)",
             }}
           >
