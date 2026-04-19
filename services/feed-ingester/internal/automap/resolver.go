@@ -240,6 +240,88 @@ func (r *Resolver) CacheCompetitorProfile(ctx context.Context, urn string) {
 		Msg("competitor profile cached")
 }
 
+// refreshTournamentMetadata pulls /v1/sports/{lang}/tournaments/{urn}/info
+// and writes the returned risk_tier back to the tournaments row. Best-
+// effort: any failure (missing REST client, empty URN, network error,
+// malformed response, missing attribute) is logged at debug and the
+// write is skipped. Called on tournament creation and on every
+// fixture_change refresh, plus from the offline backfill tool.
+func (r *Resolver) refreshTournamentMetadata(ctx context.Context, tournamentID int, tournamentURN string) {
+	if r.rc == nil || tournamentURN == "" {
+		return
+	}
+	body, err := r.rc.TournamentInfo(ctx, restLang, tournamentURN)
+	if err != nil {
+		r.log.Debug().Err(err).Str("tournament_urn", tournamentURN).Msg("tournament info fetch failed")
+		return
+	}
+	var info oddinxml.TournamentInfoResponse
+	if err := xml.Unmarshal(body, &info); err != nil {
+		r.log.Debug().Err(err).Str("tournament_urn", tournamentURN).Msg("tournament info unmarshal failed")
+		return
+	}
+	rt := atoi16(info.Tournament.RiskTier)
+	if rt <= 0 {
+		return
+	}
+	if err := store.UpdateTournamentRiskTier(ctx, r.st.Pool(), tournamentID, rt); err != nil {
+		r.log.Warn().Err(err).Int("tournament_id", tournamentID).Int16("risk_tier", rt).Msg("tournament risk_tier update failed")
+		return
+	}
+	r.log.Debug().
+		Int("tournament_id", tournamentID).
+		Str("tournament_urn", tournamentURN).
+		Int16("risk_tier", rt).
+		Msg("tournament risk_tier updated")
+}
+
+// BackfillTournamentRiskTier walks every active tournament with a NULL
+// risk_tier, calls the Oddin tournament-info endpoint, and writes the
+// returned tier back. Intended to run once after the migration lands;
+// new tournaments get their tier through refreshTournamentMetadata on
+// auto-mapping. Pace is 5 requests/sec, well under Oddin's tier-3
+// budget. Returns the number of rows successfully updated.
+func (r *Resolver) BackfillTournamentRiskTier(ctx context.Context) (int, error) {
+	if r.rc == nil {
+		return 0, errors.New("oddin rest client not configured")
+	}
+	refs, err := store.TournamentsMissingRiskTier(ctx, r.st.Pool())
+	if err != nil {
+		return 0, err
+	}
+	updated := 0
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for _, ref := range refs {
+		select {
+		case <-ctx.Done():
+			return updated, ctx.Err()
+		case <-ticker.C:
+		}
+		body, err := r.rc.TournamentInfo(ctx, restLang, ref.ProviderURN)
+		if err != nil {
+			r.log.Debug().Err(err).Str("tournament_urn", ref.ProviderURN).Msg("backfill: fetch failed")
+			continue
+		}
+		var info oddinxml.TournamentInfoResponse
+		if err := xml.Unmarshal(body, &info); err != nil {
+			r.log.Debug().Err(err).Str("tournament_urn", ref.ProviderURN).Msg("backfill: unmarshal failed")
+			continue
+		}
+		rt := atoi16(info.Tournament.RiskTier)
+		if rt <= 0 {
+			continue
+		}
+		if err := store.UpdateTournamentRiskTier(ctx, r.st.Pool(), ref.ID, rt); err != nil {
+			r.log.Warn().Err(err).Int("tournament_id", ref.ID).Msg("backfill: update failed")
+			continue
+		}
+		updated++
+	}
+	r.log.Info().Int("considered", len(refs)).Int("updated", updated).Msg("risk_tier backfill complete")
+	return updated, nil
+}
+
 func nullableTimeISO(t time.Time) any {
 	if t.IsZero() {
 		return nil
@@ -296,6 +378,7 @@ func (r *Resolver) RefreshFromFixture(ctx context.Context, matchURN string) erro
 	// labels without waiting for match re-creation.
 	r.CacheCompetitorProfile(ctx, merged.HomeTeamURN)
 	r.CacheCompetitorProfile(ctx, merged.AwayTeamURN)
+	r.refreshTournamentMetadata(ctx, tournamentID, merged.TournamentURN)
 	r.log.Info().
 		Str("match_urn", matchURN).
 		Int64("match_id", matchID).
@@ -383,6 +466,11 @@ func (r *Resolver) resolveTournament(
 	if err != nil {
 		return 0, 0, err
 	}
+
+	// Best-effort: populate risk_tier so the sidebar can rank this
+	// tournament from first sight. Errors are non-fatal — we'll retry
+	// on the next fixture_change or catch it in the offline backfill.
+	r.refreshTournamentMetadata(ctx, tid, tURN)
 
 	payload, _ := json.Marshal(map[string]any{
 		"provider_urn": tURN,

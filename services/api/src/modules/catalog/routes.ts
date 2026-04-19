@@ -668,9 +668,10 @@ export default async function catalogRoutes(app: FastifyInstance) {
   // ── Tournaments under a sport (for sidebar expansion) ──────────────
   // Returns every active tournament that belongs to the sport, plus a
   // `matchCount` of live/upcoming matches that still have active markets
-  // (same phantom filter as /catalog/sports/:slug). Sort: tournaments
-  // with matches first (count desc), then alphabetical — matches the
-  // sidebar where operators want to see where the action is.
+  // (same phantom filter as /catalog/sports/:slug). Sort: risk_tier desc
+  // (higher-tier tournaments at the top, NULLs last so unbackfilled
+  // rows don't crowd out the ones we know about), then matches-with-
+  // action first, then alphabetical.
   app.get("/catalog/sports/:slug/tournaments", async (request) => {
     const params = z.object({ slug: z.string().min(1).max(32) }).parse(request.params);
     const [sport] = await app.db
@@ -684,6 +685,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .select({
         id: tournaments.id,
         name: tournaments.name,
+        riskTier: tournaments.riskTier,
         matchCount: sql<string>`COUNT(DISTINCT ${matches.id}) FILTER (
           WHERE ${matches.status} IN ('not_started','live')
             AND EXISTS (SELECT 1 FROM markets mk WHERE mk.match_id = ${matches.id} AND mk.status = 1)
@@ -693,11 +695,19 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .innerJoin(categories, eq(categories.id, tournaments.categoryId))
       .leftJoin(matches, eq(matches.tournamentId, tournaments.id))
       .where(and(eq(categories.sportId, sport.id), eq(tournaments.active, true)))
-      .groupBy(tournaments.id, tournaments.name);
+      .groupBy(tournaments.id, tournaments.name, tournaments.riskTier);
 
     const tournamentsOut = rows
-      .map((r) => ({ id: r.id, name: r.name, matchCount: Number(r.matchCount) }))
+      .map((r) => ({
+        id: r.id,
+        name: r.name,
+        riskTier: r.riskTier,
+        matchCount: Number(r.matchCount),
+      }))
       .sort((a, b) => {
+        const at = a.riskTier ?? -Infinity;
+        const bt = b.riskTier ?? -Infinity;
+        if (at !== bt) return bt - at;
         if (a.matchCount !== b.matchCount) return b.matchCount - a.matchCount;
         return a.name.localeCompare(b.name);
       });
