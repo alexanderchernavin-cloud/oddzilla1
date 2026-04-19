@@ -111,7 +111,7 @@ export default async function HomePage() {
       </header>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-        {sports.slice(0, 10).map((s) => (
+        {orderSportsForChips(sports).slice(0, 10).map((s) => (
           <Link
             key={s.slug}
             href={`/sport/${s.slug}`}
@@ -186,4 +186,26 @@ function shortName(name: string): string {
   if (name === "Dota 2") return "Dota 2";
   if (name === "Rocket League") return "RL";
   return name;
+}
+
+// Mirror the sidebar ordering: flagship esports pinned first, remainder
+// alphabetical by display name, bot leagues hidden defensively.
+const TOP_SPORT_SLUGS = ["cs2", "dota2", "lol", "valorant"] as const;
+const HIDDEN_SPORT_SLUGS = new Set<string>(["efootballbots", "ebasketballbots"]);
+
+function orderSportsForChips<T extends { slug: string; name: string }>(
+  items: T[],
+): T[] {
+  const visible = items.filter((s) => !HIDDEN_SPORT_SLUGS.has(s.slug));
+  const rank = (slug: string) => {
+    const i = (TOP_SPORT_SLUGS as readonly string[]).indexOf(slug);
+    return i === -1 ? TOP_SPORT_SLUGS.length : i;
+  };
+  return [...visible].sort((a, b) => {
+    const ra = rank(a.slug);
+    const rb = rank(b.slug);
+    if (ra !== rb) return ra - rb;
+    if (ra === TOP_SPORT_SLUGS.length) return a.name.localeCompare(b.name);
+    return 0;
+  });
 }

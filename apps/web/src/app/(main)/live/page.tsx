@@ -11,7 +11,7 @@ interface Response {
 
 export default async function LivePage() {
   const data = await serverApi<Response>("/catalog/matches?status=live&limit=120");
-  const matches = data?.matches ?? [];
+  const matches = orderBySport(data?.matches ?? []);
 
   return (
     <div
@@ -68,4 +68,26 @@ function shortName(name: string): string {
   if (name === "Dota 2") return "Dota 2";
   if (name === "Rocket League") return "RL";
   return name;
+}
+
+// Mirror the sidebar's sport ordering: flagship esports pinned on top,
+// everything else alphabetical by display name. Keep the API's inner
+// sort (newest first) stable within each sport group.
+const TOP_SPORTS = ["cs2", "dota2", "lol", "valorant"] as const;
+
+function orderBySport(matches: ListMatchWithSport[]): ListMatchWithSport[] {
+  const rank = (slug: string) => {
+    const i = (TOP_SPORTS as readonly string[]).indexOf(slug);
+    return i === -1 ? TOP_SPORTS.length : i;
+  };
+  return [...matches].sort((a, b) => {
+    const ra = rank(a.sport.slug);
+    const rb = rank(b.sport.slug);
+    if (ra !== rb) return ra - rb;
+    if (ra === TOP_SPORTS.length) {
+      const byName = a.sport.name.localeCompare(b.sport.name);
+      if (byName !== 0) return byName;
+    }
+    return 0;
+  });
 }
