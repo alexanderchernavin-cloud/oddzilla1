@@ -45,7 +45,14 @@ export default async function SportPage({
         maxWidth: 1100,
       }}
     >
-      <header style={{ display: "flex", alignItems: "center", gap: 16 }}>
+      <header
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 16,
+          flexWrap: "wrap",
+        }}
+      >
         <div
           style={{
             width: 56,
@@ -56,11 +63,12 @@ export default async function SportPage({
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
+            flexShrink: 0,
           }}
         >
           <SportGlyph sport={slug} size={28} />
         </div>
-        <div>
+        <div style={{ minWidth: 0, flex: 1 }}>
           <div
             className="mono"
             style={{
@@ -76,15 +84,15 @@ export default async function SportPage({
             className="display"
             style={{
               margin: 0,
-              fontSize: 32,
+              fontSize: "clamp(22px, 5.5vw, 32px)",
               fontWeight: 500,
               letterSpacing: "-0.02em",
+              overflowWrap: "anywhere",
             }}
           >
             {data.sport.name}
           </h1>
         </div>
-        <div style={{ flex: 1 }} />
         <div className="mono tnum" style={{ fontSize: 12, color: "var(--fg-muted)" }}>
           {data.matches.length} {data.matches.length === 1 ? "match" : "matches"}
         </div>

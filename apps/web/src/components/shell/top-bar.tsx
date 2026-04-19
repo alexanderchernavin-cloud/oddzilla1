@@ -7,7 +7,6 @@ import { Button, Divider } from "@/components/ui/primitives";
 import { ThemeToggle } from "./theme-toggle";
 import { useMobileDrawers } from "./mobile-drawer-context";
 import { TopBarSearch } from "./top-bar-search";
-import { useBetSlip } from "@/lib/bet-slip";
 
 interface TopBarProps {
   signedIn: boolean;
@@ -30,9 +29,7 @@ const iconBtn = {
 };
 
 export function TopBar({ signedIn, user, balanceUsd }: TopBarProps) {
-  const { toggleSidebar, toggleRail } = useMobileDrawers();
-  const slip = useBetSlip();
-  const slipCount = slip.selections.length;
+  const { toggleSidebar } = useMobileDrawers();
 
   const initials = user
     ? (user.displayName || user.email)
@@ -156,36 +153,6 @@ export function TopBar({ signedIn, user, balanceUsd }: TopBarProps) {
               </span>
             </span>
           </Link>
-
-          {/* Bet-slip trigger — mobile only; opens the rail as a
-              bottom-up drawer. Shows leg count and pulses when
-              non-empty so operators notice picks they've stacked. */}
-          <button
-            type="button"
-            onClick={toggleRail}
-            className="oz-mobile-slip-fab"
-            aria-label="Open bet slip"
-            style={{
-              ...iconBtn,
-              display: undefined,
-              background: slipCount > 0 ? "var(--fg)" : "var(--surface-2)",
-              color: slipCount > 0 ? "var(--bg)" : "var(--fg-muted)",
-              border: "1px solid var(--border)",
-              minWidth: 44,
-              padding: "0 10px",
-              gap: 6,
-            }}
-          >
-            <I.Ticket size={14} />
-            {slipCount > 0 && (
-              <span
-                className="mono tnum"
-                style={{ fontSize: 12, fontWeight: 600 }}
-              >
-                {slipCount}
-              </span>
-            )}
-          </button>
 
           <Link
             href="/account"
