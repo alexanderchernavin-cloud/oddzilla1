@@ -8,11 +8,12 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
 import {
   sports,
   categories,
   tournaments,
+  competitors,
   matches,
   markets,
   marketOutcomes,
@@ -130,6 +131,7 @@ function stripLinePlaceholder(template: string, lineSpec: LineSpec): string {
 const matchListQuery = z.object({
   live: z.coerce.boolean().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
+  tournament: z.coerce.number().int().positive().optional(),
 });
 
 // Postgres returns NUMERIC(10,4) as "3.1400" or "3.1429" (pre-2026-04-18
@@ -198,6 +200,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
           // Drop phantom matches that have no active markets — they
           // leak into the sport page as "LIVE" with no odds otherwise.
           sql`EXISTS (SELECT 1 FROM markets mk WHERE mk.match_id = ${matches.id} AND mk.status = 1)`,
+          q.tournament ? eq(tournaments.id, q.tournament) : undefined,
         ),
       )
       .orderBy(desc(matches.status), matches.scheduledAt)
@@ -659,6 +662,180 @@ export default async function catalogRoutes(app: FastifyInstance) {
             : null,
         };
       }),
+    };
+  });
+
+  // ── Tournaments under a sport (for sidebar expansion) ──────────────
+  // Returns every active tournament that belongs to the sport, plus a
+  // `matchCount` of live/upcoming matches that still have active markets
+  // (same phantom filter as /catalog/sports/:slug). Sort: tournaments
+  // with matches first (count desc), then alphabetical — matches the
+  // sidebar where operators want to see where the action is.
+  app.get("/catalog/sports/:slug/tournaments", async (request) => {
+    const params = z.object({ slug: z.string().min(1).max(32) }).parse(request.params);
+    const [sport] = await app.db
+      .select()
+      .from(sports)
+      .where(and(eq(sports.slug, params.slug), eq(sports.active, true)))
+      .limit(1);
+    if (!sport) throw new NotFoundError("sport_not_found", "sport_not_found");
+
+    const rows = await app.db
+      .select({
+        id: tournaments.id,
+        name: tournaments.name,
+        matchCount: sql<string>`COUNT(DISTINCT ${matches.id}) FILTER (
+          WHERE ${matches.status} IN ('not_started','live')
+            AND EXISTS (SELECT 1 FROM markets mk WHERE mk.match_id = ${matches.id} AND mk.status = 1)
+        )::text`,
+      })
+      .from(tournaments)
+      .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+      .leftJoin(matches, eq(matches.tournamentId, tournaments.id))
+      .where(and(eq(categories.sportId, sport.id), eq(tournaments.active, true)))
+      .groupBy(tournaments.id, tournaments.name);
+
+    const tournamentsOut = rows
+      .map((r) => ({ id: r.id, name: r.name, matchCount: Number(r.matchCount) }))
+      .sort((a, b) => {
+        if (a.matchCount !== b.matchCount) return b.matchCount - a.matchCount;
+        return a.name.localeCompare(b.name);
+      });
+
+    return {
+      sport: { id: sport.id, slug: sport.slug, name: sport.name },
+      tournaments: tournamentsOut,
+    };
+  });
+
+  // ── Global search across sports, tournaments, teams, and matches ───
+  // Case-insensitive substring match. Each facet is capped at `limit`
+  // rows (default 6). Only active rows are returned, and matches are
+  // restricted to not_started/live with at least one active market so
+  // clicking through lands on a page where the user can place a bet.
+  app.get("/catalog/search", async (request) => {
+    const q = z
+      .object({
+        q: z.string().trim().min(1).max(64),
+        limit: z.coerce.number().int().min(1).max(20).default(6),
+      })
+      .parse(request.query);
+
+    // Escape ILIKE wildcards so a user typing "50%" doesn't match
+    // everything. pg's default escape is "\", reinforced with ESCAPE '\'.
+    const escaped = q.q.replace(/[\\%_]/g, (c) => `\\${c}`);
+    const needle = `%${escaped}%`;
+
+    const [sportRows, tournamentRows, teamRows, matchRows] = await Promise.all([
+      app.db
+        .select({ slug: sports.slug, name: sports.name, kind: sports.kind })
+        .from(sports)
+        .where(
+          and(
+            eq(sports.active, true),
+            or(ilike(sports.name, needle), ilike(sports.slug, needle)),
+          ),
+        )
+        .orderBy(sports.name)
+        .limit(q.limit),
+
+      app.db
+        .select({
+          id: tournaments.id,
+          name: tournaments.name,
+          sportSlug: sports.slug,
+          sportName: sports.name,
+        })
+        .from(tournaments)
+        .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+        .innerJoin(sports, eq(sports.id, categories.sportId))
+        .where(
+          and(
+            eq(tournaments.active, true),
+            eq(sports.active, true),
+            ilike(tournaments.name, needle),
+          ),
+        )
+        .orderBy(tournaments.name)
+        .limit(q.limit),
+
+      app.db
+        .select({
+          id: competitors.id,
+          name: competitors.name,
+          abbreviation: competitors.abbreviation,
+          sportSlug: sports.slug,
+          sportName: sports.name,
+        })
+        .from(competitors)
+        .innerJoin(sports, eq(sports.id, competitors.sportId))
+        .where(
+          and(
+            eq(competitors.active, true),
+            eq(sports.active, true),
+            or(
+              ilike(competitors.name, needle),
+              ilike(competitors.abbreviation, needle),
+            ),
+          ),
+        )
+        .orderBy(competitors.name)
+        .limit(q.limit),
+
+      app.db
+        .select({
+          id: matches.id,
+          homeTeam: matches.homeTeam,
+          awayTeam: matches.awayTeam,
+          scheduledAt: matches.scheduledAt,
+          status: matches.status,
+          tournamentId: tournaments.id,
+          tournamentName: tournaments.name,
+          sportSlug: sports.slug,
+          sportName: sports.name,
+        })
+        .from(matches)
+        .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
+        .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+        .innerJoin(sports, eq(sports.id, categories.sportId))
+        .where(
+          and(
+            eq(sports.active, true),
+            inArray(matches.status, ["not_started", "live"]),
+            or(
+              ilike(matches.homeTeam, needle),
+              ilike(matches.awayTeam, needle),
+            ),
+            sql`EXISTS (SELECT 1 FROM markets mk WHERE mk.match_id = ${matches.id} AND mk.status = 1)`,
+          ),
+        )
+        .orderBy(desc(matches.status), matches.scheduledAt)
+        .limit(q.limit),
+    ]);
+
+    return {
+      query: q.q,
+      sports: sportRows,
+      tournaments: tournamentRows.map((t) => ({
+        id: t.id,
+        name: t.name,
+        sport: { slug: t.sportSlug, name: t.sportName },
+      })),
+      teams: teamRows.map((t) => ({
+        id: t.id,
+        name: t.name,
+        abbreviation: t.abbreviation,
+        sport: { slug: t.sportSlug, name: t.sportName },
+      })),
+      matches: matchRows.map((m) => ({
+        id: m.id.toString(),
+        homeTeam: m.homeTeam,
+        awayTeam: m.awayTeam,
+        scheduledAt: m.scheduledAt?.toISOString() ?? null,
+        status: m.status,
+        tournament: { id: m.tournamentId, name: m.tournamentName },
+        sport: { slug: m.sportSlug, name: m.sportName },
+      })),
     };
   });
 

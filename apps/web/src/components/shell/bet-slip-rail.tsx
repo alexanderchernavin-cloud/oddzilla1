@@ -9,11 +9,13 @@ import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { I } from "@/components/ui/icons";
 import { Button } from "@/components/ui/primitives";
 import { SportGlyph } from "@/components/ui/sport-glyph";
+import { useMobileDrawers } from "./mobile-drawer-context";
 import type { SlipSelection } from "@oddzilla/types";
 
 export function BetSlipRail() {
   const slip = useBetSlip();
   const selections = slip.selections;
+  const { closeAll } = useMobileDrawers();
   const router = useRouter();
   const [stakeInput, setStakeInput] = useState("10.00");
   const [submitting, setSubmitting] = useState(false);
@@ -97,6 +99,9 @@ export function BetSlipRail() {
         maxHeight: "calc(100vh - 60px)",
       }}
     >
+      {/* Drag handle — only visible when the rail is rendered as a
+          mobile bottom sheet; CSS handles the breakpoint. */}
+      <span className="oz-rail-handle" aria-hidden="true" />
       <div
         style={{
           padding: "18px 20px 14px",
@@ -148,6 +153,28 @@ export function BetSlipRail() {
             Clear
           </button>
         )}
+        <button
+          type="button"
+          onClick={closeAll}
+          className="oz-rail-close"
+          aria-label="Close bet slip"
+          style={{
+            width: 28,
+            height: 28,
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "var(--surface-2)",
+            border: "1px solid var(--border)",
+            borderRadius: 999,
+            color: "var(--fg-muted)",
+            cursor: "pointer",
+            padding: 0,
+            marginLeft: 4,
+          }}
+        >
+          <I.Close size={12} />
+        </button>
       </div>
 
       <div

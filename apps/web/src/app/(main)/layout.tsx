@@ -1,6 +1,7 @@
 import { TopBar } from "@/components/shell/top-bar";
 import { Sidebar } from "@/components/shell/sidebar";
 import { BetSlipRail } from "@/components/shell/bet-slip-rail";
+import { MobileBetSlipBar } from "@/components/shell/mobile-bet-slip-bar";
 import { MobileDrawersProvider } from "@/components/shell/mobile-drawer-context";
 import { MobileShellOverlay } from "@/components/shell/mobile-shell-overlay";
 import { ShellContainer } from "@/components/shell/shell-container";
@@ -56,6 +57,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
         </main>
         <BetSlipRail />
         <MobileShellOverlay />
+        <MobileBetSlipBar />
       </ShellContainer>
     </MobileDrawersProvider>
   );

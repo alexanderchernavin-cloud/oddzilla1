@@ -61,7 +61,7 @@ export default async function HomePage() {
           className="display"
           style={{
             margin: "6px 0 0",
-            fontSize: 40,
+            fontSize: "clamp(26px, 6.5vw, 40px)",
             fontWeight: 500,
             letterSpacing: "-0.025em",
             lineHeight: 1.05,

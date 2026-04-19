@@ -6,7 +6,7 @@ import { I } from "@/components/ui/icons";
 import { Button, Divider } from "@/components/ui/primitives";
 import { ThemeToggle } from "./theme-toggle";
 import { useMobileDrawers } from "./mobile-drawer-context";
-import { useBetSlip } from "@/lib/bet-slip";
+import { TopBarSearch } from "./top-bar-search";
 
 interface TopBarProps {
   signedIn: boolean;
@@ -29,9 +29,7 @@ const iconBtn = {
 };
 
 export function TopBar({ signedIn, user, balanceUsd }: TopBarProps) {
-  const { toggleSidebar, toggleRail } = useMobileDrawers();
-  const slip = useBetSlip();
-  const slipCount = slip.selections.length;
+  const { toggleSidebar } = useMobileDrawers();
 
   const initials = user
     ? (user.displayName || user.email)
@@ -82,52 +80,8 @@ export function TopBar({ signedIn, user, balanceUsd }: TopBarProps) {
         <Wordmark size={15} />
       </Link>
 
-      {/* Search — hidden under ~900px */}
-      <div
-        className="oz-topbar-search"
-        style={{ flex: 1, maxWidth: 460, marginLeft: 16, minWidth: 0 }}
-      >
-        <label
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            height: 36,
-            padding: "0 14px",
-            background: "var(--surface-2)",
-            border: "1px solid var(--border)",
-            borderRadius: 999,
-            color: "var(--fg-muted)",
-          }}
-        >
-          <I.Search size={15} />
-          <input
-            placeholder="Search teams, tournaments, markets…"
-            style={{
-              flex: 1,
-              minWidth: 0,
-              border: 0,
-              background: "transparent",
-              outline: "none",
-              fontFamily: "inherit",
-              fontSize: 13,
-              color: "var(--fg)",
-            }}
-          />
-          <span
-            className="mono oz-topbar-kbd"
-            style={{
-              fontSize: 10.5,
-              padding: "2px 6px",
-              border: "1px solid var(--border)",
-              borderRadius: 4,
-              color: "var(--fg-dim)",
-            }}
-          >
-            ⌘K
-          </span>
-        </label>
-      </div>
+      {/* Search — hidden under ~900px via .oz-topbar-search CSS */}
+      <TopBarSearch />
 
       <div style={{ flex: 1 }} />
 
@@ -199,36 +153,6 @@ export function TopBar({ signedIn, user, balanceUsd }: TopBarProps) {
               </span>
             </span>
           </Link>
-
-          {/* Bet-slip trigger — mobile only; opens the rail as a
-              bottom-up drawer. Shows leg count and pulses when
-              non-empty so operators notice picks they've stacked. */}
-          <button
-            type="button"
-            onClick={toggleRail}
-            className="oz-mobile-slip-fab"
-            aria-label="Open bet slip"
-            style={{
-              ...iconBtn,
-              display: undefined,
-              background: slipCount > 0 ? "var(--fg)" : "var(--surface-2)",
-              color: slipCount > 0 ? "var(--bg)" : "var(--fg-muted)",
-              border: "1px solid var(--border)",
-              minWidth: 44,
-              padding: "0 10px",
-              gap: 6,
-            }}
-          >
-            <I.Ticket size={14} />
-            {slipCount > 0 && (
-              <span
-                className="mono tnum"
-                style={{ fontSize: 12, fontWeight: 600 }}
-              >
-                {slipCount}
-              </span>
-            )}
-          </button>
 
           <Link
             href="/account"

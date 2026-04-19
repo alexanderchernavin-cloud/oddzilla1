@@ -221,11 +221,12 @@ body {
 *::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
 
 /* ─────────── Responsive shell ───────────
-   Desktop (≥1100px): 240px sidebar + main + 340px bet-slip rail.
-   Tablet  (720–1099px): sidebar + main; bet-slip rail hidden (user
-       toggles it via the top-bar "slip" button).
-   Mobile  (<720px): just main; sidebar + rail become slide-in drawers
-       triggered from the top bar. */
+   Desktop (≥1100px): 240px sidebar + main + 340px persistent bet-slip rail.
+   Tablet  (720–1099px): sidebar + main; bet-slip rail hidden and
+       re-mounts as a bottom sheet invoked by the sticky peek bar.
+   Mobile  (<720px): just main; sidebar slides in from the left, the
+       bet-slip rail slides up from the bottom (also triggered by the
+       sticky peek bar), scrim dims everything behind whichever is open. */
 
 .oz-shell {
   display: grid;
@@ -269,28 +270,101 @@ body {
 /* Mobile-only toggle buttons in the top bar; hidden on desktop. */
 .oz-topbar-toggle { display: none !important; }
 
-/* Mobile-only floating bet-slip trigger; hidden until narrow. */
+/* The old FAB slip trigger in the top bar is replaced by the sticky
+   bottom bar on mobile. Kept hidden unconditionally so stray instances
+   don't render. */
 .oz-mobile-slip-fab { display: none !important; }
+
+/* Mobile sticky bet-slip peek bar — hidden on desktop, shown on tablet
+   + mobile via the breakpoint blocks below. At tablet the sidebar is
+   still in the grid, so the bar insets from the sidebar's right edge. */
+.oz-mobile-betbar {
+  display: none;
+  position: fixed;
+  left: calc(240px + 12px);
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  z-index: 55;
+  height: 56px;
+  padding: 0 14px;
+  align-items: center;
+  gap: 12px;
+  background: var(--fg);
+  color: var(--bg);
+  border: 0;
+  border-radius: 14px;
+  box-shadow: var(--shadow-lg);
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  transition: transform 140ms var(--ease), opacity 140ms var(--ease);
+}
+.oz-mobile-betbar:active { transform: translateY(1px); }
+
+/* Mobile bottom-sheet drag handle inside the rail. Decorative — the
+   scrim and close button are the real dismissal affordances. Hidden
+   by default; shown only when the rail is in sheet mode. */
+.oz-rail-handle { display: none; }
+
+/* Close button in the rail header. Hidden on desktop; shown on mobile
+   when the rail is acting as a dismissible sheet. */
+.oz-rail-close { display: none !important; }
 
 @media (max-width: 1099px) {
   .oz-shell {
     grid-template-columns: 240px 1fr;
     grid-template-areas: "top top" "side main";
   }
+  /* Rail becomes a bottom sheet on anything below desktop: slides up
+     from the bottom, stops short of the top bar, rounded top corners.
+     This is far more thumb-friendly than a right-edge drawer. The
+     sheet insets from the persistent sidebar at tablet widths. */
   .oz-rail {
     position: fixed !important;
-    top: 60px !important;
+    left: 240px;
     right: 0;
-    width: min(360px, 100vw);
-    height: calc(100dvh - 60px) !important;
-    max-height: none !important;
+    bottom: 0;
+    top: auto !important;
+    width: auto !important;
+    height: auto !important;
+    max-height: calc(100dvh - 60px) !important;
     z-index: 60;
-    transform: translateX(100%);
-    transition: transform 200ms var(--ease);
-    box-shadow: -8px 0 32px rgba(0, 0, 0, 0.35);
+    background: var(--bg);
+    border-left: 0 !important;
+    border-top: 1px solid var(--hairline);
+    border-radius: 16px 16px 0 0;
+    transform: translateY(100%);
+    transition: transform 220ms var(--ease-out);
+    box-shadow: 0 -16px 48px rgba(0, 0, 0, 0.35);
   }
-  .oz-shell[data-rail-open="true"] .oz-rail { transform: translateX(0); }
-  .oz-mobile-slip-fab { display: inline-flex !important; }
+  .oz-shell[data-rail-open="true"] .oz-rail { transform: translateY(0); }
+
+  .oz-rail-handle {
+    display: block;
+    width: 36px;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--border-strong);
+    margin: 8px auto 0;
+    flex-shrink: 0;
+  }
+  .oz-rail-close { display: inline-flex !important; }
+
+  .oz-mobile-betbar { display: flex; }
+
+  /* Scrim is shared with the sidebar drawer; enable it whenever any
+     drawer can pop so tapping outside closes the sheet on tablet too. */
+  .oz-shell-scrim { display: block; }
+  .oz-shell-scrim[data-open="true"] {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* Leave room for the sticky slip bar at the bottom of every page so
+     the last card isn't trapped behind it. 56 bar + 12 gap + safe area. */
+  .oz-main-inner > * {
+    padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px)) !important;
+  }
 }
 
 @media (max-width: 899px) {
@@ -320,14 +394,17 @@ body {
   .oz-topbar-toggle { display: inline-flex !important; }
   .oz-topbar-search { display: none !important; }
   .oz-topbar-bell { display: none !important; }
-  .oz-shell-scrim { display: block; }
-  .oz-shell-scrim[data-open="true"] {
-    opacity: 1;
-    pointer-events: auto;
-  }
+  /* Sidebar is fully drawer-mode now, so sheet + bar span the full
+     viewport width. */
+  .oz-rail { left: 0 !important; }
+  .oz-mobile-betbar { left: 12px; }
   /* Narrow main gets tighter side padding — the per-page paddings
-     (typically 28-32px horizontal) would waste mobile real estate. */
-  .oz-main-inner > * { padding-left: 12px !important; padding-right: 12px !important; }
+     (typically 28-32px horizontal) would waste mobile real estate.
+     The bottom slot is carved out by the .oz-mobile-betbar rule above. */
+  .oz-main-inner > * {
+    padding-left: 12px !important;
+    padding-right: 12px !important;
+  }
   .oz-main-inner .card { border-radius: 10px; }
 }
 
