@@ -44,3 +44,4 @@ Thumbs.db
 # Logs
 *.log
 logs/
+!apps/web/src/app/admin/logs/

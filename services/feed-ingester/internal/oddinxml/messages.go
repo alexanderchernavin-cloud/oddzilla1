@@ -190,6 +190,34 @@ func (k MessageKind) String() string {
 	}
 }
 
+// PeekEvent extracts the event_id URN and product code from the root XML
+// element's attributes without a full unmarshal. Used by the admin feed
+// log to stamp each row before dispatching to the type-specific handler.
+// Returns empty event_urn / product=0 for messages that don't carry
+// those attributes (alive, snapshot_complete).
+func PeekEvent(body []byte) (eventURN string, product int, err error) {
+	dec := xml.NewDecoder(bytes.NewReader(body))
+	for {
+		tok, terr := dec.Token()
+		if terr != nil {
+			return "", 0, fmt.Errorf("peek event: %w", terr)
+		}
+		se, ok := tok.(xml.StartElement)
+		if !ok {
+			continue
+		}
+		for _, a := range se.Attr {
+			switch a.Name.Local {
+			case "event_id":
+				eventURN = a.Value
+			case "product":
+				fmt.Sscanf(a.Value, "%d", &product)
+			}
+		}
+		return eventURN, product, nil
+	}
+}
+
 // PeekKind inspects the first XML start-element tag and returns the kind.
 // Cheap: does not decode attributes. Useful before full unmarshal so we can
 // pick the right struct.

@@ -68,6 +68,26 @@ func Handle(ctx context.Context, d Deps, routingKey string, body []byte) error {
 		return nil
 	}
 
+	// Persist a raw copy of every match-scoped message for the admin
+	// /admin/logs panel. System-level kinds (alive, snapshot_complete,
+	// unknown) are skipped — they're not useful per-match replay.
+	if isMatchScopedKind(kind) {
+		urn, product, perr := oddinxml.PeekEvent(body)
+		if perr == nil {
+			if ierr := store.InsertFeedMessage(ctx, d.Store.Pool(), store.FeedMessageInsert{
+				EventURN:   urn,
+				Kind:       kind.String(),
+				RoutingKey: routingKey,
+				Product:    int16(product),
+				PayloadXML: body,
+			}); ierr != nil {
+				// Non-fatal — the message itself still needs to flow
+				// through its type handler. Admin log is best-effort.
+				d.Log.Warn().Err(ierr).Str("kind", kind.String()).Msg("feed_messages insert failed; continuing")
+			}
+		}
+	}
+
 	switch kind {
 	case oddinxml.KindOddsChange:
 		return handleOddsChange(ctx, d, body)
@@ -430,6 +450,23 @@ func nullableOdds(s string) *string {
 func shouldRefreshFromREST(changeType string) bool {
 	switch changeType {
 	case "1", "2", "4", "5", "new", "datetime", "format", "coverage":
+		return true
+	}
+	return false
+}
+
+// isMatchScopedKind reports whether the message is bound to a specific
+// event URN. Alive/snapshot_complete/unknown aren't match-scoped and are
+// excluded from the admin feed log.
+func isMatchScopedKind(k oddinxml.MessageKind) bool {
+	switch k {
+	case oddinxml.KindOddsChange,
+		oddinxml.KindFixtureChange,
+		oddinxml.KindBetStop,
+		oddinxml.KindBetSettlement,
+		oddinxml.KindBetCancel,
+		oddinxml.KindRollbackBetSettlement,
+		oddinxml.KindRollbackBetCancel:
 		return true
 	}
 	return false

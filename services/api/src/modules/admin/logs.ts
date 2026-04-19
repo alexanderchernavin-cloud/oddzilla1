@@ -1,0 +1,355 @@
+// /admin/logs — sports -> tournaments -> matches hierarchy browser,
+// per-match odds history (visual) and raw AMQP feed replay. Retention is
+// enforced in feed-ingester; these endpoints only surface matches still
+// within the 24h-post-start window.
+//
+// Categories are intentionally skipped at the UI level — for esports they
+// are auto-generated dummy rows (one per sport) and admins don't navigate
+// them. The join still passes through categories because the FK chain
+// requires it.
+
+import type { FastifyInstance } from "fastify";
+import { z } from "zod";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import {
+  sports,
+  categories,
+  tournaments,
+  matches,
+  markets,
+  marketOutcomes,
+  feedMessages,
+} from "@oddzilla/db";
+import { NotFoundError } from "../../lib/errors.js";
+
+// A match is "in the admin logs window" when its scheduled_at is at most
+// 24h in the past OR the match is still live/not_started. This mirrors
+// the retention rule baked into feed-ingester's cleanup sweeper so what
+// the UI shows is always queryable.
+const matchInWindow = sql`(
+  ${matches.scheduledAt} IS NULL
+  OR ${matches.scheduledAt} > NOW() - INTERVAL '24 hours'
+  OR ${matches.status} IN ('not_started', 'live')
+)`;
+
+export default async function adminLogsRoutes(app: FastifyInstance) {
+  // ── Sports list ─────────────────────────────────────────────────────
+  app.get("/admin/logs/sports", async (request) => {
+    request.requireRole("admin");
+    const rows = await app.db
+      .select({
+        id: sports.id,
+        slug: sports.slug,
+        name: sports.name,
+        matchCount: sql<string>`COUNT(DISTINCT ${matches.id})::text`,
+      })
+      .from(sports)
+      .leftJoin(categories, eq(categories.sportId, sports.id))
+      .leftJoin(
+        tournaments,
+        eq(tournaments.categoryId, categories.id),
+      )
+      .leftJoin(
+        matches,
+        and(eq(matches.tournamentId, tournaments.id), matchInWindow),
+      )
+      .where(eq(sports.active, true))
+      .groupBy(sports.id, sports.slug, sports.name)
+      .orderBy(sports.slug);
+
+    return {
+      sports: rows.map((r) => ({
+        id: r.id,
+        slug: r.slug,
+        name: r.name,
+        matchCount: Number(r.matchCount),
+      })),
+    };
+  });
+
+  // ── Tournaments under a sport ───────────────────────────────────────
+  app.get("/admin/logs/sports/:slug/tournaments", async (request) => {
+    request.requireRole("admin");
+    const { slug } = z
+      .object({ slug: z.string().min(1).max(64) })
+      .parse(request.params);
+
+    const [sport] = await app.db
+      .select({ id: sports.id, slug: sports.slug, name: sports.name })
+      .from(sports)
+      .where(and(eq(sports.slug, slug), eq(sports.active, true)))
+      .limit(1);
+    if (!sport) throw new NotFoundError("sport_not_found", "sport_not_found");
+
+    const rows = await app.db
+      .select({
+        id: tournaments.id,
+        slug: tournaments.slug,
+        name: tournaments.name,
+        matchCount: sql<string>`COUNT(${matches.id})::text`,
+      })
+      .from(tournaments)
+      .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+      .leftJoin(
+        matches,
+        and(eq(matches.tournamentId, tournaments.id), matchInWindow),
+      )
+      .where(and(eq(categories.sportId, sport.id), eq(tournaments.active, true)))
+      .groupBy(tournaments.id, tournaments.slug, tournaments.name)
+      .having(sql`COUNT(${matches.id}) > 0`)
+      .orderBy(tournaments.name);
+
+    return {
+      sport,
+      tournaments: rows.map((r) => ({
+        id: r.id,
+        slug: r.slug,
+        name: r.name,
+        matchCount: Number(r.matchCount),
+      })),
+    };
+  });
+
+  // ── Matches under a tournament ──────────────────────────────────────
+  app.get("/admin/logs/tournaments/:id/matches", async (request) => {
+    request.requireRole("admin");
+    const { id } = z
+      .object({ id: z.coerce.number().int().positive() })
+      .parse(request.params);
+
+    const [tournament] = await app.db
+      .select({
+        id: tournaments.id,
+        name: tournaments.name,
+        sportSlug: sports.slug,
+        sportName: sports.name,
+      })
+      .from(tournaments)
+      .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+      .innerJoin(sports, eq(sports.id, categories.sportId))
+      .where(eq(tournaments.id, id))
+      .limit(1);
+    if (!tournament) throw new NotFoundError("tournament_not_found", "tournament_not_found");
+
+    const rows = await app.db
+      .select({
+        id: matches.id,
+        homeTeam: matches.homeTeam,
+        awayTeam: matches.awayTeam,
+        scheduledAt: matches.scheduledAt,
+        status: matches.status,
+        bestOf: matches.bestOf,
+        messageCount: sql<string>`(
+          SELECT COUNT(*)::text FROM ${feedMessages}
+          WHERE ${feedMessages.matchId} = ${matches.id}
+        )`,
+      })
+      .from(matches)
+      .where(and(eq(matches.tournamentId, id), matchInWindow))
+      .orderBy(desc(matches.scheduledAt));
+
+    return {
+      tournament,
+      matches: rows.map((r) => ({
+        id: r.id.toString(),
+        homeTeam: r.homeTeam,
+        awayTeam: r.awayTeam,
+        scheduledAt: r.scheduledAt?.toISOString() ?? null,
+        status: r.status,
+        bestOf: r.bestOf,
+        messageCount: Number(r.messageCount),
+      })),
+    };
+  });
+
+  // ── Match + odds-history for every market ───────────────────────────
+  // Returns the match shell plus, per market, a time series per outcome.
+  // Client renders the SVG lines. Bounded to 24h of odds_history so the
+  // payload is manageable; the feed-ingester cleanup also caps at ~24h
+  // post-start so nothing meaningful is trimmed.
+  app.get("/admin/logs/matches/:id", async (request) => {
+    request.requireRole("admin");
+    const { id } = z
+      .object({ id: z.coerce.bigint() })
+      .parse(request.params);
+
+    const [match] = await app.db
+      .select({
+        id: matches.id,
+        providerUrn: matches.providerUrn,
+        homeTeam: matches.homeTeam,
+        awayTeam: matches.awayTeam,
+        scheduledAt: matches.scheduledAt,
+        status: matches.status,
+        bestOf: matches.bestOf,
+        tournamentId: tournaments.id,
+        tournamentName: tournaments.name,
+        sportSlug: sports.slug,
+        sportName: sports.name,
+      })
+      .from(matches)
+      .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
+      .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+      .innerJoin(sports, eq(sports.id, categories.sportId))
+      .where(eq(matches.id, id))
+      .limit(1);
+    if (!match) throw new NotFoundError("match_not_found", "match_not_found");
+
+    const marketRows = await app.db
+      .select({
+        id: markets.id,
+        providerMarketId: markets.providerMarketId,
+        specifiersJson: markets.specifiersJson,
+        status: markets.status,
+      })
+      .from(markets)
+      .where(eq(markets.matchId, id))
+      .orderBy(markets.providerMarketId, markets.id);
+
+    const marketIds = marketRows.map((m) => m.id);
+
+    const outcomeRows = marketIds.length
+      ? await app.db
+          .select({
+            marketId: marketOutcomes.marketId,
+            outcomeId: marketOutcomes.outcomeId,
+            name: marketOutcomes.name,
+          })
+          .from(marketOutcomes)
+          .where(inArray(marketOutcomes.marketId, marketIds))
+      : [];
+
+    // Pull odds_history for the last 24h at most. Use raw SQL because
+    // odds_history is partitioned and the Drizzle schema flags it as a
+    // non-emitted table; direct select works but we also benefit from
+    // pgxpool's partition pruning with an explicit ts bound.
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const historyRows = marketIds.length
+      ? ((await app.db.execute(sql`
+          SELECT market_id, outcome_id, raw_odds, published_odds,
+                 EXTRACT(EPOCH FROM ts)::bigint * 1000 AS ts_ms
+            FROM odds_history
+           WHERE market_id = ANY(${marketIds}::bigint[])
+             AND ts > ${since.toISOString()}
+           ORDER BY ts ASC
+        `)) as unknown as Array<{
+          market_id: string;
+          outcome_id: string;
+          raw_odds: string | null;
+          published_odds: string | null;
+          ts_ms: string;
+        }>)
+      : [];
+
+    type Point = { tsMs: number; raw: string | null; published: string | null };
+    type Series = { outcomeId: string; name: string; points: Point[] };
+    type MarketBlock = {
+      id: string;
+      providerMarketId: number;
+      specifiers: Record<string, string>;
+      status: number;
+      outcomes: Array<{ outcomeId: string; name: string }>;
+      series: Series[];
+    };
+
+    const byMarket = new Map<string, MarketBlock>();
+    for (const m of marketRows) {
+      byMarket.set(m.id.toString(), {
+        id: m.id.toString(),
+        providerMarketId: m.providerMarketId,
+        specifiers: (m.specifiersJson ?? {}) as Record<string, string>,
+        status: m.status,
+        outcomes: [],
+        series: [],
+      });
+    }
+    const outcomeNameByKey = new Map<string, string>();
+    for (const o of outcomeRows) {
+      const key = `${o.marketId.toString()}::${o.outcomeId}`;
+      outcomeNameByKey.set(key, o.name);
+      const mb = byMarket.get(o.marketId.toString());
+      if (mb) {
+        if (!mb.outcomes.some((x) => x.outcomeId === o.outcomeId)) {
+          mb.outcomes.push({ outcomeId: o.outcomeId, name: o.name });
+        }
+      }
+    }
+    for (const h of historyRows) {
+      const mb = byMarket.get(h.market_id.toString());
+      if (!mb) continue;
+      const key = `${h.market_id.toString()}::${h.outcome_id}`;
+      let series = mb.series.find((s) => s.outcomeId === h.outcome_id);
+      if (!series) {
+        series = {
+          outcomeId: h.outcome_id,
+          name: outcomeNameByKey.get(key) ?? h.outcome_id,
+          points: [],
+        };
+        mb.series.push(series);
+      }
+      series.points.push({
+        tsMs: Number(h.ts_ms),
+        raw: h.raw_odds,
+        published: h.published_odds,
+      });
+    }
+
+    return {
+      match: {
+        id: match.id.toString(),
+        providerUrn: match.providerUrn,
+        homeTeam: match.homeTeam,
+        awayTeam: match.awayTeam,
+        scheduledAt: match.scheduledAt?.toISOString() ?? null,
+        status: match.status,
+        bestOf: match.bestOf,
+        tournament: { id: match.tournamentId, name: match.tournamentName },
+        sport: { slug: match.sportSlug, name: match.sportName },
+      },
+      markets: Array.from(byMarket.values()),
+    };
+  });
+
+  // ── Raw feed messages for a match ───────────────────────────────────
+  app.get("/admin/logs/matches/:id/feed", async (request) => {
+    request.requireRole("admin");
+    const { id } = z
+      .object({ id: z.coerce.bigint() })
+      .parse(request.params);
+    const q = z
+      .object({
+        limit: z.coerce.number().int().min(1).max(2000).default(500),
+        kind: z.string().max(64).optional(),
+      })
+      .parse(request.query);
+
+    const filters = [eq(feedMessages.matchId, id)];
+    if (q.kind) filters.push(eq(feedMessages.kind, q.kind));
+
+    const rows = await app.db
+      .select({
+        id: feedMessages.id,
+        kind: feedMessages.kind,
+        routingKey: feedMessages.routingKey,
+        product: feedMessages.product,
+        payloadXml: feedMessages.payloadXml,
+        receivedAt: feedMessages.receivedAt,
+      })
+      .from(feedMessages)
+      .where(and(...filters))
+      .orderBy(desc(feedMessages.receivedAt))
+      .limit(q.limit);
+
+    return {
+      messages: rows.map((r) => ({
+        id: r.id.toString(),
+        kind: r.kind,
+        routingKey: r.routingKey,
+        product: r.product,
+        payloadXml: r.payloadXml,
+        receivedAt: r.receivedAt.toISOString(),
+      })),
+      limit: q.limit,
+    };
+  });
+}
