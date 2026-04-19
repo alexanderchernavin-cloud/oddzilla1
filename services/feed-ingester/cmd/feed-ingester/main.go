@@ -72,9 +72,9 @@ func main() {
 	st := store.New(pool)
 	oddsBus := bus.New(rdb)
 
-	// Fallback sport + category for unknown-tournament branches. Any of
-	// the four MVP esports work; we pick CS2 as the conventional default
-	// since its seed slug is deterministic.
+	// Fallback sport + category for unknown-tournament branches. Any
+	// seeded sport works; we pick CS2 as the conventional default since
+	// its seed slug is deterministic.
 	fallbackSportID, fallbackCategoryID, err := resolveFallback(ctx, st)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("resolve fallback sport/category (run `make seed`?)")
@@ -104,16 +104,16 @@ func main() {
 		logger.With().Str("component", "automap").Logger(),
 		fallbackSportID,
 		fallbackCategoryID,
-		cfg.Oddin.AllowedSportURNs,
+		cfg.Oddin.BlockedSportSlugs,
 	)
-	if len(cfg.Oddin.AllowedSportURNs) == 0 {
-		logger.Warn().Msg("sport allowlist disabled — every Oddin sport will be persisted")
+	if len(cfg.Oddin.BlockedSportSlugs) == 0 {
+		logger.Warn().Msg("sport blocklist disabled — every Oddin sport will be persisted")
 	} else {
-		allowed := make([]string, 0, len(cfg.Oddin.AllowedSportURNs))
-		for urn := range cfg.Oddin.AllowedSportURNs {
-			allowed = append(allowed, urn)
+		blocked := make([]string, 0, len(cfg.Oddin.BlockedSportSlugs))
+		for slug := range cfg.Oddin.BlockedSportSlugs {
+			blocked = append(blocked, slug)
 		}
-		logger.Info().Strs("sports", allowed).Msg("sport allowlist active")
+		logger.Info().Strs("sports", blocked).Msg("sport blocklist active")
 	}
 
 	deps := handler.Deps{

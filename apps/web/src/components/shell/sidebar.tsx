@@ -128,24 +128,24 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
   );
 }
 
-// Explicit sport ordering: flagship esports on top, bot leagues on the bottom,
-// everything else alphabetical in between.
+// Explicit sport ordering: flagship esports pinned on top, everything
+// else alphabetical below. Bot leagues are excluded from the product
+// entirely (backend blocklist + DB inactive); the sidebar also filters
+// them defensively so a stray active row can't leak in.
 const TOP = ["cs2", "dota2", "lol", "valorant"] as const;
-const BOTTOM = ["efootballbots", "ebasketballbots"] as const;
+const HIDDEN = new Set<string>(["efootballbots", "ebasketballbots"]);
 
 function orderSports(sports: SportItem[]): SportItem[] {
-  const bySlug = new Map(sports.map((s) => [s.slug, s]));
+  const visible = sports.filter((s) => !HIDDEN.has(s.slug));
+  const bySlug = new Map(visible.map((s) => [s.slug, s]));
   const top = TOP.map((s) => bySlug.get(s)).filter(
     (s): s is SportItem => Boolean(s),
   );
-  const bottom = BOTTOM.map((s) => bySlug.get(s)).filter(
-    (s): s is SportItem => Boolean(s),
-  );
-  const pinned = new Set<string>([...TOP, ...BOTTOM]);
-  const middle = sports
+  const pinned = new Set<string>(TOP);
+  const middle = visible
     .filter((s) => !pinned.has(s.slug))
     .sort((a, b) => a.name.localeCompare(b.name));
-  return [...top, ...middle, ...bottom];
+  return [...top, ...middle];
 }
 
 function SectionLabel({ children }: { children: ReactNode }) {

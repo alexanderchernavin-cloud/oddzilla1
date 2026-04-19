@@ -85,6 +85,13 @@
       "when": 1700000011000,
       "tag": "0011_feed_messages",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1700000012000,
+      "tag": "0012_reactivate_non_bot_sports",
+      "breakpoints": true
     }
   ]
 }
