@@ -72,8 +72,22 @@ export default async function MatchPage({
         Back to {match.sport.name}
       </Link>
 
-      <div className="card" style={{ padding: 24, borderRadius: "var(--r-lg)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+      <div
+        className="card"
+        style={{
+          padding: "clamp(14px, 4vw, 24px)",
+          borderRadius: "var(--r-lg)",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            marginBottom: 18,
+            flexWrap: "wrap",
+          }}
+        >
           {isLive ? (
             <Pill tone="live">
               <LiveDot size={6} /> LIVE
@@ -99,7 +113,7 @@ export default async function MatchPage({
           style={{
             display: "grid",
             gridTemplateColumns: "1fr auto 1fr",
-            gap: 24,
+            gap: "clamp(10px, 3vw, 24px)",
             alignItems: "center",
           }}
         >
@@ -119,10 +133,11 @@ export default async function MatchPage({
             <div
               className="mono tnum"
               style={{
-                fontSize: 22,
+                fontSize: "clamp(18px, 4vw, 22px)",
                 fontWeight: 500,
                 color: "var(--fg-muted)",
                 margin: "4px 0",
+                whiteSpace: "nowrap",
               }}
             >
               {isLive ? `${homeScore} : ${awayScore}` : "vs"}
@@ -177,16 +192,21 @@ function TeamBlock({
         flexDirection: "column",
         gap: 6,
         alignItems: align === "right" ? "flex-end" : "flex-start",
+        minWidth: 0,
       }}
     >
       <TeamMark tag={tag} size={36} />
       <div
         className="display"
         style={{
-          fontSize: 26,
+          fontSize: "clamp(17px, 4.8vw, 26px)",
           fontWeight: 500,
           letterSpacing: "-0.02em",
           textAlign: align,
+          lineHeight: 1.15,
+          overflowWrap: "anywhere",
+          minWidth: 0,
+          maxWidth: "100%",
         }}
       >
         {name}
@@ -194,7 +214,12 @@ function TeamBlock({
       {showScore && (
         <div
           className="mono tnum"
-          style={{ fontSize: 32, fontWeight: 500, color: "var(--fg)", lineHeight: 1 }}
+          style={{
+            fontSize: "clamp(22px, 6vw, 32px)",
+            fontWeight: 500,
+            color: "var(--fg)",
+            lineHeight: 1,
+          }}
         >
           {score}
         </div>

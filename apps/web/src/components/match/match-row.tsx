@@ -160,7 +160,7 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
               display: "grid",
               gridTemplateColumns: "1fr 1fr",
               gap: 6,
-              minWidth: 200,
+              width: "clamp(150px, 40vw, 200px)",
             }}
           >
             <OddButton
