@@ -1,7 +1,6 @@
 import Link from "next/link";
-import { fromMicro } from "@oddzilla/types/money";
 import { serverApi } from "@/lib/server-fetch";
-import { CreateUserForm } from "./create-user-form";
+import { CreateUserForm } from "../users/create-user-form";
 
 interface AdminUserRow {
   id: string;
@@ -25,25 +24,29 @@ interface ListResponse {
 }
 
 const ALLOWED_STATUS = ["active", "blocked", "pending_kyc"] as const;
+const ROLE_FILTERS = ["all", "admin", "support"] as const;
 
-export default async function AdminBettorsPage({
+export default async function AdminStaffPage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string; status?: string; offset?: string }>;
+  searchParams: Promise<{ q?: string; status?: string; role?: string; offset?: string }>;
 }) {
   const params = await searchParams;
   const q = params.q?.trim();
   const status = ALLOWED_STATUS.includes(params.status as (typeof ALLOWED_STATUS)[number])
     ? params.status
     : undefined;
+  const roleFilter = ROLE_FILTERS.includes(params.role as (typeof ROLE_FILTERS)[number])
+    ? (params.role as (typeof ROLE_FILTERS)[number])
+    : "all";
   const offset = Number(params.offset ?? 0) || 0;
 
-  // Pinned to bettor role. Admin/support accounts live under /admin/admins.
-  const qs = new URLSearchParams({
-    limit: "50",
-    offset: String(offset),
-    role: "user",
-  });
+  const qs = new URLSearchParams({ limit: "100", offset: String(offset) });
+  if (roleFilter === "all") {
+    qs.set("roles", "admin,support");
+  } else {
+    qs.set("role", roleFilter);
+  }
   if (q) qs.set("q", q);
   if (status) qs.set("status", status);
 
@@ -53,25 +56,28 @@ export default async function AdminBettorsPage({
   return (
     <div>
       <h1 className="text-2xl font-semibold tracking-tight">
-        Bettor user management
+        Admin user management
       </h1>
       <p className="mt-1 text-sm text-[var(--color-fg-muted)]">
-        Player accounts. Block, adjust limits, or toggle bet-delay. Every
-        write is audited. Backoffice operators live under{" "}
+        Backoffice operators. Only admins can access{" "}
+        <span className="font-mono text-[var(--color-fg)]">
+          sadmin.oddzilla.cc
+        </span>
+        . Player accounts live under{" "}
         <Link
-          href="/admin/admins"
+          href="/admin/users"
           className="text-[var(--color-accent)] hover:underline"
         >
-          Admins
+          Bettors
         </Link>
         .
       </p>
 
       <div className="mt-6">
-        <CreateUserForm mode="bettor" />
+        <CreateUserForm mode="admin" />
       </div>
 
-      <form className="mt-6 flex flex-wrap items-end gap-3 text-sm" action="/admin/users">
+      <form className="mt-6 flex flex-wrap items-end gap-3 text-sm" action="/admin/admins">
         <label className="flex flex-col gap-1">
           <span className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
             Search
@@ -82,6 +88,22 @@ export default async function AdminBettorsPage({
             placeholder="email or display name"
             className="rounded-[8px] border border-[var(--color-border-strong)] bg-[var(--color-bg-card)] px-3 py-1.5"
           />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
+            Role
+          </span>
+          <select
+            name="role"
+            defaultValue={roleFilter}
+            className="rounded-[8px] border border-[var(--color-border-strong)] bg-[var(--color-bg-card)] px-3 py-1.5"
+          >
+            {ROLE_FILTERS.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
         </label>
         <label className="flex flex-col gap-1">
           <span className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
@@ -109,29 +131,45 @@ export default async function AdminBettorsPage({
       </form>
 
       {users.length === 0 ? (
-        <p className="mt-8 text-sm text-[var(--color-fg-muted)]">No bettors match.</p>
+        <p className="mt-8 text-sm text-[var(--color-fg-muted)]">
+          No admin users match.
+        </p>
       ) : (
         <div className="mt-6 overflow-x-auto rounded-[14px] border border-[var(--color-border)] bg-[var(--color-bg-card)]">
           <table className="min-w-full text-sm">
             <thead>
               <tr className="border-b border-[var(--color-border)] text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
                 <th className="px-4 py-3 text-left font-normal">Email</th>
+                <th className="px-4 py-3 text-left font-normal">Role</th>
                 <th className="px-4 py-3 text-left font-normal">Status</th>
-                <th className="px-4 py-3 text-left font-normal">KYC</th>
-                <th className="px-4 py-3 text-right font-normal">Balance</th>
-                <th className="px-4 py-3 text-right font-normal">Limit</th>
-                <th className="px-4 py-3 text-right font-normal">Delay</th>
+                <th className="px-4 py-3 text-left font-normal">Created</th>
+                <th className="px-4 py-3 text-left font-normal">Last login</th>
                 <th className="px-4 py-3" />
               </tr>
             </thead>
             <tbody>
               {users.map((u) => (
-                <tr key={u.id} className="border-b border-[var(--color-border)] last:border-b-0">
+                <tr
+                  key={u.id}
+                  className="border-b border-[var(--color-border)] last:border-b-0"
+                >
                   <td className="px-4 py-3">
                     <p className="truncate">{u.email}</p>
                     {u.displayName ? (
-                      <p className="text-xs text-[var(--color-fg-subtle)]">{u.displayName}</p>
+                      <p className="text-xs text-[var(--color-fg-subtle)]">
+                        {u.displayName}
+                      </p>
                     ) : null}
+                  </td>
+                  <td
+                    className={
+                      "px-4 py-3 text-xs uppercase tracking-[0.15em] " +
+                      (u.role === "admin"
+                        ? "text-[var(--color-accent)]"
+                        : "text-[var(--color-fg-muted)]")
+                    }
+                  >
+                    {u.role}
                   </td>
                   <td
                     className={
@@ -145,17 +183,13 @@ export default async function AdminBettorsPage({
                   >
                     {u.status}
                   </td>
-                  <td className="px-4 py-3 text-xs uppercase tracking-[0.15em] text-[var(--color-fg-muted)]">
-                    {u.kycStatus}
+                  <td className="px-4 py-3 font-mono text-xs text-[var(--color-fg-muted)]">
+                    {new Date(u.createdAt).toLocaleDateString()}
                   </td>
-                  <td className="px-4 py-3 text-right font-mono">
-                    {fromMicro(BigInt(u.balanceMicro))}
-                  </td>
-                  <td className="px-4 py-3 text-right font-mono text-[var(--color-fg-muted)]">
-                    {BigInt(u.globalLimitMicro) === 0n ? "—" : fromMicro(BigInt(u.globalLimitMicro))}
-                  </td>
-                  <td className="px-4 py-3 text-right font-mono text-[var(--color-fg-muted)]">
-                    {u.betDelaySeconds}s
+                  <td className="px-4 py-3 font-mono text-xs text-[var(--color-fg-muted)]">
+                    {u.lastLoginAt
+                      ? new Date(u.lastLoginAt).toLocaleString()
+                      : "—"}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <Link
@@ -179,15 +213,25 @@ export default async function AdminBettorsPage({
         <div className="flex items-center gap-2">
           {offset > 0 ? (
             <Link
-              href={buildHref({ q, status, offset: Math.max(0, offset - 50) })}
+              href={buildHref({
+                q,
+                status,
+                role: roleFilter,
+                offset: Math.max(0, offset - 100),
+              })}
               className="rounded-[8px] border border-[var(--color-border-strong)] px-3 py-1.5 text-xs uppercase tracking-[0.15em] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]"
             >
               Previous
             </Link>
           ) : null}
-          {users.length >= 50 ? (
+          {users.length >= 100 ? (
             <Link
-              href={buildHref({ q, status, offset: offset + 50 })}
+              href={buildHref({
+                q,
+                status,
+                role: roleFilter,
+                offset: offset + 100,
+              })}
               className="rounded-[8px] border border-[var(--color-border-strong)] px-3 py-1.5 text-xs uppercase tracking-[0.15em] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]"
             >
               Next
@@ -202,11 +246,13 @@ export default async function AdminBettorsPage({
 function buildHref(params: {
   q?: string;
   status?: string;
+  role: string;
   offset: number;
 }): string {
   const qs = new URLSearchParams();
   if (params.q) qs.set("q", params.q);
   if (params.status) qs.set("status", params.status);
+  if (params.role) qs.set("role", params.role);
   qs.set("offset", String(params.offset));
-  return `/admin/users?${qs.toString()}`;
+  return `/admin/admins?${qs.toString()}`;
 }
