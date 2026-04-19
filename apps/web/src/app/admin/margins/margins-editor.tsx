@@ -50,6 +50,45 @@ function MarginTable({ entries }: { entries: MarginEntry[] }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [err, setErr] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [draftPercent, setDraftPercent] = useState<string>("");
+
+  function startEdit(entry: MarginEntry) {
+    setErr(null);
+    setEditingId(entry.id);
+    setDraftPercent(bpToPercent(entry.paybackMarginBp));
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setDraftPercent("");
+  }
+
+  function save(entry: MarginEntry) {
+    setErr(null);
+    const bp = percentToBp(draftPercent);
+    if (bp < 0 || bp > 5000) {
+      setErr("Margin must be between 0% and 50%.");
+      return;
+    }
+    startTransition(async () => {
+      try {
+        await clientApi("/admin/odds-config", {
+          method: "PUT",
+          body: JSON.stringify({
+            scope: entry.scope,
+            scopeRefId: entry.scopeRefId,
+            paybackMarginBp: bp,
+          }),
+        });
+        setEditingId(null);
+        setDraftPercent("");
+        router.refresh();
+      } catch (e) {
+        setErr(e instanceof ApiFetchError ? e.body.message : "Save failed.");
+      }
+    });
+  }
 
   function del(id: number) {
     setErr(null);
@@ -88,29 +127,81 @@ function MarginTable({ entries }: { entries: MarginEntry[] }) {
           </tr>
         </thead>
         <tbody className="divide-y divide-[var(--color-border)]">
-          {entries.map((e) => (
-            <tr key={e.id}>
-              <td className="px-5 py-3">{e.label}</td>
-              <td className="px-5 py-3 text-right font-mono">{bpToPercent(e.paybackMarginBp)}%</td>
-              <td className="px-5 py-3 text-right text-[var(--color-fg-muted)]">
-                {new Date(e.updatedAt).toLocaleString()}
-              </td>
-              <td className="px-5 py-3 text-right">
-                {e.scope === "global" ? (
-                  <span className="text-xs text-[var(--color-fg-subtle)]">required</span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => del(e.id)}
-                    disabled={pending}
-                    className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-muted)] hover:text-[var(--color-negative)] disabled:opacity-50"
-                  >
-                    Delete
-                  </button>
-                )}
-              </td>
-            </tr>
-          ))}
+          {entries.map((e) => {
+            const editing = editingId === e.id;
+            return (
+              <tr key={e.id}>
+                <td className="px-5 py-3">{e.label}</td>
+                <td className="px-5 py-3 text-right font-mono">
+                  {editing ? (
+                    <input
+                      type="number"
+                      min={0}
+                      max={50}
+                      step={0.01}
+                      autoFocus
+                      value={draftPercent}
+                      onChange={(ev) => setDraftPercent(ev.target.value)}
+                      onKeyDown={(ev) => {
+                        if (ev.key === "Enter") save(e);
+                        else if (ev.key === "Escape") cancelEdit();
+                      }}
+                      disabled={pending}
+                      className="w-24 rounded-[8px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-2 py-1 text-right font-mono outline-none focus:border-[var(--color-accent)]"
+                    />
+                  ) : (
+                    `${bpToPercent(e.paybackMarginBp)}%`
+                  )}
+                </td>
+                <td className="px-5 py-3 text-right text-[var(--color-fg-muted)]">
+                  {new Date(e.updatedAt).toLocaleString()}
+                </td>
+                <td className="px-5 py-3 text-right">
+                  {editing ? (
+                    <div className="flex justify-end gap-3">
+                      <button
+                        type="button"
+                        onClick={() => save(e)}
+                        disabled={pending}
+                        className="text-xs uppercase tracking-[0.15em] text-[var(--color-accent)] hover:opacity-80 disabled:opacity-50"
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={cancelEdit}
+                        disabled={pending}
+                        className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)] disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex justify-end gap-3">
+                      <button
+                        type="button"
+                        onClick={() => startEdit(e)}
+                        disabled={pending}
+                        className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)] disabled:opacity-50"
+                      >
+                        Edit
+                      </button>
+                      {e.scope === "global" ? null : (
+                        <button
+                          type="button"
+                          onClick={() => del(e.id)}
+                          disabled={pending}
+                          className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-muted)] hover:text-[var(--color-negative)] disabled:opacity-50"
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
