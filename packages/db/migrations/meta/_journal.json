@@ -71,6 +71,13 @@
       "when": 1700000009000,
       "tag": "0009_competitors",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1700000010000,
+      "tag": "0010_odds_config_global_unique",
+      "breakpoints": true
     }
   ]
 }
