@@ -152,7 +152,8 @@ export function BetSlipRail() {
 
       <div
         style={{
-          flex: 1,
+          minHeight: 0,
+          flexShrink: 1,
           overflow: "auto",
           padding: "12px 16px 8px",
           display: "flex",
