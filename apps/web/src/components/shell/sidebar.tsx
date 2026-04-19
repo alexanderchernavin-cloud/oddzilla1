@@ -1,16 +1,28 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import type { ReactNode } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
+import { useEffect, useState, type ReactNode } from "react";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { I } from "@/components/ui/icons";
+import { clientApi } from "@/lib/api-client";
 
 interface SportItem {
   slug: string;
   name: string;
   kind: string;
   active: boolean;
+}
+
+interface Tournament {
+  id: number;
+  name: string;
+  matchCount: number;
+}
+
+interface TournamentsResponse {
+  sport: { id: number; slug: string; name: string };
+  tournaments: Tournament[];
 }
 
 interface SidebarProps {
@@ -22,11 +34,45 @@ interface SidebarProps {
 
 export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps) {
   const pathname = usePathname() ?? "/";
+  const searchParams = useSearchParams();
   const isActive = (href: string) => {
     if (href === "/") return pathname === "/";
     return pathname === href || pathname.startsWith(href + "/");
   };
   const totalLive = Object.values(liveCounts).reduce((a, n) => a + n, 0);
+
+  const activeSportSlug = extractSportSlug(pathname);
+  const activeTournamentId = searchParams?.get("tournament") ?? null;
+
+  // Cache tournaments per sport so navigating away and back doesn't
+  // re-fetch. Keyed by slug; value is the loaded list or undefined while
+  // still loading / never requested.
+  const [tournamentsBySport, setTournamentsBySport] = useState<
+    Record<string, Tournament[]>
+  >({});
+
+  useEffect(() => {
+    if (!activeSportSlug) return;
+    if (tournamentsBySport[activeSportSlug]) return;
+    let cancelled = false;
+    clientApi<TournamentsResponse>(
+      `/catalog/sports/${activeSportSlug}/tournaments`,
+    )
+      .then((data) => {
+        if (cancelled) return;
+        setTournamentsBySport((prev) => ({
+          ...prev,
+          [activeSportSlug]: data.tournaments,
+        }));
+      })
+      .catch(() => {
+        // Sidebar gracefully omits the tournament list on failure —
+        // the top-level sport link still works.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSportSlug, tournamentsBySport]);
 
   return (
     <aside
@@ -57,16 +103,48 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
       />
 
       <SectionLabel>Sports</SectionLabel>
-      {orderSports(sports).map((s) => (
-        <Item
-          key={s.slug}
-          href={`/sport/${s.slug}`}
-          icon={<SportGlyph sport={s.slug} size={16} />}
-          active={isActive(`/sport/${s.slug}`)}
-          label={s.name}
-          tag={liveCounts[s.slug] ? String(liveCounts[s.slug]) : undefined}
-        />
-      ))}
+      {orderSports(sports).map((s) => {
+        const sportActive = isActive(`/sport/${s.slug}`);
+        const expanded = sportActive && s.slug === activeSportSlug;
+        const tournaments = tournamentsBySport[s.slug];
+        return (
+          <div key={s.slug}>
+            <Item
+              href={`/sport/${s.slug}`}
+              icon={<SportGlyph sport={s.slug} size={16} />}
+              active={sportActive && activeTournamentId == null}
+              label={s.name}
+              tag={liveCounts[s.slug] ? String(liveCounts[s.slug]) : undefined}
+            />
+            {expanded && tournaments && tournaments.length > 0 && (
+              <div
+                style={{
+                  marginLeft: 22,
+                  paddingLeft: 10,
+                  borderLeft: "1px solid var(--hairline)",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 2,
+                  marginTop: 2,
+                  marginBottom: 4,
+                }}
+              >
+                {tournaments.map((t) => {
+                  const active = activeTournamentId === String(t.id);
+                  return (
+                    <TournamentItem
+                      key={t.id}
+                      sportSlug={s.slug}
+                      tournament={t}
+                      active={active}
+                    />
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
 
       <SectionLabel>Account</SectionLabel>
       {signedIn ? (
@@ -128,6 +206,14 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
   );
 }
 
+// extractSportSlug returns the slug if the pathname is exactly
+// /sport/:slug or /sport/:slug/… , otherwise null. Used by the sidebar
+// to decide when to auto-expand the tournament sub-tree.
+function extractSportSlug(pathname: string): string | null {
+  const m = pathname.match(/^\/sport\/([^/]+)/);
+  return m && m[1] ? m[1] : null;
+}
+
 // Explicit sport ordering: flagship esports pinned on top, everything
 // else alphabetical below. Bot leagues are excluded from the product
 // entirely (backend blocklist + DB inactive); the sidebar also filters
@@ -163,6 +249,57 @@ function SectionLabel({ children }: { children: ReactNode }) {
     >
       {children}
     </div>
+  );
+}
+
+function TournamentItem({
+  sportSlug,
+  tournament,
+  active,
+}: {
+  sportSlug: string;
+  tournament: Tournament;
+  active: boolean;
+}) {
+  return (
+    <Link
+      href={`/sport/${sportSlug}?tournament=${tournament.id}`}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "6px 10px",
+        borderRadius: 6,
+        fontSize: 12.5,
+        textDecoration: "none",
+        color: active ? "var(--fg)" : "var(--fg-muted)",
+        background: active ? "var(--surface-2)" : "transparent",
+        position: "relative",
+        transition: "background 140ms var(--ease), color 140ms var(--ease)",
+      }}
+    >
+      <span
+        style={{
+          flex: 1,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {tournament.name}
+      </span>
+      {tournament.matchCount > 0 && (
+        <span
+          className="mono tnum"
+          style={{
+            fontSize: 10.5,
+            color: active ? "var(--fg)" : "var(--fg-dim)",
+          }}
+        >
+          {tournament.matchCount}
+        </span>
+      )}
+    </Link>
   );
 }
 
