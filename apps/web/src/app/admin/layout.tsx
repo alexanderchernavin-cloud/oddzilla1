@@ -25,7 +25,10 @@ export default async function AdminLayout({ children }: { children: React.ReactN
               Dashboard
             </Link>
             <Link href="/admin/users" className="hover:text-[var(--color-fg)]">
-              Users
+              Bettors
+            </Link>
+            <Link href="/admin/admins" className="hover:text-[var(--color-fg)]">
+              Admins
             </Link>
             <Link href="/admin/mapping" className="hover:text-[var(--color-fg)]">
               Mapping
@@ -41,6 +44,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
             </Link>
             <Link href="/admin/feed" className="hover:text-[var(--color-fg)]">
               Feed
+            </Link>
+            <Link href="/admin/logs" className="hover:text-[var(--color-fg)]">
+              Logs
             </Link>
             <Link href="/account" className="hover:text-[var(--color-fg)]">
               Exit admin

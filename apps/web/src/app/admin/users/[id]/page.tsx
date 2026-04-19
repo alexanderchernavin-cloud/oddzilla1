@@ -51,11 +51,14 @@ export default async function UserDetailPage({
   const { user, stats, recentTickets } = data;
   const netLifetime = BigInt(stats.totalStakeMicro) - BigInt(stats.totalPayoutMicro);
 
+  const backHref = user.role === "user" ? "/admin/users" : "/admin/admins";
+  const backLabel = user.role === "user" ? "Bettors" : "Admins";
+
   return (
     <div>
       <nav className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-        <Link href="/admin/users" className="hover:text-[var(--color-fg)]">
-          Users
+        <Link href={backHref} className="hover:text-[var(--color-fg)]">
+          {backLabel}
         </Link>{" "}
         /{" "}
         <span className="normal-case tracking-normal text-[var(--color-fg)]">

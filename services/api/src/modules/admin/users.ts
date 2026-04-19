@@ -8,7 +8,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq, and, or, ilike, desc, sql, type SQL } from "drizzle-orm";
+import { eq, and, or, ilike, inArray, desc, sql, type SQL } from "drizzle-orm";
 import {
   users,
   wallets,
@@ -29,6 +29,14 @@ const listQuery = z.object({
   q: z.string().trim().max(128).optional(),
   status: z.enum(["active", "blocked", "pending_kyc"]).optional(),
   role: z.enum(["user", "admin", "support"]).optional(),
+  // Multi-role filter, CSV. Takes precedence over `role` when both are
+  // present. Used by the "Admin User Management" view to list admins +
+  // support side-by-side.
+  roles: z
+    .string()
+    .transform((s) => s.split(",").map((t) => t.trim()).filter(Boolean))
+    .pipe(z.array(z.enum(["user", "admin", "support"])).min(1).max(3))
+    .optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });
@@ -79,7 +87,11 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
 
     const filters: SQL[] = [];
     if (q.status) filters.push(eq(users.status, q.status));
-    if (q.role) filters.push(eq(users.role, q.role));
+    if (q.roles && q.roles.length > 0) {
+      filters.push(inArray(users.role, q.roles));
+    } else if (q.role) {
+      filters.push(eq(users.role, q.role));
+    }
     if (q.q) {
       const like = `%${q.q}%`;
       const orExpr = or(ilike(users.email, like), ilike(users.displayName, like));

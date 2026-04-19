@@ -134,6 +134,11 @@ func main() {
 		_ = healthSrv.Shutdown(shutCtx)
 	}()
 
+	// ── Feed message cleanup (always on) ───────────────────────────────
+	// Even with the feed disabled there may be stale rows left from a
+	// previous run; a small hourly sweep keeps the table bounded.
+	go runFeedMessageCleanup(ctx, st, logger)
+
 	// ── AMQP (optional) ────────────────────────────────────────────────
 	if !cfg.Oddin.Enabled {
 		logger.Warn().Msg("Oddin creds absent (ODDIN_TOKEN/ODDIN_CUSTOMER_ID); running idle — health endpoint only")
@@ -293,6 +298,39 @@ func listenRecoveryOnce(ctx context.Context, pool *pgxpool.Pool, deps handler.De
 		handler.TriggerRecovery(ctx, deps, log)
 	}
 	return nil
+}
+
+// runFeedMessageCleanup sweeps the feed_messages table once per hour.
+// Rows whose match's scheduled_at + 24h is in the past get deleted;
+// unmatched rows older than 48h are also purged as a hard safety bound.
+// Admin /admin/logs only surfaces matches that are still within their
+// window, so anything older is effectively invisible anyway.
+func runFeedMessageCleanup(ctx context.Context, st *store.Store, log zerolog.Logger) {
+	const sweepEvery = 1 * time.Hour
+	// Run once on boot so a long-stopped instance doesn't carry a
+	// backlog into the first live tick.
+	if n, err := store.SweepFeedMessages(ctx, st.Pool()); err != nil {
+		log.Warn().Err(err).Msg("feed_messages initial sweep failed")
+	} else if n > 0 {
+		log.Info().Int64("deleted", n).Msg("feed_messages initial sweep")
+	}
+	t := time.NewTicker(sweepEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			n, err := store.SweepFeedMessages(ctx, st.Pool())
+			if err != nil {
+				log.Warn().Err(err).Msg("feed_messages sweep failed")
+				continue
+			}
+			if n > 0 {
+				log.Info().Int64("deleted", n).Msg("feed_messages hourly sweep")
+			}
+		}
+	}
 }
 
 // runHandoverSweeper polls every 15s and demotes markets stuck at -2
