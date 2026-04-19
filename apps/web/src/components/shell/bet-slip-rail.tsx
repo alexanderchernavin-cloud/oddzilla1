@@ -17,7 +17,7 @@ export function BetSlipRail() {
   const selections = slip.selections;
   const { closeAll } = useMobileDrawers();
   const router = useRouter();
-  const [stakeInput, setStakeInput] = useState("10.00");
+  const [stakeInput, setStakeInput] = useState("10");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [placedTicketId, setPlacedTicketId] = useState<string | null>(null);
@@ -35,6 +35,13 @@ export function BetSlipRail() {
     if (!Number.isFinite(stake) || stake <= 0 || combinedOdds <= 0) return 0;
     return stake * combinedOdds;
   }, [stakeInput, combinedOdds]);
+
+  // Show a whole-number amount without trailing ".00"; keep up to
+  // 2 decimals otherwise, trimming trailing zeros (e.g. "14.5" not "14.50").
+  const formatAmount = (n: number): string => {
+    if (!Number.isFinite(n) || n <= 0) return "0";
+    return n.toFixed(2).replace(/\.?0+$/, "");
+  };
 
   const isCombo = selections.length >= 2;
 
@@ -323,14 +330,19 @@ export function BetSlipRail() {
               borderRadius: 10,
             }}
           >
-            <span style={{ fontSize: 12, color: "var(--fg-muted)" }}>Stake</span>
+            <span style={{ fontSize: 12, color: "var(--fg-muted)", flexShrink: 0 }}>
+              Stake
+            </span>
             <input
               value={stakeInput}
               onChange={(e) => setStakeInput(e.target.value.replace(/[^\d.]/g, ""))}
+              onFocus={(e) => e.currentTarget.select()}
               className="mono tnum"
               inputMode="decimal"
               style={{
                 flex: 1,
+                minWidth: 0,
+                width: 0,
                 border: 0,
                 background: "transparent",
                 outline: "none",
@@ -341,7 +353,10 @@ export function BetSlipRail() {
                 textAlign: "right",
               }}
             />
-            <span className="mono" style={{ fontSize: 12, color: "var(--fg-muted)" }}>
+            <span
+              className="mono"
+              style={{ fontSize: 12, color: "var(--fg-muted)", flexShrink: 0 }}
+            >
               USDT
             </span>
           </div>
@@ -378,15 +393,33 @@ export function BetSlipRail() {
               padding: "10px 0",
               borderTop: "1px dashed var(--border)",
               borderBottom: "1px dashed var(--border)",
+              gap: 10,
             }}
           >
-            <span style={{ fontSize: 12, color: "var(--fg-muted)" }}>Potential return</span>
-            <span
-              className="display tnum"
-              style={{ fontSize: 22, fontWeight: 500, letterSpacing: "-0.02em" }}
-            >
-              {potentialReturn.toFixed(2)}
+            <span style={{ fontSize: 12, color: "var(--fg-muted)", flexShrink: 0 }}>
+              Potential winning
             </span>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                gap: 6,
+                minWidth: 0,
+              }}
+            >
+              <span
+                className="display tnum"
+                style={{ fontSize: 22, fontWeight: 500, letterSpacing: "-0.02em" }}
+              >
+                {formatAmount(potentialReturn)}
+              </span>
+              <span
+                className="mono"
+                style={{ fontSize: 12, color: "var(--fg-muted)", flexShrink: 0 }}
+              >
+                USDT
+              </span>
+            </div>
           </div>
 
           {error && (
