@@ -232,6 +232,8 @@ body {
   grid-template-columns: 240px 1fr 340px;
   grid-template-rows: 60px 1fr;
   grid-template-areas: "top top top" "side main rail";
+  max-width: 1780px;
+  margin-inline: auto;
 }
 
 .oz-main {

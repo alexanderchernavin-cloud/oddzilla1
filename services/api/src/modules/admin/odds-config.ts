@@ -4,7 +4,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, isNull } from "drizzle-orm";
 import {
   oddsConfig,
   adminAuditLog,
@@ -95,10 +95,13 @@ export default async function oddsConfigRoutes(app: FastifyInstance) {
 
     const refId = body.scope === "global" ? null : (body.scopeRefId ?? null);
 
-    // Select existing for audit diff.
+    // Select existing for audit diff. `col = NULL` is always FALSE in
+    // SQL, so lookups for scope='global' (refId null) must use IS NULL.
+    // Prior code used eq(col, null) which silently missed the existing
+    // row and made every save insert a duplicate.
     const whereClause = and(
       eq(oddsConfig.scope, body.scope),
-      refId === null ? eq(oddsConfig.scopeRefId, null as never) : eq(oddsConfig.scopeRefId, refId),
+      refId === null ? isNull(oddsConfig.scopeRefId) : eq(oddsConfig.scopeRefId, refId),
     );
     const existing = await app.db.select().from(oddsConfig).where(whereClause).limit(1);
     const before = existing[0] ?? null;

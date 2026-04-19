@@ -193,7 +193,7 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
         >
           <span style={{ flex: 1 }} />
           <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-            Open market <I.Chev size={11} />
+            Open match <I.Chev size={11} />
           </span>
         </div>
       </article>

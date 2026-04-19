@@ -139,34 +139,50 @@ func (p *Publisher) processOne(ctx context.Context, ev bus.Event) error {
 	return nil
 }
 
+// MinPublishedCents is the floor applied to every published quote in
+// cents (1.01). Decimal odds of exactly 1.00 mean "stake back, no
+// profit" — useless to the user and refused by the bet slip. Every book
+// in the market quotes a minimum of 1.01, so we clamp here to match.
+const MinPublishedCents = 101
+
 // applyMargin divides raw decimal odds by (1 + margin_bp/10000) using
-// big.Float for precision. Returns the result as a 2-decimal string —
-// the industry-standard display precision for decimal odds. The DB
-// column is NUMERIC(10,4) (kept for backward compatibility and history
-// rows ingested before this change); Postgres will store e.g. 3.14 as
-// 3.1400, and the API layer trims the trailing zeros for the client.
+// big.Float end-to-end (no float64 intermediate) and floor-truncates to
+// 2 decimals. The DB column is NUMERIC(10,4) but the feed and the UI
+// both work in 2-decimal precision.
 //
-// Floor-round (via math truncation by Sprintf) so we never publish odds
-// HIGHER than the margined price — users get the conservative quote and
-// payouts don't exceed what the book mathematically collected for.
+// Floor-truncation (not round-half-even) keeps the house conservative:
+// we never publish odds HIGHER than the margined price.
+//
+// Why big.Float end-to-end: a previous implementation routed through
+// float64, which corrupted values near 1.00 (e.g. raw 1.01 → stored
+// 1.01999...97 → *100 = 100.999...97 → int64 = 100 → displayed 1.00).
+// Oddin legitimately sends near-1.00 odds for deeply-in-the-money
+// outcomes; the float path turned those into 1.00 displays.
+//
+// After truncation the result is clamped to MinPublishedCents so a
+// displayed 1.00 is never possible regardless of upstream quote.
 func applyMargin(rawOdds string, marginBp int) (string, error) {
 	if rawOdds == "" {
 		return "", fmt.Errorf("empty raw odds")
 	}
-	raw, ok := new(big.Float).SetPrec(64).SetString(rawOdds)
+	raw, ok := new(big.Float).SetPrec(128).SetString(rawOdds)
 	if !ok {
 		return "", fmt.Errorf("parse raw odds %q", rawOdds)
 	}
-	divisor := new(big.Float).Quo(
+	divisor := new(big.Float).SetPrec(128).Quo(
 		new(big.Float).SetInt64(int64(10000+marginBp)),
-		big.NewFloat(10000),
+		new(big.Float).SetInt64(10000),
 	)
-	pub := new(big.Float).Quo(raw, divisor)
-	pubF, _ := pub.Float64()
-	// Truncate to 2 decimals (floor, not round-half-even) by multiplying,
-	// flooring, dividing. fmt %f rounds, so we can't use it directly.
-	truncated := float64(int64(pubF*100)) / 100.0
-	return fmt.Sprintf("%.2f", truncated), nil
+	pub := new(big.Float).SetPrec(128).Quo(raw, divisor)
+	// Scale to cents and truncate. big.Float.Int truncates toward zero,
+	// which equals floor for non-negative inputs.
+	scaled := new(big.Float).SetPrec(128).Mul(pub, new(big.Float).SetInt64(100))
+	centsBig, _ := scaled.Int(nil)
+	cents := centsBig.Int64()
+	if cents < MinPublishedCents {
+		cents = MinPublishedCents
+	}
+	return fmt.Sprintf("%d.%02d", cents/100, cents%100), nil
 }
 
 // Stats returns a lightweight snapshot used by /healthz.
