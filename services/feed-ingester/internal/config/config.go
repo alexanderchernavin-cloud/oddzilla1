@@ -39,16 +39,17 @@ type OddinConfig struct {
 	Lang        string
 	Heartbeat   time.Duration
 
-	// AllowedSportURNs restricts auto-mapping to this set of Oddin sport
-	// URNs. Any odds/fixture message whose sport is outside this set is
-	// dropped before any DB rows are created. Empty means no filter
-	// (legacy behavior — every sport the feed emits is persisted).
+	// BlockedSportSlugs drops auto-mapping for sports whose slugified
+	// abbreviation matches this set. Any odds/fixture message whose sport
+	// would slug to one of these values is dropped before any DB rows are
+	// created. Empty means no filter (every sport the feed emits is
+	// persisted).
 	//
-	// Default is the 4 MVP esports per CLAUDE.md (CS2, Dota2, LoL,
-	// Valorant). Override with the env var ALLOWED_ODDIN_SPORT_URNS,
-	// comma-separated (e.g. "od:sport:3,od:sport:2,od:sport:1,od:sport:13").
-	// Set to "*" to disable filtering entirely.
-	AllowedSportURNs map[string]struct{}
+	// Default blocks Oddin's bot leagues (eFootball Bots, eBasketball Bots)
+	// which are out of MVP scope. Override with the env var
+	// BLOCKED_ODDIN_SPORT_SLUGS, comma-separated. Set to "*" to disable
+	// filtering entirely.
+	BlockedSportSlugs map[string]struct{}
 }
 
 func Load() (Config, error) {
@@ -82,18 +83,19 @@ func Load() (Config, error) {
 		Heartbeat:   30 * time.Second,
 	}
 	cfg.Oddin.Enabled = cfg.Oddin.Token != "" && cfg.Oddin.CustomerID != ""
-	cfg.Oddin.AllowedSportURNs = parseAllowedSports(
-		getEnvDefault("ALLOWED_ODDIN_SPORT_URNS", "od:sport:3,od:sport:2,od:sport:1,od:sport:13"),
+	cfg.Oddin.BlockedSportSlugs = parseBlockedSports(
+		getEnvDefault("BLOCKED_ODDIN_SPORT_SLUGS", "efootballbots,ebasketballbots"),
 	)
 
 	return cfg, nil
 }
 
-// parseAllowedSports accepts a comma-separated list of Oddin sport URNs.
-// "*" disables filtering (returns nil); empty string also returns nil so
-// misconfiguration doesn't silently drop every message. Returns a set for
+// parseBlockedSports accepts a comma-separated list of sport slugs (as
+// produced by slugify(FixtureSport.Abbr) in the automap resolver). "*"
+// disables filtering (returns nil); empty string also returns nil so
+// misconfiguration doesn't silently persist bot leagues. Returns a set for
 // O(1) lookup.
-func parseAllowedSports(raw string) map[string]struct{} {
+func parseBlockedSports(raw string) map[string]struct{} {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || raw == "*" {
 		return nil

@@ -12,7 +12,7 @@ Postgres 16 + Redis 7 + Caddy, all on one Hetzner box via Docker Compose.
 
 | Question | Answer |
 | --- | --- |
-| What sportsbook are we building? | B2C, esports-only for MVP: CS2, DOTA2, LOL, Valorant |
+| What sportsbook are we building? | B2C, esports-only. Every Oddin esport is surfaced; CS2, DOTA2, LOL, Valorant pinned at the top of the sidebar; `efootballbots` + `ebasketballbots` excluded (backend blocklist + DB inactive). |
 | Which markets? | All Oddin markets — the `provider_market_id` whitelist was dropped at both feed-ingester and `/catalog/matches/:id`. Known labels for match-winner (`1`) and map-winner (`4`); others render as "Market #N". |
 | Which feed? | Oddin.gg, **protocol level** (raw AMQP + REST, no SDK) |
 | Which chains? | USDT on TRC20 (Tron) and ERC20 (Ethereum), both from day 1 |
@@ -153,7 +153,7 @@ These rules are load-bearing. Breaking them causes money or data loss.
 
 | Concern | Path |
 | --- | --- |
-| SQL migrations | [`packages/db/migrations/`](./packages/db/migrations/) — `0000_init`, `0001_odds_history_partitions`, `0002_chain_scanner_state`, `0003_drop_news_articles`, `0004_unclassified_sport`, `0005_merge_duplicate_sports`, `0006_market_descriptions`, `0007_purge_non_mvp_sports`, `0008_competitors` (teams as first-class per-sport entities) |
+| SQL migrations | [`packages/db/migrations/`](./packages/db/migrations/) — `0000_init`, `0001_odds_history_partitions`, `0002_chain_scanner_state`, `0003_drop_news_articles`, `0004_unclassified_sport`, `0005_merge_duplicate_sports`, `0006_market_descriptions`, `0007_purge_non_mvp_sports` (superseded by 0012), `0008_competitors` (teams as first-class per-sport entities), `0010_odds_config_global_unique`, `0011_feed_messages`, `0012_reactivate_non_bot_sports` (re-enables every non-bot sport after the product opened past the 4-MVP scope) |
 | Drizzle schema | [`packages/db/src/schema/`](./packages/db/src/schema/) |
 | Seed script | [`packages/db/src/seed.ts`](./packages/db/src/seed.ts) — seed sport URNs are `od:sport:{3,2,1,13}` matching real Oddin feed (do NOT revert to synthetic `od:sport:cs2` etc. — it breaks auto-mapping) |
 | Money helpers | [`packages/types/src/money.ts`](./packages/types/src/money.ts) |
@@ -251,7 +251,7 @@ post-Phase-8 Oddin-workflow hardening pass; production stack is live at
 | DB schema + migrations | Live | 6 migrations: init, odds_history partitions, chain_scanner_state, drop_news_articles, `0004_unclassified_sport` (hidden fallback sport + move placeholder tournaments), `0005_merge_duplicate_sports` (merge s-N auto-duplicates into seeded rows + align seed URNs with real Oddin URNs `od:sport:{1,2,3,13}`). |
 | Auth (signup/login/refresh/me + password change) | Live | argon2id + JOSE JWT (`alg: HS256` pinned) + refresh-rotation; helmet CSP `default-src 'none'` on `/api/*`; rate-limited login (5/min) + signup (10/min); shared cookie domain `.oddzilla.cc`. Browser uses same-origin `/api/*` through Caddy — `NEXT_PUBLIC_API_URL` is baked **empty** so api-client falls back to `/api`. |
 | Catalog API + sport/match SSR pages | Live | `/catalog/sports` filters `active=true` (hides `unclassified`); `/catalog/sports/:slug` returns inline match-winner odds per row (paired to home/away by team-name); `/catalog/matches/:id` returns all active (`status=1`) markets — provider-id whitelist removed. Odds formatted to 2 decimals via `formatOdds()`. |
-| Frontend design | Live (2026-04-18) | Ported from Claude Design handoff bundle. Grid shell: top-bar + left sidebar + main + right-rail bet slip. Route groups: `(auth)` = login/signup, `(main)` = home/sport/match/account/bets/wallet, `admin/*` keeps its own layout. Sidebar order: CS2 → Dota 2 → LoL → Valorant → middle (alphabetical) → eFootball Bots → eBasketball Bots. Tokens in `apps/web/src/app/globals.css`; legacy `--color-*` aliases kept for admin/bets/wallet pages. |
+| Frontend design | Live (2026-04-18) | Ported from Claude Design handoff bundle. Grid shell: top-bar + left sidebar + main + right-rail bet slip. Route groups: `(auth)` = login/signup, `(main)` = home/sport/match/account/bets/wallet, `admin/*` keeps its own layout. Sidebar order: CS2 → Dota 2 → LoL → Valorant → every other active sport (alphabetical); `efootballbots` + `ebasketballbots` are hidden via both the feed-ingester blocklist (`BLOCKED_ODDIN_SPORT_SLUGS`) and a defensive filter in `sidebar.tsx`. Tokens in `apps/web/src/app/globals.css`; legacy `--color-*` aliases kept for admin/bets/wallet pages. |
 | Bet slip + placement | Live | Singles + combos (up to 20 legs, cross-match only — same-match legs rejected server-side). Always-visible right rail (`apps/web/src/components/shell/bet-slip-rail.tsx`) drives the `BetSlipProvider` store, with a Single/Combo toggle. Withdrawals also block non-active users at request time. |
 | bet-delay worker | Live | LISTEN + 1s sweep + 5% drift tolerance |
 | Oddin AMQP feed (feed-ingester + settlement) | Live | AMQPS over `:5672` (not 5671), vhost `/oddinfeed/{customer_id}` URL-assembled by hand to preserve `%2F`. Bookmaker 142 |
@@ -382,11 +382,13 @@ If you're a fresh agent picking this up:
    primitives in
    [`apps/web/src/components/ui/primitives.tsx`](./apps/web/src/components/ui/primitives.tsx).
    The shell (`top-bar`, `sidebar`, `bet-slip-rail`) wraps everything
-   under `app/(main)/`. Sports order is hard-pinned in
-   `sidebar.tsx` via `TOP` + `BOTTOM` arrays — tune there if the user
-   wants a different order. Admin / wallet / bets still use legacy
-   Tailwind classes against the `@theme`-bridged color tokens; reskin
-   them when the design gets extended.
+   under `app/(main)/`. Sports order in `sidebar.tsx`: slugs in the `TOP`
+   array are pinned to the top; everything else is alphabetical; slugs
+   in `HIDDEN` never render (currently `efootballbots` +
+   `ebasketballbots`, matching the feed-ingester `BLOCKED_ODDIN_SPORT_SLUGS`
+   default). Admin / wallet / bets still use legacy Tailwind classes
+   against the `@theme`-bridged color tokens; reskin them when the
+   design gets extended.
 10. **Odds margin.** Globally **0 bp** today — Oddin already margins.
     If the user asks to add house margin, do it via
     `/admin/margins` (cascade market_type→tournament→sport→global)
