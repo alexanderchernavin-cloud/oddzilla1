@@ -8,49 +8,26 @@ interface SportsResponse {
   sports: Array<{ id: number; slug: string; name: string; kind: string; active: boolean }>;
 }
 
-interface SportDetail {
-  sport: { id: number; slug: string; name: string };
-  matches: ListMatch[];
+interface ListMatchWithSport extends ListMatch {
+  sport: { slug: string; name: string };
 }
 
-const TOP_SPORTS = 4;
+interface CrossSportResponse {
+  matches: ListMatchWithSport[];
+}
 
 export default async function HomePage() {
-  const [sportsRes, liveCountsRes] = await Promise.all([
+  const [sportsRes, liveCountsRes, liveRes, upcomingRes] = await Promise.all([
     serverApi<SportsResponse>("/catalog/sports"),
     serverApi<Record<string, number>>("/catalog/live-counts"),
+    serverApi<CrossSportResponse>("/catalog/matches?status=live&limit=120"),
+    serverApi<CrossSportResponse>("/catalog/matches?status=upcoming&limit=60"),
   ]);
 
   const sports = sportsRes?.sports ?? [];
   const liveCounts = liveCountsRes ?? {};
-
-  // Top sports by live count, fall back to alphabetical order if no live
-  // counts (e.g. all zero on a quiet morning).
-  const topSports = sports
-    .slice()
-    .sort(
-      (a, b) =>
-        (liveCounts[b.slug] ?? 0) - (liveCounts[a.slug] ?? 0) ||
-        a.name.localeCompare(b.name),
-    )
-    .slice(0, TOP_SPORTS);
-
-  const details = await Promise.all(
-    topSports.map((s) => serverApi<SportDetail>(`/catalog/sports/${s.slug}?limit=8`)),
-  );
-
-  const allMatches: Array<{ match: ListMatch; sportSlug: string; sportShort: string }> = [];
-  details.forEach((d, i) => {
-    const s = topSports[i];
-    if (!d || !s) return;
-    const sportShort = shortName(s.name);
-    for (const m of d.matches) {
-      allMatches.push({ match: m, sportSlug: s.slug, sportShort });
-    }
-  });
-
-  const live = allMatches.filter((x) => x.match.status === "live");
-  const upcoming = allMatches.filter((x) => x.match.status === "not_started");
+  const live = orderMatchesBySport(liveRes?.matches ?? []);
+  const upcoming = orderMatchesBySport(upcomingRes?.matches ?? []);
 
   const dayLabel = new Date().toLocaleDateString("en-US", {
     weekday: "long",
@@ -144,12 +121,12 @@ export default async function HomePage() {
         <section style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <SectionHeader kicker="Live" title="In play" count={live.length} />
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--gap, 12px)" }}>
-            {live.map((x) => (
+            {live.map((m) => (
               <MatchRow
-                key={x.match.id}
-                match={x.match}
-                sportSlug={x.sportSlug}
-                sportShort={x.sportShort}
+                key={m.id}
+                match={m}
+                sportSlug={m.sport.slug}
+                sportShort={shortName(m.sport.name)}
               />
             ))}
           </div>
@@ -160,17 +137,16 @@ export default async function HomePage() {
         <SectionHeader kicker="Upcoming" title="Next up today" count={upcoming.length} />
         {upcoming.length === 0 ? (
           <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
-            Nothing scheduled in the top sports. Check individual sport pages for the
-            full slate.
+            Nothing scheduled. Check individual sport pages for the full slate.
           </p>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--gap, 12px)" }}>
-            {upcoming.slice(0, 20).map((x) => (
+            {upcoming.slice(0, 20).map((m) => (
               <MatchRow
-                key={x.match.id}
-                match={x.match}
-                sportSlug={x.sportSlug}
-                sportShort={x.sportShort}
+                key={m.id}
+                match={m}
+                sportSlug={m.sport.slug}
+                sportShort={shortName(m.sport.name)}
               />
             ))}
           </div>
@@ -193,19 +169,36 @@ function shortName(name: string): string {
 const TOP_SPORT_SLUGS = ["cs2", "dota2", "lol", "valorant"] as const;
 const HIDDEN_SPORT_SLUGS = new Set<string>(["efootballbots", "ebasketballbots"]);
 
+function sportRank(slug: string): number {
+  const i = (TOP_SPORT_SLUGS as readonly string[]).indexOf(slug);
+  return i === -1 ? TOP_SPORT_SLUGS.length : i;
+}
+
 function orderSportsForChips<T extends { slug: string; name: string }>(
   items: T[],
 ): T[] {
   const visible = items.filter((s) => !HIDDEN_SPORT_SLUGS.has(s.slug));
-  const rank = (slug: string) => {
-    const i = (TOP_SPORT_SLUGS as readonly string[]).indexOf(slug);
-    return i === -1 ? TOP_SPORT_SLUGS.length : i;
-  };
   return [...visible].sort((a, b) => {
-    const ra = rank(a.slug);
-    const rb = rank(b.slug);
+    const ra = sportRank(a.slug);
+    const rb = sportRank(b.slug);
     if (ra !== rb) return ra - rb;
     if (ra === TOP_SPORT_SLUGS.length) return a.name.localeCompare(b.name);
+    return 0;
+  });
+}
+
+function orderMatchesBySport(
+  items: ListMatchWithSport[],
+): ListMatchWithSport[] {
+  const visible = items.filter((m) => !HIDDEN_SPORT_SLUGS.has(m.sport.slug));
+  return [...visible].sort((a, b) => {
+    const ra = sportRank(a.sport.slug);
+    const rb = sportRank(b.sport.slug);
+    if (ra !== rb) return ra - rb;
+    if (ra === TOP_SPORT_SLUGS.length) {
+      const byName = a.sport.name.localeCompare(b.sport.name);
+      if (byName !== 0) return byName;
+    }
     return 0;
   });
 }
