@@ -170,6 +170,15 @@ func (c *Client) Sports(ctx context.Context, lang string) ([]byte, error) {
 	return c.Get(ctx, fmt.Sprintf("/v1/sports/%s/sports", lang), nil)
 }
 
+// TournamentInfo returns tournament metadata, including risk_tier, for a
+// single tournament URN. Used by auto-mapping to populate risk_tier on
+// tournament-creation and by the backfill tool.
+//   GET /v1/sports/{lang}/tournaments/{urn}/info
+func (c *Client) TournamentInfo(ctx context.Context, lang, tournamentURN string) ([]byte, error) {
+	path := fmt.Sprintf("/v1/sports/%s/tournaments/%s/info", lang, tournamentURN)
+	return c.Get(ctx, path, nil)
+}
+
 // CompetitorProfile returns a team's metadata (name, abbreviation, icon)
 // plus the active player roster. Players carry their own URN, short
 // name, and full name — which is what the API substitutes into outcome

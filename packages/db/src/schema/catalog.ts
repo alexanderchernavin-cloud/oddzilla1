@@ -61,6 +61,9 @@ export const tournaments = pgTable(
     name: text().notNull(),
     startAt: timestamp({ withTimezone: true }),
     endAt: timestamp({ withTimezone: true }),
+    // Oddin risk_tier: sidebar lists tournaments higher-tier first.
+    // Nullable until the backfill runs or auto-mapping populates it.
+    riskTier: smallint(),
     active: boolean().notNull().default(true),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },

@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"errors"
+	"flag"
 	"net/http"
 	"os"
 	"os/signal"
@@ -36,6 +37,13 @@ import (
 )
 
 func main() {
+	backfillRiskTier := flag.Bool(
+		"backfill-tournament-metadata",
+		false,
+		"Run tournament risk_tier backfill and exit (does not start the AMQP consumer).",
+	)
+	flag.Parse()
+
 	cfg, err := config.Load()
 	logger := newLogger(cfg.LogLevel, cfg.ServiceName)
 	if err != nil {
@@ -114,6 +122,19 @@ func main() {
 			blocked = append(blocked, slug)
 		}
 		logger.Info().Strs("sports", blocked).Msg("sport blocklist active")
+	}
+
+	if *backfillRiskTier {
+		if restClient == nil {
+			logger.Fatal().Msg("backfill requires ODDIN_TOKEN")
+		}
+		logger.Info().Msg("running tournament risk_tier backfill")
+		n, err := resolver.BackfillTournamentRiskTier(ctx)
+		if err != nil {
+			logger.Fatal().Err(err).Int("updated", n).Msg("backfill failed")
+		}
+		logger.Info().Int("updated", n).Msg("backfill finished")
+		return
 	}
 
 	deps := handler.Deps{

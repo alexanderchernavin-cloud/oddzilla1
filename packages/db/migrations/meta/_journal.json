@@ -92,6 +92,13 @@
       "when": 1700000012000,
       "tag": "0012_reactivate_non_bot_sports",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1700000013000,
+      "tag": "0013_tournament_risk_tier",
+      "breakpoints": true
     }
   ]
 }

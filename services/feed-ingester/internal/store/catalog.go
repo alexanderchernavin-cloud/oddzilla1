@@ -115,6 +115,55 @@ RETURNING id`
 	return id, nil
 }
 
+// UpdateTournamentRiskTier sets risk_tier on an existing tournaments row.
+// No-op when riskTier <= 0 so callers can pass through REST responses that
+// omitted the attribute without guarding.
+func UpdateTournamentRiskTier(ctx context.Context, db pgxRunner, tournamentID int, riskTier int16) error {
+	if riskTier <= 0 {
+		return nil
+	}
+	if _, err := db.Exec(ctx,
+		`UPDATE tournaments SET risk_tier = $2 WHERE id = $1`,
+		tournamentID, riskTier,
+	); err != nil {
+		return fmt.Errorf("update tournament risk_tier: %w", err)
+	}
+	return nil
+}
+
+// TournamentRef is a minimal (id, urn) pair used by the metadata backfill
+// tool to iterate tournaments that still need their risk_tier populated.
+type TournamentRef struct {
+	ID          int
+	ProviderURN string
+}
+
+// TournamentsMissingRiskTier returns every active tournament whose
+// risk_tier is still NULL. The backfill tool walks this list and calls
+// the Oddin tournament-info endpoint for each.
+func TournamentsMissingRiskTier(ctx context.Context, db pgxRunner) ([]TournamentRef, error) {
+	rows, err := db.Query(ctx, `
+SELECT id, provider_urn
+  FROM tournaments
+ WHERE active = TRUE
+   AND risk_tier IS NULL
+   AND provider_urn LIKE 'od:tournament:%'
+ ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("select tournaments missing risk_tier: %w", err)
+	}
+	defer rows.Close()
+	var out []TournamentRef
+	for rows.Next() {
+		var t TournamentRef
+		if err := rows.Scan(&t.ID, &t.ProviderURN); err != nil {
+			return nil, fmt.Errorf("scan tournament ref: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 // FindSportBySlug returns the sport id (or 0 if not found).
 func FindSportBySlug(ctx context.Context, db pgxRunner, slug string) (int, bool, error) {
 	var id int

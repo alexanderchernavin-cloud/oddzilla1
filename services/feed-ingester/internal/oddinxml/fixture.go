@@ -70,6 +70,20 @@ type FixtureExtraInfo struct {
 	Value string `xml:"value,attr"`
 }
 
+// TournamentInfoResponse wraps /v1/sports/{lang}/tournaments/{urn}/info.
+// The tournament element carries the risk_tier attribute (1..N) that
+// tells the sidebar how to prioritise tournaments when a sport has many.
+type TournamentInfoResponse struct {
+	XMLName    xml.Name           `xml:"tournament_info"`
+	Tournament TournamentInfoItem `xml:"tournament"`
+}
+
+type TournamentInfoItem struct {
+	ID       string `xml:"id,attr"`
+	Name     string `xml:"name,attr"`
+	RiskTier string `xml:"risk_tier,attr"`
+}
+
 // SportsResponse is the top-level wrapper of /sports.
 type SportsResponse struct {
 	XMLName xml.Name      `xml:"sports"`
