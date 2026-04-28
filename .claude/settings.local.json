@@ -25,7 +25,9 @@
       "Bash(ssh -o ConnectTimeout=8 team@178.104.174.24 'sg docker -c \"docker exec oddzilla-postgres-1 sh -c \\\\\"psql -U \\\\\\\\$POSTGRES_USER -d oddzilla -c \\\\\\\\\\\\\"SELECT routing_key FROM feed_messages WHERE routing_key LIKE 047%odds_change%047 ORDER BY id DESC LIMIT 3;\\\\\\\\\\\\\"\\\\\"\"')",
       "Bash(ssh -o ConnectTimeout=8 team@178.104.174.24 'sg docker -c \"docker exec oddzilla-postgres-1 psql -U oddzilla -d oddzilla -tAc \\\\\"SELECT kind, count\\(*\\) FROM feed_messages WHERE received_at > now\\(\\) - interval 047 5 minutes 047 GROUP BY kind ORDER BY 2 DESC;\\\\\"\"')",
       "Bash(ssh -o ConnectTimeout=8 team@178.104.174.24 'sg docker -c \"docker exec -i oddzilla-postgres-1 psql -U oddzilla -d oddzilla\"')",
-      "Bash(ssh -o ConnectTimeout=8 team@178.104.174.24 'sg docker -c \"docker exec -i oddzilla-postgres-1 psql -U oddzilla -d oddzilla -tA\"')"
+      "Bash(ssh -o ConnectTimeout=8 team@178.104.174.24 'sg docker -c \"docker exec -i oddzilla-postgres-1 psql -U oddzilla -d oddzilla -tA\"')",
+      "Bash(pnpm --filter @oddzilla/web typecheck)",
+      "Bash(gh pr *)"
     ]
   }
 }
