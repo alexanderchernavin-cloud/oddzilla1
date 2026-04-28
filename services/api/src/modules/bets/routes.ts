@@ -6,12 +6,14 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { SUPPORTED_CURRENCIES } from "@oddzilla/types";
 import { BetsService } from "./service.js";
 import { NotFoundError } from "../../lib/errors.js";
 
 const placeBody = z.object({
   stakeMicro: z.string().regex(/^\d+$/, "stake must be a positive integer string"),
   idempotencyKey: z.string().min(8).max(64),
+  currency: z.enum(SUPPORTED_CURRENCIES).optional(),
   selections: z
     .array(
       z.object({
