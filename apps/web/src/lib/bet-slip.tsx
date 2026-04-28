@@ -20,12 +20,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import {
-  isCurrency,
-  SUPPORTED_CURRENCIES,
-  type Currency,
-  type SlipSelection,
-} from "@oddzilla/types";
+import { isCurrency, SUPPORTED_CURRENCIES, type Currency } from "@oddzilla/types/currencies";
+import type { SlipSelection } from "@oddzilla/types";
 
 const STORAGE_KEY = "oddzilla.betslip.v2";
 // New users land on the demo OZ wallet so the bet flow is testable
@@ -179,8 +175,6 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
 
   return <SlipContext.Provider value={value}>{children}</SlipContext.Provider>;
 }
-
-export { SUPPORTED_CURRENCIES };
 
 export function useBetSlip(): SlipContextValue {
   const ctx = useContext(SlipContext);

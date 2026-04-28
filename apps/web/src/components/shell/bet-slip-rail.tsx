@@ -4,14 +4,14 @@ import { useMemo, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { toMicro } from "@oddzilla/types/money";
-import { SUPPORTED_CURRENCIES } from "@oddzilla/types";
+import { SUPPORTED_CURRENCIES, type Currency } from "@oddzilla/types/currencies";
 import { useBetSlip } from "@/lib/bet-slip";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { I } from "@/components/ui/icons";
 import { Button } from "@/components/ui/primitives";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { useMobileDrawers } from "./mobile-drawer-context";
-import type { Currency, SlipSelection } from "@oddzilla/types";
+import type { SlipSelection } from "@oddzilla/types";
 
 export function BetSlipRail() {
   const slip = useBetSlip();
