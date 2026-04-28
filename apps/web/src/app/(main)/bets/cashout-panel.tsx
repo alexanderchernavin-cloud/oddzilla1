@@ -95,12 +95,6 @@ export function CashoutPanel({ ticket, onCashedOut }: Props) {
   const offer = quote.offerMicro
     ? fromMicro(BigInt(quote.offerMicro))
     : "0";
-  const stakeNum = Number(quote.ticketStakeMicro) / 1_000_000;
-  const offerNum = quote.offerMicro
-    ? Number(quote.offerMicro) / 1_000_000
-    : 0;
-  const deltaPct = stakeNum > 0 ? ((offerNum - stakeNum) / stakeNum) * 100 : 0;
-  const deltaSign = deltaPct >= 0 ? "+" : "";
 
   async function accept() {
     if (!quote || !quote.quoteId || !quote.offerMicro) return;
@@ -145,19 +139,8 @@ export function CashoutPanel({ ticket, onCashedOut }: Props) {
             Cashout offer
             {quote.fullPayback ? " · full stake" : null}
           </div>
-          <div className="mt-1 font-mono text-base">{offer} USDT</div>
-          <div className="text-[11px] text-[var(--color-fg-muted)]">
-            <span
-              className={
-                deltaPct >= 0
-                  ? "text-[var(--color-positive)]"
-                  : "text-[var(--color-negative)]"
-              }
-            >
-              {deltaSign}
-              {deltaPct.toFixed(1)}%
-            </span>{" "}
-            vs stake
+          <div className="mt-1 font-mono text-base">
+            {offer} {ticket.currency}
           </div>
         </div>
         <div className="flex flex-col items-end gap-1">
@@ -186,7 +169,7 @@ export function CashoutPanel({ ticket, onCashedOut }: Props) {
                 disabled={accepting}
                 className="btn btn-primary text-xs"
               >
-                {accepting ? "…" : `Confirm ${offer}`}
+                {accepting ? "…" : `Confirm ${offer} ${ticket.currency}`}
               </button>
             </div>
           )}
