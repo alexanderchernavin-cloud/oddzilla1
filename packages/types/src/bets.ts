@@ -4,6 +4,8 @@
 // bigint precision through JSON. The frontend converts with
 // `toMicro()` / `fromMicro()` from ./money.
 
+import type { Currency } from "./currencies.js";
+
 export type BetType = "single" | "combo" | "system";
 
 export type TicketStatus =
@@ -33,6 +35,7 @@ export interface SlipSelection {
 export interface PlaceBetRequest {
   stakeMicro: string;        // bigint as string
   idempotencyKey: string;    // client-supplied UUID
+  currency?: Currency;       // wallet to debit; defaults to USDT for compat
   selections: Array<{
     marketId: string;
     outcomeId: string;
@@ -48,6 +51,7 @@ export interface TicketSummary {
   id: string;                // UUID
   status: TicketStatus;
   betType: BetType;
+  currency: Currency;
   stakeMicro: string;
   potentialPayoutMicro: string;
   actualPayoutMicro: string | null;

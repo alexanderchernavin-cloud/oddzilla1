@@ -1,72 +1,62 @@
 import { fromMicro } from "@oddzilla/types/money";
 import type {
+  Currency,
   DepositAddressesResponse,
   DepositListResponse,
+  WalletListResponse,
+  WalletSnapshot,
   WithdrawalListResponse,
 } from "@oddzilla/types";
 import { serverApi } from "@/lib/server-fetch";
 import { WalletPanels } from "./wallet-panels";
 
-interface WalletResponse {
-  currency: "USDT";
-  balanceMicro: string;
-  lockedMicro: string;
-  availableMicro: string;
+interface LedgerEntry {
+  id: string;
+  currency: Currency;
+  deltaMicro: string;
+  type: string;
+  refType: string | null;
+  refId: string | null;
+  txHash: string | null;
+  memo: string | null;
+  createdAt: string;
 }
 
 interface LedgerResponse {
-  entries: Array<{
-    id: string;
-    deltaMicro: string;
-    type: string;
-    refType: string | null;
-    refId: string | null;
-    txHash: string | null;
-    memo: string | null;
-    createdAt: string;
-  }>;
+  entries: LedgerEntry[];
 }
 
 export default async function WalletPage() {
-  const [wallet, ledger, addresses, deposits, withdrawals] = await Promise.all([
-    serverApi<WalletResponse>("/wallet"),
+  const [walletRes, ledger, addresses, deposits, withdrawals] = await Promise.all([
+    serverApi<WalletListResponse>("/wallet"),
     serverApi<LedgerResponse>("/wallet/ledger?limit=25"),
     serverApi<DepositAddressesResponse>("/wallet/deposit-addresses"),
     serverApi<DepositListResponse>("/wallet/deposits?limit=25"),
     serverApi<WithdrawalListResponse>("/wallet/withdrawals?limit=25"),
   ]);
 
+  const wallets = walletRes?.wallets ?? [];
+  const usdt = wallets.find((w) => w.currency === "USDT");
+  const oz = wallets.find((w) => w.currency === "OZ");
+
   return (
     <div>
       <h1 className="text-2xl font-semibold tracking-tight">Wallet</h1>
       <p className="mt-2 text-sm text-[var(--color-fg-muted)]">
-        USDT balance plus your TRC20 + ERC20 deposit addresses.
+        Real-money USDT plus the OZ demo balance for testing the bet flow.
+        Deposits and withdrawals are USDT only.
       </p>
 
-      <section className="mt-8 grid gap-4 sm:grid-cols-3">
-        <Stat
-          label="Balance"
-          value={wallet ? fromMicro(BigInt(wallet.balanceMicro)) : "—"}
-          suffix="USDT"
-        />
-        <Stat
-          label="Locked"
-          value={wallet ? fromMicro(BigInt(wallet.lockedMicro)) : "—"}
-          suffix="USDT"
-        />
-        <Stat
-          label="Available"
-          value={wallet ? fromMicro(BigInt(wallet.availableMicro)) : "—"}
-          suffix="USDT"
-          highlight
-        />
+      <section className="mt-8 grid gap-4 md:grid-cols-2">
+        <CurrencyCard wallet={usdt} currency="USDT" tag={null} />
+        <CurrencyCard wallet={oz} currency="OZ" tag="demo" />
       </section>
 
       <WalletPanels
         addresses={addresses?.addresses ?? []}
         deposits={deposits?.deposits ?? []}
         withdrawals={withdrawals?.withdrawals ?? []}
-        availableMicro={wallet?.availableMicro ?? "0"}
+        availableMicro={usdt?.availableMicro ?? "0"}
       />
 
       <section className="mt-12">
@@ -88,7 +78,12 @@ export default async function WalletPage() {
                   className="flex items-center justify-between px-4 py-3 text-sm"
                 >
                   <div>
-                    <p className="font-medium capitalize">{e.type.replace(/_/g, " ")}</p>
+                    <p className="font-medium capitalize">
+                      {e.type.replace(/_/g, " ")}
+                      <span className="ml-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-fg-muted)]">
+                        {e.currency}
+                      </span>
+                    </p>
                     <p className="text-xs text-[var(--color-fg-subtle)]">
                       {new Date(e.createdAt).toLocaleString()}
                       {e.txHash ? ` · ${e.txHash.slice(0, 12)}…` : ""}
@@ -103,7 +98,7 @@ export default async function WalletPage() {
                     }
                   >
                     {positive ? "+" : ""}
-                    {fromMicro(delta)} USDT
+                    {fromMicro(delta)} {e.currency}
                   </p>
                 </li>
               );
@@ -115,32 +110,41 @@ export default async function WalletPage() {
   );
 }
 
-function Stat({
-  label,
-  value,
-  suffix,
-  highlight,
+function CurrencyCard({
+  wallet,
+  currency,
+  tag,
 }: {
-  label: string;
-  value: string;
-  suffix: string;
-  highlight?: boolean;
+  wallet: WalletSnapshot | undefined;
+  currency: Currency;
+  tag: string | null;
 }) {
+  const balance = wallet ? fromMicro(BigInt(wallet.balanceMicro)) : "—";
+  const locked = wallet ? fromMicro(BigInt(wallet.lockedMicro)) : "—";
+  const available = wallet ? fromMicro(BigInt(wallet.availableMicro)) : "—";
+
   return (
     <div className="card p-6">
-      <p className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-        {label}
+      <div className="flex items-center gap-2">
+        <p className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
+          {currency}
+        </p>
+        {tag ? (
+          <span className="rounded-full border border-[var(--color-border-strong)] px-2 py-[1px] text-[10px] uppercase tracking-[0.12em] text-[var(--color-fg-muted)]">
+            {tag}
+          </span>
+        ) : null}
+      </div>
+      <p className="mt-3 font-mono text-3xl text-[var(--color-accent)]">
+        {available}
+        <span className="ml-2 text-sm text-[var(--color-fg-muted)]">{currency}</span>
       </p>
-      <p
-        className={
-          "mt-3 font-mono " +
-          (highlight
-            ? "text-3xl text-[var(--color-accent)]"
-            : "text-2xl text-[var(--color-fg)]")
-        }
-      >
-        {value} <span className="text-sm text-[var(--color-fg-muted)]">{suffix}</span>
-      </p>
+      <dl className="mt-4 grid grid-cols-2 gap-y-1 text-xs text-[var(--color-fg-muted)]">
+        <dt>Balance</dt>
+        <dd className="text-right font-mono text-[var(--color-fg)]">{balance}</dd>
+        <dt>Locked</dt>
+        <dd className="text-right font-mono text-[var(--color-fg)]">{locked}</dd>
+      </dl>
     </div>
   );
 }

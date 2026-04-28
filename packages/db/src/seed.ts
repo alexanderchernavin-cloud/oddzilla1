@@ -111,10 +111,15 @@ async function main() {
     }
     if (!user) throw new Error(`failed to upsert ${role}`);
 
+    // Seed both currency wallets so dev users mirror real signup flow.
+    // OZ defaults to 0 here — the demo bonus only applies on real signup.
     await db
       .insert(wallets)
-      .values({ userId: user.id })
-      .onConflictDoNothing({ target: wallets.userId });
+      .values([
+        { userId: user.id, currency: "USDT", balanceMicro: 0n },
+        { userId: user.id, currency: "OZ", balanceMicro: 0n },
+      ])
+      .onConflictDoNothing({ target: [wallets.userId, wallets.currency] });
     return user;
   }
 

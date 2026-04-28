@@ -7,17 +7,10 @@ import { MobileShellOverlay } from "@/components/shell/mobile-shell-overlay";
 import { ShellContainer } from "@/components/shell/shell-container";
 import { getSessionUser } from "@/lib/auth";
 import { serverApi } from "@/lib/server-fetch";
-import { fromMicro } from "@oddzilla/types/money";
+import type { WalletListResponse } from "@oddzilla/types";
 
 interface SportsResponse {
   sports: Array<{ id: number; slug: string; name: string; kind: string; active: boolean }>;
-}
-
-interface WalletResponse {
-  currency: string;
-  balanceMicro: string;
-  lockedMicro: string;
-  availableMicro: string;
 }
 
 export default async function MainLayout({ children }: { children: React.ReactNode }) {
@@ -25,12 +18,12 @@ export default async function MainLayout({ children }: { children: React.ReactNo
     getSessionUser(),
     serverApi<SportsResponse>("/catalog/sports"),
     serverApi<Record<string, number>>("/catalog/live-counts"),
-    serverApi<WalletResponse>("/wallet"),
+    serverApi<WalletListResponse>("/wallet"),
   ]);
 
   const sports = sportsRes?.sports ?? [];
   const liveCounts = liveCountsRes ?? {};
-  const balanceUsd = walletRes ? fromMicro(BigInt(walletRes.availableMicro)) : undefined;
+  const wallets = walletRes?.wallets ?? [];
 
   return (
     <MobileDrawersProvider>
@@ -38,7 +31,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
         <TopBar
           signedIn={Boolean(user)}
           user={user ?? undefined}
-          balanceUsd={balanceUsd}
+          wallets={wallets}
         />
         <Sidebar
           sports={sports}

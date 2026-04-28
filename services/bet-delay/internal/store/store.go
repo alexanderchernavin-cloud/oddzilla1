@@ -25,6 +25,7 @@ func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 type PendingTicket struct {
 	ID          string
 	UserID      string
+	Currency    string
 	StakeMicro  int64
 	NotBeforeTs time.Time
 }
@@ -34,7 +35,7 @@ type PendingTicket struct {
 // on them — prevents two workers from grabbing the same row.
 func (s *Store) ListReady(ctx context.Context, limit int) ([]PendingTicket, error) {
 	const q = `
-SELECT id, user_id, stake_micro, not_before_ts
+SELECT id, user_id, currency, stake_micro, not_before_ts
   FROM tickets
  WHERE status = 'pending_delay'
    AND not_before_ts <= NOW()
@@ -49,7 +50,7 @@ SELECT id, user_id, stake_micro, not_before_ts
 	out := make([]PendingTicket, 0, limit)
 	for rows.Next() {
 		var t PendingTicket
-		if err := rows.Scan(&t.ID, &t.UserID, &t.StakeMicro, &t.NotBeforeTs); err != nil {
+		if err := rows.Scan(&t.ID, &t.UserID, &t.Currency, &t.StakeMicro, &t.NotBeforeTs); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -132,9 +133,10 @@ UPDATE tickets
 	return nil
 }
 
-// RejectAndRefund rejects the ticket, unlocks the stake, and writes a
-// compensating wallet_ledger row keyed so replaying is safe.
-func RejectAndRefund(ctx context.Context, tx pgx.Tx, ticketID, userID, reason string, stakeMicro int64) error {
+// RejectAndRefund rejects the ticket, unlocks the stake on the
+// (user_id, currency) wallet, and writes a compensating wallet_ledger row
+// keyed so replaying is safe.
+func RejectAndRefund(ctx context.Context, tx pgx.Tx, ticketID, userID, currency, reason string, stakeMicro int64) error {
 	if _, err := tx.Exec(ctx, `
 UPDATE tickets
    SET status = 'rejected',
@@ -145,18 +147,18 @@ UPDATE tickets
 	}
 	if _, err := tx.Exec(ctx, `
 UPDATE wallets
-   SET locked_micro = locked_micro - $2,
+   SET locked_micro = locked_micro - $3,
        updated_at   = NOW()
- WHERE user_id = $1`, userID, stakeMicro); err != nil {
+ WHERE user_id = $1 AND currency = $2`, userID, currency, stakeMicro); err != nil {
 		return fmt.Errorf("unlock stake: %w", err)
 	}
 	// Unique partial index on (type, ref_type, ref_id) ensures this
 	// refund cannot double-post if we crash + replay.
 	if _, err := tx.Exec(ctx, `
-INSERT INTO wallet_ledger (user_id, delta_micro, type, ref_type, ref_id, memo)
-VALUES ($1, $2, 'bet_refund', 'ticket', $3, $4)
+INSERT INTO wallet_ledger (user_id, currency, delta_micro, type, ref_type, ref_id, memo)
+VALUES ($1, $2, $3, 'bet_refund', 'ticket', $4, $5)
 ON CONFLICT (type, ref_type, ref_id) WHERE ref_id IS NOT NULL DO NOTHING`,
-		userID, stakeMicro, ticketID, reason); err != nil {
+		userID, currency, stakeMicro, ticketID, reason); err != nil {
 		return fmt.Errorf("ledger refund: %w", err)
 	}
 	return nil

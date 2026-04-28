@@ -3,7 +3,8 @@
 
 import { eq, and, isNull } from "drizzle-orm";
 import type { DbClient } from "@oddzilla/db";
-import { users, sessions, wallets } from "@oddzilla/db";
+import { users, sessions, wallets, walletLedger } from "@oddzilla/db";
+import { SIGNUP_BONUS_OZ_MICRO } from "@oddzilla/types";
 
 // A Drizzle transaction handle has the same query API as the root client
 // (`.insert`, `.update`, `.select`, etc.). We extract the callback's first
@@ -72,7 +73,10 @@ export class AuthService {
 
     const passwordHash = await hashPassword(input.password);
 
-    // Create user + zero-balance wallet atomically.
+    // Create user + per-currency wallets atomically. Every signup gets a
+    // zero-balance USDT wallet (real money) and an OZ wallet pre-funded
+    // with the demo signup bonus so the bet slip and settlement are
+    // testable end-to-end without on-chain top-up.
     const user = await this.db.transaction(async (tx) => {
       const [created] = await tx
         .insert(users)
@@ -90,8 +94,31 @@ export class AuthService {
 
       await tx
         .insert(wallets)
-        .values({ userId: created.id })
-        .onConflictDoNothing({ target: wallets.userId });
+        .values([
+          { userId: created.id, currency: "USDT", balanceMicro: 0n },
+          {
+            userId: created.id,
+            currency: "OZ",
+            balanceMicro: SIGNUP_BONUS_OZ_MICRO,
+          },
+        ])
+        .onConflictDoNothing({ target: [wallets.userId, wallets.currency] });
+
+      // Audit row for the OZ bonus. The wallet_ledger unique partial index
+      // on (type, ref_type, ref_id) makes this idempotent if signup is
+      // somehow retried for the same user id.
+      await tx
+        .insert(walletLedger)
+        .values({
+          userId: created.id,
+          currency: "OZ",
+          deltaMicro: SIGNUP_BONUS_OZ_MICRO,
+          type: "adjustment",
+          refType: "signup_bonus",
+          refId: created.id,
+          memo: "demo OZ signup bonus",
+        })
+        .onConflictDoNothing();
 
       return created;
     });

@@ -20,9 +20,17 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { SlipSelection } from "@oddzilla/types";
+import {
+  isCurrency,
+  SUPPORTED_CURRENCIES,
+  type Currency,
+  type SlipSelection,
+} from "@oddzilla/types";
 
 const STORAGE_KEY = "oddzilla.betslip.v2";
+// New users land on the demo OZ wallet so the bet flow is testable
+// out-of-the-box without on-chain top-up.
+const DEFAULT_SLIP_CURRENCY: Currency = "OZ";
 
 export type SlipMode = "single" | "combo";
 
@@ -30,6 +38,7 @@ interface SlipState {
   selections: SlipSelection[];
   mode: SlipMode;
   open: boolean;
+  currency: Currency;
 }
 
 interface SlipContextValue extends SlipState {
@@ -38,6 +47,7 @@ interface SlipContextValue extends SlipState {
   clear(): void;
   setOpen(open: boolean): void;
   setMode(mode: SlipMode): void;
+  setCurrency(currency: Currency): void;
   has(marketId: string, outcomeId: string): boolean;
 }
 
@@ -45,20 +55,41 @@ const SlipContext = createContext<SlipContextValue | null>(null);
 
 function loadFromStorage(): SlipState {
   if (typeof window === "undefined") {
-    return { selections: [], mode: "combo", open: false };
+    return {
+      selections: [],
+      mode: "combo",
+      open: false,
+      currency: DEFAULT_SLIP_CURRENCY,
+    };
   }
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { selections: [], mode: "combo", open: false };
+    if (!raw) {
+      return {
+        selections: [],
+        mode: "combo",
+        open: false,
+        currency: DEFAULT_SLIP_CURRENCY,
+      };
+    }
     const parsed = JSON.parse(raw) as Partial<SlipState>;
     const mode: SlipMode = parsed.mode === "single" ? "single" : "combo";
+    const currency: Currency = isCurrency(parsed.currency)
+      ? parsed.currency
+      : DEFAULT_SLIP_CURRENCY;
     return {
       selections: Array.isArray(parsed.selections) ? parsed.selections : [],
       mode,
       open: false, // never restore open state — surprising UX otherwise
+      currency,
     };
   } catch {
-    return { selections: [], mode: "combo", open: false };
+    return {
+      selections: [],
+      mode: "combo",
+      open: false,
+      currency: DEFAULT_SLIP_CURRENCY,
+    };
   }
 }
 
@@ -67,6 +98,7 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
     selections: [],
     mode: "combo",
     open: false,
+    currency: DEFAULT_SLIP_CURRENCY,
   }));
 
   useEffect(() => {
@@ -77,12 +109,16 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
     try {
       window.localStorage.setItem(
         STORAGE_KEY,
-        JSON.stringify({ selections: state.selections, mode: state.mode }),
+        JSON.stringify({
+          selections: state.selections,
+          mode: state.mode,
+          currency: state.currency,
+        }),
       );
     } catch {
       // localStorage quota/disabled — slip just won't persist.
     }
-  }, [state.selections, state.mode]);
+  }, [state.selections, state.mode, state.currency]);
 
   const add = useCallback((selection: SlipSelection) => {
     setState((prev) => {
@@ -122,6 +158,11 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, mode }));
   }, []);
 
+  const setCurrency = useCallback((currency: Currency) => {
+    if (!isCurrency(currency)) return;
+    setState((prev) => ({ ...prev, currency }));
+  }, []);
+
   const has = useCallback(
     (marketId: string, outcomeId: string) => {
       return state.selections.some(
@@ -132,12 +173,14 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo<SlipContextValue>(
-    () => ({ ...state, add, remove, clear, setOpen, setMode, has }),
-    [state, add, remove, clear, setOpen, setMode, has],
+    () => ({ ...state, add, remove, clear, setOpen, setMode, setCurrency, has }),
+    [state, add, remove, clear, setOpen, setMode, setCurrency, has],
   );
 
   return <SlipContext.Provider value={value}>{children}</SlipContext.Provider>;
 }
+
+export { SUPPORTED_CURRENCIES };
 
 export function useBetSlip(): SlipContextValue {
   const ctx = useContext(SlipContext);

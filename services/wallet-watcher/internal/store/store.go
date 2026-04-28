@@ -237,17 +237,19 @@ UPDATE deposits
 		return tx.Commit(ctx)
 	}
 
+	// On-chain deposits are USDT only — TRC20 and ERC20 USDT are the
+	// supported networks. The OZ demo currency has no chain.
 	if _, err := tx.Exec(ctx, `
 UPDATE wallets
    SET balance_micro = balance_micro + $2,
        updated_at = NOW()
- WHERE user_id = $1`, p.UserID, p.AmountMicro); err != nil {
+ WHERE user_id = $1 AND currency = 'USDT'`, p.UserID, p.AmountMicro); err != nil {
 		return fmt.Errorf("credit wallet: %w", err)
 	}
 
 	if _, err := tx.Exec(ctx, `
-INSERT INTO wallet_ledger (user_id, delta_micro, type, ref_type, ref_id, tx_hash, memo)
-VALUES ($1, $2, 'deposit', 'deposit', $3, $4, NULL)
+INSERT INTO wallet_ledger (user_id, currency, delta_micro, type, ref_type, ref_id, tx_hash, memo)
+VALUES ($1, 'USDT', $2, 'deposit', 'deposit', $3, $4, NULL)
 ON CONFLICT (type, ref_type, ref_id) WHERE ref_id IS NOT NULL DO NOTHING`,
 		p.UserID, p.AmountMicro, p.ID, p.TxHash); err != nil {
 		return fmt.Errorf("ledger deposit: %w", err)

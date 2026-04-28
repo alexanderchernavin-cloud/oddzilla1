@@ -393,7 +393,7 @@ func (s *Settler) reverseSettledForCancel(ctx context.Context, tx pgx.Tx, ticket
 	).Scan(&prior); err != nil {
 		return false, fmt.Errorf("read actual_payout for cancel-reverse: %w", err)
 	}
-	if err := store.ReverseSettledTicket(ctx, tx, ticketID, t.UserID, "bet_cancel", t.StakeMicro, prior); err != nil {
+	if err := store.ReverseSettledTicket(ctx, tx, ticketID, t.UserID, t.Currency, "bet_cancel", t.StakeMicro, prior); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -584,7 +584,7 @@ func (s *Settler) reverseTicket(ctx context.Context, tx pgx.Tx, ticketID, reason
 		return false, fmt.Errorf("read actual_payout: %w", err)
 	}
 
-	if err := store.ReverseSettledTicket(ctx, tx, ticketID, t.UserID, reason, t.StakeMicro, prior); err != nil {
+	if err := store.ReverseSettledTicket(ctx, tx, ticketID, t.UserID, t.Currency, reason, t.StakeMicro, prior); err != nil {
 		return false, err
 	}
 	return true, nil

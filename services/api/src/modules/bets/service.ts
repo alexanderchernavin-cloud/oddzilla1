@@ -36,7 +36,10 @@ import {
   tournaments,
 } from "@oddzilla/db";
 import {
+  DEFAULT_CURRENCY,
   DEFAULT_ODDS_DRIFT_TOLERANCE,
+  isCurrency,
+  type Currency,
   type PlaceBetRequest,
   type TicketSummary,
 } from "@oddzilla/types";
@@ -90,6 +93,9 @@ export class BetsService {
     if (stake <= 0n) {
       throw new BadRequestError("stake_must_be_positive", "stake_must_be_positive");
     }
+    const currency: Currency = req.currency && isCurrency(req.currency)
+      ? req.currency
+      : DEFAULT_CURRENCY;
     const tolerance = DEFAULT_ODDS_DRIFT_TOLERANCE;
 
     const placed = await this.db.transaction(async (tx) => {
@@ -130,7 +136,7 @@ export class BetsService {
       const walletRows = await tx
         .select()
         .from(wallets)
-        .where(eq(wallets.userId, ctx.userId))
+        .where(and(eq(wallets.userId, ctx.userId), eq(wallets.currency, currency)))
         .for("update")
         .limit(1);
       if (walletRows.length === 0) {
@@ -235,6 +241,7 @@ export class BetsService {
           userId: ctx.userId,
           status,
           betType: isCombo ? "combo" : "single",
+          currency,
           stakeMicro: stake,
           potentialPayoutMicro,
           idempotencyKey: req.idempotencyKey,
@@ -276,10 +283,13 @@ export class BetsService {
           lockedMicro: sql`${wallets.lockedMicro} + ${stake}`,
           updatedAt: new Date(),
         })
-        .where(eq(wallets.userId, ctx.userId));
+        .where(
+          and(eq(wallets.userId, ctx.userId), eq(wallets.currency, currency)),
+        );
 
       await tx.insert(walletLedger).values({
         userId: ctx.userId,
+        currency,
         deltaMicro: -stake,
         type: "bet_stake",
         refType: "ticket",
@@ -408,10 +418,12 @@ export class BetsService {
       sportSlug: string | null;
     }>,
   ): TicketSummary {
+    const ticketCurrency = (t.currency.trim() as Currency) ?? DEFAULT_CURRENCY;
     return {
       id: t.id,
       status: t.status,
       betType: t.betType,
+      currency: ticketCurrency,
       stakeMicro: t.stakeMicro.toString(),
       potentialPayoutMicro: t.potentialPayoutMicro.toString(),
       actualPayoutMicro:

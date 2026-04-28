@@ -99,6 +99,8 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
     }
     const whereClause = filters.length > 0 ? and(...filters) : sql`TRUE`;
 
+    // Join only the USDT wallet so the listing surfaces real-money balance.
+    // Demo OZ balances are not relevant to admin financial overview.
     const rows = await app.db
       .select({
         id: users.id,
@@ -116,7 +118,10 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
         lockedMicro: wallets.lockedMicro,
       })
       .from(users)
-      .leftJoin(wallets, eq(wallets.userId, users.id))
+      .leftJoin(
+        wallets,
+        and(eq(wallets.userId, users.id), eq(wallets.currency, "USDT")),
+      )
       .where(whereClause)
       .orderBy(desc(users.createdAt))
       .limit(q.limit)
@@ -165,7 +170,10 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
         lockedMicro: wallets.lockedMicro,
       })
       .from(users)
-      .leftJoin(wallets, eq(wallets.userId, users.id))
+      .leftJoin(
+        wallets,
+        and(eq(wallets.userId, users.id), eq(wallets.currency, "USDT")),
+      )
       .where(eq(users.id, params.id))
       .limit(1);
     if (!user) throw new NotFoundError("user_not_found", "user_not_found");
@@ -349,10 +357,13 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
         .returning();
       if (!u) throw new Error("user insert returned no row");
 
+      // Admin-created users get USDT (zero) only. The OZ demo bonus is
+      // signup-only — admins can manually credit OZ via the ledger if
+      // they want to test on behalf of a created user.
       await tx
         .insert(wallets)
-        .values({ userId: u.id })
-        .onConflictDoNothing({ target: wallets.userId });
+        .values({ userId: u.id, currency: "USDT", balanceMicro: 0n })
+        .onConflictDoNothing({ target: [wallets.userId, wallets.currency] });
 
       await tx.insert(adminAuditLog).values({
         actorUserId: admin.id,
@@ -411,7 +422,7 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
         (SELECT COUNT(*)::int FROM ${walletLedger} WHERE user_id = ${params.id}) AS ledger_count,
         (SELECT COUNT(*)::int FROM ${deposits} WHERE user_id = ${params.id}) AS deposit_count,
         (SELECT COUNT(*)::int FROM ${withdrawals} WHERE user_id = ${params.id}) AS withdrawal_count,
-        (SELECT COALESCE(balance_micro, 0)::text FROM ${wallets} WHERE user_id = ${params.id}) AS balance_micro
+        (SELECT COALESCE(SUM(balance_micro), 0)::text FROM ${wallets} WHERE user_id = ${params.id}) AS balance_micro
     `)) as unknown as Array<{
       ticket_count: number;
       ledger_count: number;

@@ -7,7 +7,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   tickets,
   wallets,
@@ -49,6 +49,7 @@ export default async function adminTicketsRoutes(app: FastifyInstance) {
         id: t.id,
         userId: t.userId,
         status: t.status,
+        currency: t.currency.trim(),
         stakeMicro: t.stakeMicro.toString(),
         potentialPayoutMicro: t.potentialPayoutMicro.toString(),
         actualPayoutMicro: t.actualPayoutMicro?.toString() ?? null,
@@ -82,6 +83,7 @@ export default async function adminTicketsRoutes(app: FastifyInstance) {
     }
 
     const stakeMicro = existing.stakeMicro;
+    const ticketCurrency = existing.currency;
 
     await app.db.transaction(async (tx) => {
       // Flip to voided with a full refund.
@@ -95,19 +97,26 @@ export default async function adminTicketsRoutes(app: FastifyInstance) {
         })
         .where(eq(tickets.id, params.id));
 
-      // Release the lock + credit back the full stake.
+      // Release the lock + credit back the full stake on the ticket's
+      // currency wallet.
       await tx
         .update(wallets)
         .set({
           lockedMicro: sql`${wallets.lockedMicro} - ${stakeMicro}`,
           updatedAt: new Date(),
         })
-        .where(eq(wallets.userId, existing.userId));
+        .where(
+          and(
+            eq(wallets.userId, existing.userId),
+            eq(wallets.currency, ticketCurrency),
+          ),
+        );
 
       // Ledger: bet_refund row (unique on (type, ref_type, ref_id) so
       // replay is safe).
       await tx.insert(walletLedger).values({
         userId: existing.userId,
+        currency: ticketCurrency,
         deltaMicro: stakeMicro,
         type: "bet_refund",
         refType: "ticket",

@@ -12,7 +12,7 @@ import {
   deposits as depositsTable,
   withdrawals as withdrawalsTable,
 } from "@oddzilla/db";
-import { CONFIRMATIONS_REQUIRED } from "@oddzilla/types";
+import { CONFIRMATIONS_REQUIRED, SUPPORTED_CURRENCIES } from "@oddzilla/types";
 import {
   BadRequestError,
   ForbiddenError,
@@ -26,6 +26,7 @@ import {
 
 const ledgerQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
+  currency: z.enum(SUPPORTED_CURRENCIES).optional(),
 });
 
 const NETWORKS = ["TRC20", "ERC20"] as const;
@@ -52,34 +53,48 @@ function masterMnemonic(): string {
 
 export default async function walletRoutes(app: FastifyInstance) {
   // ── Balance summary ──────────────────────────────────────────────────
+  // Returns one snapshot per currency the user has a wallet row for.
+  // Order matches SUPPORTED_CURRENCIES so USDT is always first.
   app.get("/wallet", async (request) => {
     const u = request.requireAuth();
-    const [wallet] = await app.db
+    const rows = await app.db
       .select()
       .from(wallets)
-      .where(eq(wallets.userId, u.id))
-      .limit(1);
-    if (!wallet) throw new NotFoundError("wallet_not_found", "wallet_not_found");
+      .where(eq(wallets.userId, u.id));
+    if (rows.length === 0) {
+      throw new NotFoundError("wallet_not_found", "wallet_not_found");
+    }
+    const byCurrency = new Map(rows.map((r) => [r.currency.trim(), r]));
+    const ordered = SUPPORTED_CURRENCIES
+      .map((c) => byCurrency.get(c))
+      .filter((r): r is NonNullable<typeof r> => r !== undefined);
     return {
-      currency: wallet.currency,
-      balanceMicro: wallet.balanceMicro.toString(),
-      lockedMicro: wallet.lockedMicro.toString(),
-      availableMicro: (wallet.balanceMicro - wallet.lockedMicro).toString(),
+      wallets: ordered.map((w) => ({
+        currency: w.currency.trim(),
+        balanceMicro: w.balanceMicro.toString(),
+        lockedMicro: w.lockedMicro.toString(),
+        availableMicro: (w.balanceMicro - w.lockedMicro).toString(),
+      })),
     };
   });
 
   app.get("/wallet/ledger", async (request) => {
     const u = request.requireAuth();
     const q = ledgerQuery.parse(request.query);
+    const conditions = [eq(walletLedger.userId, u.id)];
+    if (q.currency) {
+      conditions.push(eq(walletLedger.currency, q.currency));
+    }
     const rows = await app.db
       .select()
       .from(walletLedger)
-      .where(eq(walletLedger.userId, u.id))
+      .where(and(...conditions))
       .orderBy(desc(walletLedger.createdAt))
       .limit(q.limit);
     return {
       entries: rows.map((r) => ({
         id: r.id.toString(),
+        currency: r.currency.trim(),
         deltaMicro: r.deltaMicro.toString(),
         type: r.type,
         refType: r.refType,
@@ -190,10 +205,11 @@ export default async function walletRoutes(app: FastifyInstance) {
         throw new ForbiddenError("account_not_active", "account_not_active");
       }
 
+      // Withdrawals are USDT-only — there's no on-chain network for OZ.
       const [wallet] = await tx
         .select()
         .from(wallets)
-        .where(eq(wallets.userId, u.id))
+        .where(and(eq(wallets.userId, u.id), eq(wallets.currency, "USDT")))
         .for("update")
         .limit(1);
       if (!wallet) throw new NotFoundError("wallet_not_found", "wallet_not_found");
@@ -226,7 +242,7 @@ export default async function walletRoutes(app: FastifyInstance) {
           lockedMicro: sql`${wallets.lockedMicro} + ${amount}`,
           updatedAt: new Date(),
         })
-        .where(eq(wallets.userId, u.id));
+        .where(and(eq(wallets.userId, u.id), eq(wallets.currency, "USDT")));
 
       const [inserted] = await tx
         .insert(withdrawalsTable)
@@ -300,14 +316,14 @@ export default async function walletRoutes(app: FastifyInstance) {
         .set({ status: "cancelled" })
         .where(eq(withdrawalsTable.id, params.id));
 
-      // Release the lock.
+      // Release the lock on the USDT wallet (withdrawals are USDT-only).
       await tx
         .update(wallets)
         .set({
           lockedMicro: sql`${wallets.lockedMicro} - ${row.amountMicro}`,
           updatedAt: new Date(),
         })
-        .where(eq(wallets.userId, u.id));
+        .where(and(eq(wallets.userId, u.id), eq(wallets.currency, "USDT")));
     });
 
     return { ok: true };

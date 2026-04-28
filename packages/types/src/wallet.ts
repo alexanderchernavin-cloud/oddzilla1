@@ -1,6 +1,35 @@
 // Wallet API contract types. Money is bigint-as-string.
 
+import type { Currency } from "./currencies.js";
+
 export type ChainNetwork = "TRC20" | "ERC20";
+
+export interface WalletSnapshot {
+  currency: Currency;
+  balanceMicro: string;
+  lockedMicro: string;
+  availableMicro: string;
+}
+
+export interface WalletListResponse {
+  wallets: WalletSnapshot[];
+}
+
+export interface WalletLedgerEntryDto {
+  id: string;
+  currency: Currency;
+  deltaMicro: string;
+  type: string;
+  refType: string | null;
+  refId: string | null;
+  txHash: string | null;
+  memo: string | null;
+  createdAt: string;
+}
+
+export interface WalletLedgerResponse {
+  entries: WalletLedgerEntryDto[];
+}
 
 export type DepositStatus = "seen" | "confirming" | "credited" | "orphaned";
 export type WithdrawalStatus =

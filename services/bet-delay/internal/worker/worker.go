@@ -150,14 +150,14 @@ func (w *Worker) sweepLoop(ctx context.Context) {
 // ─── Core processing ───────────────────────────────────────────────────────
 
 // processOne runs for NOTIFY-driven attempts where we only have the id;
-// it must still re-read stake + not_before_ts.
+// it must still re-read stake + currency + not_before_ts.
 func (w *Worker) processOne(ctx context.Context, ticketID string) error {
 	const q = `
-SELECT id, user_id, stake_micro, not_before_ts
+SELECT id, user_id, currency, stake_micro, not_before_ts
   FROM tickets
  WHERE id = $1 AND status = 'pending_delay'`
 	var p store.PendingTicket
-	err := w.pool.QueryRow(ctx, q, ticketID).Scan(&p.ID, &p.UserID, &p.StakeMicro, &p.NotBeforeTs)
+	err := w.pool.QueryRow(ctx, q, ticketID).Scan(&p.ID, &p.UserID, &p.Currency, &p.StakeMicro, &p.NotBeforeTs)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil // already processed
@@ -197,7 +197,7 @@ func (w *Worker) processTicket(ctx context.Context, p store.PendingTicket) error
 
 	reject, reason := w.evaluate(selections)
 	if reject {
-		if err := store.RejectAndRefund(ctx, tx, p.ID, p.UserID, reason, p.StakeMicro); err != nil {
+		if err := store.RejectAndRefund(ctx, tx, p.ID, p.UserID, p.Currency, reason, p.StakeMicro); err != nil {
 			return err
 		}
 		if err := tx.Commit(ctx); err != nil {

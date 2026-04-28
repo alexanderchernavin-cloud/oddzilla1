@@ -1,4 +1,5 @@
 export * from "./money.js";
+export * from "./currencies.js";
 export * from "./specifiers.js";
 export * from "./api.js";
 export * from "./ws.js";

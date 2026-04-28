@@ -139,9 +139,11 @@ function TicketRow({ ticket }: { ticket: TicketSummary }) {
           >
             {STATUS_LABEL[ticket.status]}
           </span>
-          <p className="mt-2 font-mono text-sm">{stake} USDT</p>
+          <p className="mt-2 font-mono text-sm">
+            {stake} {ticket.currency}
+          </p>
           <p className="font-mono text-xs text-[var(--color-fg-muted)]">
-            → {actual ?? potential} USDT
+            → {actual ?? potential} {ticket.currency}
           </p>
         </div>
       </div>

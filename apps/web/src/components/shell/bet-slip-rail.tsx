@@ -4,17 +4,19 @@ import { useMemo, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { toMicro } from "@oddzilla/types/money";
+import { SUPPORTED_CURRENCIES } from "@oddzilla/types";
 import { useBetSlip } from "@/lib/bet-slip";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { I } from "@/components/ui/icons";
 import { Button } from "@/components/ui/primitives";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { useMobileDrawers } from "./mobile-drawer-context";
-import type { SlipSelection } from "@oddzilla/types";
+import type { Currency, SlipSelection } from "@oddzilla/types";
 
 export function BetSlipRail() {
   const slip = useBetSlip();
   const selections = slip.selections;
+  const currency = slip.currency;
   const { closeAll } = useMobileDrawers();
   const router = useRouter();
   const [stakeInput, setStakeInput] = useState("10");
@@ -74,6 +76,7 @@ export function BetSlipRail() {
           body: JSON.stringify({
             stakeMicro,
             idempotencyKey,
+            currency,
             selections: selections.map((s) => ({
               marketId: s.marketId,
               outcomeId: s.outcomeId,
@@ -318,6 +321,11 @@ export function BetSlipRail() {
             </div>
           )}
 
+          <CurrencyTabs
+            value={currency}
+            onChange={(c) => slip.setCurrency(c)}
+          />
+
           <div
             style={{
               display: "flex",
@@ -357,7 +365,7 @@ export function BetSlipRail() {
               className="mono"
               style={{ fontSize: 12, color: "var(--fg-muted)", flexShrink: 0 }}
             >
-              USDT
+              {currency}
             </span>
           </div>
 
@@ -417,7 +425,7 @@ export function BetSlipRail() {
                 className="mono"
                 style={{ fontSize: 12, color: "var(--fg-muted)", flexShrink: 0 }}
               >
-                USDT
+                {currency}
               </span>
             </div>
           </div>
@@ -527,6 +535,72 @@ function SelectionCard({
       <div style={{ fontSize: 11, color: "var(--fg-muted)" }}>
         {selection.homeTeam} vs {selection.awayTeam}
       </div>
+    </div>
+  );
+}
+
+function CurrencyTabs({
+  value,
+  onChange,
+}: {
+  value: Currency;
+  onChange: (c: Currency) => void;
+}) {
+  return (
+    <div
+      role="tablist"
+      aria-label="Wallet currency"
+      style={{
+        display: "flex",
+        gap: 4,
+        padding: 3,
+        background: "var(--surface-2)",
+        border: "1px solid var(--border)",
+        borderRadius: 999,
+      }}
+    >
+      {SUPPORTED_CURRENCIES.map((c) => {
+        const active = c === value;
+        return (
+          <button
+            key={c}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(c)}
+            className="mono"
+            style={{
+              flex: 1,
+              height: 26,
+              border: 0,
+              borderRadius: 999,
+              background: active ? "var(--fg)" : "transparent",
+              color: active ? "var(--bg)" : "var(--fg-muted)",
+              fontSize: 11,
+              fontWeight: 600,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              cursor: active ? "default" : "pointer",
+              fontFamily: "var(--font-mono)",
+            }}
+          >
+            {c}
+            {c === "OZ" ? (
+              <span
+                style={{
+                  marginLeft: 6,
+                  fontSize: 9,
+                  fontWeight: 500,
+                  opacity: 0.7,
+                  letterSpacing: "0.06em",
+                }}
+              >
+                demo
+              </span>
+            ) : null}
+          </button>
+        );
+      })}
     </div>
   );
 }

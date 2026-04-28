@@ -287,9 +287,12 @@ func nullableInt64(p *int64) any {
 // ─── Ticket resolution ─────────────────────────────────────────────────────
 
 // TicketForSettle is everything we need to compute payout + update wallet.
+// Currency identifies which (user_id, currency) wallet row to update;
+// every wallet/ledger query in the settlement flow is scoped by this.
 type TicketForSettle struct {
 	ID                   string
 	UserID               string
+	Currency             string
 	Status               string
 	BetType              string
 	StakeMicro           int64
@@ -301,11 +304,11 @@ type TicketForSettle struct {
 func LoadTicketForSettle(ctx context.Context, tx pgx.Tx, ticketID string) (TicketForSettle, bool, error) {
 	var t TicketForSettle
 	err := tx.QueryRow(ctx, `
-SELECT id, user_id, status::text, bet_type::text, stake_micro, potential_payout_micro
+SELECT id, user_id, currency, status::text, bet_type::text, stake_micro, potential_payout_micro
   FROM tickets
  WHERE id = $1
    FOR UPDATE SKIP LOCKED`, ticketID).Scan(
-		&t.ID, &t.UserID, &t.Status, &t.BetType, &t.StakeMicro, &t.PotentialPayoutMicro,
+		&t.ID, &t.UserID, &t.Currency, &t.Status, &t.BetType, &t.StakeMicro, &t.PotentialPayoutMicro,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -382,13 +385,14 @@ UPDATE tickets
 		return fmt.Errorf("update ticket settled: %w", err)
 	}
 
-	// Wallet: release the lock, move balance by (payout - stake).
+	// Wallet: release the lock, move balance by (payout - stake), scoped
+	// to the ticket's currency wallet row.
 	if _, err := tx.Exec(ctx, `
 UPDATE wallets
-   SET locked_micro = locked_micro - $2,
-       balance_micro = balance_micro + ($3 - $2),
+   SET locked_micro = locked_micro - $3,
+       balance_micro = balance_micro + ($4 - $3),
        updated_at = NOW()
- WHERE user_id = $1`, t.UserID, t.StakeMicro, payoutMicro); err != nil {
+ WHERE user_id = $1 AND currency = $2`, t.UserID, t.Currency, t.StakeMicro, payoutMicro); err != nil {
 		return fmt.Errorf("update wallet: %w", err)
 	}
 
@@ -401,10 +405,10 @@ UPDATE wallets
 			return err
 		}
 		if _, err := tx.Exec(ctx, `
-INSERT INTO wallet_ledger (user_id, delta_micro, type, ref_type, ref_id, memo)
-VALUES ($1, $2, $3::wallet_tx_type, 'ticket', $4, $5)
+INSERT INTO wallet_ledger (user_id, currency, delta_micro, type, ref_type, ref_id, memo)
+VALUES ($1, $2, $3, $4::wallet_tx_type, 'ticket', $5, $6)
 ON CONFLICT (type, ref_type, ref_id) WHERE ref_id IS NOT NULL DO NOTHING`,
-			t.UserID, payoutMicro, ledgerType, refID, memo); err != nil {
+			t.UserID, t.Currency, payoutMicro, ledgerType, refID, memo); err != nil {
 			return fmt.Errorf("ledger settle insert: %w", err)
 		}
 	}
@@ -473,7 +477,7 @@ SELECT ref_id FROM wallet_ledger p
 //
 // Safe to call when the ticket was already back to 'accepted' — the
 // wallet/ledger operations are additive, so we guard with a status check.
-func ReverseSettledTicket(ctx context.Context, tx pgx.Tx, ticketID, userID, reason string, stakeMicro, priorPayoutMicro int64) error {
+func ReverseSettledTicket(ctx context.Context, tx pgx.Tx, ticketID, userID, currency, reason string, stakeMicro, priorPayoutMicro int64) error {
 	tag, err := tx.Exec(ctx, `
 UPDATE tickets
    SET status = 'accepted',
@@ -489,10 +493,10 @@ UPDATE tickets
 
 	if _, err := tx.Exec(ctx, `
 UPDATE wallets
-   SET locked_micro = locked_micro + $2,
-       balance_micro = balance_micro - ($3 - $2),
+   SET locked_micro = locked_micro + $3,
+       balance_micro = balance_micro - ($4 - $3),
        updated_at = NOW()
- WHERE user_id = $1`, userID, stakeMicro, priorPayoutMicro); err != nil {
+ WHERE user_id = $1 AND currency = $2`, userID, currency, stakeMicro, priorPayoutMicro); err != nil {
 		return fmt.Errorf("reverse wallet: %w", err)
 	}
 
@@ -510,10 +514,10 @@ UPDATE wallets
 		}
 		if found {
 			if _, err := tx.Exec(ctx, `
-INSERT INTO wallet_ledger (user_id, delta_micro, type, ref_type, ref_id, memo)
-VALUES ($1, $2, 'adjustment', 'ticket', $3, $4)
+INSERT INTO wallet_ledger (user_id, currency, delta_micro, type, ref_type, ref_id, memo)
+VALUES ($1, $2, $3, 'adjustment', 'ticket', $4, $5)
 ON CONFLICT (type, ref_type, ref_id) WHERE ref_id IS NOT NULL DO NOTHING`,
-				userID, -priorPayoutMicro, refID, reason); err != nil {
+				userID, currency, -priorPayoutMicro, refID, reason); err != nil {
 				return fmt.Errorf("ledger reverse insert: %w", err)
 			}
 		}

@@ -10,15 +10,18 @@ import {
   check,
   index,
   uniqueIndex,
+  primaryKey,
 } from "drizzle-orm/pg-core";
 import { walletTxTypeEnum } from "../enums.js";
 import { users } from "./users.js";
 
+// One wallet row per (user, currency). USDT is the production currency;
+// OZ is a demo currency for testing bet flows. See migration 0014.
 export const wallets = pgTable(
   "wallets",
   {
     userId: uuid()
-      .primaryKey()
+      .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
     currency: char({ length: 4 }).notNull().default("USDT"),
     balanceMicro: bigint({ mode: "bigint" }).notNull().default(0n),
@@ -26,6 +29,7 @@ export const wallets = pgTable(
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    primaryKey({ columns: [t.userId, t.currency] }),
     check("wallets_balance_nonneg", sql`${t.balanceMicro} >= 0`),
     check("wallets_locked_nonneg", sql`${t.lockedMicro} >= 0`),
     check("wallets_balance_ge_locked", sql`${t.balanceMicro} >= ${t.lockedMicro}`),
@@ -39,6 +43,7 @@ export const walletLedger = pgTable(
     userId: uuid()
       .notNull()
       .references(() => users.id),
+    currency: char({ length: 4 }).notNull().default("USDT"),
     deltaMicro: bigint({ mode: "bigint" }).notNull(),
     type: walletTxTypeEnum().notNull(),
     refType: text(),

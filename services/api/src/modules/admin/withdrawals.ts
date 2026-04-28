@@ -13,7 +13,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq, desc, sql } from "drizzle-orm";
+import { and, eq, desc, sql } from "drizzle-orm";
 import {
   withdrawals as withdrawalsTable,
   wallets,
@@ -147,14 +147,14 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
         );
       }
 
-      // Release the lock.
+      // Release the lock on the USDT wallet — withdrawals are USDT-only.
       await tx
         .update(wallets)
         .set({
           lockedMicro: sql`${wallets.lockedMicro} - ${row.amountMicro}`,
           updatedAt: new Date(),
         })
-        .where(eq(wallets.userId, row.userId));
+        .where(and(eq(wallets.userId, row.userId), eq(wallets.currency, "USDT")));
 
       await tx
         .update(withdrawalsTable)
@@ -261,7 +261,7 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
       const [wallet] = await tx
         .select()
         .from(wallets)
-        .where(eq(wallets.userId, row.userId))
+        .where(and(eq(wallets.userId, row.userId), eq(wallets.currency, "USDT")))
         .for("update")
         .limit(1);
       if (!wallet) throw new NotFoundError("wallet_not_found", "wallet_not_found");
@@ -279,12 +279,13 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
           balanceMicro: sql`${wallets.balanceMicro} - ${debit}`,
           updatedAt: new Date(),
         })
-        .where(eq(wallets.userId, row.userId));
+        .where(and(eq(wallets.userId, row.userId), eq(wallets.currency, "USDT")));
 
       await tx
         .insert(walletLedger)
         .values({
           userId: row.userId,
+          currency: "USDT",
           deltaMicro: -debit,
           type: "withdrawal",
           refType: "withdrawal",
@@ -337,14 +338,14 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
         );
       }
 
-      // Release the lock — user gets their funds back.
+      // Release the lock — user gets their funds back. USDT-only.
       await tx
         .update(wallets)
         .set({
           lockedMicro: sql`${wallets.lockedMicro} - ${row.amountMicro}`,
           updatedAt: new Date(),
         })
-        .where(eq(wallets.userId, row.userId));
+        .where(and(eq(wallets.userId, row.userId), eq(wallets.currency, "USDT")));
 
       await tx
         .update(withdrawalsTable)
