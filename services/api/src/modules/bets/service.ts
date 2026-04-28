@@ -268,12 +268,22 @@ export class BetsService {
 
       // ── Insert selections ────────────────────────────────────────────
       await tx.insert(ticketSelections).values(
-        req.selections.map((s) => ({
-          ticketId: inserted.id,
-          marketId: BigInt(s.marketId),
-          outcomeId: s.outcomeId,
-          oddsAtPlacement: s.odds,
-        })),
+        req.selections.map((s) => {
+          const outcome = outcomeByKey.get(`${s.marketId}:${s.outcomeId}`)!;
+          // Snapshot the leg's win probability at placement time so cashout
+          // can later show "ticket value at placement" (Sportradar §1.2 /
+          // Cashout doc) and apply the optional "significant change" gate
+          // without needing to reconstruct it from odds. Null when the
+          // feed didn't have one yet (rare; falls back to 1/odds in the
+          // cashout engine).
+          return {
+            ticketId: inserted.id,
+            marketId: BigInt(s.marketId),
+            outcomeId: s.outcomeId,
+            oddsAtPlacement: s.odds,
+            probabilityAtPlacement: outcome.probability ?? null,
+          };
+        }),
       );
 
       // ── Lock stake on wallet + audit ledger ──────────────────────────

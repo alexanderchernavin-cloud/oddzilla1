@@ -29,6 +29,7 @@ export const oddsHistory = pgTable(
     outcomeId: text().notNull(),
     rawOdds: numeric({ precision: 10, scale: 4 }),
     publishedOdds: numeric({ precision: 10, scale: 4 }),
+    probability: numeric({ precision: 8, scale: 7 }),
     ts: timestamp({ withTimezone: true }).notNull(),
   },
   (t) => [index("odds_history_market_ts_idx").on(t.marketId, sql`${t.ts} DESC`)],

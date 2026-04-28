@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { fromMicro } from "@oddzilla/types/money";
 import type {
@@ -9,6 +9,7 @@ import type {
   WsTicketFrame,
 } from "@oddzilla/types";
 import { useTicketStream } from "@/lib/use-ticket-stream";
+import { CashoutPanel } from "./cashout-panel";
 
 const STATUS_LABEL: Record<TicketStatus, string> = {
   pending_delay: "Pending",
@@ -57,6 +58,24 @@ export function BetHistory({
     );
   });
 
+  const onCashedOut = useCallback(
+    (ticketId: string, payoutMicro: string, cashedOutAt: string) => {
+      setTickets((prev) =>
+        prev.map((t) =>
+          t.id === ticketId
+            ? {
+                ...t,
+                status: "cashed_out" as TicketStatus,
+                actualPayoutMicro: payoutMicro,
+                settledAt: cashedOutAt,
+              }
+            : t,
+        ),
+      );
+    },
+    [],
+  );
+
   if (tickets.length === 0) {
     return (
       <p className="mt-8 text-sm text-[var(--color-fg-muted)]">
@@ -68,13 +87,23 @@ export function BetHistory({
   return (
     <ul className="mt-8 space-y-3">
       {tickets.map((t) => (
-        <TicketRow key={t.id} ticket={t} />
+        <TicketRow key={t.id} ticket={t} onCashedOut={onCashedOut} />
       ))}
     </ul>
   );
 }
 
-function TicketRow({ ticket }: { ticket: TicketSummary }) {
+function TicketRow({
+  ticket,
+  onCashedOut,
+}: {
+  ticket: TicketSummary;
+  onCashedOut: (
+    ticketId: string,
+    payoutMicro: string,
+    cashedOutAt: string,
+  ) => void;
+}) {
   const selection = ticket.selections[0];
   const stake = fromMicro(BigInt(ticket.stakeMicro));
   const potential = fromMicro(BigInt(ticket.potentialPayoutMicro));
@@ -147,6 +176,7 @@ function TicketRow({ ticket }: { ticket: TicketSummary }) {
           </p>
         </div>
       </div>
+      <CashoutPanel ticket={ticket} onCashedOut={onCashedOut} />
     </li>
   );
 }

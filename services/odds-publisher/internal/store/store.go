@@ -160,15 +160,22 @@ func (s *Store) CurrentMargin(ctx context.Context, info MarketInfo, ttl time.Dur
 }
 
 // UpdateOutcomePublishedOdds writes the computed published_odds back to
-// the market_outcomes row. Bumps last_oddin_ts monotonically.
-func (s *Store) UpdateOutcomePublishedOdds(ctx context.Context, marketID int64, outcomeID, publishedOdds string, oddinTs int64) error {
+// the market_outcomes row. Bumps last_oddin_ts monotonically. The
+// probability arg may be "" — in that case we leave the existing
+// probability column alone (the ingester already wrote it on its pass).
+func (s *Store) UpdateOutcomePublishedOdds(ctx context.Context, marketID int64, outcomeID, publishedOdds, probability string, oddinTs int64) error {
 	const q = `
 UPDATE market_outcomes
    SET published_odds = $3::numeric,
-       last_oddin_ts  = GREATEST(last_oddin_ts, $4),
+       probability    = COALESCE($4::numeric, probability),
+       last_oddin_ts  = GREATEST(last_oddin_ts, $5),
        updated_at     = NOW()
  WHERE market_id = $1 AND outcome_id = $2`
-	if _, err := s.pool.Exec(ctx, q, marketID, outcomeID, publishedOdds, oddinTs); err != nil {
+	var prob any
+	if probability != "" {
+		prob = probability
+	}
+	if _, err := s.pool.Exec(ctx, q, marketID, outcomeID, publishedOdds, prob, oddinTs); err != nil {
 		return fmt.Errorf("update published_odds: %w", err)
 	}
 	return nil
@@ -178,11 +185,15 @@ UPDATE market_outcomes
 // odds. The ingester already wrote a row with raw only; this one carries
 // the published snapshot. Readers filtering by ts DESC always see the
 // latest publication.
-func (s *Store) AppendOddsHistoryPublished(ctx context.Context, marketID int64, outcomeID, rawOdds, publishedOdds string, ts time.Time) error {
+func (s *Store) AppendOddsHistoryPublished(ctx context.Context, marketID int64, outcomeID, rawOdds, publishedOdds, probability string, ts time.Time) error {
 	const q = `
-INSERT INTO odds_history (market_id, outcome_id, raw_odds, published_odds, ts)
-VALUES ($1, $2, $3::numeric, $4::numeric, $5)`
-	if _, err := s.pool.Exec(ctx, q, marketID, outcomeID, rawOdds, publishedOdds, ts); err != nil {
+INSERT INTO odds_history (market_id, outcome_id, raw_odds, published_odds, probability, ts)
+VALUES ($1, $2, $3::numeric, $4::numeric, $5::numeric, $6)`
+	var prob any
+	if probability != "" {
+		prob = probability
+	}
+	if _, err := s.pool.Exec(ctx, q, marketID, outcomeID, rawOdds, publishedOdds, prob, ts); err != nil {
 		return fmt.Errorf("insert odds_history: %w", err)
 	}
 	return nil

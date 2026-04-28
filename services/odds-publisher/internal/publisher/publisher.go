@@ -45,6 +45,7 @@ type OutboundPayload struct {
 	Specifiers       string    `json:"specifiers"` // canonical k=v|k=v
 	OutcomeID        string    `json:"outcomeId"`
 	PublishedOdds    string    `json:"publishedOdds"` // decimal string
+	Probability      string    `json:"probability,omitempty"` // decimal in [0,1]; "" omitted
 	Active           bool      `json:"active"`
 	Ts               time.Time `json:"ts"`
 }
@@ -107,10 +108,10 @@ func (p *Publisher) processOne(ctx context.Context, ev bus.Event) error {
 	}
 
 	// Persist first so reconnecting WS clients see the truth.
-	if err := p.store.UpdateOutcomePublishedOdds(ctx, info.MarketID, ev.OutcomeID, published, ev.OddinTs); err != nil {
+	if err := p.store.UpdateOutcomePublishedOdds(ctx, info.MarketID, ev.OutcomeID, published, ev.Probability, ev.OddinTs); err != nil {
 		return err
 	}
-	if err := p.store.AppendOddsHistoryPublished(ctx, info.MarketID, ev.OutcomeID, ev.RawOdds, published, time.UnixMilli(ev.OddinTs)); err != nil {
+	if err := p.store.AppendOddsHistoryPublished(ctx, info.MarketID, ev.OutcomeID, ev.RawOdds, published, ev.Probability, time.UnixMilli(ev.OddinTs)); err != nil {
 		// Not fatal — history is for audit, not correctness.
 		p.log.Debug().Err(err).Msg("history insert failed")
 	}
@@ -124,6 +125,7 @@ func (p *Publisher) processOne(ctx context.Context, ev bus.Event) error {
 		Specifiers:       ev.SpecifiersCanonical,
 		OutcomeID:        ev.OutcomeID,
 		PublishedOdds:    published,
+		Probability:      ev.Probability,
 		Active:           ev.Active,
 		Ts:               time.UnixMilli(ev.OddinTs),
 	}

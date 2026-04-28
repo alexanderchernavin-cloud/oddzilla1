@@ -37,6 +37,7 @@ type Event struct {
 	ProviderMarketID    int
 	SpecifiersCanonical string
 	RawOdds             string
+	Probability         string // "" when feed omits it
 	Active              bool
 	MatchID             int64
 	OddinTs             int64
@@ -206,6 +207,9 @@ func decodeBatch(msgs []redis.XMessage) []Event {
 		}
 		if v, ok := m.Values["raw_odds"].(string); ok {
 			ev.RawOdds = v
+		}
+		if v, ok := m.Values["probability"].(string); ok {
+			ev.Probability = v
 		}
 		if v, ok := m.Values["active"].(string); ok {
 			ev.Active = v == "1"

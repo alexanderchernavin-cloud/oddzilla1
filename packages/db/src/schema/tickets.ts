@@ -62,6 +62,7 @@ export const ticketSelections = pgTable(
       .references(() => markets.id),
     outcomeId: text().notNull(),
     oddsAtPlacement: numeric({ precision: 10, scale: 4 }).notNull(),
+    probabilityAtPlacement: numeric({ precision: 8, scale: 7 }),
     result: outcomeResultEnum(),
     voidFactor: numeric({ precision: 4, scale: 3 }),
     settledAt: timestamp({ withTimezone: true }),

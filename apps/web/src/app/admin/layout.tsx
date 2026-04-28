@@ -36,6 +36,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
             <Link href="/admin/margins" className="hover:text-[var(--color-fg)]">
               Margins
             </Link>
+            <Link href="/admin/cashout" className="hover:text-[var(--color-fg)]">
+              Cashout
+            </Link>
             <Link href="/admin/withdrawals" className="hover:text-[var(--color-fg)]">
               Withdrawals
             </Link>

@@ -11,6 +11,7 @@ export const walletTxTypeEnum = pgEnum("wallet_tx_type", [
   "bet_payout",
   "bet_refund",
   "adjustment",
+  "cashout",
 ]);
 export const chainNetworkEnum = pgEnum("chain_network", ["TRC20", "ERC20"]);
 export const depositStatusEnum = pgEnum("deposit_status", ["seen", "confirming", "credited", "orphaned"]);
@@ -57,3 +58,12 @@ export const settlementTypeEnum = pgEnum("settlement_type", [
 
 export const oddsScopeEnum = pgEnum("odds_scope", ["global", "sport", "tournament", "market_type"]);
 export const mappingStatusEnum = pgEnum("mapping_status", ["pending", "approved", "rejected"]);
+
+export const cashoutStatusEnum = pgEnum("cashout_status", [
+  "offered",
+  "accepted",
+  "declined",
+  "expired",
+  "errored",
+  "unavailable",
+]);

@@ -8,6 +8,7 @@ export * from "./descriptions.js";
 export * from "./profiles.js";
 export * from "./odds.js";
 export * from "./tickets.js";
+export * from "./cashout.js";
 export * from "./settlements.js";
 export * from "./admin.js";
 export * from "./feed.js";

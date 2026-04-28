@@ -14,7 +14,18 @@
       "Bash(ssh -i ~/.ssh/id_ed25519 root@178.104.174.24 \"systemctl restart tigervncserver@:1.service && sleep 3 && systemctl is-active tigervncserver@:1.service && sudo -u team -H pgrep -af autocutsel\")",
       "Bash(ssh -i ~/.ssh/id_ed25519 team@178.104.174.24 \"mkdir -p ~/oddzilla && echo CREATED && ls -la ~/oddzilla\")",
       "Bash(scp -i ~/.ssh/id_ed25519 -r \"/d/AI/Oddzilla/Oddin\" team@178.104.174.24:/home/team/oddzilla/)",
-      "Bash(ssh -i ~/.ssh/id_ed25519 team@178.104.174.24 \"du -sh ~/oddzilla/Oddin && find ~/oddzilla/Oddin -type f | wc -l && ls ~/oddzilla/Oddin/\")"
+      "Bash(ssh -i ~/.ssh/id_ed25519 team@178.104.174.24 \"du -sh ~/oddzilla/Oddin && find ~/oddzilla/Oddin -type f | wc -l && ls ~/oddzilla/Oddin/\")",
+      "Bash(where pdftoppm *)",
+      "Bash(pip show *)",
+      "Bash(pdftotext -layout \"D:/AI/Oddzilla/Cashout/Cashout_Function_201119.pdf\" \"D:/AI/Oddzilla/Cashout/cashout.txt\")",
+      "Bash(python -c ' *)",
+      "Bash(ssh -o ConnectTimeout=8 team@178.104.174.24 'sg docker -c \"docker logs --since 10m oddzilla-feed-ingester-1 2>&1\" | grep -i -m 5 \"probabilit\\\\|odds_change\\\\|outcome\" | head -20')",
+      "Bash(ssh -o ConnectTimeout=8 team@178.104.174.24 'sg docker -c \"docker logs --since 5m oddzilla-feed-ingester-1 2>&1 | tail -50\"')",
+      "Bash(ssh -o ConnectTimeout=8 team@178.104.174.24 'sg docker -c \"docker exec oddzilla-postgres-1 psql -U postgres -d oddzilla -c \\\\\"SELECT routing_key, substring\\(payload from 1 for 600\\) FROM feed_messages WHERE routing_key LIKE \\\\\\\\047%odds_change%\\\\\\\\047 ORDER BY id DESC LIMIT 1;\\\\\"\"')",
+      "Bash(ssh -o ConnectTimeout=8 team@178.104.174.24 'sg docker -c \"docker exec oddzilla-postgres-1 sh -c \\\\\"psql -U \\\\\\\\$POSTGRES_USER -d oddzilla -c \\\\\\\\\\\\\"SELECT routing_key FROM feed_messages WHERE routing_key LIKE 047%odds_change%047 ORDER BY id DESC LIMIT 3;\\\\\\\\\\\\\"\\\\\"\"')",
+      "Bash(ssh -o ConnectTimeout=8 team@178.104.174.24 'sg docker -c \"docker exec oddzilla-postgres-1 psql -U oddzilla -d oddzilla -tAc \\\\\"SELECT kind, count\\(*\\) FROM feed_messages WHERE received_at > now\\(\\) - interval 047 5 minutes 047 GROUP BY kind ORDER BY 2 DESC;\\\\\"\"')",
+      "Bash(ssh -o ConnectTimeout=8 team@178.104.174.24 'sg docker -c \"docker exec -i oddzilla-postgres-1 psql -U oddzilla -d oddzilla\"')",
+      "Bash(ssh -o ConnectTimeout=8 team@178.104.174.24 'sg docker -c \"docker exec -i oddzilla-postgres-1 psql -U oddzilla -d oddzilla -tA\"')"
     ]
   }
 }

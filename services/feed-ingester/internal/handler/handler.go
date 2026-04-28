@@ -180,23 +180,26 @@ func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 		ts := time.UnixMilli(msg.Timestamp).UTC()
 		for _, o := range m.Outcomes {
 			rawOdds := nullableOdds(o.Odds)
+			probability := nullableProbability(o.Probability)
 			active := o.Active == nil || *o.Active == 1
 			rows = append(rows, store.OutcomeUpsert{
 				MarketID:    marketID,
 				OutcomeID:   o.ID,
 				Name:        o.Name,
 				RawOdds:     rawOdds,
+				Probability: probability,
 				Active:      active,
 				LastOddinTs: msg.Timestamp,
 			})
 			history = append(history, store.OddsHistoryRow{
-				MarketID:  marketID,
-				OutcomeID: o.ID,
-				RawOdds:   rawOdds,
-				Ts:        ts,
+				MarketID:    marketID,
+				OutcomeID:   o.ID,
+				RawOdds:     rawOdds,
+				Probability: probability,
+				Ts:          ts,
 			})
 			if rawOdds != nil {
-				events = append(events, bus.OddsEvent{
+				ev := bus.OddsEvent{
 					MarketID:            marketID,
 					OutcomeID:           o.ID,
 					ProviderMarketID:    m.ID,
@@ -205,7 +208,11 @@ func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 					Active:              active,
 					MatchID:             matchID,
 					OddinTs:             msg.Timestamp,
-				})
+				}
+				if probability != nil {
+					ev.Probability = *probability
+				}
+				events = append(events, ev)
 			}
 		}
 		if err := store.UpsertOutcomes(ctx, d.Store.Pool(), rows); err != nil {
@@ -439,6 +446,27 @@ func afterTsKey(product int) string {
 
 func nullableOdds(s string) *string {
 	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// nullableProbability validates Oddin's `probabilities` attribute. It is a
+// decimal between 0 and 1; we keep it as a string so Postgres NUMERIC stays
+// authoritative. Out-of-range or unparseable values become nil (don't write
+// junk to the DB; the feed is generally clean but parser drift on either
+// side could otherwise pollute the column).
+func nullableProbability(s string) *string {
+	if s == "" {
+		return nil
+	}
+	// Defensive parse — Oddin sends e.g. "0.368". Anything outside [0,1]
+	// is meaningless and dropped.
+	var f float64
+	if _, err := fmt.Sscanf(s, "%f", &f); err != nil {
+		return nil
+	}
+	if f < 0 || f > 1 {
 		return nil
 	}
 	return &s

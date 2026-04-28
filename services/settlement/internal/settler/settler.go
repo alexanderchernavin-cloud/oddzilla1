@@ -216,8 +216,14 @@ func (s *Settler) maybeSettleTicket(ctx context.Context, tx pgx.Tx, ticketID, so
 		return false, nil
 	}
 	if t.Status != "accepted" {
-		// Either still pending_delay (shouldn't happen — bet-delay moves
-		// it first) or already settled/voided/rejected.
+		// Already in a terminal state. Includes:
+		//   settled / voided / rejected — nothing more to do
+		//   cashed_out                  — user already paid via cashout;
+		//                                 settlement should not double-pay
+		//                                 even if the underlying market
+		//                                 settles afterwards
+		//   pending_delay               — shouldn't happen (bet-delay
+		//                                 advances first); ignore safely
 		return false, nil
 	}
 	unresolved, err := store.UnresolvedCount(ctx, tx, ticketID)

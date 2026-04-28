@@ -32,6 +32,7 @@ type OddsEvent struct {
 	ProviderMarketID int
 	SpecifiersCanonical string // sorted k=v|k=v; hash can be derived
 	RawOdds       string // decimal string
+	Probability   string // decimal in [0,1]; empty when feed omits it
 	Active        bool
 	MatchID       int64
 	OddinTs       int64 // source timestamp, ms
@@ -54,6 +55,7 @@ func (b *Bus) PublishOdds(ctx context.Context, ev OddsEvent) error {
 		"provider_market_id": ev.ProviderMarketID,
 		"specifiers":        ev.SpecifiersCanonical,
 		"raw_odds":          ev.RawOdds,
+		"probability":       ev.Probability,
 		"active":            boolInt(ev.Active),
 		"match_id":          ev.MatchID,
 		"oddin_ts":          ev.OddinTs,

@@ -55,6 +55,7 @@ export const marketOutcomes = pgTable(
     name: text().notNull(),
     rawOdds: numeric({ precision: 10, scale: 4 }),
     publishedOdds: numeric({ precision: 10, scale: 4 }),
+    probability: numeric({ precision: 8, scale: 7 }),
     active: boolean().notNull().default(true),
     result: outcomeResultEnum(),
     voidFactor: numeric({ precision: 4, scale: 3 }),

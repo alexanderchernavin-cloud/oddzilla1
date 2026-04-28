@@ -32,6 +32,7 @@ type OutcomeUpsert struct {
 	OutcomeID     string
 	Name          string
 	RawOdds       *string // decimal as string; nil → don't touch
+	Probability   *string // decimal in [0,1]; nil → don't touch
 	Active        bool
 	LastOddinTs   int64
 }
@@ -77,10 +78,11 @@ func UpsertOutcomes(ctx context.Context, db pgxRunner, rows []OutcomeUpsert) err
 	// volume (dozens per market-change) a simple multi-row INSERT is fine.
 	const q = `
 INSERT INTO market_outcomes
-  (market_id, outcome_id, name, raw_odds, active, last_oddin_ts, updated_at)
-VALUES ($1, $2, $3, $4::numeric, $5, $6, NOW())
+  (market_id, outcome_id, name, raw_odds, probability, active, last_oddin_ts, updated_at)
+VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6, $7, NOW())
 ON CONFLICT (market_id, outcome_id) DO UPDATE
    SET raw_odds      = COALESCE(EXCLUDED.raw_odds, market_outcomes.raw_odds),
+       probability   = COALESCE(EXCLUDED.probability, market_outcomes.probability),
        active        = EXCLUDED.active,
        name          = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE market_outcomes.name END,
        last_oddin_ts = GREATEST(market_outcomes.last_oddin_ts, EXCLUDED.last_oddin_ts),
@@ -90,12 +92,15 @@ ON CONFLICT (market_id, outcome_id) DO UPDATE
 	// single roundtrip for the whole group.
 	batch := &pgx.Batch{}
 	for _, r := range rows {
-		var rawOdds any
+		var rawOdds, probability any
 		if r.RawOdds != nil {
 			rawOdds = *r.RawOdds
 		}
+		if r.Probability != nil {
+			probability = *r.Probability
+		}
 		name := r.Name
-		batch.Queue(q, r.MarketID, r.OutcomeID, name, rawOdds, r.Active, r.LastOddinTs)
+		batch.Queue(q, r.MarketID, r.OutcomeID, name, rawOdds, probability, r.Active, r.LastOddinTs)
 	}
 	br := db.SendBatch(ctx, batch)
 	defer br.Close()
@@ -115,17 +120,20 @@ func AppendOddsHistory(ctx context.Context, db pgxRunner, rows []OddsHistoryRow)
 	if len(rows) == 0 {
 		return nil
 	}
-	cols := []string{"market_id", "outcome_id", "raw_odds", "published_odds", "ts"}
+	cols := []string{"market_id", "outcome_id", "raw_odds", "published_odds", "probability", "ts"}
 	src := make([][]any, len(rows))
 	for i, r := range rows {
-		var rawOdds, pubOdds any
+		var rawOdds, pubOdds, probability any
 		if r.RawOdds != nil {
 			rawOdds = *r.RawOdds
 		}
 		if r.PublishedOdds != nil {
 			pubOdds = *r.PublishedOdds
 		}
-		src[i] = []any{r.MarketID, r.OutcomeID, rawOdds, pubOdds, r.Ts}
+		if r.Probability != nil {
+			probability = *r.Probability
+		}
+		src[i] = []any{r.MarketID, r.OutcomeID, rawOdds, pubOdds, probability, r.Ts}
 	}
 	// Use CopyFrom where available (pgxpool exposes it via Acquire).
 	if p, ok := db.(*pgxpool.Pool); ok {
@@ -143,8 +151,8 @@ func AppendOddsHistory(ctx context.Context, db pgxRunner, rows []OddsHistoryRow)
 	// Fallback: multi-row insert via batch.
 	batch := &pgx.Batch{}
 	const q = `
-INSERT INTO odds_history (market_id, outcome_id, raw_odds, published_odds, ts)
-VALUES ($1, $2, $3::numeric, $4::numeric, $5)
+INSERT INTO odds_history (market_id, outcome_id, raw_odds, published_odds, probability, ts)
+VALUES ($1, $2, $3::numeric, $4::numeric, $5::numeric, $6)
 `
 	for _, v := range src {
 		batch.Queue(q, v...)
@@ -166,6 +174,7 @@ type OddsHistoryRow struct {
 	OutcomeID     string
 	RawOdds       *string // decimal string
 	PublishedOdds *string
+	Probability   *string // decimal in [0,1]; nil when feed omits it
 	Ts            time.Time
 }
 
