@@ -139,10 +139,15 @@ explicit user direction — later phases assume earlier invariants hold.
   protocol. Per-client 5 msg/s token bucket (capacity 5, refill 200 ms).
   Subscription cap 100 matches per client.
 - `services/api`: `/catalog/sports`, `/catalog/sports/:slug` (live +
-  upcoming matches), `/catalog/matches/:id` (grouped markets + outcomes),
-  `/catalog/live-counts`. Admin-only `/admin/odds-config` (GET, PUT upsert,
-  DELETE, GET `/options`) with full audit-log trail; global scope cannot
-  be deleted.
+  upcoming matches; accepts `?tournament=N` to filter to one tournament),
+  `/catalog/sports/:slug/tournaments` (per-sport tournament list with
+  live+upcoming match counts, powering the sidebar sub-tree),
+  `/catalog/matches` (cross-sport list), `/catalog/matches/:id` (grouped
+  markets + outcomes), `/catalog/search` (global search across sports /
+  tournaments / teams / matches; case-insensitive, 6 hits per facet),
+  `/catalog/live-counts`. Admin-only `/admin/odds-config` (GET, PUT
+  upsert, DELETE, GET `/options`) with full audit-log trail; global scope
+  cannot be deleted.
 - `apps/web/src/lib/use-live-odds.ts`: shared singleton WS connection
   across components, exponential-backoff reconnect (1s → 16s cap), resub
   on reconnect, out-of-order tick suppression.
