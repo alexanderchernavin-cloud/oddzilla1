@@ -137,23 +137,28 @@ therefore safe.
 ### Bet placement
 
 1. Client builds a slip, submits `POST /bets` with a client-generated
-   `idempotencyKey` body field (NOT a header), stake in micro-USDT, and
-   the market/outcome/odds for each selection.
+   `idempotencyKey` body field (NOT a header), stake in micro-units,
+   `currency` (`USDT` or `OZ`; defaults to `USDT` for compat), and the
+   market/outcome/odds for each selection. The currency selection lives
+   in the bet-slip context (localStorage, default `OZ` so demo testing
+   works out of the box) and is forwarded with each placement.
 2. `services/api` validates inside one transaction (with
-   `SELECT FOR UPDATE` on the user + wallet rows): user is active, stake
-   > 0, stake ≤ `balance - locked` (available), stake ≤
-   `users.global_limit_micro` (if set), each market is `status=1` (active),
-   each outcome is `active=true` and has a current `published_odds`,
-   submitted odds within ±5% (default `DEFAULT_ODDS_DRIFT_TOLERANCE`)
-   of current.
+   `SELECT FOR UPDATE` on the user + the matching `(user_id, currency)`
+   wallet row): user is active, stake > 0, stake ≤ `balance - locked`
+   (available), stake ≤ `users.global_limit_micro` (if set), each market
+   is `status=1` (active), each outcome is `active=true` and has a
+   current `published_odds`, submitted odds within ±5% (default
+   `DEFAULT_ODDS_DRIFT_TOLERANCE`) of current.
 3. Same transaction:
    - Idempotency short-circuit: if `idempotencyKey` already exists for
      this user, return the existing ticket — no double-spend.
    - Insert `tickets` (status `pending_delay` if user has
-     `bet_delay_seconds > 0`, else `accepted`).
+     `bet_delay_seconds > 0`, else `accepted`; `currency` carried so
+     settlement knows which wallet to credit).
    - Insert `ticket_selections` rows (one per selection).
-   - `UPDATE wallets SET locked_micro = locked_micro + stake`.
-   - `INSERT wallet_ledger (type='bet_stake', ref_type='ticket',
+   - `UPDATE wallets SET locked_micro = locked_micro + stake WHERE
+      user_id = $u AND currency = $c`.
+   - `INSERT wallet_ledger (currency, type='bet_stake', ref_type='ticket',
       ref_id=ticket.id, delta_micro=-stake)` — unique partial index makes
      a replay a no-op.
    - If delayed: `pg_notify('bet_delay', ticket.id::text)`.
@@ -474,6 +479,13 @@ a Phase 7.5 follow-up; the existing scanner has all the data it needs.
   (5-tuple composite unique), wallet credits (partial unique on `ref_id`),
   deposits (`(network, tx_hash, log_index)`). Given enough crashes,
   retries, and replays, this is what keeps the books balanced.
+- **Two wallets per user from signup.** `services/api` signup creates a
+  USDT wallet (zero) and an OZ wallet (1000 OZ demo bonus, written
+  through `wallet_ledger` keyed on `(adjustment, signup_bonus, user_id)`
+  so retries can't double-credit). The OZ wallet exists so the bet slip
+  / placement / settlement flow is exercisable end-to-end before any
+  on-chain top-up. Withdrawals + deposits stay USDT-only — there's no
+  on-chain network for OZ.
 
 ## Scale path
 

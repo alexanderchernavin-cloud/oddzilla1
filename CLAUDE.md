@@ -17,7 +17,7 @@ Postgres 16 + Redis 7 + Caddy, all on one Hetzner box via Docker Compose.
 | Which feed? | Oddin.gg, **protocol level** (raw AMQP + REST, no SDK) |
 | Which chains? | USDT on TRC20 (Tron) and ERC20 (Ethereum), both from day 1 |
 | Where does it run? | Hetzner CPX22 at `178.104.174.24` (see [`CONNECT.md`](./CONNECT.md)). Public URLs: **`s.oddzilla.cc`** (storefront) + **`sadmin.oddzilla.cc`** (admin; `/` redirects to `/admin`). Let's Encrypt via Caddy. |
-| How is money stored? | `BIGINT micro_usdt` (1 USDT = 1,000,000 micro) everywhere |
+| How is money stored? | `BIGINT _micro` (6 decimals = 1,000,000 micro per unit) on every wallet/ledger/ticket row, with a sibling `currency CHAR(4)`. Two currencies: `USDT` (real, on-chain) and `OZ` (demo, every signup gets a 1000 OZ bonus for testing the bet flow). Withdrawals + deposits stay USDT-only. |
 | Auth? | Email + password (argon2id), JWT access (15 min) + refresh cookie (30 d). `Domain=.oddzilla.cc` so session works on both subdomains. |
 | UI aesthetic? | Premium / quiet editorial: Instrument Serif display + Geist UI + Geist Mono for odds. Dark theme default (`#0b0b0c`), light via `data-theme="light"`. Ported from the Claude Design handoff bundle. **No emojis.** |
 
@@ -92,11 +92,20 @@ See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full picture, and
 
 These rules are load-bearing. Breaking them causes money or data loss.
 
-1. **Money is `BIGINT micro_usdt` (6 decimals, matches on-chain USDT).**
+1. **Money is `BIGINT _micro` (6 decimals) per currency.**
    Column suffix is `_micro`. Never `NUMERIC` for balances/stakes. Never
    `number` in TS (precision loss > 2^53). Use the `MicroUsdt` branded bigint
-   from `packages/types/src/money.ts`. JSON serialization: bigints go over
+   from `packages/types/src/money.ts` for arithmetic (the math is currency-
+   agnostic — OZ also has 6 decimals). JSON serialization: bigints go over
    the wire as decimal strings (`"10000000"` not `10000000`).
+
+   Every wallet read/write is scoped by `(user_id, currency)` since
+   migration 0014. Forgetting the `currency` filter on a `wallets` /
+   `wallet_ledger` query will silently touch the wrong row. The supported
+   set is hard-coded in
+   [`packages/types/src/currencies.ts`](./packages/types/src/currencies.ts)
+   (`SUPPORTED_CURRENCIES = ["USDT", "OZ"]`). Withdrawals + on-chain
+   deposits hard-code `currency='USDT'`; OZ has no chain.
 
 2. **Specifier canonicalization.** A market is uniquely keyed by
    `(match_id, provider_market_id, specifiers_hash)`. The hash is sha256 of
@@ -153,10 +162,11 @@ These rules are load-bearing. Breaking them causes money or data loss.
 
 | Concern | Path |
 | --- | --- |
-| SQL migrations | [`packages/db/migrations/`](./packages/db/migrations/) — `0000_init`, `0001_odds_history_partitions`, `0002_chain_scanner_state`, `0003_drop_news_articles`, `0004_unclassified_sport`, `0005_merge_duplicate_sports`, `0006_market_descriptions`, `0007_purge_non_mvp_sports` (superseded by 0012), `0008_competitors` (teams as first-class per-sport entities), `0010_odds_config_global_unique`, `0011_feed_messages` (raw AMQP message log keyed to match for the `/admin/logs` panel; retention = `match.scheduled_at + 24h`, hard 48h cap on unmapped URNs), `0012_reactivate_non_bot_sports` (re-enables every non-bot sport after the product opened past the 4-MVP scope) |
+| SQL migrations | [`packages/db/migrations/`](./packages/db/migrations/) — `0000_init`, `0001_odds_history_partitions`, `0002_chain_scanner_state`, `0003_drop_news_articles`, `0004_unclassified_sport`, `0005_merge_duplicate_sports`, `0006_market_descriptions`, `0007_purge_non_mvp_sports` (superseded by 0012), `0008_competitors` (teams as first-class per-sport entities), `0010_odds_config_global_unique`, `0011_feed_messages` (raw AMQP message log keyed to match for the `/admin/logs` panel; retention = `match.scheduled_at + 24h`, hard 48h cap on unmapped URNs), `0012_reactivate_non_bot_sports` (re-enables every non-bot sport after the product opened past the 4-MVP scope), `0013_tournament_risk_tier`, `0014_multi_currency` (composite PK on `wallets`; `currency CHAR(4)` on `wallet_ledger` + `tickets`; OZ demo currency), `0015_cashout` (cashout cascade + probability columns + `cashouts` table), `0016_cashout_acceptance_delay`, `0017_tiple_tippot` (tiple/tippot bet products + per-scope `bet_product_config`) |
 | Drizzle schema | [`packages/db/src/schema/`](./packages/db/src/schema/) |
 | Seed script | [`packages/db/src/seed.ts`](./packages/db/src/seed.ts) — seed sport URNs are `od:sport:{3,2,1,13}` matching real Oddin feed (do NOT revert to synthetic `od:sport:cs2` etc. — it breaks auto-mapping) |
 | Money helpers | [`packages/types/src/money.ts`](./packages/types/src/money.ts) |
+| Currency list + demo bonus | [`packages/types/src/currencies.ts`](./packages/types/src/currencies.ts) (`SUPPORTED_CURRENCIES`, `SIGNUP_BONUS_OZ_MICRO`) |
 | Specifier canonicalization (TS reference) | [`packages/types/src/specifiers.ts`](./packages/types/src/specifiers.ts) |
 | Specifier golden fixture | [`docs/fixtures/specifiers.json`](./docs/fixtures/specifiers.json) |
 | Shared API/WS/bet/wallet types | [`packages/types/src/`](./packages/types/src/) |
@@ -273,13 +283,13 @@ post-Phase-8 Oddin-workflow hardening pass; production stack is live at
 
 | Component | Status | Notes |
 | --- | --- | --- |
-| DB schema + migrations | Live | 6 migrations: init, odds_history partitions, chain_scanner_state, drop_news_articles, `0004_unclassified_sport` (hidden fallback sport + move placeholder tournaments), `0005_merge_duplicate_sports` (merge s-N auto-duplicates into seeded rows + align seed URNs with real Oddin URNs `od:sport:{1,2,3,13}`). |
-| Auth (signup/login/refresh/me + password change) | Live | argon2id + JOSE JWT (`alg: HS256` pinned) + refresh-rotation; helmet CSP `default-src 'none'` on `/api/*`; rate-limited login (5/min) + signup (10/min); shared cookie domain `.oddzilla.cc`. Browser uses same-origin `/api/*` through Caddy — `NEXT_PUBLIC_API_URL` is baked **empty** so api-client falls back to `/api`. |
+| DB schema + migrations | Live | 18 migrations 0000–0017. See "SQL migrations" row above for the full list. Recent additions: `0013_tournament_risk_tier`, `0014_multi_currency` (per-currency wallets + OZ demo), `0015_cashout`, `0016_cashout_acceptance_delay`, `0017_tiple_tippot`. |
+| Auth (signup/login/refresh/me + password change) | Live | argon2id + JOSE JWT (`alg: HS256` pinned) + refresh-rotation; helmet CSP `default-src 'none'` on `/api/*`; rate-limited login (5/min) + signup (10/min); shared cookie domain `.oddzilla.cc`. Browser uses same-origin `/api/*` through Caddy — `NEXT_PUBLIC_API_URL` is baked **empty** so api-client falls back to `/api`. Signup also creates a USDT wallet (zero) + OZ wallet (1000 OZ demo bonus) atomically, with an idempotent `(adjustment, signup_bonus, user_id)` ledger row. |
 | Catalog API + sport/match SSR pages | Live | `/catalog/sports` filters `active=true` (hides `unclassified`); `/catalog/sports/:slug` returns inline match-winner odds per row (paired to home/away by team-name) and accepts `?tournament=N` to filter the list; `/catalog/sports/:slug/tournaments` returns tournaments under a sport with live+upcoming match counts; `/catalog/matches/:id` returns all active (`status=1`) markets — provider-id whitelist removed. Odds formatted to 2 decimals via `formatOdds()`. |
 | Top-bar global search | Live | `/catalog/search?q=…` (case-insensitive, 6 hits per facet across active sports / tournaments / teams / matches; matches gated on at least one active market). Frontend popover in `top-bar-search.tsx` debounces 180 ms, supports arrow-key nav, Cmd/Ctrl+K focus, Esc/click-outside close. |
 | Sidebar tournament sub-tree | Live | When the user is on `/sport/:slug`, the sidebar auto-fetches `/catalog/sports/:slug/tournaments` and renders an indented list under the sport. Each tournament links to `/sport/:slug?tournament=ID`; the sport page reads the param server-side and shows a dismissible filter chip. |
 | Frontend design | Live (2026-04-18) | Ported from Claude Design handoff bundle. Grid shell: top-bar + left sidebar + main + right-rail bet slip. Route groups: `(auth)` = login/signup, `(main)` = home/sport/match/account/bets/wallet, `admin/*` keeps its own layout. Sidebar order: CS2 → Dota 2 → LoL → Valorant → every other active sport (alphabetical); `efootballbots` + `ebasketballbots` are hidden via both the feed-ingester blocklist (`BLOCKED_ODDIN_SPORT_SLUGS`) and a defensive filter in `sidebar.tsx`. Tokens in `apps/web/src/app/globals.css`; legacy `--color-*` aliases kept for admin/bets/wallet pages. |
-| Bet slip + placement | Live | Singles + combos (up to 20 legs, cross-match only — same-match legs rejected server-side). Always-visible right rail (`apps/web/src/components/shell/bet-slip-rail.tsx`) drives the `BetSlipProvider` store, with a Single/Combo toggle. Withdrawals also block non-active users at request time. |
+| Bet slip + placement | Live | Singles + combos (up to 20 legs, cross-match only — same-match legs rejected server-side). Always-visible right rail (`apps/web/src/components/shell/bet-slip-rail.tsx`) drives the `BetSlipProvider` store, with a Single/Combo toggle and a USDT/OZ currency switcher (default OZ for the demo flow). The chosen currency is persisted in localStorage and forwarded as `currency` on `POST /bets`; the API debits the matching `(user_id, currency)` wallet. Withdrawals also block non-active users at request time. |
 | bet-delay worker | Live | LISTEN + 1s sweep + 5% drift tolerance |
 | Oddin AMQP feed (feed-ingester + settlement) | Live | AMQPS over `:5672` (not 5671), vhost `/oddinfeed/{customer_id}` URL-assembled by hand to preserve `%2F`. Bookmaker 142 |
 | Recovery flow | Live | `POST /v1/{product}/recovery/initiate_request` triggered on every (re)connect for both producers + on `alive subscribed=0` + on `alive` timestamp drift > 5s |
@@ -308,7 +318,8 @@ post-Phase-8 Oddin-workflow hardening pass; production stack is live at
 | Wallet withdrawal on-chain submission | **Manual** | Admin marks-submitted with tx hash from external signer/wallet. Pre-launch needs a dedicated signer container |
 | News scraper | **Removed** | Service + `news_articles` table deleted via migration 0003; no longer in scope |
 | Combos | Live | Frontend slip accumulates selections; Single/Combo toggle; settlement pays stake × product(EffectiveFactor), `bet_refund` ledger only when every leg voids. |
-| Cash-out | Live | Migration 0014 adds `cashout_config`, `cashouts`, probability columns on `market_outcomes` / `odds_history` / `ticket_selections`, and a `cashout` value on `wallet_tx_type`. Algorithm is Sportradar §2.1.1 (`stake × ticketOdds × Π(legProb)`) with optional §2.1.2 deduction ladder; full-stake prematch window is configurable per-scope. Oddin already populates `probabilities="0.368"` on every active outcome (verified on the integration broker 2026-04-28); engine falls back to `1/oddsCurrent` when the attribute is missing. Endpoints: `GET /tickets/:id/cashout/quote`, `POST /tickets/:id/cashout`, plus `/admin/cashout-config` cascade. Frontend: [`apps/web/src/app/(main)/bets/cashout-panel.tsx`](./apps/web/src/app/(main)/bets/cashout-panel.tsx) polls every 2s and surfaces an accept dialog. Settlement is unaffected — `maybeSettleTicket` already gates on `t.Status == "accepted"`, so `cashed_out` tickets are never re-paid. |
+| Cash-out | Live | Migration 0015 adds `cashout_config`, `cashouts`, probability columns on `market_outcomes` / `odds_history` / `ticket_selections`, and a `cashout` value on `wallet_tx_type`. Algorithm is Sportradar §2.1.1 (`stake × ticketOdds × Π(legProb)`) with optional §2.1.2 deduction ladder; full-stake prematch window is configurable per-scope. Oddin already populates `probabilities="0.368"` on every active outcome (verified on the integration broker 2026-04-28); engine falls back to `1/oddsCurrent` when the attribute is missing. Endpoints: `GET /tickets/:id/cashout/quote`, `POST /tickets/:id/cashout`, plus `/admin/cashout-config` cascade. Frontend: [`apps/web/src/app/(main)/bets/cashout-panel.tsx`](./apps/web/src/app/(main)/bets/cashout-panel.tsx) polls every 2s and surfaces an accept dialog. Settlement is unaffected — `maybeSettleTicket` already gates on `t.Status == "accepted"`, so `cashed_out` tickets are never re-paid. |
+| Multi-currency wallets (USDT + OZ demo) | Live (2026-04-29) | Migration 0014: composite PK `wallets(user_id, currency)`, `currency CHAR(4) NOT NULL DEFAULT 'USDT'` on `wallet_ledger` and `tickets`. Currencies hard-coded in [`packages/types/src/currencies.ts`](./packages/types/src/currencies.ts). Signup creates a USDT wallet (zero) + OZ wallet (1000 OZ bonus) atomically with an `(adjustment, signup_bonus, user_id)` audit ledger row. `GET /wallet` returns `{ wallets: WalletSnapshot[] }`. `POST /bets` accepts `currency`, debits the matching wallet. Settlement Go scopes wallet/ledger ops by currency from `tickets.currency`. Bet-slip UI has a USDT/OZ tab switcher (default OZ, persisted in localStorage); top-bar shows the active currency's balance, replaces `+ Deposit` with a `Demo` chip when OZ is active. Withdrawals + deposits remain USDT-only — backfill SQL for existing users is in [`docs/OPERATIONS.md`](./docs/OPERATIONS.md#oz-demo-currency-backfill). |
 | Outright (tournament-level) markets | Not started | Auto-mapper currently falls back to placeholder for `od:tournament:N` URNs (REST `/sport_events/` only handles match URNs); flagged as Post-MVP |
 | Prometheus + Grafana | Not started | Defer until traffic justifies |
 

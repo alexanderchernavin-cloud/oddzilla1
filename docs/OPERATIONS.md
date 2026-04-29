@@ -155,15 +155,26 @@ Add Prometheus + Grafana once Phase 4 goes live. Key metrics to watch:
 
 ### Wallet reconciliation (Phase 7 exit criterion)
 
-Daily cron job (`services/api` or a dedicated `services/reconciler`):
+Daily cron job (`services/api` or a dedicated `services/reconciler`).
+Reconciliation is per-currency since migration 0014:
 
 ```sql
-SELECT
-  (SELECT SUM(balance_micro) FROM wallets)
-    - (SELECT COALESCE(SUM(delta_micro),0) FROM wallet_ledger) AS drift_micro;
+SELECT w.currency,
+       SUM(w.balance_micro)                          AS balance_total,
+       COALESCE(l.ledger_total, 0)                   AS ledger_total,
+       SUM(w.balance_micro) - COALESCE(l.ledger_total, 0) AS drift_micro
+  FROM wallets w
+  LEFT JOIN (
+    SELECT currency, SUM(delta_micro) AS ledger_total
+      FROM wallet_ledger
+     GROUP BY currency
+  ) l USING (currency)
+ GROUP BY w.currency, l.ledger_total;
 ```
 
-Drift must be zero. Any non-zero value pages on-call.
+Drift must be zero per currency. Any non-zero value pages on-call.
+Note that the OZ row will read `balance = signup_bonus_count × 1_000_000_000`
+matching `ledger = same` — it nets to zero like USDT does.
 
 ## Backups
 
@@ -380,6 +391,42 @@ address derivation) — that's the only process that has it. Notes:
    service — deposit/withdrawal scanners pause; nothing else is
    affected).
 5. Permanent fix: upgrade Hetzner plan.
+
+## OZ demo currency backfill
+
+When migration 0014 runs on an existing environment, pre-existing users
+only have a USDT wallet. To grant the OZ demo balance to all of them,
+run this **idempotent** SQL (the unique partial index on
+`wallet_ledger(type, ref_type, ref_id) WHERE ref_id IS NOT NULL` blocks
+double-credits even on retry):
+
+```sql
+BEGIN;
+
+INSERT INTO wallets (user_id, currency, balance_micro, locked_micro)
+SELECT id, 'OZ', 1000000000, 0
+  FROM users
+ON CONFLICT (user_id, currency) DO NOTHING;
+
+INSERT INTO wallet_ledger (user_id, currency, delta_micro, type, ref_type, ref_id, memo)
+SELECT id, 'OZ', 1000000000, 'adjustment', 'signup_bonus', id::text, 'demo OZ signup backfill'
+  FROM users
+ON CONFLICT DO NOTHING;
+
+COMMIT;
+```
+
+Run from the host through the postgres container:
+
+```bash
+ssh team@<host> 'sg docker -c "docker compose exec -T postgres sh -c \
+  '"'"'psql -U \$POSTGRES_USER -d \$POSTGRES_DB'"'"'"' < backfill.sql
+```
+
+To bulk-credit OZ for testing (e.g. raise everyone's balance), insert a
+new ledger row with a fresh `ref_id` (e.g. `'<user_id>:test-credit-1'`)
+plus a matching `UPDATE wallets SET balance_micro = balance_micro + ?`
+in the same transaction.
 
 ## Access management
 

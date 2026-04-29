@@ -11,8 +11,10 @@ Canonical SQL lives in [`../packages/db/migrations/`](../packages/db/migrations/
   profiles, odds-config global-uniqueness fix, feed-messages audit,
   tournament risk-tier ranking. See file names for detail.
 - `0014_multi_currency.sql` — composite `(user_id, currency)` PK on
-  `wallets`; currency column on `wallet_ledger` and `tickets`. Adds the
-  demo `OZ` currency alongside USDT.
+  `wallets`; `currency CHAR(4)` column on `wallet_ledger` and `tickets`.
+  Adds the demo `OZ` currency alongside USDT (every signup gets a 1000
+  OZ bonus written through the ledger so the bet flow is testable
+  without on-chain top-up).
 - `0015_cashout.sql` — probability columns on `market_outcomes` /
   `odds_history` / `ticket_selections`; `cashout` value on
   `wallet_tx_type`; `cashout_config` cascade table; `cashouts`
@@ -29,7 +31,17 @@ For column-by-column detail open the SQL file — it's concise and annotated.
 
 ## Conventions
 
-- **Money** is `BIGINT` in micro-USDT (1 USDT = 1,000,000 micro). Suffix `_micro`.
+- **Money** is `BIGINT` with 6-decimal precision (1 unit = 1,000,000 micro).
+  Suffix `_micro`. The amount is per-currency — every wallet/ledger/ticket
+  row also carries a `currency CHAR(4)` column.
+- **Currencies** (migration 0014):
+  - `USDT` — real money on TRC20/ERC20. Decimals match on-chain USDT.
+  - `OZ` — demo currency for testing the bet flow without on-chain top-up.
+    Every signup gets a 1000 OZ bonus written through the ledger. Deposits
+    and withdrawals stay USDT-only — there is no on-chain network for OZ.
+  - The list is hardcoded in [`packages/types/src/currencies.ts`](../packages/types/src/currencies.ts)
+    as `SUPPORTED_CURRENCIES`. No DB enum — `CHAR(4)` keeps it cheap to
+    extend.
 - **Time** is `TIMESTAMPTZ`. Always UTC.
 - **Enums** are first-class Postgres enum types (see top of `0000_init.sql`).
 - **UUIDs** for user-facing / externally-referenced rows. `SERIAL` / `BIGSERIAL`
@@ -77,14 +89,29 @@ partial index `WHERE revoked_at IS NULL` makes active-session lookups cheap.
 
 ### Wallet
 
-**`wallets`** — one row per user. `balance_micro` = total. `locked_micro` =
-locked by open tickets. `balance_micro - locked_micro` = spendable. A table
-check enforces `balance_micro >= locked_micro`.
+**`wallets`** — one row per `(user_id, currency)`. Composite primary key
+since migration 0014 — every user has both a USDT wallet (real money,
+zero on signup) and an OZ wallet (demo money, 1000 OZ on signup).
+`balance_micro` = total. `locked_micro` = locked by open tickets.
+`balance_micro - locked_micro` = spendable. A table check enforces
+`balance_micro >= locked_micro`.
+
+> **Currency scoping rule.** Every wallet read/write that previously
+> filtered on `user_id` alone now also filters on `currency`. Forgetting
+> the currency clause silently picks the alphabetically first row
+> (CAS for "OZ" before "USDT" if both have OZ first). All callers in
+> the codebase (`bets/service.ts`, `admin/withdrawals.ts`,
+> `admin/tickets.ts`, settlement Go store, bet-delay Go store) are
+> already updated. Withdrawals and on-chain deposits hard-code
+> `currency='USDT'` because there is no OZ chain.
 
 **`wallet_ledger`** — append-only audit log. Every credit / debit produces
-a row here with signed `delta_micro`, `type`, `ref_type`/`ref_id` pointing
-back to the cause (ticket UUID, deposit UUID, withdrawal UUID), and
-optional `tx_hash` for on-chain events.
+a row here with signed `delta_micro`, the `currency` it moved, `type`,
+`ref_type`/`ref_id` pointing back to the cause (ticket UUID, deposit UUID,
+withdrawal UUID), and optional `tx_hash` for on-chain events. The
+signup OZ bonus shows up as
+`(adjustment, signup_bonus, user_id, +1_000_000_000)` and is keyed off
+the unique partial index so it can never double-credit on retry.
 
 > **Apply-once invariant.** `UNIQUE (type, ref_type, ref_id) WHERE ref_id IS
 > NOT NULL`. Any attempt to re-credit a deposit, re-pay a ticket, or re-refund
@@ -200,9 +227,11 @@ admins; every change is also written to `admin_audit_log`.
 ### Tickets
 
 **`tickets`** — one per bet submission. `idempotency_key` is a unique
-constraint that lets the client retry POST /bets safely. `stake_micro` and
-`potential_payout_micro` are fixed at placement. `actual_payout_micro` is
-written at settlement; NULL until then.
+constraint that lets the client retry POST /bets safely. `stake_micro`,
+`potential_payout_micro`, and `currency` are fixed at placement.
+`actual_payout_micro` is written at settlement; NULL until then. Settlement
+uses `currency` to find the right `(user_id, currency)` wallet row when
+crediting payouts, refunds, and rollback adjustments.
 
 States:
 - `pending_delay` — bet-delay worker hasn't finalized yet (user has
@@ -212,11 +241,11 @@ States:
 - `settled` — all selections resolved, payout applied.
 - `voided` — manually voided by admin, or cancelled by feed before
   settlement.
-- `cashed_out` — user sold the ticket back via the cashout flow.
-  `actual_payout_micro` holds the offer they accepted; settlement is
-  permanently inhibited (the `t.Status != "accepted"` gate in
-  `maybeSettleTicket` prevents double-payment even if the underlying
-  market settles afterwards).
+- `cashed_out` — user sold the ticket back via the cashout flow
+  (Sportradar §2.1.1; see migration 0015). `actual_payout_micro` holds
+  the offer they accepted; settlement is permanently inhibited (the
+  `t.Status != "accepted"` gate in `maybeSettleTicket` prevents
+  double-payment even if the underlying market settles afterwards).
 
 Indexes include a partial `WHERE status='pending_delay'` on `not_before_ts`
 to make the bet-delay sweep query trivially cheap.
@@ -340,7 +369,7 @@ SELECT * FROM tickets
 SELECT * FROM ticket_selections
   WHERE market_id = $1 AND result IS NULL;
 
--- PnL for last 24h by sport (admin dashboard)
+-- PnL for last 24h by sport, USDT only (filter OZ out — it's demo money)
 SELECT s.slug AS sport,
        SUM(CASE WHEN wl.type='bet_stake'  THEN -wl.delta_micro ELSE 0 END) AS stakes,
        SUM(CASE WHEN wl.type='bet_payout' THEN  wl.delta_micro ELSE 0 END) AS payouts,
@@ -355,6 +384,7 @@ SELECT s.slug AS sport,
   JOIN categories c   ON c.id = tu.category_id
   JOIN sports s       ON s.id = c.sport_id
   WHERE wl.created_at >= NOW() - INTERVAL '24 hours'
+    AND wl.currency = 'USDT'
   GROUP BY s.slug
   ORDER BY pnl_micro DESC;
 
