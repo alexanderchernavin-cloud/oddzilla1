@@ -29,6 +29,7 @@ export const cashoutConfig = pgTable(
     deductionLadderJson: jsonb(),
     minOfferMicro: bigint({ mode: "bigint" }).notNull().default(0n),
     minValueChangeBp: integer().notNull().default(0),
+    acceptanceDelaySeconds: integer().notNull().default(5),
     updatedBy: uuid().references(() => users.id),
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },
@@ -45,6 +46,10 @@ export const cashoutConfig = pgTable(
     check(
       "cashout_config_min_change_range",
       sql`${t.minValueChangeBp} BETWEEN 0 AND 10000`,
+    ),
+    check(
+      "cashout_config_acceptance_delay_range",
+      sql`${t.acceptanceDelaySeconds} BETWEEN 0 AND 60`,
     ),
   ],
 );

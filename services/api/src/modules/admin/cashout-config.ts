@@ -34,6 +34,7 @@ const upsertBody = z.object({
     .string()
     .regex(/^\d+$/, "minOfferMicro must be a non-negative integer string"),
   minValueChangeBp: z.number().int().min(0).max(10000),
+  acceptanceDelaySeconds: z.number().int().min(0).max(60),
 });
 
 export default async function cashoutConfigRoutes(app: FastifyInstance) {
@@ -87,6 +88,7 @@ export default async function cashoutConfigRoutes(app: FastifyInstance) {
           deductionLadderJson: r.deductionLadderJson,
           minOfferMicro: r.minOfferMicro.toString(),
           minValueChangeBp: r.minValueChangeBp,
+          acceptanceDelaySeconds: r.acceptanceDelaySeconds,
           updatedAt: r.updatedAt.toISOString(),
           updatedBy: r.updatedBy,
           label,
@@ -134,6 +136,7 @@ export default async function cashoutConfigRoutes(app: FastifyInstance) {
             deductionLadderJson: ladder,
             minOfferMicro: BigInt(body.minOfferMicro),
             minValueChangeBp: body.minValueChangeBp,
+            acceptanceDelaySeconds: body.acceptanceDelaySeconds,
             updatedBy: admin.id,
             updatedAt: new Date(),
           })
@@ -151,6 +154,7 @@ export default async function cashoutConfigRoutes(app: FastifyInstance) {
             deductionLadderJson: ladder,
             minOfferMicro: BigInt(body.minOfferMicro),
             minValueChangeBp: body.minValueChangeBp,
+            acceptanceDelaySeconds: body.acceptanceDelaySeconds,
             updatedBy: admin.id,
           })
           .returning();
@@ -170,6 +174,7 @@ export default async function cashoutConfigRoutes(app: FastifyInstance) {
               deductionLadderJson: before.deductionLadderJson,
               minOfferMicro: before.minOfferMicro.toString(),
               minValueChangeBp: before.minValueChangeBp,
+              acceptanceDelaySeconds: before.acceptanceDelaySeconds,
             }
           : null,
         afterJson: {
@@ -180,6 +185,7 @@ export default async function cashoutConfigRoutes(app: FastifyInstance) {
           deductionLadderJson: ladder,
           minOfferMicro: body.minOfferMicro,
           minValueChangeBp: body.minValueChangeBp,
+          acceptanceDelaySeconds: body.acceptanceDelaySeconds,
         },
         ipInet: request.ip ?? null,
       });
@@ -197,6 +203,7 @@ export default async function cashoutConfigRoutes(app: FastifyInstance) {
         deductionLadderJson: result.deductionLadderJson,
         minOfferMicro: result.minOfferMicro.toString(),
         minValueChangeBp: result.minValueChangeBp,
+        acceptanceDelaySeconds: result.acceptanceDelaySeconds,
         updatedAt: result.updatedAt.toISOString(),
       },
     };
@@ -233,6 +240,7 @@ export default async function cashoutConfigRoutes(app: FastifyInstance) {
           deductionLadderJson: existing.deductionLadderJson,
           minOfferMicro: existing.minOfferMicro.toString(),
           minValueChangeBp: existing.minValueChangeBp,
+          acceptanceDelaySeconds: existing.acceptanceDelaySeconds,
         },
         afterJson: null,
         ipInet: request.ip ?? null,
