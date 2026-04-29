@@ -9,6 +9,7 @@
     ".": "./src/index.ts",
     "./money": "./src/money.ts",
     "./currencies": "./src/currencies.ts",
+    "./products": "./src/products.ts",
     "./specifiers": "./src/specifiers.ts"
   },
   "scripts": {

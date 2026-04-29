@@ -5,12 +5,12 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { toMicro } from "@oddzilla/types/money";
 import { SUPPORTED_CURRENCIES, type Currency } from "@oddzilla/types/currencies";
-import {
-  parseProbability,
-  priceTiple,
-  priceTippot,
-  type TippotTier,
-} from "@oddzilla/types";
+// Runtime imports MUST come from the /products subpath (mirrors the
+// currencies workaround) — Next.js webpack can't resolve ".js" imports
+// re-exported from the package root because the package ships TS source.
+// Type-only `BetMeta` etc go through the bare path since they're erased.
+import { parseProbability, priceTiple, priceTippot } from "@oddzilla/types/products";
+import type { TippotTier } from "@oddzilla/types/products";
 import { useBetSlip, type SlipMode } from "@/lib/bet-slip";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { I } from "@/components/ui/icons";
