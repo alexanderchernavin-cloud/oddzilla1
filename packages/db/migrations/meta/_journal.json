@@ -127,6 +127,13 @@
       "when": 1700000017000,
       "tag": "0017_tiple_tippot",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1700000018000,
+      "tag": "0018_bet_product_per_leg_margin",
+      "breakpoints": true
     }
   ]
 }

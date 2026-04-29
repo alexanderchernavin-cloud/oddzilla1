@@ -127,5 +127,5 @@ test("rejects too few legs", () => {
 
 test("rejects out-of-range margin", () => {
   assert.throws(() => priceTiple([0.5, 0.5], -1), /margin_bp/);
-  assert.throws(() => priceTiple([0.5, 0.5], 5001), /margin_bp/);
+  assert.throws(() => priceTiple([0.5, 0.5], 200001), /margin_bp/);
 });

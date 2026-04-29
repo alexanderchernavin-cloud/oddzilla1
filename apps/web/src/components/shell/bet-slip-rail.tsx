@@ -19,11 +19,16 @@ import { SportGlyph } from "@/components/ui/sport-glyph";
 import { useMobileDrawers } from "./mobile-drawer-context";
 import type { SlipSelection } from "@oddzilla/types";
 
-// Default product margins; the server uses bet_product_config so these
-// are only for the client-side preview. The actual offered odds at
-// placement come from the server. 1500 bp = 15%.
-const PREVIEW_TIPLE_MARGIN_BP = 1500;
-const PREVIEW_TIPPOT_MARGIN_BP = 1500;
+// Default product margins for the client-side preview. The server is
+// authoritative — it loads bet_product_config and computes the effective
+// margin as `base + per-leg × N`. These constants mirror the migration
+// 0017 + 0018 defaults so the preview matches a freshly-deployed prod
+// config; admin overrides aren't pushed to the client. Effective preview
+// margin = previewBase + previewPerLeg × N.
+const PREVIEW_TIPLE_BASE_BP = 1500;
+const PREVIEW_TIPLE_PER_LEG_BP = 0;
+const PREVIEW_TIPPOT_BASE_BP = 0;
+const PREVIEW_TIPPOT_PER_LEG_BP = 500;
 
 export function BetSlipRail() {
   const slip = useBetSlip();
@@ -81,7 +86,9 @@ export function BetSlipRail() {
   const tipleQuote = useMemo(() => {
     if (effectiveMode !== "tiple" || !probabilityArr) return null;
     try {
-      return priceTiple(probabilityArr, PREVIEW_TIPLE_MARGIN_BP);
+      const eff =
+        PREVIEW_TIPLE_BASE_BP + PREVIEW_TIPLE_PER_LEG_BP * probabilityArr.length;
+      return priceTiple(probabilityArr, eff);
     } catch {
       return null;
     }
@@ -90,7 +97,9 @@ export function BetSlipRail() {
   const tippotQuote = useMemo(() => {
     if (effectiveMode !== "tippot" || !probabilityArr) return null;
     try {
-      return priceTippot(probabilityArr, PREVIEW_TIPPOT_MARGIN_BP);
+      const eff =
+        PREVIEW_TIPPOT_BASE_BP + PREVIEW_TIPPOT_PER_LEG_BP * probabilityArr.length;
+      return priceTippot(probabilityArr, eff);
     } catch {
       return null;
     }

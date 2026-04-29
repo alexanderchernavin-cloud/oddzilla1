@@ -211,7 +211,15 @@ export class BetsService {
       // ── Per-product gating: load bet_product_config for tiple/tippot ─
       // Done inside the tx so admin updates take effect on the next bet
       // without cache invalidation. The table has at most 2 rows.
-      let productCfg: { marginBp: number; minLegs: number; maxLegs: number; enabled: boolean } | null = null;
+      let productCfg:
+        | {
+            marginBp: number;
+            marginBpPerLeg: number;
+            minLegs: number;
+            maxLegs: number;
+            enabled: boolean;
+          }
+        | null = null;
       if (isProductBet) {
         const [cfg] = await tx
           .select()
@@ -226,6 +234,7 @@ export class BetsService {
         }
         productCfg = {
           marginBp: cfg.marginBp,
+          marginBpPerLeg: cfg.marginBpPerLeg,
           minLegs: cfg.minLegs,
           maxLegs: cfg.maxLegs,
           enabled: cfg.enabled,
@@ -309,10 +318,17 @@ export class BetsService {
       }
 
       // ── Compute payout based on product ──────────────────────────────
+      // Effective margin compounds the per-leg term over N. This is what
+      // keeps Tippot's all-N-wins multiplier strictly below an equivalent
+      // combo (whose overround compounds for free via the odds product).
+      // See migration 0018 for the rationale.
+      const effectiveMarginBp = productCfg
+        ? productCfg.marginBp + productCfg.marginBpPerLeg * req.selections.length
+        : 0;
       let potentialPayoutMicro: bigint;
       let betMeta: BetMeta | null = null;
       if (betType === "tiple") {
-        const quote = priceTiple(probabilities, productCfg!.marginBp);
+        const quote = priceTiple(probabilities, effectiveMarginBp);
         if (Number(quote.offeredOdds) < 1.01) {
           // Refuse offered < 1.01 — bettor would lose money on a winning
           // ticket. Mirrors the floor odds-publisher applies elsewhere.
@@ -329,7 +345,7 @@ export class BetsService {
         };
         betMeta = meta;
       } else if (betType === "tippot") {
-        const quote = priceTippot(probabilities, productCfg!.marginBp);
+        const quote = priceTippot(probabilities, effectiveMarginBp);
         // Top tier (all legs win) sets the displayed potential payout —
         // matches what users intuitively expect to see in the slip.
         const topMultiplier = Number(quote.tiers[quote.tiers.length - 1]!.multiplier);

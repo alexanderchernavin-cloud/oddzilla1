@@ -70,7 +70,10 @@ func PriceTiple(probabilities []float64, marginBp int) (TipleQuote, error) {
 	if n < 2 {
 		return TipleQuote{}, fmt.Errorf("tiple needs ≥ 2 legs, got %d", n)
 	}
-	if marginBp < 0 || marginBp > 5000 {
+	// Effective margin (caller-computed: base + per-leg × N from
+	// bet_product_config). 200000 bp = 2000% — well above any realistic
+	// admin config but bounded as a sanity guard.
+	if marginBp < 0 || marginBp > 200000 {
 		return TipleQuote{}, fmt.Errorf("margin_bp out of range: %d", marginBp)
 	}
 	for _, p := range probabilities {
@@ -117,7 +120,7 @@ func PriceTippot(probabilities []float64, marginBp int) (TippotQuote, error) {
 	if n < 2 {
 		return TippotQuote{}, fmt.Errorf("tippot needs ≥ 2 legs, got %d", n)
 	}
-	if marginBp < 0 || marginBp > 5000 {
+	if marginBp < 0 || marginBp > 200000 {
 		return TippotQuote{}, fmt.Errorf("margin_bp out of range: %d", marginBp)
 	}
 	for _, p := range probabilities {

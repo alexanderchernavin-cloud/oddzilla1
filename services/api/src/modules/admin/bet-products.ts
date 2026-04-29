@@ -12,6 +12,7 @@ const productEnum = z.enum(["tiple", "tippot"]);
 
 const updateBody = z.object({
   marginBp: z.number().int().min(0).max(5000),
+  marginBpPerLeg: z.number().int().min(0).max(5000),
   minLegs: z.number().int().min(2).max(30),
   maxLegs: z.number().int().min(2).max(30),
   enabled: z.boolean(),
@@ -28,6 +29,7 @@ export default async function betProductsRoutes(app: FastifyInstance) {
       products: rows.map((r) => ({
         productName: r.productName,
         marginBp: r.marginBp,
+        marginBpPerLeg: r.marginBpPerLeg,
         minLegs: r.minLegs,
         maxLegs: r.maxLegs,
         enabled: r.enabled,
@@ -59,6 +61,7 @@ export default async function betProductsRoutes(app: FastifyInstance) {
         .update(betProductConfig)
         .set({
           marginBp: body.marginBp,
+          marginBpPerLeg: body.marginBpPerLeg,
           minLegs: body.minLegs,
           maxLegs: body.maxLegs,
           enabled: body.enabled,
@@ -76,12 +79,14 @@ export default async function betProductsRoutes(app: FastifyInstance) {
         targetId: params.product,
         beforeJson: {
           marginBp: before.marginBp,
+          marginBpPerLeg: before.marginBpPerLeg,
           minLegs: before.minLegs,
           maxLegs: before.maxLegs,
           enabled: before.enabled,
         },
         afterJson: {
           marginBp: body.marginBp,
+          marginBpPerLeg: body.marginBpPerLeg,
           minLegs: body.minLegs,
           maxLegs: body.maxLegs,
           enabled: body.enabled,
@@ -96,6 +101,7 @@ export default async function betProductsRoutes(app: FastifyInstance) {
       product: {
         productName: result.productName,
         marginBp: result.marginBp,
+        marginBpPerLeg: result.marginBpPerLeg,
         minLegs: result.minLegs,
         maxLegs: result.maxLegs,
         enabled: result.enabled,

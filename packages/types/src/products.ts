@@ -72,7 +72,10 @@ export interface TipleQuote {
 export function priceTiple(probabilities: number[], marginBp: number): TipleQuote {
   const n = probabilities.length;
   if (n < 2) throw new Error(`tiple needs ≥ 2 legs, got ${n}`);
-  if (marginBp < 0 || marginBp > 5000) {
+  // Effective margin (caller-computed: base + per-leg × N from
+  // bet_product_config). 200000 bp = 2000% — well above any realistic
+  // admin config but bounded as a sanity guard against div-by-near-zero.
+  if (marginBp < 0 || marginBp > 200000) {
     throw new Error(`margin_bp out of range: ${marginBp}`);
   }
   for (const p of probabilities) {
@@ -136,7 +139,10 @@ export interface TippotQuote {
 export function priceTippot(probabilities: number[], marginBp: number): TippotQuote {
   const n = probabilities.length;
   if (n < 2) throw new Error(`tippot needs ≥ 2 legs, got ${n}`);
-  if (marginBp < 0 || marginBp > 5000) {
+  // Effective margin (caller-computed: base + per-leg × N from
+  // bet_product_config). 200000 bp = 2000% — well above any realistic
+  // admin config but bounded as a sanity guard against div-by-near-zero.
+  if (marginBp < 0 || marginBp > 200000) {
     throw new Error(`margin_bp out of range: ${marginBp}`);
   }
   for (const p of probabilities) {

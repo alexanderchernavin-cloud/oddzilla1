@@ -11,15 +11,24 @@ import {
 } from "drizzle-orm/pg-core";
 import { users } from "./users.js";
 
-// Per-product knobs for the new probability-driven products. margin_bp uses
-// the same convention as odds_config (offered = fair / (1 + bp/10000)).
-// Defaults seeded in 0014_tiple_tippot.sql: tiple 2..20 / 1500 bp,
-// tippot 3..12 / 1500 bp.
+// Per-product knobs for the probability-driven products. Effective margin
+// at pricing time is
+//
+//   effective_bp = margin_bp + margin_bp_per_leg * N
+//
+// where N is the leg count on the slip. The two-component shape exists so
+// Tippot can compound margin per leg the way a combo's odds-product does
+// for free, without forcing the same cadence onto Tiple. Both knobs are
+// admin-tunable from /admin/bet-products. Defaults seeded by migrations
+// 0017 + 0018:
+//   tiple : margin_bp=1500, margin_bp_per_leg=0   (flat 15%)
+//   tippot: margin_bp=0,    margin_bp_per_leg=500 (5% × N)
 export const betProductConfig = pgTable(
   "bet_product_config",
   {
     productName: text().primaryKey(),
     marginBp: integer().notNull(),
+    marginBpPerLeg: integer().notNull().default(0),
     minLegs: smallint().notNull(),
     maxLegs: smallint().notNull(),
     enabled: boolean().notNull().default(true),
@@ -28,6 +37,10 @@ export const betProductConfig = pgTable(
   },
   (t) => [
     check("bet_product_config_margin_range", sql`${t.marginBp} BETWEEN 0 AND 5000`),
+    check(
+      "bet_product_config_margin_per_leg_range",
+      sql`${t.marginBpPerLeg} BETWEEN 0 AND 5000`,
+    ),
     check("bet_product_config_min_legs", sql`${t.minLegs} >= 2`),
     check(
       "bet_product_config_max_legs",
