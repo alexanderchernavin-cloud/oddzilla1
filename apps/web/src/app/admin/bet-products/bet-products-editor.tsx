@@ -123,7 +123,7 @@ function ProductCard({ product }: { product: BetProduct }) {
         </label>
         <label className="flex flex-col text-xs">
           <span className="text-[var(--color-fg-muted)]">
-            Per-leg margin (% × N)
+            Per-leg margin (compound %)
           </span>
           <input
             type="number"
@@ -160,9 +160,9 @@ function ProductCard({ product }: { product: BetProduct }) {
       </div>
       <p className="mt-2 text-[11px] leading-relaxed text-[var(--color-fg-muted)]">
         Effective margin at placement is{" "}
-        <span className="font-mono">base + per-leg × N</span>. Per-leg
-        margin compounds the way a combo&apos;s odds product does, so
-        Tippot&apos;s all-wins multiplier stays below an equivalent combo.
+        <span className="font-mono">(1 + base) × (1 + per-leg)^N − 1</span>.
+        Per-leg margin compounds the way a combo&apos;s odds product does
+        — e.g. 5% per-leg over 5 matches yields 1.05^5 − 1 ≈ 27.6%.
       </p>
 
       {err && <p className="mt-3 text-xs text-red-500">{err}</p>}

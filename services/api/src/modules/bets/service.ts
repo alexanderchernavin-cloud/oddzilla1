@@ -318,12 +318,26 @@ export class BetsService {
       }
 
       // ── Compute payout based on product ──────────────────────────────
-      // Effective margin compounds the per-leg term over N. This is what
-      // keeps Tippot's all-N-wins multiplier strictly below an equivalent
-      // combo (whose overround compounds for free via the odds product).
-      // See migration 0018 for the rationale.
+      // Effective margin compounds the per-leg term over N multiplicatively
+      // — same shape a combo's overround takes when each leg's margined
+      // odds are multiplied together. Specifically:
+      //
+      //   1 + effective = (1 + base) × (1 + per_leg)^N
+      //
+      // For tiple (per_leg=0) the formula degenerates to flat `base`. For
+      // tippot (default base=0, per_leg=500) at N=5 the effective overround
+      // is 1.05^5 − 1 ≈ 27.6%. Rounded to integer basis points; the sub-bp
+      // loss is well below quote precision (odds quote at 2 decimals).
       const effectiveMarginBp = productCfg
-        ? productCfg.marginBp + productCfg.marginBpPerLeg * req.selections.length
+        ? Math.round(
+            ((1 + productCfg.marginBp / 10000) *
+              Math.pow(
+                1 + productCfg.marginBpPerLeg / 10000,
+                req.selections.length,
+              ) -
+              1) *
+              10000,
+          )
         : 0;
       let potentialPayoutMicro: bigint;
       let betMeta: BetMeta | null = null;

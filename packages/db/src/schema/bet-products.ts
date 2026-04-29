@@ -12,9 +12,9 @@ import {
 import { users } from "./users.js";
 
 // Per-product knobs for the probability-driven products. Effective margin
-// at pricing time is
+// at pricing time compounds the per-leg term multiplicatively:
 //
-//   effective_bp = margin_bp + margin_bp_per_leg * N
+//   1 + effective = (1 + margin_bp/10000) × (1 + margin_bp_per_leg/10000)^N
 //
 // where N is the leg count on the slip. The two-component shape exists so
 // Tippot can compound margin per leg the way a combo's odds-product does
@@ -22,7 +22,8 @@ import { users } from "./users.js";
 // admin-tunable from /admin/bet-products. Defaults seeded by migrations
 // 0017 + 0018:
 //   tiple : margin_bp=1500, margin_bp_per_leg=0   (flat 15%)
-//   tippot: margin_bp=0,    margin_bp_per_leg=500 (5% × N)
+//   tippot: margin_bp=0,    margin_bp_per_leg=500 (compounds — 5% per leg,
+//           e.g. N=5 → 1.05^5−1 ≈ 27.6%)
 export const betProductConfig = pgTable(
   "bet_product_config",
   {

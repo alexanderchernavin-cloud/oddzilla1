@@ -21,14 +21,19 @@ import type { SlipSelection } from "@oddzilla/types";
 
 // Default product margins for the client-side preview. The server is
 // authoritative — it loads bet_product_config and computes the effective
-// margin as `base + per-leg × N`. These constants mirror the migration
-// 0017 + 0018 defaults so the preview matches a freshly-deployed prod
-// config; admin overrides aren't pushed to the client. Effective preview
-// margin = previewBase + previewPerLeg × N.
+// margin as `(1 + base) × (1 + per_leg)^N − 1`. These constants mirror
+// the migration 0017 + 0018 defaults so the preview matches a freshly-
+// deployed prod config; admin overrides aren't pushed to the client.
 const PREVIEW_TIPLE_BASE_BP = 1500;
 const PREVIEW_TIPLE_PER_LEG_BP = 0;
 const PREVIEW_TIPPOT_BASE_BP = 0;
 const PREVIEW_TIPPOT_PER_LEG_BP = 500;
+
+function effectiveMarginBp(baseBp: number, perLegBp: number, n: number): number {
+  return Math.round(
+    ((1 + baseBp / 10000) * Math.pow(1 + perLegBp / 10000, n) - 1) * 10000,
+  );
+}
 
 export function BetSlipRail() {
   const slip = useBetSlip();
@@ -86,8 +91,11 @@ export function BetSlipRail() {
   const tipleQuote = useMemo(() => {
     if (effectiveMode !== "tiple" || !probabilityArr) return null;
     try {
-      const eff =
-        PREVIEW_TIPLE_BASE_BP + PREVIEW_TIPLE_PER_LEG_BP * probabilityArr.length;
+      const eff = effectiveMarginBp(
+        PREVIEW_TIPLE_BASE_BP,
+        PREVIEW_TIPLE_PER_LEG_BP,
+        probabilityArr.length,
+      );
       return priceTiple(probabilityArr, eff);
     } catch {
       return null;
@@ -97,8 +105,11 @@ export function BetSlipRail() {
   const tippotQuote = useMemo(() => {
     if (effectiveMode !== "tippot" || !probabilityArr) return null;
     try {
-      const eff =
-        PREVIEW_TIPPOT_BASE_BP + PREVIEW_TIPPOT_PER_LEG_BP * probabilityArr.length;
+      const eff = effectiveMarginBp(
+        PREVIEW_TIPPOT_BASE_BP,
+        PREVIEW_TIPPOT_PER_LEG_BP,
+        probabilityArr.length,
+      );
       return priceTippot(probabilityArr, eff);
     } catch {
       return null;

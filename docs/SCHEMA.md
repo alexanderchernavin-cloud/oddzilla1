@@ -24,9 +24,11 @@ Canonical SQL lives in [`../packages/db/migrations/`](../packages/db/migrations/
 - `0017_tiple_tippot.sql` — `tiple` / `tippot` values on `bet_type`;
   `bet_meta` JSONB on `tickets`; `bet_product_config` per-scope pricing.
 - `0018_bet_product_per_leg_margin.sql` — `bet_product_config.margin_bp_per_leg`;
-  effective margin used at placement is `margin_bp + margin_bp_per_leg × N`,
-  giving Tippot the same per-leg compounding a combo gets via its odds
-  product. Tippot defaults to 0 + 500 (5% × N); Tiple stays at 1500 + 0.
+  effective margin at placement compounds multiplicatively as
+  `(1 + margin_bp) × (1 + margin_bp_per_leg)^N − 1`, mirroring how a
+  combo's overround compounds via its odds product. Tippot defaults to
+  0 + 500 (5% per leg compounded — N=5 ≈ 27.6%); Tiple stays at 1500 + 0
+  (flat 15%).
 
 Drizzle mirror is [`../packages/db/src/schema/`](../packages/db/src/schema/).
 
