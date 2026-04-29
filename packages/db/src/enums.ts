@@ -48,7 +48,7 @@ export const ticketStatusEnum = pgEnum("ticket_status", [
   "voided",
   "cashed_out",
 ]);
-export const betTypeEnum = pgEnum("bet_type", ["single", "combo", "system"]);
+export const betTypeEnum = pgEnum("bet_type", ["single", "combo", "system", "tiple", "tippot"]);
 export const settlementTypeEnum = pgEnum("settlement_type", [
   "settle",
   "cancel",

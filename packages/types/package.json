@@ -9,11 +9,12 @@
     ".": "./src/index.ts",
     "./money": "./src/money.ts",
     "./currencies": "./src/currencies.ts",
+    "./products": "./src/products.ts",
     "./specifiers": "./src/specifiers.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test --import tsx src/specifiers.test.ts",
+    "test": "node --test --import tsx \"src/*.test.ts\"",
     "lint": "eslint ."
   },
   "devDependencies": {

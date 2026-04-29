@@ -45,3 +45,7 @@ Thumbs.db
 *.log
 logs/
 !apps/web/src/app/admin/logs/
+
+# Local scratch / one-off harnesses (e.g. .scratch/pg-smoke for the
+# embedded-Postgres placement→settlement smoke run).
+.scratch/

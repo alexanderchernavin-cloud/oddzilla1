@@ -53,7 +53,11 @@ export type CashoutUnavailableReason =
   | "leg_no_probability"
   | "leg_lost"
   | "below_minimum"
-  | "below_change_threshold";
+  | "below_change_threshold"
+  // Tiple / Tippot don't have a defined cashout product yet. The math is
+  // materially different (any-leg-wins / tiered) and Sportradar §2.1.1
+  // doesn't apply unmodified — they need their own quote engine.
+  | "bet_type_unsupported";
 
 export interface CashoutQuote {
   available: boolean;

@@ -211,8 +211,16 @@ export default async function catalogRoutes(app: FastifyInstance) {
     const matchIds = rows.map((r) => r.matchId);
     const oddsByMatch = new Map<
       string,
-      { homeMarketId: string; homeOutcomeId: string; homePrice: string | null;
-        awayMarketId: string; awayOutcomeId: string; awayPrice: string | null }
+      {
+        homeMarketId: string;
+        homeOutcomeId: string;
+        homePrice: string | null;
+        homeProbability: string | null;
+        awayMarketId: string;
+        awayOutcomeId: string;
+        awayPrice: string | null;
+        awayProbability: string | null;
+      }
     >();
     if (matchIds.length > 0) {
       const oddsRows = await app.db
@@ -222,6 +230,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
           outcomeId: marketOutcomes.outcomeId,
           outcomeName: marketOutcomes.name,
           publishedOdds: marketOutcomes.publishedOdds,
+          probability: marketOutcomes.probability,
           active: marketOutcomes.active,
         })
         .from(markets)
@@ -254,9 +263,14 @@ export default async function catalogRoutes(app: FastifyInstance) {
           homeMarketId: home.marketId.toString(),
           homeOutcomeId: home.outcomeId,
           homePrice: home.active ? home.publishedOdds : null,
+          // Probability is metadata — keep it independent of `active`. The
+          // bet slip uses it for tiple/tippot preview; a suspended price
+          // shouldn't blank the pricing context.
+          homeProbability: home.probability ?? null,
           awayMarketId: away.marketId.toString(),
           awayOutcomeId: away.outcomeId,
           awayPrice: away.active ? away.publishedOdds : null,
+          awayProbability: away.probability ?? null,
         });
       }
     }
@@ -285,8 +299,16 @@ export default async function catalogRoutes(app: FastifyInstance) {
           matchWinner: o
             ? {
                 marketId: o.homeMarketId,
-                home: { outcomeId: o.homeOutcomeId, price: formatOdds(o.homePrice) },
-                away: { outcomeId: o.awayOutcomeId, price: formatOdds(o.awayPrice) },
+                home: {
+                  outcomeId: o.homeOutcomeId,
+                  price: formatOdds(o.homePrice),
+                  probability: o.homeProbability,
+                },
+                away: {
+                  outcomeId: o.awayOutcomeId,
+                  price: formatOdds(o.awayPrice),
+                  probability: o.awayProbability,
+                },
               }
             : null,
         };
@@ -340,6 +362,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         outcomeId: marketOutcomes.outcomeId,
         outcomeName: marketOutcomes.name,
         publishedOdds: marketOutcomes.publishedOdds,
+        probability: marketOutcomes.probability,
         active: marketOutcomes.active,
       })
       .from(markets)
@@ -425,6 +448,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         name: string;
         rawName: string;
         publishedOdds: string | null;
+        probability: string | null;
         active: boolean;
       }>;
     };
@@ -489,6 +513,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
           name: resolvedName,
           rawName: r.outcomeName ?? "",
           publishedOdds: formatOdds(r.publishedOdds),
+          probability: r.probability ?? null,
           active: r.active ?? false,
         });
       }
@@ -592,8 +617,16 @@ export default async function catalogRoutes(app: FastifyInstance) {
     const matchIds = rows.map((r) => r.matchId);
     const oddsByMatch = new Map<
       string,
-      { homeMarketId: string; homeOutcomeId: string; homePrice: string | null;
-        awayMarketId: string; awayOutcomeId: string; awayPrice: string | null }
+      {
+        homeMarketId: string;
+        homeOutcomeId: string;
+        homePrice: string | null;
+        homeProbability: string | null;
+        awayMarketId: string;
+        awayOutcomeId: string;
+        awayPrice: string | null;
+        awayProbability: string | null;
+      }
     >();
     if (matchIds.length > 0) {
       const oddsRows = await app.db
@@ -603,6 +636,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
           outcomeId: marketOutcomes.outcomeId,
           outcomeName: marketOutcomes.name,
           publishedOdds: marketOutcomes.publishedOdds,
+          probability: marketOutcomes.probability,
           active: marketOutcomes.active,
         })
         .from(markets)
@@ -632,9 +666,11 @@ export default async function catalogRoutes(app: FastifyInstance) {
           homeMarketId: home.marketId.toString(),
           homeOutcomeId: home.outcomeId,
           homePrice: home.active ? home.publishedOdds : null,
+          homeProbability: home.probability ?? null,
           awayMarketId: away.marketId.toString(),
           awayOutcomeId: away.outcomeId,
           awayPrice: away.active ? away.publishedOdds : null,
+          awayProbability: away.probability ?? null,
         });
       }
     }
@@ -656,8 +692,16 @@ export default async function catalogRoutes(app: FastifyInstance) {
           matchWinner: o
             ? {
                 marketId: o.homeMarketId,
-                home: { outcomeId: o.homeOutcomeId, price: formatOdds(o.homePrice) },
-                away: { outcomeId: o.awayOutcomeId, price: formatOdds(o.awayPrice) },
+                home: {
+                  outcomeId: o.homeOutcomeId,
+                  price: formatOdds(o.homePrice),
+                  probability: o.homeProbability,
+                },
+                away: {
+                  outcomeId: o.awayOutcomeId,
+                  price: formatOdds(o.awayPrice),
+                  probability: o.awayProbability,
+                },
               }
             : null,
         };

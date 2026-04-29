@@ -34,14 +34,22 @@ import {
   sports,
   categories,
   tournaments,
+  betProductConfig,
 } from "@oddzilla/db";
 import {
   DEFAULT_CURRENCY,
   DEFAULT_ODDS_DRIFT_TOLERANCE,
   isCurrency,
+  parseProbability,
+  priceTiple,
+  priceTippot,
+  type BetMeta,
+  type BetType,
   type Currency,
   type PlaceBetRequest,
   type TicketSummary,
+  type TippotMeta,
+  type TipleMeta,
 } from "@oddzilla/types";
 import {
   BadRequestError,
@@ -76,11 +84,29 @@ export class BetsService {
     if (!req.selections.length) {
       throw new BadRequestError("no_selections", "no_selections");
     }
-    const isCombo = req.selections.length > 1;
-    if (isCombo) {
-      // Same-match combos are a related-contingency (the outcomes aren't
-      // independent) — standard bookmaker rule is to block them. Cheap
-      // front-end check exists too; this is the authoritative one.
+    // Resolve effective bet type. Default behavior preserved: 1 leg → single,
+    // ≥ 2 → combo. tiple/tippot must be explicit (the math + payout
+    // contract is materially different and we don't want to silently
+    // upgrade users into a different product).
+    const betType: BetType =
+      req.betType ?? (req.selections.length > 1 ? "combo" : "single");
+    const isMultiLeg = req.selections.length > 1;
+    const isProductBet = betType === "tiple" || betType === "tippot";
+    if (betType === "single" && req.selections.length !== 1) {
+      throw new BadRequestError("single_requires_one_leg", "single_requires_one_leg");
+    }
+    if ((betType === "combo" || isProductBet) && !isMultiLeg) {
+      throw new BadRequestError("multi_leg_required", "multi_leg_required");
+    }
+    if (betType === "system") {
+      // Reserved enum value; not yet implemented in any layer.
+      throw new BadRequestError("bet_type_unsupported", "bet_type_unsupported");
+    }
+    if (isMultiLeg) {
+      // Same-match combos / tiples / tippots are a related-contingency
+      // (the outcomes aren't independent) — standard bookmaker rule is to
+      // block them. For probability-driven products this also breaks the
+      // independence assumption baked into the math.
       const seenMarkets = new Set<string>();
       for (const s of req.selections) {
         if (seenMarkets.has(s.marketId)) {
@@ -182,8 +208,46 @@ export class BetsService {
         outcomeRows.map((o) => [`${o.marketId.toString()}:${o.outcomeId}`, o]),
       );
 
+      // ── Per-product gating: load bet_product_config for tiple/tippot ─
+      // Done inside the tx so admin updates take effect on the next bet
+      // without cache invalidation. The table has at most 2 rows.
+      let productCfg: { marginBp: number; minLegs: number; maxLegs: number; enabled: boolean } | null = null;
+      if (isProductBet) {
+        const [cfg] = await tx
+          .select()
+          .from(betProductConfig)
+          .where(eq(betProductConfig.productName, betType))
+          .limit(1);
+        if (!cfg) {
+          throw new BadRequestError("bet_product_unconfigured", "bet_product_unconfigured");
+        }
+        if (!cfg.enabled) {
+          throw new BadRequestError("bet_product_disabled", "bet_product_disabled");
+        }
+        productCfg = {
+          marginBp: cfg.marginBp,
+          minLegs: cfg.minLegs,
+          maxLegs: cfg.maxLegs,
+          enabled: cfg.enabled,
+        };
+        if (req.selections.length < cfg.minLegs) {
+          throw new BadRequestError("too_few_legs", "too_few_legs");
+        }
+        if (req.selections.length > cfg.maxLegs) {
+          throw new BadRequestError("too_many_legs", "too_many_legs");
+        }
+      } else if (req.selections.length > 20) {
+        // Combo cap (existing behavior, unchanged).
+        throw new BadRequestError("too_many_legs", "too_many_legs");
+      }
+
       let productOdds = 1;
       const seenMatchIds = new Set<string>();
+      // Probabilities aligned 1:1 with req.selections — only used for
+      // tiple/tippot pricing. Sourced from market_outcomes (server-trusted).
+      // The persisted leg.probabilityAtPlacement comes from outcome.probability
+      // directly at the insert site, so we don't need to thread strings here.
+      const probabilities: number[] = [];
       for (const sel of req.selections) {
         const market = marketByID.get(sel.marketId);
         if (!market) {
@@ -195,7 +259,7 @@ export class BetsService {
         if (market.matchStatus !== "not_started" && market.matchStatus !== "live") {
           throw new BadRequestError("match_not_open", "match_not_open");
         }
-        if (isCombo) {
+        if (isMultiLeg) {
           const matchKey = market.matchId.toString();
           if (seenMatchIds.has(matchKey)) {
             throw new BadRequestError("combo_same_match", "combo_same_match");
@@ -222,11 +286,67 @@ export class BetsService {
           throw new BadRequestError("odds_drift_exceeded", "odds_drift_exceeded");
         }
         productOdds *= submittedOdds;
+
+        // Probability: required for tiple/tippot, freezes on the leg row
+        // either way (audit trail; settlement uses it for re-pricing on
+        // void). priceTiple/priceTippot enforce p ∈ (0, 1) — exact 0/1
+        // would degenerate the math.
+        if (isProductBet) {
+          if (!outcome.probability) {
+            throw new BadRequestError("outcome_no_probability", "outcome_no_probability");
+          }
+          let p: number;
+          try {
+            p = parseProbability(outcome.probability);
+          } catch {
+            throw new BadRequestError("outcome_probability_invalid", "outcome_probability_invalid");
+          }
+          if (!(p > 0 && p < 1)) {
+            throw new BadRequestError("outcome_probability_extreme", "outcome_probability_extreme");
+          }
+          probabilities.push(p);
+        }
       }
 
-      const potentialPayoutMicro = BigInt(
-        Math.floor(Number(stake) * productOdds),
-      );
+      // ── Compute payout based on product ──────────────────────────────
+      let potentialPayoutMicro: bigint;
+      let betMeta: BetMeta | null = null;
+      if (betType === "tiple") {
+        const quote = priceTiple(probabilities, productCfg!.marginBp);
+        if (Number(quote.offeredOdds) < 1.01) {
+          // Refuse offered < 1.01 — bettor would lose money on a winning
+          // ticket. Mirrors the floor odds-publisher applies elsewhere.
+          throw new BadRequestError("tiple_odds_too_low", "tiple_odds_too_low");
+        }
+        potentialPayoutMicro = BigInt(
+          Math.floor(Number(stake) * Number(quote.offeredOdds)),
+        );
+        const meta: TipleMeta = {
+          product: "tiple",
+          n: quote.n,
+          marginBp: quote.marginBp,
+          fairProbability: quote.fairProbability.toFixed(6),
+        };
+        betMeta = meta;
+      } else if (betType === "tippot") {
+        const quote = priceTippot(probabilities, productCfg!.marginBp);
+        // Top tier (all legs win) sets the displayed potential payout —
+        // matches what users intuitively expect to see in the slip.
+        const topMultiplier = Number(quote.tiers[quote.tiers.length - 1]!.multiplier);
+        potentialPayoutMicro = BigInt(Math.floor(Number(stake) * topMultiplier));
+        const meta: TippotMeta = {
+          product: "tippot",
+          n: quote.n,
+          marginBp: quote.marginBp,
+          tiers: quote.tiers,
+        };
+        betMeta = meta;
+      } else {
+        // single / combo — existing odds-product math.
+        potentialPayoutMicro = BigInt(
+          Math.floor(Number(stake) * productOdds),
+        );
+      }
 
       // ── Insert ticket ────────────────────────────────────────────────
       const now = new Date();
@@ -240,7 +360,7 @@ export class BetsService {
         .values({
           userId: ctx.userId,
           status,
-          betType: isCombo ? "combo" : "single",
+          betType,
           currency,
           stakeMicro: stake,
           potentialPayoutMicro,
@@ -250,6 +370,7 @@ export class BetsService {
           acceptedAt,
           clientIp: ctx.ip,
           userAgent: ctx.userAgent,
+          betMeta: betMeta as unknown as Record<string, unknown> | null,
         })
         .returning();
       if (!inserted) {
@@ -267,15 +388,15 @@ export class BetsService {
       }
 
       // ── Insert selections ────────────────────────────────────────────
+      // Snapshot the leg's win probability at placement time. Cashout uses
+      // it as "ticket value at placement" (Sportradar §1.2) and the
+      // significant-change gate; tiple/tippot use it for the math the
+      // server priced from. Null when the feed hasn't shipped one yet
+      // (rare; cashout falls back to 1/odds, tiple/tippot reject earlier
+      // via outcome_no_probability).
       await tx.insert(ticketSelections).values(
         req.selections.map((s) => {
           const outcome = outcomeByKey.get(`${s.marketId}:${s.outcomeId}`)!;
-          // Snapshot the leg's win probability at placement time so cashout
-          // can later show "ticket value at placement" (Sportradar §1.2 /
-          // Cashout doc) and apply the optional "significant change" gate
-          // without needing to reconstruct it from odds. Null when the
-          // feed didn't have one yet (rare; falls back to 1/odds in the
-          // cashout engine).
           return {
             ticketId: inserted.id,
             marketId: BigInt(s.marketId),
@@ -443,10 +564,12 @@ export class BetsService {
       placedAt: t.placedAt.toISOString(),
       acceptedAt: t.acceptedAt?.toISOString() ?? null,
       settledAt: t.settledAt?.toISOString() ?? null,
+      betMeta: (t.betMeta ?? null) as TicketSummary["betMeta"],
       selections: rows.map((r) => ({
         marketId: r.sel.marketId.toString(),
         outcomeId: r.sel.outcomeId,
         oddsAtPlacement: r.sel.oddsAtPlacement,
+        probabilityAtPlacement: r.sel.probabilityAtPlacement ?? null,
         result: r.sel.result,
         voidFactor: r.sel.voidFactor,
         market:

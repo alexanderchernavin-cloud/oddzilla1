@@ -9,6 +9,7 @@ export * from "./profiles.js";
 export * from "./odds.js";
 export * from "./tickets.js";
 export * from "./cashout.js";
+export * from "./bet-products.js";
 export * from "./settlements.js";
 export * from "./admin.js";
 export * from "./feed.js";

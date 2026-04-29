@@ -19,8 +19,8 @@ export interface ListMatch {
   tournament: { id: number; name: string };
   matchWinner: {
     marketId: string;
-    home: { outcomeId: string; price: string | null };
-    away: { outcomeId: string; price: string | null };
+    home: { outcomeId: string; price: string | null; probability?: string | null };
+    away: { outcomeId: string; price: string | null; probability?: string | null };
   } | null;
 }
 
@@ -45,6 +45,7 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
       marketId: match.matchWinner.marketId,
       outcomeId: o.outcomeId,
       odds: o.price,
+      probability: o.probability ?? undefined,
       homeTeam: match.homeTeam,
       awayTeam: match.awayTeam,
       marketLabel: "Match winner",

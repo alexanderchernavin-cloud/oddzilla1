@@ -239,7 +239,7 @@ func (s *Settler) maybeSettleTicket(ctx context.Context, tx pgx.Tx, ticketID, so
 		return false, err
 	}
 
-	payout, ledgerType, err := computePayout(t.BetType, t.StakeMicro, selections)
+	payout, ledgerType, err := computePayout(t, selections)
 	if err != nil {
 		return false, err
 	}
@@ -696,23 +696,34 @@ func unmarshal(body []byte, v any) error {
 	return nil
 }
 
+// ComputePayoutForSmoke is a thin re-export of computePayout for the
+// smoke-settle CLI in services/settlement/cmd/smoke-settle. Production
+// dispatch goes through Handle → maybeSettleTicket → computePayout.
+func ComputePayoutForSmoke(t store.TicketForSettle, selections []store.SelectionResult) (int64, string, error) {
+	return computePayout(t, selections)
+}
+
 // computePayout returns (payoutMicro, ledgerType, err) for a ticket.
 // Dispatches by bet_type. `system` tickets aren't supported yet.
-func computePayout(betType string, stakeMicro int64, selections []store.SelectionResult) (int64, string, error) {
-	switch betType {
+func computePayout(t store.TicketForSettle, selections []store.SelectionResult) (int64, string, error) {
+	switch t.BetType {
 	case "single":
 		if len(selections) != 1 {
 			return 0, "", fmt.Errorf("single expected exactly 1 selection, got %d", len(selections))
 		}
 		sel := selections[0]
-		payout, err := SinglePayout(stakeMicro, sel.OddsAtPlacement, sel.Result, sel.VoidFactor)
+		payout, err := SinglePayout(t.StakeMicro, sel.OddsAtPlacement, sel.Result, sel.VoidFactor)
 		if err != nil {
 			return 0, "", err
 		}
 		return payout, LedgerTypeFor(sel.Result), nil
 	case "combo":
-		return ComboPayout(stakeMicro, selections)
+		return ComboPayout(t.StakeMicro, selections)
+	case "tiple":
+		return TiplePayout(t.StakeMicro, t.PotentialPayoutMicro, selections)
+	case "tippot":
+		return TippotPayout(t.StakeMicro, t.BetMetaJSON, selections)
 	default:
-		return 0, "", fmt.Errorf("bet_type %q not supported yet", betType)
+		return 0, "", fmt.Errorf("bet_type %q not supported yet", t.BetType)
 	}
 }
