@@ -146,8 +146,9 @@ function Field({
       </span>
       <input
         {...rest}
+        className="oz-auth-input"
         style={{
-          height: 42,
+          height: 44,
           padding: "0 14px",
           background: "var(--surface-2)",
           border: "1px solid var(--border)",
