@@ -163,6 +163,17 @@ const hasActiveMarket = sql`EXISTS (
      AND mk.status = 1
 )`;
 
+// Inline match-winner odds for the list cards are restricted to two-way
+// markets (`variant='way:two'`). Sports like eFootball expose market 1
+// only as a three-way 1X2 (home/draw/away across outcomes 1/2/3). The
+// list card has just two columns labelled "1"/"2" — there's no slot for
+// the draw — so showing the 1.85/2.70 of a 1X2 looks like a fake 1/2
+// price (and depending on PG row ordering can even pair the draw odds
+// into the away column). Three-way matches still appear in listings via
+// `hasActiveMarket`; they just render without inline buttons and the
+// user clicks through to see the full 1X2 on the match page.
+const isTwoWayMatchWinner = sql`(${markets.specifiersJson}->>'variant') = 'way:two'`;
+
 export default async function catalogRoutes(app: FastifyInstance) {
   // ── Sports tree ─────────────────────────────────────────────────────
   app.get("/catalog/sports", async () => {
@@ -258,10 +269,15 @@ export default async function catalogRoutes(app: FastifyInstance) {
             inArray(markets.matchId, matchIds),
             eq(markets.providerMarketId, 1),
             eq(markets.status, 1),
+            isTwoWayMatchWinner,
           ),
         );
 
-      // Pair each match's outcomes against its home/away team names.
+      // Pair each match's outcomes by Oddin's canonical outcome_id ("1"
+      // = home, "2" = away). The market_outcomes.name column is empty
+      // for sport=esports (Oddin sends names only for player-resolved
+      // outcomes), so falling back to array index is non-deterministic
+      // — PG returns rows in undefined order without ORDER BY.
       const byMatch = new Map<string, typeof oddsRows>();
       for (const r of oddsRows) {
         const key = r.matchId.toString();
@@ -274,8 +290,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
         const key = row.matchId.toString();
         const outs = byMatch.get(key);
         if (!outs || outs.length === 0) continue;
-        const home = outs.find((o) => o.outcomeName === row.homeTeam) ?? outs[0];
-        const away = outs.find((o) => o.outcomeName === row.awayTeam) ?? outs[1];
+        const home = outs.find((o) => o.outcomeId === "1");
+        const away = outs.find((o) => o.outcomeId === "2");
         if (!home || !away) continue;
         oddsByMatch.set(key, {
           homeMarketId: home.marketId.toString(),
@@ -686,6 +702,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
             inArray(markets.matchId, matchIds),
             eq(markets.providerMarketId, 1),
             eq(markets.status, 1),
+            isTwoWayMatchWinner,
           ),
         );
       const byMatch = new Map<string, typeof oddsRows>();
@@ -699,8 +716,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
         const key = row.matchId.toString();
         const outs = byMatch.get(key);
         if (!outs || outs.length === 0) continue;
-        const home = outs.find((o) => o.outcomeName === row.homeTeam) ?? outs[0];
-        const away = outs.find((o) => o.outcomeName === row.awayTeam) ?? outs[1];
+        const home = outs.find((o) => o.outcomeId === "1");
+        const away = outs.find((o) => o.outcomeId === "2");
         if (!home || !away) continue;
         oddsByMatch.set(key, {
           homeMarketId: home.marketId.toString(),
