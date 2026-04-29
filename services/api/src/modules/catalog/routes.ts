@@ -1,10 +1,15 @@
-// /catalog endpoints. Read-only; serves the SSR catalog pages and the
-// match-details panel. Public (no auth required).
+// /catalog endpoints. Read-only; serves the SSR catalog pages, the
+// match-details panel, the top-bar global search, and the sidebar
+// tournament sub-tree. Public (no auth required).
 //
 // Routes:
-//   GET  /catalog/sports                         active esports + match counts
-//   GET  /catalog/sports/:slug                   sport + upcoming/live matches
-//   GET  /catalog/matches/:id                    match + tournament/sport + markets
+//   GET  /catalog/sports                          active sports
+//   GET  /catalog/sports/:slug                    sport + matches (?tournament=N filter)
+//   GET  /catalog/sports/:slug/tournaments        tournaments under a sport + live counts
+//   GET  /catalog/matches                         cross-sport list (live | upcoming)
+//   GET  /catalog/matches/:id                     match + tournament/sport + markets
+//   GET  /catalog/search                          global search (sports/tournaments/teams/matches)
+//   GET  /catalog/live-counts                     live match counts per sport
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
