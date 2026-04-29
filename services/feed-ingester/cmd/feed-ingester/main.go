@@ -222,6 +222,12 @@ func main() {
 			// match (status='live' long after scheduled start). Per-URN
 			// cooldown lives inside the listener.
 			go runFixtureRefreshListener(ctx, pool, resolver, logger)
+			// LISTEN on phantom_drain so the admin recovery flow can
+			// trigger a full DrainPhantomLive sweep without restarting
+			// the container or shelling in to run the CLI flag. Mutex
+			// inside the listener prevents two concurrent drains from
+			// fighting for Oddin's REST budget.
+			go runPhantomDrainListener(ctx, pool, resolver, logger)
 		}
 	}
 
@@ -420,6 +426,88 @@ func listenFixtureRefreshOnce(
 		if err := res.RefreshFromFixture(ctx, urn); err != nil {
 			log.Warn().Err(err).Str("urn", urn).Msg("fixture_refresh failed")
 		}
+	}
+	return nil
+}
+
+// runPhantomDrainListener subscribes to Postgres notifications on the
+// `phantom_drain` channel. Each NOTIFY's payload is JSON of the form
+// `{"requestedBy": <userID>, "hours": <ageHours>}`; we run
+// resolver.DrainPhantomLive against the requested age threshold to
+// re-pull every stuck-live match's fixture from Oddin REST. Used by the
+// admin recovery endpoint so the operator's "Recovery" button cleans
+// up stuck matches.status in addition to replaying AMQP.
+//
+// Drains are serialized via the supplied mutex: a second NOTIFY that
+// arrives mid-sweep is skipped. Phantom counts barely move within a few
+// minutes, so dropping the duplicate is the right call (the next
+// recovery click will pick up anything new).
+func runPhantomDrainListener(ctx context.Context, pool *pgxpool.Pool, res *automap.Resolver, log zerolog.Logger) {
+	var draining sync.Mutex
+	for ctx.Err() == nil {
+		if err := listenPhantomDrainOnce(ctx, pool, res, &draining, log); err != nil && !errors.Is(err, context.Canceled) {
+			log.Warn().Err(err).Msg("phantom_drain LISTEN errored; reconnecting in 2s")
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(2 * time.Second):
+			}
+		}
+	}
+}
+
+func listenPhantomDrainOnce(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	res *automap.Resolver,
+	draining *sync.Mutex,
+	log zerolog.Logger,
+) error {
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, "LISTEN phantom_drain"); err != nil {
+		return err
+	}
+	log.Info().Msg("listening on phantom_drain channel")
+	for ctx.Err() == nil {
+		n, err := conn.Conn().WaitForNotification(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return err
+		}
+		if n == nil {
+			continue
+		}
+		var payload struct {
+			RequestedBy any `json:"requestedBy"`
+			Hours       int `json:"hours"`
+		}
+		if err := json.Unmarshal([]byte(n.Payload), &payload); err != nil {
+			log.Warn().Err(err).Str("payload", n.Payload).Msg("phantom_drain payload invalid; using defaults")
+		}
+		hours := payload.Hours
+		if hours <= 0 {
+			hours = 6
+		}
+		if !draining.TryLock() {
+			log.Info().Int("hours", hours).Msg("phantom_drain skipped: another sweep is already running")
+			continue
+		}
+		go func(hours int) {
+			defer draining.Unlock()
+			log.Info().Int("hours", hours).Msg("phantom_drain: starting sweep")
+			n, err := res.DrainPhantomLive(ctx, hours)
+			if err != nil {
+				log.Warn().Err(err).Int("hours", hours).Int("refreshed", n).Msg("phantom_drain failed")
+				return
+			}
+			log.Info().Int("hours", hours).Int("refreshed", n).Msg("phantom_drain finished")
+		}(hours)
 	}
 	return nil
 }
