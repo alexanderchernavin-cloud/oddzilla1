@@ -2,19 +2,22 @@
 //
 // POST /admin/feed/recovery
 //   Body: { flushOdds?: boolean, hours?: number }
-//   Rewinds the Oddin AMQP cursor by `hours` (default 24, max 72 — Oddin's
-//   recovery window) and sends `pg_notify('feed_recovery', ...)` which the
-//   feed-ingester LISTENs on. Feed-ingester then calls
-//   `InitiateRecovery` for both producers, causing Oddin to replay every
-//   message since the new cursor timestamp. Markets that were stuck
-//   "LIVE" without odds get re-populated; new matches that were missed
-//   appear.
+//   Rewinds the Oddin AMQP cursor by `hours` (default 48, max 72 — Oddin
+//   actually rejects requests older than 3 days with a 404 / "Supported
+//   is only 3 day range", so 72 is the hard cap) and sends
+//   `pg_notify('feed_recovery', ...)` which the feed-ingester LISTENs
+//   on. Feed-ingester then calls `InitiateRecovery` for both producers,
+//   causing Oddin to replay every message since the new cursor
+//   timestamp. Markets that were stuck "LIVE" without odds get
+//   re-populated; new matches that were missed appear.
 //
-//   When `flushOdds=true`, also suspends all currently-active markets
-//   (status=-1) and nulls their published_odds, so the UI shows a clean
-//   "Suspended" state until recovery re-populates. Does not touch
-//   settled/closed matches. Never touches `settlements` — that table is
-//   append-only and apply-once.
+//   When `flushOdds=true` (default), also suspends all currently-active
+//   markets (status=-1) and nulls their published_odds, raw_odds, AND
+//   probability, plus flips market_outcomes.active=false, so the UI
+//   shows a clean "Suspended" state with no stale prices and Tiple/
+//   Tippot can't price off pre-flush probability snapshots until the
+//   replay refills them. Does not touch settled/closed matches. Never
+//   touches `settlements` — that table is append-only and apply-once.
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -30,8 +33,15 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
   app.post("/admin/feed/recovery", async (request) => {
     const admin = request.requireRole("admin");
     const body = bodySchema.parse(request.body ?? {});
-    const hours = body.hours ?? 24;
-    const flush = Boolean(body.flushOdds);
+    // Default 48h (2 days). Wide enough to catch any future fixture that
+    // had its last odds_change up to two days ago, so probability gets
+    // refilled across the catalog. Oddin's hard limit is 3 days; max
+    // stays at 72.
+    const hours = body.hours ?? 48;
+    // Default true: the operator hits this button when the catalog is
+    // visibly stale, which is exactly when we want a clean slate before
+    // the replay. They can opt out via { flushOdds: false }.
+    const flush = body.flushOdds ?? true;
 
     // Target cursor = now - hours. Oddin rejects recovery requests older
     // than ~3 days so this is clamped at 72h by the schema above.
@@ -69,8 +79,10 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
       const outcomeResult = await app.db.execute(sql`
         UPDATE market_outcomes
            SET published_odds = NULL,
-               active = FALSE,
-               updated_at = NOW()
+               raw_odds       = NULL,
+               probability    = NULL,
+               active         = FALSE,
+               updated_at     = NOW()
           FROM markets m
           JOIN matches ma ON ma.id = m.match_id
          WHERE market_outcomes.market_id = m.id

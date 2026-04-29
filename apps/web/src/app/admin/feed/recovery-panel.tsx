@@ -27,7 +27,11 @@ interface RecoveryResponse {
 
 export function RecoveryPanel({ initialStatus }: { initialStatus: FeedStatus }) {
   const router = useRouter();
-  const [hours, setHours] = useState(24);
+  // 48h default: matches the API default after the 2026-04-29 incident.
+  // Two days catches every future fixture whose last odds_change is up to
+  // 48h stale, which is the common case when probability columns go
+  // missing on idle pre-match markets. Oddin's hard cap is 72h.
+  const [hours, setHours] = useState(48);
   const [flushOdds, setFlushOdds] = useState(true);
   const [confirming, setConfirming] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -131,7 +135,9 @@ export function RecoveryPanel({ initialStatus }: { initialStatus: FeedStatus }) 
           />
           <span>
             Flush odds — suspend every active market and clear published
-            prices until the replay re-populates them.
+            odds, raw odds, and probability until the replay re-populates
+            them. Recommended: prevents stale probabilities from feeding
+            Tiple / Tippot pricing while recovery is in flight.
           </span>
         </label>
 
