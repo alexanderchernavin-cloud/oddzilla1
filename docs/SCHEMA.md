@@ -7,6 +7,20 @@ Canonical SQL lives in [`../packages/db/migrations/`](../packages/db/migrations/
 - `0002_chain_scanner_state.sql` — block cursor for `wallet-watcher`.
 - `0003_drop_news_articles.sql` — drops the news_articles table after the
   news scraper was cancelled mid-Phase-8.
+- `0004` – `0013` — sport seed cleanup, market descriptions, competitor
+  profiles, odds-config global-uniqueness fix, feed-messages audit,
+  tournament risk-tier ranking. See file names for detail.
+- `0014_multi_currency.sql` — composite `(user_id, currency)` PK on
+  `wallets`; currency column on `wallet_ledger` and `tickets`. Adds the
+  demo `OZ` currency alongside USDT.
+- `0015_cashout.sql` — probability columns on `market_outcomes` /
+  `odds_history` / `ticket_selections`; `cashout` value on
+  `wallet_tx_type`; `cashout_config` cascade table; `cashouts`
+  quote/accept records; `cashout_status` enum.
+- `0016_cashout_acceptance_delay.sql` — `cashout_config.
+  acceptance_delay_seconds` (default 5; 0–60 range).
+- `0017_tiple_tippot.sql` — `tiple` / `tippot` values on `bet_type`;
+  `bet_meta` JSONB on `tickets`; `bet_product_config` per-scope pricing.
 
 Drizzle mirror is [`../packages/db/src/schema/`](../packages/db/src/schema/).
 
@@ -32,7 +46,7 @@ For column-by-column detail open the SQL file — it's concise and annotated.
 | `user_status` | `active`, `blocked`, `pending_kyc` |
 | `user_role` | `user`, `admin`, `support` |
 | `kyc_status` | `none`, `pending`, `approved`, `rejected` |
-| `wallet_tx_type` | `deposit`, `withdrawal`, `bet_stake`, `bet_payout`, `bet_refund`, `adjustment` |
+| `wallet_tx_type` | `deposit`, `withdrawal`, `bet_stake`, `bet_payout`, `bet_refund`, `adjustment`, `cashout` |
 | `chain_network` | `TRC20`, `ERC20` |
 | `deposit_status` | `seen`, `confirming`, `credited`, `orphaned` |
 | `withdrawal_status` | `requested`, `approved`, `submitted`, `confirmed`, `failed`, `cancelled` |
@@ -40,10 +54,11 @@ For column-by-column detail open the SQL file — it's concise and annotated.
 | `match_status` | `not_started`, `live`, `closed`, `cancelled`, `suspended` |
 | `outcome_result` | `won`, `lost`, `void`, `half_won`, `half_lost` |
 | `ticket_status` | `pending_delay`, `accepted`, `rejected`, `settled`, `voided`, `cashed_out` |
-| `bet_type` | `single`, `combo`, `system` |
+| `bet_type` | `single`, `combo`, `system`, `tiple`, `tippot` |
 | `settlement_type` | `settle`, `cancel`, `rollback_settle`, `rollback_cancel` |
 | `odds_scope` | `global`, `sport`, `tournament`, `market_type` |
 | `mapping_status` | `pending`, `approved`, `rejected` |
+| `cashout_status` | `offered`, `accepted`, `declined`, `expired`, `errored`, `unavailable` |
 
 ## Table groups
 
@@ -91,6 +106,7 @@ satisfy "sum(ledger) = balance". The placement of a bet writes a
 | Settle void | unchanged | -stake | `(bet_refund, ticket, ticketId, +stake)` |
 | Rollback prior win | -(payout-stake) | +stake | `(adjustment, ticket, <latest payout ref_id>, -payout)` |
 | Manual void (admin) | unchanged | -stake | `(bet_refund, ticket, ticketId, +stake)` |
+| Cashout accepted | +(offer-stake) | -stake | `(cashout, ticket, ticketId, +(offer-stake))` |
 | Deposit credited | +amount | unchanged | `(deposit, deposit, depositId, +amount)` |
 | Withdrawal requested | unchanged | +amount | (none — lock only) |
 | Withdrawal cancelled / rejected / failed | unchanged | -amount | (none — release only) |
@@ -166,8 +182,11 @@ inactive, -1 suspended, -2 handed over, -3 settled, -4 cancelled).
 
 **`market_outcomes`** — per-outcome state. `raw_odds` is what Oddin sent;
 `published_odds` is what we showed to users after applying the payback margin
-from `odds_config`. `result` + `void_factor` are filled in by the settlement
-worker.
+from `odds_config`. `probability` (NUMERIC(8,7)) is Oddin's
+`probabilities="..."` attribute on the outcome — populated for every
+active outcome on the integration broker and the source-of-truth input
+for the cashout algorithm. `result` + `void_factor` are filled in by the
+settlement worker.
 
 **`odds_history`** — append-only, partitioned daily. Used for admin PnL
 drill-down and disputed-bet audits. Retention 90 days online via `pg_partman`;
@@ -193,16 +212,25 @@ States:
 - `settled` — all selections resolved, payout applied.
 - `voided` — manually voided by admin, or cancelled by feed before
   settlement.
-- `cashed_out` — future feature; reserved.
+- `cashed_out` — user sold the ticket back via the cashout flow.
+  `actual_payout_micro` holds the offer they accepted; settlement is
+  permanently inhibited (the `t.Status != "accepted"` gate in
+  `maybeSettleTicket` prevents double-payment even if the underlying
+  market settles afterwards).
 
 Indexes include a partial `WHERE status='pending_delay'` on `not_before_ts`
 to make the bet-delay sweep query trivially cheap.
 
 **`ticket_selections`** — one per market on a combo; singles have exactly
 one. `odds_at_placement` is frozen at bet time so settlement payout math is
-independent of later odds changes. Partial index `WHERE result IS NULL`
-gives settlement a tight index to scan when it needs to find unresolved
-selections for a market.
+independent of later odds changes. `probability_at_placement` is
+snapshot from `market_outcomes.probability` so cashout can later show
+"value at placement" and run the optional "significant change" gate
+without reconstructing it from odds (NUMERIC(8,7); null when the feed
+hadn't shipped a probability for that outcome yet — falls back to
+`1/oddsCurrent` inside the cashout engine). Partial index `WHERE result
+IS NULL` gives settlement a tight index to scan when it needs to find
+unresolved selections for a market.
 
 ### Settlement
 
@@ -212,6 +240,49 @@ Unique key
 where `payload_hash` is sha256 of the canonicalized XML. An `ON CONFLICT DO
 NOTHING` with `RETURNING id` tells the worker whether it actually inserted
 (do work) or it's a replay (skip). `payload_json` retained for audit.
+
+### Cashout
+
+**`cashout_config`** — per-scope cashout knobs. Same cascade as
+`odds_config` (`market_type → tournament → sport → global`); admin
+edits go through `/admin/cashout-config` with audit-log entries.
+Columns:
+
+| Column | Default | Notes |
+| --- | --- | --- |
+| `enabled` | `TRUE` | Master kill-switch per scope. |
+| `prematch_full_payback_seconds` | 600 (global) | Within N seconds of placement, while the match has not yet started, the offer is set to the stake. "Cancel as cashout" cooling-off window. 0 disables. |
+| `acceptance_delay_seconds` | 5 (global) | Server holds an accepted cashout this many seconds before commit. Mirrors `users.bet_delay_seconds` for placement — gives the bookmaker a window to bail if odds move beyond tolerance. 0–60. |
+| `deduction_ladder_json` | `NULL` | Optional `[{factor, deduction}]` ladder for chapter §2.1.2 of Sportradar's cashout doc. `NULL` = pure simple cashout. |
+| `min_offer_micro` | 100,000 (global) | Below this absolute offer, return `unavailable` rather than offer pennies. |
+| `min_value_change_bp` | 0 | "Significant change" gate: only offer when `\|currentValue/stake − 1\| ≥ bp/10000`. |
+
+A partial unique index `WHERE scope='global'` prevents duplicate global
+rows (Postgres treats `NULL` as distinct, so plain
+`(scope, scope_ref_id)` doesn't cover global by itself — same fix that
+landed for `odds_config` in 0010).
+
+Across combo legs the resolver picks the most-restrictive value:
+`enabled=AND`, `prematch=MIN`, `acceptance_delay=MAX` (more cautious
+wins), `min_offer=MAX`, `min_change=MAX`. The deduction ladder is the
+first non-null leg's ladder.
+
+**`cashouts`** — quote / accept records. One row per `GET
+/tickets/:id/cashout/quote` call (only for `available` quotes —
+unavailable ones are computed but not persisted, so 5 s polling × 1000
+users doesn't burn the table). `status` lifecycle: `offered` → either
+`accepted` (terminal, money moved) or `expired` / `errored` /
+`declined`. `unavailable` exists for legacy rows. `offered_micro` is
+the locked amount the user agreed to; `payout_micro` is what was
+actually paid (always equal to `offered_micro` for accepted rows
+today). `ticket_odds_snapshot`, `probability_snapshot`, and
+`deduction_factor_snapshot` capture the inputs for support / audit.
+
+> **One accepted per ticket.** A partial unique index
+> `WHERE status='accepted'` on `ticket_id` is the apply-once backstop
+> against double-cashout under concurrent accept races. The
+> `wallet_ledger` `(type='cashout', ref_type='ticket', ref_id=ticketId)`
+> unique partial index is the second backstop on the wallet side.
 
 ### Admin + ops
 
@@ -267,10 +338,23 @@ SELECT s.slug AS sport,
 
 -- Lookup current odds for a match
 SELECT m.id AS market_id, m.provider_market_id, m.specifiers_json,
-       mo.outcome_id, mo.name, mo.published_odds, mo.active
+       mo.outcome_id, mo.name, mo.published_odds, mo.probability, mo.active
   FROM markets m
   JOIN market_outcomes mo ON mo.market_id = m.id
   WHERE m.match_id = $1 AND m.status = 1 AND mo.active;
+
+-- Daily cashout PnL (admin view): how much the book made or lost via
+-- cashout vs the alternative outcome (let it run to settlement).
+SELECT date_trunc('day', c.executed_at) AS day,
+       count(*)                         AS cashouts_taken,
+       SUM(t.potential_payout_micro - c.payout_micro) AS counterfactual_save_micro,
+       SUM(c.payout_micro - t.stake_micro)            AS realized_pnl_micro
+  FROM cashouts c
+  JOIN tickets  t ON t.id = c.ticket_id
+  WHERE c.status = 'accepted'
+    AND c.executed_at >= NOW() - INTERVAL '30 days'
+  GROUP BY day
+  ORDER BY day DESC;
 ```
 
 ## Migration workflow

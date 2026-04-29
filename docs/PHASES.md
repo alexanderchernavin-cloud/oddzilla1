@@ -220,7 +220,8 @@ explicit user direction — later phases assume earlier invariants hold.
   ticket id, no double-spend.
 
 **Deferred:** combo bets (UI + payout math + delay re-validation across N
-markets), cash-out, per-user stake limits beyond `global_limit_micro`.
+markets), per-user stake limits beyond `global_limit_micro`. Cashout
+landed later in Phase 9.
 
 ## Phase 6 — Settlement ✔
 
@@ -516,10 +517,75 @@ plus a security audit yielded a small fix list.
   flow exchanges `initiate_request` ↔ `snapshot_complete` cleanly on
   reconnect.
 
+## Phase 9 — Cashout ✔
+
+**Delivered:**
+- Migration `0015_cashout.sql` adds `probability` (NUMERIC(8,7)) to
+  `market_outcomes`, `odds_history`, and `ticket_selections`; the
+  `cashout` value on `wallet_tx_type`; the `cashout_config` cascade
+  table (mirrors `odds_config`); the `cashouts` quote/accept records;
+  and the `cashout_status` enum. `0016_cashout_acceptance_delay.sql`
+  adds `cashout_config.acceptance_delay_seconds` (default 5, 0–60).
+- `feed-ingester` now persists Oddin's `probabilities="0.368"`
+  attribute (already in the XML structs since Phase 3) into outcomes
+  + history and forwards it through the bus. `odds-publisher` carries
+  it on the `published_odds` WS payload as `probability`. Verified
+  populated on every active outcome on the integration broker.
+- Cashout engine in TS at `services/api/src/modules/cashout/`. Three
+  modes: Simple (§2.1.1) `stake × ticketOdds × Π(legProb)`; optional
+  Deduction Ladder (§2.1.2) with linear interpolation; Prematch
+  full-stake window (Oddzilla extension — return stake while bet is
+  young + match not started). 16 unit tests in `algorithm.test.ts`
+  cover Excel scenarios + doc EXAMPLE 1/2 + lost/won/void/half legs +
+  ladder + prematch window + probability fallback to `1/oddsCurrent`.
+- Endpoints: `GET /tickets/:id/cashout/quote` (240/min/user, 5 s
+  poll-friendly) and `POST /tickets/:id/cashout` (30/min/user). Both
+  use per-`req.user.id` rate-limit keys instead of per-IP so users
+  behind shared NATs don't collide.
+- Two-phase accept: pre-validate → sleep
+  `cashout_config.acceptance_delay_seconds` with no DB locks held →
+  recompute offer → reject if drifted >5% or leg gone inactive →
+  transactional commit at the original quoted amount. Wallet credit
+  via `wallet_ledger (type='cashout', ref_type='ticket',
+  ref_id=ticketId)`; `cashouts.status='accepted'` partial unique on
+  `ticket_id` is the apply-once backstop.
+- Settlement guard inherited for free: `maybeSettleTicket` already
+  gates on `t.Status == "accepted"`, so cashed-out tickets are never
+  re-paid even if the underlying market settles afterwards.
+- Frontend cashout panel
+  (`apps/web/src/app/(main)/bets/cashout-panel.tsx`) polls every 5 s,
+  renders the offer + accept dialog, shows a `Confirming… Ns`
+  countdown during the acceptance delay. Multi-currency: offer
+  rendered in `ticket.currency` (was hardcoded USDT until the
+  multi-currency landing).
+- Admin `/admin/cashout` page edits the cascade — enabled toggle,
+  prematch full-stake window, acceptance delay, min offer floor,
+  significant-change gate, deduction ladder JSON. Audit-logged.
+
+**Acceptance reached (offline):**
+- 16/16 cashout algorithm unit tests pass under `tsx --test`.
+- `pnpm -r typecheck` clean across all 10 TS workspaces.
+- `go vet ./... && go test ./...` clean across all 5 Go services.
+
+**Live acceptance:**
+- Quote endpoint hit from `/bets`; offer updates as the underlying
+  probability moves on the live broker.
+- Click Cash out → 5 s countdown → ticket flips to `cashed_out`,
+  wallet balance updates by `(offer − stake)`, `wallet_ledger` row
+  created with type `cashout`.
+- Concurrent accept of the same quote from two tabs: one wins, the
+  other gets `quote_accepted` (409). Partial unique index on
+  `cashouts WHERE status='accepted'` is the backstop.
+- Suspended market mid-quote → reason `leg_inactive`, button hidden;
+  resumes when market goes back to `status=1`.
+
+**Deferred:**
+- Cashout for `tiple` / `tippot` products (Phase 10) — algorithm needs
+  a different shape (any-leg-wins / tiered). Engine returns
+  `bet_type_unsupported` for those today.
+
 ## Post-MVP candidates (not in scope yet)
 
-- Combo and system bets (UI + payout math).
-- Cash-out feature (`cashed_out` ticket status reserved in the schema).
 - Outright markets (tournament winners) — requires dynamic outcome handling.
 - Traditional sports (football, tennis) — existing `sport_kind='traditional'`
   enum value and real `categories` rows instead of dummies.

@@ -278,6 +278,64 @@ actually paid out the right amount to the right address. Admin is
 responsible for verifying. Pre-launch, the signer container will
 enforce this via signed payloads.
 
+### Cashout admin runbook
+
+Cashout is on by default, with a 600 s prematch full-stake window and a
+5 s acceptance delay. Admin surface is `/admin/cashout`. The cascade is
+`market_type → tournament → sport → global`; the most-restrictive
+resolved value wins across combo legs.
+
+**Knobs (all editable per scope, audited):**
+
+| Setting | Global default | Effect |
+| --- | --- | --- |
+| Enabled | `true` | Master kill-switch. Off → users see "feature_disabled" reason. |
+| Prematch full-stake window | `600 s` | Within N seconds of placement, while the match has not started, return stake as the offer. 0 disables. |
+| Acceptance delay | `5 s` | Server holds the accepted cashout this many seconds before commit, then re-validates. Ranges 0–60. |
+| Min offer | `0.10` USDT | Below this, return `below_minimum`. |
+| Min value-change gate | `0` (off) | If non-zero, only offer when `\|currentValue/stake − 1\| ≥ bp/10000`. |
+| Deduction ladder | `null` | Optional `[{factor, deduction}]` JSON for chapter §2.1.2. Disabled by default — Oddin already ships margined odds. |
+
+**Common operator tasks:**
+
+1. **Disable cashout for one tournament temporarily** (e.g. while
+   investigating a mispriced market):
+   - `/admin/cashout` → "Add / update cashout config".
+   - Scope = Tournament, pick the tournament, Enabled = off.
+   - Save. Live within one quote tick (no cache).
+
+2. **Tighten prematch full-stake window for a specific sport** (e.g.
+   the user found an exploit in long-running matches):
+   - Scope = Sport, pick the sport, set Prematch full-stake to 60 s.
+   - Or 0 to disable the cooling-off entirely for that sport.
+
+3. **Raise the minimum offer floor** (cut down cashout-spam tickets):
+   - Scope = Global, bump Min offer to e.g. `1.00` USDT.
+
+4. **Add a deduction ladder for combos** (apply house margin on
+   cashouts, like Sportradar §2.1.2):
+   - Use the JSON textarea, e.g.
+     `[{"factor":0.5,"deduction":1.025},{"factor":1,"deduction":1.005},{"factor":5,"deduction":1.075}]`.
+   - Sorted ascending by `factor` (= `currentValue/stake`).
+   - Apply per-scope; ladder from the highest-priority leg wins for
+     combos.
+
+5. **Investigate a customer dispute** ("cashout offer disappeared"):
+   - `SELECT * FROM cashouts WHERE ticket_id = '...' ORDER BY requested_at DESC` —
+     `unavailable` rows aren't persisted any more, so most rows
+     should be `offered` followed by `accepted` / `expired` /
+     `errored`. `errored` rows carry a `reason` column — typically
+     `drift_offer_dropped` (offer drifted >5% during the acceptance
+     delay) or `drift_<reason>` (a leg went inactive / lost).
+   - The wallet ledger row is `(type='cashout', ref_type='ticket',
+     ref_id=<ticket-id>)`; `delta_micro` is `offer − stake`.
+
+**Throughput sanity:** quote endpoint allows 240/min/user (per
+`req.user.id`, not IP). Frontend polls every 5 s. At 1000 concurrent
+open tickets that's 200 quotes/sec — comfortable for the single
+`api`/`postgres` pair on the current box. Watch `docker stats
+oddzilla-api-1` if it ever feels slow.
+
 ### HD master mnemonic management
 
 Currently lives in `HD_MASTER_MNEMONIC` env on `services/api` (for

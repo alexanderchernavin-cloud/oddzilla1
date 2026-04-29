@@ -255,6 +255,116 @@ operator escape hatch for an `accepted` ticket: full stake refund,
 `status='voided'`, audit-logged. Cannot void already-settled tickets —
 those go through Oddin's rollback flow.
 
+### Cashout
+
+Lets a punter sell an open ticket back to the bookmaker before
+settlement. Math is Sportradar §2.1.1 (Simple Cashout):
+
+```
+offer = stake × ticketOdds × ∏(legProbability)
+```
+
+Settled-won legs collapse `legProbability → 1` but keep their odds in
+the product. Settled-lost legs collapse the offer to zero. Voided legs
+drop out entirely. Inactive (suspended) markets short-circuit to
+`unavailable`.
+
+The implementation lives in `services/api/src/modules/cashout/` —
+algorithm in `algorithm.ts` (pure functions, 16 unit tests),
+quote/accept service in `service.ts`, routes in `routes.ts`.
+
+**Probability source.** Oddin's `odds_change` carries
+`probabilities="0.368"` on every active outcome (verified live on the
+integration broker 2026-04-28). `feed-ingester` parses it (the field
+was already in the XML structs from Phase 3) and writes through to
+`market_outcomes.probability`; `odds-publisher` carries it on the WS
+`odds` payload. When the attribute is absent for an outcome, the
+cashout engine falls back to `1/oddsCurrent` — that's the
+"poor-man's substitute" Sportradar warns about in §2.2; we accept the
+small bias because Oddin's odds already carry margin.
+
+**Quote flow.**
+
+1. Frontend `apps/web/src/app/(main)/bets/cashout-panel.tsx` polls
+   `GET /tickets/:id/cashout/quote` every 5 s while the ticket is
+   `accepted`. Per-user rate limit is 240/min (keyed on `req.user.id`,
+   not IP — many users behind one ISP NAT shared the limit before).
+2. Service loads the ticket + its legs (joined to
+   `markets`/`matches`/`tournaments`/`categories`/`sports`/`market_outcomes`),
+   resolves `cashout_config` per leg with the same cascade as
+   `odds_config` (`market_type → tournament → sport → global`), and
+   takes the most-restrictive value across legs (`enabled=AND`,
+   `prematch=MIN`, `acceptance_delay=MAX`, `min_offer=MAX`,
+   `min_change=MAX`).
+3. `compute()` runs the algorithm. Three modes can fire:
+   - **Prematch full-stake window** (Oddzilla extension). If the bet
+     was placed within
+     `cashout_config.prematch_full_payback_seconds` and the match has
+     not started, return `stake` as the offer. Bookmaker convention
+     for "cancel as cashout". Default 600 s globally.
+   - **Simple cashout (§2.1.1).** `stake × ticketOdds × Π(legProb)`.
+   - **Deduction ladder (§2.1.2).** If a ladder is configured, divide
+     the simple offer by an interpolated `deductionFactor` keyed on
+     `currentValue/stake`. Disabled by default (margin already at 0 bp
+     globally — Oddin ships margined odds).
+4. Available offers are persisted as `cashouts(status='offered')`
+   with a 30 s TTL. Unavailable quotes are NOT persisted (5 s polling
+   × 1000 users = 12k throwaway inserts/min eliminated).
+5. Frontend renders the offer with a `Cash out` button. Click →
+   confirm dialog → accept.
+
+**Accept flow** (two-phase, no DB locks during the delay):
+
+1. **Pre-validate.** Service re-reads the quote + ticket + recomputes
+   the resolved config. Rejects if quote not `offered`, expired, or
+   `offered_micro` mismatches the client-supplied `expectedOfferMicro`
+   (paranoia against stale tabs).
+2. **Acceptance delay.** Sleeps
+   `cashout_config.acceptance_delay_seconds` (default 5, MAX across
+   legs, 0 disables). Mirrors `users.bet_delay_seconds` for placement —
+   gives the bookmaker a window to bail if the underlying probability
+   moves against them. Frontend shows a `Confirming… Ns` countdown.
+3. **Drift check.** Recomputes the offer against fresh feed data. If
+   the new offer is `< originalOffer × (1 − 0.05)` or no longer
+   available (a leg went inactive / lost during the delay), the
+   service marks the cashout `errored` with a `drift_*` reason and
+   returns `409 offer_drifted`. Frontend re-fetches and shows the
+   fresh quote.
+4. **Transactional commit.** One DB transaction:
+   - `SELECT FOR UPDATE` the cashout row (serializes against
+     concurrent accepts of the same quote).
+   - `SELECT FOR UPDATE` the ticket; bail if no longer `accepted`.
+   - `SELECT FOR UPDATE` the wallet for `(userId, ticket.currency)`.
+   - `UPDATE wallets SET balance += offer − stake, locked -= stake`.
+     Net effect: stake hold released, gain or loss recorded.
+   - `INSERT wallet_ledger (type='cashout', ref_type='ticket',
+      ref_id=ticketId, delta_micro=offer-stake, currency=...)` —
+     unique partial index `(type, ref_type, ref_id) WHERE ref_id IS
+     NOT NULL` dedupes accidental retries.
+   - `UPDATE tickets SET status='cashed_out',
+      actual_payout_micro=offer, settled_at=NOW()`.
+   - `UPDATE cashouts SET status='accepted', payout_micro=offer,
+      executed_at=NOW()`. Partial unique
+     `WHERE status='accepted'` enforces one-accepted-per-ticket as a
+     second backstop against double-cashout under races.
+5. Commit, then `Redis PUBLISH user:{userId}` with a `ticket` frame so
+   the bets list flips to `cashed_out` immediately.
+
+**Settlement guard.** `services/settlement` does NOT need a special
+case for cashed-out tickets: `maybeSettleTicket` already gates on
+`t.Status == "accepted"`, so a `bet_settlement` arriving for a
+ticket's market after the user cashed out updates the selections (for
+audit) but never re-pays. Same goes for `rollback_*` — they check
+`t.Status == "settled"` before reversing.
+
+**Admin.** `/admin/cashout` (page in `apps/web/src/app/admin/cashout/`)
+edits the cascade. The admin endpoint
+`PUT /admin/cashout-config` writes a row per scope and an
+`admin_audit_log` entry with before/after JSON. Cache: none — quote
+calls re-read `cashout_config` every time. Quote rate is far below
+`odds_change` rate so the per-quote SELECT is fine; if it ever
+becomes a hot spot, mirror the `odds-publisher` 5 s in-memory cache.
+
 ### Wallet deposit
 
 1. First call to `GET /wallet/deposit-addresses` from the API derives both
