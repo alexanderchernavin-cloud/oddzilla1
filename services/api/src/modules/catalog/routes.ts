@@ -149,26 +149,18 @@ function formatOdds(s: string | null | undefined): string | null {
   return (Math.floor(n * 100) / 100).toFixed(2);
 }
 
-// Phantom-live guard. Every list/count endpoint that surfaces matches as
-// "live" or "upcoming" runs through this predicate so a row only appears
-// when its match-winner market actually has a price the user can bet on.
-//
-// History: we used to gate on `EXISTS markets WHERE status=1` alone. That
-// passed any match with at least one active market — including matches
-// whose match-winner was suspended (or never re-priced after a feed
-// recovery flush) but where some secondary market happened to be active.
-// The card then rendered with dashes for the 1/2 buttons, which the user
-// (correctly) read as broken. Requiring the match-winner outcomes to
-// have `active=TRUE AND published_odds IS NOT NULL` keeps phantoms out
-// of the listings even when matches.status is still stale.
-const hasPricedMatchWinner = sql`EXISTS (
+// Has-active-market guard. Every list/count endpoint runs this so we
+// skip matches with zero active markets — there's nothing to bet on,
+// the card would render empty. Intentionally lenient: a real live
+// match can have its match-winner briefly suspended (mid-round, post-
+// goal in football) while secondary markets stay open, and we still
+// want the row visible. Phantom-live matches are corrected at the
+// source by the phantom_drain sweeper (REST fixture refetch updates
+// matches.status to closed/ended), not by filtering them out here.
+const hasActiveMarket = sql`EXISTS (
   SELECT 1 FROM markets mk
-    JOIN market_outcomes mo ON mo.market_id = mk.id
    WHERE mk.match_id = ${matches.id}
-     AND mk.provider_market_id = 1
      AND mk.status = 1
-     AND mo.active = TRUE
-     AND mo.published_odds IS NOT NULL
 )`;
 
 export default async function catalogRoutes(app: FastifyInstance) {
@@ -224,9 +216,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
         and(
           eq(categories.sportId, sport.id),
           matchStatusCondition,
-          // Drop phantoms — see hasPricedMatchWinner above for why a
-          // bare `markets.status=1` check leaks dashed cards into the UI.
-          hasPricedMatchWinner,
+          // Skip matches with zero active markets — nothing to bet on.
+          hasActiveMarket,
           q.tournament ? eq(tournaments.id, q.tournament) : undefined,
         ),
       )
@@ -654,7 +645,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         and(
           cond,
           eq(sports.active, true),
-          hasPricedMatchWinner,
+          hasActiveMarket,
         ),
       )
       .orderBy(
@@ -781,7 +772,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         riskTier: tournaments.riskTier,
         matchCount: sql<string>`COUNT(DISTINCT ${matches.id}) FILTER (
           WHERE ${matches.status} IN ('not_started','live')
-            AND ${hasPricedMatchWinner}
+            AND ${hasActiveMarket}
         )::text`,
       })
       .from(tournaments)
@@ -909,7 +900,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
               ilike(matches.homeTeam, needle),
               ilike(matches.awayTeam, needle),
             ),
-            hasPricedMatchWinner,
+            hasActiveMarket,
           ),
         )
         .orderBy(desc(matches.status), matches.scheduledAt)
@@ -959,7 +950,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         and(
           eq(matches.tournamentId, tournaments.id),
           eq(matches.status, "live"),
-          hasPricedMatchWinner,
+          hasActiveMarket,
         ),
       )
       .where(eq(sports.active, true))
