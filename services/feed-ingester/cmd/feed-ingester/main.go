@@ -43,6 +43,16 @@ func main() {
 		false,
 		"Run tournament risk_tier backfill and exit (does not start the AMQP consumer).",
 	)
+	drainPhantomLive := flag.Bool(
+		"drain-phantom-live",
+		false,
+		"Re-fetch every match still flagged `live` more than --phantom-age-hours after its scheduled start, then exit. Use after a feed/postgres outage to clear matches whose match_status_change message we missed.",
+	)
+	phantomAgeHours := flag.Int(
+		"phantom-age-hours",
+		6,
+		"Age threshold for --drain-phantom-live; matches younger than this are treated as legitimately live.",
+	)
 	flag.Parse()
 
 	cfg, err := config.Load()
@@ -135,6 +145,19 @@ func main() {
 			logger.Fatal().Err(err).Int("updated", n).Msg("backfill failed")
 		}
 		logger.Info().Int("updated", n).Msg("backfill finished")
+		return
+	}
+
+	if *drainPhantomLive {
+		if restClient == nil {
+			logger.Fatal().Msg("drain requires ODDIN_TOKEN")
+		}
+		logger.Info().Int("age_hours", *phantomAgeHours).Msg("running phantom-live drain")
+		n, err := resolver.DrainPhantomLive(ctx, *phantomAgeHours)
+		if err != nil {
+			logger.Fatal().Err(err).Int("refreshed", n).Msg("drain failed")
+		}
+		logger.Info().Int("refreshed", n).Msg("drain finished")
 		return
 	}
 
