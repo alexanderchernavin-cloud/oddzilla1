@@ -43,15 +43,15 @@ func main() {
 		false,
 		"Run tournament risk_tier backfill and exit (does not start the AMQP consumer).",
 	)
-	drainPhantomLive := flag.Bool(
-		"drain-phantom-live",
+	drainPhantomStale := flag.Bool(
+		"drain-phantom-stale",
 		false,
-		"Re-fetch every match still flagged `live` more than --phantom-age-hours after its scheduled start, then exit. Use after a feed/postgres outage to clear matches whose match_status_change message we missed.",
+		"Re-fetch every match still flagged `live` or `not_started` more than --phantom-age-hours after its scheduled start, then exit. Use after a feed/postgres outage, or to mop up matches whose match_status_change Oddin's broker never emitted.",
 	)
 	phantomAgeHours := flag.Int(
 		"phantom-age-hours",
 		6,
-		"Age threshold for --drain-phantom-live; matches younger than this are treated as legitimately live.",
+		"Age threshold for --drain-phantom-stale; matches younger than this are treated as legitimately live or upcoming.",
 	)
 	flag.Parse()
 
@@ -148,12 +148,12 @@ func main() {
 		return
 	}
 
-	if *drainPhantomLive {
+	if *drainPhantomStale {
 		if restClient == nil {
 			logger.Fatal().Msg("drain requires ODDIN_TOKEN")
 		}
-		logger.Info().Int("age_hours", *phantomAgeHours).Msg("running phantom-live drain")
-		n, err := resolver.DrainPhantomLive(ctx, *phantomAgeHours)
+		logger.Info().Int("age_hours", *phantomAgeHours).Msg("running phantom-stale drain")
+		n, err := resolver.DrainPhantomStale(ctx, *phantomAgeHours)
 		if err != nil {
 			logger.Fatal().Err(err).Int("refreshed", n).Msg("drain failed")
 		}
@@ -218,23 +218,24 @@ func main() {
 			// cache shouldn't hold up the main AMQP loop.
 			go backfillCompetitorProfiles(ctx, resolver, st, logger)
 			// LISTEN on fixture_refresh so the API can ask us to re-pull
-			// a single fixture from REST when it spots a phantom-live
-			// match (status='live' long after scheduled start). Per-URN
-			// cooldown lives inside the listener.
+			// a single fixture from REST when it spots a phantom-stale
+			// match (status='live' or 'not_started' long after scheduled
+			// start). Per-URN cooldown lives inside the listener.
 			go runFixtureRefreshListener(ctx, pool, resolver, logger)
 			// LISTEN on phantom_drain so the admin recovery flow can
-			// trigger a full DrainPhantomLive sweep without restarting
+			// trigger a full DrainPhantomStale sweep without restarting
 			// the container or shelling in to run the CLI flag. Mutex
 			// inside the listener prevents two concurrent drains from
 			// fighting for Oddin's REST budget.
 			go runPhantomDrainListener(ctx, pool, resolver, logger)
 			// Periodic auto-drain. Oddin emits match_status_change only
 			// sparsely so matches that end without one accumulate as
-			// status='live' phantoms; the REST-driven drain is the only
-			// authoritative cleanup. Going through pg_notify (rather
-			// than calling DrainPhantomLive directly) reuses the
-			// listener's single-flight mutex, so this ticker can never
-			// collide with a manual click on /admin/feed/recovery.
+			// status='live' or 'not_started' phantoms; the REST-driven
+			// drain is the only authoritative cleanup. Going through
+			// pg_notify (rather than calling DrainPhantomStale directly)
+			// reuses the listener's single-flight mutex, so this ticker
+			// can never collide with a manual click on
+			// /admin/feed/recovery.
 			go runPhantomDrainTicker(ctx, pool, logger)
 		}
 	}
@@ -368,10 +369,11 @@ func listenRecoveryOnce(ctx context.Context, pool *pgxpool.Pool, deps handler.De
 // `fixture_refresh` channel. Each NOTIFY's payload is a single match
 // URN (e.g. "od:match:12345"); we re-fetch its fixture from Oddin's REST
 // and let RefreshFromFixture overwrite matches.status. Used by the API
-// to clear stuck-live matches that never received a match_status_change
-// (typically because we missed it during a recovery gap).
+// to clear stuck-live or stuck-not_started matches that never received a
+// match_status_change (because we missed it during a recovery gap, or
+// because Oddin's broker simply never emitted one).
 //
-// Per-URN cooldown of 5 minutes prevents a popular phantom-live match
+// Per-URN cooldown of 5 minutes prevents a popular phantom-stale match
 // from hammering Oddin's REST endpoint when many users hit the detail
 // page in rapid succession.
 func runFixtureRefreshListener(ctx context.Context, pool *pgxpool.Pool, res *automap.Resolver, log zerolog.Logger) {
@@ -441,10 +443,11 @@ func listenFixtureRefreshOnce(
 // runPhantomDrainListener subscribes to Postgres notifications on the
 // `phantom_drain` channel. Each NOTIFY's payload is JSON of the form
 // `{"requestedBy": <userID>, "hours": <ageHours>}`; we run
-// resolver.DrainPhantomLive against the requested age threshold to
-// re-pull every stuck-live match's fixture from Oddin REST. Used by the
-// admin recovery endpoint so the operator's "Recovery" button cleans
-// up stuck matches.status in addition to replaying AMQP.
+// resolver.DrainPhantomStale against the requested age threshold to
+// re-pull every stuck match's fixture from Oddin REST (covers both
+// status='live' and status='not_started' phantoms). Used by the admin
+// recovery endpoint so the operator's "Recovery" button cleans up stuck
+// matches.status in addition to replaying AMQP.
 //
 // Drains are serialized via the supplied mutex: a second NOTIFY that
 // arrives mid-sweep is skipped. Phantom counts barely move within a few
@@ -509,7 +512,7 @@ func listenPhantomDrainOnce(
 		go func(hours int) {
 			defer draining.Unlock()
 			log.Info().Int("hours", hours).Msg("phantom_drain: starting sweep")
-			n, err := res.DrainPhantomLive(ctx, hours)
+			n, err := res.DrainPhantomStale(ctx, hours)
 			if err != nil {
 				log.Warn().Err(err).Int("hours", hours).Int("refreshed", n).Msg("phantom_drain failed")
 				return
@@ -522,19 +525,38 @@ func listenPhantomDrainOnce(
 
 // runPhantomDrainTicker fires pg_notify('phantom_drain', ...) every hour
 // so runPhantomDrainListener performs its REST-driven cleanup sweep.
-// Going through pg_notify (rather than calling DrainPhantomLive directly)
+// Going through pg_notify (rather than calling DrainPhantomStale directly)
 // keeps a single mutex governing every code path that can drain — manual
 // admin click, periodic ticker, and the on-boot listener all share the
 // same single-flight guard.
 //
-// The cleanup itself paces at 5 RPS inside DrainPhantomLive, well under
+// One sweep fires immediately on boot so a freshly-restarted ingester
+// doesn't wait up to an hour to catch up on phantoms accumulated during
+// the outage.
+//
+// The cleanup itself paces at 5 RPS inside DrainPhantomStale, well under
 // Oddin's REST budget; running once per hour against a 6h age threshold
 // catches a typical match within ~2 ticks of its actual end time.
 func runPhantomDrainTicker(ctx context.Context, pool *pgxpool.Pool, log zerolog.Logger) {
 	const (
-		sweepEvery = 1 * time.Hour
-		payload    = `{"requestedBy":"ticker","hours":6}`
+		sweepEvery   = 1 * time.Hour
+		bootDelay    = 30 * time.Second
+		payload      = `{"requestedBy":"ticker","hours":6}`
 	)
+	fire := func() {
+		if _, err := pool.Exec(ctx, `SELECT pg_notify('phantom_drain', $1)`, payload); err != nil {
+			log.Warn().Err(err).Msg("phantom_drain ticker: pg_notify failed")
+		}
+	}
+	// Initial sweep on boot, after a short delay so the LISTEN goroutine
+	// has time to register on the phantom_drain channel — pg_notify is
+	// fire-and-forget; if no session is listening yet, the NOTIFY is lost.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(bootDelay):
+	}
+	fire()
 	t := time.NewTicker(sweepEvery)
 	defer t.Stop()
 	for {
@@ -542,9 +564,7 @@ func runPhantomDrainTicker(ctx context.Context, pool *pgxpool.Pool, log zerolog.
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if _, err := pool.Exec(ctx, `SELECT pg_notify('phantom_drain', $1)`, payload); err != nil {
-				log.Warn().Err(err).Msg("phantom_drain ticker: pg_notify failed")
-			}
+			fire()
 		}
 	}
 }
