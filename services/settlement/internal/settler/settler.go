@@ -80,6 +80,7 @@ func (s *Settler) Handle(ctx context.Context, routingKey string, body []byte) er
 		return s.handleRollbackCancel(ctx, body)
 	case oddinxml.KindOddsChange,
 		oddinxml.KindFixtureChange,
+		oddinxml.KindMatchStatusChange,
 		oddinxml.KindBetStop,
 		oddinxml.KindAlive,
 		oddinxml.KindSnapshotComplete:

@@ -43,8 +43,8 @@ Oddin uses an 8-section dot-separated routing key:
 - `pre`: `pre` / `-`
 - `live`: `live` / `-`
 - `message_type`: `odds_change`, `bet_settlement`, `bet_cancel`, `fixture_change`,
-  `bet_stop`, `alive`, `snapshot_complete`, `rollback_bet_settlement`,
-  `rollback_bet_cancel`
+  `match_status_change`, `bet_stop`, `alive`, `snapshot_complete`,
+  `rollback_bet_settlement`, `rollback_bet_cancel`
 - `sport`: numeric Oddin sport id
 - `urn`: `od:match` / `od:tournament` / `-`
 - `event_id`: the numeric id part of the URN, or `-`
@@ -127,6 +127,37 @@ compensating `settlements` row and reverses the ledger entries, resetting
 `tickets.status='accepted'` and `ticket_selections.result=NULL`. Each
 ticket's compensating `adjustment` ledger row uses the same `ref_id` as
 the `bet_payout` it's reversing (see "Ledger generation suffix" below).
+
+### `match_status_change`
+
+Announces a transition in the match's lifecycle status. Sparsely emitted
+in practice — many matches end without one ever arriving — so we treat it
+as a fast path on top of the periodic REST drain rather than the
+authoritative source.
+
+- `event_id` — `od:match:1234`
+- `product` — `1` or `2`
+- `timestamp` — ms
+- `status` — numeric code per Sportradar UOF (Oddin's
+  `GET /v1/descriptions/en/match_status`); see
+  `oddinxml.MapMatchStatusCode`:
+
+| Code | Meaning | Mapped to |
+| --- | --- | --- |
+| 0 | NotStarted | `not_started` |
+| 1 | Live | `live` |
+| 2 | Suspended | `suspended` |
+| 3 | Ended (awaiting confirm) | `closed` |
+| 4 | Closed | `closed` |
+| 5 | Cancelled | `cancelled` |
+| 6 | Delayed | `live` (still expected to play) |
+| 7 | Interrupted | `suspended` |
+| 8 | Postponed | `not_started` (rescheduled) |
+| 9 | Abandoned | `cancelled` |
+
+Unknown codes leave `matches.status` untouched. The hourly
+`runPhantomDrainTicker` (see CLAUDE.md "Recovery flow") catches any match
+that ended without a `match_status_change` message.
 
 ### `alive`
 

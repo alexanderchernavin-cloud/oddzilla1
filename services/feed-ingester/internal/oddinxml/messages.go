@@ -111,6 +111,25 @@ type FixtureChange struct {
 	NextLiveAt *int64   `xml:"next_live_time,attr"`
 }
 
+// ─── MatchStatusChange ─────────────────────────────────────────────────────
+
+// MatchStatusChange announces a transition in the match's lifecycle status
+// (not_started → live → ended → closed → cancelled). Oddin's protocol
+// follows the Sportradar UOF convention; the `status` attribute is a
+// numeric code documented at GET /v1/descriptions/en/match_status. We've
+// observed that the integration broker emits these only sparsely (many
+// matches end without one ever arriving — see the phantom-drain
+// background worker), so this handler is a best-effort fast path; the
+// REST-driven drain is the authoritative cleanup.
+type MatchStatusChange struct {
+	XMLName   xml.Name `xml:"match_status_change"`
+	EventID   string   `xml:"event_id,attr"`
+	Product   int      `xml:"product,attr"`
+	Timestamp int64    `xml:"timestamp,attr"`
+	RequestID *int64   `xml:"request_id,attr"` // set on snapshot recovery
+	Status    int      `xml:"status,attr"`     // see MapMatchStatusCode
+}
+
 // ─── Rollbacks ─────────────────────────────────────────────────────────────
 
 type RollbackBetSettlement struct {
@@ -163,6 +182,7 @@ const (
 	KindRollbackBetCancel
 	KindAlive
 	KindSnapshotComplete
+	KindMatchStatusChange
 )
 
 func (k MessageKind) String() string {
@@ -185,6 +205,8 @@ func (k MessageKind) String() string {
 		return "alive"
 	case KindSnapshotComplete:
 		return "snapshot_complete"
+	case KindMatchStatusChange:
+		return "match_status_change"
 	default:
 		return "unknown"
 	}
@@ -218,6 +240,41 @@ func PeekEvent(body []byte) (eventURN string, product int, err error) {
 	}
 }
 
+// MapMatchStatusCode translates a numeric Oddin match_status code (the
+// `status` attribute on match_status_change, and the `oddin_status_code`
+// column we cache on matches) to our match_status enum value. Unknown
+// codes map to "" so callers can leave the existing status untouched.
+//
+// Codes follow the Sportradar UOF convention used by Oddin:
+//
+//	0  not started     → not_started
+//	1  live            → live
+//	2  suspended       → suspended
+//	3  ended           → closed (final whistle, awaiting confirm)
+//	4  closed          → closed (settlement complete)
+//	5  cancelled       → cancelled
+//	6  delayed         → live (still expected to play)
+//	7  interrupted     → suspended
+//	8  postponed       → not_started (rescheduled in fixture later)
+//	9  abandoned       → cancelled
+func MapMatchStatusCode(code int) string {
+	switch code {
+	case 0:
+		return "not_started"
+	case 1, 6:
+		return "live"
+	case 2, 7:
+		return "suspended"
+	case 3, 4:
+		return "closed"
+	case 5, 9:
+		return "cancelled"
+	case 8:
+		return "not_started"
+	}
+	return ""
+}
+
 // PeekKind inspects the first XML start-element tag and returns the kind.
 // Cheap: does not decode attributes. Useful before full unmarshal so we can
 // pick the right struct.
@@ -248,6 +305,8 @@ func PeekKind(body []byte) (MessageKind, error) {
 				return KindAlive, nil
 			case "snapshot_complete":
 				return KindSnapshotComplete, nil
+			case "match_status_change":
+				return KindMatchStatusChange, nil
 			default:
 				return KindUnknown, fmt.Errorf("peek: unknown root element %q", se.Name.Local)
 			}
