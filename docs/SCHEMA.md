@@ -235,6 +235,28 @@ a ms timestamp (the column is generic, used for whatever monotonic
 position the chain exposes through its API). The `BumpCursor` helper
 never regresses (`GREATEST(current, new)`).
 
+**`feed_messages`** — raw AMQP message log surfaced by `/admin/logs`
+(added in migration 0011). One row per match-scoped Oddin message
+processed by feed-ingester (`odds_change`, `fixture_change`, `bet_stop`,
+`bet_settlement`, `bet_cancel`, `rollback_bet_settlement`,
+`rollback_bet_cancel`). Columns: `id`, `match_id` (nullable FK to
+`matches.id` with `ON DELETE CASCADE` — resolved at insert via subquery
+on `provider_urn`), `event_urn`, `kind`, `routing_key`, `product`
+(SMALLINT 1=pre / 2=live), `payload_xml` (verbatim XML), `received_at`.
+Indexes: `(match_id, received_at DESC) WHERE match_id IS NOT NULL`,
+`(received_at)` for cleanup, `(event_urn, received_at DESC) WHERE
+event_urn IS NOT NULL`. Retention is enforced from feed-ingester:
+`runFeedMessageCleanup` deletes rows whose match has passed
+`scheduled_at + 24h`, plus a hard 48h ceiling for unmapped URNs.
+Insertion is best-effort — failures log and continue so a transient
+DB hiccup never stalls the AMQP consumer.
+
+**System-level kinds (`alive`, `snapshot_complete`) are intentionally
+not logged** — they're heartbeats / recovery markers, not match-scoped
+debugging signal. Settlement messages are dispatched by the
+settlement worker but feed-ingester sees them too on the same broker
+topic, so the per-match log is complete from a single write site.
+
 ## Common queries
 
 ```sql
