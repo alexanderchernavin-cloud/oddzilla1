@@ -1,7 +1,12 @@
 // Admin-only feed controls.
 //
 // POST /admin/feed/recovery
-//   Body: { flushOdds?: boolean, hours?: number }
+//   Body: {
+//     flushOdds?: boolean,
+//     hours?: number,
+//     drainPhantoms?: boolean,
+//     drainAgeHours?: number,
+//   }
 //   Rewinds the Oddin AMQP cursor by `hours` (default 48, max 72 — Oddin
 //   actually rejects requests older than 3 days with a 404 / "Supported
 //   is only 3 day range", so 72 is the hard cap) and sends
@@ -18,6 +23,16 @@
 //   Tippot can't price off pre-flush probability snapshots until the
 //   replay refills them. Does not touch settled/closed matches. Never
 //   touches `settlements` — that table is append-only and apply-once.
+//
+//   When `drainPhantoms=true` (default), also fires
+//   `pg_notify('phantom_drain', '{"hours":N}')`. Feed-ingester listens
+//   on this channel and re-pulls every match still flagged `live` more
+//   than `drainAgeHours` after its scheduled start from Oddin's REST
+//   fixture endpoint, so closed/ended matches whose
+//   match_status_change we missed during the outage get their
+//   matches.status corrected. AMQP replay alone cannot fix these
+//   because Oddin won't replay match_status_change for matches older
+//   than ~3 days; REST fixture state is the only source of truth.
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -27,6 +42,8 @@ import { adminAuditLog, amqpState } from "@oddzilla/db";
 const bodySchema = z.object({
   flushOdds: z.boolean().optional(),
   hours: z.coerce.number().int().min(1).max(72).optional(),
+  drainPhantoms: z.boolean().optional(),
+  drainAgeHours: z.coerce.number().int().min(1).max(168).optional(),
 });
 
 export default async function adminFeedRoutes(app: FastifyInstance) {
@@ -42,6 +59,12 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
     // visibly stale, which is exactly when we want a clean slate before
     // the replay. They can opt out via { flushOdds: false }.
     const flush = body.flushOdds ?? true;
+    // Default true: Oddin won't replay match_status_change beyond ~3
+    // days, so a separate REST-driven sweep is the only way to clean
+    // up stuck-live rows after a long outage. 6h matches the CLI flag
+    // default and is well above any plausible esports series length.
+    const drainPhantoms = body.drainPhantoms ?? true;
+    const drainAgeHours = body.drainAgeHours ?? 6;
 
     // Target cursor = now - hours. Oddin rejects recovery requests older
     // than ~3 days so this is clamped at 72h by the schema above.
@@ -121,18 +144,45 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
     });
     await app.db.execute(sql`SELECT pg_notify('feed_recovery', ${payload})`);
 
+    // Count phantom-live candidates so the response and audit log
+    // surface what the drain will hit. The actual REST fan-out happens
+    // inside feed-ingester at 5 RPS — this number is informational.
+    let phantomCount = 0;
+    if (drainPhantoms) {
+      const phantomRows = (await app.db.execute(sql`
+        SELECT COUNT(*)::text AS cnt
+          FROM matches
+         WHERE status = 'live'
+           AND scheduled_at IS NOT NULL
+           AND scheduled_at < NOW() - make_interval(hours => ${drainAgeHours})
+           AND provider_urn LIKE 'od:match:%'
+      `)) as unknown as Array<{ cnt: string }>;
+      phantomCount = Number(phantomRows[0]?.cnt ?? "0");
+
+      const drainPayload = JSON.stringify({
+        requestedBy: admin.id,
+        hours: drainAgeHours,
+      });
+      await app.db.execute(
+        sql`SELECT pg_notify('phantom_drain', ${drainPayload})`,
+      );
+    }
+
     await app.db.insert(adminAuditLog).values({
       actorUserId: admin.id,
       action: "feed.recovery",
       targetType: "amqp_state",
       targetId: "producer:1,producer:2",
-      beforeJson: { activeMarkets },
+      beforeJson: { activeMarkets, phantomCandidates: phantomCount },
       afterJson: {
         cursorMs,
         hours,
         flush,
         flushedMarkets,
         flushedOutcomes,
+        drainPhantoms,
+        drainAgeHours: drainPhantoms ? drainAgeHours : null,
+        phantomCandidates: phantomCount,
       },
       ipInet: request.ip ?? null,
     });
@@ -144,6 +194,9 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
       flushedMarkets,
       flushedOutcomes,
       activeMarketsBefore: activeMarkets,
+      drainPhantoms,
+      drainAgeHours: drainPhantoms ? drainAgeHours : null,
+      phantomCandidates: phantomCount,
     };
   });
 
