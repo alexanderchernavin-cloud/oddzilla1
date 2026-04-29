@@ -33,6 +33,13 @@ export interface CashoutConfigEntry {
   deductionLadderJson: CashoutLadderStep[] | null;
   minOfferMicro: string; // bigint as string
   minValueChangeBp: number;
+  /**
+   * Seconds the server holds an accepted cashout before commit. Mirrors
+   * users.bet_delay_seconds for placement — a short window that lets
+   * the bookmaker bail if the underlying odds drift beyond tolerance.
+   * 0 = no delay.
+   */
+  acceptanceDelaySeconds: number;
   updatedAt: string; // ISO
   label?: string;
 }
@@ -62,6 +69,12 @@ export interface CashoutQuote {
   deductionFactor?: string;       // > 1 means lower offer; only set when ladder applied
   fullPayback?: boolean;          // true when offer = stake from prematch window
   expiresAt?: string;             // ISO; quote becomes invalid after this
+  /**
+   * Seconds the server will wait between accept-click and money-moves
+   * (resolved cashout_config.acceptance_delay_seconds across legs).
+   * Frontend uses this to render a countdown.
+   */
+  acceptanceDelaySeconds?: number;
 }
 
 export interface CashoutAcceptRequest {

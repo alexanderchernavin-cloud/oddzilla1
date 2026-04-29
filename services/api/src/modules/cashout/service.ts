@@ -6,15 +6,19 @@
 //     a `cashouts` row in `offered` status. Returns CashoutQuote.
 //
 //   accept(userId, ticketId, quoteId, expectedOfferMicro)
-//     Atomically: re-fetches the offered cashout, validates it's still
-//     fresh (not expired) and the on-screen amount matches, then
-//     transitions the ticket to cashed_out and credits the wallet via a
-//     ledger row keyed (type='cashout', ref_type='ticket', ref_id=ticket).
-//     The unique partial index on wallet_ledger makes accept idempotent
-//     against retries.
+//     1. Pre-validates the quote (status, freshness, amount).
+//     2. If the resolved cashout_config has acceptanceDelaySeconds > 0,
+//        sleeps that many seconds (no DB locks held). Mirrors the
+//        bet-placement bet_delay_seconds — gives the bookmaker a window
+//        to bail if the underlying probability moves against them.
+//     3. Recomputes the current offer; if it dropped by more than the
+//        drift tolerance from the quoted amount, rejects.
+//     4. Transactional commit: ticket → cashed_out, wallet credit at
+//        the ORIGINAL quoted amount, wallet_ledger row keyed apply-once
+//        on (cashout, ticket, ticket_id).
 
 import { Redis } from "ioredis";
-import { eq, and, sql, isNull, desc } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import type { DbClient } from "@oddzilla/db";
 import {
   tickets,
@@ -29,35 +33,26 @@ import {
   cashouts,
   wallets,
   walletLedger,
-  users,
 } from "@oddzilla/db";
-import type {
-  CashoutQuote,
-  CashoutLadderStep,
-  CashoutUnavailableReason,
-} from "@oddzilla/types";
+import type { CashoutQuote, CashoutLadderStep } from "@oddzilla/types";
 import {
-  BadRequestError,
   ConflictError,
   NotFoundError,
   ForbiddenError,
 } from "../../lib/errors.js";
 import { compute } from "./algorithm.js";
 
-// Quote validity: long enough for a user to read the offer and click,
-// short enough that the offer doesn't drift out from under us. The
-// significant-change gate already protects against tiny moves; a hard
-// 10s ceiling keeps stale offers off the wire.
-const QUOTE_TTL_SECONDS = 10;
+// Quote validity. Long enough for the user to read + click + sit
+// through the acceptance delay; short enough that stale offers don't
+// stay on the wire.
+const QUOTE_TTL_SECONDS = 30;
+
+// During the acceptance delay we tolerate this much downward drift in
+// the recomputed offer before rejecting. 5% mirrors the placement
+// odds-drift tolerance.
+const ACCEPTANCE_DRIFT_TOLERANCE = 0.05;
 
 const USER_CHANNEL_PREFIX = "user:";
-
-type TxHandle = Parameters<Parameters<DbClient["transaction"]>[0]>[0];
-
-interface ScopeKey {
-  scope: "global" | "sport" | "tournament" | "market_type";
-  scopeRefId: string | null;
-}
 
 interface ResolvedConfig {
   enabled: boolean;
@@ -65,6 +60,7 @@ interface ResolvedConfig {
   deductionLadder: CashoutLadderStep[] | null;
   minOfferMicro: bigint;
   minValueChangeBp: number;
+  acceptanceDelaySeconds: number;
 }
 
 export class CashoutService {
@@ -80,12 +76,20 @@ export class CashoutService {
     const ticket = await this.loadTicket(userId, ticketId);
 
     if (ticket.status !== "accepted") {
-      return { available: false, reason: "not_open", ticketStakeMicro: ticket.stakeMicro.toString() };
+      return {
+        available: false,
+        reason: "not_open",
+        ticketStakeMicro: ticket.stakeMicro.toString(),
+      };
     }
 
     const legs = await this.loadLegs(ticketId);
     if (legs.length === 0) {
-      return { available: false, reason: "not_open", ticketStakeMicro: ticket.stakeMicro.toString() };
+      return {
+        available: false,
+        reason: "not_open",
+        ticketStakeMicro: ticket.stakeMicro.toString(),
+      };
     }
 
     const config = await this.resolveConfig(legs);
@@ -105,7 +109,6 @@ export class CashoutService {
         oddsAtPlacement: l.oddsAtPlacement,
         probabilityCurrent: l.probability !== null ? Number(l.probability) : null,
         oddsCurrent: l.publishedOdds,
-        // marketOutcomes is left-joined; missing row → inactive.
         active: (l.active ?? false) && l.marketStatus === 1,
         result: l.result,
         voidFactor: l.voidFactor,
@@ -122,25 +125,19 @@ export class CashoutService {
       probability: result.probability.toFixed(7),
       ticketValueFairMicro: result.ticketValueFairMicro.toString(),
       deductionFactor:
-        result.deductionFactor !== null ? result.deductionFactor.toFixed(4) : undefined,
+        result.deductionFactor !== null
+          ? result.deductionFactor.toFixed(4)
+          : undefined,
       fullPayback: result.fullPayback,
+      acceptanceDelaySeconds: config.acceptanceDelaySeconds,
     };
 
     if (!result.available) {
-      // Persist negative outcomes too (audit + ratelimiting / cooldown
-      // tooling), but at status='unavailable' so they never accept.
-      await this.db.insert(cashouts).values({
-        ticketId,
-        userId,
-        status: "unavailable",
-        offeredMicro: 0n,
-        ticketOddsSnapshot: result.ticketOdds.toFixed(4),
-        probabilitySnapshot: result.probability.toFixed(15),
-        deductionFactorSnapshot:
-          result.deductionFactor !== null ? result.deductionFactor.toFixed(4) : null,
-        reason: result.reason ?? null,
-        expiresAt: new Date(Date.now() + QUOTE_TTL_SECONDS * 1000),
-      });
+      // We deliberately do NOT persist a row for unavailable quotes
+      // anymore. Polling at 5s with 1000+ users would otherwise burn
+      // the cashouts table at ~12k rows/min. Audit signal we lose:
+      // why a particular ticket showed "unavailable". Acceptable —
+      // the user-facing message already names the reason.
       return baseQuote;
     }
 
@@ -155,7 +152,9 @@ export class CashoutService {
         ticketOddsSnapshot: result.ticketOdds.toFixed(4),
         probabilitySnapshot: result.probability.toFixed(15),
         deductionFactorSnapshot:
-          result.deductionFactor !== null ? result.deductionFactor.toFixed(4) : null,
+          result.deductionFactor !== null
+            ? result.deductionFactor.toFixed(4)
+            : null,
         expiresAt,
       })
       .returning();
@@ -172,8 +171,12 @@ export class CashoutService {
   }
 
   /**
-   * Accept a previously-issued quote. Atomic: ticket → cashed_out,
-   * wallet credit, ledger row.
+   * Accept a previously-issued quote. Two-phase:
+   *   1. Pre-validate without locks.
+   *   2. Sleep cashout_config.acceptance_delay_seconds (resolved across
+   *      legs).
+   *   3. Recompute the offer; reject if drifted beyond tolerance.
+   *   4. Transactional commit at the ORIGINAL quoted amount.
    */
   async accept(
     userId: string,
@@ -181,28 +184,107 @@ export class CashoutService {
     quoteId: string,
     expectedOfferMicro: bigint,
   ): Promise<{ payoutMicro: bigint; cashedOutAt: Date }> {
+    // ── Phase 1: pre-validate (no locks) ──────────────────────────────
+    const [quote] = await this.db
+      .select()
+      .from(cashouts)
+      .where(and(eq(cashouts.id, quoteId), eq(cashouts.ticketId, ticketId)))
+      .limit(1);
+    if (!quote) throw new NotFoundError("quote_not_found", "quote_not_found");
+    if (quote.userId !== userId) {
+      throw new ForbiddenError("quote_other_user", "quote_other_user");
+    }
+    if (quote.status !== "offered") {
+      throw new ConflictError(`quote_${quote.status}`, `quote_${quote.status}`);
+    }
+    if (quote.expiresAt.getTime() < Date.now()) {
+      await this.db
+        .update(cashouts)
+        .set({ status: "expired" })
+        .where(eq(cashouts.id, quoteId));
+      throw new ConflictError("quote_expired", "quote_expired");
+    }
+    if (quote.offeredMicro !== expectedOfferMicro) {
+      throw new ConflictError("quote_amount_mismatch", "quote_amount_mismatch");
+    }
+
+    const ticketBefore = await this.loadTicket(userId, ticketId);
+    if (ticketBefore.status !== "accepted") {
+      throw new ConflictError(
+        `ticket_${ticketBefore.status}`,
+        `ticket_${ticketBefore.status}`,
+      );
+    }
+
+    const legs = await this.loadLegs(ticketId);
+    const resolvedConfig = await this.resolveConfig(legs);
+
+    // ── Phase 2: acceptance delay (no locks) ──────────────────────────
+    if (resolvedConfig.acceptanceDelaySeconds > 0) {
+      await sleep(resolvedConfig.acceptanceDelaySeconds * 1000);
+    }
+
+    // ── Phase 3: recompute + drift check ──────────────────────────────
+    const freshLegs = await this.loadLegs(ticketId);
+    const matchEarliestKickoffMs = freshLegs.reduce<number | null>((acc, l) => {
+      if (!l.matchScheduledAt) return acc;
+      const ms = l.matchScheduledAt.getTime();
+      return acc === null || ms < acc ? ms : acc;
+    }, null);
+
+    const recomputed = compute({
+      betType: ticketBefore.betType,
+      stakeMicro: ticketBefore.stakeMicro,
+      potentialPayoutMicro: ticketBefore.potentialPayoutMicro,
+      placedAtMs: ticketBefore.placedAt.getTime(),
+      matchEarliestKickoffMs,
+      legs: freshLegs.map((l) => ({
+        oddsAtPlacement: l.oddsAtPlacement,
+        probabilityCurrent: l.probability !== null ? Number(l.probability) : null,
+        oddsCurrent: l.publishedOdds,
+        active: (l.active ?? false) && l.marketStatus === 1,
+        result: l.result,
+        voidFactor: l.voidFactor,
+      })),
+      config: resolvedConfig,
+      nowMs: Date.now(),
+    });
+
+    // If the offer is no longer available (a leg went inactive, lost,
+    // etc.) or has dropped beyond the drift tolerance, reject.
+    const driftFloor =
+      (Number(quote.offeredMicro) * (1 - ACCEPTANCE_DRIFT_TOLERANCE)) | 0;
+    if (!recomputed.available || Number(recomputed.offerMicro) < driftFloor) {
+      await this.db
+        .update(cashouts)
+        .set({
+          status: "errored",
+          reason: !recomputed.available
+            ? `drift_${recomputed.reason ?? "unavailable"}`
+            : "drift_offer_dropped",
+        })
+        .where(eq(cashouts.id, quoteId));
+      throw new ConflictError("offer_drifted", "offer_drifted");
+    }
+
+    // ── Phase 4: transactional commit ────────────────────────────────
     const placed = await this.db.transaction(async (tx) => {
-      // ── Load + lock the quote, ticket, wallet ──────────────────────
-      const [quote] = await tx
+      // Re-load with FOR UPDATE so we serialize against any concurrent
+      // accept of the same quote.
+      const [lockedQuote] = await tx
         .select()
         .from(cashouts)
-        .where(and(eq(cashouts.id, quoteId), eq(cashouts.ticketId, ticketId)))
+        .where(eq(cashouts.id, quoteId))
         .for("update")
         .limit(1);
-      if (!quote) throw new NotFoundError("quote_not_found", "quote_not_found");
-      if (quote.userId !== userId) throw new ForbiddenError("quote_other_user", "quote_other_user");
-      if (quote.status !== "offered") {
-        throw new ConflictError(`quote_${quote.status}`, `quote_${quote.status}`);
+      if (!lockedQuote) {
+        throw new NotFoundError("quote_not_found", "quote_not_found");
       }
-      if (quote.expiresAt.getTime() < Date.now()) {
-        await tx
-          .update(cashouts)
-          .set({ status: "expired" })
-          .where(eq(cashouts.id, quoteId));
-        throw new ConflictError("quote_expired", "quote_expired");
-      }
-      if (quote.offeredMicro !== expectedOfferMicro) {
-        throw new ConflictError("quote_amount_mismatch", "quote_amount_mismatch");
+      if (lockedQuote.status !== "offered") {
+        throw new ConflictError(
+          `quote_${lockedQuote.status}`,
+          `quote_${lockedQuote.status}`,
+        );
       }
 
       const [ticket] = await tx
@@ -213,30 +295,30 @@ export class CashoutService {
         .limit(1);
       if (!ticket) throw new NotFoundError("ticket_not_found", "ticket_not_found");
       if (ticket.status !== "accepted") {
-        throw new ConflictError(`ticket_${ticket.status}`, `ticket_${ticket.status}`);
+        throw new ConflictError(
+          `ticket_${ticket.status}`,
+          `ticket_${ticket.status}`,
+        );
       }
 
-      // Wallets are keyed (user_id, currency) since migration 0014.
-      // Lock the row matching the ticket's currency.
       const [wallet] = await tx
         .select()
         .from(wallets)
-        .where(and(eq(wallets.userId, userId), eq(wallets.currency, ticket.currency)))
+        .where(
+          and(eq(wallets.userId, userId), eq(wallets.currency, ticket.currency)),
+        )
         .for("update")
         .limit(1);
-      if (!wallet) throw new NotFoundError("wallet_not_found", "wallet_not_found");
+      if (!wallet) {
+        throw new NotFoundError("wallet_not_found", "wallet_not_found");
+      }
 
       const cashedOutAt = new Date();
       const stake = ticket.stakeMicro;
-      const offer = quote.offeredMicro;
-      // Net delta to balance:
-      //   At placement we did: locked += stake, balance unchanged
-      //   On cashout we want : balance += offer - stake (the gain/loss),
-      //                        locked -= stake (release stake hold).
-      // Why: we never debited balance at placement; the stake was held
-      // via locked_micro. The cashout payout is offer; if offer < stake
-      // the user effectively loses (stake - offer) and balance decreases.
-
+      const offer = lockedQuote.offeredMicro;
+      // Wallet delta: at placement we did `locked += stake` without
+      // touching balance. On cashout: `balance += offer - stake` and
+      // `locked -= stake` to release the hold.
       await tx
         .update(wallets)
         .set({
@@ -244,10 +326,12 @@ export class CashoutService {
           lockedMicro: sql`${wallets.lockedMicro} - ${stake}`,
           updatedAt: cashedOutAt,
         })
-        .where(and(eq(wallets.userId, userId), eq(wallets.currency, ticket.currency)));
+        .where(
+          and(eq(wallets.userId, userId), eq(wallets.currency, ticket.currency)),
+        );
 
-      // Apply-once ledger row. Unique partial index on (type, ref_type,
-      // ref_id) means a retry of this whole tx is safe.
+      // Apply-once ledger row keyed (type=cashout, ref_type=ticket,
+      // ref_id=ticket_id) — unique partial index makes retries no-ops.
       await tx.insert(walletLedger).values({
         userId,
         currency: ticket.currency,
@@ -258,7 +342,6 @@ export class CashoutService {
         memo: `cashout offer ${offer.toString()} for stake ${stake.toString()}`,
       });
 
-      // Transition the ticket.
       await tx
         .update(tickets)
         .set({
@@ -268,7 +351,6 @@ export class CashoutService {
         })
         .where(eq(tickets.id, ticketId));
 
-      // Settle the quote row.
       await tx
         .update(cashouts)
         .set({
@@ -347,21 +429,23 @@ export class CashoutService {
   }
 
   /**
-   * Resolve cashout_config across the supplied legs. The cascade is
-   * market_type → tournament → sport → global, applied per-leg; the
-   * tightest scope wins. For settings that are scalars (enabled,
-   * prematchFullPaybackSeconds, etc.) we take the most-restrictive
-   * across legs:
-   *   - enabled = AND across legs
-   *   - prematchFullPaybackSeconds = MIN across legs
-   *   - minOfferMicro = MAX across legs
-   *   - minValueChangeBp = MAX across legs
-   * deductionLadder is taken from the highest-priority leg (the first
-   * leg's resolved config). This is a rare-edge-case path so the
-   * conservative AND/MIN/MAX choices keep us safe.
+   * Resolve cashout_config across the supplied legs. Cascade per leg:
+   * market_type → tournament → sport → global. Across legs we take the
+   * most-restrictive value:
+   *   - enabled                     = AND
+   *   - prematchFullPaybackSeconds  = MIN
+   *   - acceptanceDelaySeconds      = MAX (longer delay = more cautious
+   *                                        for the bookmaker)
+   *   - minOfferMicro               = MAX
+   *   - minValueChangeBp            = MAX
+   *   - deductionLadder             = first non-null leg's ladder
    */
   private async resolveConfig(
-    legs: Array<{ sportId: number; tournamentId: number; providerMarketId: number }>,
+    legs: Array<{
+      sportId: number;
+      tournamentId: number;
+      providerMarketId: number;
+    }>,
   ): Promise<ResolvedConfig> {
     const allConfigs = await this.db.select().from(cashoutConfig);
     const byScope = new Map<string, (typeof allConfigs)[number]>();
@@ -378,6 +462,7 @@ export class CashoutService {
         deductionLadder: null,
         minOfferMicro: 0n,
         minValueChangeBp: 0,
+        acceptanceDelaySeconds: 0,
       };
     }
 
@@ -393,6 +478,7 @@ export class CashoutService {
         deductionLadder: ladder,
         minOfferMicro: winner.minOfferMicro,
         minValueChangeBp: winner.minValueChangeBp,
+        acceptanceDelaySeconds: winner.acceptanceDelaySeconds,
       };
     });
 
@@ -404,8 +490,13 @@ export class CashoutService {
           c.prematchFullPaybackSeconds,
         ),
         deductionLadder: acc.deductionLadder ?? c.deductionLadder,
-        minOfferMicro: c.minOfferMicro > acc.minOfferMicro ? c.minOfferMicro : acc.minOfferMicro,
+        minOfferMicro:
+          c.minOfferMicro > acc.minOfferMicro ? c.minOfferMicro : acc.minOfferMicro,
         minValueChangeBp: Math.max(acc.minValueChangeBp, c.minValueChangeBp),
+        acceptanceDelaySeconds: Math.max(
+          acc.acceptanceDelaySeconds,
+          c.acceptanceDelaySeconds,
+        ),
       }),
       {
         enabled: true,
@@ -413,6 +504,7 @@ export class CashoutService {
         deductionLadder: null,
         minOfferMicro: 0n,
         minValueChangeBp: 0,
+        acceptanceDelaySeconds: 0,
       },
     );
   }
@@ -435,4 +527,8 @@ function readLadder(raw: unknown): CashoutLadderStep[] | null {
     }
   }
   return parsed.length > 0 ? parsed : null;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

@@ -16,6 +16,7 @@ export interface CashoutConfigEntry {
   deductionLadderJson: CashoutLadderStep[] | null;
   minOfferMicro: string;
   minValueChangeBp: number;
+  acceptanceDelaySeconds: number;
   updatedAt: string;
   updatedBy: string | null;
   label: string;
@@ -70,6 +71,7 @@ function ConfigTable({ entries }: { entries: CashoutConfigEntry[] }) {
             deductionLadder: entry.deductionLadderJson,
             minOfferMicro: entry.minOfferMicro,
             minValueChangeBp: entry.minValueChangeBp,
+            acceptanceDelaySeconds: entry.acceptanceDelaySeconds,
           }),
         });
         router.refresh();
@@ -113,6 +115,7 @@ function ConfigTable({ entries }: { entries: CashoutConfigEntry[] }) {
             <th className="px-5 py-3 text-left">Scope</th>
             <th className="px-5 py-3 text-left">Enabled</th>
             <th className="px-5 py-3 text-right">Prematch full-stake</th>
+            <th className="px-5 py-3 text-right">Accept delay</th>
             <th className="px-5 py-3 text-right">Min offer</th>
             <th className="px-5 py-3 text-right">Change gate</th>
             <th className="px-5 py-3 text-right">Ladder</th>
@@ -140,6 +143,9 @@ function ConfigTable({ entries }: { entries: CashoutConfigEntry[] }) {
               </td>
               <td className="px-5 py-3 text-right font-mono">
                 {e.prematchFullPaybackSeconds}s
+              </td>
+              <td className="px-5 py-3 text-right font-mono">
+                {e.acceptanceDelaySeconds}s
               </td>
               <td className="px-5 py-3 text-right font-mono">
                 {microToUsdt(e.minOfferMicro)} USDT
@@ -178,6 +184,7 @@ function UpsertForm({ options }: { options: CashoutOptions }) {
   const [refId, setRefId] = useState<string>("");
   const [enabled, setEnabled] = useState(true);
   const [prematchSec, setPrematchSec] = useState("60");
+  const [acceptDelaySec, setAcceptDelaySec] = useState("5");
   const [minOfferUsdt, setMinOfferUsdt] = useState("0.10");
   const [minChangePct, setMinChangePct] = useState("0.00");
   const [ladderText, setLadderText] = useState("");
@@ -195,6 +202,11 @@ function UpsertForm({ options }: { options: CashoutOptions }) {
     const sec = Number.parseInt(prematchSec, 10);
     if (!Number.isFinite(sec) || sec < 0 || sec > 86400) {
       setMsg({ kind: "err", text: "Prematch seconds must be 0–86400." });
+      return;
+    }
+    const acceptSec = Number.parseInt(acceptDelaySec, 10);
+    if (!Number.isFinite(acceptSec) || acceptSec < 0 || acceptSec > 60) {
+      setMsg({ kind: "err", text: "Accept delay must be 0–60 seconds." });
       return;
     }
     const minMicro = usdtToMicro(minOfferUsdt);
@@ -243,6 +255,7 @@ function UpsertForm({ options }: { options: CashoutOptions }) {
           deductionLadder: ladder,
           minOfferMicro: minMicro,
           minValueChangeBp: changeBp,
+          acceptanceDelaySeconds: acceptSec,
         }),
       });
       setMsg({ kind: "ok", text: "Saved." });
@@ -351,6 +364,20 @@ function UpsertForm({ options }: { options: CashoutOptions }) {
           max={86400}
           value={prematchSec}
           onChange={(e) => setPrematchSec(e.target.value)}
+          className="mt-1 w-32 rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-3 py-2 font-mono outline-none focus:border-[var(--color-accent)]"
+        />
+      </label>
+
+      <label className="block">
+        <span className="text-xs text-[var(--color-fg-subtle)]">
+          Acceptance delay (seconds; 0 = no delay, 5 = default)
+        </span>
+        <input
+          type="number"
+          min={0}
+          max={60}
+          value={acceptDelaySec}
+          onChange={(e) => setAcceptDelaySec(e.target.value)}
           className="mt-1 w-32 rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-3 py-2 font-mono outline-none focus:border-[var(--color-accent)]"
         />
       </label>

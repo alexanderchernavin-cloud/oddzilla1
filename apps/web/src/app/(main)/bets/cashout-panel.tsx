@@ -5,7 +5,10 @@ import { fromMicro } from "@oddzilla/types/money";
 import type { CashoutQuote, TicketSummary } from "@oddzilla/types";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 
-const POLL_MS = 2000;
+// 5s cadence balances offer freshness against backend load. With 1000+
+// concurrent open tickets that's 200 quotes/s — comfortable for one
+// api container hitting Postgres on the same box.
+const POLL_MS = 5000;
 
 const REASON_COPY: Record<string, string> = {
   not_open: "Cashout is only available for open tickets.",
@@ -31,9 +34,21 @@ interface Props {
 export function CashoutPanel({ ticket, onCashedOut }: Props) {
   const [quote, setQuote] = useState<CashoutQuote | null>(null);
   const [accepting, setAccepting] = useState(false);
+  const [acceptingDeadlineMs, setAcceptingDeadlineMs] = useState<number | null>(
+    null,
+  );
+  const [now, setNow] = useState(() => Date.now());
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const cancelRef = useRef(false);
+
+  // Tick the clock once a second while the acceptance countdown is
+  // running, so the button label updates live.
+  useEffect(() => {
+    if (acceptingDeadlineMs === null) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [acceptingDeadlineMs]);
 
   useEffect(() => {
     cancelRef.current = false;
@@ -100,6 +115,10 @@ export function CashoutPanel({ ticket, onCashedOut }: Props) {
     if (!quote || !quote.quoteId || !quote.offerMicro) return;
     setAccepting(true);
     setError(null);
+    const delaySec = quote.acceptanceDelaySeconds ?? 0;
+    if (delaySec > 0) {
+      setAcceptingDeadlineMs(Date.now() + delaySec * 1000);
+    }
     try {
       const res = await clientApi<{
         ticketId: string;
@@ -115,9 +134,12 @@ export function CashoutPanel({ ticket, onCashedOut }: Props) {
       onCashedOut(res.ticketId, res.payoutMicro, res.cashedOutAt);
     } catch (e) {
       if (e instanceof ApiFetchError) {
-        if (e.body.error === "quote_expired" || e.body.error === "quote_amount_mismatch") {
+        if (
+          e.body.error === "quote_expired" ||
+          e.body.error === "quote_amount_mismatch" ||
+          e.body.error === "offer_drifted"
+        ) {
           setError("Offer changed. Refreshing…");
-          // Trigger refresh on the next tick.
           setQuote(null);
         } else {
           setError(e.body.message);
@@ -128,8 +150,14 @@ export function CashoutPanel({ ticket, onCashedOut }: Props) {
       setConfirming(false);
     } finally {
       setAccepting(false);
+      setAcceptingDeadlineMs(null);
     }
   }
+
+  const remainingSec =
+    acceptingDeadlineMs !== null
+      ? Math.max(0, Math.ceil((acceptingDeadlineMs - now) / 1000))
+      : 0;
 
   return (
     <div className="mt-3 rounded-md border border-[var(--color-accent)] bg-[var(--color-surface-2)] p-3">
@@ -169,7 +197,11 @@ export function CashoutPanel({ ticket, onCashedOut }: Props) {
                 disabled={accepting}
                 className="btn btn-primary text-xs"
               >
-                {accepting ? "…" : `Confirm ${offer} ${ticket.currency}`}
+                {accepting
+                  ? remainingSec > 0
+                    ? `Confirming… ${remainingSec}s`
+                    : "Confirming…"
+                  : `Confirm ${offer} ${ticket.currency}`}
               </button>
             </div>
           )}
