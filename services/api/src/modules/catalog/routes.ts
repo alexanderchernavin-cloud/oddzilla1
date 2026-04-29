@@ -346,6 +346,30 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .limit(1);
     if (!match) throw new NotFoundError("match_not_found", "match_not_found");
 
+    // Phantom-live trip wire. Oddin's integration broker sometimes leaves
+    // a match flagged `live` for hours (or, in extreme cases, years) after
+    // the real fixture is over — usually because we missed a
+    // match_status_change during a recovery gap. If a match still says
+    // `live` more than 6 h after its scheduled start, ask the feed
+    // ingester to re-fetch the fixture from REST. Feed-ingester dedupes
+    // per-URN so repeated detail-page hits don't hammer Oddin.
+    if (
+      match.status === "live" &&
+      match.providerUrn &&
+      match.scheduledAt &&
+      Date.now() - match.scheduledAt.getTime() > 6 * 60 * 60 * 1000
+    ) {
+      const urn = match.providerUrn;
+      void app.db
+        .execute(sql`SELECT pg_notify('fixture_refresh', ${urn})`)
+        .catch((err) => {
+          app.log.warn(
+            { err, urn },
+            "fixture_refresh notify failed",
+          );
+        });
+    }
+
     // Only active markets (status=1). Join against market_descriptions
     // so each row carries a human-readable name template, then expand
     // {specifier} placeholders at render time using the row's own
