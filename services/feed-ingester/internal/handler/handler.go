@@ -95,6 +95,9 @@ func Handle(ctx context.Context, d Deps, routingKey string, body []byte) error {
 	case oddinxml.KindFixtureChange:
 		return handleFixtureChange(ctx, d, body)
 
+	case oddinxml.KindMatchStatusChange:
+		return handleMatchStatusChange(ctx, d, body)
+
 	case oddinxml.KindBetStop:
 		return handleBetStop(ctx, d, body)
 
@@ -299,6 +302,68 @@ func handleFixtureChange(ctx context.Context, d Deps, body []byte) error {
 	return nil
 }
 
+// ─── match_status_change ──────────────────────────────────────────────────
+
+// handleMatchStatusChange flips matches.status when Oddin announces a
+// lifecycle transition (live → ended, etc.). The integration broker emits
+// these only sparsely — many matches end without one — so this handler is
+// a fast path; the periodic phantom-drain ticker catches the leftovers via
+// REST.
+//
+// Behaviour:
+//   - Unknown match URN → log and ack. The next odds_change/fixture_change
+//     will create the row via ResolveMatch.
+//   - Sport on blocklist → ack and bump cursor; we keep grandfathered rows
+//     but never react to their lifecycle messages.
+//   - Unknown numeric status → log and ack without overwriting status. We
+//     still cache the raw code on the row for traceability.
+func handleMatchStatusChange(ctx context.Context, d Deps, body []byte) error {
+	var msg oddinxml.MatchStatusChange
+	if err := xml.Unmarshal(body, &msg); err != nil {
+		d.Log.Warn().Err(err).Msg("match_status_change: unmarshal failed; dropping")
+		return nil
+	}
+
+	matchID, err := d.Resolver.ResolveMatch(ctx, automap.MatchContext{
+		MatchURN: msg.EventID,
+	}, body)
+	if err != nil {
+		if errors.Is(err, automap.ErrSportBlocked) {
+			if bumpErr := store.BumpAfterTs(ctx, d.Store.Pool(), afterTsKey(msg.Product), msg.Timestamp); bumpErr != nil {
+				d.Log.Warn().Err(bumpErr).Msg("bump after_ts failed on blocked-sport drop")
+			}
+			return nil
+		}
+		return fmt.Errorf("match_status_change: resolve %s: %w", msg.EventID, err)
+	}
+
+	newStatus := oddinxml.MapMatchStatusCode(msg.Status)
+	if newStatus == "" {
+		d.Log.Warn().
+			Str("match_urn", msg.EventID).
+			Int("oddin_code", msg.Status).
+			Msg("match_status_change: unknown status code; row left as-is")
+	} else {
+		if err := store.UpdateMatchStatus(ctx, d.Store.Pool(), matchID, newStatus); err != nil {
+			d.Log.Warn().Err(err).Int64("match_id", matchID).
+				Str("status", newStatus).Int("oddin_code", msg.Status).
+				Msg("match_status_change: status update failed")
+		} else {
+			d.Log.Info().
+				Str("match_urn", msg.EventID).
+				Int64("match_id", matchID).
+				Str("status", newStatus).
+				Int("oddin_code", msg.Status).
+				Msg("match_status_change: status applied")
+		}
+	}
+
+	if err := store.BumpAfterTs(ctx, d.Store.Pool(), afterTsKey(msg.Product), msg.Timestamp); err != nil {
+		d.Log.Warn().Err(err).Msg("bump after_ts failed")
+	}
+	return nil
+}
+
 // ─── bet_stop ─────────────────────────────────────────────────────────────
 
 // bet_stop suspends a whole group of markets for a match. For phase 3 we
@@ -490,6 +555,7 @@ func isMatchScopedKind(k oddinxml.MessageKind) bool {
 	switch k {
 	case oddinxml.KindOddsChange,
 		oddinxml.KindFixtureChange,
+		oddinxml.KindMatchStatusChange,
 		oddinxml.KindBetStop,
 		oddinxml.KindBetSettlement,
 		oddinxml.KindBetCancel,

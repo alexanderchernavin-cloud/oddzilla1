@@ -228,6 +228,14 @@ func main() {
 			// inside the listener prevents two concurrent drains from
 			// fighting for Oddin's REST budget.
 			go runPhantomDrainListener(ctx, pool, resolver, logger)
+			// Periodic auto-drain. Oddin emits match_status_change only
+			// sparsely so matches that end without one accumulate as
+			// status='live' phantoms; the REST-driven drain is the only
+			// authoritative cleanup. Going through pg_notify (rather
+			// than calling DrainPhantomLive directly) reuses the
+			// listener's single-flight mutex, so this ticker can never
+			// collide with a manual click on /admin/feed/recovery.
+			go runPhantomDrainTicker(ctx, pool, logger)
 		}
 	}
 
@@ -510,6 +518,35 @@ func listenPhantomDrainOnce(
 		}(hours)
 	}
 	return nil
+}
+
+// runPhantomDrainTicker fires pg_notify('phantom_drain', ...) every hour
+// so runPhantomDrainListener performs its REST-driven cleanup sweep.
+// Going through pg_notify (rather than calling DrainPhantomLive directly)
+// keeps a single mutex governing every code path that can drain — manual
+// admin click, periodic ticker, and the on-boot listener all share the
+// same single-flight guard.
+//
+// The cleanup itself paces at 5 RPS inside DrainPhantomLive, well under
+// Oddin's REST budget; running once per hour against a 6h age threshold
+// catches a typical match within ~2 ticks of its actual end time.
+func runPhantomDrainTicker(ctx context.Context, pool *pgxpool.Pool, log zerolog.Logger) {
+	const (
+		sweepEvery = 1 * time.Hour
+		payload    = `{"requestedBy":"ticker","hours":6}`
+	)
+	t := time.NewTicker(sweepEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if _, err := pool.Exec(ctx, `SELECT pg_notify('phantom_drain', $1)`, payload); err != nil {
+				log.Warn().Err(err).Msg("phantom_drain ticker: pg_notify failed")
+			}
+		}
+	}
 }
 
 // runFeedMessageCleanup sweeps the feed_messages table once per hour.

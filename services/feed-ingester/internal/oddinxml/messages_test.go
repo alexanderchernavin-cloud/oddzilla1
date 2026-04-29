@@ -19,6 +19,7 @@ func TestPeekKind(t *testing.T) {
 		{`<rollback_bet_cancel event_id="od:match:1"/>`, KindRollbackBetCancel},
 		{`<alive product="1" timestamp="1"/>`, KindAlive},
 		{`<snapshot_complete product="1" timestamp="1" request_id="1"/>`, KindSnapshotComplete},
+		{`<match_status_change event_id="od:match:1" product="2" timestamp="1" status="3"/>`, KindMatchStatusChange},
 	}
 	for _, c := range cases {
 		got, err := PeekKind([]byte(c.body))
@@ -99,6 +100,53 @@ func TestDecodeBetSettlement(t *testing.T) {
 	m := msg.Outcomes.Markets[1]
 	if m.ID != 4 || m.Specifiers != "map=1" || m.Outcomes[1].Result != "1" {
 		t.Fatalf("map winner: %#v", m)
+	}
+}
+
+func TestDecodeMatchStatusChange(t *testing.T) {
+	body := []byte(`<match_status_change event_id="od:match:2703003" product="2" timestamp="1777469038288" status="3"/>`)
+	var msg MatchStatusChange
+	if err := xml.Unmarshal(body, &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if msg.EventID != "od:match:2703003" {
+		t.Fatalf("event_id: %q", msg.EventID)
+	}
+	if msg.Product != 2 {
+		t.Fatalf("product: %d", msg.Product)
+	}
+	if msg.Timestamp != 1777469038288 {
+		t.Fatalf("timestamp: %d", msg.Timestamp)
+	}
+	if msg.Status != 3 {
+		t.Fatalf("status: %d", msg.Status)
+	}
+}
+
+func TestMapMatchStatusCode(t *testing.T) {
+	cases := []struct {
+		code int
+		want string
+	}{
+		{0, "not_started"},
+		{1, "live"},
+		{2, "suspended"},
+		{3, "closed"},  // Ended (awaiting confirm) — same destination as Closed
+		{4, "closed"},  // Closed (settlement complete)
+		{5, "cancelled"},
+		{6, "live"},     // Delayed, still expected to play
+		{7, "suspended"},
+		{8, "not_started"}, // Postponed → rescheduled later
+		{9, "cancelled"},
+		// Unknown codes leave the existing status untouched.
+		{42, ""},
+		{-1, ""},
+		{99, ""},
+	}
+	for _, c := range cases {
+		if got := MapMatchStatusCode(c.code); got != c.want {
+			t.Fatalf("code=%d: got %q, want %q", c.code, got, c.want)
+		}
 	}
 }
 

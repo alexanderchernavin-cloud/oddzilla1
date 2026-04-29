@@ -163,6 +163,7 @@ const (
 	KindRollbackBetCancel
 	KindAlive
 	KindSnapshotComplete
+	KindMatchStatusChange
 )
 
 func (k MessageKind) String() string {
@@ -185,6 +186,8 @@ func (k MessageKind) String() string {
 		return "alive"
 	case KindSnapshotComplete:
 		return "snapshot_complete"
+	case KindMatchStatusChange:
+		return "match_status_change"
 	default:
 		return "unknown"
 	}
@@ -220,6 +223,8 @@ func PeekKind(body []byte) (MessageKind, error) {
 				return KindAlive, nil
 			case "snapshot_complete":
 				return KindSnapshotComplete, nil
+			case "match_status_change":
+				return KindMatchStatusChange, nil
 			default:
 				return KindUnknown, fmt.Errorf("peek: unknown root element %q", se.Name.Local)
 			}
