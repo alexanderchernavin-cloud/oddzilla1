@@ -860,23 +860,15 @@ function ModeSelector({
 }
 
 function TippotTierTable({ tiers, stake }: { tiers: TippotTier[]; stake: number }) {
-  // The user-facing payout table for Tippot. Each row is one possible
-  // outcome of "exactly k of N legs win" with the multiplier the bettor
-  // accepts at placement and the projected payout for the current stake.
-  // Rows are highlighted by chance: tiers where P(>=k) is meaningfully
-  // above zero get full color; the long-shot top tiers fade.
+  // Bettor-facing payout table for Tippot. One row per possible outcome
+  // ("k of N legs win") with the projected payout for the current stake.
+  // Implied probability and the raw multiplier are intentionally hidden —
+  // the bettor accepts a payout schedule, not a probability quote.
   const N = tiers.length;
   const stakeOk = Number.isFinite(stake) && stake > 0;
   const fmtUsdt = (n: number): string => {
     if (!Number.isFinite(n) || n <= 0) return "—";
     return n.toFixed(2).replace(/\.?0+$/, "");
-  };
-  const fmtPct = (s: string): string => {
-    const n = Number(s);
-    if (!Number.isFinite(n)) return "—";
-    if (n >= 0.0001) return (n * 100).toFixed(n >= 0.1 ? 1 : 2) + "%";
-    if (n > 0) return (n * 100).toExponential(1) + "%";
-    return "0%";
   };
   return (
     <div
@@ -890,7 +882,7 @@ function TippotTierTable({ tiers, stake }: { tiers: TippotTier[]; stake: number 
         className="mono"
         style={{
           display: "grid",
-          gridTemplateColumns: "minmax(0,1fr) auto auto auto",
+          gridTemplateColumns: "minmax(0,1fr) auto",
           gap: 10,
           fontSize: 10,
           letterSpacing: "0.08em",
@@ -902,8 +894,6 @@ function TippotTierTable({ tiers, stake }: { tiers: TippotTier[]; stake: number 
         }}
       >
         <span>Wins</span>
-        <span style={{ textAlign: "right" }}>Chance</span>
-        <span style={{ textAlign: "right" }}>×</span>
         <span style={{ textAlign: "right" }}>Payout</span>
       </div>
       <div style={{ display: "flex", flexDirection: "column" }}>
@@ -911,16 +901,12 @@ function TippotTierTable({ tiers, stake }: { tiers: TippotTier[]; stake: number 
           const m = Number(t.multiplier);
           const payout = stakeOk ? stake * m : 0;
           const isTop = t.k === N;
-          // Row dim level — long-shot top tier should still draw the eye
-          // but the small-k rows are the realistic outcomes. Keep all
-          // rows at full opacity so the user can read the contract; vary
-          // weight + color instead.
           return (
             <div
               key={t.k}
               style={{
                 display: "grid",
-                gridTemplateColumns: "minmax(0,1fr) auto auto auto",
+                gridTemplateColumns: "minmax(0,1fr) auto",
                 alignItems: "baseline",
                 gap: 10,
                 padding: "8px 12px",
@@ -956,18 +942,6 @@ function TippotTierTable({ tiers, stake }: { tiers: TippotTier[]; stake: number 
                     Top
                   </span>
                 )}
-              </span>
-              <span
-                className="mono tnum"
-                style={{ textAlign: "right", color: "var(--fg-dim)", fontSize: 11.5 }}
-              >
-                {fmtPct(t.pAtLeastK)}
-              </span>
-              <span
-                className="mono tnum"
-                style={{ textAlign: "right", color: "var(--fg-muted)" }}
-              >
-                ×{t.multiplier}
               </span>
               <span
                 className="mono tnum"
