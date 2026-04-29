@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -193,6 +194,11 @@ func main() {
 			// there can be hundreds of URNs — a fresh boot with no
 			// cache shouldn't hold up the main AMQP loop.
 			go backfillCompetitorProfiles(ctx, resolver, st, logger)
+			// LISTEN on fixture_refresh so the API can ask us to re-pull
+			// a single fixture from REST when it spots a phantom-live
+			// match (status='live' long after scheduled start). Per-URN
+			// cooldown lives inside the listener.
+			go runFixtureRefreshListener(ctx, pool, resolver, logger)
 		}
 	}
 
@@ -317,6 +323,80 @@ func listenRecoveryOnce(ctx context.Context, pool *pgxpool.Pool, deps handler.De
 		}
 		log.Info().Str("payload", n.Payload).Msg("feed_recovery notification received")
 		handler.TriggerRecovery(ctx, deps, log)
+	}
+	return nil
+}
+
+// runFixtureRefreshListener subscribes to Postgres notifications on the
+// `fixture_refresh` channel. Each NOTIFY's payload is a single match
+// URN (e.g. "od:match:12345"); we re-fetch its fixture from Oddin's REST
+// and let RefreshFromFixture overwrite matches.status. Used by the API
+// to clear stuck-live matches that never received a match_status_change
+// (typically because we missed it during a recovery gap).
+//
+// Per-URN cooldown of 5 minutes prevents a popular phantom-live match
+// from hammering Oddin's REST endpoint when many users hit the detail
+// page in rapid succession.
+func runFixtureRefreshListener(ctx context.Context, pool *pgxpool.Pool, res *automap.Resolver, log zerolog.Logger) {
+	var lastFired sync.Map // map[string]time.Time
+	const cooldown = 5 * time.Minute
+
+	for ctx.Err() == nil {
+		if err := listenFixtureRefreshOnce(ctx, pool, res, &lastFired, cooldown, log); err != nil && !errors.Is(err, context.Canceled) {
+			log.Warn().Err(err).Msg("fixture_refresh LISTEN errored; reconnecting in 2s")
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(2 * time.Second):
+			}
+		}
+	}
+}
+
+func listenFixtureRefreshOnce(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	res *automap.Resolver,
+	lastFired *sync.Map,
+	cooldown time.Duration,
+	log zerolog.Logger,
+) error {
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, "LISTEN fixture_refresh"); err != nil {
+		return err
+	}
+	log.Info().Msg("listening on fixture_refresh channel")
+	for ctx.Err() == nil {
+		n, err := conn.Conn().WaitForNotification(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return err
+		}
+		if n == nil {
+			continue
+		}
+		urn := n.Payload
+		if urn == "" {
+			continue
+		}
+		if t, ok := lastFired.Load(urn); ok {
+			if since := time.Since(t.(time.Time)); since < cooldown {
+				log.Debug().Str("urn", urn).Dur("since", since).
+					Msg("fixture_refresh dedupe (cooldown)")
+				continue
+			}
+		}
+		lastFired.Store(urn, time.Now())
+		log.Info().Str("urn", urn).Msg("fixture_refresh: re-fetching from REST")
+		if err := res.RefreshFromFixture(ctx, urn); err != nil {
+			log.Warn().Err(err).Str("urn", urn).Msg("fixture_refresh failed")
+		}
 	}
 	return nil
 }
