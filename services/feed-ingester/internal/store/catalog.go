@@ -164,6 +164,35 @@ SELECT id, provider_urn
 	return out, rows.Err()
 }
 
+// PhantomLiveMatchURNs returns provider URNs of matches still flagged
+// `live` more than `ageHours` after their scheduled start. These are
+// matches whose match_status_change message we missed (typically during
+// a recovery gap after a postgres outage); the drain tool re-pulls the
+// fixture from REST so the row's status reflects reality.
+func PhantomLiveMatchURNs(ctx context.Context, db pgxRunner, ageHours int) ([]string, error) {
+	rows, err := db.Query(ctx, `
+SELECT provider_urn
+  FROM matches
+ WHERE status = 'live'
+   AND scheduled_at IS NOT NULL
+   AND scheduled_at < NOW() - make_interval(hours => $1)
+   AND provider_urn LIKE 'od:match:%'
+ ORDER BY scheduled_at`, ageHours)
+	if err != nil {
+		return nil, fmt.Errorf("select phantom-live matches: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var urn string
+		if err := rows.Scan(&urn); err != nil {
+			return nil, fmt.Errorf("scan phantom-live urn: %w", err)
+		}
+		out = append(out, urn)
+	}
+	return out, rows.Err()
+}
+
 // FindSportBySlug returns the sport id (or 0 if not found).
 func FindSportBySlug(ctx context.Context, db pgxRunner, slug string) (int, bool, error) {
 	var id int
