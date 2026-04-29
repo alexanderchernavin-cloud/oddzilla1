@@ -297,6 +297,10 @@ type TicketForSettle struct {
 	BetType              string
 	StakeMicro           int64
 	PotentialPayoutMicro int64
+	// Raw bet_meta JSONB. NULL for single/combo, populated for tiple/tippot
+	// with the schedule frozen at placement. Settlement parses it
+	// per-bet-type — see services/settlement/internal/settler/payout.go.
+	BetMetaJSON []byte
 }
 
 // LoadTicketForSettle FOR UPDATEs the ticket row inside the caller's tx.
@@ -304,11 +308,11 @@ type TicketForSettle struct {
 func LoadTicketForSettle(ctx context.Context, tx pgx.Tx, ticketID string) (TicketForSettle, bool, error) {
 	var t TicketForSettle
 	err := tx.QueryRow(ctx, `
-SELECT id, user_id, currency, status::text, bet_type::text, stake_micro, potential_payout_micro
+SELECT id, user_id, currency, status::text, bet_type::text, stake_micro, potential_payout_micro, bet_meta
   FROM tickets
  WHERE id = $1
    FOR UPDATE SKIP LOCKED`, ticketID).Scan(
-		&t.ID, &t.UserID, &t.Currency, &t.Status, &t.BetType, &t.StakeMicro, &t.PotentialPayoutMicro,
+		&t.ID, &t.UserID, &t.Currency, &t.Status, &t.BetType, &t.StakeMicro, &t.PotentialPayoutMicro, &t.BetMetaJSON,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -334,9 +338,10 @@ SELECT COUNT(*)
 
 // SelectionResult carries enough to compute payout.
 type SelectionResult struct {
-	OddsAtPlacement string
-	Result          string
-	VoidFactor      string // may be empty
+	OddsAtPlacement        string
+	ProbabilityAtPlacement string // may be empty (single/combo, or pre-Tiple data)
+	Result                 string
+	VoidFactor             string // may be empty
 }
 
 // ResolvedSelections returns each selection's oddsAtPlacement + result.
@@ -344,6 +349,7 @@ type SelectionResult struct {
 func ResolvedSelections(ctx context.Context, tx pgx.Tx, ticketID string) ([]SelectionResult, error) {
 	rows, err := tx.Query(ctx, `
 SELECT odds_at_placement::text,
+       COALESCE(probability_at_placement::text, ''),
        COALESCE(result::text, ''),
        COALESCE(void_factor::text, '')
   FROM ticket_selections
@@ -355,7 +361,7 @@ SELECT odds_at_placement::text,
 	out := make([]SelectionResult, 0, 4)
 	for rows.Next() {
 		var s SelectionResult
-		if err := rows.Scan(&s.OddsAtPlacement, &s.Result, &s.VoidFactor); err != nil {
+		if err := rows.Scan(&s.OddsAtPlacement, &s.ProbabilityAtPlacement, &s.Result, &s.VoidFactor); err != nil {
 			return nil, err
 		}
 		out = append(out, s)

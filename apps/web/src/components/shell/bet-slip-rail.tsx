@@ -5,13 +5,25 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { toMicro } from "@oddzilla/types/money";
 import { SUPPORTED_CURRENCIES, type Currency } from "@oddzilla/types/currencies";
-import { useBetSlip } from "@/lib/bet-slip";
+import {
+  parseProbability,
+  priceTiple,
+  priceTippot,
+  type TippotTier,
+} from "@oddzilla/types";
+import { useBetSlip, type SlipMode } from "@/lib/bet-slip";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { I } from "@/components/ui/icons";
 import { Button } from "@/components/ui/primitives";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { useMobileDrawers } from "./mobile-drawer-context";
 import type { SlipSelection } from "@oddzilla/types";
+
+// Default product margins; the server uses bet_product_config so these
+// are only for the client-side preview. The actual offered odds at
+// placement come from the server. 1500 bp = 15%.
+const PREVIEW_TIPLE_MARGIN_BP = 1500;
+const PREVIEW_TIPPOT_MARGIN_BP = 1500;
 
 export function BetSlipRail() {
   const slip = useBetSlip();
@@ -32,19 +44,71 @@ export function BetSlipRail() {
     }
   }, [selections.length, placedTicketId]);
 
+  // Effective product mode. Single is forced when there's only one
+  // selection regardless of last-stored mode. tiple/tippot need ≥2.
+  const effectiveMode: SlipMode = useMemo(() => {
+    if (selections.length <= 1) return "single";
+    if (slip.mode === "single") return "combo";
+    return slip.mode;
+  }, [selections.length, slip.mode]);
+
   // Combined odds = product of all selection odds (combo accumulator).
-  // With a single selection, this degrades to that selection's odds —
-  // the rail renders the same way for singles and combos.
+  // Used for single + combo display.
   const combinedOdds = useMemo(() => {
     if (selections.length === 0) return 0;
     return selections.reduce((acc, s) => acc * Number(s.odds || 0), 1);
   }, [selections]);
 
+  // Tiple/Tippot quotes — only computable when every selection carries a
+  // probability. Server prices authoritatively at placement; this is
+  // strictly preview.
+  const probabilityArr = useMemo<number[] | null>(() => {
+    if (selections.length < 2) return null;
+    const out: number[] = [];
+    for (const s of selections) {
+      if (!s.probability) return null;
+      try {
+        const p = parseProbability(s.probability);
+        if (!(p > 0 && p < 1)) return null;
+        out.push(p);
+      } catch {
+        return null;
+      }
+    }
+    return out;
+  }, [selections]);
+
+  const tipleQuote = useMemo(() => {
+    if (effectiveMode !== "tiple" || !probabilityArr) return null;
+    try {
+      return priceTiple(probabilityArr, PREVIEW_TIPLE_MARGIN_BP);
+    } catch {
+      return null;
+    }
+  }, [effectiveMode, probabilityArr]);
+
+  const tippotQuote = useMemo(() => {
+    if (effectiveMode !== "tippot" || !probabilityArr) return null;
+    try {
+      return priceTippot(probabilityArr, PREVIEW_TIPPOT_MARGIN_BP);
+    } catch {
+      return null;
+    }
+  }, [effectiveMode, probabilityArr]);
+
   const potentialReturn = useMemo(() => {
     const stake = Number(stakeInput);
-    if (!Number.isFinite(stake) || stake <= 0 || combinedOdds <= 0) return 0;
+    if (!Number.isFinite(stake) || stake <= 0) return 0;
+    if (effectiveMode === "tiple" && tipleQuote) {
+      return stake * Number(tipleQuote.offeredOdds);
+    }
+    if (effectiveMode === "tippot" && tippotQuote) {
+      const top = tippotQuote.tiers[tippotQuote.tiers.length - 1];
+      return top ? stake * Number(top.multiplier) : 0;
+    }
+    if (combinedOdds <= 0) return 0;
     return stake * combinedOdds;
-  }, [stakeInput, combinedOdds]);
+  }, [stakeInput, combinedOdds, effectiveMode, tipleQuote, tippotQuote]);
 
   // Show a whole-number amount without trailing ".00"; keep up to
   // 2 decimals otherwise, trimming trailing zeros (e.g. "14.5" not "14.50").
@@ -53,7 +117,11 @@ export function BetSlipRail() {
     return n.toFixed(2).replace(/\.?0+$/, "");
   };
 
-  const isCombo = selections.length >= 2;
+  const isCombo = effectiveMode === "combo";
+  const isTiple = effectiveMode === "tiple";
+  const isTippot = effectiveMode === "tippot";
+  const isMulti = selections.length >= 2;
+  const productPriceMissing = (isTiple || isTippot) && probabilityArr === null;
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -85,6 +153,9 @@ export function BetSlipRail() {
             stakeMicro,
             idempotencyKey,
             currency,
+            // Send explicit betType so the server knows to apply tiple/
+            // tippot pricing — without this, ≥2 legs default to "combo".
+            betType: effectiveMode,
             selections: selections.map((s) => ({
               marketId: s.marketId,
               outcomeId: s.outcomeId,
@@ -142,16 +213,18 @@ export function BetSlipRail() {
             style={{
               fontSize: 10.5,
               padding: "2px 8px",
-              background: isCombo ? "var(--fg)" : "var(--surface-2)",
-              color: isCombo ? "var(--bg)" : "var(--fg-muted)",
-              border: isCombo ? "1px solid var(--fg)" : "1px solid var(--border)",
+              background: isMulti ? "var(--fg)" : "var(--surface-2)",
+              color: isMulti ? "var(--bg)" : "var(--fg-muted)",
+              border: isMulti ? "1px solid var(--fg)" : "1px solid var(--border)",
               borderRadius: 999,
               letterSpacing: "0.08em",
               textTransform: "uppercase",
               fontWeight: 600,
             }}
           >
-            {isCombo ? `Combo · ${selections.length}` : "Single"}
+            {effectiveMode === "single"
+              ? "Single"
+              : `${effectiveMode} · ${selections.length}`}
           </span>
         )}
         <div style={{ flex: 1 }} />
@@ -312,6 +385,14 @@ export function BetSlipRail() {
             gap: 12,
           }}
         >
+          {isMulti && (
+            <ModeSelector
+              mode={effectiveMode}
+              n={selections.length}
+              onChange={(m) => slip.setMode(m)}
+            />
+          )}
+
           {isCombo && (
             <div
               style={{
@@ -333,6 +414,45 @@ export function BetSlipRail() {
             value={currency}
             onChange={(c) => slip.setCurrency(c)}
           />
+
+          {isTiple && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                justifyContent: "space-between",
+                fontSize: 12,
+                color: "var(--fg-muted)",
+              }}
+            >
+              <span>Tiple · any leg wins</span>
+              <span className="mono tnum" style={{ fontSize: 14, fontWeight: 600, color: "var(--fg)" }}>
+                {tipleQuote ? tipleQuote.offeredOdds : "—"}
+              </span>
+            </div>
+          )}
+
+          {isTippot && tippotQuote && (
+            <TippotTierTable tiers={tippotQuote.tiers} stake={Number(stakeInput)} />
+          )}
+
+          {productPriceMissing && (
+            <div
+              role="status"
+              style={{
+                fontSize: 11,
+                color: "var(--fg-muted)",
+                lineHeight: 1.45,
+                background: "var(--surface-2)",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                padding: "8px 10px",
+              }}
+            >
+              Pricing computed at submit — one or more selections is missing
+              its implied probability.
+            </div>
+          )}
 
           <div
             style={{
@@ -454,7 +574,15 @@ export function BetSlipRail() {
             disabled={submitting}
             style={{ width: "100%" }}
           >
-            {submitting ? "Placing…" : isCombo ? "Place combo" : "Place bet"}
+            {submitting
+              ? "Placing…"
+              : isTiple
+                ? "Place Tiple"
+                : isTippot
+                  ? "Place Tippot"
+                  : isCombo
+                    ? "Place combo"
+                    : "Place bet"}
           </Button>
 
           <div style={{ fontSize: 11, color: "var(--fg-dim)", textAlign: "center" }}>
@@ -632,8 +760,233 @@ function mapError(err: ApiFetchError): string {
     case "idempotency_key_collision":
       return "Please retry — collision on submission id.";
     case "combo_same_match":
-      return "Combos can't include two markets from the same match.";
+      return "This product can't include two markets from the same match.";
+    case "outcome_no_probability":
+    case "outcome_probability_invalid":
+    case "outcome_probability_extreme":
+      return "One of your selections has no implied probability. Try a different market.";
+    case "too_few_legs":
+      return "Add more selections to use this product.";
+    case "too_many_legs":
+      return "Too many selections for this product.";
+    case "tiple_odds_too_low":
+      return "Your Tiple is too likely — pick longer-shot selections.";
+    case "bet_product_disabled":
+      return "This product is currently disabled.";
+    case "bet_product_unconfigured":
+      return "This product isn't configured yet — try Single or Combo.";
+    case "multi_leg_required":
+      return "This product needs at least 2 selections.";
+    case "single_requires_one_leg":
+      return "Single accepts only one selection — switch mode for combos.";
     default:
       return err.body.message || "Placement failed.";
   }
+}
+
+function ModeSelector({
+  mode,
+  n,
+  onChange,
+}: {
+  mode: SlipMode;
+  n: number;
+  onChange: (m: SlipMode) => void;
+}) {
+  // tippot defaults to ≥3 legs at the server; offer the toggle anyway
+  // and let the server reject with a clear error if min_legs is unmet.
+  const opts: Array<{ id: SlipMode; label: string; disabled?: boolean }> = [
+    { id: "combo", label: "Combo" },
+    { id: "tiple", label: "Tiple" },
+    { id: "tippot", label: "Tippot", disabled: n < 3 },
+  ];
+  return (
+    <div
+      role="tablist"
+      style={{
+        display: "flex",
+        gap: 4,
+        padding: 3,
+        background: "var(--surface-2)",
+        border: "1px solid var(--border)",
+        borderRadius: 999,
+      }}
+    >
+      {opts.map((o) => {
+        const active = mode === o.id;
+        return (
+          <button
+            key={o.id}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            disabled={o.disabled}
+            onClick={() => onChange(o.id)}
+            className="mono"
+            style={{
+              flex: 1,
+              padding: "5px 10px",
+              fontSize: 11,
+              fontWeight: 600,
+              letterSpacing: "0.06em",
+              textTransform: "uppercase",
+              background: active ? "var(--fg)" : "transparent",
+              color: active
+                ? "var(--bg)"
+                : o.disabled
+                  ? "var(--fg-dim)"
+                  : "var(--fg-muted)",
+              border: 0,
+              borderRadius: 999,
+              cursor: o.disabled ? "not-allowed" : "pointer",
+              fontFamily: "var(--font-mono)",
+            }}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function TippotTierTable({ tiers, stake }: { tiers: TippotTier[]; stake: number }) {
+  // The user-facing payout table for Tippot. Each row is one possible
+  // outcome of "exactly k of N legs win" with the multiplier the bettor
+  // accepts at placement and the projected payout for the current stake.
+  // Rows are highlighted by chance: tiers where P(>=k) is meaningfully
+  // above zero get full color; the long-shot top tiers fade.
+  const N = tiers.length;
+  const stakeOk = Number.isFinite(stake) && stake > 0;
+  const fmtUsdt = (n: number): string => {
+    if (!Number.isFinite(n) || n <= 0) return "—";
+    return n.toFixed(2).replace(/\.?0+$/, "");
+  };
+  const fmtPct = (s: string): string => {
+    const n = Number(s);
+    if (!Number.isFinite(n)) return "—";
+    if (n >= 0.0001) return (n * 100).toFixed(n >= 0.1 ? 1 : 2) + "%";
+    if (n > 0) return (n * 100).toExponential(1) + "%";
+    return "0%";
+  };
+  return (
+    <div
+      style={{
+        border: "1px solid var(--border)",
+        borderRadius: 10,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        className="mono"
+        style={{
+          display: "grid",
+          gridTemplateColumns: "minmax(0,1fr) auto auto auto",
+          gap: 10,
+          fontSize: 10,
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+          color: "var(--fg-muted)",
+          padding: "8px 12px",
+          background: "var(--surface-2)",
+          borderBottom: "1px solid var(--border)",
+        }}
+      >
+        <span>Wins</span>
+        <span style={{ textAlign: "right" }}>Chance</span>
+        <span style={{ textAlign: "right" }}>×</span>
+        <span style={{ textAlign: "right" }}>Payout</span>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        {tiers.map((t, i) => {
+          const m = Number(t.multiplier);
+          const payout = stakeOk ? stake * m : 0;
+          const isTop = t.k === N;
+          // Row dim level — long-shot top tier should still draw the eye
+          // but the small-k rows are the realistic outcomes. Keep all
+          // rows at full opacity so the user can read the contract; vary
+          // weight + color instead.
+          return (
+            <div
+              key={t.k}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "minmax(0,1fr) auto auto auto",
+                alignItems: "baseline",
+                gap: 10,
+                padding: "8px 12px",
+                fontSize: 12.5,
+                borderTop: i === 0 ? 0 : "1px dashed var(--border)",
+                background: isTop
+                  ? "color-mix(in oklab, var(--positive) 6%, transparent)"
+                  : "transparent",
+              }}
+            >
+              <span style={{ color: "var(--fg)", display: "flex", alignItems: "baseline", gap: 6 }}>
+                <span
+                  className="mono tnum"
+                  style={{ fontWeight: 600, fontSize: 13, minWidth: 18, textAlign: "right" }}
+                >
+                  {t.k}
+                </span>
+                <span style={{ color: "var(--fg-muted)", fontSize: 11.5 }}>
+                  of {N}
+                </span>
+                {isTop && (
+                  <span
+                    className="mono"
+                    style={{
+                      fontSize: 9,
+                      letterSpacing: "0.08em",
+                      textTransform: "uppercase",
+                      color: "var(--positive)",
+                      fontWeight: 700,
+                      marginLeft: 2,
+                    }}
+                  >
+                    Top
+                  </span>
+                )}
+              </span>
+              <span
+                className="mono tnum"
+                style={{ textAlign: "right", color: "var(--fg-dim)", fontSize: 11.5 }}
+              >
+                {fmtPct(t.pAtLeastK)}
+              </span>
+              <span
+                className="mono tnum"
+                style={{ textAlign: "right", color: "var(--fg-muted)" }}
+              >
+                ×{t.multiplier}
+              </span>
+              <span
+                className="mono tnum"
+                style={{
+                  textAlign: "right",
+                  fontWeight: isTop ? 700 : 600,
+                  color: isTop ? "var(--positive)" : "var(--fg)",
+                }}
+              >
+                {fmtUsdt(payout)}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      <div
+        style={{
+          padding: "6px 12px 8px",
+          fontSize: 10,
+          color: "var(--fg-dim)",
+          background: "var(--surface-2)",
+          borderTop: "1px solid var(--border)",
+          lineHeight: 1.45,
+        }}
+      >
+        Locked at placement. Voids drop legs; payout uses the row matching
+        the count of winning legs in the remainder.
+      </div>
+    </div>
+  );
 }

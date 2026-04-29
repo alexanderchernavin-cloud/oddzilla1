@@ -10,6 +10,10 @@ export interface MarketOutcome {
   name: string; // rendered by the API (home→homeTeam, "2:1", "Over", …)
   rawName: string;
   publishedOdds: string | null;
+  // Implied probability from the Oddin feed; carried into the bet slip
+  // so the rail can preview Tiple/Tippot pricing locally. Server still
+  // re-reads this at placement.
+  probability: string | null;
   active: boolean;
 }
 
@@ -494,6 +498,7 @@ function toggle(
       marketId: m.id,
       outcomeId: o.outcomeId,
       odds: o.publishedOdds,
+      probability: o.probability ?? undefined,
       homeTeam: match.homeTeam,
       awayTeam: match.awayTeam,
       marketLabel: m.name,

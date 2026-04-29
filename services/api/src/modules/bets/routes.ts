@@ -14,6 +14,9 @@ const placeBody = z.object({
   stakeMicro: z.string().regex(/^\d+$/, "stake must be a positive integer string"),
   idempotencyKey: z.string().min(8).max(64),
   currency: z.enum(SUPPORTED_CURRENCIES).optional(),
+  // Optional explicit product. Server still validates leg-count against
+  // bet_product_config (tiple ≥ 2, tippot ≥ 3) — see service.place().
+  betType: z.enum(["single", "combo", "tiple", "tippot"]).optional(),
   selections: z
     .array(
       z.object({
@@ -23,7 +26,7 @@ const placeBody = z.object({
       }),
     )
     .min(1)
-    .max(20),
+    .max(30), // tippot allows up to 30; cascade limit enforced server-side
 });
 
 const listQuery = z.object({

@@ -1,9 +1,11 @@
 "use client";
 
 // Bet slip store — React Context + localStorage persistence. Accumulates
-// selections across matches. Two placement modes:
+// selections across matches. Four placement modes:
 //   single: place N independent tickets (one per selection)
-//   combo:  place one multi-selection ticket (all must win)
+//   combo:  place one multi-selection ticket (all legs must win)
+//   tiple:  place one ticket that wins if at least one leg wins
+//   tippot: place one ticket whose payout depends on the # of winning legs
 //
 // Per-match rule: only one outcome per match at a time. Picking another
 // market or outcome from the same match replaces the previous selection
@@ -28,7 +30,9 @@ const STORAGE_KEY = "oddzilla.betslip.v2";
 // out-of-the-box without on-chain top-up.
 const DEFAULT_SLIP_CURRENCY: Currency = "OZ";
 
-export type SlipMode = "single" | "combo";
+export type SlipMode = "single" | "combo" | "tiple" | "tippot";
+
+const ALL_MODES: SlipMode[] = ["single", "combo", "tiple", "tippot"];
 
 interface SlipState {
   selections: SlipSelection[];
@@ -69,7 +73,9 @@ function loadFromStorage(): SlipState {
       };
     }
     const parsed = JSON.parse(raw) as Partial<SlipState>;
-    const mode: SlipMode = parsed.mode === "single" ? "single" : "combo";
+    const mode: SlipMode = ALL_MODES.includes(parsed.mode as SlipMode)
+      ? (parsed.mode as SlipMode)
+      : "combo";
     const currency: Currency = isCurrency(parsed.currency)
       ? parsed.currency
       : DEFAULT_SLIP_CURRENCY;

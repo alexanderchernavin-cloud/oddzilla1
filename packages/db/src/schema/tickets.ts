@@ -12,6 +12,7 @@ import {
   unique,
   index,
   check,
+  jsonb,
 } from "drizzle-orm/pg-core";
 import { ticketStatusEnum, betTypeEnum, outcomeResultEnum } from "../enums.js";
 import { users } from "./users.js";
@@ -38,6 +39,7 @@ export const tickets = pgTable(
     settledAt: timestamp({ withTimezone: true }),
     clientIp: inet(),
     userAgent: text(),
+    betMeta: jsonb(),
   },
   (t) => [
     check("tickets_stake_pos", sql`${t.stakeMicro} > 0`),

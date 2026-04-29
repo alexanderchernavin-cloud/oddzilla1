@@ -120,6 +120,13 @@
       "when": 1700000016000,
       "tag": "0016_cashout_acceptance_delay",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1700000017000,
+      "tag": "0017_tiple_tippot",
+      "breakpoints": true
     }
   ]
 }

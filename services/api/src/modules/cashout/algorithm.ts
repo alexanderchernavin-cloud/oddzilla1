@@ -23,7 +23,7 @@
 // down to the nearest micro and then capped at potentialPayout so we
 // never offer more than the win.
 
-import type { CashoutLadderStep, CashoutUnavailableReason } from "@oddzilla/types";
+import type { BetType, CashoutLadderStep, CashoutUnavailableReason } from "@oddzilla/types";
 
 export interface LegInput {
   /** Decimal odds at placement (the price the user got). */
@@ -55,7 +55,10 @@ export interface LegInput {
 }
 
 export interface ComputeInput {
-  betType: "single" | "combo" | "system";
+  // Accepts the full BetType union — tiple/tippot are rejected up-front
+  // with reason "bet_type_unsupported"; single/combo/system flow through
+  // the simple-cashout math.
+  betType: BetType;
   stakeMicro: bigint;
   potentialPayoutMicro: bigint;
   placedAtMs: number;
@@ -85,6 +88,12 @@ export interface ComputeOutput {
 export function compute(input: ComputeInput): ComputeOutput {
   if (!input.config.enabled) {
     return blank("feature_disabled");
+  }
+  // Tiple/Tippot products have probability-driven payout schedules that
+  // don't reduce to stake × ticketOdds × Π(prob). Until they get their
+  // own cashout engine, refuse to quote.
+  if (input.betType === "tiple" || input.betType === "tippot") {
+    return blank("bet_type_unsupported");
   }
 
   // Check for prematch full-stake window first. If we're inside the
