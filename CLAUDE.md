@@ -153,7 +153,7 @@ These rules are load-bearing. Breaking them causes money or data loss.
 
 | Concern | Path |
 | --- | --- |
-| SQL migrations | [`packages/db/migrations/`](./packages/db/migrations/) — `0000_init`, `0001_odds_history_partitions`, `0002_chain_scanner_state`, `0003_drop_news_articles`, `0004_unclassified_sport`, `0005_merge_duplicate_sports`, `0006_market_descriptions`, `0007_purge_non_mvp_sports` (superseded by 0012), `0008_competitors` (teams as first-class per-sport entities), `0010_odds_config_global_unique`, `0011_feed_messages`, `0012_reactivate_non_bot_sports` (re-enables every non-bot sport after the product opened past the 4-MVP scope) |
+| SQL migrations | [`packages/db/migrations/`](./packages/db/migrations/) — `0000_init`, `0001_odds_history_partitions`, `0002_chain_scanner_state`, `0003_drop_news_articles`, `0004_unclassified_sport`, `0005_merge_duplicate_sports`, `0006_market_descriptions`, `0007_purge_non_mvp_sports` (superseded by 0012), `0008_competitors` (teams as first-class per-sport entities), `0010_odds_config_global_unique`, `0011_feed_messages` (raw AMQP message log keyed to match for the `/admin/logs` panel; retention = `match.scheduled_at + 24h`, hard 48h cap on unmapped URNs), `0012_reactivate_non_bot_sports` (re-enables every non-bot sport after the product opened past the 4-MVP scope) |
 | Drizzle schema | [`packages/db/src/schema/`](./packages/db/src/schema/) |
 | Seed script | [`packages/db/src/seed.ts`](./packages/db/src/seed.ts) — seed sport URNs are `od:sport:{3,2,1,13}` matching real Oddin feed (do NOT revert to synthetic `od:sport:cs2` etc. — it breaks auto-mapping) |
 | Money helpers | [`packages/types/src/money.ts`](./packages/types/src/money.ts) |
@@ -163,7 +163,7 @@ These rules are load-bearing. Breaking them causes money or data loss.
 | Auth helpers (argon2id + JOSE JWT) | [`packages/auth/src/`](./packages/auth/src/) |
 | Env parsing (zod) | [`packages/config/src/env.ts`](./packages/config/src/env.ts) |
 | API plugins (db, redis, auth) | [`services/api/src/plugins/`](./services/api/src/plugins/) |
-| API route modules | [`services/api/src/modules/`](./services/api/src/modules/) — `auth`, `users`, `wallet`, `bets`, `catalog`, `admin/{routes,odds-config,tickets,withdrawals,dashboard,users,audit}` |
+| API route modules | [`services/api/src/modules/`](./services/api/src/modules/) — `auth`, `users`, `wallet`, `bets`, `catalog`, `admin/{routes,odds-config,tickets,withdrawals,dashboard,users,audit,feed,logs}`. `users` accepts `?roles=admin,support` (CSV) for the Admin user-management view. `logs` powers the sport→tournament→match browser with per-match odds-history + raw feed-message endpoints. |
 | HD wallet derivation (TS, address-only) | [`services/api/src/lib/hdwallet.ts`](./services/api/src/lib/hdwallet.ts) |
 | Oddin XML structs (Go) | `services/feed-ingester/internal/oddinxml/` (msg + fixture decoders; also duplicated in `services/settlement/internal/oddinxml/`) |
 | Oddin REST client (Go) | `services/feed-ingester/internal/oddinrest/` — `WhoAmI`, `Fixtures`, `SportEventFixture`, `Sports`, `SnapshotRecovery`, `InitiateRecovery` |
@@ -183,7 +183,7 @@ These rules are load-bearing. Breaking them causes money or data loss.
 | Browser API/WS clients | [`apps/web/src/lib/api-client.ts`](./apps/web/src/lib/api-client.ts) (empty `NEXT_PUBLIC_API_URL` → `/api` prefix; in dev set `.env.local`), [`ws-client.ts`](./apps/web/src/lib/ws-client.ts) (empty `NEXT_PUBLIC_WS_URL` → `wss://<host>/ws`) |
 | Design tokens + Tailwind @theme bridge | [`apps/web/src/app/globals.css`](./apps/web/src/app/globals.css) |
 | Route groups | `apps/web/src/app/{(main),(auth)}/` — `(main)` shares the shell, `(auth)` = login/signup, `admin/*` outside both |
-| Admin pages (web) | [`apps/web/src/app/admin/`](./apps/web/src/app/admin/) — `page.tsx` (PnL dashboard), `users/[id]`, `audit`, `mapping`, `margins`, `withdrawals`. Not yet reskinned; uses legacy `--color-*` tokens mapped in `@theme`. |
+| Admin pages (web) | [`apps/web/src/app/admin/`](./apps/web/src/app/admin/) — `page.tsx` (PnL dashboard), `users` (Bettor user management — pinned to `role=user`), `users/[id]` (edit; breadcrumb routes back to Bettors or Admins per role), `admins` (Admin user management — admin + support, with an admin-mode `CreateUserForm`), `logs` (sport→tournament→match browser with inline SVG odds-history charts and a raw AMQP feed viewer per match), `audit`, `mapping`, `margins`, `withdrawals`, `feed` (recovery controls). Not yet reskinned; uses legacy `--color-*` tokens mapped in `@theme`. |
 | Server access | [`CONNECT.md`](./CONNECT.md) |
 | GitHub repo | https://github.com/alexanderchernavin-cloud/oddzilla1 (private) |
 | Production server | `team@178.104.174.24` (Hetzner CPX22, Ubuntu 24.04). Repo lives at `/home/team/oddzilla`. Docker 29 + pnpm 9.12 + Node 22 installed. |
@@ -271,7 +271,9 @@ post-Phase-8 Oddin-workflow hardening pass; production stack is live at
 | Admin: tickets list + manual void | Live | `/admin/tickets` API; UI page not built |
 | Admin: withdrawals approve flow | Live | `/admin/withdrawals` page with approve/reject/mark-submitted/confirmed/failed; mark-confirmed pre-checks `balance >= debit` |
 | Admin: PnL dashboard | Live | `/admin` with KPIs (today PnL, active users, open tickets, stakes today), 14-day PnL × sport table, top-10 big wins (30d) |
-| Admin: users management | Live | `/admin/users` list + `/admin/users/[id]` edit (status/role/limit/bet-delay) with self-modification guards + audit logging |
+| Admin: bettor user management | Live | `/admin/users` list + `/admin/users/[id]` edit (status/role/limit/bet-delay) with self-modification guards + audit logging. View pinned to `role=user` server-side via the API's new `roles` CSV filter; admins/support are hidden here. |
+| Admin: admin user management | Live | `/admin/admins` list + create flow for backoffice operators (admin + support). Calls `/admin/users` with `?roles=admin,support`. Shared `CreateUserForm` is parameterized by `mode` — `admin` mode exposes role choice and drops bettor-only knobs (bet-delay + stake limit). |
+| Admin: feed logs panel | Live | `/admin/logs` sport → tournament → match hierarchy (categories joined silently — esports auto-dummies). Per match: inline SVG line charts per market over the last 24h of `odds_history`; "Feed log" button opens `/admin/logs/matches/[id]/feed` with kind-filterable `<details>` viewer of raw AMQP XML. feed-ingester writes every match-scoped kind to `feed_messages`; hourly `runFeedMessageCleanup` goroutine sweeps once retention expires. |
 | Admin: audit log viewer | Live | `/admin/audit` paginated with action/target/actor filters |
 | Server security hardening | Live | Non-root inside every container (`node:1000` for TS, `app:100` for Go); SSH `PasswordAuthentication no`, `PermitRootLogin no`, `MaxAuthTries 3`, `X11Forwarding no`; repo dir `chmod 750`; CSP header on Next.js HTML responses via Caddy; `NODE_ENV=production` on server so auth cookies get `Secure` flag. `fail2ban` was installed briefly then removed (kept banning legit operator connections — password auth off makes brute force impossible anyway, see `project_security_hardening.md` memory). |
 | Postgres backups | Live | `/usr/local/bin/oddzilla-pg-backup` (from `infra/hetzner/backup/pg_backup.sh`) runs daily at 03:00 UTC via root cron, `docker exec` into postgres container, writes `/var/backups/oddzilla/*.sql.gz` (root:root 600), 14-day rotation. **Off-server copy is still manual** — pre-launch todo. |
