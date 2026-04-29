@@ -1,14 +1,22 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import { getSessionClaims } from "@/lib/auth";
 import { LogoutButton } from "@/components/logout-button";
 
 // The middleware already checks for auth cookie presence before this runs.
-// Here we verify the role. Non-admins see a 404 rather than a 403 so we
-// don't leak the existence of admin URLs.
+// Here we verify the role.
+//
+// Two failure modes to distinguish:
+//   - claims === null: the access cookie is present but jose couldn't verify
+//     it (expired, signed with a rotated JWT_SECRET, malformed). Treat that
+//     like "not signed in" and bounce to /login — otherwise admins see a
+//     bare 404 with a stale cookie they can't clear without DevTools.
+//   - claims.role !== "admin": real non-admin trying to peek. 404 (not 403)
+//     so we don't leak that admin URLs exist.
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   const claims = await getSessionClaims();
-  if (!claims || claims.role !== "admin") notFound();
+  if (!claims) redirect("/login?next=/admin");
+  if (claims.role !== "admin") notFound();
 
   return (
     <div className="min-h-dvh">
