@@ -29,6 +29,23 @@ const STATUS_COLOR: Record<TicketStatus, string> = {
   cashed_out: "text-[var(--color-fg-muted)]",
 };
 
+function resolveStatusBadge(ticket: TicketSummary): {
+  label: string;
+  color: string;
+} {
+  if (ticket.status === "settled") {
+    const won =
+      ticket.actualPayoutMicro != null && BigInt(ticket.actualPayoutMicro) > 0n;
+    return won
+      ? { label: "Won", color: "text-[var(--color-positive)]" }
+      : { label: "Lost", color: "text-[var(--color-negative)]" };
+  }
+  return {
+    label: STATUS_LABEL[ticket.status],
+    color: STATUS_COLOR[ticket.status],
+  };
+}
+
 export function BetHistory({
   initialTickets,
 }: {
@@ -161,13 +178,18 @@ function TicketRow({
         </div>
 
         <div className="text-right">
-          <span
-            className={
-              "text-xs uppercase tracking-[0.15em] " + STATUS_COLOR[ticket.status]
-            }
-          >
-            {STATUS_LABEL[ticket.status]}
-          </span>
+          {(() => {
+            const badge = resolveStatusBadge(ticket);
+            return (
+              <span
+                className={
+                  "text-xs uppercase tracking-[0.15em] " + badge.color
+                }
+              >
+                {badge.label}
+              </span>
+            );
+          })()}
           <p className="mt-2 font-mono text-sm">
             {stake} {ticket.currency}
           </p>
