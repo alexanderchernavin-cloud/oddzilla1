@@ -18,3 +18,13 @@ Entry points for different questions:
 - **"How do I talk to Oddin?"** → ODDIN.md.
 - **"What's next to build?"** → PHASES.md.
 - **"Prod is on fire, what do I do?"** → OPERATIONS.md.
+
+## Keeping these docs in sync
+
+Every PR that changes behavior, schema, paths, env vars, phase status, or
+operational steps must update the relevant doc here in the **same merge**
+— never "in a follow-up". The full trigger map (which kind of change
+updates which file) lives in [`../CLAUDE.md`](../CLAUDE.md) under
+`## Conventions`. When reviewing, treat a code-only diff as a smell and
+check the triggers before approving. Stale docs mislead the next agent;
+fix them in place rather than leaving outdated text.

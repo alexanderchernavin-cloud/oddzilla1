@@ -220,6 +220,31 @@ These rules are load-bearing. Breaking them causes money or data loss.
   chain RPC) must boot cleanly when those creds are absent — log a warning
   and serve health only. Pattern is well-established in feed-ingester,
   settlement, wallet-watcher.
+- **Docs stay in sync on every merge.** Before a PR lands, check whether
+  CLAUDE.md, the relevant `docs/*.md`, the root `README.md`, and any
+  affected `services/*/README.md` still describe reality, and update
+  them in the *same* PR — never "in a follow-up". Stale docs are worse
+  than missing ones: they mislead the next agent. Trigger map:
+  - New service, data flow, or invariant → CLAUDE.md (`## Architecture
+    map`, `## Invariants`, `## Where things live`) + `docs/ARCHITECTURE.md`.
+  - Schema migration → CLAUDE.md migration list under `## Where things
+    live` + `docs/SCHEMA.md`.
+  - Env var added / renamed / removed → `.env.example` + CLAUDE.md
+    `## Local secrets that exist`.
+  - Phase progress, new component shipped, acceptance bar reached →
+    `docs/PHASES.md` + the CLAUDE.md `## Live phase status` table.
+  - Deploy / backup / runbook / incident step changed →
+    `docs/OPERATIONS.md`.
+  - Oddin protocol detail changed → `docs/ODDIN.md`.
+  - Service-internal change (new module, renamed binary, added flag) →
+    that service's `services/<name>/README.md`.
+  - File or symbol renamed / removed → grep `CLAUDE.md README.md docs/`
+    and the service READMEs for the old name and either update or
+    delete the references.
+
+  If a doc claim is no longer true, fix it in the same merge. When
+  reviewing, treat "diff touches code but no doc" as a smell — ask
+  whether one of the triggers above applies before approving.
 
 ## Hard limits
 

@@ -33,6 +33,11 @@ Seeded credentials (override via `.env` before `make seed`):
 Start with [**CLAUDE.md**](CLAUDE.md) for the architecture summary and
 invariants — it's the load-bearing doc for both humans and agents.
 
+> **Docs stay in sync on every merge.** Every PR that changes behavior,
+> schema, paths, env vars, phase status, or operational steps must update
+> the relevant doc in the same merge — never "in a follow-up". Trigger
+> map lives in [CLAUDE.md](CLAUDE.md) under `## Conventions`.
+
 Deeper references live in [**`docs/`**](docs/):
 
 | Doc | Use when you need to know... |
