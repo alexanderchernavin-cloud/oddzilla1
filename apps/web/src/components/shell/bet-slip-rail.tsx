@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { toMicro } from "@oddzilla/types/money";
@@ -23,6 +23,14 @@ export function BetSlipRail() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [placedTicketId, setPlacedTicketId] = useState<string | null>(null);
+
+  // Drop the success view as soon as the user starts a new slip — otherwise
+  // the post-placement screen would shadow new picks indefinitely.
+  useEffect(() => {
+    if (selections.length > 0 && placedTicketId) {
+      setPlacedTicketId(null);
+    }
+  }, [selections.length, placedTicketId]);
 
   // Combined odds = product of all selection odds (combo accumulator).
   // With a single selection, this degrades to that selection's odds —
