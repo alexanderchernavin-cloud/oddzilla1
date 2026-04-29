@@ -160,10 +160,12 @@ export function RecoveryPanel({ initialStatus }: { initialStatus: FeedStatus }) 
             onChange={(e) => setDrainPhantoms(e.target.checked)}
           />
           <span>
-            Drain phantom-live matches — re-pull every match still
-            flagged <span className="mono">live</span> more than 6 h
+            Drain phantom-stale matches — re-pull every match still
+            flagged <span className="mono">live</span> or{" "}
+            <span className="mono">not_started</span> more than 6 h
             after its scheduled start from Oddin REST so closed/ended
-            fixtures we missed during the outage get their{" "}
+            fixtures we missed (during an outage, or because Oddin
+            never emitted a match_status_change) get their{" "}
             <span className="mono">matches.status</span> corrected.
             AMQP replay alone cannot fix these (Oddin won&apos;t replay
             match_status_change beyond ~3 days).
@@ -203,9 +205,9 @@ export function RecoveryPanel({ initialStatus }: { initialStatus: FeedStatus }) 
               : `${result.activeMarketsBefore} active market${result.activeMarketsBefore === 1 ? "" : "s"} were left in place.`}{" "}
             {result.drainPhantoms
               ? result.phantomCandidates > 0
-                ? `Phantom-live drain queued for ${result.phantomCandidates} match${result.phantomCandidates === 1 ? "" : "es"} (REST-paced at 5/sec).`
-                : "No phantom-live matches to drain."
-              : "Phantom-live drain skipped."}{" "}
+                ? `Phantom-stale drain queued for ${result.phantomCandidates} match${result.phantomCandidates === 1 ? "" : "es"} (REST-paced at 5/sec).`
+                : "No phantom-stale matches to drain."
+              : "Phantom-stale drain skipped."}{" "}
             Feed-ingester should start re-populating within seconds.
           </div>
         )}

@@ -144,15 +144,18 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
     });
     await app.db.execute(sql`SELECT pg_notify('feed_recovery', ${payload})`);
 
-    // Count phantom-live candidates so the response and audit log
+    // Count phantom-stale candidates so the response and audit log
     // surface what the drain will hit. The actual REST fan-out happens
     // inside feed-ingester at 5 RPS — this number is informational.
+    // Covers both 'live' and 'not_started' phantoms (matches whose
+    // scheduled start is well in the past but whose status was never
+    // advanced); both are corrected by the same REST refetch.
     let phantomCount = 0;
     if (drainPhantoms) {
       const phantomRows = (await app.db.execute(sql`
         SELECT COUNT(*)::text AS cnt
           FROM matches
-         WHERE status = 'live'
+         WHERE status IN ('live', 'not_started')
            AND scheduled_at IS NOT NULL
            AND scheduled_at < NOW() - make_interval(hours => ${drainAgeHours})
            AND provider_urn LIKE 'od:match:%'
