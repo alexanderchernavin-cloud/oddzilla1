@@ -12,6 +12,7 @@ import { SUPPORTED_CURRENCIES, type Currency } from "@oddzilla/types/currencies"
 import { parseProbability, priceTiple, priceTippot } from "@oddzilla/types/products";
 import type { TippotTier } from "@oddzilla/types/products";
 import { useBetSlip, type SlipMode } from "@/lib/bet-slip";
+import { useLiveOddsForMatches } from "@/lib/use-live-odds";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { I } from "@/components/ui/icons";
 import { Button } from "@/components/ui/primitives";
@@ -35,6 +36,8 @@ function effectiveMarginBp(baseBp: number, perLegBp: number, n: number): number 
   );
 }
 
+const DRIFT_ERROR_MESSAGE = "The odds moved since you clicked. Try again.";
+
 export function BetSlipRail() {
   const slip = useBetSlip();
   const selections = slip.selections;
@@ -53,6 +56,34 @@ export function BetSlipRail() {
       setPlacedTicketId(null);
     }
   }, [selections.length, placedTicketId]);
+
+  // Subscribe to live odds for every match in the slip. When a tick
+  // arrives we refresh the stored selection in place — that way the user
+  // submits the latest published odds and the server-side drift check
+  // (5% tolerance) doesn't fire under normal price drift. Any "odds moved"
+  // error is also cleared as soon as we apply a fresh tick so the user
+  // doesn't see a stale message after the auto-update.
+  const slipMatchIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const s of selections) ids.add(s.matchId);
+    return [...ids];
+  }, [selections]);
+  const liveTicks = useLiveOddsForMatches(slipMatchIds);
+  useEffect(() => {
+    let appliedAny = false;
+    for (const s of selections) {
+      const tick = liveTicks[`${s.marketId}:${s.outcomeId}`];
+      if (!tick) continue;
+      if (tick.publishedOdds === s.odds && (tick.probability ?? s.probability) === s.probability) {
+        continue;
+      }
+      slip.updateOdds(s.marketId, s.outcomeId, tick.publishedOdds, tick.probability);
+      appliedAny = true;
+    }
+    if (appliedAny) {
+      setError((prev) => (prev === DRIFT_ERROR_MESSAGE ? null : prev));
+    }
+  }, [liveTicks, selections, slip]);
 
   // Effective product mode. Single is forced when there's only one
   // selection regardless of last-stored mode. tiple/tippot need ≥2.
@@ -768,7 +799,7 @@ function mapError(err: ApiFetchError): string {
     case "exceeds_global_limit":
       return "Stake exceeds your global limit.";
     case "odds_drift_exceeded":
-      return "The odds moved since you clicked. Try again.";
+      return DRIFT_ERROR_MESSAGE;
     case "market_not_active":
     case "outcome_not_active":
     case "outcome_no_price":

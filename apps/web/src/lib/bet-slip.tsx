@@ -49,6 +49,15 @@ interface SlipContextValue extends SlipState {
   setMode(mode: SlipMode): void;
   setCurrency(currency: Currency): void;
   has(marketId: string, outcomeId: string): boolean;
+  // Refresh a stored selection from a live odds tick. No-op if the slip
+  // doesn't hold this (marketId, outcomeId) or if the values are
+  // unchanged (avoids re-render churn on every WS frame).
+  updateOdds(
+    marketId: string,
+    outcomeId: string,
+    odds: string,
+    probability?: string,
+  ): void;
 }
 
 const SlipContext = createContext<SlipContextValue | null>(null);
@@ -174,9 +183,43 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
     [state.selections],
   );
 
+  const updateOdds = useCallback(
+    (
+      marketId: string,
+      outcomeId: string,
+      odds: string,
+      probability?: string,
+    ) => {
+      setState((prev) => {
+        let changed = false;
+        const next = prev.selections.map((s) => {
+          if (s.marketId !== marketId || s.outcomeId !== outcomeId) return s;
+          const nextProb =
+            probability !== undefined && probability !== "" ? probability : s.probability;
+          if (s.odds === odds && s.probability === nextProb) return s;
+          changed = true;
+          return { ...s, odds, probability: nextProb };
+        });
+        if (!changed) return prev;
+        return { ...prev, selections: next };
+      });
+    },
+    [],
+  );
+
   const value = useMemo<SlipContextValue>(
-    () => ({ ...state, add, remove, clear, setOpen, setMode, setCurrency, has }),
-    [state, add, remove, clear, setOpen, setMode, setCurrency, has],
+    () => ({
+      ...state,
+      add,
+      remove,
+      clear,
+      setOpen,
+      setMode,
+      setCurrency,
+      has,
+      updateOdds,
+    }),
+    [state, add, remove, clear, setOpen, setMode, setCurrency, has, updateOdds],
   );
 
   return <SlipContext.Provider value={value}>{children}</SlipContext.Provider>;

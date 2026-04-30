@@ -16,6 +16,10 @@ export interface LiveOddsTick {
   marketId: string;
   outcomeId: string;
   publishedOdds: string;
+  // Implied probability — present when odds-publisher carried it through
+  // (it does for every Oddin-priced outcome). Required so the bet slip
+  // can refresh its tiple/tippot quote when odds drift.
+  probability?: string;
   active: boolean;
   ts: string; // ISO
 }
@@ -98,6 +102,7 @@ function ensureConnected(conn: SharedConnection) {
         marketId?: string;
         outcomeId?: string;
         publishedOdds?: string;
+        probability?: string;
         active?: boolean;
         ts?: string;
         ticketId?: string;
@@ -106,12 +111,13 @@ function ensureConnected(conn: SharedConnection) {
         actualPayoutMicro?: string | null;
       };
       if (payload.type === "odds") {
-        const { matchId, marketId, outcomeId, publishedOdds, active, ts } = payload;
+        const { matchId, marketId, outcomeId, publishedOdds, probability, active, ts } = payload;
         if (!matchId || !marketId || !outcomeId || !publishedOdds || !ts) return;
         const tick: LiveOddsTick = {
           marketId,
           outcomeId,
           publishedOdds,
+          probability: probability && probability !== "" ? probability : undefined,
           active: active ?? true,
           ts,
         };
@@ -200,6 +206,48 @@ export function useLiveOdds(matchId: string | null): Record<string, LiveOddsTick
       bumpSubscription(conn, matchId, -1);
     };
   }, [matchId]);
+
+  return ticks;
+}
+
+// Multi-match variant for components that watch a heterogeneous selection
+// set (the bet slip). Returns ticks keyed by `${marketId}:${outcomeId}` —
+// market ids are unique across matches, so collisions can't occur.
+export function useLiveOddsForMatches(
+  matchIds: readonly string[],
+): Record<string, LiveOddsTick> {
+  const [ticks, setTicks] = useState<Record<string, LiveOddsTick>>({});
+
+  // Stable join key — we only resubscribe when the *set* of matches
+  // changes, not on every render's array identity churn.
+  const key = [...matchIds].sort().join(",");
+
+  useEffect(() => {
+    if (matchIds.length === 0) return;
+    const conn = getShared();
+
+    const id = crypto.randomUUID();
+    const matchIdSet = new Set(matchIds);
+    conn.listeners.set(id, {
+      matchIds: matchIdSet,
+      onTick: (tick) => {
+        setTicks((prev) => {
+          const k = `${tick.marketId}:${tick.outcomeId}`;
+          const existing = prev[k];
+          if (existing && new Date(existing.ts) > new Date(tick.ts)) return prev;
+          return { ...prev, [k]: tick };
+        });
+      },
+    });
+    for (const m of matchIdSet) bumpSubscription(conn, m, 1);
+    ensureConnected(conn);
+
+    return () => {
+      conn.listeners.delete(id);
+      for (const m of matchIdSet) bumpSubscription(conn, m, -1);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
 
   return ticks;
 }
