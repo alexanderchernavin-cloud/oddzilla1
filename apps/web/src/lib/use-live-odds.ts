@@ -219,15 +219,18 @@ export function useLiveOddsForMatches(
   const [ticks, setTicks] = useState<Record<string, LiveOddsTick>>({});
 
   // Stable join key — we only resubscribe when the *set* of matches
-  // changes, not on every render's array identity churn.
+  // changes, not on every render's array identity churn. Sort + join
+  // produces a deterministic string; the effect derives the actual
+  // match ids from it so the deps array is honestly just `[key]`
+  // (no eslint-disable needed).
   const key = [...matchIds].sort().join(",");
 
   useEffect(() => {
-    if (matchIds.length === 0) return;
+    if (key === "") return;
     const conn = getShared();
+    const matchIdSet = new Set(key.split(","));
 
     const id = crypto.randomUUID();
-    const matchIdSet = new Set(matchIds);
     conn.listeners.set(id, {
       matchIds: matchIdSet,
       onTick: (tick) => {
@@ -246,7 +249,6 @@ export function useLiveOddsForMatches(
       conn.listeners.delete(id);
       for (const m of matchIdSet) bumpSubscription(conn, m, -1);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
   return ticks;
