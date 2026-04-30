@@ -22,7 +22,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { isCurrency, SUPPORTED_CURRENCIES, type Currency } from "@oddzilla/types/currencies";
+import { isCurrency, type Currency } from "@oddzilla/types/currencies";
 import type { SlipSelection } from "@oddzilla/types";
 
 const STORAGE_KEY = "oddzilla.betslip.v2";
