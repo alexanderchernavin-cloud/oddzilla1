@@ -495,15 +495,21 @@ func listenPhantomDrainOnce(
 			continue
 		}
 		var payload struct {
-			RequestedBy any `json:"requestedBy"`
-			Hours       int `json:"hours"`
+			RequestedBy any  `json:"requestedBy"`
+			Hours       *int `json:"hours"`
 		}
 		if err := json.Unmarshal([]byte(n.Payload), &payload); err != nil {
 			log.Warn().Err(err).Str("payload", n.Payload).Msg("phantom_drain payload invalid; using defaults")
 		}
-		hours := payload.Hours
-		if hours <= 0 {
-			hours = 6
+		// Default to 0: any match still in live/not_started past its
+		// scheduled start is a candidate. Only clamp negatives — explicit
+		// hours=0 is a legitimate value, not a missing field.
+		hours := 0
+		if payload.Hours != nil {
+			hours = *payload.Hours
+			if hours < 0 {
+				hours = 0
+			}
 		}
 		if !draining.TryLock() {
 			log.Info().Int("hours", hours).Msg("phantom_drain skipped: another sweep is already running")

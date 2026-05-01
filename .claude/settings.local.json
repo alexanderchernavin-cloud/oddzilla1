@@ -27,7 +27,9 @@
       "Bash(ssh -o ConnectTimeout=8 team@178.104.174.24 'sg docker -c \"docker exec -i oddzilla-postgres-1 psql -U oddzilla -d oddzilla\"')",
       "Bash(ssh -o ConnectTimeout=8 team@178.104.174.24 'sg docker -c \"docker exec -i oddzilla-postgres-1 psql -U oddzilla -d oddzilla -tA\"')",
       "Bash(pnpm --filter @oddzilla/web typecheck)",
-      "Bash(gh pr *)"
+      "Bash(gh pr *)",
+      "Bash(ssh team@178.104.174.24 'sudo -n docker exec -i oddzilla-postgres-1 psql -U oddzilla -d oddzilla')",
+      "Bash(go vet *)"
     ]
   }
 }
