@@ -43,7 +43,7 @@ const bodySchema = z.object({
   flushOdds: z.boolean().optional(),
   hours: z.coerce.number().int().min(1).max(72).optional(),
   drainPhantoms: z.boolean().optional(),
-  drainAgeHours: z.coerce.number().int().min(1).max(168).optional(),
+  drainAgeHours: z.coerce.number().int().min(0).max(168).optional(),
 });
 
 export default async function adminFeedRoutes(app: FastifyInstance) {
@@ -61,10 +61,11 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
     const flush = body.flushOdds ?? true;
     // Default true: Oddin won't replay match_status_change beyond ~3
     // days, so a separate REST-driven sweep is the only way to clean
-    // up stuck-live rows after a long outage. 6h matches the CLI flag
-    // default and is well above any plausible esports series length.
+    // up stuck-live rows after a long outage. Default age=0 (any match
+    // past scheduled_at is a candidate) — Oddin's broker often skips
+    // match_status_change entirely, so REST is the authoritative state.
     const drainPhantoms = body.drainPhantoms ?? true;
-    const drainAgeHours = body.drainAgeHours ?? 6;
+    const drainAgeHours = body.drainAgeHours ?? 0;
 
     // Target cursor = now - hours. Oddin rejects recovery requests older
     // than ~3 days so this is clamped at 72h by the schema above.

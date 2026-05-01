@@ -46,12 +46,12 @@ func main() {
 	drainPhantomStale := flag.Bool(
 		"drain-phantom-stale",
 		false,
-		"Re-fetch every match still flagged `live` or `not_started` more than --phantom-age-hours after its scheduled start, then exit. Use after a feed/postgres outage, or to mop up matches whose match_status_change Oddin's broker never emitted.",
+		"Re-fetch every match still flagged `live` or `not_started` whose scheduled start is more than --phantom-age-hours in the past, then exit. Use after a feed/postgres outage, or to mop up matches whose match_status_change Oddin's broker never emitted.",
 	)
 	phantomAgeHours := flag.Int(
 		"phantom-age-hours",
-		6,
-		"Age threshold for --drain-phantom-stale; matches younger than this are treated as legitimately live or upcoming.",
+		0,
+		"Age threshold (hours past scheduled_at) for --drain-phantom-stale. Default 0 — any match still in live/not_started after its scheduled start is a candidate. Oddin's broker often skips match_status_change entirely, so REST is the authoritative state and waiting longer just leaves stale rows in the catalog.",
 	)
 	flag.Parse()
 
@@ -523,7 +523,7 @@ func listenPhantomDrainOnce(
 	return nil
 }
 
-// runPhantomDrainTicker fires pg_notify('phantom_drain', ...) every hour
+// runPhantomDrainTicker fires pg_notify('phantom_drain', ...) every 15min
 // so runPhantomDrainListener performs its REST-driven cleanup sweep.
 // Going through pg_notify (rather than calling DrainPhantomStale directly)
 // keeps a single mutex governing every code path that can drain — manual
@@ -534,14 +534,19 @@ func listenPhantomDrainOnce(
 // doesn't wait up to an hour to catch up on phantoms accumulated during
 // the outage.
 //
-// The cleanup itself paces at 5 RPS inside DrainPhantomStale, well under
-// Oddin's REST budget; running once per hour against a 6h age threshold
-// catches a typical match within ~2 ticks of its actual end time.
+// Payload hours=0 means any match whose scheduled_at is in the past is a
+// candidate. Oddin's integration broker frequently skips
+// match_status_change entirely (matches transition not_started → closed
+// without ever passing through live in AMQP), so REST is the authoritative
+// state — there is no value in waiting hours past scheduled_at before
+// validating. The cleanup itself paces at 5 RPS inside DrainPhantomStale,
+// well under Oddin's REST budget; a 15-minute cadence catches a fresh
+// match within ~15min of its actual start.
 func runPhantomDrainTicker(ctx context.Context, pool *pgxpool.Pool, log zerolog.Logger) {
 	const (
-		sweepEvery   = 1 * time.Hour
-		bootDelay    = 30 * time.Second
-		payload      = `{"requestedBy":"ticker","hours":6}`
+		sweepEvery = 15 * time.Minute
+		bootDelay  = 30 * time.Second
+		payload    = `{"requestedBy":"ticker","hours":0}`
 	)
 	fire := func() {
 		if _, err := pool.Exec(ctx, `SELECT pg_notify('phantom_drain', $1)`, payload); err != nil {
