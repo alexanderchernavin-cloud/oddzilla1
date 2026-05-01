@@ -66,6 +66,14 @@ type MatchUpsert struct {
 }
 
 func UpsertMatch(ctx context.Context, db pgxRunner, m MatchUpsert) (int64, error) {
+	// tournament_id is overwritten only when the incoming row points at a
+	// real tournament — never at a placeholder. Without this guard, a match
+	// that was originally created under "Unknown tournament" (because the
+	// auto-mapper's first REST fetch 404'd) could never be re-classified
+	// once REST started returning the proper sport/tournament. The reverse
+	// regression — re-pointing a properly-mapped match BACK to a
+	// placeholder — would happen on every odds_change for a known match
+	// without fixture context, and is what the "real-only" guard prevents.
 	const q = `
 INSERT INTO matches (tournament_id, provider_urn, home_team, away_team,
                      home_team_urn, away_team_urn,
@@ -73,7 +81,15 @@ INSERT INTO matches (tournament_id, provider_urn, home_team, away_team,
                      scheduled_at, status, oddin_status_code, best_of, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::match_status, $11, $12, NOW())
 ON CONFLICT (provider_urn) DO UPDATE
-   SET home_team          = CASE WHEN EXCLUDED.home_team  <> '' THEN EXCLUDED.home_team  ELSE matches.home_team  END,
+   SET tournament_id      = CASE
+                              WHEN EXISTS (
+                                SELECT 1 FROM tournaments t
+                                 WHERE t.id = EXCLUDED.tournament_id
+                                   AND t.provider_urn NOT LIKE 'od:tournament:placeholder-%'
+                              ) THEN EXCLUDED.tournament_id
+                              ELSE matches.tournament_id
+                            END,
+       home_team          = CASE WHEN EXCLUDED.home_team  <> '' THEN EXCLUDED.home_team  ELSE matches.home_team  END,
        away_team          = CASE WHEN EXCLUDED.away_team  <> '' THEN EXCLUDED.away_team  ELSE matches.away_team  END,
        home_competitor_id = COALESCE(EXCLUDED.home_competitor_id, matches.home_competitor_id),
        away_competitor_id = COALESCE(EXCLUDED.away_competitor_id, matches.away_competitor_id),
