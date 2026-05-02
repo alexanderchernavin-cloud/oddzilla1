@@ -13,7 +13,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { and, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, notInArray, or, sql } from "drizzle-orm";
 import {
   sports,
   categories,
@@ -163,6 +163,18 @@ const hasActiveMarket = sql`EXISTS (
      AND mk.status = 1
 )`;
 
+// Tournaments whose name matches one of these strings are hidden from
+// every list/count endpoint. Oddin's integration broker exposes test
+// tournaments (e.g. "Integration testing" with bot teams "Integration
+// testing 1/2") that are useful for protocol verification but never
+// belong on the storefront. Match by exact name — these strings are
+// stable Oddin constants. The `/catalog/matches/:id` detail route
+// intentionally does not filter by this list: hidden tournaments are
+// unreachable through the UI anyway, and a deep link should still
+// resolve so admin/debug tooling keeps working.
+const HIDDEN_TOURNAMENT_NAMES = ["Integration testing"];
+const notHiddenTournament = notInArray(tournaments.name, HIDDEN_TOURNAMENT_NAMES);
+
 // Inline match-winner odds for the list cards are restricted to two-way
 // markets (`variant='way:two'`). Sports like eFootball expose market 1
 // only as a three-way 1X2 (home/draw/away across outcomes 1/2/3). The
@@ -229,6 +241,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
           matchStatusCondition,
           // Skip matches with zero active markets — nothing to bet on.
           hasActiveMarket,
+          notHiddenTournament,
           q.tournament ? eq(tournaments.id, q.tournament) : undefined,
         ),
       )
@@ -662,6 +675,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
           cond,
           eq(sports.active, true),
           hasActiveMarket,
+          notHiddenTournament,
         ),
       )
       .orderBy(
@@ -799,7 +813,13 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .from(tournaments)
       .innerJoin(categories, eq(categories.id, tournaments.categoryId))
       .leftJoin(matches, eq(matches.tournamentId, tournaments.id))
-      .where(and(eq(categories.sportId, sport.id), eq(tournaments.active, true)))
+      .where(
+        and(
+          eq(categories.sportId, sport.id),
+          eq(tournaments.active, true),
+          notHiddenTournament,
+        ),
+      )
       .groupBy(tournaments.id, tournaments.name, tournaments.riskTier)
       .having(sql`${matchCountExpr}::int > 0`);
 
@@ -870,6 +890,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
             eq(tournaments.active, true),
             eq(sports.active, true),
             ilike(tournaments.name, needle),
+            notHiddenTournament,
             // Empty tournaments (every match closed/phantom-stale) are
             // hidden so search results never lead to a zero-match page.
             sql`EXISTS (
@@ -935,6 +956,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
               ilike(matches.awayTeam, needle),
             ),
             hasActiveMarket,
+            notHiddenTournament,
           ),
         )
         .orderBy(desc(matches.status), matches.scheduledAt)
@@ -978,7 +1000,13 @@ export default async function catalogRoutes(app: FastifyInstance) {
       })
       .from(sports)
       .leftJoin(categories, eq(categories.sportId, sports.id))
-      .leftJoin(tournaments, eq(tournaments.categoryId, categories.id))
+      .leftJoin(
+        tournaments,
+        and(
+          eq(tournaments.categoryId, categories.id),
+          notHiddenTournament,
+        ),
+      )
       .leftJoin(
         matches,
         and(
