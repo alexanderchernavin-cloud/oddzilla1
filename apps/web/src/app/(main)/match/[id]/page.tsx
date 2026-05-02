@@ -87,9 +87,8 @@ export default async function MatchPage({
   const { match, markets, marketGroups } = data;
   const isLive = match.status === "live";
   const liveScore = match.liveScore ?? null;
-  const homeScore = liveScore?.home ?? 0;
-  const awayScore = liveScore?.away ?? 0;
-  const showSeriesScore = isLive || (homeScore > 0 || awayScore > 0);
+  const homeSeries = liveScore?.home ?? 0;
+  const awaySeries = liveScore?.away ?? 0;
 
   const whenLabel = match.scheduledAt
     ? new Date(match.scheduledAt).toLocaleString("en-US", {
@@ -99,6 +98,14 @@ export default async function MatchPage({
         minute: "2-digit",
       })
     : "Time TBD";
+
+  // The number of map columns in the scoreboard table. Prefer bestOf so
+  // unplayed maps render as placeholders; fall back to the count of
+  // periods we've seen so the table doesn't shrink to zero columns
+  // pre-match for sports with no bestOf metadata.
+  const periods = (liveScore?.periods ?? []).filter((p) => p.number != null);
+  const periodCount = periods.length;
+  const mapCount = Math.max(match.bestOf ?? 0, periodCount, 0);
 
   return (
     <div
@@ -165,61 +172,16 @@ export default async function MatchPage({
           </span>
         </div>
 
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1fr auto 1fr",
-            gap: "clamp(10px, 3vw, 24px)",
-            alignItems: "center",
-          }}
-        >
-          <TeamBlock
-            name={match.homeTeam}
-            score={homeScore}
-            align="left"
-            showScore={showSeriesScore}
-          />
-          <div style={{ textAlign: "center" }}>
-            <div
-              className="display"
-              style={{
-                fontSize: 11,
-                letterSpacing: "0.1em",
-                textTransform: "uppercase",
-                color: "var(--fg-dim)",
-              }}
-            >
-              Series
-            </div>
-            <div
-              className="mono tnum"
-              style={{
-                fontSize: "clamp(18px, 4vw, 22px)",
-                fontWeight: 500,
-                color: "var(--fg-muted)",
-                margin: "4px 0",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {showSeriesScore ? `${homeScore} : ${awayScore}` : "vs"}
-            </div>
-          </div>
-          <TeamBlock
-            name={match.awayTeam}
-            score={awayScore}
-            align="right"
-            showScore={showSeriesScore}
-          />
-        </div>
-
-        {liveScore ? (
-          <MapScoreboard
-            sportSlug={match.sport.slug}
-            bestOf={match.bestOf}
-            liveScore={liveScore}
-            isLive={isLive}
-          />
-        ) : null}
+        <Scoreboard
+          homeTeam={match.homeTeam}
+          awayTeam={match.awayTeam}
+          homeSeries={homeSeries}
+          awaySeries={awaySeries}
+          mapCount={mapCount}
+          liveScore={liveScore}
+          isLive={isLive}
+          sportSlug={match.sport.slug}
+        />
       </div>
 
       {markets.length === 0 ? (
@@ -243,285 +205,101 @@ export default async function MatchPage({
   );
 }
 
-function TeamBlock({
-  name,
-  score,
-  align,
-  showScore,
-}: {
-  name: string;
-  score: number;
-  align: "left" | "right";
-  showScore: boolean;
-}) {
-  const tag = name
+function teamTag(name: string): string {
+  return name
     .split(/\s+/)
     .slice(0, 3)
     .map((w) => w[0])
     .join("")
     .slice(0, 4);
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 6,
-        alignItems: align === "right" ? "flex-end" : "flex-start",
-        minWidth: 0,
-      }}
-    >
-      <TeamMark tag={tag} size={36} />
-      <div
-        className="display"
-        style={{
-          fontSize: "clamp(17px, 4.8vw, 26px)",
-          fontWeight: 500,
-          letterSpacing: "-0.02em",
-          textAlign: align,
-          lineHeight: 1.15,
-          overflowWrap: "anywhere",
-          minWidth: 0,
-          maxWidth: "100%",
-        }}
-      >
-        {name}
-      </div>
-      {showScore && (
-        <div
-          className="mono tnum"
-          style={{
-            fontSize: "clamp(22px, 6vw, 32px)",
-            fontWeight: 500,
-            color: "var(--fg)",
-            lineHeight: 1,
-          }}
-        >
-          {score}
-        </div>
-      )}
-    </div>
-  );
 }
 
-// Per-sport label for the per-map score column. CS2/Valorant report rounds
-// won; Dota 2 / LoL report kills (and turrets/towers as a secondary stat).
-// Falls back to a generic "Score" header when the sport isn't known yet.
-function periodMetricLabel(sportSlug: string): string {
-  switch (sportSlug.toLowerCase()) {
-    case "cs2":
-    case "csgo":
-    case "counter-strike":
-    case "valorant":
-      return "Rounds";
-    case "dota2":
-    case "dota":
-    case "lol":
-    case "leagueoflegends":
-    case "league-of-legends":
-      return "Kills";
-    default:
-      return "Score";
-  }
-}
-
-// pickPeriodMetric returns the (home, away) integer pair to render for a
-// completed map, preferring the sport-native metric (rounds for CS2,
-// kills for Dota) and falling back to the generic home_score/away_score
-// Oddin always populates.
-function pickPeriodMetric(
-  p: LiveScorePeriod,
-  sportSlug: string,
-): { home: number | null; away: number | null } {
-  const slug = sportSlug.toLowerCase();
-  if (slug === "cs2" || slug === "csgo" || slug === "counter-strike" || slug === "valorant") {
-    if (p.homeWonRounds != null || p.awayWonRounds != null) {
-      return { home: p.homeWonRounds ?? null, away: p.awayWonRounds ?? null };
-    }
-  }
-  if (slug === "dota2" || slug === "dota" || slug === "lol" || slug === "leagueoflegends" || slug === "league-of-legends") {
-    if (p.homeKills != null || p.awayKills != null) {
-      return { home: p.homeKills ?? null, away: p.awayKills ?? null };
-    }
-  }
-  if (p.homeScore != null || p.awayScore != null) {
-    return { home: p.homeScore ?? null, away: p.awayScore ?? null };
-  }
-  if (p.homeGoals != null || p.awayGoals != null) {
-    return { home: p.homeGoals ?? null, away: p.awayGoals ?? null };
-  }
-  return { home: null, away: null };
-}
-
-// pickLiveMetric returns the live (home, away) pair from the scoreboard
-// block for the in-progress map. Same sport precedence as pickPeriodMetric.
-function pickLiveMetric(
-  sb: LiveScoreScoreboard,
-  sportSlug: string,
-): { home: number | null; away: number | null } {
-  const slug = sportSlug.toLowerCase();
-  if (slug === "cs2" || slug === "csgo" || slug === "counter-strike" || slug === "valorant") {
-    if (sb.homeWonRounds != null || sb.awayWonRounds != null) {
-      return { home: sb.homeWonRounds ?? null, away: sb.awayWonRounds ?? null };
-    }
-  }
-  if (slug === "dota2" || slug === "dota" || slug === "lol" || slug === "leagueoflegends" || slug === "league-of-legends") {
-    if (sb.homeKills != null || sb.awayKills != null) {
-      return { home: sb.homeKills ?? null, away: sb.awayKills ?? null };
-    }
-  }
-  if (sb.homeGoals != null || sb.awayGoals != null) {
-    return { home: sb.homeGoals ?? null, away: sb.awayGoals ?? null };
-  }
-  return { home: null, away: null };
-}
-
-function MapScoreboard({
-  sportSlug,
-  bestOf,
+// Scoreboard renders a two-row table:
+//   [team mark] [team name] | Score | 1 | 2 | … | N
+// where Score is the series score (boxed) and the numeric columns are
+// the per-map metric (rounds for CS2/Valorant, kills for Dota/LoL, etc.).
+// The currently-live map column is highlighted; unplayed maps render
+// dimmed dashes.
+function Scoreboard({
+  homeTeam,
+  awayTeam,
+  homeSeries,
+  awaySeries,
+  mapCount,
   liveScore,
   isLive,
+  sportSlug,
 }: {
-  sportSlug: string;
-  bestOf: number | null;
-  liveScore: LiveScore;
+  homeTeam: string;
+  awayTeam: string;
+  homeSeries: number;
+  awaySeries: number;
+  mapCount: number;
+  liveScore: LiveScore | null;
   isLive: boolean;
+  sportSlug: string;
 }) {
-  const periods = (liveScore.periods ?? []).filter((p) => p.number != null);
-  const currentMap = liveScore.currentMap ?? null;
-  const scoreboard = liveScore.scoreboard ?? null;
+  const periods = (liveScore?.periods ?? []).filter((p) => p.number != null);
+  const periodByNumber = new Map<number, LiveScorePeriod>();
+  for (const p of periods) periodByNumber.set(p.number ?? 0, p);
 
-  // Synthesize a row for the in-progress map when Oddin hasn't added it
-  // to <period_scores> yet (common at the start of a map). The live
-  // scoreboard block is the source of truth for the current map's score.
-  const synthesizedLiveRow: LiveScorePeriod | null =
-    isLive && currentMap != null && !periods.some((p) => p.number === currentMap) && scoreboard
-      ? { number: currentMap, type: "map", isLive: true }
-      : null;
+  const currentMap = isLive ? liveScore?.currentMap ?? null : null;
+  const scoreboard = liveScore?.scoreboard ?? null;
 
-  const rows = synthesizedLiveRow ? [...periods, synthesizedLiveRow] : periods;
-  rows.sort((a, b) => (a.number ?? 0) - (b.number ?? 0));
+  const cols = mapCount > 0 ? Array.from({ length: mapCount }, (_, i) => i + 1) : [];
 
-  // Render a placeholder up to bestOf so users can see the series shape
-  // before any maps have started.
-  const totalSlots = Math.max(rows.length, bestOf ?? 0);
-  if (totalSlots === 0) return null;
-
-  const metricLabel = periodMetricLabel(sportSlug);
+  // Grid template: [team] [score] [map1] [map2] … [mapN]
+  // Team column flexes; numeric columns are fixed-width and centered.
+  const gridTemplate = `minmax(0, 1fr) 60px${cols.length ? " " + cols.map(() => "44px").join(" ") : ""}`;
 
   return (
     <div
       style={{
-        marginTop: 20,
-        paddingTop: 16,
-        borderTop: "1px solid var(--border)",
         display: "flex",
         flexDirection: "column",
-        gap: 10,
+        gap: 4,
       }}
     >
       <div
-        className="display"
-        style={{
-          fontSize: 11,
-          letterSpacing: "0.1em",
-          textTransform: "uppercase",
-          color: "var(--fg-dim)",
-        }}
-      >
-        Maps
-      </div>
-      <div
+        role="table"
         style={{
           display: "grid",
-          gridTemplateColumns: `repeat(${totalSlots}, minmax(64px, 1fr))`,
-          gap: 8,
+          gridTemplateColumns: gridTemplate,
+          rowGap: 6,
+          columnGap: 10,
+          alignItems: "center",
         }}
       >
-        {Array.from({ length: totalSlots }).map((_, idx) => {
-          const mapNumber = idx + 1;
-          const row = rows.find((p) => p.number === mapNumber) ?? null;
-          const live =
-            isLive &&
-            (row?.isLive === true ||
-              (currentMap === mapNumber && row != null) ||
-              (currentMap === mapNumber && synthesizedLiveRow?.number === mapNumber));
+        {/* Header row */}
+        <div role="row" style={{ display: "contents" }}>
+          <div />
+          <ColHeader label="Score" />
+          {cols.map((n) => (
+            <ColHeader
+              key={n}
+              label={String(n)}
+              live={currentMap === n}
+            />
+          ))}
+        </div>
 
-          let homeVal: number | null = null;
-          let awayVal: number | null = null;
-          if (row) {
-            if (live && scoreboard) {
-              const live = pickLiveMetric(scoreboard, sportSlug);
-              homeVal = live.home;
-              awayVal = live.away;
-            } else {
-              const m = pickPeriodMetric(row, sportSlug);
-              homeVal = m.home;
-              awayVal = m.away;
-            }
-          }
+        {/* Home row */}
+        <TeamRow
+          name={homeTeam}
+          series={homeSeries}
+          cols={cols}
+          getValue={(n) => mapCellValue("home", n, periodByNumber.get(n), scoreboard, currentMap, sportSlug)}
+          isLiveCol={(n) => currentMap === n}
+        />
 
-          const finished = row != null && !live;
-          const upcoming = row == null;
-
-          return (
-            <div
-              key={mapNumber}
-              style={{
-                padding: "10px 8px",
-                borderRadius: "var(--r-md)",
-                background: live ? "var(--bg-elev-2, rgba(255,255,255,0.04))" : "transparent",
-                border: live
-                  ? "1px solid var(--accent, rgba(255,255,255,0.18))"
-                  : "1px solid var(--border)",
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                gap: 4,
-                opacity: upcoming ? 0.45 : 1,
-              }}
-            >
-              <div
-                className="mono"
-                style={{
-                  fontSize: 10,
-                  color: live ? "var(--fg)" : "var(--fg-dim)",
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 4,
-                }}
-              >
-                {live ? <LiveDot size={5} /> : null}
-                Map {mapNumber}
-              </div>
-              <div
-                className="mono tnum"
-                style={{
-                  fontSize: 16,
-                  fontWeight: 500,
-                  color: upcoming ? "var(--fg-dim)" : "var(--fg)",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {homeVal != null && awayVal != null ? `${homeVal} : ${awayVal}` : "—"}
-              </div>
-              {finished ? (
-                <div
-                  className="mono"
-                  style={{
-                    fontSize: 9,
-                    color: "var(--fg-dim)",
-                    letterSpacing: "0.08em",
-                    textTransform: "uppercase",
-                  }}
-                >
-                  Final
-                </div>
-              ) : null}
-            </div>
-          );
-        })}
+        {/* Away row */}
+        <TeamRow
+          name={awayTeam}
+          series={awaySeries}
+          cols={cols}
+          getValue={(n) => mapCellValue("away", n, periodByNumber.get(n), scoreboard, currentMap, sportSlug)}
+          isLiveCol={(n) => currentMap === n}
+        />
       </div>
 
       {isLive && scoreboard && currentMap != null
@@ -537,10 +315,14 @@ function MapScoreboard({
                   display: "flex",
                   flexWrap: "wrap",
                   gap: "4px 14px",
-                  marginTop: 4,
+                  marginTop: 12,
+                  paddingTop: 10,
+                  borderTop: "1px solid var(--border)",
                 }}
               >
-                <span style={{ color: "var(--fg-dim)" }}>Map {currentMap}:</span>
+                <span style={{ color: "var(--fg-dim)" }}>
+                  Map {currentMap} live
+                </span>
                 {extras.map((line) => (
                   <span key={line.label}>
                     <span style={{ color: "var(--fg-dim)" }}>{line.label}</span>{" "}
@@ -551,17 +333,192 @@ function MapScoreboard({
             );
           })()
         : null}
-
-      {!isLive && metricLabel ? (
-        <div
-          className="mono"
-          style={{ fontSize: 10, color: "var(--fg-dim)", letterSpacing: "0.08em" }}
-        >
-          {metricLabel.toUpperCase()} PER MAP
-        </div>
-      ) : null}
     </div>
   );
+}
+
+function ColHeader({ label, live = false }: { label: string; live?: boolean }) {
+  return (
+    <div
+      className="mono"
+      style={{
+        fontSize: 10.5,
+        color: live ? "var(--fg)" : "var(--fg-dim)",
+        letterSpacing: "0.08em",
+        textTransform: "uppercase",
+        textAlign: "center",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 4,
+      }}
+    >
+      {live ? <LiveDot size={5} /> : null}
+      {label}
+    </div>
+  );
+}
+
+function TeamRow({
+  name,
+  series,
+  cols,
+  getValue,
+  isLiveCol,
+}: {
+  name: string;
+  series: number;
+  cols: number[];
+  getValue: (n: number) => number | null;
+  isLiveCol: (n: number) => boolean;
+}) {
+  return (
+    <>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          minWidth: 0,
+        }}
+      >
+        <TeamMark tag={teamTag(name)} size={28} />
+        <span
+          style={{
+            fontWeight: 500,
+            fontSize: 15,
+            letterSpacing: "-0.01em",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            minWidth: 0,
+          }}
+        >
+          {name}
+        </span>
+      </div>
+
+      <div
+        className="mono tnum"
+        style={{
+          textAlign: "center",
+          fontSize: 16,
+          fontWeight: 500,
+          color: "var(--fg)",
+          padding: "6px 0",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--r-sm, 6px)",
+          minWidth: 44,
+        }}
+      >
+        {series}
+      </div>
+
+      {cols.map((n) => {
+        const v = getValue(n);
+        const live = isLiveCol(n);
+        return (
+          <div
+            key={n}
+            className="mono tnum"
+            style={{
+              textAlign: "center",
+              fontSize: 15,
+              fontWeight: 500,
+              color: v == null ? "var(--fg-dim)" : live ? "var(--fg)" : "var(--fg-muted)",
+            }}
+          >
+            {v == null ? "—" : v}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+// mapCellValue picks the right metric for one (team, map) cell.
+// Prefers the live <scoreboard> for the current map (more up-to-date than
+// the period_score row, which only refreshes after the map ends on some
+// sports). Falls back to the period when the scoreboard block is empty —
+// Oddin sometimes ships `<scoreboard/>` with no inner attributes during
+// pauses or just-started maps.
+function mapCellValue(
+  side: "home" | "away",
+  mapNumber: number,
+  period: LiveScorePeriod | undefined,
+  scoreboard: LiveScoreScoreboard | null,
+  currentMap: number | null,
+  sportSlug: string,
+): number | null {
+  if (currentMap === mapNumber && scoreboard) {
+    const live = pickLiveMetric(scoreboard, sportSlug);
+    const v = side === "home" ? live.home : live.away;
+    if (v != null) return v;
+  }
+  if (!period) return null;
+  const periodMetric = pickPeriodMetric(period, sportSlug);
+  return side === "home" ? periodMetric.home : periodMetric.away;
+}
+
+// pickPeriodMetric returns the (home, away) integer pair for a completed
+// map, preferring the sport-native metric (rounds for CS2, kills for Dota)
+// and falling back to the generic home_score/away_score Oddin always
+// populates.
+function pickPeriodMetric(
+  p: LiveScorePeriod,
+  sportSlug: string,
+): { home: number | null; away: number | null } {
+  const slug = sportSlug.toLowerCase();
+  if (slug === "cs2" || slug === "csgo" || slug === "counter-strike" || slug === "valorant") {
+    if (p.homeWonRounds != null || p.awayWonRounds != null) {
+      return { home: p.homeWonRounds ?? null, away: p.awayWonRounds ?? null };
+    }
+  }
+  if (
+    slug === "dota2" ||
+    slug === "dota" ||
+    slug === "lol" ||
+    slug === "leagueoflegends" ||
+    slug === "league-of-legends"
+  ) {
+    if (p.homeKills != null || p.awayKills != null) {
+      return { home: p.homeKills ?? null, away: p.awayKills ?? null };
+    }
+  }
+  if (p.homeScore != null || p.awayScore != null) {
+    return { home: p.homeScore ?? null, away: p.awayScore ?? null };
+  }
+  if (p.homeGoals != null || p.awayGoals != null) {
+    return { home: p.homeGoals ?? null, away: p.awayGoals ?? null };
+  }
+  return { home: null, away: null };
+}
+
+function pickLiveMetric(
+  sb: LiveScoreScoreboard,
+  sportSlug: string,
+): { home: number | null; away: number | null } {
+  const slug = sportSlug.toLowerCase();
+  if (slug === "cs2" || slug === "csgo" || slug === "counter-strike" || slug === "valorant") {
+    if (sb.homeWonRounds != null || sb.awayWonRounds != null) {
+      return { home: sb.homeWonRounds ?? null, away: sb.awayWonRounds ?? null };
+    }
+  }
+  if (
+    slug === "dota2" ||
+    slug === "dota" ||
+    slug === "lol" ||
+    slug === "leagueoflegends" ||
+    slug === "league-of-legends"
+  ) {
+    if (sb.homeKills != null || sb.awayKills != null) {
+      return { home: sb.homeKills ?? null, away: sb.awayKills ?? null };
+    }
+  }
+  if (sb.homeGoals != null || sb.awayGoals != null) {
+    return { home: sb.homeGoals ?? null, away: sb.awayGoals ?? null };
+  }
+  return { home: null, away: null };
 }
 
 function formatScoreboardExtras(

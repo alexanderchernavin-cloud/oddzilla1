@@ -125,6 +125,51 @@ func TestBuildLiveScore_CurrentMap_FallbackToSeriesScore(t *testing.T) {
 	}
 }
 
+// Real production shape captured from Oddin (2026-05-02): map 1 finished
+// with rounds 13-11 (home won, series 1-0); maps 2 and 3 both report 0-0
+// with no round attrs and use Oddin's CS2-specific match_status_codes 51,
+// 52, 53 (NOT the generic UOF "6 = in progress"). The current map should
+// be 2 — derived from the series score, not from match_status_code.
+func TestBuildLiveScore_CS2_RealOddinShape(t *testing.T) {
+	body := []byte(`<sport_event_status home_score="1" away_score="0" status="1" scoreboard_available="true" match_status="52">
+  <period_scores>
+    <period_score type="map" number="1" match_status_code="51" home_score="1" away_score="0" home_won_rounds="13" away_won_rounds="11"/>
+    <period_score type="map" number="2" match_status_code="52" home_score="0" away_score="0"/>
+    <period_score type="map" number="3" match_status_code="53" home_score="0" away_score="0"/>
+  </period_scores>
+  <scoreboard></scoreboard>
+</sport_event_status>`)
+	var s oddinxml.SportEventStatus
+	if err := xml.Unmarshal(body, &s); err != nil {
+		t.Fatal(err)
+	}
+	cm := deriveCurrentMap(&s)
+	if cm == nil || *cm != 2 {
+		t.Fatalf("expected currentMap=2 from real CS2 shape, got %v", cm)
+	}
+	raw, err := buildLiveScore(&s, 1700000000000)
+	if err != nil || raw == nil {
+		t.Fatalf("buildLiveScore: raw=%v err=%v", raw, err)
+	}
+	var got liveScorePayload
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Home == nil || *got.Home != 1 || got.Away == nil || *got.Away != 0 {
+		t.Errorf("series score: %v / %v, want 1 / 0", got.Home, got.Away)
+	}
+	if len(got.Periods) != 3 {
+		t.Fatalf("expected 3 periods, got %d", len(got.Periods))
+	}
+	// Period 2 must be flagged live since currentMap=2.
+	if !got.Periods[1].IsLive {
+		t.Error("period 2 should be flagged isLive")
+	}
+	if got.Periods[0].IsLive || got.Periods[2].IsLive {
+		t.Error("only period 2 should be live")
+	}
+}
+
 func TestBuildLiveScore_CurrentMap_NilWhenSeriesEnded(t *testing.T) {
 	// status>=3 means the series has ended/closed/cancelled.
 	s := &oddinxml.SportEventStatus{

@@ -160,43 +160,42 @@ func buildLiveScore(s *oddinxml.SportEventStatus, oddinTsMs int64) ([]byte, erro
 	return json.Marshal(payload)
 }
 
+// deriveCurrentMap returns the 1-indexed map being played right now.
+// Heuristic order:
+//
+//  1. The highest period flagged with the UOF "in progress" code 6.
+//     Honored where Oddin uses it (some traditional sports).
+//  2. Top-level series score + 1. This is the most reliable signal for
+//     CS2/Valorant — Oddin emits sport-specific per-period codes
+//     (51/52/53) that are NOT the generic UOF "6 = in progress", so
+//     we cannot infer "completed" from the code itself.
+//  3. Count of periods with a determined winner (homeScore + awayScore
+//     > 0) + 1. Last-resort fallback when only periods are present.
+//
+// Returns nil when the series has ended (status >= 3) or when nothing
+// useful is available.
 func deriveCurrentMap(s *oddinxml.SportEventStatus) *int {
 	if s == nil {
 		return nil
 	}
-	// If the series is over, no map is "live".
 	if s.Status != nil && *s.Status >= 3 {
 		return nil
 	}
 
-	// Prefer the explicit per-period in-progress flag. Oddin uses
-	// match_status_code 6 ("In progress") on the live map; values >= 100
-	// indicate the period is finished. We pick the highest live number.
 	if s.PeriodScores != nil {
-		var live, maxFinished int
-		var liveSet, finishedSet bool
+		var live int
+		liveSet := false
 		for _, p := range s.PeriodScores.Periods {
-			if p.Number == nil {
+			if p.Number == nil || p.MatchStatusCode == nil || *p.MatchStatusCode != 6 {
 				continue
 			}
-			if p.MatchStatusCode != nil && *p.MatchStatusCode == 6 {
-				if !liveSet || *p.Number > live {
-					live = *p.Number
-					liveSet = true
-				}
-				continue
-			}
-			if !finishedSet || *p.Number > maxFinished {
-				maxFinished = *p.Number
-				finishedSet = true
+			if !liveSet || *p.Number > live {
+				live = *p.Number
+				liveSet = true
 			}
 		}
 		if liveSet {
 			n := live
-			return &n
-		}
-		if finishedSet {
-			n := maxFinished + 1
 			return &n
 		}
 	}
@@ -205,5 +204,25 @@ func deriveCurrentMap(s *oddinxml.SportEventStatus) *int {
 		n := *s.HomeScore + *s.AwayScore + 1
 		return &n
 	}
+
+	if s.PeriodScores != nil {
+		completed := 0
+		for _, p := range s.PeriodScores.Periods {
+			h := 0
+			a := 0
+			if p.HomeScore != nil {
+				h = *p.HomeScore
+			}
+			if p.AwayScore != nil {
+				a = *p.AwayScore
+			}
+			if h+a > 0 {
+				completed++
+			}
+		}
+		n := completed + 1
+		return &n
+	}
+
 	return nil
 }
