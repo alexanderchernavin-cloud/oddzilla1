@@ -160,20 +160,24 @@ func buildLiveScore(s *oddinxml.SportEventStatus, oddinTsMs int64) ([]byte, erro
 	return json.Marshal(payload)
 }
 
-// deriveCurrentMap returns the 1-indexed map being played right now.
+// deriveCurrentMap returns the 1-indexed period being played right now.
+// "Map" is a CS2/Valorant term, but the field is generic — for basketball
+// it's the current quarter, for football the current half, etc.
+//
 // Heuristic order:
 //
 //  1. The highest period flagged with the UOF "in progress" code 6.
-//     Honored where Oddin uses it (some traditional sports).
-//  2. Top-level series score + 1. This is the most reliable signal for
-//     CS2/Valorant — Oddin emits sport-specific per-period codes
-//     (51/52/53) that are NOT the generic UOF "6 = in progress", so
-//     we cannot infer "completed" from the code itself.
-//  3. Count of periods with a determined winner (homeScore + awayScore
-//     > 0) + 1. Last-resort fallback when only periods are present.
+//     Honored where Oddin uses it (some traditional sports do).
+//  2. Count of periods that have a determined score, plus 1, capped at
+//     the total period count. A period is "started/completed" when it
+//     has any non-zero metric (score, rounds, kills, goals, etc.).
 //
-// Returns nil when the series has ended (status >= 3) or when nothing
-// useful is available.
+// We deliberately do NOT use top-level series home_score + away_score,
+// since for non-map sports (basketball quarters, football halves) those
+// fields hold cumulative game points, not maps-won — adding them
+// produces nonsense like "currentMap = 74".
+//
+// Returns nil when the series has ended (status >= 3).
 func deriveCurrentMap(s *oddinxml.SportEventStatus) *int {
 	if s == nil {
 		return nil
@@ -182,47 +186,66 @@ func deriveCurrentMap(s *oddinxml.SportEventStatus) *int {
 		return nil
 	}
 
-	if s.PeriodScores != nil {
-		var live int
-		liveSet := false
-		for _, p := range s.PeriodScores.Periods {
-			if p.Number == nil || p.MatchStatusCode == nil || *p.MatchStatusCode != 6 {
-				continue
-			}
-			if !liveSet || *p.Number > live {
-				live = *p.Number
-				liveSet = true
-			}
-		}
-		if liveSet {
-			n := live
-			return &n
-		}
+	if s.PeriodScores == nil || len(s.PeriodScores.Periods) == 0 {
+		return nil
 	}
 
-	if s.HomeScore != nil && s.AwayScore != nil {
-		n := *s.HomeScore + *s.AwayScore + 1
+	var live int
+	liveSet := false
+	for _, p := range s.PeriodScores.Periods {
+		if p.Number == nil || p.MatchStatusCode == nil || *p.MatchStatusCode != 6 {
+			continue
+		}
+		if !liveSet || *p.Number > live {
+			live = *p.Number
+			liveSet = true
+		}
+	}
+	if liveSet {
+		n := live
 		return &n
 	}
 
-	if s.PeriodScores != nil {
-		completed := 0
-		for _, p := range s.PeriodScores.Periods {
-			h := 0
-			a := 0
-			if p.HomeScore != nil {
-				h = *p.HomeScore
-			}
-			if p.AwayScore != nil {
-				a = *p.AwayScore
-			}
-			if h+a > 0 {
-				completed++
-			}
+	completed := 0
+	maxNumber := 0
+	for _, p := range s.PeriodScores.Periods {
+		if p.Number != nil && *p.Number > maxNumber {
+			maxNumber = *p.Number
 		}
-		n := completed + 1
-		return &n
+		if periodHasScore(p) {
+			completed++
+		}
 	}
+	n := completed + 1
+	if maxNumber > 0 && n > maxNumber {
+		n = maxNumber
+	}
+	return &n
+}
 
-	return nil
+// periodHasScore returns true when any score-bearing attribute on the
+// period is non-zero. Used to decide whether the period has started.
+func periodHasScore(p oddinxml.PeriodScore) bool {
+	pairs := [][2]*int{
+		{p.HomeScore, p.AwayScore},
+		{p.HomeWonRounds, p.AwayWonRounds},
+		{p.HomeKills, p.AwayKills},
+		{p.HomeGoals, p.AwayGoals},
+		{p.HomeDestroyedTurrets, p.AwayDestroyedTurrets},
+		{p.HomeDestroyedTowers, p.AwayDestroyedTowers},
+	}
+	for _, pair := range pairs {
+		h := 0
+		a := 0
+		if pair[0] != nil {
+			h = *pair[0]
+		}
+		if pair[1] != nil {
+			a = *pair[1]
+		}
+		if h+a > 0 {
+			return true
+		}
+	}
+	return false
 }
