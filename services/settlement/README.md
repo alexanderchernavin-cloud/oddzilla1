@@ -19,6 +19,9 @@ Sub-packages (`internal/`):
   reversal helpers
 - `settler` — dispatcher + per-message-type handlers + payout math
   (`EffectiveFactor`, `SinglePayout`, `LedgerTypeFor`)
+- `sweeper` — periodic stale-ticket sweeper (default 30 min). Notifies
+  `fixture_refresh` for matches with stuck `accepted` tickets in the
+  5h–48h window, and voids+refunds stale legs after 48h.
 - `config` — env parsing with graceful idle when Oddin creds absent
 
 ## Messages handled
@@ -64,6 +67,33 @@ lock contention bounded. Each chunk:
 - reverse `wallet_ledger` via a `bet_refund` row,
 - reset `tickets.status='accepted'`, `ticket_selections.result=NULL`,
 - write an `admin_audit_log` row with the rollback reason.
+
+## Stale-ticket sweeper
+
+A background goroutine in the settlement service handles tickets that
+get left in `accepted` long after their match should have ended —
+typically because Oddin's broker never emitted the `bet_settlement`,
+the message landed for a market we don't have, or our consumer was
+offline through the recovery window.
+
+Runs on its own ticker (default 30 min, env
+`SETTLEMENT_STALE_SWEEP_INTERVAL`). Two phases per tick:
+
+1. **Recovery (5h ≤ age < 48h after `matches.scheduled_at`).** For each
+   match URN with stuck `accepted` tickets, fire
+   `pg_notify('fixture_refresh', urn)`. The feed-ingester listener
+   re-fetches the fixture from Oddin REST and updates `matches.status`.
+   Per-URN cooldown (5 min) inside that listener makes spamming safe.
+2. **Void (age ≥ 48h).** For each ticket with at least one stale
+   unresolved selection, void only the stale leg(s) (`result=void,
+   void_factor=1`) and re-run the settler's `MaybeSettleTicketTx`.
+   Singles refund the stake; combos with one stale leg + one
+   future-match leg keep the ticket open until the future leg
+   resolves. Each void writes an `admin_audit_log` row and a
+   Redis-fanned ticket frame for the user's open session.
+
+Thresholds tunable via `SETTLEMENT_STALE_RECOVERY_AGE_HOURS` (default
+5) and `SETTLEMENT_STALE_VOID_AGE_HOURS` (default 48).
 
 ## Run
 

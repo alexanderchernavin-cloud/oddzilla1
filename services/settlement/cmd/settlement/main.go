@@ -30,6 +30,7 @@ import (
 	"github.com/oddzilla/settlement/internal/config"
 	"github.com/oddzilla/settlement/internal/settler"
 	"github.com/oddzilla/settlement/internal/store"
+	"github.com/oddzilla/settlement/internal/sweeper"
 )
 
 func main() {
@@ -65,8 +66,13 @@ func main() {
 
 	st := store.New(pool)
 	stt := settler.New(st, rdb, cfg.RollbackBatchSize, logger)
+	swp := sweeper.New(sweeper.Config{
+		RecoveryAgeHours: cfg.StaleRecoveryAgeHours,
+		VoidAgeHours:     cfg.StaleVoidAgeHours,
+		Interval:         cfg.StaleSweepInterval,
+	}, st, stt, rdb, logger)
 
-	healthSrv := startHealth(cfg.HealthPort, pool, rdb, stt, logger)
+	healthSrv := startHealth(cfg.HealthPort, pool, rdb, stt, swp, logger)
 	defer func() {
 		shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutCancel()
@@ -78,6 +84,11 @@ func main() {
 	} else {
 		go runAMQP(ctx, cfg, stt, logger)
 	}
+
+	// The stale-ticket sweeper does not depend on AMQP. Run it even when
+	// Oddin creds are absent so any tickets stuck from a previous run get
+	// refunded after the void window.
+	go swp.Run(ctx)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -115,19 +126,23 @@ func runAMQP(ctx context.Context, cfg config.Config, stt *settler.Settler, log z
 }
 
 type healthResp struct {
-	Status        string `json:"status"`
-	Service       string `json:"service"`
-	DB            string `json:"db"`
-	Redis         string `json:"redis"`
-	UptimeSeconds int64  `json:"uptimeSeconds"`
-	Settled       int64  `json:"settled"`
-	Cancelled     int64  `json:"cancelled"`
-	RolledBack    int64  `json:"rolledBack"`
-	Skipped       int64  `json:"skipped"`
-	Errors        int64  `json:"errors"`
+	Status            string `json:"status"`
+	Service           string `json:"service"`
+	DB                string `json:"db"`
+	Redis             string `json:"redis"`
+	UptimeSeconds     int64  `json:"uptimeSeconds"`
+	Settled           int64  `json:"settled"`
+	Cancelled         int64  `json:"cancelled"`
+	RolledBack        int64  `json:"rolledBack"`
+	Skipped           int64  `json:"skipped"`
+	Errors            int64  `json:"errors"`
+	StaleTicks        int64  `json:"staleTicks"`
+	StaleRecoveries   int64  `json:"staleRecoveries"`
+	StaleVoided       int64  `json:"staleVoided"`
+	StaleVoidFailures int64  `json:"staleVoidFailures"`
 }
 
-func startHealth(port string, pool *pgxpool.Pool, rdb *redis.Client, stt *settler.Settler, log zerolog.Logger) *http.Server {
+func startHealth(port string, pool *pgxpool.Pool, rdb *redis.Client, stt *settler.Settler, swp *sweeper.Sweeper, log zerolog.Logger) *http.Server {
 	startedAt := time.Now()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -139,18 +154,23 @@ func startHealth(port string, pool *pgxpool.Pool, rdb *redis.Client, stt *settle
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
 		settled, cancelled, rolled, skipped, errs := stt.Stats()
+		ticks, recov, voided, failed := swp.Stats()
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(healthResp{
-			Status:        status,
-			Service:       "settlement",
-			DB:            okOrDown(dbOk),
-			Redis:         okOrDown(redisOk),
-			UptimeSeconds: int64(time.Since(startedAt).Seconds()),
-			Settled:       settled,
-			Cancelled:     cancelled,
-			RolledBack:    rolled,
-			Skipped:       skipped,
-			Errors:        errs,
+			Status:            status,
+			Service:           "settlement",
+			DB:                okOrDown(dbOk),
+			Redis:             okOrDown(redisOk),
+			UptimeSeconds:     int64(time.Since(startedAt).Seconds()),
+			Settled:           settled,
+			Cancelled:         cancelled,
+			RolledBack:        rolled,
+			Skipped:           skipped,
+			Errors:            errs,
+			StaleTicks:        ticks,
+			StaleRecoveries:   recov,
+			StaleVoided:       voided,
+			StaleVoidFailures: failed,
 		})
 	})
 	srv := &http.Server{

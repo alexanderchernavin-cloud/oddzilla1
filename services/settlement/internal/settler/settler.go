@@ -204,6 +204,15 @@ func (s *Settler) applyMarketSettle(ctx context.Context, eventURN string, ts int
 	return nil
 }
 
+// MaybeSettleTicketTx is the exported entry point used by the periodic
+// stale-ticket sweeper. It runs the same code path as a settlement-
+// triggered settle so payout math, wallet movement, and ref_id
+// generation all stay consistent. Caller owns the surrounding
+// transaction and is responsible for commit/rollback.
+func (s *Settler) MaybeSettleTicketTx(ctx context.Context, tx pgx.Tx, ticketID, sourceTag string) (bool, error) {
+	return s.maybeSettleTicket(ctx, tx, ticketID, sourceTag)
+}
+
 // maybeSettleTicket returns (true, nil) if the ticket transitioned to
 // settled in this tx. Returns (false, nil) if it's locked by another
 // worker (SKIP LOCKED miss), already settled, or has unresolved

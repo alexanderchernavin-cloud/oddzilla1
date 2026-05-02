@@ -101,7 +101,7 @@ gracefully:
 | --- | --- | --- |
 | api | DATABASE_URL, REDIS_URL, JWT_SECRET, REFRESH_COOKIE_SECRET | HD_MASTER_MNEMONIC absent → `/wallet/deposit-addresses` returns 500 |
 | feed-ingester | DATABASE_URL, REDIS_URL | ODDIN_TOKEN+ODDIN_CUSTOMER_ID absent → idle, health-only |
-| settlement | DATABASE_URL, REDIS_URL | ODDIN_TOKEN+ODDIN_CUSTOMER_ID absent → idle, health-only |
+| settlement | DATABASE_URL, REDIS_URL | ODDIN_TOKEN+ODDIN_CUSTOMER_ID absent → AMQP idle, but stale-ticket sweeper still runs (refunds tickets stuck >48h) |
 | odds-publisher | DATABASE_URL, REDIS_URL | none — runs as soon as redis stream `odds.raw` has entries |
 | bet-delay | DATABASE_URL, REDIS_URL | none |
 | wallet-watcher | DATABASE_URL | TRON_RPC_URL absent → TRC20 scanner disabled. ETH_RPC_URL absent → ERC20 scanner disabled. Both absent → idle, health-only |
