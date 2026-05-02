@@ -94,15 +94,20 @@ func TestBuildLiveScore_CS2_LiveSecondMap(t *testing.T) {
 	}
 }
 
-func TestBuildLiveScore_CurrentMap_FallbackToCompletedPlusOne(t *testing.T) {
-	// One ended map, no live flag — current map should be number+1.
+func TestBuildLiveScore_CurrentMap_CountStartedPeriods(t *testing.T) {
+	// One started/finished period (rounds played), one not started yet.
+	// No code=6 anywhere — must fall back to "started count + 1".
 	s := &oddinxml.SportEventStatus{
 		Status:    ptr(1),
 		HomeScore: ptr(1),
 		AwayScore: ptr(0),
 		PeriodScores: &oddinxml.PeriodScores{
 			Periods: []oddinxml.PeriodScore{
-				{Number: ptr(1), Type: "map", MatchStatusCode: ptr(100)},
+				{
+					Number: ptr(1), Type: "map", MatchStatusCode: ptr(100),
+					HomeWonRounds: ptr(16), AwayWonRounds: ptr(12),
+				},
+				{Number: ptr(2), Type: "map", MatchStatusCode: ptr(101)},
 			},
 		},
 	}
@@ -112,16 +117,38 @@ func TestBuildLiveScore_CurrentMap_FallbackToCompletedPlusOne(t *testing.T) {
 	}
 }
 
-func TestBuildLiveScore_CurrentMap_FallbackToSeriesScore(t *testing.T) {
-	// No periods reported yet, but series at 2-1 → next map is 4.
+func TestBuildLiveScore_CurrentMap_NilWithoutPeriods(t *testing.T) {
+	// No periods → cannot infer current period number. Top-level series
+	// score must NOT be summed (it's points/goals for non-map sports).
 	s := &oddinxml.SportEventStatus{
 		Status:    ptr(1),
 		HomeScore: ptr(2),
 		AwayScore: ptr(1),
 	}
+	if cm := deriveCurrentMap(s); cm != nil {
+		t.Fatalf("expected nil currentMap without periods, got %v", cm)
+	}
+}
+
+func TestBuildLiveScore_CurrentMap_BasketballQuarters(t *testing.T) {
+	// Real production basketball shape: home_score=20, away_score=53 are
+	// game points (not maps won). Must NOT compute currentMap = 74.
+	s := &oddinxml.SportEventStatus{
+		Status:    ptr(1),
+		HomeScore: ptr(20),
+		AwayScore: ptr(53),
+		PeriodScores: &oddinxml.PeriodScores{
+			Periods: []oddinxml.PeriodScore{
+				{Number: ptr(1), Type: "quarter", HomeScore: ptr(6), AwayScore: ptr(18)},
+				{Number: ptr(2), Type: "quarter", HomeScore: ptr(6), AwayScore: ptr(18)},
+				{Number: ptr(3), Type: "quarter", HomeScore: ptr(8), AwayScore: ptr(17)},
+				{Number: ptr(4), Type: "quarter", HomeScore: ptr(0), AwayScore: ptr(0)},
+			},
+		},
+	}
 	cm := deriveCurrentMap(s)
 	if cm == nil || *cm != 4 {
-		t.Fatalf("expected currentMap=4, got %v", cm)
+		t.Fatalf("expected currentMap=4 (basketball Q4), got %v", cm)
 	}
 }
 
