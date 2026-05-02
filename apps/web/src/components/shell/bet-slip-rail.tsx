@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { toMicro } from "@oddzilla/types/money";
+import { fromMicro, toMicro } from "@oddzilla/types/money";
 import { SUPPORTED_CURRENCIES, type Currency } from "@oddzilla/types/currencies";
 // Runtime imports MUST come from the /products subpath (mirrors the
 // currencies workaround) — Next.js webpack can't resolve ".js" imports
@@ -13,12 +13,19 @@ import { parseProbability, priceTiple, priceTippot } from "@oddzilla/types/produ
 import type { TippotTier } from "@oddzilla/types/products";
 import { useBetSlip, type SlipMode } from "@/lib/bet-slip";
 import { useLiveOddsForMatches } from "@/lib/use-live-odds";
+import { useTicketStream } from "@/lib/use-ticket-stream";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { I } from "@/components/ui/icons";
 import { Button } from "@/components/ui/primitives";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { useMobileDrawers } from "./mobile-drawer-context";
-import type { SlipSelection } from "@oddzilla/types";
+import type {
+  SlipSelection,
+  TicketListResponse,
+  TicketStatus,
+  TicketSummary,
+  WsTicketFrame,
+} from "@oddzilla/types";
 
 // Default product margins for the client-side preview. The server is
 // authoritative — it loads bet_product_config and computes the effective
@@ -38,6 +45,8 @@ function effectiveMarginBp(baseBp: number, perLegBp: number, n: number): number 
 
 const DRIFT_ERROR_MESSAGE = "The odds moved since you clicked. Try again.";
 
+type RailTab = "slip" | "history";
+
 export function BetSlipRail() {
   const slip = useBetSlip();
   const selections = slip.selections;
@@ -48,6 +57,7 @@ export function BetSlipRail() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [placedTicketId, setPlacedTicketId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<RailTab>("slip");
 
   // Drop the success view as soon as the user starts a new slip — otherwise
   // the post-placement screen would shadow new picks indefinitely.
@@ -56,6 +66,17 @@ export function BetSlipRail() {
       setPlacedTicketId(null);
     }
   }, [selections.length, placedTicketId]);
+
+  // When a new selection is added (count goes up) while the user is on the
+  // history tab, jump back to the slip so the freshly clicked pick is
+  // visible. Manual tab switches without selection changes are preserved.
+  const prevSelectionCount = useRef(selections.length);
+  useEffect(() => {
+    if (selections.length > prevSelectionCount.current && activeTab === "history") {
+      setActiveTab("slip");
+    }
+    prevSelectionCount.current = selections.length;
+  }, [selections.length, activeTab]);
 
   // Subscribe to live odds for every match in the slip. When a tick
   // arrives we refresh the stored selection in place — that way the user
@@ -218,6 +239,10 @@ export function BetSlipRail() {
       setPlacedTicketId(res.ticket.id);
       slip.clear();
       router.refresh();
+      // Surface the new ticket in-rail by flipping to History — the slip
+      // body now also shows a placement-success card, but the user usually
+      // wants to watch their fresh ticket pick up status.
+      setActiveTab("history");
     } catch (err) {
       setError(err instanceof ApiFetchError ? mapError(err) : "Placement failed.");
     } finally {
@@ -244,81 +269,89 @@ export function BetSlipRail() {
       <span className="oz-rail-handle" aria-hidden="true" />
       <div
         style={{
-          padding: "18px 20px 14px",
+          padding: "14px 20px 12px",
           display: "flex",
-          alignItems: "center",
+          flexDirection: "column",
           gap: 10,
           borderBottom: "1px solid var(--hairline)",
         }}
       >
-        <I.Ticket size={16} />
-        <span
-          className="display"
-          style={{ fontSize: 16, fontWeight: 500, letterSpacing: "-0.01em" }}
-        >
-          Bet slip
-        </span>
-        {selections.length > 0 && (
-          <span
-            className="mono"
-            style={{
-              fontSize: 10.5,
-              padding: "2px 8px",
-              background: isMulti ? "var(--fg)" : "var(--surface-2)",
-              color: isMulti ? "var(--bg)" : "var(--fg-muted)",
-              border: isMulti ? "1px solid var(--fg)" : "1px solid var(--border)",
-              borderRadius: 999,
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-              fontWeight: 600,
-            }}
-          >
-            {effectiveMode === "single"
-              ? "Single"
-              : `${effectiveMode} · ${selections.length}`}
-          </span>
-        )}
-        <div style={{ flex: 1 }} />
-        {selections.length > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <RailTabs
+            active={activeTab}
+            onChange={setActiveTab}
+            slipCount={selections.length}
+          />
+          <div style={{ flex: 1 }} />
+          {activeTab === "slip" && selections.length > 0 && (
+            <button
+              type="button"
+              onClick={slip.clear}
+              style={{
+                background: 0,
+                border: 0,
+                color: "var(--fg-muted)",
+                fontSize: 12,
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              Clear
+            </button>
+          )}
           <button
             type="button"
-            onClick={slip.clear}
+            onClick={closeAll}
+            className="oz-rail-close"
+            aria-label="Close bet slip"
             style={{
-              background: 0,
-              border: 0,
+              width: 28,
+              height: 28,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "var(--surface-2)",
+              border: "1px solid var(--border)",
+              borderRadius: 999,
               color: "var(--fg-muted)",
-              fontSize: 12,
               cursor: "pointer",
-              fontFamily: "inherit",
+              padding: 0,
+              marginLeft: 4,
             }}
           >
-            Clear
+            <I.Close size={12} />
           </button>
+        </div>
+        {activeTab === "slip" && selections.length > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span
+              className="mono"
+              style={{
+                fontSize: 10.5,
+                padding: "2px 8px",
+                background: isMulti ? "var(--fg)" : "var(--surface-2)",
+                color: isMulti ? "var(--bg)" : "var(--fg-muted)",
+                border: isMulti
+                  ? "1px solid var(--fg)"
+                  : "1px solid var(--border)",
+                borderRadius: 999,
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+                fontWeight: 600,
+              }}
+            >
+              {effectiveMode === "single"
+                ? "Single"
+                : `${effectiveMode} · ${selections.length}`}
+            </span>
+          </div>
         )}
-        <button
-          type="button"
-          onClick={closeAll}
-          className="oz-rail-close"
-          aria-label="Close bet slip"
-          style={{
-            width: 28,
-            height: 28,
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            background: "var(--surface-2)",
-            border: "1px solid var(--border)",
-            borderRadius: 999,
-            color: "var(--fg-muted)",
-            cursor: "pointer",
-            padding: 0,
-            marginLeft: 4,
-          }}
-        >
-          <I.Close size={12} />
-        </button>
       </div>
 
+      {activeTab === "history" ? (
+        <HistoryPane highlightTicketId={placedTicketId} />
+      ) : (
+        <>
       <div
         style={{
           minHeight: 0,
@@ -640,6 +673,8 @@ export function BetSlipRail() {
             Odds may update before acceptance.
           </div>
         </form>
+      )}
+        </>
       )}
     </aside>
   );
@@ -1012,6 +1047,395 @@ function TippotTierTable({ tiers, stake }: { tiers: TippotTier[]; stake: number 
         Locked at placement. Voids drop legs; payout uses the row matching
         the count of winning legs in the remainder.
       </div>
+    </div>
+  );
+}
+
+function RailTabs({
+  active,
+  onChange,
+  slipCount,
+}: {
+  active: RailTab;
+  onChange: (t: RailTab) => void;
+  slipCount: number;
+}) {
+  const tabs: Array<{ id: RailTab; label: string; icon: "ticket" | "history" }> = [
+    { id: "slip", label: "Slip", icon: "ticket" },
+    { id: "history", label: "History", icon: "history" },
+  ];
+  return (
+    <div role="tablist" aria-label="Bet slip view" style={{ display: "flex", gap: 4 }}>
+      {tabs.map((t) => {
+        const isActive = active === t.id;
+        return (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={isActive}
+            onClick={() => onChange(t.id)}
+            className="display"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "4px 2px",
+              fontSize: 16,
+              fontWeight: 500,
+              letterSpacing: "-0.01em",
+              background: 0,
+              border: 0,
+              borderBottom: isActive
+                ? "2px solid var(--fg)"
+                : "2px solid transparent",
+              color: isActive ? "var(--fg)" : "var(--fg-muted)",
+              cursor: isActive ? "default" : "pointer",
+              fontFamily: "inherit",
+              marginBottom: -1,
+            }}
+          >
+            {t.icon === "ticket" ? <I.Ticket size={14} /> : <I.Clock size={14} />}
+            <span>{t.label}</span>
+            {t.id === "slip" && slipCount > 0 && !isActive && (
+              <span
+                className="mono tnum"
+                style={{
+                  fontSize: 10,
+                  fontWeight: 600,
+                  padding: "1px 6px",
+                  background: "var(--fg)",
+                  color: "var(--bg)",
+                  borderRadius: 999,
+                  letterSpacing: 0,
+                  marginLeft: 2,
+                }}
+              >
+                {slipCount}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+const HISTORY_STATUS_LABEL: Record<TicketStatus, string> = {
+  pending_delay: "Pending",
+  accepted: "Accepted",
+  rejected: "Rejected",
+  settled: "Settled",
+  voided: "Voided",
+  cashed_out: "Cashed out",
+};
+
+function resolveHistoryBadge(t: TicketSummary): {
+  label: string;
+  color: string;
+} {
+  if (t.status === "settled") {
+    const won =
+      t.actualPayoutMicro != null && BigInt(t.actualPayoutMicro) > 0n;
+    return won
+      ? { label: "Won", color: "var(--positive)" }
+      : { label: "Lost", color: "var(--negative)" };
+  }
+  if (t.status === "rejected") return { label: "Rejected", color: "var(--negative)" };
+  if (t.status === "pending_delay") return { label: "Pending", color: "var(--warning, var(--fg-muted))" };
+  if (t.status === "accepted") return { label: "Accepted", color: "var(--fg)" };
+  return { label: HISTORY_STATUS_LABEL[t.status], color: "var(--fg-muted)" };
+}
+
+function HistoryPane({ highlightTicketId }: { highlightTicketId: string | null }) {
+  const [tickets, setTickets] = useState<TicketSummary[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Lazy fetch on first mount of the pane. The /bets full page already
+  // has its own SSR fetch — this one is independent and lighter (capped
+  // at 20 rows since the rail is narrow).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await clientApi<TicketListResponse>("/bets?limit=20");
+        if (!cancelled) setTickets(data.tickets ?? []);
+      } catch (e) {
+        if (!cancelled) {
+          setError(
+            e instanceof ApiFetchError && e.status === 401
+              ? "Sign in to see your bet history."
+              : "Could not load bet history.",
+          );
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Live ticket frames update status in place — same pattern as the full
+  // /bets page so the rail stays consistent without polling.
+  useTicketStream(
+    useCallback((frame: WsTicketFrame) => {
+      setTickets((prev) =>
+        prev
+          ? prev.map((t) =>
+              t.id === frame.ticketId
+                ? {
+                    ...t,
+                    status: frame.status,
+                    rejectReason: frame.rejectReason ?? t.rejectReason,
+                    actualPayoutMicro:
+                      frame.actualPayoutMicro ?? t.actualPayoutMicro,
+                  }
+                : t,
+            )
+          : prev,
+      );
+    }, []),
+  );
+
+  return (
+    <div
+      style={{
+        minHeight: 0,
+        flex: 1,
+        overflow: "auto",
+        padding: "12px 16px 18px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+      }}
+    >
+      {error ? (
+        <div
+          role="alert"
+          style={{
+            fontSize: 12,
+            color: "var(--fg-muted)",
+            padding: "20px 0",
+            textAlign: "center",
+            lineHeight: 1.5,
+          }}
+        >
+          {error}
+        </div>
+      ) : tickets === null ? (
+        <div
+          style={{
+            fontSize: 12,
+            color: "var(--fg-muted)",
+            padding: "20px 0",
+            textAlign: "center",
+          }}
+        >
+          Loading…
+        </div>
+      ) : tickets.length === 0 ? (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: 8,
+            textAlign: "center",
+            padding: "12px 20px 20px",
+            color: "var(--fg-muted)",
+          }}
+        >
+          <div
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 999,
+              background: "var(--surface-2)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "var(--fg-dim)",
+            }}
+          >
+            <I.Clock size={18} />
+          </div>
+          <div
+            className="display"
+            style={{ fontSize: 15, color: "var(--fg)", letterSpacing: "-0.01em" }}
+          >
+            No bets yet
+          </div>
+          <div
+            style={{
+              fontSize: 12,
+              color: "var(--fg-muted)",
+              maxWidth: 220,
+              lineHeight: 1.5,
+            }}
+          >
+            Once you place a bet it will appear here and on your full bet
+            history page.
+          </div>
+        </div>
+      ) : (
+        <>
+          {tickets.map((t) => (
+            <HistoryTicketCard
+              key={t.id}
+              ticket={t}
+              highlight={t.id === highlightTicketId}
+            />
+          ))}
+          <Link
+            href="/bets"
+            style={{
+              marginTop: 4,
+              fontSize: 12,
+              color: "var(--fg-muted)",
+              textDecoration: "underline",
+              textAlign: "center",
+            }}
+          >
+            View full history →
+          </Link>
+        </>
+      )}
+    </div>
+  );
+}
+
+function HistoryTicketCard({
+  ticket,
+  highlight,
+}: {
+  ticket: TicketSummary;
+  highlight: boolean;
+}) {
+  const stake = fromMicro(BigInt(ticket.stakeMicro));
+  const potential = fromMicro(BigInt(ticket.potentialPayoutMicro));
+  const actual = ticket.actualPayoutMicro
+    ? fromMicro(BigInt(ticket.actualPayoutMicro))
+    : null;
+  const badge = resolveHistoryBadge(ticket);
+  const first = ticket.selections[0];
+  const legCount = ticket.selections.length;
+  const matchHref = first?.market ? `/match/${first.market.matchId}` : null;
+  const placedAt = new Date(ticket.placedAt);
+  const placedLabel = Number.isFinite(placedAt.getTime())
+    ? placedAt.toLocaleString(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : ticket.placedAt;
+
+  return (
+    <div
+      style={{
+        padding: "12px 14px",
+        background: highlight
+          ? "color-mix(in oklab, var(--positive) 7%, var(--surface))"
+          : "var(--surface)",
+        border: highlight
+          ? "1px solid color-mix(in oklab, var(--positive) 35%, var(--border))"
+          : "1px solid var(--border)",
+        borderRadius: 10,
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        {first?.market ? (
+          <SportGlyph sport={first.market.sportSlug} size={12} />
+        ) : (
+          <I.Ticket size={12} />
+        )}
+        <span
+          className="mono"
+          style={{
+            fontSize: 10,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            color: "var(--fg-dim)",
+          }}
+        >
+          {ticket.betType}
+          {legCount > 1 ? ` · ${legCount} legs` : ""}
+        </span>
+        <div style={{ flex: 1 }} />
+        <span
+          className="mono"
+          style={{
+            fontSize: 10,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            color: badge.color,
+            fontWeight: 600,
+          }}
+        >
+          {badge.label}
+        </span>
+      </div>
+      {first?.market ? (
+        <div
+          style={{
+            fontSize: 13,
+            fontWeight: 500,
+            letterSpacing: "-0.005em",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {first.market.homeTeam}{" "}
+          <span style={{ color: "var(--fg-muted)" }}>vs</span>{" "}
+          {first.market.awayTeam}
+          {legCount > 1 ? (
+            <span style={{ color: "var(--fg-muted)" }}> +{legCount - 1}</span>
+          ) : null}
+        </div>
+      ) : (
+        <div style={{ fontSize: 13, color: "var(--fg-muted)" }}>
+          Selection metadata unavailable
+        </div>
+      )}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "baseline",
+          justifyContent: "space-between",
+          gap: 10,
+        }}
+      >
+        <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>
+          {placedLabel}
+        </span>
+        <span
+          className="mono tnum"
+          style={{ fontSize: 12, color: "var(--fg-muted)" }}
+        >
+          {stake} → {actual ?? potential} {ticket.currency}
+        </span>
+      </div>
+      {ticket.rejectReason ? (
+        <div style={{ fontSize: 11, color: "var(--negative)" }}>
+          {ticket.rejectReason}
+        </div>
+      ) : null}
+      {matchHref ? (
+        <Link
+          href={matchHref}
+          style={{
+            fontSize: 11,
+            color: "var(--fg-muted)",
+            textDecoration: "underline",
+          }}
+        >
+          View match →
+        </Link>
+      ) : null}
     </div>
   );
 }
