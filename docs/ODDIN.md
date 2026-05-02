@@ -214,6 +214,57 @@ Per-game notes:
 | Dota 2 | `map=1..5` (BO3 typical). No map-end signal; score updates live. | `home_kills`, `away_kills` |
 | LoL | `map=1..5`. Score updates live. | `home_kills`, `away_kills`, `home_destroyed_turrets`, `away_destroyed_turrets` |
 
+## Live scoreboard (`<sport_event_status>`)
+
+Every `odds_change` carries an optional `<sport_event_status>` block (Oddin
+inherits the Sportradar UOF `sportEventStatus` XSD). Shape:
+
+```xml
+<odds_change ...>
+  <sport_event_status status="1" match_status="6" home_score="1" away_score="0">
+    <period_scores>
+      <period_score number="1" type="map" match_status_code="100"
+        home_score="16" away_score="12" home_won_rounds="16" away_won_rounds="12"/>
+      <period_score number="2" type="map" match_status_code="6"
+        home_score="5" away_score="7" home_won_rounds="5" away_won_rounds="7"/>
+    </period_scores>
+    <scoreboard home_won_rounds="5" away_won_rounds="7"
+      current_ct_team="1" current_def_team="2" time="12:34"/>
+  </sport_event_status>
+  <odds>...</odds>
+</odds_change>
+```
+
+- `home_score`/`away_score` (top-level) = the **series score** (number of
+  maps won).
+- `<period_score>` rows = one entry per map with the per-map metric. CS2 /
+  Valorant fill `home_won_rounds` / `away_won_rounds`; Dota 2 / LoL fill
+  `home_kills` / `away_kills` (LoL also fills `home_destroyed_turrets`).
+  `match_status_code=6` flags the period as in-progress; `>=100` means
+  it's ended.
+- `<scoreboard>` = live state of the **current map only**. Same field
+  vocabulary as `<period_score>` plus chrono attrs (`time`, `game_time`,
+  `remaining_game_time`).
+
+Decoded by `services/feed-ingester/internal/oddinxml/messages.go`
+(`SportEventStatus`, `PeriodScores`, `PeriodScore`, `Scoreboard`).
+Persisted to `matches.live_score` (jsonb) by `handleOddsChange`
+via `buildLiveScore` →
+`store.UpdateMatchLiveScore` —
+see [`services/feed-ingester/internal/handler/livescore.go`](../services/feed-ingester/internal/handler/livescore.go).
+
+The persisted JSON keeps `home`/`away` at the top level so legacy
+list-card consumers (`apps/web/src/components/match/match-row.tsx`)
+keep working. Per-map detail lives under `periods[]`; live state of
+the in-progress map under `scoreboard`. `currentMap` (1-indexed) is
+derived from the period with `match_status_code=6`, falling back to
+`max(period.number) + 1`, then to `home + away + 1`.
+
+REST equivalent: `GET /v1/sports/en/sport_events/{matchURN}/summary`
+returns the same `sportEventStatus` shape inside `<match_summary>`.
+Not currently called — odds_change messages already carry the same
+data on every tick.
+
 ## Specifier canonicalization (invariant)
 
 Both `feed-ingester` and `settlement` must produce byte-identical output for

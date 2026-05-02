@@ -23,7 +23,76 @@ type OddsChange struct {
 	Timestamp int64    `xml:"timestamp,attr"`  // ms since epoch
 	Request   *int64   `xml:"request_id,attr"` // set on snapshot recovery
 
-	Odds *OddsBlock `xml:"odds"`
+	SportEventStatus *SportEventStatus `xml:"sport_event_status"`
+	Odds             *OddsBlock        `xml:"odds"`
+}
+
+// SportEventStatus is the live scoreboard block carried inside odds_change
+// (and inside REST /v1/sports/en/sport_events/{urn}/summary). Shape mirrors
+// Sportradar UOF's sportEventStatus type — Oddin keeps the same XSD.
+//
+// `home_score`/`away_score` are the series score (number of maps won, etc.).
+// Per-map detail lives in <period_scores>; the live state of the current
+// map lives in <scoreboard>. Both children are optional and absent on
+// pre-match snapshots.
+type SportEventStatus struct {
+	Status              *int          `xml:"status,attr"`              // 0..9 lifecycle code
+	MatchStatus         *int          `xml:"match_status,attr"`        // sport-specific in-game phase (live=6, ended=100, …)
+	HomeScore           *int          `xml:"home_score,attr"`          // series score (maps won)
+	AwayScore           *int          `xml:"away_score,attr"`
+	ScoreboardAvailable string        `xml:"scoreboard_available,attr"`
+	PeriodScores        *PeriodScores `xml:"period_scores"`
+	Scoreboard          *Scoreboard   `xml:"scoreboard"`
+}
+
+type PeriodScores struct {
+	Periods []PeriodScore `xml:"period_score"`
+}
+
+// PeriodScore is one row inside <period_scores>. For CS2/Valorant `type` is
+// "map" and `home_won_rounds`/`away_won_rounds` carry the per-map round
+// score; for Dota 2 / LoL `home_kills` / `away_kills` carry the per-map
+// kill count. Generic `home_score`/`away_score` is the headline per-map
+// number (rounds for CS2, kills for Dota, goals for football, etc.).
+type PeriodScore struct {
+	Number               *int   `xml:"number,attr"`
+	Type                 string `xml:"type,attr"`
+	MatchStatusCode      *int   `xml:"match_status_code,attr"`
+	HomeScore            *int   `xml:"home_score,attr"`
+	AwayScore            *int   `xml:"away_score,attr"`
+	HomeWonRounds        *int   `xml:"home_won_rounds,attr"`
+	AwayWonRounds        *int   `xml:"away_won_rounds,attr"`
+	HomeKills            *int   `xml:"home_kills,attr"`
+	AwayKills            *int   `xml:"away_kills,attr"`
+	HomeGoals            *int   `xml:"home_goals,attr"`
+	AwayGoals            *int   `xml:"away_goals,attr"`
+	HomeDestroyedTurrets *int   `xml:"home_destroyed_turrets,attr"`
+	AwayDestroyedTurrets *int   `xml:"away_destroyed_turrets,attr"`
+	HomeDestroyedTowers  *int   `xml:"home_destroyed_towers,attr"`
+	AwayDestroyedTowers  *int   `xml:"away_destroyed_towers,attr"`
+}
+
+// Scoreboard is the live state of the current period (map). Field names
+// reflect the union of attributes Oddin emits across our supported
+// esports — only the ones relevant to the current sport are populated.
+type Scoreboard struct {
+	CurrentCtTeam        *int   `xml:"current_ct_team,attr"`
+	CurrentDefTeam       *int   `xml:"current_def_team,attr"`
+	HomeWonRounds        *int   `xml:"home_won_rounds,attr"`
+	AwayWonRounds        *int   `xml:"away_won_rounds,attr"`
+	HomeKills            *int   `xml:"home_kills,attr"`
+	AwayKills            *int   `xml:"away_kills,attr"`
+	HomeDestroyedTurrets *int   `xml:"home_destroyed_turrets,attr"`
+	AwayDestroyedTurrets *int   `xml:"away_destroyed_turrets,attr"`
+	HomeDestroyedTowers  *int   `xml:"home_destroyed_towers,attr"`
+	AwayDestroyedTowers  *int   `xml:"away_destroyed_towers,attr"`
+	HomeGold             *int   `xml:"home_gold,attr"`
+	AwayGold             *int   `xml:"away_gold,attr"`
+	HomeGoals            *int   `xml:"home_goals,attr"`
+	AwayGoals            *int   `xml:"away_goals,attr"`
+	Time                 string `xml:"time,attr"`
+	GameTime             *int   `xml:"game_time,attr"`
+	RemainingGameTime    *int   `xml:"remaining_game_time,attr"`
 }
 
 type OddsBlock struct {

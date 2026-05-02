@@ -275,6 +275,31 @@ func UpdateMatchStatus(ctx context.Context, db pgxRunner, matchID int64, status 
 	return nil
 }
 
+// UpdateMatchLiveScore writes the JSON-encoded scoreboard payload to
+// matches.live_score. Called from handleOddsChange whenever a message
+// includes a <sport_event_status> block. `payload` must already be valid
+// JSON; pass nil to clear the column.
+func UpdateMatchLiveScore(ctx context.Context, db pgxRunner, matchID int64, payload []byte) error {
+	if payload == nil {
+		_, err := db.Exec(ctx,
+			`UPDATE matches SET live_score = NULL, updated_at = NOW() WHERE id = $1`,
+			matchID,
+		)
+		if err != nil {
+			return fmt.Errorf("clear match live_score: %w", err)
+		}
+		return nil
+	}
+	_, err := db.Exec(ctx,
+		`UPDATE matches SET live_score = $2::jsonb, updated_at = NOW() WHERE id = $1`,
+		matchID, payload,
+	)
+	if err != nil {
+		return fmt.Errorf("update match live_score: %w", err)
+	}
+	return nil
+}
+
 // EnsureCategoryForSport returns (id, inserted, err) for the auto-mapped
 // category that sits directly under the given sport. Categories from Oddin
 // don't always exist in the source feed — we keep one synthetic "Auto" row

@@ -156,6 +156,19 @@ func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 		return fmt.Errorf("resolve match %s: %w", msg.EventID, err)
 	}
 
+	// Persist the live scoreboard if Oddin attached one. This block is
+	// best-effort: missing or malformed score data must never block odds
+	// publishing — the markets themselves are the value-bearing payload.
+	if msg.SportEventStatus != nil {
+		if payload, perr := buildLiveScore(msg.SportEventStatus, msg.Timestamp); perr == nil && payload != nil {
+			if uerr := store.UpdateMatchLiveScore(ctx, d.Store.Pool(), matchID, payload); uerr != nil {
+				d.Log.Warn().Err(uerr).Int64("match_id", matchID).Msg("update live_score failed; continuing")
+			}
+		} else if perr != nil {
+			d.Log.Warn().Err(perr).Int64("match_id", matchID).Msg("build live_score payload failed; continuing")
+		}
+	}
+
 	events := make([]bus.OddsEvent, 0, 32)
 
 	for _, m := range msg.Odds.Markets {
