@@ -13,4 +13,5 @@ export * from "./bet-products.js";
 export * from "./settlements.js";
 export * from "./admin.js";
 export * from "./feed.js";
+export * from "./fe-settings.js";
 export * from "../enums.js";

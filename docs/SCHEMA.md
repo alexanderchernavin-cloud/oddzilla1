@@ -29,6 +29,13 @@ Canonical SQL lives in [`../packages/db/migrations/`](../packages/db/migrations/
   combo's overround compounds via its odds product. Tippot defaults to
   0 + 500 (5% per leg compounded — N=5 ≈ 27.6%); Tiple stays at 1500 + 0
   (flat 15%).
+- `0019_fe_market_display_order.sql` — `fe_market_display_order` table
+  keyed by `(sport_id, provider_market_id)` with `display_order INTEGER`.
+  Per-sport storefront override of the default `provider_market_id`
+  ascending order on the match-detail page. Smaller `display_order` =
+  higher priority; markets with no row fall back to the legacy default
+  (provider_market_id ascending). Configured via
+  `/admin/fe-settings/markets-order`, consulted by `/catalog/matches/:id`.
 
 Drizzle mirror is [`../packages/db/src/schema/`](../packages/db/src/schema/).
 

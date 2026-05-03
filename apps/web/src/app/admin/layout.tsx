@@ -62,6 +62,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
             <Link href="/admin/logs" className="hover:text-[var(--color-fg)]">
               Logs
             </Link>
+            <Link href="/admin/fe-settings/markets-order" className="hover:text-[var(--color-fg)]">
+              FE Settings
+            </Link>
             <Link href="/account" className="hover:text-[var(--color-fg)]">
               Exit admin
             </Link>
