@@ -594,6 +594,25 @@ export default async function catalogRoutes(app: FastifyInstance) {
     // sort by provider_market_id so a given scope's markets arrive in a
     // stable order on the client.
     const marketList = Array.from(marketMap.values());
+    // Sort outcomes inside each market by Oddin's canonical outcome_id —
+    // numeric ids ("1"=home, "2"=away, "3"=draw) come first in ascending
+    // order, so the home/P1 button is always leftmost. Non-numeric ids
+    // (URNs like od:competitor:N for outright winners, "under"/"over" for
+    // totals, …) keep insertion order behind the numeric block. PG
+    // returns outcomes in undefined order without ORDER BY, which made
+    // home/away appear randomly swapped on the match-detail UI.
+    for (const m of marketList) {
+      m.outcomes.sort((a, b) => {
+        const ai = Number.parseInt(a.outcomeId, 10);
+        const bi = Number.parseInt(b.outcomeId, 10);
+        const aNum = Number.isFinite(ai) && String(ai) === a.outcomeId;
+        const bNum = Number.isFinite(bi) && String(bi) === b.outcomeId;
+        if (aNum && bNum) return ai - bi;
+        if (aNum) return -1;
+        if (bNum) return 1;
+        return 0;
+      });
+    }
     const scopeMap = new Map<string, { id: string; label: string; order: number; markets: MarketRow[] }>();
     for (const m of marketList) {
       const g = scopeMap.get(m.scope.id) ?? { ...m.scope, markets: [] as MarketRow[] };
