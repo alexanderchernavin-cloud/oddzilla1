@@ -29,6 +29,7 @@ import adminUsersRoutes from "./modules/admin/users.js";
 import adminAuditRoutes from "./modules/admin/audit.js";
 import adminFeedRoutes from "./modules/admin/feed.js";
 import adminLogsRoutes from "./modules/admin/logs.js";
+import adminFeSettingsRoutes from "./modules/admin/fe-settings.js";
 import { ApiError } from "./lib/errors.js";
 
 const env = loadEnv();
@@ -141,6 +142,7 @@ await app.register(adminUsersRoutes);
 await app.register(adminAuditRoutes);
 await app.register(adminFeedRoutes);
 await app.register(adminLogsRoutes);
+await app.register(adminFeSettingsRoutes);
 
 app.get("/", async () => ({ service: "oddzilla-api", status: "ok" }));
 

@@ -26,6 +26,7 @@ import {
   outcomeDescriptions,
   competitorProfiles,
   playerProfiles,
+  feMarketDisplayOrder,
 } from "@oddzilla/db";
 import { NotFoundError } from "../../lib/errors.js";
 
@@ -591,8 +592,10 @@ export default async function catalogRoutes(app: FastifyInstance) {
     }
 
     // Group markets by scope (Match / Map 1 / Map 2 / …). Within a group
-    // sort by provider_market_id so a given scope's markets arrive in a
-    // stable order on the client.
+    // honour the per-sport admin ordering from fe_market_display_order;
+    // markets without an explicit row fall back to provider_market_id
+    // ascending (the legacy default). The override table is small —
+    // typically <50 rows per sport — so a per-request fetch is cheap.
     const marketList = Array.from(marketMap.values());
     // Sort outcomes inside each market by Oddin's canonical outcome_id —
     // numeric ids ("1"=home, "2"=away, "3"=draw) come first in ascending
@@ -620,8 +623,35 @@ export default async function catalogRoutes(app: FastifyInstance) {
       scopeMap.set(m.scope.id, g);
     }
     const groups = Array.from(scopeMap.values()).sort((a, b) => a.order - b.order);
+
+    const orderRows = await app.db
+      .select({
+        providerMarketId: feMarketDisplayOrder.providerMarketId,
+        displayOrder: feMarketDisplayOrder.displayOrder,
+      })
+      .from(feMarketDisplayOrder)
+      .where(eq(feMarketDisplayOrder.sportId, match.sportId));
+    const adminOrderByMarket = new Map<number, number>();
+    for (const r of orderRows) adminOrderByMarket.set(r.providerMarketId, r.displayOrder);
+
+    const sortKey = (m: MarketRow): [number, number, number] => {
+      const admin = adminOrderByMarket.get(m.providerMarketId);
+      // Configured rows render first (group 0), unranked after (group 1).
+      // Within a group: configured by displayOrder asc; unranked by
+      // providerMarketId asc. The third tuple element is providerMarketId
+      // as a deterministic tiebreaker for repeated configured ids.
+      return admin == null
+        ? [1, m.providerMarketId, m.providerMarketId]
+        : [0, admin, m.providerMarketId];
+    };
     for (const g of groups) {
-      g.markets.sort((a, b) => a.providerMarketId - b.providerMarketId);
+      g.markets.sort((a, b) => {
+        const ka = sortKey(a);
+        const kb = sortKey(b);
+        if (ka[0] !== kb[0]) return ka[0] - kb[0];
+        if (ka[1] !== kb[1]) return ka[1] - kb[1];
+        return ka[2] - kb[2];
+      });
     }
 
     return {
