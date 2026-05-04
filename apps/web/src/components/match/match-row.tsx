@@ -4,7 +4,6 @@ import Link from "next/link";
 import type { MouseEvent } from "react";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { Pill, LiveDot, OddButton, TeamMark } from "@/components/ui/primitives";
-import { I } from "@/components/ui/icons";
 import { useBetSlip } from "@/lib/bet-slip";
 import type { SlipSelection } from "@oddzilla/types";
 
@@ -97,11 +96,12 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
           style={{
             display: "flex",
             alignItems: "center",
-            gap: 10,
-            padding: "10px 14px",
+            gap: 8,
+            padding: "7px 12px",
             borderBottom: "1px solid var(--hairline)",
             fontSize: 11.5,
             color: "var(--fg-muted)",
+            minWidth: 0,
           }}
         >
           <SportGlyph sport={sportSlug} size={13} />
@@ -112,22 +112,36 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
               letterSpacing: "0.08em",
               textTransform: "uppercase",
               color: "var(--fg-dim)",
+              flexShrink: 0,
             }}
           >
             {sportShort}
           </span>
-          <span style={{ color: "var(--fg-dim)" }}>·</span>
-          <span style={{ color: "var(--fg-muted)" }}>{match.tournament.name}</span>
+          <span style={{ color: "var(--fg-dim)", flexShrink: 0 }}>·</span>
+          <span
+            style={{
+              color: "var(--fg-muted)",
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {truncate(match.tournament.name, 32)}
+          </span>
           {match.bestOf && (
             <>
-              <span style={{ color: "var(--fg-dim)" }}>·</span>
-              <span className="mono" style={{ fontSize: 10.5, color: "var(--fg-dim)" }}>
+              <span style={{ color: "var(--fg-dim)", flexShrink: 0 }}>·</span>
+              <span
+                className="mono"
+                style={{ fontSize: 10.5, color: "var(--fg-dim)", flexShrink: 0 }}
+              >
                 BO{match.bestOf}
               </span>
             </>
           )}
 
-          <div style={{ flex: 1 }} />
+          <div style={{ flex: 1, minWidth: 4 }} />
 
           {isLive ? (
             <Pill tone="live">
@@ -135,7 +149,10 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
             </Pill>
           ) : (
             whenLabel && (
-              <span className="mono" style={{ fontSize: 11, color: "var(--fg-muted)" }}>
+              <span
+                className="mono"
+                style={{ fontSize: 11, color: "var(--fg-muted)", flexShrink: 0 }}
+              >
                 {whenLabel}
               </span>
             )
@@ -145,13 +162,20 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "1fr auto",
-            gap: 16,
-            padding: 14,
+            gridTemplateColumns: "minmax(0, 1fr) auto",
+            gap: 12,
+            padding: "10px 12px",
             alignItems: "center",
           }}
         >
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              minWidth: 0,
+            }}
+          >
             <TeamLine name={match.homeTeam} score={match.liveScore?.home} isLive={isLive} />
             <TeamLine name={match.awayTeam} score={match.liveScore?.away} isLive={isLive} />
           </div>
@@ -161,7 +185,7 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
               display: "grid",
               gridTemplateColumns: "1fr 1fr",
               gap: 6,
-              width: "clamp(150px, 40vw, 200px)",
+              width: "clamp(130px, 38vw, 200px)",
             }}
           >
             <OddButton
@@ -180,26 +204,18 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
             />
           </div>
         </div>
-
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            padding: "8px 14px",
-            borderTop: "1px solid var(--hairline)",
-            fontSize: 11.5,
-            color: "var(--fg-dim)",
-          }}
-        >
-          <span style={{ flex: 1 }} />
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-            Open match <I.Chev size={11} />
-          </span>
-        </div>
       </article>
     </Link>
   );
+}
+
+// Cap the rendered length and append ".." (two dots) when a name is too
+// long, per UX preference. CSS ellipsis still kicks in below this length
+// when the column itself is narrower than the truncated string — both
+// layers together keep mobile rows on one line at any viewport width.
+function truncate(name: string, max: number): string {
+  if (name.length <= max) return name;
+  return name.slice(0, max).trimEnd() + "..";
 }
 
 function TeamLine({
@@ -218,27 +234,31 @@ function TeamLine({
     .join("")
     .slice(0, 4);
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-      <TeamMark tag={tag} size={28} />
-      <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.2, minWidth: 0 }}>
-        <span
-          style={{
-            fontSize: 14,
-            fontWeight: 500,
-            letterSpacing: "-0.005em",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {name}
-        </span>
-      </div>
-      <div style={{ flex: 1 }} />
+    <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+      <TeamMark tag={tag} size={24} />
+      <span
+        style={{
+          fontSize: 14,
+          fontWeight: 500,
+          letterSpacing: "-0.005em",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          minWidth: 0,
+          flex: 1,
+        }}
+      >
+        {truncate(name, 22)}
+      </span>
       {isLive && typeof score === "number" && (
         <span
           className="mono tnum"
-          style={{ fontSize: 16, fontWeight: 600, color: "var(--fg)" }}
+          style={{
+            fontSize: 15,
+            fontWeight: 600,
+            color: "var(--fg)",
+            flexShrink: 0,
+          }}
         >
           {score}
         </span>
