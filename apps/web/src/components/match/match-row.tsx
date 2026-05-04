@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import type { MouseEvent } from "react";
+import type { CSSProperties, MouseEvent } from "react";
 import { SportGlyph } from "@/components/ui/sport-glyph";
-import { Pill, LiveDot, OddButton, TeamMark } from "@/components/ui/primitives";
+import { Pill, LiveDot, TeamMark } from "@/components/ui/primitives";
 import { useBetSlip } from "@/lib/bet-slip";
 import type { SlipSelection } from "@oddzilla/types";
 
@@ -78,6 +78,13 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
     return sameDay ? `Today · ${time}` : d.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + ` · ${time}`;
   })();
 
+  const homePrice = match.matchWinner?.home.price
+    ? Number(match.matchWinner.home.price)
+    : null;
+  const awayPrice = match.matchWinner?.away.price
+    ? Number(match.matchWinner.away.price)
+    : null;
+
   return (
     <Link
       href={`/match/${match.id}`}
@@ -97,7 +104,7 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
             display: "flex",
             alignItems: "center",
             gap: 8,
-            padding: "7px 12px",
+            padding: "6px 12px",
             borderBottom: "1px solid var(--hairline)",
             fontSize: 11.5,
             color: "var(--fg-muted)",
@@ -162,47 +169,35 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "minmax(0, 1fr) auto",
-            gap: 12,
-            padding: "10px 12px",
+            // mark · name · score · odds. Score column collapses to 0 when no
+            // live data is present (auto), the name takes everything else.
+            gridTemplateColumns: "auto minmax(0, 1fr) auto auto",
+            columnGap: 10,
+            rowGap: 4,
+            padding: "8px 12px",
             alignItems: "center",
           }}
         >
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 6,
-              minWidth: 0,
-            }}
-          >
-            <TeamLine name={match.homeTeam} score={match.liveScore?.home} isLive={isLive} />
-            <TeamLine name={match.awayTeam} score={match.liveScore?.away} isLive={isLive} />
-          </div>
-
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: 6,
-              width: "clamp(130px, 38vw, 200px)",
-            }}
-          >
-            <OddButton
-              price={match.matchWinner?.home.price ? Number(match.matchWinner.home.price) : null}
-              label="1"
-              selected={homePicked}
-              locked={!match.matchWinner?.home.price}
-              onClick={(e) => handlePick("home", e)}
-            />
-            <OddButton
-              price={match.matchWinner?.away.price ? Number(match.matchWinner.away.price) : null}
-              label="2"
-              selected={awayPicked}
-              locked={!match.matchWinner?.away.price}
-              onClick={(e) => handlePick("away", e)}
-            />
-          </div>
+          <TeamRow
+            name={match.homeTeam}
+            score={match.liveScore?.home}
+            isLive={isLive}
+            label="1"
+            price={homePrice}
+            selected={homePicked}
+            locked={!homePrice}
+            onPick={(e) => handlePick("home", e)}
+          />
+          <TeamRow
+            name={match.awayTeam}
+            score={match.liveScore?.away}
+            isLive={isLive}
+            label="2"
+            price={awayPrice}
+            selected={awayPicked}
+            locked={!awayPrice}
+            onPick={(e) => handlePick("away", e)}
+          />
         </div>
       </article>
     </Link>
@@ -218,14 +213,24 @@ function truncate(name: string, max: number): string {
   return name.slice(0, max).trimEnd() + "..";
 }
 
-function TeamLine({
+function TeamRow({
   name,
   score,
   isLive,
+  label,
+  price,
+  selected,
+  locked,
+  onPick,
 }: {
   name: string;
   score?: number;
   isLive?: boolean;
+  label: "1" | "2";
+  price: number | null;
+  selected: boolean;
+  locked: boolean;
+  onPick: (e: MouseEvent<HTMLButtonElement>) => void;
 }) {
   const tag = name
     .split(/\s+/)
@@ -233,9 +238,10 @@ function TeamLine({
     .map((w) => w[0])
     .join("")
     .slice(0, 4);
+  const showScore = isLive && typeof score === "number";
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-      <TeamMark tag={tag} size={24} />
+    <>
+      <TeamMark tag={tag} size={22} />
       <span
         style={{
           fontSize: 14,
@@ -245,24 +251,93 @@ function TeamLine({
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
           minWidth: 0,
-          flex: 1,
         }}
       >
-        {truncate(name, 22)}
+        {truncate(name, 24)}
       </span>
-      {isLive && typeof score === "number" && (
-        <span
-          className="mono tnum"
-          style={{
-            fontSize: 15,
-            fontWeight: 600,
-            color: "var(--fg)",
-            flexShrink: 0,
-          }}
-        >
-          {score}
-        </span>
-      )}
-    </div>
+      <span
+        className="mono tnum"
+        style={{
+          fontSize: 13,
+          fontWeight: 600,
+          color: "var(--fg)",
+          minWidth: showScore ? 18 : 0,
+          textAlign: "right",
+          opacity: showScore ? 1 : 0,
+        }}
+      >
+        {showScore ? score : ""}
+      </span>
+      <RowOddBtn
+        label={label}
+        price={price}
+        selected={selected}
+        locked={locked}
+        onClick={onPick}
+      />
+    </>
+  );
+}
+
+// Inline odds button used in the list card. One per team row, so the
+// whole odds column is a single ~70px wide track instead of 2x ~80px.
+// Compact: 32px tall, label + price side-by-side, mono price. Selection
+// state matches the bet slip's accent like the larger OddButton.
+function RowOddBtn({
+  label,
+  price,
+  selected,
+  locked,
+  onClick,
+}: {
+  label: string;
+  price: number | null;
+  selected: boolean;
+  locked: boolean;
+  onClick: (e: MouseEvent<HTMLButtonElement>) => void;
+}) {
+  const baseStyle: CSSProperties = {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 6,
+    width: "clamp(64px, 18vw, 88px)",
+    height: 32,
+    padding: "0 9px",
+    background: selected ? "var(--accent)" : "var(--surface-2)",
+    color: selected ? "var(--accent-fg)" : "var(--fg)",
+    border: "1px solid",
+    borderColor: selected ? "var(--accent)" : "var(--border)",
+    borderRadius: 8,
+    cursor: locked ? "not-allowed" : "pointer",
+    fontFamily: "inherit",
+    transition: "all 140ms var(--ease)",
+    opacity: locked ? 0.5 : 1,
+  };
+  return (
+    <button type="button" disabled={locked} onClick={onClick} style={baseStyle}>
+      <span
+        className="mono"
+        style={{
+          fontSize: 10.5,
+          color: selected
+            ? "color-mix(in oklab, var(--accent-fg) 70%, transparent)"
+            : "var(--fg-muted)",
+          fontWeight: 600,
+        }}
+      >
+        {label}
+      </span>
+      <span
+        className="mono tnum"
+        style={{
+          fontSize: 13,
+          fontWeight: 600,
+          letterSpacing: "-0.01em",
+        }}
+      >
+        {locked || price == null ? "—" : price.toFixed(2)}
+      </span>
+    </button>
   );
 }
