@@ -4,6 +4,7 @@ import Link from "next/link";
 import type { CSSProperties, MouseEvent, ReactNode } from "react";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { Pill, LiveDot, TeamMark } from "@/components/ui/primitives";
+import { TierMark, isFeaturedTier } from "@/components/ui/tier-mark";
 import { useBetSlip } from "@/lib/bet-slip";
 import { mapCellValue, type LiveScore } from "@/lib/live-score";
 import type { SlipSelection } from "@oddzilla/types";
@@ -16,7 +17,7 @@ export interface ListMatch {
   status: "not_started" | "live" | "closed" | "cancelled" | "suspended";
   bestOf?: number | null;
   liveScore?: LiveScore | null;
-  tournament: { id: number; name: string };
+  tournament: { id: number; name: string; riskTier?: number | null };
   matchWinner: {
     marketId: string;
     home: { outcomeId: string; price: string | null; probability?: string | null };
@@ -105,20 +106,26 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
     />
   );
 
+  const tier = match.tournament.riskTier ?? null;
+  const featured = isFeaturedTier(tier);
+  // Top-tier cards (Oddin risk_tier 1 or 2) earn a subtle gold left-edge
+  // accent so the eye picks them out in a long list. The user wants both
+  // tiers treated the same — a single "Top" affordance instead of two
+  // ranks of highlight.
+  const cardStyle: CSSProperties = {
+    borderRadius: "var(--r-md)",
+    overflow: "hidden",
+    transition: "border-color 160ms var(--ease)",
+    cursor: "pointer",
+    ...(featured ? { borderLeft: "2px solid var(--tier-gold)" } : null),
+  };
+
   return (
     <Link
       href={`/match/${match.id}`}
       style={{ textDecoration: "none", color: "inherit" }}
     >
-      <article
-        className="card"
-        style={{
-          borderRadius: "var(--r-md)",
-          overflow: "hidden",
-          transition: "border-color 160ms var(--ease)",
-          cursor: "pointer",
-        }}
-      >
+      <article className="card" style={cardStyle}>
         <div
           style={{
             display: "flex",
@@ -145,9 +152,11 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
             {sportShort}
           </span>
           <span style={{ color: "var(--fg-dim)", flexShrink: 0 }}>·</span>
+          {featured && <TierMark tier={tier} size={11} />}
           <span
             style={{
-              color: "var(--fg-muted)",
+              color: featured ? "var(--fg)" : "var(--fg-muted)",
+              fontWeight: featured ? 600 : undefined,
               minWidth: 0,
               overflow: "hidden",
               textOverflow: "ellipsis",

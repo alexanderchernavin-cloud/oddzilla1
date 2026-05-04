@@ -55,6 +55,7 @@
   --positive: #6fe09a;
   --negative: #ff6b5c;
   --live: #ff5a46;
+  --tier-gold: #f5b94a;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-md: 0 4px 24px -8px rgba(0, 0, 0, 0.6), 0 1px 2px rgba(0, 0, 0, 0.4);
@@ -82,6 +83,7 @@
   --positive: #0a7c3e;
   --negative: #b4332a;
   --live: #d93a2c;
+  --tier-gold: #b9851f;
 
   --shadow-sm: 0 1px 2px rgba(10, 10, 10, 0.04);
   --shadow-md: 0 4px 20px -6px rgba(10, 10, 10, 0.08), 0 1px 2px rgba(10, 10, 10, 0.04);
