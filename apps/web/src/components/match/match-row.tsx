@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import type { CSSProperties, MouseEvent } from "react";
+import type { CSSProperties, MouseEvent, ReactNode } from "react";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { Pill, LiveDot, TeamMark } from "@/components/ui/primitives";
 import { useBetSlip } from "@/lib/bet-slip";
+import { mapCellValue, type LiveScore } from "@/lib/live-score";
 import type { SlipSelection } from "@oddzilla/types";
 
 export interface ListMatch {
@@ -14,7 +15,7 @@ export interface ListMatch {
   scheduledAt: string | null;
   status: "not_started" | "live" | "closed" | "cancelled" | "suspended";
   bestOf?: number | null;
-  liveScore?: { home?: number; away?: number } | null;
+  liveScore?: LiveScore | null;
   tournament: { id: number; name: string };
   matchWinner: {
     marketId: string;
@@ -84,6 +85,25 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
   const awayPrice = match.matchWinner?.away.price
     ? Number(match.matchWinner.away.price)
     : null;
+
+  const homeOdds = (
+    <RowOddBtn
+      label="1"
+      price={homePrice}
+      selected={homePicked}
+      locked={!homePrice}
+      onClick={(e) => handlePick("home", e)}
+    />
+  );
+  const awayOdds = (
+    <RowOddBtn
+      label="2"
+      price={awayPrice}
+      selected={awayPicked}
+      locked={!awayPrice}
+      onClick={(e) => handlePick("away", e)}
+    />
+  );
 
   return (
     <Link
@@ -166,39 +186,16 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
           )}
         </div>
 
-        <div
-          style={{
-            display: "grid",
-            // mark · name · score · odds. Score column collapses to 0 when no
-            // live data is present (auto), the name takes everything else.
-            gridTemplateColumns: "auto minmax(0, 1fr) auto auto",
-            columnGap: 10,
-            rowGap: 4,
-            padding: "8px 12px",
-            alignItems: "center",
-          }}
-        >
-          <TeamRow
-            name={match.homeTeam}
-            score={match.liveScore?.home}
-            isLive={isLive}
-            label="1"
-            price={homePrice}
-            selected={homePicked}
-            locked={!homePrice}
-            onPick={(e) => handlePick("home", e)}
-          />
-          <TeamRow
-            name={match.awayTeam}
-            score={match.liveScore?.away}
-            isLive={isLive}
-            label="2"
-            price={awayPrice}
-            selected={awayPicked}
-            locked={!awayPrice}
-            onPick={(e) => handlePick("away", e)}
-          />
-        </div>
+        <ScoreTable
+          homeTeam={match.homeTeam}
+          awayTeam={match.awayTeam}
+          liveScore={match.liveScore ?? null}
+          bestOf={match.bestOf ?? null}
+          isLive={isLive}
+          sportSlug={sportSlug}
+          homeTrailing={homeOdds}
+          awayTrailing={awayOdds}
+        />
       </article>
     </Link>
   );
@@ -213,76 +210,241 @@ function truncate(name: string, max: number): string {
   return name.slice(0, max).trimEnd() + "..";
 }
 
-function TeamRow({
-  name,
-  score,
-  isLive,
-  label,
-  price,
-  selected,
-  locked,
-  onPick,
-}: {
-  name: string;
-  score?: number;
-  isLive?: boolean;
-  label: "1" | "2";
-  price: number | null;
-  selected: boolean;
-  locked: boolean;
-  onPick: (e: MouseEvent<HTMLButtonElement>) => void;
-}) {
-  const tag = name
+function teamTag(name: string): string {
+  return name
     .split(/\s+/)
     .slice(0, 3)
     .map((w) => w[0])
     .join("")
     .slice(0, 4);
-  const showScore = isLive && typeof score === "number";
+}
+
+// ScoreTable renders a two-row mini-scoreboard mirroring the match-detail
+// page's Scoreboard but in compact form for list cards:
+//   [team mark + name] | Σ | Map 1 | Map 2 | Map N | [trailing]
+// `homeTrailing` / `awayTrailing` add a per-row trailing cell — used by
+// MatchRow to slot the odds button vertically aligned with each team
+// row instead of as a separate 2-column block to the right. That gives
+// the name column a much wider track on narrow viewports.
+function ScoreTable({
+  homeTeam,
+  awayTeam,
+  liveScore,
+  bestOf,
+  isLive,
+  sportSlug,
+  homeTrailing,
+  awayTrailing,
+}: {
+  homeTeam: string;
+  awayTeam: string;
+  liveScore: LiveScore | null;
+  bestOf: number | null;
+  isLive: boolean;
+  sportSlug: string;
+  homeTrailing?: ReactNode;
+  awayTrailing?: ReactNode;
+}) {
+  const periods = (liveScore?.periods ?? []).filter((p) => p.number != null);
+  const periodByNumber = new Map<number, NonNullable<LiveScore["periods"]>[number]>();
+  for (const p of periods) periodByNumber.set(p.number ?? 0, p);
+
+  const homeSeries = liveScore?.home ?? 0;
+  const awaySeries = liveScore?.away ?? 0;
+  const currentMap = isLive ? liveScore?.currentMap ?? null : null;
+  const scoreboard = liveScore?.scoreboard ?? null;
+
+  // Number of map columns. Use bestOf when known so empty future maps
+  // render as dashes (gives a stable "shape" for BO3+); fall back to the
+  // periods we've observed. Cap at 5 to keep the row from getting huge
+  // for esoteric formats.
+  const mapCount = Math.min(5, Math.max(bestOf ?? 0, periods.length, 0));
+  const cols = isLive && mapCount > 0 ? Array.from({ length: mapCount }, (_, i) => i + 1) : [];
+  const showSeries = isLive && mapCount > 1;
+  const hasTrailing = homeTrailing != null || awayTrailing != null;
+
+  // Grid template:
+  //   name(1fr) [Σ] [map1..mapN] [trailing]
+  // Number columns shrink on narrow viewports via clamp() so the name
+  // track stays usable on a 360px phone — empirically the previous fixed
+  // 26px columns + 32px series squeezed names down to a single letter.
+  const seriesCol = "clamp(22px, 6vw, 30px)";
+  const mapCol = "clamp(18px, 5vw, 26px)";
+  const trailCol = "clamp(64px, 19vw, 92px)";
+  const gridTemplate = [
+    "minmax(0, 1fr)",
+    showSeries ? seriesCol : null,
+    ...cols.map(() => mapCol),
+    hasTrailing ? trailCol : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return (
+    <div
+      role="table"
+      style={{
+        display: "grid",
+        gridTemplateColumns: gridTemplate,
+        rowGap: 6,
+        columnGap: 6,
+        alignItems: "center",
+        padding: "8px 12px",
+        minWidth: 0,
+      }}
+    >
+      {/* Header row — only when there are numeric columns to label.
+          Pre-match has neither series nor maps, so the header is suppressed
+          to keep the card short. */}
+      {(showSeries || cols.length > 0) && (
+        <div role="row" style={{ display: "contents" }}>
+          <div />
+          {showSeries && <ColHeader label="Σ" />}
+          {cols.map((n) => (
+            <ColHeader key={n} label={String(n)} live={currentMap === n} />
+          ))}
+          {hasTrailing && <div />}
+        </div>
+      )}
+
+      <TeamScoreRow
+        name={homeTeam}
+        series={homeSeries}
+        cols={cols}
+        showSeries={showSeries}
+        getValue={(n) =>
+          mapCellValue("home", n, periodByNumber.get(n), scoreboard, currentMap, sportSlug)
+        }
+        isLiveCol={(n) => currentMap === n}
+        trailing={homeTrailing}
+        hasTrailing={hasTrailing}
+      />
+      <TeamScoreRow
+        name={awayTeam}
+        series={awaySeries}
+        cols={cols}
+        showSeries={showSeries}
+        getValue={(n) =>
+          mapCellValue("away", n, periodByNumber.get(n), scoreboard, currentMap, sportSlug)
+        }
+        isLiveCol={(n) => currentMap === n}
+        trailing={awayTrailing}
+        hasTrailing={hasTrailing}
+      />
+    </div>
+  );
+}
+
+function ColHeader({ label, live = false }: { label: string; live?: boolean }) {
+  return (
+    <div
+      className="mono"
+      style={{
+        fontSize: 9.5,
+        color: live ? "var(--fg)" : "var(--fg-dim)",
+        letterSpacing: "0.06em",
+        textTransform: "uppercase",
+        textAlign: "center",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 3,
+      }}
+    >
+      {live ? <LiveDot size={4} /> : null}
+      {label}
+    </div>
+  );
+}
+
+function TeamScoreRow({
+  name,
+  series,
+  cols,
+  showSeries,
+  getValue,
+  isLiveCol,
+  trailing,
+  hasTrailing,
+}: {
+  name: string;
+  series: number;
+  cols: number[];
+  showSeries: boolean;
+  getValue: (n: number) => number | null;
+  isLiveCol: (n: number) => boolean;
+  trailing?: ReactNode;
+  hasTrailing: boolean;
+}) {
   return (
     <>
-      <TeamMark tag={tag} size={22} />
-      <span
+      <div
         style={{
-          fontSize: 14,
-          fontWeight: 500,
-          letterSpacing: "-0.005em",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
           minWidth: 0,
         }}
       >
-        {truncate(name, 24)}
-      </span>
-      <span
-        className="mono tnum"
-        style={{
-          fontSize: 13,
-          fontWeight: 600,
-          color: "var(--fg)",
-          minWidth: showScore ? 18 : 0,
-          textAlign: "right",
-          opacity: showScore ? 1 : 0,
-        }}
-      >
-        {showScore ? score : ""}
-      </span>
-      <RowOddBtn
-        label={label}
-        price={price}
-        selected={selected}
-        locked={locked}
-        onClick={onPick}
-      />
+        <TeamMark tag={teamTag(name)} size={22} />
+        <span
+          style={{
+            fontSize: 13.5,
+            fontWeight: 500,
+            letterSpacing: "-0.005em",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            minWidth: 0,
+            flex: 1,
+          }}
+        >
+          {truncate(name, 24)}
+        </span>
+      </div>
+      {showSeries && (
+        <div
+          className="mono tnum"
+          style={{
+            textAlign: "center",
+            fontSize: 12.5,
+            fontWeight: 600,
+            color: "var(--fg)",
+            padding: "2px 0",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--r-sm, 6px)",
+          }}
+        >
+          {series}
+        </div>
+      )}
+      {cols.map((n) => {
+        const v = getValue(n);
+        const live = isLiveCol(n);
+        return (
+          <div
+            key={n}
+            className="mono tnum"
+            style={{
+              textAlign: "center",
+              fontSize: 12.5,
+              fontWeight: 500,
+              color: v == null ? "var(--fg-dim)" : live ? "var(--fg)" : "var(--fg-muted)",
+            }}
+          >
+            {v == null ? "—" : v}
+          </div>
+        );
+      })}
+      {hasTrailing && <div>{trailing}</div>}
     </>
   );
 }
 
 // Inline odds button used in the list card. One per team row, so the
-// whole odds column is a single ~70px wide track instead of 2x ~80px.
-// Compact: 32px tall, label + price side-by-side, mono price. Selection
-// state matches the bet slip's accent like the larger OddButton.
+// whole odds block becomes a single ~70px wide track instead of two
+// ~80px buttons sitting next to both rows. Compact: 30px tall, label
+// + price side-by-side.
 function RowOddBtn({
   label,
   price,
@@ -301,8 +463,8 @@ function RowOddBtn({
     alignItems: "center",
     justifyContent: "space-between",
     gap: 6,
-    width: "clamp(64px, 18vw, 88px)",
-    height: 32,
+    width: "100%",
+    height: 30,
     padding: "0 9px",
     background: selected ? "var(--accent)" : "var(--surface-2)",
     color: selected ? "var(--accent-fg)" : "var(--fg)",
@@ -331,7 +493,7 @@ function RowOddBtn({
       <span
         className="mono tnum"
         style={{
-          fontSize: 13,
+          fontSize: 12.5,
           fontWeight: 600,
           letterSpacing: "-0.01em",
         }}
