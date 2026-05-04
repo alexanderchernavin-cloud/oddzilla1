@@ -1,12 +1,14 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { serverApi } from "@/lib/server-fetch";
-import { MatchRow, type ListMatch } from "@/components/match/match-row";
+import { type ListMatch } from "@/components/match/match-row";
+import { MatchListTabs } from "@/components/match/match-list-tabs";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { I } from "@/components/ui/icons";
 
 interface SportResponse {
   sport: { id: number; slug: string; name: string };
+  topConfigured: boolean;
   matches: ListMatch[];
 }
 
@@ -144,49 +146,59 @@ export default async function SportPage({
         </div>
       )}
 
-      {live.length > 0 && (
-        <section style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div
-            className="mono"
-            style={{
-              fontSize: 10.5,
-              letterSpacing: "0.14em",
-              textTransform: "uppercase",
-              color: "var(--fg-dim)",
-              fontWeight: 600,
-            }}
-          >
-            Live · {live.length}
-          </div>
-          {live.map((m) => (
-            <MatchRow key={m.id} match={m} sportSlug={slug} sportShort={sportShort} />
-          ))}
-        </section>
-      )}
-
-      <section style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <div
-          className="mono"
-          style={{
-            fontSize: 10.5,
-            letterSpacing: "0.14em",
-            textTransform: "uppercase",
-            color: "var(--fg-dim)",
-            fontWeight: 600,
-          }}
-        >
-          Upcoming · {upcoming.length}
-        </div>
-        {upcoming.length === 0 ? (
-          <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
-            No upcoming matches scheduled.
-          </p>
-        ) : (
-          upcoming.map((m) => (
-            <MatchRow key={m.id} match={m} sportSlug={slug} sportShort={sportShort} />
-          ))
-        )}
-      </section>
+      <MatchListTabs
+        matches={data.matches}
+        sportSlug={() => slug}
+        sportShort={() => sportShort}
+        topConfigured={() => data.topConfigured}
+        groups={[
+          ...(live.length > 0
+            ? [
+                {
+                  key: "live",
+                  label: (
+                    <div
+                      className="mono"
+                      style={{
+                        fontSize: 10.5,
+                        letterSpacing: "0.14em",
+                        textTransform: "uppercase",
+                        color: "var(--fg-dim)",
+                        fontWeight: 600,
+                      }}
+                    >
+                      Live · {live.length}
+                    </div>
+                  ),
+                  matches: live,
+                },
+              ]
+            : []),
+          {
+            key: "upcoming",
+            label: (
+              <div
+                className="mono"
+                style={{
+                  fontSize: 10.5,
+                  letterSpacing: "0.14em",
+                  textTransform: "uppercase",
+                  color: "var(--fg-dim)",
+                  fontWeight: 600,
+                }}
+              >
+                Upcoming · {upcoming.length}
+              </div>
+            ),
+            matches: upcoming,
+          },
+        ]}
+      />
+      {upcoming.length === 0 && live.length === 0 ? (
+        <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
+          No matches scheduled.
+        </p>
+      ) : null}
     </div>
   );
 }

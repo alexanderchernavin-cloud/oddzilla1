@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { serverApi } from "@/lib/server-fetch";
-import { MatchRow, type ListMatch } from "@/components/match/match-row";
+import { type ListMatch } from "@/components/match/match-row";
+import { MatchListTabs } from "@/components/match/match-list-tabs";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 
 interface ListMatchWithSport extends ListMatch {
@@ -9,6 +10,7 @@ interface ListMatchWithSport extends ListMatch {
 
 interface Response {
   matches: ListMatchWithSport[];
+  topConfiguredSports?: Record<string, boolean>;
 }
 
 interface PageProps {
@@ -94,16 +96,14 @@ export default async function LivePage({ searchParams }: PageProps) {
             : "Nothing live right now. Check back soon."}
         </p>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {visible.map((m) => (
-            <MatchRow
-              key={m.id}
-              match={m}
-              sportSlug={m.sport.slug}
-              sportShort={shortName(m.sport.name)}
-            />
-          ))}
-        </div>
+        <MatchListTabs
+          matches={visible}
+          sportSlug={(m) => (m as ListMatchWithSport).sport.slug}
+          sportShort={(m) => shortName((m as ListMatchWithSport).sport.name)}
+          topConfigured={(m) =>
+            !!data?.topConfiguredSports?.[(m as ListMatchWithSport).sport.slug]
+          }
+        />
       )}
     </div>
   );

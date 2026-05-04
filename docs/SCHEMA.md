@@ -36,6 +36,15 @@ Canonical SQL lives in [`../packages/db/migrations/`](../packages/db/migrations/
   higher priority; markets with no row fall back to the legacy default
   (provider_market_id ascending). Configured via
   `/admin/fe-settings/markets-order`, consulted by `/catalog/matches/:id`.
+- `0020_fe_market_order_scope.sql` — adds `scope TEXT` column to
+  `fe_market_display_order` (CHECK in `match` / `map` / `top`) and
+  re-keys the unique constraint to `(sport_id, scope, provider_market_id)`.
+  Three scopes: `match` (markets without a `map` specifier), `map`
+  (markets carrying a `map` specifier — one shared ordering applies to
+  every Map N tab), `top` (curated highlights; empty by default,
+  rendered as a "Top" tab on the match-detail page and an inline tab
+  toggle on match list cards via `loadTopMarketIdsBySport` /
+  `loadTopMarketsForMatches` in `services/api/src/modules/catalog/routes.ts`).
 
 Drizzle mirror is [`../packages/db/src/schema/`](../packages/db/src/schema/).
 

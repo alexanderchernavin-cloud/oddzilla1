@@ -5,7 +5,7 @@ interface SportSummary {
   id: number;
   slug: string;
   name: string;
-  configuredMarketCount: number;
+  configured: { match: number; map: number; top: number };
 }
 
 interface SportListResponse {
@@ -20,9 +20,11 @@ export default async function MarketsOrderIndex() {
     <div>
       <h2 className="text-lg font-medium">Markets display order</h2>
       <p className="mt-2 text-sm text-[var(--color-fg-muted)]">
-        Override the default order of market types on the match-detail page,
-        per sport. Markets without an explicit position fall back to provider
-        market id ascending — the legacy default.
+        Override the default order of market types per sport, with a separate
+        list for each scope: <strong>Match</strong> (markets without a map
+        specifier), <strong>Map</strong> (markets with a map specifier — the
+        same order applies to every Map N tab), and <strong>Top</strong> (a
+        curated highlights tab; empty by default and only shows ids you add).
       </p>
 
       {sports.length === 0 ? (
@@ -34,7 +36,9 @@ export default async function MarketsOrderIndex() {
               <tr>
                 <th className="px-5 py-3 text-left">Sport</th>
                 <th className="px-5 py-3 text-left">Slug</th>
-                <th className="px-5 py-3 text-right">Configured rows</th>
+                <th className="px-5 py-3 text-right">Match</th>
+                <th className="px-5 py-3 text-right">Map</th>
+                <th className="px-5 py-3 text-right">Top</th>
                 <th className="px-5 py-3" />
               </tr>
             </thead>
@@ -46,11 +50,17 @@ export default async function MarketsOrderIndex() {
                     {s.slug}
                   </td>
                   <td className="px-5 py-3 text-right font-mono">
-                    {s.configuredMarketCount > 0 ? s.configuredMarketCount : "—"}
+                    {s.configured.match > 0 ? s.configured.match : "—"}
+                  </td>
+                  <td className="px-5 py-3 text-right font-mono">
+                    {s.configured.map > 0 ? s.configured.map : "—"}
+                  </td>
+                  <td className="px-5 py-3 text-right font-mono">
+                    {s.configured.top > 0 ? s.configured.top : "—"}
                   </td>
                   <td className="px-5 py-3 text-right">
                     <Link
-                      href={`/admin/fe-settings/markets-order/${s.id}`}
+                      href={`/admin/fe-settings/markets-order/${s.id}/match`}
                       className="text-xs uppercase tracking-[0.15em] text-[var(--color-accent)] hover:underline"
                     >
                       Edit
