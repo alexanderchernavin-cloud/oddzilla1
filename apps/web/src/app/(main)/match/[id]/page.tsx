@@ -214,6 +214,13 @@ function teamTag(name: string): string {
     .slice(0, 4);
 }
 
+// Cap the rendered length and append ".." (two dots) when a name is too
+// long. Combines with CSS ellipsis below for narrow viewports.
+function truncateName(name: string, max: number): string {
+  if (name.length <= max) return name;
+  return name.slice(0, max).trimEnd() + "..";
+}
+
 // Scoreboard renders a two-row table:
 //   [team mark] [team name] | Score | 1 | 2 | … | N
 // where Score is the series score (boxed) and the numeric columns are
@@ -392,9 +399,10 @@ function TeamRow({
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
             minWidth: 0,
+            flex: 1,
           }}
         >
-          {name}
+          {truncateName(name, 24)}
         </span>
       </div>
 

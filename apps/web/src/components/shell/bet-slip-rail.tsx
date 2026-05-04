@@ -754,7 +754,15 @@ function SelectionCard({
           {Number(selection.odds).toFixed(2)}
         </div>
       </div>
-      <div style={{ fontSize: 11, color: "var(--fg-muted)" }}>
+      <div
+        style={{
+          fontSize: 11,
+          color: "var(--fg-muted)",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
         {selection.homeTeam} vs {selection.awayTeam}
       </div>
     </div>
