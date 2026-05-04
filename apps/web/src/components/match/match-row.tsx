@@ -266,11 +266,12 @@ function ScoreTable({
   // Grid template:
   //   name(1fr) [Σ] [map1..mapN] [trailing]
   // Number columns shrink on narrow viewports via clamp() so the name
-  // track stays usable on a 360px phone — empirically the previous fixed
-  // 26px columns + 32px series squeezed names down to a single letter.
-  const seriesCol = "clamp(22px, 6vw, 30px)";
-  const mapCol = "clamp(18px, 5vw, 26px)";
-  const trailCol = "clamp(64px, 19vw, 92px)";
+  // track stays usable on a 360px phone. The odds button itself loses
+  // its "1"/"2" label on mobile (see .oz-row-odd / .oz-odd-label in
+  // globals.css), so the trailing column can be tighter.
+  const seriesCol = "clamp(20px, 5.4vw, 28px)";
+  const mapCol = "clamp(16px, 4.4vw, 24px)";
+  const trailCol = "clamp(58px, 16vw, 92px)";
   const gridTemplate = [
     "minmax(0, 1fr)",
     showSeries ? seriesCol : null,
@@ -476,10 +477,20 @@ function RowOddBtn({
     transition: "all 140ms var(--ease)",
     opacity: locked ? 0.5 : 1,
   };
+  // .oz-row-odd flips justify-content to center on mobile (the row it
+  // sits in is already aligned with the team's name, so the "1"/"2"
+  // label is redundant there). .oz-odd-label hides the label itself
+  // at the same breakpoint. See globals.css.
   return (
-    <button type="button" disabled={locked} onClick={onClick} style={baseStyle}>
+    <button
+      type="button"
+      disabled={locked}
+      onClick={onClick}
+      className="oz-row-odd"
+      style={baseStyle}
+    >
       <span
-        className="mono"
+        className="mono oz-odd-label"
         style={{
           fontSize: 10.5,
           color: selected
