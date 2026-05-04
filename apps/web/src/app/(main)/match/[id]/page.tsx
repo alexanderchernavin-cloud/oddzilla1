@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { serverApi } from "@/lib/server-fetch";
 import { LiveMarkets, type MarketGroup, type MarketSnapshot } from "./live-markets";
 import { Pill, LiveDot, TeamMark } from "@/components/ui/primitives";
+import { TierMark } from "@/components/ui/tier-mark";
 import { I } from "@/components/ui/icons";
 import {
   mapCellValue,
@@ -20,7 +21,7 @@ interface MatchResponse {
     status: "not_started" | "live" | "closed" | "cancelled" | "suspended";
     bestOf: number | null;
     liveScore: LiveScore | null;
-    tournament: { id: number; name: string };
+    tournament: { id: number; name: string; riskTier?: number | null };
     sport: { id: number; slug: string; name: string };
   };
   markets: MarketSnapshot[];
@@ -110,6 +111,9 @@ export default async function MatchPage({
           ) : (
             <Pill>Upcoming · {whenLabel}</Pill>
           )}
+          {(match.tournament.riskTier === 1 || match.tournament.riskTier === 2) && (
+            <TopPill />
+          )}
           <span
             className="mono"
             style={{
@@ -117,8 +121,12 @@ export default async function MatchPage({
               color: "var(--fg-muted)",
               letterSpacing: "0.08em",
               textTransform: "uppercase",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
             }}
           >
+            <TierMark tier={match.tournament.riskTier ?? null} size={11} />
             {match.tournament.name}
             {match.bestOf ? ` · BO${match.bestOf}` : ""}
           </span>
@@ -154,6 +162,34 @@ export default async function MatchPage({
         />
       )}
     </div>
+  );
+}
+
+// TopPill renders a filled gold "TOP" chip in the match-detail header
+// for any tournament Oddin marks risk_tier 1 or 2. Mono-uppercase to
+// match the LIVE/Upcoming pills next to it.
+function TopPill() {
+  return (
+    <span
+      className="mono"
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "3px 8px",
+        borderRadius: 999,
+        fontSize: 10.5,
+        fontWeight: 600,
+        letterSpacing: "0.08em",
+        textTransform: "uppercase",
+        color: "var(--accent-fg)",
+        background: "var(--tier-gold)",
+        border: "1px solid var(--tier-gold)",
+      }}
+      title="Top tournament"
+    >
+      Top
+    </span>
   );
 }
 

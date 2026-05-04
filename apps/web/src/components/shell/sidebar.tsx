@@ -5,6 +5,7 @@ import { usePathname, useSearchParams } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { I } from "@/components/ui/icons";
+import { TierMark, isFeaturedTier } from "@/components/ui/tier-mark";
 import { clientApi } from "@/lib/api-client";
 
 interface SportItem {
@@ -17,6 +18,7 @@ interface SportItem {
 interface Tournament {
   id: number;
   name: string;
+  riskTier?: number | null;
   matchCount: number;
 }
 
@@ -261,29 +263,33 @@ function TournamentItem({
   tournament: Tournament;
   active: boolean;
 }) {
+  const tier = tournament.riskTier ?? null;
+  const featured = isFeaturedTier(tier);
   return (
     <Link
       href={`/sport/${sportSlug}?tournament=${tournament.id}`}
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 8,
+        gap: 6,
         padding: "6px 10px",
         borderRadius: 6,
         fontSize: 12.5,
         textDecoration: "none",
-        color: active ? "var(--fg)" : "var(--fg-muted)",
+        color: active || featured ? "var(--fg)" : "var(--fg-muted)",
         background: active ? "var(--surface-2)" : "transparent",
         position: "relative",
         transition: "background 140ms var(--ease), color 140ms var(--ease)",
       }}
     >
+      <TierMark tier={tier} size={11} />
       <span
         style={{
           flex: 1,
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
+          fontWeight: featured ? 600 : undefined,
         }}
       >
         {tournament.name}

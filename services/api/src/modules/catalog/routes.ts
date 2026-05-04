@@ -232,6 +232,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         liveScore: matches.liveScore,
         tournamentId: tournaments.id,
         tournamentName: tournaments.name,
+        tournamentRiskTier: tournaments.riskTier,
       })
       .from(matches)
       .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
@@ -343,6 +344,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
           tournament: {
             id: r.tournamentId,
             name: r.tournamentName,
+            riskTier: r.tournamentRiskTier,
           },
           matchWinner: o
             ? {
@@ -382,6 +384,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         liveScore: matches.liveScore,
         tournamentId: tournaments.id,
         tournamentName: tournaments.name,
+        tournamentRiskTier: tournaments.riskTier,
         sportId: sports.id,
         sportSlug: sports.slug,
         sportName: sports.name,
@@ -667,6 +670,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         tournament: {
           id: match.tournamentId,
           name: match.tournamentName,
+          riskTier: match.tournamentRiskTier,
         },
         sport: {
           id: match.sportId,
@@ -712,6 +716,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         liveScore: matches.liveScore,
         tournamentId: tournaments.id,
         tournamentName: tournaments.name,
+        tournamentRiskTier: tournaments.riskTier,
         sportSlug: sports.slug,
         sportName: sports.name,
       })
@@ -807,7 +812,11 @@ export default async function catalogRoutes(app: FastifyInstance) {
           status: r.status,
           bestOf: r.bestOf,
           liveScore: r.liveScore,
-          tournament: { id: r.tournamentId, name: r.tournamentName },
+          tournament: {
+            id: r.tournamentId,
+            name: r.tournamentName,
+            riskTier: r.tournamentRiskTier,
+          },
           sport: { slug: r.sportSlug, name: r.sportName },
           matchWinner: o
             ? {
@@ -928,6 +937,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         .select({
           id: tournaments.id,
           name: tournaments.name,
+          riskTier: tournaments.riskTier,
           sportSlug: sports.slug,
           sportName: sports.name,
         })
@@ -989,6 +999,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
           status: matches.status,
           tournamentId: tournaments.id,
           tournamentName: tournaments.name,
+          tournamentRiskTier: tournaments.riskTier,
           sportSlug: sports.slug,
           sportName: sports.name,
         })
@@ -1018,6 +1029,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
       tournaments: tournamentRows.map((t) => ({
         id: t.id,
         name: t.name,
+        riskTier: t.riskTier,
         sport: { slug: t.sportSlug, name: t.sportName },
       })),
       teams: teamRows.map((t) => ({
@@ -1032,7 +1044,11 @@ export default async function catalogRoutes(app: FastifyInstance) {
         awayTeam: m.awayTeam,
         scheduledAt: m.scheduledAt?.toISOString() ?? null,
         status: m.status,
-        tournament: { id: m.tournamentId, name: m.tournamentName },
+        tournament: {
+          id: m.tournamentId,
+          name: m.tournamentName,
+          riskTier: m.tournamentRiskTier,
+        },
         sport: { slug: m.sportSlug, name: m.sportName },
       })),
     };

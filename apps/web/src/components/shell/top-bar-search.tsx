@@ -13,6 +13,7 @@ import {
 import { I } from "@/components/ui/icons";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { Pill, LiveDot, TeamMark } from "@/components/ui/primitives";
+import { TierMark } from "@/components/ui/tier-mark";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 
 interface SportHit {
@@ -23,6 +24,7 @@ interface SportHit {
 interface TournamentHit {
   id: number;
   name: string;
+  riskTier?: number | null;
   sport: { slug: string; name: string };
 }
 interface TeamHit {
@@ -37,7 +39,7 @@ interface MatchHit {
   awayTeam: string;
   scheduledAt: string | null;
   status: "not_started" | "live" | "closed" | "cancelled" | "suspended";
-  tournament: { id: number; name: string };
+  tournament: { id: number; name: string; riskTier?: number | null };
   sport: { slug: string; name: string };
 }
 interface SearchResponse {
@@ -404,7 +406,12 @@ function ResultGroups({
           onHover={() => onHoverIndex(i)}
           onPick={onPick}
           left={<SportGlyph sport={t.sport.slug} size={16} />}
-          primary={t.name}
+          primary={
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <TierMark tier={t.riskTier ?? null} size={11} />
+              {t.name}
+            </span>
+          }
           secondary={t.sport.name}
         />,
       );
@@ -454,7 +461,12 @@ function ResultGroups({
           onPick={onPick}
           left={<SportGlyph sport={m.sport.slug} size={16} />}
           primary={`${m.homeTeam} vs ${m.awayTeam}`}
-          secondary={`${m.sport.name} · ${m.tournament.name}`}
+          secondary={
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <TierMark tier={m.tournament.riskTier ?? null} size={10} />
+              {`${m.sport.name} · ${m.tournament.name}`}
+            </span>
+          }
           right={
             isLive ? (
               <Pill tone="live">
@@ -510,8 +522,8 @@ function Row({
   onHover: () => void;
   onPick: (href: string) => void;
   left: ReactNode;
-  primary: string;
-  secondary?: string;
+  primary: ReactNode;
+  secondary?: ReactNode;
   right?: ReactNode;
 }) {
   return (
