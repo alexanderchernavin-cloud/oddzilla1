@@ -1,7 +1,10 @@
 import Link from "next/link";
 import { serverApi } from "@/lib/server-fetch";
 import { type ListMatch } from "@/components/match/match-row";
-import { MatchListTabs } from "@/components/match/match-list-tabs";
+import {
+  MatchListTabs,
+  type ListMatchEnriched,
+} from "@/components/match/match-list-tabs";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 
 interface ListMatchWithSport extends ListMatch {
@@ -11,6 +14,18 @@ interface ListMatchWithSport extends ListMatch {
 interface Response {
   matches: ListMatchWithSport[];
   topConfiguredSports?: Record<string, boolean>;
+}
+
+function enrich(
+  m: ListMatchWithSport,
+  topConfigured: Record<string, boolean>,
+): ListMatchEnriched {
+  return {
+    ...m,
+    _sportSlug: m.sport.slug,
+    _sportShort: shortName(m.sport.name),
+    _topConfigured: !!topConfigured[m.sport.slug],
+  };
 }
 
 interface PageProps {
@@ -97,12 +112,9 @@ export default async function LivePage({ searchParams }: PageProps) {
         </p>
       ) : (
         <MatchListTabs
-          matches={visible}
-          sportSlug={(m) => (m as ListMatchWithSport).sport.slug}
-          sportShort={(m) => shortName((m as ListMatchWithSport).sport.name)}
-          topConfigured={(m) =>
-            !!data?.topConfiguredSports?.[(m as ListMatchWithSport).sport.slug]
-          }
+          matches={visible.map((m) =>
+            enrich(m, data?.topConfiguredSports ?? {}),
+          )}
         />
       )}
     </div>

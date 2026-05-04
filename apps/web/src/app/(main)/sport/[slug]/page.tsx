@@ -2,7 +2,10 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { serverApi } from "@/lib/server-fetch";
 import { type ListMatch } from "@/components/match/match-row";
-import { MatchListTabs } from "@/components/match/match-list-tabs";
+import {
+  MatchListTabs,
+  type ListMatchEnriched,
+} from "@/components/match/match-list-tabs";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { I } from "@/components/ui/icons";
 
@@ -10,6 +13,20 @@ interface SportResponse {
   sport: { id: number; slug: string; name: string };
   topConfigured: boolean;
   matches: ListMatch[];
+}
+
+function enrich(
+  m: ListMatch,
+  sportSlug: string,
+  sportShort: string,
+  topConfigured: boolean,
+): ListMatchEnriched {
+  return {
+    ...m,
+    _sportSlug: sportSlug,
+    _sportShort: sportShort,
+    _topConfigured: topConfigured,
+  };
 }
 
 export default async function SportPage({
@@ -33,9 +50,12 @@ export default async function SportPage({
     ? data.matches.find((m) => String(m.tournament.id) === tournamentId)?.tournament.name ?? null
     : null;
 
-  const live = data.matches.filter((m) => m.status === "live");
-  const upcoming = data.matches.filter((m) => m.status !== "live");
   const sportShort = shortName(data.sport.name);
+  const enriched = data.matches.map((m) =>
+    enrich(m, slug, sportShort, !!data.topConfigured),
+  );
+  const live = enriched.filter((m) => m.status === "live");
+  const upcoming = enriched.filter((m) => m.status !== "live");
 
   return (
     <div
@@ -147,10 +167,7 @@ export default async function SportPage({
       )}
 
       <MatchListTabs
-        matches={data.matches}
-        sportSlug={() => slug}
-        sportShort={() => sportShort}
-        topConfigured={() => data.topConfigured}
+        matches={enriched}
         groups={[
           ...(live.length > 0
             ? [

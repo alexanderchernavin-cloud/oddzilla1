@@ -3,40 +3,42 @@
 import { useState, type ReactNode } from "react";
 import { MatchRow, type ListMatch, type MatchListTab } from "./match-row";
 
+// A list match enriched server-side with the per-row metadata MatchRow
+// needs. Functions can't cross the server/client boundary, so the
+// surrounding page bakes these in instead of passing computed callbacks.
+export interface ListMatchEnriched extends ListMatch {
+  _sportSlug: string;
+  _sportShort: string;
+  _topConfigured: boolean;
+}
+
 // Page-level [Match | Top] tab strip for storefront list pages. The
-// "Top" tab is only rendered when the API tells us the relevant sport
-// has Top markets configured — otherwise the strip degrades to plain
-// section headers and only Match-Winner inline odds.
-//
-// `topConfiguredFor` keys: sport slug → boolean. When `null` (single-
-// sport page), we fall back to the boolean `topConfigured` prop.
+// "Top" tab is only rendered when at least one match in view has the
+// Top scope configured for its sport — otherwise the strip is hidden
+// and Match-Winner odds render as before.
 export function MatchListTabs({
   matches,
-  sportSlug,
-  sportShort,
-  topConfigured,
   groups,
 }: {
-  matches: ListMatch[];
-  sportSlug: (m: ListMatch) => string;
-  sportShort: (m: ListMatch) => string;
-  topConfigured: (m: ListMatch) => boolean;
+  matches: ListMatchEnriched[];
   // Optional grouping — render headers between sections (e.g. Live /
   // Upcoming). When omitted we render a single flat list.
-  groups?: Array<{ key: string; label: ReactNode; matches: ListMatch[] }>;
+  groups?: Array<{ key: string; label: ReactNode; matches: ListMatchEnriched[] }>;
 }) {
   const [tab, setTab] = useState<MatchListTab>("match");
 
-  // Show the strip only if at least one match in the list has the Top
-  // scope configured for its sport. Hiding it on lists with zero Top
-  // configs avoids a useless tab on the home page when no admin has
-  // curated anything yet.
-  const anyTopConfigured = matches.some(topConfigured);
+  const anyTopConfigured = matches.some((m) => m._topConfigured);
 
-  function renderRow(m: ListMatch) {
-    const slug = sportSlug(m);
-    const short = sportShort(m);
-    return <MatchRow key={m.id} match={m} sportSlug={slug} sportShort={short} tab={tab} />;
+  function renderRow(m: ListMatchEnriched) {
+    return (
+      <MatchRow
+        key={m.id}
+        match={m}
+        sportSlug={m._sportSlug}
+        sportShort={m._sportShort}
+        tab={tab}
+      />
+    );
   }
 
   const body = groups
