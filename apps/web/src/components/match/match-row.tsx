@@ -5,6 +5,7 @@ import type { MouseEvent } from "react";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { Pill, LiveDot, OddButton, TeamMark } from "@/components/ui/primitives";
 import { useBetSlip } from "@/lib/bet-slip";
+import { mapCellValue, type LiveScore } from "@/lib/live-score";
 import type { SlipSelection } from "@oddzilla/types";
 
 export interface ListMatch {
@@ -14,7 +15,7 @@ export interface ListMatch {
   scheduledAt: string | null;
   status: "not_started" | "live" | "closed" | "cancelled" | "suspended";
   bestOf?: number | null;
-  liveScore?: { home?: number; away?: number } | null;
+  liveScore?: LiveScore | null;
   tournament: { id: number; name: string };
   matchWinner: {
     marketId: string;
@@ -168,17 +169,14 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
             alignItems: "center",
           }}
         >
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 6,
-              minWidth: 0,
-            }}
-          >
-            <TeamLine name={match.homeTeam} score={match.liveScore?.home} isLive={isLive} />
-            <TeamLine name={match.awayTeam} score={match.liveScore?.away} isLive={isLive} />
-          </div>
+          <ScoreTable
+            homeTeam={match.homeTeam}
+            awayTeam={match.awayTeam}
+            liveScore={match.liveScore ?? null}
+            bestOf={match.bestOf ?? null}
+            isLive={isLive}
+            sportSlug={sportSlug}
+          />
 
           <div
             style={{
@@ -218,24 +216,118 @@ function truncate(name: string, max: number): string {
   return name.slice(0, max).trimEnd() + "..";
 }
 
-function TeamLine({
-  name,
-  score,
-  isLive,
-}: {
-  name: string;
-  score?: number;
-  isLive?: boolean;
-}) {
-  const tag = name
+function teamTag(name: string): string {
+  return name
     .split(/\s+/)
     .slice(0, 3)
     .map((w) => w[0])
     .join("")
     .slice(0, 4);
+}
+
+// ScoreTable renders a two-row mini-scoreboard mirroring the match-detail
+// page's Scoreboard but in compact form for list cards:
+//   [team mark + name] | Series | Map 1 | Map 2 | Map N
+// Uses the same metric-picking rules (rounds for CS2, kills for Dota,
+// generic home/away_score otherwise — see lib/live-score.ts) so a value
+// shown on a list card always matches the equivalent cell on the
+// match-detail page. Pre-match the row collapses to just team names so
+// the layout doesn't fill with "—" placeholders for unstarted maps.
+function ScoreTable({
+  homeTeam,
+  awayTeam,
+  liveScore,
+  bestOf,
+  isLive,
+  sportSlug,
+}: {
+  homeTeam: string;
+  awayTeam: string;
+  liveScore: LiveScore | null;
+  bestOf: number | null;
+  isLive: boolean;
+  sportSlug: string;
+}) {
+  const periods = (liveScore?.periods ?? []).filter((p) => p.number != null);
+  const periodByNumber = new Map<number, NonNullable<LiveScore["periods"]>[number]>();
+  for (const p of periods) periodByNumber.set(p.number ?? 0, p);
+
+  const homeSeries = liveScore?.home ?? 0;
+  const awaySeries = liveScore?.away ?? 0;
+  const currentMap = isLive ? liveScore?.currentMap ?? null : null;
+  const scoreboard = liveScore?.scoreboard ?? null;
+
+  // Number of map columns. Use bestOf when known so empty future maps
+  // render as dashes (gives a stable "shape" for BO3+); fall back to the
+  // periods we've observed. Cap at 5 to keep the row from getting huge
+  // for esoteric formats.
+  const mapCount = Math.min(5, Math.max(bestOf ?? 0, periods.length, 0));
+  const cols = isLive && mapCount > 0 ? Array.from({ length: mapCount }, (_, i) => i + 1) : [];
+
+  // Pre-match: just the names, no numeric columns.
+  if (!isLive) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+        <NameOnlyRow name={homeTeam} />
+        <NameOnlyRow name={awayTeam} />
+      </div>
+    );
+  }
+
+  // Live: [team] [series] [map1..mapN]. Series column is only useful when
+  // there's more than one map; for BO1 it duplicates map 1 — drop it.
+  const showSeries = mapCount > 1;
+  const gridTemplate = `minmax(0, 1fr)${showSeries ? " 32px" : ""}${
+    cols.length ? " " + cols.map(() => "26px").join(" ") : ""
+  }`;
+
+  return (
+    <div
+      role="table"
+      style={{
+        display: "grid",
+        gridTemplateColumns: gridTemplate,
+        rowGap: 6,
+        columnGap: 8,
+        alignItems: "center",
+        minWidth: 0,
+      }}
+    >
+      <div role="row" style={{ display: "contents" }}>
+        <div />
+        {showSeries && <ColHeader label="Σ" />}
+        {cols.map((n) => (
+          <ColHeader key={n} label={String(n)} live={currentMap === n} />
+        ))}
+      </div>
+      <TeamScoreRow
+        name={homeTeam}
+        series={homeSeries}
+        cols={cols}
+        showSeries={showSeries}
+        getValue={(n) =>
+          mapCellValue("home", n, periodByNumber.get(n), scoreboard, currentMap, sportSlug)
+        }
+        isLiveCol={(n) => currentMap === n}
+      />
+      <TeamScoreRow
+        name={awayTeam}
+        series={awaySeries}
+        cols={cols}
+        showSeries={showSeries}
+        getValue={(n) =>
+          mapCellValue("away", n, periodByNumber.get(n), scoreboard, currentMap, sportSlug)
+        }
+        isLiveCol={(n) => currentMap === n}
+      />
+    </div>
+  );
+}
+
+function NameOnlyRow({ name }: { name: string }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-      <TeamMark tag={tag} size={24} />
+      <TeamMark tag={teamTag(name)} size={24} />
       <span
         style={{
           fontSize: 14,
@@ -250,19 +342,107 @@ function TeamLine({
       >
         {truncate(name, 22)}
       </span>
-      {isLive && typeof score === "number" && (
+    </div>
+  );
+}
+
+function ColHeader({ label, live = false }: { label: string; live?: boolean }) {
+  return (
+    <div
+      className="mono"
+      style={{
+        fontSize: 9.5,
+        color: live ? "var(--fg)" : "var(--fg-dim)",
+        letterSpacing: "0.08em",
+        textTransform: "uppercase",
+        textAlign: "center",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 3,
+      }}
+    >
+      {live ? <LiveDot size={4} /> : null}
+      {label}
+    </div>
+  );
+}
+
+function TeamScoreRow({
+  name,
+  series,
+  cols,
+  showSeries,
+  getValue,
+  isLiveCol,
+}: {
+  name: string;
+  series: number;
+  cols: number[];
+  showSeries: boolean;
+  getValue: (n: number) => number | null;
+  isLiveCol: (n: number) => boolean;
+}) {
+  return (
+    <>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          minWidth: 0,
+        }}
+      >
+        <TeamMark tag={teamTag(name)} size={24} />
         <span
-          className="mono tnum"
           style={{
-            fontSize: 15,
-            fontWeight: 600,
-            color: "var(--fg)",
-            flexShrink: 0,
+            fontSize: 14,
+            fontWeight: 500,
+            letterSpacing: "-0.005em",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            minWidth: 0,
+            flex: 1,
           }}
         >
-          {score}
+          {truncate(name, 22)}
         </span>
+      </div>
+      {showSeries && (
+        <div
+          className="mono tnum"
+          style={{
+            textAlign: "center",
+            fontSize: 13,
+            fontWeight: 600,
+            color: "var(--fg)",
+            padding: "3px 0",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--r-sm, 6px)",
+          }}
+        >
+          {series}
+        </div>
       )}
-    </div>
+      {cols.map((n) => {
+        const v = getValue(n);
+        const live = isLiveCol(n);
+        return (
+          <div
+            key={n}
+            className="mono tnum"
+            style={{
+              textAlign: "center",
+              fontSize: 13,
+              fontWeight: 500,
+              color: v == null ? "var(--fg-dim)" : live ? "var(--fg)" : "var(--fg-muted)",
+            }}
+          >
+            {v == null ? "—" : v}
+          </div>
+        );
+      })}
+    </>
   );
 }
