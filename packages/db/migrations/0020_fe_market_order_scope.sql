@@ -19,8 +19,16 @@ ALTER TABLE fe_market_display_order
   ADD COLUMN scope TEXT NOT NULL DEFAULT 'match'
   CHECK (scope IN ('match', 'map', 'top'));
 
+-- 0019 wrote the original UNIQUE inline (no name), so PG auto-generated
+-- `fe_market_display_order_sport_id_provider_market_id_key`. The Drizzle
+-- schema uses an explicit `unique("fe_market_display_order_sport_market")`
+-- name, which is what `pnpm db:push` would create. Drop both with
+-- IF EXISTS so this migration applies cleanly regardless of how 0019
+-- landed (drizzle-kit push vs. our hand-written migrate runner).
 ALTER TABLE fe_market_display_order
-  DROP CONSTRAINT fe_market_display_order_sport_market;
+  DROP CONSTRAINT IF EXISTS fe_market_display_order_sport_market;
+ALTER TABLE fe_market_display_order
+  DROP CONSTRAINT IF EXISTS fe_market_display_order_sport_id_provider_market_id_key;
 
 ALTER TABLE fe_market_display_order
   ADD CONSTRAINT fe_market_display_order_sport_scope_market
