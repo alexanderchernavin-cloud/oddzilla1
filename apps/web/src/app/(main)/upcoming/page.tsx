@@ -1,6 +1,9 @@
 import { serverApi } from "@/lib/server-fetch";
 import { type ListMatch } from "@/components/match/match-row";
-import { MatchListTabs } from "@/components/match/match-list-tabs";
+import {
+  MatchListTabs,
+  type ListMatchEnriched,
+} from "@/components/match/match-list-tabs";
 
 interface ListMatchWithSport extends ListMatch {
   sport: { slug: string; name: string };
@@ -9,6 +12,18 @@ interface ListMatchWithSport extends ListMatch {
 interface Response {
   matches: ListMatchWithSport[];
   topConfiguredSports?: Record<string, boolean>;
+}
+
+function enrich(
+  m: ListMatchWithSport,
+  topConfigured: Record<string, boolean>,
+): ListMatchEnriched {
+  return {
+    ...m,
+    _sportSlug: m.sport.slug,
+    _sportShort: shortName(m.sport.name),
+    _topConfigured: !!topConfigured[m.sport.slug],
+  };
 }
 
 export default async function UpcomingPage() {
@@ -52,12 +67,9 @@ export default async function UpcomingPage() {
         </p>
       ) : (
         <MatchListTabs
-          matches={matches}
-          sportSlug={(m) => (m as ListMatchWithSport).sport.slug}
-          sportShort={(m) => shortName((m as ListMatchWithSport).sport.name)}
-          topConfigured={(m) =>
-            !!data?.topConfiguredSports?.[(m as ListMatchWithSport).sport.slug]
-          }
+          matches={matches.map((m) =>
+            enrich(m, data?.topConfiguredSports ?? {}),
+          )}
         />
       )}
     </div>

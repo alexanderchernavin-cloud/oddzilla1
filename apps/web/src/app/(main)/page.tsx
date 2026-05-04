@@ -1,7 +1,10 @@
 import Link from "next/link";
 import { serverApi } from "@/lib/server-fetch";
 import { type ListMatch } from "@/components/match/match-row";
-import { MatchListTabs } from "@/components/match/match-list-tabs";
+import {
+  MatchListTabs,
+  type ListMatchEnriched,
+} from "@/components/match/match-list-tabs";
 import { SectionHeader } from "@/components/match/section-header";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 
@@ -16,6 +19,18 @@ interface ListMatchWithSport extends ListMatch {
 interface CrossSportResponse {
   matches: ListMatchWithSport[];
   topConfiguredSports?: Record<string, boolean>;
+}
+
+function enrich(
+  m: ListMatchWithSport,
+  topConfigured: Record<string, boolean>,
+): ListMatchEnriched {
+  return {
+    ...m,
+    _sportSlug: m.sport.slug,
+    _sportShort: shortName(m.sport.name),
+    _topConfigured: !!topConfigured[m.sport.slug],
+  };
 }
 
 export default async function HomePage() {
@@ -120,25 +135,25 @@ export default async function HomePage() {
       </div>
 
       {(() => {
-        const upcomingShown = upcoming.slice(0, 20);
-        const merged = [...live, ...upcomingShown];
         const topConfig: Record<string, boolean> = {
           ...(liveRes?.topConfiguredSports ?? {}),
           ...(upcomingRes?.topConfiguredSports ?? {}),
         };
+        const liveEnriched = live.map((m) => enrich(m, topConfig));
+        const upcomingShown = upcoming.slice(0, 20).map((m) => enrich(m, topConfig));
+        const merged = [...liveEnriched, ...upcomingShown];
         return (
           <MatchListTabs
             matches={merged}
-            sportSlug={(m) => (m as ListMatchWithSport).sport.slug}
-            sportShort={(m) => shortName((m as ListMatchWithSport).sport.name)}
-            topConfigured={(m) => !!topConfig[(m as ListMatchWithSport).sport.slug]}
             groups={[
-              ...(live.length > 0
+              ...(liveEnriched.length > 0
                 ? [
                     {
                       key: "live",
-                      label: <SectionHeader kicker="Live" title="In play" count={live.length} />,
-                      matches: live,
+                      label: (
+                        <SectionHeader kicker="Live" title="In play" count={live.length} />
+                      ),
+                      matches: liveEnriched,
                     },
                   ]
                 : []),
