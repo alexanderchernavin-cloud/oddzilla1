@@ -148,6 +148,13 @@
       "when": 1700000020000,
       "tag": "0020_fe_market_order_scope",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1700000021000,
+      "tag": "0021_competitor_logos",
+      "breakpoints": true
     }
   ]
 }

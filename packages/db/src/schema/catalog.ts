@@ -85,6 +85,12 @@ export const competitors = pgTable(
     slug: text().notNull(),
     name: text().notNull(),
     abbreviation: text(),
+    // Optional team branding. logo_url is plain TEXT so admins can paste any
+    // HTTPS URL (Liquipedia, team CDN, self-hosted /logos/*); brand_color is
+    // a "#RRGGBB" hex string reserved for future tinted accents. Both are
+    // nullable — when absent the storefront falls back to initials.
+    logoUrl: text(),
+    brandColor: text(),
     active: boolean().notNull().default(true),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },

@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import type { CSSProperties, ReactNode, MouseEvent } from "react";
 
 // ── Button ──────────────────────────────────────────────────────────────
@@ -337,16 +338,31 @@ export function OddButton({
 }
 
 // ── TeamMark ────────────────────────────────────────────────────────────
+// Renders the team's branded logo when `logoUrl` is supplied, falling back
+// to a monogram (up to 4 initials) when it isn't or when the image fails
+// to load. The fallback path matters: feeds add new teams faster than an
+// admin can paste logos, and a broken <img> would replace the row's leading
+// column with the alt-text default the browser picks (an icon, varies per
+// platform). The component owns the error state so the consumer doesn't
+// have to thread it through every call site.
 export function TeamMark({
   tag,
   color,
   size = 24,
+  logoUrl,
+  name,
 }: {
   tag: string;
   color?: string;
   size?: number;
+  logoUrl?: string | null;
+  // Optional human team name; used only as the <img> alt and falls back
+  // to the tag when omitted. Empty alt is allowed when neither is set.
+  name?: string;
 }) {
   const letters = tag.slice(0, 4).toUpperCase();
+  const [imgFailed, setImgFailed] = useState(false);
+  const showImage = !!logoUrl && !imgFailed;
   return (
     <span
       style={{
@@ -356,7 +372,7 @@ export function TeamMark({
         width: size,
         height: size,
         borderRadius: 6,
-        background: "var(--surface-2)",
+        background: showImage ? "var(--surface-1)" : "var(--surface-2)",
         border: "1px solid var(--hairline)",
         fontFamily: "var(--font-mono)",
         fontSize: Math.max(9, size * 0.36),
@@ -364,6 +380,7 @@ export function TeamMark({
         letterSpacing: "0.02em",
         color: "var(--fg)",
         position: "relative",
+        overflow: "hidden",
         flexShrink: 0,
       }}
     >
@@ -377,10 +394,29 @@ export function TeamMark({
             height: 5,
             borderRadius: 999,
             background: color,
+            zIndex: 2,
           }}
         />
       ) : null}
-      {letters}
+      {showImage ? (
+        <img
+          src={logoUrl}
+          alt={name ?? letters}
+          onError={() => setImgFailed(true)}
+          loading="lazy"
+          decoding="async"
+          style={{
+            width: "100%",
+            height: "100%",
+            objectFit: "contain",
+            // Subtle inset so the logo doesn't touch the rounded edge.
+            padding: Math.max(1, Math.round(size * 0.06)),
+            background: "transparent",
+          }}
+        />
+      ) : (
+        letters
+      )}
     </span>
   );
 }

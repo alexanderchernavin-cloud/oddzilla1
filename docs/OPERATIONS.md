@@ -347,6 +347,82 @@ open tickets that's 200 quotes/sec — comfortable for the single
 `api`/`postgres` pair on the current box. Watch `docker stats
 oddzilla-api-1` if it ever feels slow.
 
+### Team logos runbook
+
+Storefront match cards and the match-detail header render team logos
+when the matching `competitors.logo_url` is set; otherwise they fall
+back to the existing initials TeamMark. Admin UI at
+`/admin/competitors` lists every team scoped per sport with sport,
+search, and "missing logo only" filters.
+
+**One-off edit:**
+
+1. `/admin/competitors`, filter to the relevant sport.
+2. Click "Edit" on the row, paste the logo URL (https or absolute
+   `/path`), optionally set a `#RRGGBB` brand colour and a short
+   abbreviation, Save. The change is audit-logged
+   (`admin_audit_log.action = 'competitor.update'`).
+3. The `<img onError>` handler in `TeamMark` falls back to the
+   initials block silently if the URL 404s; check the row preview to
+   confirm it loaded.
+
+**Bulk seed (curated overrides):**
+
+A small curated seed of popular teams with hand-picked URLs and
+brand colours lives in [`packages/db/seeds/competitor-logos.json`](../packages/db/seeds/competitor-logos.json)
+keyed by `(sport_slug, competitor_slug)`. Use this for teams whose
+Liquipedia logo is wrong, missing, or where you want a brand colour
+that the resolver can't infer. Apply with:
+
+```bash
+ADMIN_EMAIL=admin@oddzilla.local \
+ADMIN_PASSWORD='ChangeMeAdmin123!' \
+API_BASE_URL=http://localhost:3001 \
+  pnpm --filter @oddzilla/db db:seed-logos
+```
+
+Idempotent — re-run any time. Missing rows (no matching `(sport_slug,
+competitor_slug)` pair) are reported with their reason; this is
+expected for teams the feed hasn't delivered yet.
+
+**Bulk auto-resolve via Liquipedia (every team):**
+
+For exhaustive coverage, [`packages/db/src/resolve-logos.ts`](../packages/db/src/resolve-logos.ts)
+iterates every active competitor across the supported esports
+(`cs2`, `lol`, `valorant`, `dota2`, `ml`, `kog`, `r6`, `sc2`, `cod`,
+`aov`, `rocketleague`, `overwatch`, `crossfire`, `sc1`, `w3`),
+queries Liquipedia's MediaWiki API in batches of 40 with `prop=
+pageimages&piprop=original`, and writes the returned URL back to
+`competitors.logo_url`. Idempotent — only fills nulls unless `--force`.
+Run **on the production box** so the script has direct DB access and
+the data flow stays local:
+
+```bash
+ssh team@178.104.174.24
+cd /home/team/oddzilla
+sudo -n docker exec -i oddzilla-api-1 sh -c '
+  cd /repo && DATABASE_URL=$DATABASE_URL pnpm --filter @oddzilla/db db:resolve-logos --dry-run
+'
+# Review the output, then run for real:
+sudo -n docker exec -i oddzilla-api-1 sh -c '
+  cd /repo && DATABASE_URL=$DATABASE_URL pnpm --filter @oddzilla/db db:resolve-logos
+'
+```
+
+Flags: `--force` (overwrite existing logo_url), `--sport=cs2`
+(scope to one sport), `--dry-run` (report without writing),
+`--concurrency=N` (parallel HTTP, capped at 16 — leave at 4 to
+respect Liquipedia's rate limits).
+
+The resolver pauses 2.1 s between batches to honour Liquipedia's
+"≤1 query per 2 s" guideline. ~430 active teams across the supported
+esports → ≈30 s wall clock.
+
+After the resolver runs, hand-tune any teams whose Liquipedia entry
+was wrong via `/admin/competitors`. Curated overrides in the seed
+JSON above always take precedence over the resolver because they're
+applied last.
+
 ### HD master mnemonic management
 
 Currently lives in `HD_MASTER_MNEMONIC` env on `services/api` (for

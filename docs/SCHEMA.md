@@ -45,6 +45,17 @@ Canonical SQL lives in [`../packages/db/migrations/`](../packages/db/migrations/
   rendered as a "Top" tab on the match-detail page and an inline tab
   toggle on match list cards via `loadTopMarketIdsBySport` /
   `loadTopMarketsForMatches` in `services/api/src/modules/catalog/routes.ts`).
+- `0021_competitor_logos.sql` — adds `competitors.logo_url TEXT` and
+  `competitors.brand_color TEXT` for storefront team branding. Both are
+  nullable and accept HTTPS URLs / absolute paths (`/logos/...`); a CHECK
+  constraint requires `brand_color ~ '^#[0-9A-Fa-f]{6}$'` when present.
+  No new index — lookups already go through `competitors.id` (FK from
+  `matches`) or `(sport_id, slug)`. Catalog endpoints LEFT JOIN
+  `competitors` twice (home + away aliases) to surface `homeLogoUrl` /
+  `awayLogoUrl` on every match row + match detail. Admins manage entries
+  at `/admin/competitors` (PATCH /admin/competitors/:id) or via the bulk
+  endpoint `POST /admin/competitors/bulk-logos` consumed by
+  `packages/db/src/apply-logo-seed.ts`.
 
 Drizzle mirror is [`../packages/db/src/schema/`](../packages/db/src/schema/).
 

@@ -17,6 +17,10 @@ interface MatchResponse {
     id: string;
     homeTeam: string;
     awayTeam: string;
+    homeLogoUrl?: string | null;
+    awayLogoUrl?: string | null;
+    homeBrandColor?: string | null;
+    awayBrandColor?: string | null;
     scheduledAt: string | null;
     status: "not_started" | "live" | "closed" | "cancelled" | "suspended";
     bestOf: number | null;
@@ -135,6 +139,8 @@ export default async function MatchPage({
         <Scoreboard
           homeTeam={match.homeTeam}
           awayTeam={match.awayTeam}
+          homeLogoUrl={match.homeLogoUrl ?? null}
+          awayLogoUrl={match.awayLogoUrl ?? null}
           homeSeries={homeSeries}
           awaySeries={awaySeries}
           mapCount={mapCount}
@@ -218,6 +224,8 @@ function truncateName(name: string, max: number): string {
 function Scoreboard({
   homeTeam,
   awayTeam,
+  homeLogoUrl,
+  awayLogoUrl,
   homeSeries,
   awaySeries,
   mapCount,
@@ -227,6 +235,8 @@ function Scoreboard({
 }: {
   homeTeam: string;
   awayTeam: string;
+  homeLogoUrl: string | null;
+  awayLogoUrl: string | null;
   homeSeries: number;
   awaySeries: number;
   mapCount: number;
@@ -281,6 +291,7 @@ function Scoreboard({
         {/* Home row */}
         <TeamRow
           name={homeTeam}
+          logoUrl={homeLogoUrl}
           series={homeSeries}
           cols={cols}
           getValue={(n) => mapCellValue("home", n, periodByNumber.get(n), scoreboard, currentMap, sportSlug)}
@@ -290,6 +301,7 @@ function Scoreboard({
         {/* Away row */}
         <TeamRow
           name={awayTeam}
+          logoUrl={awayLogoUrl}
           series={awaySeries}
           cols={cols}
           getValue={(n) => mapCellValue("away", n, periodByNumber.get(n), scoreboard, currentMap, sportSlug)}
@@ -356,12 +368,14 @@ function ColHeader({ label, live = false }: { label: string; live?: boolean }) {
 
 function TeamRow({
   name,
+  logoUrl,
   series,
   cols,
   getValue,
   isLiveCol,
 }: {
   name: string;
+  logoUrl?: string | null;
   series: number;
   cols: number[];
   getValue: (n: number) => number | null;
@@ -377,7 +391,7 @@ function TeamRow({
           minWidth: 0,
         }}
       >
-        <TeamMark tag={teamTag(name)} size={28} />
+        <TeamMark tag={teamTag(name)} size={28} logoUrl={logoUrl} name={name} />
         <span
           style={{
             fontWeight: 500,
