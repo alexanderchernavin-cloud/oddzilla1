@@ -408,6 +408,13 @@ body {
     padding-right: 12px !important;
   }
   .oz-main-inner .card { border-radius: 10px; }
+
+  /* Match-card row odds: drop the "1" / "2" label on mobile (the row
+     it sits in is already aligned with the team's name) and center
+     the price in the now-empty button. Desktop keeps the label on the
+     left so the buttons match the rest of the design system. */
+  .oz-odd-label { display: none; }
+  .oz-row-odd { justify-content: center !important; }
 }
 
 @media (max-width: 479px) {
