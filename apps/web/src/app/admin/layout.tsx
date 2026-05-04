@@ -41,6 +41,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
             <Link href="/admin/mapping" className="hover:text-[var(--color-fg)]">
               Mapping
             </Link>
+            <Link href="/admin/competitors" className="hover:text-[var(--color-fg)]">
+              Teams
+            </Link>
             <Link href="/admin/margins" className="hover:text-[var(--color-fg)]">
               Margins
             </Link>

@@ -31,12 +31,16 @@ interface TeamHit {
   id: number;
   name: string;
   abbreviation: string | null;
+  logoUrl?: string | null;
+  brandColor?: string | null;
   sport: { slug: string; name: string };
 }
 interface MatchHit {
   id: string;
   homeTeam: string;
   awayTeam: string;
+  homeLogoUrl?: string | null;
+  awayLogoUrl?: string | null;
   scheduledAt: string | null;
   status: "not_started" | "live" | "closed" | "cancelled" | "suspended";
   tournament: { id: number; name: string; riskTier?: number | null };
@@ -430,7 +434,7 @@ function ResultGroups({
           href={`/sport/${team.sport.slug}`}
           onHover={() => onHoverIndex(i)}
           onPick={onPick}
-          left={<TeamMark tag={tag} size={22} />}
+          left={<TeamMark tag={tag} size={22} logoUrl={team.logoUrl} name={team.name} />}
           primary={team.name}
           secondary={team.sport.name}
         />,

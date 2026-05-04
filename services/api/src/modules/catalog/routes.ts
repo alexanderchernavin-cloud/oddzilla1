@@ -14,6 +14,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { and, asc, desc, eq, ilike, inArray, notInArray, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import {
   sports,
   categories,
@@ -29,6 +30,13 @@ import {
   feMarketDisplayOrder,
 } from "@oddzilla/db";
 import { NotFoundError } from "../../lib/errors.js";
+
+// Two aliases of `competitors` so a single match query can pull the home
+// and away team's branding columns (logo_url, brand_color) in one round
+// trip. LEFT JOIN: a match may have NULL competitor FKs (placeholder team
+// names from the feed before the auto-mapper resolved a URN).
+const homeCompetitor = alias(competitors, "home_competitor");
+const awayCompetitor = alias(competitors, "away_competitor");
 
 // substituteTemplate replaces {specifier} placeholders in an Oddin name
 // template with the supplied specifier values. Unknown placeholders are
@@ -393,6 +401,10 @@ export default async function catalogRoutes(app: FastifyInstance) {
         providerUrn: matches.providerUrn,
         homeTeam: matches.homeTeam,
         awayTeam: matches.awayTeam,
+        homeLogoUrl: homeCompetitor.logoUrl,
+        awayLogoUrl: awayCompetitor.logoUrl,
+        homeBrandColor: homeCompetitor.brandColor,
+        awayBrandColor: awayCompetitor.brandColor,
         scheduledAt: matches.scheduledAt,
         status: matches.status,
         bestOf: matches.bestOf,
@@ -404,6 +416,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .from(matches)
       .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
       .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+      .leftJoin(homeCompetitor, eq(homeCompetitor.id, matches.homeCompetitorId))
+      .leftJoin(awayCompetitor, eq(awayCompetitor.id, matches.awayCompetitorId))
       .where(
         and(
           eq(categories.sportId, sport.id),
@@ -516,6 +530,10 @@ export default async function catalogRoutes(app: FastifyInstance) {
           providerUrn: r.providerUrn,
           homeTeam: r.homeTeam,
           awayTeam: r.awayTeam,
+          homeLogoUrl: r.homeLogoUrl,
+          awayLogoUrl: r.awayLogoUrl,
+          homeBrandColor: r.homeBrandColor,
+          awayBrandColor: r.awayBrandColor,
           scheduledAt: r.scheduledAt?.toISOString() ?? null,
           status: r.status,
           bestOf: r.bestOf,
@@ -558,6 +576,10 @@ export default async function catalogRoutes(app: FastifyInstance) {
         providerUrn: matches.providerUrn,
         homeTeam: matches.homeTeam,
         awayTeam: matches.awayTeam,
+        homeLogoUrl: homeCompetitor.logoUrl,
+        awayLogoUrl: awayCompetitor.logoUrl,
+        homeBrandColor: homeCompetitor.brandColor,
+        awayBrandColor: awayCompetitor.brandColor,
         scheduledAt: matches.scheduledAt,
         status: matches.status,
         bestOf: matches.bestOf,
@@ -573,6 +595,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
       .innerJoin(categories, eq(categories.id, tournaments.categoryId))
       .innerJoin(sports, eq(sports.id, categories.sportId))
+      .leftJoin(homeCompetitor, eq(homeCompetitor.id, matches.homeCompetitorId))
+      .leftJoin(awayCompetitor, eq(awayCompetitor.id, matches.awayCompetitorId))
       .where(eq(matches.id, params.id))
       .limit(1);
     if (!match) throw new NotFoundError("match_not_found", "match_not_found");
@@ -897,6 +921,10 @@ export default async function catalogRoutes(app: FastifyInstance) {
         providerUrn: match.providerUrn,
         homeTeam: match.homeTeam,
         awayTeam: match.awayTeam,
+        homeLogoUrl: match.homeLogoUrl,
+        awayLogoUrl: match.awayLogoUrl,
+        homeBrandColor: match.homeBrandColor,
+        awayBrandColor: match.awayBrandColor,
         scheduledAt: match.scheduledAt?.toISOString() ?? null,
         status: match.status,
         bestOf: match.bestOf,
@@ -944,6 +972,10 @@ export default async function catalogRoutes(app: FastifyInstance) {
         providerUrn: matches.providerUrn,
         homeTeam: matches.homeTeam,
         awayTeam: matches.awayTeam,
+        homeLogoUrl: homeCompetitor.logoUrl,
+        awayLogoUrl: awayCompetitor.logoUrl,
+        homeBrandColor: homeCompetitor.brandColor,
+        awayBrandColor: awayCompetitor.brandColor,
         scheduledAt: matches.scheduledAt,
         status: matches.status,
         bestOf: matches.bestOf,
@@ -959,6 +991,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
       .innerJoin(categories, eq(categories.id, tournaments.categoryId))
       .innerJoin(sports, eq(sports.id, categories.sportId))
+      .leftJoin(homeCompetitor, eq(homeCompetitor.id, matches.homeCompetitorId))
+      .leftJoin(awayCompetitor, eq(awayCompetitor.id, matches.awayCompetitorId))
       .where(
         and(
           cond,
@@ -1062,6 +1096,10 @@ export default async function catalogRoutes(app: FastifyInstance) {
           providerUrn: r.providerUrn,
           homeTeam: r.homeTeam,
           awayTeam: r.awayTeam,
+          homeLogoUrl: r.homeLogoUrl,
+          awayLogoUrl: r.awayLogoUrl,
+          homeBrandColor: r.homeBrandColor,
+          awayBrandColor: r.awayBrandColor,
           scheduledAt: r.scheduledAt?.toISOString() ?? null,
           status: r.status,
           bestOf: r.bestOf,
@@ -1227,6 +1265,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
           id: competitors.id,
           name: competitors.name,
           abbreviation: competitors.abbreviation,
+          logoUrl: competitors.logoUrl,
+          brandColor: competitors.brandColor,
           sportSlug: sports.slug,
           sportName: sports.name,
         })
@@ -1250,6 +1290,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
           id: matches.id,
           homeTeam: matches.homeTeam,
           awayTeam: matches.awayTeam,
+          homeLogoUrl: homeCompetitor.logoUrl,
+          awayLogoUrl: awayCompetitor.logoUrl,
           scheduledAt: matches.scheduledAt,
           status: matches.status,
           tournamentId: tournaments.id,
@@ -1262,6 +1304,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
         .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
         .innerJoin(categories, eq(categories.id, tournaments.categoryId))
         .innerJoin(sports, eq(sports.id, categories.sportId))
+        .leftJoin(homeCompetitor, eq(homeCompetitor.id, matches.homeCompetitorId))
+        .leftJoin(awayCompetitor, eq(awayCompetitor.id, matches.awayCompetitorId))
         .where(
           and(
             eq(sports.active, true),
@@ -1291,12 +1335,16 @@ export default async function catalogRoutes(app: FastifyInstance) {
         id: t.id,
         name: t.name,
         abbreviation: t.abbreviation,
+        logoUrl: t.logoUrl,
+        brandColor: t.brandColor,
         sport: { slug: t.sportSlug, name: t.sportName },
       })),
       matches: matchRows.map((m) => ({
         id: m.id.toString(),
         homeTeam: m.homeTeam,
         awayTeam: m.awayTeam,
+        homeLogoUrl: m.homeLogoUrl,
+        awayLogoUrl: m.awayLogoUrl,
         scheduledAt: m.scheduledAt?.toISOString() ?? null,
         status: m.status,
         tournament: {

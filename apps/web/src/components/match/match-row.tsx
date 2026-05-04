@@ -13,6 +13,8 @@ export interface ListMatch {
   id: string;
   homeTeam: string;
   awayTeam: string;
+  homeLogoUrl?: string | null;
+  awayLogoUrl?: string | null;
   scheduledAt: string | null;
   status: "not_started" | "live" | "closed" | "cancelled" | "suspended";
   bestOf?: number | null;
@@ -280,6 +282,8 @@ export function MatchRow({ match, sportSlug, sportShort, tab = "match" }: Props)
         <ScoreTable
           homeTeam={match.homeTeam}
           awayTeam={match.awayTeam}
+          homeLogoUrl={match.homeLogoUrl ?? null}
+          awayLogoUrl={match.awayLogoUrl ?? null}
           liveScore={match.liveScore ?? null}
           bestOf={match.bestOf ?? null}
           isLive={isLive}
@@ -362,6 +366,8 @@ function outcomeLabelForCard(
 function ScoreTable({
   homeTeam,
   awayTeam,
+  homeLogoUrl,
+  awayLogoUrl,
   liveScore,
   bestOf,
   isLive,
@@ -371,6 +377,8 @@ function ScoreTable({
 }: {
   homeTeam: string;
   awayTeam: string;
+  homeLogoUrl: string | null;
+  awayLogoUrl: string | null;
   liveScore: LiveScore | null;
   bestOf: number | null;
   isLive: boolean;
@@ -443,6 +451,7 @@ function ScoreTable({
 
       <TeamScoreRow
         name={homeTeam}
+        logoUrl={homeLogoUrl}
         series={homeSeries}
         cols={cols}
         showSeries={showSeries}
@@ -455,6 +464,7 @@ function ScoreTable({
       />
       <TeamScoreRow
         name={awayTeam}
+        logoUrl={awayLogoUrl}
         series={awaySeries}
         cols={cols}
         showSeries={showSeries}
@@ -493,6 +503,7 @@ function ColHeader({ label, live = false }: { label: string; live?: boolean }) {
 
 function TeamScoreRow({
   name,
+  logoUrl,
   series,
   cols,
   showSeries,
@@ -502,6 +513,7 @@ function TeamScoreRow({
   hasTrailing,
 }: {
   name: string;
+  logoUrl?: string | null;
   series: number;
   cols: number[];
   showSeries: boolean;
@@ -520,7 +532,7 @@ function TeamScoreRow({
           minWidth: 0,
         }}
       >
-        <TeamMark tag={teamTag(name)} size={22} />
+        <TeamMark tag={teamTag(name)} size={22} logoUrl={logoUrl} name={name} />
         <span
           style={{
             fontSize: 13.5,
