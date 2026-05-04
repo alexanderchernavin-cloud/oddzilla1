@@ -13,7 +13,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { and, desc, eq, ilike, inArray, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, notInArray, or, sql } from "drizzle-orm";
 import {
   sports,
   categories,
@@ -187,6 +187,173 @@ const notHiddenTournament = notInArray(tournaments.name, HIDDEN_TOURNAMENT_NAMES
 // user clicks through to see the full 1X2 on the match page.
 const isTwoWayMatchWinner = sql`(${markets.specifiersJson}->>'variant') = 'way:two'`;
 
+// loadTopMarketIdsBySport fetches the ordered Top market ids for one or
+// more sports. Returns a map keyed by sportId — empty array when the
+// admin hasn't curated any Top markets for that sport. Used by the list
+// endpoints to expose `topMarket` per card so the storefront can render
+// a Top tab inline.
+async function loadTopMarketIdsBySport(
+  db: FastifyInstance["db"],
+  sportIds: number[],
+): Promise<Map<number, number[]>> {
+  const out = new Map<number, number[]>();
+  if (sportIds.length === 0) return out;
+  const rows = await db
+    .select({
+      sportId: feMarketDisplayOrder.sportId,
+      providerMarketId: feMarketDisplayOrder.providerMarketId,
+      displayOrder: feMarketDisplayOrder.displayOrder,
+    })
+    .from(feMarketDisplayOrder)
+    .where(
+      and(
+        eq(feMarketDisplayOrder.scope, "top"),
+        inArray(feMarketDisplayOrder.sportId, sportIds),
+      ),
+    )
+    .orderBy(asc(feMarketDisplayOrder.sportId), asc(feMarketDisplayOrder.displayOrder));
+  for (const r of rows) {
+    const arr = out.get(r.sportId) ?? [];
+    arr.push(r.providerMarketId);
+    out.set(r.sportId, arr);
+  }
+  return out;
+}
+
+// loadTopMarketsForMatches loads the first available Top market for each
+// match (priority order = admin's configured order). Returns a map keyed
+// by matchId. Designed for inline use on match list cards: one market
+// per match, two outcomes preferred (so the card layout stays a clean
+// 2-column row of price buttons).
+async function loadTopMarketsForMatches(
+  db: FastifyInstance["db"],
+  matchSports: Array<{ matchId: bigint; sportId: number }>,
+  topIdsBySport: Map<number, number[]>,
+): Promise<Map<string, InlineTopMarket>> {
+  const out = new Map<string, InlineTopMarket>();
+  if (matchSports.length === 0) return out;
+
+  const allTopIds = new Set<number>();
+  for (const ids of topIdsBySport.values()) for (const id of ids) allTopIds.add(id);
+  if (allTopIds.size === 0) return out;
+
+  const matchIds = matchSports.map((m) => m.matchId);
+  const rows = await db
+    .select({
+      matchId: markets.matchId,
+      marketId: markets.id,
+      providerMarketId: markets.providerMarketId,
+      specifiersJson: markets.specifiersJson,
+      status: markets.status,
+      outcomeId: marketOutcomes.outcomeId,
+      outcomeName: marketOutcomes.name,
+      publishedOdds: marketOutcomes.publishedOdds,
+      probability: marketOutcomes.probability,
+      active: marketOutcomes.active,
+    })
+    .from(markets)
+    .innerJoin(marketOutcomes, eq(marketOutcomes.marketId, markets.id))
+    .where(
+      and(
+        inArray(markets.matchId, matchIds),
+        inArray(markets.providerMarketId, Array.from(allTopIds)),
+        eq(markets.status, 1),
+      ),
+    );
+
+  // Group rows: matchId → providerMarketId → market data + outcomes.
+  type MarketBucket = {
+    marketId: bigint;
+    providerMarketId: number;
+    specifiers: Record<string, string>;
+    outcomes: Array<{
+      outcomeId: string;
+      name: string;
+      publishedOdds: string | null;
+      probability: string | null;
+      active: boolean;
+    }>;
+  };
+  const byMatch = new Map<string, Map<number, MarketBucket>>();
+  for (const r of rows) {
+    const mkey = r.matchId.toString();
+    let perMarket = byMatch.get(mkey);
+    if (!perMarket) {
+      perMarket = new Map();
+      byMatch.set(mkey, perMarket);
+    }
+    let bucket = perMarket.get(r.providerMarketId);
+    if (!bucket) {
+      bucket = {
+        marketId: r.marketId,
+        providerMarketId: r.providerMarketId,
+        specifiers: (r.specifiersJson ?? {}) as Record<string, string>,
+        outcomes: [],
+      };
+      perMarket.set(r.providerMarketId, bucket);
+    }
+    bucket.outcomes.push({
+      outcomeId: r.outcomeId,
+      name: r.outcomeName ?? "",
+      publishedOdds: r.publishedOdds,
+      probability: r.probability,
+      active: r.active,
+    });
+  }
+
+  const sportByMatch = new Map<string, number>();
+  for (const ms of matchSports) sportByMatch.set(ms.matchId.toString(), ms.sportId);
+
+  for (const [mkey, perMarket] of byMatch) {
+    const sportId = sportByMatch.get(mkey);
+    if (!sportId) continue;
+    const ids = topIdsBySport.get(sportId) ?? [];
+    let pick: MarketBucket | undefined;
+    for (const id of ids) {
+      const candidate = perMarket.get(id);
+      if (candidate) {
+        pick = candidate;
+        break;
+      }
+    }
+    if (!pick) continue;
+    pick.outcomes.sort((a, b) => {
+      const ai = Number.parseInt(a.outcomeId, 10);
+      const bi = Number.parseInt(b.outcomeId, 10);
+      const aNum = Number.isFinite(ai) && String(ai) === a.outcomeId;
+      const bNum = Number.isFinite(bi) && String(bi) === b.outcomeId;
+      if (aNum && bNum) return ai - bi;
+      if (aNum) return -1;
+      if (bNum) return 1;
+      return 0;
+    });
+    out.set(mkey, {
+      marketId: pick.marketId.toString(),
+      providerMarketId: pick.providerMarketId,
+      specifiers: pick.specifiers,
+      outcomes: pick.outcomes.map((o) => ({
+        outcomeId: o.outcomeId,
+        name: o.name,
+        publishedOdds: o.active ? formatOdds(o.publishedOdds) : null,
+        probability: o.probability ?? null,
+      })),
+    });
+  }
+  return out;
+}
+
+interface InlineTopMarket {
+  marketId: string;
+  providerMarketId: number;
+  specifiers: Record<string, string>;
+  outcomes: Array<{
+    outcomeId: string;
+    name: string;
+    publishedOdds: string | null;
+    probability: string | null;
+  }>;
+}
+
 export default async function catalogRoutes(app: FastifyInstance) {
   // ── Sports tree ─────────────────────────────────────────────────────
   app.get("/catalog/sports", async () => {
@@ -324,14 +491,26 @@ export default async function catalogRoutes(app: FastifyInstance) {
       }
     }
 
+    // Inline Top market per card (when admin configured the Top scope
+     // for this sport). Returned alongside matchWinner so the storefront
+     // can show either depending on which list-page tab is active.
+    const topIdsBySport = await loadTopMarketIdsBySport(app.db, [sport.id]);
+    const topMarkets = await loadTopMarketsForMatches(
+      app.db,
+      rows.map((r) => ({ matchId: r.matchId, sportId: sport.id })),
+      topIdsBySport,
+    );
+
     return {
       sport: {
         id: sport.id,
         slug: sport.slug,
         name: sport.name,
       },
+      topConfigured: (topIdsBySport.get(sport.id) ?? []).length > 0,
       matches: rows.map((r) => {
         const o = oddsByMatch.get(r.matchId.toString());
+        const top = topMarkets.get(r.matchId.toString()) ?? null;
         return {
           id: r.matchId.toString(),
           providerUrn: r.providerUrn,
@@ -361,6 +540,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
                 },
               }
             : null,
+          topMarket: top,
         };
       }),
     };
@@ -627,18 +807,34 @@ export default async function catalogRoutes(app: FastifyInstance) {
     }
     const groups = Array.from(scopeMap.values()).sort((a, b) => a.order - b.order);
 
+    // Per-scope admin ordering. Three scopes live in fe_market_display_order:
+    //   match — markets without a `map` specifier (the Match scope group)
+    //   map   — markets with a `map` specifier; one ordering shared across
+    //           every Map N group (Map 1, Map 2, …)
+    //   top   — curated highlights, surfaced as a synthetic "Top" tab; a
+    //           market id only appears here if the admin added it. The
+    //           materialised group is built below by filtering marketList.
     const orderRows = await app.db
       .select({
+        scope: feMarketDisplayOrder.scope,
         providerMarketId: feMarketDisplayOrder.providerMarketId,
         displayOrder: feMarketDisplayOrder.displayOrder,
       })
       .from(feMarketDisplayOrder)
       .where(eq(feMarketDisplayOrder.sportId, match.sportId));
-    const adminOrderByMarket = new Map<number, number>();
-    for (const r of orderRows) adminOrderByMarket.set(r.providerMarketId, r.displayOrder);
 
-    const sortKey = (m: MarketRow): [number, number, number] => {
-      const admin = adminOrderByMarket.get(m.providerMarketId);
+    const orderByScope: Record<"match" | "map" | "top", Map<number, number>> = {
+      match: new Map(),
+      map: new Map(),
+      top: new Map(),
+    };
+    for (const r of orderRows) {
+      const bucket = orderByScope[r.scope as keyof typeof orderByScope];
+      if (bucket) bucket.set(r.providerMarketId, r.displayOrder);
+    }
+
+    function sortKey(orderMap: Map<number, number>, m: MarketRow): [number, number, number] {
+      const admin = orderMap.get(m.providerMarketId);
       // Configured rows render first (group 0), unranked after (group 1).
       // Within a group: configured by displayOrder asc; unranked by
       // providerMarketId asc. The third tuple element is providerMarketId
@@ -646,15 +842,53 @@ export default async function catalogRoutes(app: FastifyInstance) {
       return admin == null
         ? [1, m.providerMarketId, m.providerMarketId]
         : [0, admin, m.providerMarketId];
-    };
-    for (const g of groups) {
-      g.markets.sort((a, b) => {
-        const ka = sortKey(a);
-        const kb = sortKey(b);
+    }
+    function applySort(orderMap: Map<number, number>, list: MarketRow[]) {
+      list.sort((a, b) => {
+        const ka = sortKey(orderMap, a);
+        const kb = sortKey(orderMap, b);
         if (ka[0] !== kb[0]) return ka[0] - kb[0];
         if (ka[1] !== kb[1]) return ka[1] - kb[1];
         return ka[2] - kb[2];
       });
+    }
+    for (const g of groups) {
+      // Map groups (id=`map_N`) read the shared `map` ordering;
+      // the Match group reads `match`.
+      const orderMap =
+        g.id.startsWith("map_") ? orderByScope.map : orderByScope.match;
+      applySort(orderMap, g.markets);
+    }
+
+    // Synthetic "Top" group — markets the admin explicitly curated for
+    // this sport, regardless of their actual scope. We pick at most one
+    // representative market row per provider_market_id (preferring the
+    // match-scope copy if it exists, falling back to the lowest-id map
+    // copy) so the Top tab doesn't double up on totals/handicaps that
+    // exist for both Match and Map 1. Insertion order matches the admin
+    // configuration.
+    if (orderByScope.top.size > 0) {
+      const topGroup = {
+        id: "top",
+        label: "Top",
+        order: -1, // render before Match in the scope-tabs strip
+        markets: [] as MarketRow[],
+      };
+      const topIds = Array.from(orderByScope.top.entries()).sort(
+        (a, b) => a[1] - b[1],
+      );
+      for (const [providerMarketId] of topIds) {
+        const candidates = marketList.filter(
+          (m) => m.providerMarketId === providerMarketId,
+        );
+        if (candidates.length === 0) continue;
+        const matchCopy = candidates.find((m) => m.scope.id === "match");
+        const pick =
+          matchCopy ??
+          candidates.sort((a, b) => a.scope.order - b.scope.order)[0];
+        if (pick) topGroup.markets.push(pick);
+      }
+      if (topGroup.markets.length > 0) groups.unshift(topGroup);
     }
 
     return {
@@ -717,6 +951,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         tournamentId: tournaments.id,
         tournamentName: tournaments.name,
         tournamentRiskTier: tournaments.riskTier,
+        sportId: sports.id,
         sportSlug: sports.slug,
         sportName: sports.name,
       })
@@ -800,9 +1035,28 @@ export default async function catalogRoutes(app: FastifyInstance) {
       }
     }
 
+    // Inline Top markets per card. We fetch the curated id list per
+    // sport once (typically a handful of distinct sports in any list
+    // response), then resolve the first available Top market per match.
+    const distinctSportIds = Array.from(new Set(rows.map((r) => r.sportId)));
+    const topIdsBySport = await loadTopMarketIdsBySport(app.db, distinctSportIds);
+    const topMarkets = await loadTopMarketsForMatches(
+      app.db,
+      rows.map((r) => ({ matchId: r.matchId, sportId: r.sportId })),
+      topIdsBySport,
+    );
+    const topConfiguredSports: Record<string, boolean> = {};
+    for (const r of rows) {
+      const slug = r.sportSlug;
+      if (topConfiguredSports[slug] !== undefined) continue;
+      topConfiguredSports[slug] = (topIdsBySport.get(r.sportId) ?? []).length > 0;
+    }
+
     return {
+      topConfiguredSports,
       matches: rows.map((r) => {
         const o = oddsByMatch.get(r.matchId.toString());
+        const top = topMarkets.get(r.matchId.toString()) ?? null;
         return {
           id: r.matchId.toString(),
           providerUrn: r.providerUrn,
@@ -833,6 +1087,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
                 },
               }
             : null,
+          topMarket: top,
         };
       }),
     };

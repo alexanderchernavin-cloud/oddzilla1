@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { serverApi } from "@/lib/server-fetch";
-import { MatchRow, type ListMatch } from "@/components/match/match-row";
+import { type ListMatch } from "@/components/match/match-row";
+import { MatchListTabs } from "@/components/match/match-list-tabs";
 import { SectionHeader } from "@/components/match/section-header";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 
@@ -14,6 +15,7 @@ interface ListMatchWithSport extends ListMatch {
 
 interface CrossSportResponse {
   matches: ListMatchWithSport[];
+  topConfiguredSports?: Record<string, boolean>;
 }
 
 export default async function HomePage() {
@@ -117,41 +119,49 @@ export default async function HomePage() {
         ))}
       </div>
 
-      {live.length > 0 && (
-        <section style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <SectionHeader kicker="Live" title="In play" count={live.length} />
-          <div style={{ display: "flex", flexDirection: "column", gap: "var(--gap, 12px)" }}>
-            {live.map((m) => (
-              <MatchRow
-                key={m.id}
-                match={m}
-                sportSlug={m.sport.slug}
-                sportShort={shortName(m.sport.name)}
-              />
-            ))}
-          </div>
-        </section>
-      )}
-
-      <section style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <SectionHeader kicker="Upcoming" title="Next up today" count={upcoming.length} />
-        {upcoming.length === 0 ? (
-          <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
-            Nothing scheduled. Check individual sport pages for the full slate.
-          </p>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: "var(--gap, 12px)" }}>
-            {upcoming.slice(0, 20).map((m) => (
-              <MatchRow
-                key={m.id}
-                match={m}
-                sportSlug={m.sport.slug}
-                sportShort={shortName(m.sport.name)}
-              />
-            ))}
-          </div>
-        )}
-      </section>
+      {(() => {
+        const upcomingShown = upcoming.slice(0, 20);
+        const merged = [...live, ...upcomingShown];
+        const topConfig: Record<string, boolean> = {
+          ...(liveRes?.topConfiguredSports ?? {}),
+          ...(upcomingRes?.topConfiguredSports ?? {}),
+        };
+        return (
+          <MatchListTabs
+            matches={merged}
+            sportSlug={(m) => (m as ListMatchWithSport).sport.slug}
+            sportShort={(m) => shortName((m as ListMatchWithSport).sport.name)}
+            topConfigured={(m) => !!topConfig[(m as ListMatchWithSport).sport.slug]}
+            groups={[
+              ...(live.length > 0
+                ? [
+                    {
+                      key: "live",
+                      label: <SectionHeader kicker="Live" title="In play" count={live.length} />,
+                      matches: live,
+                    },
+                  ]
+                : []),
+              {
+                key: "upcoming",
+                label: (
+                  <SectionHeader
+                    kicker="Upcoming"
+                    title="Next up today"
+                    count={upcoming.length}
+                  />
+                ),
+                matches: upcomingShown,
+              },
+            ]}
+          />
+        );
+      })()}
+      {upcoming.length === 0 && live.length === 0 ? (
+        <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
+          Nothing scheduled. Check individual sport pages for the full slate.
+        </p>
+      ) : null}
     </div>
   );
 }
