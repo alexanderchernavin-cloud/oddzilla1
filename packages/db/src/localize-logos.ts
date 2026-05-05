@@ -18,7 +18,12 @@
 import { eq, isNotNull, and, not, like } from "drizzle-orm";
 import { createDb } from "./index.js";
 import { competitors } from "./schema/index.js";
-import { downloadAndStore, ensureStoreDir, isLocalPath } from "./lib/logo-store.js";
+import {
+  downloadAndStore,
+  ensureStoreDir,
+  fetchWikipediaLogo,
+  isLocalPath,
+} from "./lib/logo-store.js";
 
 interface CliFlags {
   dryRun: boolean;
@@ -73,6 +78,10 @@ async function main() {
         not(like(competitors.logoUrl, "/team-logos/%")),
       ),
     );
+  // We always re-resolve the team via Wikipedia when the original URL
+  // download fails (e.g. Liquipedia 429s). Same code path the resolver
+  // uses, so a localized row can be the same image we'd have written
+  // for a fresh competitor.
   console.log(
     `localize-logos: dry-run=${flags.dryRun} concurrency=${flags.concurrency} ` +
       `storeDir=${storeDir} candidates=${rows.length}`,
@@ -103,11 +112,20 @@ async function main() {
         local = await downloadAndStore(r.logoUrl, r.id, storeDir);
       } catch (err) {
         console.warn(`  err  ${r.id} ${r.name}: ${(err as Error).message}`);
-        failed++;
-        continue;
+        local = null;
       }
       if (!local) {
-        console.warn(`  fail ${r.id} ${r.name} (rate-limited or non-2xx)`);
+        // Original URL unreachable (Liquipedia 429, file removed, etc.)
+        // — re-resolve the team via Wikipedia and download THAT.
+        try {
+          const wpUrl = await fetchWikipediaLogo(r.name);
+          if (wpUrl) local = await downloadAndStore(wpUrl, r.id, storeDir);
+        } catch (err) {
+          console.warn(`  wp-err ${r.id} ${r.name}: ${(err as Error).message}`);
+        }
+      }
+      if (!local) {
+        console.warn(`  fail ${r.id} ${r.name} (no source resolved)`);
         failed++;
         continue;
       }
