@@ -121,16 +121,19 @@ function toThumb(originalUrl: string, sizePx: number): string {
 interface FetchedLogo {
   url: string | null;
   status: number;
+  source: "exact" | "search" | "miss" | "error";
 }
 
-async function fetchLogo(wiki: string, name: string): Promise<FetchedLogo> {
-  const pageUrl = `https://liquipedia.net/${wiki}/${pageTitle(name)}`;
+// Fetch a single page by title and extract og:image. Returns null when
+// the page either 404s or its og:image is the wiki's default placeholder.
+async function fetchPageLogo(
+  wiki: string,
+  title: string,
+): Promise<{ url: string | null; status: number }> {
+  const pageUrl = `https://liquipedia.net/${wiki}/${pageTitle(title)}`;
   const res = await fetch(pageUrl, { headers: REQUEST_HEADERS, redirect: "follow" });
   if (!res.ok) return { url: null, status: res.status };
   const html = await res.text();
-  // og:image points at the team-card logo for any standard team page.
-  // Skip the wiki's default "<sport>_default_allmode.png" placeholder
-  // since that's what shows up when a team has no infobox image.
   const m = html.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i);
   const original = m?.[1];
   if (!original) return { url: null, status: res.status };
@@ -138,6 +141,55 @@ async function fetchLogo(wiki: string, name: string): Promise<FetchedLogo> {
     return { url: null, status: res.status };
   }
   return { url: toThumb(original, 256), status: res.status };
+}
+
+// MediaWiki opensearch returns ["query", [titles], [descriptions], [urls]].
+// We use it as a fallback when the exact-title page is 404 or the
+// placeholder logo. Searching on Liquipedia mostly hits team articles
+// because the corpus is small and team-heavy. Limit to the top 3 hits
+// and pick the first one whose page yields a real og:image.
+async function searchPageTitles(
+  wiki: string,
+  query: string,
+): Promise<string[]> {
+  const url =
+    `https://liquipedia.net/${wiki}/api.php?` +
+    new URLSearchParams({
+      action: "opensearch",
+      format: "json",
+      search: query,
+      limit: "3",
+      namespace: "0",
+    }).toString();
+  const res = await fetch(url, {
+    headers: { ...REQUEST_HEADERS, Accept: "application/json" },
+  });
+  if (!res.ok) return [];
+  const body = (await res.json()) as [string, string[], string[], string[]] | unknown;
+  if (!Array.isArray(body) || !Array.isArray(body[1])) return [];
+  return (body as [string, string[], string[], string[]])[1];
+}
+
+async function fetchLogo(wiki: string, name: string): Promise<FetchedLogo> {
+  // Pass 1: exact title (with underscores). Most popular teams hit here.
+  const exact = await fetchPageLogo(wiki, name);
+  if (exact.url) return { ...exact, source: "exact" };
+
+  // Pass 2: opensearch fallback. Catches teams where the page title
+  // differs from the feed name — "Team Lynx" → "Lynx (esports)",
+  // "1win" → "1win Team", abbreviations, casing differences.
+  let candidates: string[];
+  try {
+    candidates = await searchPageTitles(wiki, name);
+  } catch {
+    return { url: null, status: exact.status, source: "miss" };
+  }
+  for (const cand of candidates) {
+    if (cand.toLowerCase() === name.toLowerCase()) continue; // already tried
+    const hit = await fetchPageLogo(wiki, cand);
+    if (hit.url) return { ...hit, source: "search" };
+  }
+  return { url: null, status: exact.status, source: "miss" };
 }
 
 async function main() {
