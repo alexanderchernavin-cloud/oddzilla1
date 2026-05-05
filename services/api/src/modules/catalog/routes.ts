@@ -158,6 +158,18 @@ function formatOdds(s: string | null | undefined): string | null {
   return (Math.floor(n * 100) / 100).toFixed(2);
 }
 
+// Outcome sort weight for Oddin's canonical numeric outcome_ids. Three-way
+// markets render 1 / X / 2 (home / draw / away) — Oddin assigns "3" to the
+// draw, so it gets a weight of 1.5 to slot between home and away. Returns
+// null for non-numeric ids (URNs, "under"/"over", …) so callers can keep
+// them in insertion order behind the numeric block.
+function outcomeSortWeight(id: string): number | null {
+  const n = Number.parseInt(id, 10);
+  if (!Number.isFinite(n) || String(n) !== id) return null;
+  if (n === 3) return 1.5;
+  return n;
+}
+
 // Has-active-market guard. Every list/count endpoint runs this so we
 // skip matches with zero active markets — there's nothing to bet on,
 // the card would render empty. Intentionally lenient: a real live
@@ -325,14 +337,15 @@ async function loadTopMarketsForMatches(
       }
     }
     if (!pick) continue;
+    // Three-way markets render 1 / X / 2 — outcome "3" (draw) sits between
+    // home and away. See identical comment on m.outcomes.sort below for
+    // the full rationale.
     pick.outcomes.sort((a, b) => {
-      const ai = Number.parseInt(a.outcomeId, 10);
-      const bi = Number.parseInt(b.outcomeId, 10);
-      const aNum = Number.isFinite(ai) && String(ai) === a.outcomeId;
-      const bNum = Number.isFinite(bi) && String(bi) === b.outcomeId;
-      if (aNum && bNum) return ai - bi;
-      if (aNum) return -1;
-      if (bNum) return 1;
+      const aw = outcomeSortWeight(a.outcomeId);
+      const bw = outcomeSortWeight(b.outcomeId);
+      if (aw != null && bw != null) return aw - bw;
+      if (aw != null) return -1;
+      if (bw != null) return 1;
       return 0;
     });
     out.set(mkey, {
@@ -804,22 +817,17 @@ export default async function catalogRoutes(app: FastifyInstance) {
     // ascending (the legacy default). The override table is small —
     // typically <50 rows per sport — so a per-request fetch is cheap.
     const marketList = Array.from(marketMap.values());
-    // Sort outcomes inside each market by Oddin's canonical outcome_id —
-    // numeric ids ("1"=home, "2"=away, "3"=draw) come first in ascending
-    // order, so the home/P1 button is always leftmost. Non-numeric ids
-    // (URNs like od:competitor:N for outright winners, "under"/"over" for
-    // totals, …) keep insertion order behind the numeric block. PG
-    // returns outcomes in undefined order without ORDER BY, which made
-    // home/away appear randomly swapped on the match-detail UI.
+    // Sort outcomes inside each market by Oddin's canonical outcome_id
+    // (see outcomeSortWeight). PG returns outcomes in undefined order
+    // without ORDER BY, which made home/away appear randomly swapped on
+    // the match-detail UI before this sort was added.
     for (const m of marketList) {
       m.outcomes.sort((a, b) => {
-        const ai = Number.parseInt(a.outcomeId, 10);
-        const bi = Number.parseInt(b.outcomeId, 10);
-        const aNum = Number.isFinite(ai) && String(ai) === a.outcomeId;
-        const bNum = Number.isFinite(bi) && String(bi) === b.outcomeId;
-        if (aNum && bNum) return ai - bi;
-        if (aNum) return -1;
-        if (bNum) return 1;
+        const aw = outcomeSortWeight(a.outcomeId);
+        const bw = outcomeSortWeight(b.outcomeId);
+        if (aw != null && bw != null) return aw - bw;
+        if (aw != null) return -1;
+        if (bw != null) return 1;
         return 0;
       });
     }
