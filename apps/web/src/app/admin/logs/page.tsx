@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { serverApi } from "@/lib/server-fetch";
+import { LogsSearch } from "./logs-search";
 
 interface SportRow {
   id: number;
@@ -17,12 +18,17 @@ export default async function LogsHomePage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-semibold tracking-tight">Feed logs</h1>
-      <p className="mt-1 text-sm text-[var(--color-fg-muted)]">
-        Per-match odds history and raw AMQP message replay. Matches are kept
-        for 24h after their scheduled start; older entries are swept
-        automatically.
-      </p>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Feed logs</h1>
+          <p className="mt-1 text-sm text-[var(--color-fg-muted)]">
+            Per-match odds history and raw AMQP message replay. Matches with
+            at least one feed message in the 7-day retention window appear
+            here; older entries are swept automatically.
+          </p>
+        </div>
+        <LogsSearch />
+      </div>
 
       {sports.length === 0 ? (
         <p className="mt-8 text-sm text-[var(--color-fg-muted)]">

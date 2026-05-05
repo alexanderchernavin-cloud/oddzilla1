@@ -31,6 +31,11 @@ interface MarketBlock {
   outcomes: Outcome[];
   series: Series[];
 }
+interface Group {
+  id: string;
+  label: string;
+  marketIds: string[];
+}
 interface Response {
   match: {
     id: string;
@@ -44,6 +49,7 @@ interface Response {
     sport: { slug: string; name: string };
   };
   markets: MarketBlock[];
+  groups: Group[];
 }
 
 function marketStatusLabel(status: number): string {
@@ -168,96 +174,114 @@ export default async function LogsMatchPage({
           Markets · {data.markets.length}
         </h2>
         <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">
-          Inline chart shows the last 24h. Use the Odds history button for the
-          full 7-day series.
+          Grouped + ordered the same way as the storefront. Inline chart
+          shows the last 24h; use the Odds history button for the full 7-day
+          series.
         </p>
         {data.markets.length === 0 ? (
           <p className="mt-3 text-sm text-[var(--color-fg-muted)]">
             No markets on this match.
           </p>
         ) : (
-          <ul className="mt-4 space-y-4">
-            {data.markets.map((m) => (
-              <li
-                key={m.id}
-                className="rounded-[14px] border border-[var(--color-border)] bg-[var(--color-bg-card)] p-4"
-              >
-                <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <div>
-                    <p className="text-sm font-medium">
-                      {m.name}
-                      <span className="ml-2 font-mono text-[var(--color-fg-subtle)]">
-                        #{m.providerMarketId}
-                      </span>
-                      {m.settled ? (
-                        <span className="ml-2 rounded-[6px] border border-[var(--color-border-strong)] px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-fg-muted)]">
-                          settled
-                        </span>
-                      ) : null}
-                    </p>
-                    {specifierSummary(m.specifiers) ? (
-                      <p className="mt-0.5 font-mono text-[var(--color-fg-subtle)]">
-                        {specifierSummary(m.specifiers)}
-                      </p>
-                    ) : null}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={
-                        "rounded-[8px] border px-2 py-0.5 font-mono uppercase tracking-[0.12em] " +
-                        (m.status === 1
-                          ? "border-[var(--color-accent)] text-[var(--color-accent)]"
-                          : "border-[var(--color-border-strong)] text-[var(--color-fg-muted)]")
-                      }
-                    >
-                      {marketStatusLabel(m.status)}
-                    </span>
-                    <Link
-                      href={`/admin/logs/matches/${data.match.id}/markets/${m.id}`}
-                      className="rounded-[8px] border border-[var(--color-border-strong)] px-2 py-0.5 font-mono text-xs uppercase tracking-[0.12em] text-[var(--color-fg-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
-                    >
-                      Odds history
-                    </Link>
-                  </div>
-                </div>
-
-                {m.outcomes.length > 0 ? (
-                  <ul className="mb-3 grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
-                    {m.outcomes.map((o) => (
+          (() => {
+            const marketById = new Map(data.markets.map((m) => [m.id, m]));
+            const groups = data.groups.length
+              ? data.groups
+              : [{ id: "all", label: "Markets", marketIds: data.markets.map((m) => m.id) }];
+            return groups.map((g) => (
+              <div key={g.id} className="mt-6">
+                <h3 className="mb-3 text-xs font-medium uppercase tracking-[0.15em] text-[var(--color-fg-muted)]">
+                  {g.label} · {g.marketIds.length}
+                </h3>
+                <ul className="space-y-4">
+                  {g.marketIds.map((mid) => {
+                    const m = marketById.get(mid);
+                    if (!m) return null;
+                    return (
                       <li
-                        key={o.outcomeId}
-                        className={
-                          "flex items-center justify-between gap-2 rounded-[8px] border px-2.5 py-1.5 text-xs " +
-                          (o.result === "won" || o.result === "half_won"
-                            ? "border-[var(--color-positive)] bg-[color-mix(in_oklab,var(--color-positive)_8%,transparent)]"
-                            : o.result === "lost" || o.result === "half_lost"
-                              ? "border-[var(--color-border)] opacity-60"
-                              : "border-[var(--color-border)]")
-                        }
+                        key={m.id}
+                        className="rounded-[14px] border border-[var(--color-border)] bg-[var(--color-bg-card)] p-4"
                       >
-                        <div className="min-w-0 flex-1 truncate">
-                          <span className="font-medium">{o.name}</span>
-                          <span className="ml-1.5 font-mono text-[10px] text-[var(--color-fg-subtle)]">
-                            {o.outcomeId}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          {o.publishedOdds ? (
-                            <span className="font-mono text-[var(--color-fg-muted)]">
-                              {Number(o.publishedOdds).toFixed(2)}
+                        <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+                          <div>
+                            <p className="text-sm font-medium">
+                              {m.name}
+                              <span className="ml-2 font-mono text-[var(--color-fg-subtle)]">
+                                #{m.providerMarketId}
+                              </span>
+                              {m.settled ? (
+                                <span className="ml-2 rounded-[6px] border border-[var(--color-border-strong)] px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-fg-muted)]">
+                                  settled
+                                </span>
+                              ) : null}
+                            </p>
+                            {specifierSummary(m.specifiers) ? (
+                              <p className="mt-0.5 font-mono text-[var(--color-fg-subtle)]">
+                                {specifierSummary(m.specifiers)}
+                              </p>
+                            ) : null}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={
+                                "rounded-[8px] border px-2 py-0.5 font-mono uppercase tracking-[0.12em] " +
+                                (m.status === 1
+                                  ? "border-[var(--color-accent)] text-[var(--color-accent)]"
+                                  : "border-[var(--color-border-strong)] text-[var(--color-fg-muted)]")
+                              }
+                            >
+                              {marketStatusLabel(m.status)}
                             </span>
-                          ) : null}
-                          {outcomeResultBadge(o.result)}
+                            <Link
+                              href={`/admin/logs/matches/${data.match.id}/markets/${m.id}`}
+                              className="rounded-[8px] border border-[var(--color-border-strong)] px-2 py-0.5 font-mono text-xs uppercase tracking-[0.12em] text-[var(--color-fg-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+                            >
+                              Odds history
+                            </Link>
+                          </div>
                         </div>
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
 
-                <OddsChart series={m.series} />
-              </li>
-            ))}
-          </ul>
+                        {m.outcomes.length > 0 ? (
+                          <ul className="mb-3 grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
+                            {m.outcomes.map((o) => (
+                              <li
+                                key={o.outcomeId}
+                                className={
+                                  "flex items-center justify-between gap-2 rounded-[8px] border px-2.5 py-1.5 text-xs " +
+                                  (o.result === "won" || o.result === "half_won"
+                                    ? "border-[var(--color-positive)] bg-[color-mix(in_oklab,var(--color-positive)_8%,transparent)]"
+                                    : o.result === "lost" || o.result === "half_lost"
+                                      ? "border-[var(--color-border)] opacity-60"
+                                      : "border-[var(--color-border)]")
+                                }
+                              >
+                                <div className="min-w-0 flex-1 truncate">
+                                  <span className="font-medium">{o.name}</span>
+                                  <span className="ml-1.5 font-mono text-[10px] text-[var(--color-fg-subtle)]">
+                                    {o.outcomeId}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  {o.publishedOdds ? (
+                                    <span className="font-mono text-[var(--color-fg-muted)]">
+                                      {Number(o.publishedOdds).toFixed(2)}
+                                    </span>
+                                  ) : null}
+                                  {outcomeResultBadge(o.result)}
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : null}
+
+                        <OddsChart series={m.series} />
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ));
+          })()
         )}
       </section>
     </div>

@@ -33,6 +33,8 @@ import { NotFoundError } from "../../lib/errors.js";
 import {
   substituteTemplate,
   renderOutcomeLabel,
+  deriveScope,
+  outcomeSortWeight,
 } from "../../lib/market-naming.js";
 
 // Two aliases of `competitors` so a single match query can pull the home
@@ -41,20 +43,6 @@ import {
 // names from the feed before the auto-mapper resolved a URN).
 const homeCompetitor = alias(competitors, "home_competitor");
 const awayCompetitor = alias(competitors, "away_competitor");
-
-// deriveScope reads a market's specifiers and returns a short tag used
-// by the UI to group markets into sections. "match" is the default;
-// "map_N" appears when the market is scoped to a specific map (either
-// via a `map` specifier or, for some markets, a `period` specifier).
-function deriveScope(specs: Record<string, string>): { id: string; label: string; order: number } {
-  if (specs.map) {
-    const n = Number.parseInt(specs.map, 10);
-    if (Number.isFinite(n) && n > 0) {
-      return { id: `map_${n}`, label: `Map ${n}`, order: n };
-    }
-  }
-  return { id: "match", label: "Match", order: 0 };
-}
 
 // Oddin specifier names that act as "lines" — i.e. each value produces
 // a separate market row on the feed, but users see them as one market
@@ -113,18 +101,6 @@ function formatOdds(s: string | null | undefined): string | null {
   const n = Number.parseFloat(s);
   if (!Number.isFinite(n)) return null;
   return (Math.floor(n * 100) / 100).toFixed(2);
-}
-
-// Outcome sort weight for Oddin's canonical numeric outcome_ids. Three-way
-// markets render 1 / X / 2 (home / draw / away) — Oddin assigns "3" to the
-// draw, so it gets a weight of 1.5 to slot between home and away. Returns
-// null for non-numeric ids (URNs, "under"/"over", …) so callers can keep
-// them in insertion order behind the numeric block.
-function outcomeSortWeight(id: string): number | null {
-  const n = Number.parseInt(id, 10);
-  if (!Number.isFinite(n) || String(n) !== id) return null;
-  if (n === 3) return 1.5;
-  return n;
 }
 
 // Has-active-market guard. Every list/count endpoint runs this so we
