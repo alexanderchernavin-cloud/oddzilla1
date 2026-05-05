@@ -19,9 +19,12 @@ type FeedMessageInsert struct {
 }
 
 // InsertFeedMessage appends one row to feed_messages. If event_urn is
-// non-empty, match_id is resolved via a subquery against matches.
-// provider_urn; unresolved URNs are stored as match_id = NULL and the
-// cleanup sweeper drops them after 48h regardless.
+// non-empty we attempt to resolve match_id via a subquery against
+// matches.provider_urn; the lookup can race the auto-mapper (the very
+// first messages for a brand-new match URN arrive before the match
+// row exists), so unresolved rows are stored with match_id = NULL.
+// The admin endpoints join on event_urn so orphans still show up; the
+// nightly backfill in SweepFeedMessages closes the loop later.
 func InsertFeedMessage(ctx context.Context, db pgxRunner, m FeedMessageInsert) error {
 	const q = `
 INSERT INTO feed_messages (match_id, event_urn, kind, routing_key, product, payload_xml)
@@ -42,27 +45,30 @@ VALUES (
 	return nil
 }
 
-// SweepFeedMessages deletes rows whose associated match passed the
-// retention window (scheduled_at + 24h) and unmapped rows older than
-// the hard safety bound (48h since received). Returns the number of
-// rows deleted for logging.
+// SweepFeedMessages keeps feed_messages bounded by a uniform 7-day
+// retention window since received_at, then backfills match_id for
+// rows whose URN now resolves (resolves the insert-time race with
+// the auto-mapper). Returns the number of rows deleted for logging.
 func SweepFeedMessages(ctx context.Context, db pgxRunner) (int64, error) {
-	const q = `
-DELETE FROM feed_messages fm
- WHERE fm.received_at < NOW() - INTERVAL '48 hours'
-    OR (
-        fm.match_id IS NOT NULL
-        AND EXISTS (
-            SELECT 1 FROM matches ma
-             WHERE ma.id = fm.match_id
-               AND ma.scheduled_at IS NOT NULL
-               AND ma.scheduled_at + INTERVAL '24 hours' < NOW()
-        )
-    )
+	const deleteQ = `
+DELETE FROM feed_messages
+ WHERE received_at < NOW() - INTERVAL '7 days'
 `
-	tag, err := db.Exec(ctx, q)
+	tag, err := db.Exec(ctx, deleteQ)
 	if err != nil {
 		return 0, fmt.Errorf("sweep feed_messages: %w", err)
+	}
+
+	const backfillQ = `
+UPDATE feed_messages fm
+   SET match_id = ma.id
+  FROM matches ma
+ WHERE fm.match_id IS NULL
+   AND fm.event_urn IS NOT NULL
+   AND ma.provider_urn = fm.event_urn
+`
+	if _, err := db.Exec(ctx, backfillQ); err != nil {
+		return tag.RowsAffected(), fmt.Errorf("backfill feed_messages match_id: %w", err)
 	}
 	return tag.RowsAffected(), nil
 }

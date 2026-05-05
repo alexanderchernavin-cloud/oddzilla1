@@ -108,8 +108,8 @@ export default async function LogsMatchFeedPage({
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Raw feed log</h1>
           <p className="mt-1 text-sm text-[var(--color-fg-muted)]">
-            Every AMQP message received for this match. Retained for 24h past
-            scheduled start. Click a row to expand the XML payload.
+            Every AMQP message received for this match. Retained for 7 days.
+            Click a row to expand the XML payload.
           </p>
         </div>
       </div>

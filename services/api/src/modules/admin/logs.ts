@@ -1,16 +1,22 @@
 // /admin/logs — sports -> tournaments -> matches hierarchy browser,
 // per-match odds history (visual) and raw AMQP feed replay. Retention is
-// enforced in feed-ingester; these endpoints only surface matches still
-// within the 24h-post-start window.
+// enforced in feed-ingester (7 days since received_at); these endpoints
+// only surface matches still within that 7-day window.
 //
 // Categories are intentionally skipped at the UI level — for esports they
 // are auto-generated dummy rows (one per sport) and admins don't navigate
 // them. The join still passes through categories because the FK chain
 // requires it.
+//
+// Counts and feed-message lookups join on `event_urn = matches.provider_urn`
+// rather than `match_id`. The match_id column is filled at insert time,
+// but the very first AMQP messages for a brand-new URN race the auto-
+// mapper and end up with match_id = NULL; counting by event_urn captures
+// those orphans too. SweepFeedMessages backfills the column lazily.
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import {
   sports,
   categories,
@@ -23,14 +29,24 @@ import {
 import { NotFoundError } from "../../lib/errors.js";
 
 // A match is "in the admin logs window" when its scheduled_at is at most
-// 24h in the past OR the match is still live/not_started. This mirrors
-// the retention rule baked into feed-ingester's cleanup sweeper so what
-// the UI shows is always queryable.
+// 7 days in the past OR the match is still live/not_started. This mirrors
+// the retention rule in feed-ingester so what the UI shows is queryable.
 const matchInWindow = sql`(
   ${matches.scheduledAt} IS NULL
-  OR ${matches.scheduledAt} > NOW() - INTERVAL '24 hours'
+  OR ${matches.scheduledAt} > NOW() - INTERVAL '7 days'
   OR ${matches.status} IN ('not_started', 'live')
 )`;
+
+// Correlated subquery that counts feed_messages for a given match.id
+// using event_urn = matches.provider_urn so orphan rows (inserted before
+// the match existed) still get tallied.
+const messageCountSql = sql<string>`(
+  SELECT COUNT(*)::text FROM ${feedMessages}
+   WHERE ${feedMessages.eventUrn} = ${matches.providerUrn}
+)`;
+
+const HISTORY_DAYS = 7;
+const HISTORY_MS = HISTORY_DAYS * 24 * 60 * 60 * 1000;
 
 export default async function adminLogsRoutes(app: FastifyInstance) {
   // ── Sports list ─────────────────────────────────────────────────────
@@ -139,10 +155,7 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
         scheduledAt: matches.scheduledAt,
         status: matches.status,
         bestOf: matches.bestOf,
-        messageCount: sql<string>`(
-          SELECT COUNT(*)::text FROM ${feedMessages}
-          WHERE ${feedMessages.matchId} = ${matches.id}
-        )`,
+        messageCount: messageCountSql,
       })
       .from(matches)
       .where(and(eq(matches.tournamentId, id), matchInWindow))
@@ -162,11 +175,11 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
     };
   });
 
-  // ── Match + odds-history for every market ───────────────────────────
-  // Returns the match shell plus, per market, a time series per outcome.
-  // Client renders the SVG lines. Bounded to 24h of odds_history so the
-  // payload is manageable; the feed-ingester cleanup also caps at ~24h
-  // post-start so nothing meaningful is trimmed.
+  // ── Match shell + market list with outcomes & winners ───────────────
+  // Outcome `result` ∈ {won, lost, void, half_won, half_lost} comes from
+  // settlement; null means the market is unsettled. The chart payload is
+  // limited to 24h of inline points to keep the page light — the full
+  // 7-day history lives behind the per-market history button.
   app.get("/admin/logs/matches/:id", async (request) => {
     request.requireRole("admin");
     const { id } = z
@@ -214,15 +227,18 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
             marketId: marketOutcomes.marketId,
             outcomeId: marketOutcomes.outcomeId,
             name: marketOutcomes.name,
+            rawOdds: marketOutcomes.rawOdds,
+            publishedOdds: marketOutcomes.publishedOdds,
+            result: marketOutcomes.result,
+            voidFactor: marketOutcomes.voidFactor,
           })
           .from(marketOutcomes)
-          .where(inArray(marketOutcomes.marketId, marketIds))
+          .where(sql`${marketOutcomes.marketId} = ANY(${marketIds}::bigint[])`)
       : [];
 
-    // Pull odds_history for the last 24h at most. Use raw SQL because
-    // odds_history is partitioned and the Drizzle schema flags it as a
-    // non-emitted table; direct select works but we also benefit from
-    // pgxpool's partition pruning with an explicit ts bound.
+    // Bound the chart payload to 24h to keep this page snappy. The
+    // per-market history endpoint serves the full 7-day window when the
+    // admin needs the long view.
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const historyRows = marketIds.length
       ? ((await app.db.execute(sql`
@@ -243,12 +259,21 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
 
     type Point = { tsMs: number; raw: string | null; published: string | null };
     type Series = { outcomeId: string; name: string; points: Point[] };
+    type Outcome = {
+      outcomeId: string;
+      name: string;
+      rawOdds: string | null;
+      publishedOdds: string | null;
+      result: string | null;
+      voidFactor: string | null;
+    };
     type MarketBlock = {
       id: string;
       providerMarketId: number;
       specifiers: Record<string, string>;
       status: number;
-      outcomes: Array<{ outcomeId: string; name: string }>;
+      settled: boolean;
+      outcomes: Outcome[];
       series: Series[];
     };
 
@@ -259,6 +284,7 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
         providerMarketId: m.providerMarketId,
         specifiers: (m.specifiersJson ?? {}) as Record<string, string>,
         status: m.status,
+        settled: false,
         outcomes: [],
         series: [],
       });
@@ -268,11 +294,16 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
       const key = `${o.marketId.toString()}::${o.outcomeId}`;
       outcomeNameByKey.set(key, o.name);
       const mb = byMarket.get(o.marketId.toString());
-      if (mb) {
-        if (!mb.outcomes.some((x) => x.outcomeId === o.outcomeId)) {
-          mb.outcomes.push({ outcomeId: o.outcomeId, name: o.name });
-        }
-      }
+      if (!mb) continue;
+      mb.outcomes.push({
+        outcomeId: o.outcomeId,
+        name: o.name,
+        rawOdds: o.rawOdds,
+        publishedOdds: o.publishedOdds,
+        result: o.result,
+        voidFactor: o.voidFactor,
+      });
+      if (o.result) mb.settled = true;
     }
     for (const h of historyRows) {
       const mb = byMarket.get(h.market_id.toString());
@@ -310,7 +341,83 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
     };
   });
 
+  // ── Per-market full odds history (7d) ───────────────────────────────
+  // Returns a chronological log of every odds_history row for one market
+  // along with the market shell + outcomes (so the page can render
+  // names/results without a second round-trip).
+  app.get("/admin/logs/matches/:id/markets/:marketId/history", async (request) => {
+    request.requireRole("admin");
+    const { id, marketId } = z
+      .object({
+        id: z.coerce.bigint(),
+        marketId: z.coerce.bigint(),
+      })
+      .parse(request.params);
+
+    const [market] = await app.db
+      .select({
+        id: markets.id,
+        matchId: markets.matchId,
+        providerMarketId: markets.providerMarketId,
+        specifiersJson: markets.specifiersJson,
+        status: markets.status,
+      })
+      .from(markets)
+      .where(and(eq(markets.id, marketId), eq(markets.matchId, id)))
+      .limit(1);
+    if (!market) throw new NotFoundError("market_not_found", "market_not_found");
+
+    const outcomes = await app.db
+      .select({
+        outcomeId: marketOutcomes.outcomeId,
+        name: marketOutcomes.name,
+        rawOdds: marketOutcomes.rawOdds,
+        publishedOdds: marketOutcomes.publishedOdds,
+        result: marketOutcomes.result,
+        voidFactor: marketOutcomes.voidFactor,
+      })
+      .from(marketOutcomes)
+      .where(eq(marketOutcomes.marketId, market.id));
+
+    const since = new Date(Date.now() - HISTORY_MS);
+    const rows = (await app.db.execute(sql`
+      SELECT outcome_id, raw_odds, published_odds, probability,
+             EXTRACT(EPOCH FROM ts)::bigint * 1000 AS ts_ms
+        FROM odds_history
+       WHERE market_id = ${market.id}
+         AND ts > ${since.toISOString()}
+       ORDER BY ts ASC, outcome_id ASC
+    `)) as unknown as Array<{
+      outcome_id: string;
+      raw_odds: string | null;
+      published_odds: string | null;
+      probability: string | null;
+      ts_ms: string;
+    }>;
+
+    return {
+      market: {
+        id: market.id.toString(),
+        matchId: market.matchId.toString(),
+        providerMarketId: market.providerMarketId,
+        specifiers: (market.specifiersJson ?? {}) as Record<string, string>,
+        status: market.status,
+        outcomes,
+      },
+      retentionDays: HISTORY_DAYS,
+      points: rows.map((r) => ({
+        outcomeId: r.outcome_id,
+        rawOdds: r.raw_odds,
+        publishedOdds: r.published_odds,
+        probability: r.probability,
+        tsMs: Number(r.ts_ms),
+      })),
+    };
+  });
+
   // ── Raw feed messages for a match ───────────────────────────────────
+  // Filters by event_urn = matches.provider_urn (rather than match_id) so
+  // orphan rows from the insert/auto-map race are visible too.
   app.get("/admin/logs/matches/:id/feed", async (request) => {
     request.requireRole("admin");
     const { id } = z
@@ -323,7 +430,14 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
       })
       .parse(request.query);
 
-    const filters = [eq(feedMessages.matchId, id)];
+    const [match] = await app.db
+      .select({ providerUrn: matches.providerUrn })
+      .from(matches)
+      .where(eq(matches.id, id))
+      .limit(1);
+    if (!match) throw new NotFoundError("match_not_found", "match_not_found");
+
+    const filters = [eq(feedMessages.eventUrn, match.providerUrn)];
     if (q.kind) filters.push(eq(feedMessages.kind, q.kind));
 
     const rows = await app.db

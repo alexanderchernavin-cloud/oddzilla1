@@ -13,12 +13,21 @@ interface Series {
   name: string;
   points: Point[];
 }
+interface Outcome {
+  outcomeId: string;
+  name: string;
+  rawOdds: string | null;
+  publishedOdds: string | null;
+  result: string | null;
+  voidFactor: string | null;
+}
 interface MarketBlock {
   id: string;
   providerMarketId: number;
   specifiers: Record<string, string>;
   status: number;
-  outcomes: Array<{ outcomeId: string; name: string }>;
+  settled: boolean;
+  outcomes: Outcome[];
   series: Series[];
 }
 interface Response {
@@ -59,6 +68,30 @@ function specifierSummary(specs: Record<string, string>): string {
   const entries = Object.entries(specs);
   if (entries.length === 0) return "";
   return entries.map(([k, v]) => `${k}=${v}`).join(" · ");
+}
+
+function outcomeResultBadge(result: string | null) {
+  if (!result) return null;
+  const tone =
+    result === "won"
+      ? "border-[var(--color-positive)] text-[var(--color-positive)]"
+      : result === "half_won"
+        ? "border-[var(--color-positive)] text-[var(--color-positive)] opacity-80"
+        : result === "lost"
+          ? "border-[var(--color-negative)] text-[var(--color-negative)]"
+          : result === "half_lost"
+            ? "border-[var(--color-negative)] text-[var(--color-negative)] opacity-80"
+            : "border-[var(--color-border-strong)] text-[var(--color-fg-muted)]";
+  return (
+    <span
+      className={
+        "rounded-[6px] border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] " +
+        tone
+      }
+    >
+      {result.replace("_", " ")}
+    </span>
+  );
 }
 
 export default async function LogsMatchPage({
@@ -131,8 +164,12 @@ export default async function LogsMatchPage({
 
       <section className="mt-8">
         <h2 className="text-sm font-medium uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-          Odds history · last 24h
+          Markets · {data.markets.length}
         </h2>
+        <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">
+          Inline chart shows the last 24h. Use the Odds history button for the
+          full 7-day series.
+        </p>
         {data.markets.length === 0 ? (
           <p className="mt-3 text-sm text-[var(--color-fg-muted)]">
             No markets on this match.
@@ -148,6 +185,11 @@ export default async function LogsMatchPage({
                   <div>
                     <p className="text-sm font-medium">
                       Market #{m.providerMarketId}
+                      {m.settled ? (
+                        <span className="ml-2 rounded-[6px] border border-[var(--color-border-strong)] px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-fg-muted)]">
+                          settled
+                        </span>
+                      ) : null}
                     </p>
                     {specifierSummary(m.specifiers) ? (
                       <p className="mt-0.5 font-mono text-[var(--color-fg-subtle)]">
@@ -155,17 +197,59 @@ export default async function LogsMatchPage({
                       </p>
                     ) : null}
                   </div>
-                  <span
-                    className={
-                      "rounded-[8px] border px-2 py-0.5 font-mono uppercase tracking-[0.12em] " +
-                      (m.status === 1
-                        ? "border-[var(--color-accent)] text-[var(--color-accent)]"
-                        : "border-[var(--color-border-strong)] text-[var(--color-fg-muted)]")
-                    }
-                  >
-                    {marketStatusLabel(m.status)}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={
+                        "rounded-[8px] border px-2 py-0.5 font-mono uppercase tracking-[0.12em] " +
+                        (m.status === 1
+                          ? "border-[var(--color-accent)] text-[var(--color-accent)]"
+                          : "border-[var(--color-border-strong)] text-[var(--color-fg-muted)]")
+                      }
+                    >
+                      {marketStatusLabel(m.status)}
+                    </span>
+                    <Link
+                      href={`/admin/logs/matches/${data.match.id}/markets/${m.id}`}
+                      className="rounded-[8px] border border-[var(--color-border-strong)] px-2 py-0.5 font-mono text-xs uppercase tracking-[0.12em] text-[var(--color-fg-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+                    >
+                      Odds history
+                    </Link>
+                  </div>
                 </div>
+
+                {m.outcomes.length > 0 ? (
+                  <ul className="mb-3 grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
+                    {m.outcomes.map((o) => (
+                      <li
+                        key={o.outcomeId}
+                        className={
+                          "flex items-center justify-between gap-2 rounded-[8px] border px-2.5 py-1.5 text-xs " +
+                          (o.result === "won" || o.result === "half_won"
+                            ? "border-[var(--color-positive)] bg-[color-mix(in_oklab,var(--color-positive)_8%,transparent)]"
+                            : o.result === "lost" || o.result === "half_lost"
+                              ? "border-[var(--color-border)] opacity-60"
+                              : "border-[var(--color-border)]")
+                        }
+                      >
+                        <div className="min-w-0 flex-1 truncate">
+                          <span className="font-medium">{o.name}</span>
+                          <span className="ml-1.5 font-mono text-[10px] text-[var(--color-fg-subtle)]">
+                            {o.outcomeId}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {o.publishedOdds ? (
+                            <span className="font-mono text-[var(--color-fg-muted)]">
+                              {Number(o.publishedOdds).toFixed(2)}
+                            </span>
+                          ) : null}
+                          {outcomeResultBadge(o.result)}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+
                 <OddsChart series={m.series} />
               </li>
             ))}
