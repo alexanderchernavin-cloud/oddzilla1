@@ -53,3 +53,29 @@ export function outcomeDescKey(
 ): string {
   return `${providerMarketId}:${variant ?? ""}:${outcomeId}`;
 }
+
+// Group tag a market lands in on the storefront (Match / Map 1 / …).
+// `order` is used as the inter-group sort key (lower = earlier).
+export type MarketScope = { id: string; label: string; order: number };
+
+export function deriveScope(specs: Record<string, string>): MarketScope {
+  if (specs.map) {
+    const n = Number.parseInt(specs.map, 10);
+    if (Number.isFinite(n) && n > 0) {
+      return { id: `map_${n}`, label: `Map ${n}`, order: n };
+    }
+  }
+  return { id: "match", label: "Match", order: 0 };
+}
+
+// Outcome sort weight for Oddin's canonical numeric outcome_ids. Three-way
+// markets render 1 / X / 2 (home / draw / away) — Oddin assigns "3" to the
+// draw, so it gets a weight of 1.5 to slot between home and away. Returns
+// null for non-numeric ids (URNs, "under"/"over", …) so callers can keep
+// them in insertion order behind the numeric block.
+export function outcomeSortWeight(id: string): number | null {
+  const n = Number.parseInt(id, 10);
+  if (!Number.isFinite(n) || String(n) !== id) return null;
+  if (n === 3) return 1.5;
+  return n;
+}

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { serverApi } from "@/lib/server-fetch";
+import { LogsSearch } from "../../logs-search";
 
 interface TournamentRow {
   id: number;
@@ -31,12 +32,17 @@ export default async function LogsSportPage({
         <span> / </span>
         <span>{data.sport.name}</span>
       </nav>
-      <h1 className="mt-2 text-2xl font-semibold tracking-tight">
-        {data.sport.name}
-      </h1>
-      <p className="mt-1 text-sm text-[var(--color-fg-muted)]">
-        Tournaments with matches currently in the 24h retention window.
-      </p>
+      <div className="mt-2 flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            {data.sport.name}
+          </h1>
+          <p className="mt-1 text-sm text-[var(--color-fg-muted)]">
+            Tournaments with matches in the 7-day retention window.
+          </p>
+        </div>
+        <LogsSearch />
+      </div>
 
       {data.tournaments.length === 0 ? (
         <p className="mt-8 text-sm text-[var(--color-fg-muted)]">

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { serverApi } from "@/lib/server-fetch";
+import { LogsSearch } from "../../logs-search";
 
 interface MatchRow {
   id: string;
@@ -59,14 +60,19 @@ export default async function LogsTournamentPage({
         <span> / </span>
         <span>{data.tournament.name}</span>
       </nav>
-      <h1 className="mt-2 text-2xl font-semibold tracking-tight">
-        {data.tournament.name}
-      </h1>
-      <p className="mt-1 text-sm text-[var(--color-fg-muted)]">
-        Matches with at least one feed message in the 7-day retention
-        window. Click any match to see its markets, odds history and raw
-        feed log.
-      </p>
+      <div className="mt-2 flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            {data.tournament.name}
+          </h1>
+          <p className="mt-1 text-sm text-[var(--color-fg-muted)]">
+            Matches with at least one feed message in the 7-day retention
+            window. Click any match to see its markets, odds history and raw
+            feed log.
+          </p>
+        </div>
+        <LogsSearch />
+      </div>
 
       {data.matches.length === 0 ? (
         <p className="mt-8 text-sm text-[var(--color-fg-muted)]">

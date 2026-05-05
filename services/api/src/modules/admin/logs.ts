@@ -16,7 +16,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
 import {
   sports,
   categories,
@@ -29,6 +29,7 @@ import {
   competitorProfiles,
   playerProfiles,
   feedMessages,
+  feMarketDisplayOrder,
 } from "@oddzilla/db";
 import { NotFoundError } from "../../lib/errors.js";
 import {
@@ -36,6 +37,9 @@ import {
   renderOutcomeLabel,
   descKey,
   outcomeDescKey,
+  deriveScope,
+  outcomeSortWeight,
+  type MarketScope,
 } from "../../lib/market-naming.js";
 
 // A match shows up in the admin logs panel iff it has at least one
@@ -209,6 +213,7 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
         bestOf: matches.bestOf,
         tournamentId: tournaments.id,
         tournamentName: tournaments.name,
+        sportId: sports.id,
         sportSlug: sports.slug,
         sportName: sports.name,
       })
@@ -396,6 +401,7 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
       providerMarketId: number;
       name: string;
       specifiers: Record<string, string>;
+      scope: MarketScope;
       status: number;
       settled: boolean;
       outcomes: Outcome[];
@@ -410,6 +416,7 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
         providerMarketId: m.providerMarketId,
         name: renderMarketName(m.providerMarketId, specs),
         specifiers: specs,
+        scope: deriveScope(specs),
         status: m.status,
         settled: false,
         outcomes: [],
@@ -458,6 +465,71 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
       });
     }
 
+    // Sort outcomes inside each market by Oddin's canonical numeric
+    // weight (1 / X / 2 = home / draw / away), matching the storefront.
+    const marketList = Array.from(byMarket.values());
+    for (const mb of marketList) {
+      mb.outcomes.sort((a, b) => {
+        const aw = outcomeSortWeight(a.outcomeId);
+        const bw = outcomeSortWeight(b.outcomeId);
+        if (aw != null && bw != null) return aw - bw;
+        if (aw != null) return -1;
+        if (bw != null) return 1;
+        return 0;
+      });
+    }
+
+    // Group markets into the same scope buckets the storefront uses
+    // (Match / Map 1 / Map 2 / …) and apply the per-scope admin ordering
+    // from fe_market_display_order. Within a scope, configured markets
+    // come first in displayOrder, unconfigured markets fall back to
+    // providerMarketId asc.
+    type Group = { id: string; label: string; order: number; markets: MarketBlock[] };
+    const groupMap = new Map<string, Group>();
+    for (const mb of marketList) {
+      const g = groupMap.get(mb.scope.id) ?? { ...mb.scope, markets: [] };
+      g.markets.push(mb);
+      groupMap.set(mb.scope.id, g);
+    }
+    const groups = Array.from(groupMap.values()).sort((a, b) => a.order - b.order);
+
+    const orderRows = await app.db
+      .select({
+        scope: feMarketDisplayOrder.scope,
+        providerMarketId: feMarketDisplayOrder.providerMarketId,
+        displayOrder: feMarketDisplayOrder.displayOrder,
+      })
+      .from(feMarketDisplayOrder)
+      .where(eq(feMarketDisplayOrder.sportId, match.sportId));
+    const orderByScope: Record<"match" | "map" | "top", Map<number, number>> = {
+      match: new Map(),
+      map: new Map(),
+      top: new Map(),
+    };
+    for (const r of orderRows) {
+      const bucket = orderByScope[r.scope as keyof typeof orderByScope];
+      if (bucket) bucket.set(r.providerMarketId, r.displayOrder);
+    }
+    function applySort(orderMap: Map<number, number>, list: MarketBlock[]) {
+      list.sort((a, b) => {
+        const ao = orderMap.get(a.providerMarketId);
+        const bo = orderMap.get(b.providerMarketId);
+        if (ao != null && bo != null) {
+          if (ao !== bo) return ao - bo;
+          return a.providerMarketId - b.providerMarketId;
+        }
+        if (ao != null) return -1;
+        if (bo != null) return 1;
+        return a.providerMarketId - b.providerMarketId;
+      });
+    }
+    for (const g of groups) {
+      const orderMap = g.id.startsWith("map_")
+        ? orderByScope.map
+        : orderByScope.match;
+      applySort(orderMap, g.markets);
+    }
+
     return {
       match: {
         id: match.id.toString(),
@@ -470,7 +542,14 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
         tournament: { id: match.tournamentId, name: match.tournamentName },
         sport: { slug: match.sportSlug, name: match.sportName },
       },
-      markets: Array.from(byMarket.values()),
+      // Flat list (storefront-equivalent order) for backwards compat
+      // plus a grouped view for the per-scope rendering.
+      markets: groups.flatMap((g) => g.markets),
+      groups: groups.map((g) => ({
+        id: g.id,
+        label: g.label,
+        marketIds: g.markets.map((m) => m.id),
+      })),
     };
   });
 
@@ -678,6 +757,128 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
         receivedAt: r.receivedAt.toISOString(),
       })),
       limit: q.limit,
+    };
+  });
+
+  // ── Search across the logs hierarchy ────────────────────────────────
+  // Returns up to 6 matched sports, tournaments and matches whose names
+  // (or team names, for matches) contain the query. Same matchInWindow
+  // filter as the rest of the panel: matches must have at least one
+  // feed_messages row; tournaments/sports must contain such a match.
+  app.get("/admin/logs/search", async (request) => {
+    request.requireRole("admin");
+    const { q } = z
+      .object({ q: z.string().trim().min(1).max(64) })
+      .parse(request.query);
+    const like = `%${q}%`;
+    const LIMIT = 6;
+
+    // Sports: match by slug or display name; only those containing at
+    // least one in-window match (any tournament under any category).
+    const sportRows = await app.db
+      .select({
+        id: sports.id,
+        slug: sports.slug,
+        name: sports.name,
+      })
+      .from(sports)
+      .where(
+        and(
+          eq(sports.active, true),
+          or(ilike(sports.slug, like), ilike(sports.name, like)),
+          sql`EXISTS (
+            SELECT 1
+              FROM ${categories} c
+              JOIN ${tournaments} t ON t.category_id = c.id
+              JOIN ${matches} m ON m.tournament_id = t.id
+             WHERE c.sport_id = ${sports.id}
+               AND EXISTS (
+                 SELECT 1 FROM ${feedMessages} fm
+                  WHERE fm.event_urn = m.provider_urn
+               )
+          )`,
+        ),
+      )
+      .orderBy(sports.slug)
+      .limit(LIMIT);
+
+    // Tournaments: match by name or slug; only those with at least one
+    // in-window match. Carry sport context so the UI can link directly.
+    const tournamentRows = await app.db
+      .select({
+        id: tournaments.id,
+        name: tournaments.name,
+        sportSlug: sports.slug,
+        sportName: sports.name,
+      })
+      .from(tournaments)
+      .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+      .innerJoin(sports, eq(sports.id, categories.sportId))
+      .where(
+        and(
+          eq(tournaments.active, true),
+          eq(sports.active, true),
+          or(ilike(tournaments.name, like), ilike(tournaments.slug, like)),
+          sql`EXISTS (
+            SELECT 1 FROM ${matches} m
+             WHERE m.tournament_id = ${tournaments.id}
+               AND EXISTS (
+                 SELECT 1 FROM ${feedMessages} fm
+                  WHERE fm.event_urn = m.provider_urn
+               )
+          )`,
+        ),
+      )
+      .orderBy(tournaments.name)
+      .limit(LIMIT);
+
+    // Matches: home/away team match. Same in-window filter.
+    const matchRows = await app.db
+      .select({
+        id: matches.id,
+        homeTeam: matches.homeTeam,
+        awayTeam: matches.awayTeam,
+        scheduledAt: matches.scheduledAt,
+        status: matches.status,
+        tournamentId: tournaments.id,
+        tournamentName: tournaments.name,
+        sportSlug: sports.slug,
+      })
+      .from(matches)
+      .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
+      .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+      .innerJoin(sports, eq(sports.id, categories.sportId))
+      .where(
+        and(
+          or(ilike(matches.homeTeam, like), ilike(matches.awayTeam, like)),
+          matchInWindow,
+        ),
+      )
+      .orderBy(desc(matches.scheduledAt))
+      .limit(LIMIT);
+
+    return {
+      query: q,
+      sports: sportRows.map((r) => ({
+        id: r.id,
+        slug: r.slug,
+        name: r.name,
+      })),
+      tournaments: tournamentRows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        sportSlug: r.sportSlug,
+        sportName: r.sportName,
+      })),
+      matches: matchRows.map((r) => ({
+        id: r.id.toString(),
+        homeTeam: r.homeTeam,
+        awayTeam: r.awayTeam,
+        scheduledAt: r.scheduledAt?.toISOString() ?? null,
+        status: r.status,
+        tournament: { id: r.tournamentId, name: r.tournamentName },
+        sportSlug: r.sportSlug,
+      })),
     };
   });
 }
