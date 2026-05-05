@@ -241,13 +241,22 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
     // Bound the chart payload to 24h to keep this page snappy. The
     // per-market history endpoint serves the full 7-day window when the
     // admin needs the long view.
+    //
+    // We expand market_ids into an `IN (...)` list with sql.join rather
+    // than `ANY(:::bigint[])` because postgres-js renders a JS array
+    // inside an `sql\`\`` template as a record `(($1, $2, ...))`, which
+    // PG can't cast to bigint[]. The IN form binds each id as its own
+    // numeric param and works the same end-to-end.
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const historyRows = marketIds.length
       ? ((await app.db.execute(sql`
           SELECT market_id, outcome_id, raw_odds, published_odds,
                  EXTRACT(EPOCH FROM ts)::bigint * 1000 AS ts_ms
             FROM odds_history
-           WHERE market_id = ANY(${marketIds}::bigint[])
+           WHERE market_id IN (${sql.join(
+             marketIds.map((id) => sql`${id}`),
+             sql`, `,
+           )})
              AND ts > ${since.toISOString()}
            ORDER BY ts ASC
         `)) as unknown as Array<{
