@@ -50,7 +50,8 @@ export function OddsChart({ series }: { series: Series[] }) {
   if (allPoints.length === 0) {
     return (
       <div className="rounded-[10px] border border-[var(--color-border)] bg-[var(--color-bg)] p-4 text-xs text-[var(--color-fg-subtle)]">
-        No odds history in the last 24h.
+        No odds history in the last 24h. The Odds history button shows the
+        full 7-day window.
       </div>
     );
   }

@@ -63,8 +63,8 @@ export default async function LogsTournamentPage({
         {data.tournament.name}
       </h1>
       <p className="mt-1 text-sm text-[var(--color-fg-muted)]">
-        Matches in the 24h retention window. Click any match to see its odds
-        history and raw feed log.
+        Matches in the 7-day retention window. Click any match to see its
+        markets, odds history and raw feed log.
       </p>
 
       {data.matches.length === 0 ? (
