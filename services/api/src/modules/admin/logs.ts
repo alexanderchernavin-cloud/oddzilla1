@@ -16,7 +16,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   sports,
   categories,
@@ -235,7 +235,7 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
             voidFactor: marketOutcomes.voidFactor,
           })
           .from(marketOutcomes)
-          .where(sql`${marketOutcomes.marketId} = ANY(${marketIds}::bigint[])`)
+          .where(inArray(marketOutcomes.marketId, marketIds))
       : [];
 
     // Bound the chart payload to 24h to keep this page snappy. The
