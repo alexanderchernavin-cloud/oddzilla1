@@ -2,6 +2,7 @@ import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import { getSessionClaims } from "@/lib/auth";
 import { LogoutButton } from "@/components/logout-button";
+import { ThemeToggle } from "@/components/shell/theme-toggle";
 
 // The middleware already checks for auth cookie presence before this runs.
 // Here we verify the role.
@@ -71,6 +72,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
             <Link href="/account" className="hover:text-[var(--color-fg)]">
               Exit admin
             </Link>
+            <ThemeToggle />
             <LogoutButton />
           </nav>
         </div>

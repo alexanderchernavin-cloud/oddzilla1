@@ -37,6 +37,12 @@ export const viewport: Viewport = {
   initialScale: 1,
 };
 
+// Runs before body paints — keeps `oz:theme` in sync with the SSR
+// `data-theme="dark"` attribute so users who picked light don't see a
+// dark flash on every navigation. Storage key must match
+// `apps/web/src/components/shell/theme-toggle.tsx`.
+const themeBootScript = `(function(){try{var t=localStorage.getItem("oz:theme");if(t==="light"||t==="dark"){document.documentElement.setAttribute("data-theme",t);}}catch(e){}})();`;
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html
@@ -44,6 +50,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       data-theme="dark"
       className={`${geist.variable} ${geistMono.variable} ${instrumentSerif.variable}`}
     >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeBootScript }} />
+      </head>
       <body>
         <BetSlipProvider>{children}</BetSlipProvider>
       </body>

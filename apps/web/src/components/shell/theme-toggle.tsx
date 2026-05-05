@@ -3,19 +3,19 @@
 import { useEffect, useState } from "react";
 import { I } from "@/components/ui/icons";
 
+// Storage key must match the inline pre-hydration script in
+// `apps/web/src/app/layout.tsx`.
 const STORAGE_KEY = "oz:theme";
 
 export function ThemeToggle() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
 
   useEffect(() => {
-    const stored = (typeof window !== "undefined" && window.localStorage.getItem(STORAGE_KEY)) as
-      | "dark"
-      | "light"
-      | null;
-    const initial = stored ?? "dark";
-    setTheme(initial);
-    document.documentElement.setAttribute("data-theme", initial);
+    // Pre-hydration script in the root layout has already set
+    // <html data-theme>; trust it as the source of truth so the icon
+    // renders correctly on first paint without a second flip.
+    const current = document.documentElement.getAttribute("data-theme");
+    setTheme(current === "light" ? "light" : "dark");
   }, []);
 
   function toggle() {
