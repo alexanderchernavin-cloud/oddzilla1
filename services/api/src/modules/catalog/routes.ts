@@ -103,6 +103,92 @@ function formatOdds(s: string | null | undefined): string | null {
   return (Math.floor(n * 100) / 100).toFixed(2);
 }
 
+// Stream embed helper. matches.tv_channels is a JSONB array of
+// `{ name, language, streamUrl }` (see migration 0022 + the
+// feed-ingester resolver). The frontend embeds Twitch + YouTube; for
+// every other host we hand back a passthrough row that renders as a
+// link. We classify here so the Next.js page can stay dumb — and so a
+// future admin override (e.g. blocking a misbehaving channel) has one
+// place to land.
+type StreamSource = {
+  platform: "twitch" | "youtube" | "other";
+  // For Twitch: the channel slug (`esl_csgo`). For YouTube: the video
+  // id (`abc123XYZ`). null for `other` — caller falls back to the URL.
+  embedId: string | null;
+  url: string;
+  name: string | null;
+  language: string | null;
+};
+
+function parseMatchStreams(raw: unknown): StreamSource[] {
+  if (!Array.isArray(raw)) return [];
+  const out: StreamSource[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as Record<string, unknown>;
+    const url = typeof e.streamUrl === "string" ? e.streamUrl.trim() : "";
+    if (!url) continue;
+    const name = typeof e.name === "string" && e.name.trim() ? e.name.trim() : null;
+    const language =
+      typeof e.language === "string" && e.language.trim() ? e.language.trim() : null;
+    const classified = classifyStreamUrl(url);
+    out.push({ ...classified, url, name, language });
+  }
+  return out;
+}
+
+function classifyStreamUrl(
+  url: string,
+): Pick<StreamSource, "platform" | "embedId"> {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { platform: "other", embedId: null };
+  }
+  const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+  if (host === "twitch.tv" || host === "player.twitch.tv" || host === "m.twitch.tv") {
+    // https://www.twitch.tv/<channel> | https://player.twitch.tv/?channel=<channel>
+    const channelParam = parsed.searchParams.get("channel");
+    if (channelParam && /^[a-zA-Z0-9_]+$/.test(channelParam)) {
+      return { platform: "twitch", embedId: channelParam.toLowerCase() };
+    }
+    const seg = parsed.pathname.split("/").filter(Boolean)[0] ?? "";
+    if (seg && /^[a-zA-Z0-9_]+$/.test(seg)) {
+      return { platform: "twitch", embedId: seg.toLowerCase() };
+    }
+    return { platform: "twitch", embedId: null };
+  }
+  if (
+    host === "youtube.com" ||
+    host === "m.youtube.com" ||
+    host === "youtube-nocookie.com" ||
+    host === "youtu.be"
+  ) {
+    // https://www.youtube.com/watch?v=ID | https://youtu.be/ID |
+    // https://www.youtube.com/live/ID | https://www.youtube.com/embed/ID
+    let videoId: string | null = null;
+    if (host === "youtu.be") {
+      videoId = parsed.pathname.split("/").filter(Boolean)[0] ?? null;
+    } else {
+      const v = parsed.searchParams.get("v");
+      if (v) {
+        videoId = v;
+      } else {
+        const segs = parsed.pathname.split("/").filter(Boolean);
+        if (segs.length >= 2 && (segs[0] === "live" || segs[0] === "embed" || segs[0] === "shorts")) {
+          videoId = segs[1] ?? null;
+        }
+      }
+    }
+    if (videoId && /^[a-zA-Z0-9_-]{6,}$/.test(videoId)) {
+      return { platform: "youtube", embedId: videoId };
+    }
+    return { platform: "youtube", embedId: null };
+  }
+  return { platform: "other", embedId: null };
+}
+
 // Has-active-market guard. Every list/count endpoint runs this so we
 // skip matches with zero active markets — there's nothing to bet on,
 // the card would render empty. Intentionally lenient: a real live
@@ -530,6 +616,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         status: matches.status,
         bestOf: matches.bestOf,
         liveScore: matches.liveScore,
+        tvChannels: matches.tvChannels,
         tournamentId: tournaments.id,
         tournamentName: tournaments.name,
         tournamentRiskTier: tournaments.riskTier,
@@ -870,6 +957,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         status: match.status,
         bestOf: match.bestOf,
         liveScore: match.liveScore,
+        streams: parseMatchStreams(match.tvChannels),
         tournament: {
           id: match.tournamentId,
           name: match.tournamentName,

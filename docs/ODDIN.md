@@ -179,7 +179,7 @@ Update `amqp_state.after_ts` to the `timestamp` in this message.
 | Purpose | Method + path | Used in |
 | --- | --- | --- |
 | customer id / vhost | `GET /v1/users/whoami` | bootstrap to discover `bookmaker_id` for the AMQP vhost path |
-| sport-event fixture (sport + tournament + competitors) | `GET /v1/sports/en/sport_events/{matchURN}/fixture` | auto-mapping resolver on first sight of an unknown match URN; fixture_change re-fetch on NEW/DATE_TIME/FORMAT/COVERAGE |
+| sport-event fixture (sport + tournament + competitors + tv_channels) | `GET /v1/sports/en/sport_events/{matchURN}/fixture` | auto-mapping resolver on first sight of an unknown match URN; fixture_change re-fetch on NEW / DATE_TIME / FORMAT / COVERAGE / **STREAM_URL (106)**. The response carries an optional `<tv_channels><tv_channel name=… language=… stream_url=…/></tv_channels>` block (Twitch / YouTube broadcasters) which the resolver persists to `matches.tv_channels` for the storefront live-stream embed. |
 | sports list | `GET /v1/sports/en/sports` | resolver helper |
 | **recovery initiate** | `POST /v1/{product}/recovery/initiate_request?after={ms}&request_id={n}&node_id={n}` | feed-ingester on every (re)connect for both pre + live; also on `alive subscribed=0` and on alive-timestamp drift > 5s |
 | recovery snapshot (per fixture) | `GET /v1/descriptions/en/fixtures/{fixture_id}/odds/{product_id}/{after_ts}` | not currently used — the broader `initiate_request` endpoint above handles our recovery flow |
@@ -331,8 +331,12 @@ endpoint only handles match URNs. Outright support is post-MVP.
 
 `Resolver.RefreshFromFixture(matchURN)` is the same flow but only
 applies updates to existing matches; called from the fixture_change
-handler on change_types NEW (1), DATE_TIME (2), FORMAT (4), and
-COVERAGE (5).
+handler on change_types NEW (1), DATE_TIME (2), FORMAT (4),
+COVERAGE (5), and STREAM_URL (106). The 106 case keeps the
+match's stored Twitch / YouTube broadcaster (in
+`matches.tv_channels`) in sync with whatever Oddin attached or
+removed mid-event. Bet placement is unaffected — the column is
+display-only.
 
 ## Ledger generation suffix (re-settle support)
 

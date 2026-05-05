@@ -119,6 +119,12 @@ export const matches = pgTable(
     oddinStatusCode: smallint(),
     bestOf: smallint(),
     liveScore: jsonb(),
+    // Oddin's fixture endpoint exposes <tv_channels><tv_channel name=...
+    // language=... stream_url=.../></tv_channels>. We store the parsed
+    // array verbatim — the storefront recognises Twitch / YouTube
+    // stream_url shapes and renders an embed. NULL = unknown (fixture
+    // not fetched yet or missing block); [] = explicitly no channels.
+    tvChannels: jsonb(),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },

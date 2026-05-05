@@ -1,10 +1,15 @@
 import Link from "next/link";
+import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { serverApi } from "@/lib/server-fetch";
 import { LiveMarkets, type MarketGroup, type MarketSnapshot } from "./live-markets";
 import { Pill, LiveDot, TeamMark } from "@/components/ui/primitives";
 import { TierMark } from "@/components/ui/tier-mark";
 import { I } from "@/components/ui/icons";
+import {
+  MatchStreams,
+  type MatchStream,
+} from "@/components/match/match-streams";
 import {
   mapCellValue,
   type LiveScore,
@@ -25,6 +30,7 @@ interface MatchResponse {
     status: "not_started" | "live" | "closed" | "cancelled" | "suspended";
     bestOf: number | null;
     liveScore: LiveScore | null;
+    streams?: MatchStream[];
     tournament: { id: number; name: string; riskTier?: number | null };
     sport: { id: number; slug: string; name: string };
   };
@@ -42,6 +48,8 @@ export default async function MatchPage({
   if (!data) notFound();
 
   const { match, markets, marketGroups } = data;
+  const streams = match.streams ?? [];
+  const parentHost = await resolveEmbedHost();
   const isLive = match.status === "live";
   const liveScore = match.liveScore ?? null;
   const homeSeries = liveScore?.home ?? 0;
@@ -150,6 +158,10 @@ export default async function MatchPage({
         />
       </div>
 
+      {streams.length > 0 ? (
+        <MatchStreams streams={streams} parentHost={parentHost} />
+      ) : null}
+
       {markets.length === 0 ? (
         <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
           No markets from the feed yet. This page will update live when odds start
@@ -169,6 +181,18 @@ export default async function MatchPage({
       )}
     </div>
   );
+}
+
+// Twitch's iframe player only loads when its `parent=` query param matches
+// the embedding hostname (any Host or X-Forwarded-Host header it sees from
+// the browser). Reading from the same place Next.js does keeps prod
+// (s.oddzilla.cc) and `pnpm dev` (localhost) working without env config.
+async function resolveEmbedHost(): Promise<string | null> {
+  const h = await headers();
+  const raw = h.get("x-forwarded-host") ?? h.get("host");
+  if (!raw) return null;
+  const host = raw.split(":")[0]?.toLowerCase() ?? "";
+  return host || null;
 }
 
 // TopPill renders a filled gold "TOP" chip in the match-detail header

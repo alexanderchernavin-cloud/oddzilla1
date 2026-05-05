@@ -25,7 +25,10 @@
 	# CSP applied only to responses from web:3000 (Next.js HTML). /api/* has
 	# its own strict default-src 'none' CSP from @fastify/helmet.
 	# Backticks preserve semicolons/quotes inside the value.
-	header Content-Security-Policy `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests`
+	# `frame-src` whitelists Twitch + YouTube so the live-stream embed on
+	# the match-detail page can load. Everything else still falls back to
+	# default-src 'self'.
+	header Content-Security-Policy `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https: wss:; frame-src 'self' https://player.twitch.tv https://www.twitch.tv https://www.youtube.com https://www.youtube-nocookie.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests`
 }
 
 # Static team logos written to the `team-logos` volume by the api
