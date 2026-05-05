@@ -28,10 +28,27 @@
 	header Content-Security-Policy `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests`
 }
 
+# Static team logos written to the `team-logos` volume by the api
+# container's resolve-logos / apply-logo-seed scripts. Served with a
+# year-long cache because the file path is keyed on competitor.id +
+# content hash — overwrites use a different filename, so the URL itself
+# is the cache buster.
+(team_logos) {
+	handle_path /team-logos/* {
+		root * /srv/team-logos
+		file_server {
+			hide .* _*
+		}
+		header Cache-Control "public, max-age=31536000, immutable"
+		header Access-Control-Allow-Origin "*"
+	}
+}
+
 # ── Public frontend ──────────────────────────────────────────────────────────
 {$FRONTEND_HOST} {
 	encode zstd gzip
 	import security_headers
+	import team_logos
 
 	handle_path /api/* {
 		reverse_proxy api:3001
@@ -58,6 +75,7 @@
 {$ADMIN_HOST} {
 	encode zstd gzip
 	import security_headers
+	import team_logos
 
 	redir / /admin 302
 

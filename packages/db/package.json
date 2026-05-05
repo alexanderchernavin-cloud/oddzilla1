@@ -17,6 +17,7 @@
     "db:seed-logos": "tsx src/apply-logo-seed.ts",
     "db:resolve-logos": "tsx src/resolve-logos.ts",
     "db:apply-logo-seed": "tsx src/apply-logo-seed-direct.ts",
+    "db:localize-logos": "tsx src/localize-logos.ts",
     "db:studio": "drizzle-kit studio",
     "db:check": "drizzle-kit check",
     "typecheck": "tsc --noEmit",
