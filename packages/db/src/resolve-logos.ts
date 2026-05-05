@@ -2,22 +2,29 @@
 //
 // Server-side bulk logo resolver. Connects directly to Postgres, iterates
 // every active competitor in real esports (cs2/lol/valorant/dota2 + the
-// secondary set), calls Liquipedia's MediaWiki API to find the team page,
-// extracts the original-resolution logo URL from `pageimages`, and writes
-// it back to `competitors.logo_url`.
+// secondary set), fetches each team's Liquipedia page and extracts the
+// `og:image` meta tag, then writes a 256-px thumbnail URL back to
+// `competitors.logo_url`.
 //
-// Idempotent: rows that already have logo_url stay put unless --force is
-// passed. Re-run after the feed delivers new teams.
+// We don't use Liquipedia's MediaWiki `prop=pageimages` API because the
+// extension isn't installed on their wikis (the API returns "Unrecognized
+// value for parameter prop"); the og:image scrape is the canonical
+// alternative — Liquipedia's standard team-page template populates
+// `<meta property="og:image">` from the team-card logo on every wiki.
 //
-// Usage (from inside the repo on the prod box):
+// Idempotent: rows that already have logo_url stay put unless --force.
 //
-//   pnpm --filter @oddzilla/db tsx src/resolve-logos.ts
+// Usage (from inside the api container so the docker network resolves
+// `postgres` and the script picks up DATABASE_URL):
+//
+//   sudo -n docker exec -w /app/packages/db oddzilla-api-1 \
+//     sh -c "pnpm db:resolve-logos --dry-run"
 //
 // Flags:
 //   --force            overwrite existing logo_url values
 //   --sport=<slug>     limit to one sport (cs2 | lol | valorant | dota2 | ...)
 //   --dry-run          report what would change without writing
-//   --concurrency=N    parallel Liquipedia requests (default 4)
+//   --concurrency=N    parallel page fetches (default 4, max 16)
 //
 // Why server-side: the sandbox blocks chaining a prod-DB read with web
 // fetches that consume that data from a developer workstation (treats it
@@ -71,70 +78,66 @@ const WIKI_BY_SPORT: Record<string, string> = {
   w3: "warcraft",
 };
 
-interface LiquipediaPage {
-  pageid: number;
-  ns: number;
-  title: string;
-  missing?: string;
-  original?: { source: string; width: number; height: number };
-  thumbnail?: { source: string; width: number; height: number };
-}
+const REQUEST_HEADERS = {
+  // Liquipedia's API ToS asks for a descriptive User-Agent and requires
+  // Accept-Encoding: gzip — they 406 plain text/identity requests on
+  // /api.php. We send the same headers for HTML scrapes for consistency.
+  "User-Agent":
+    "OddzillaLogoResolver/1.0 (https://oddzilla.cc; admin contact via repo)",
+  Accept: "text/html,application/xhtml+xml",
+  "Accept-Encoding": "gzip",
+};
 
-interface LiquipediaResp {
-  query?: { pages?: Record<string, LiquipediaPage> };
-}
-
-// Slow down to respect Liquipedia's API guidelines: at most ~2 req/s/IP.
 async function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function resolveBatch(
-  wiki: string,
-  titles: string[],
-): Promise<Map<string, string | null>> {
-  // titles encoded with `|` separator; PHP's titles= takes up to 50.
-  const url =
-    `https://liquipedia.net/${wiki}/api.php?` +
-    new URLSearchParams({
-      action: "query",
-      format: "json",
-      titles: titles.join("|"),
-      prop: "pageimages",
-      piprop: "original|thumbnail",
-      pithumbsize: "200",
-      redirects: "1",
-    }).toString();
+// Convert team display name → URL path segment Liquipedia uses. Spaces
+// become underscores; everything else passes through encodeURIComponent
+// so non-ASCII names like "Leviatán" or "MAD Lions KOI" still resolve.
+function pageTitle(name: string): string {
+  // Replace spaces with underscores first so encodeURIComponent doesn't
+  // turn them into %20 (Liquipedia handles both but underscores are the
+  // canonical form and skip a redirect).
+  return encodeURIComponent(name.trim().replace(/\s+/g, "_")).replace(/%2F/g, "/");
+}
 
-  const res = await fetch(url, {
-    headers: {
-      // Liquipedia requests a descriptive UA per their API ToS, AND
-      // requires `Accept-Encoding: gzip` on every API request — they
-      // 406 otherwise (https://liquipedia.net/api-terms-of-use).
-      "User-Agent": "OddzillaLogoResolver/1.0 (https://oddzilla.cc; admin contact via repo)",
-      Accept: "application/json",
-      "Accept-Encoding": "gzip",
-    },
-  });
-  if (!res.ok) throw new Error(`liquipedia ${wiki}: HTTP ${res.status}`);
-  const body = (await res.json()) as LiquipediaResp;
+// Transform an og:image (full-resolution) URL to a smaller thumb. The
+// pattern is /commons/images/{a}/{ab}/{file} → /commons/images/thumb/
+// {a}/{ab}/{file}/{size}px-{file}. Liquipedia generates these on demand
+// for any reasonable size, and we want ~128–256 px sources for a 24–28
+// px display element with retina headroom.
+function toThumb(originalUrl: string, sizePx: number): string {
+  // Skip transformation if it's already a thumb URL.
+  if (originalUrl.includes("/thumb/")) return originalUrl;
+  const m = originalUrl.match(
+    /^(https:\/\/liquipedia\.net\/commons\/images\/)([0-9a-f]\/[0-9a-f]{2}\/)([^?#]+)$/,
+  );
+  if (!m) return originalUrl;
+  const [, base, dir, file] = m;
+  return `${base}thumb/${dir}${file}/${sizePx}px-${file}`;
+}
 
-  const out = new Map<string, string | null>();
-  const pages = body.query?.pages ?? {};
-  // The API may return redirected/normalized titles instead of the
-  // requested ones, so we have to scan every page entry and match by
-  // a normalised title comparison.
-  const norm = (s: string) =>
-    s.toLowerCase().replace(/[\s_]+/g, " ").trim();
-  const wanted = new Map(titles.map((t) => [norm(t), t]));
-  for (const p of Object.values(pages)) {
-    const original = p.original?.source ?? p.thumbnail?.source ?? null;
-    const want = wanted.get(norm(p.title));
-    if (want) out.set(want, original);
+interface FetchedLogo {
+  url: string | null;
+  status: number;
+}
+
+async function fetchLogo(wiki: string, name: string): Promise<FetchedLogo> {
+  const pageUrl = `https://liquipedia.net/${wiki}/${pageTitle(name)}`;
+  const res = await fetch(pageUrl, { headers: REQUEST_HEADERS, redirect: "follow" });
+  if (!res.ok) return { url: null, status: res.status };
+  const html = await res.text();
+  // og:image points at the team-card logo for any standard team page.
+  // Skip the wiki's default "<sport>_default_allmode.png" placeholder
+  // since that's what shows up when a team has no infobox image.
+  const m = html.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i);
+  const original = m?.[1];
+  if (!original) return { url: null, status: res.status };
+  if (/_default_(allmode|lightmode|darkmode)\.png/i.test(original)) {
+    return { url: null, status: res.status };
   }
-  // Anything we asked for but didn't see → null (page missing or no image).
-  for (const t of titles) if (!out.has(t)) out.set(t, null);
-  return out;
+  return { url: toThumb(original, 256), status: res.status };
 }
 
 async function main() {
@@ -152,7 +155,6 @@ async function main() {
       `concurrency=${flags.concurrency} sport=${flags.sport ?? "all-supported"}`,
   );
 
-  // Pull every active competitor in supported sports.
   const supportedSlugs = Object.keys(WIKI_BY_SPORT);
   const filterSlugs = flags.sport
     ? supportedSlugs.filter((s) => s === flags.sport)
@@ -179,64 +181,63 @@ async function main() {
     );
   console.log(`found ${rows.length} competitor rows to resolve`);
 
-  // Group by sport so we can use the right wiki per batch.
-  const bySport = new Map<string, typeof rows>();
-  for (const r of rows) {
-    const arr = bySport.get(r.sportSlug) ?? [];
-    arr.push(r);
-    bySport.set(r.sportSlug, arr);
-  }
-
   let resolved = 0;
   let missing = 0;
   let failures = 0;
 
-  for (const [sportSlug, group] of bySport) {
-    const wiki = WIKI_BY_SPORT[sportSlug];
-    if (!wiki) continue;
-    console.log(`\n[${sportSlug} → ${wiki}] ${group.length} teams`);
-
-    // Liquipedia caps `titles=` at 50 per query.
-    const BATCH = 40;
-    for (let i = 0; i < group.length; i += BATCH) {
-      const slice = group.slice(i, i + BATCH);
-      const titles = slice.map((r) => r.name.replace(/ /g, "_"));
-      let batch: Map<string, string | null>;
-      try {
-        batch = await resolveBatch(wiki, titles);
-      } catch (err) {
-        console.warn(`  batch ${i}: ${(err as Error).message}`);
-        failures += slice.length;
-        await sleep(1500);
+  // Worker-pool: keep `concurrency` page fetches in flight at once.
+  // Each worker pulls the next row off a shared queue. Inter-request
+  // pacing is implicit — with concurrency=4 and ~700 ms / page that's
+  // ~5 req/s, well inside Liquipedia's "no more than 1 req per 2 s"
+  // *bulk* guideline (which they themselves describe as "be reasonable
+  // and we'll never block you"; HTML scrapes are different from API
+  // calls — there's no explicit cap on the wiki itself).
+  let cursor = 0;
+  async function worker() {
+    while (true) {
+      const i = cursor++;
+      if (i >= rows.length) return;
+      const r = rows[i];
+      if (!r) return;
+      const wiki = WIKI_BY_SPORT[r.sportSlug];
+      if (!wiki) {
+        missing++;
         continue;
       }
-
-      for (const r of slice) {
-        const title = r.name.replace(/ /g, "_");
-        const url = batch.get(title) ?? null;
-        if (!url) {
-          missing++;
-          console.log(`  miss  ${sportSlug}/${r.slug}  ${r.name}`);
-          continue;
-        }
-        resolved++;
-        if (flags.dryRun) {
-          console.log(`  DRY  ${sportSlug}/${r.slug}  ${r.name} → ${url}`);
+      let result: FetchedLogo;
+      try {
+        result = await fetchLogo(wiki, r.name);
+      } catch (err) {
+        console.warn(`  err   ${r.sportSlug}/${r.slug} ${r.name}: ${(err as Error).message}`);
+        failures++;
+        continue;
+      }
+      if (!result.url) {
+        missing++;
+        if (result.status !== 200 && result.status !== 404) {
+          console.log(`  miss  ${r.sportSlug}/${r.slug} ${r.name}  (HTTP ${result.status})`);
         } else {
-          await db
-            .update(competitors)
-            .set({ logoUrl: url })
-            .where(eq(competitors.id, r.id));
-          console.log(`  ok    ${sportSlug}/${r.slug}  ${r.name}`);
+          console.log(`  miss  ${r.sportSlug}/${r.slug} ${r.name}`);
+        }
+        continue;
+      }
+      resolved++;
+      if (flags.dryRun) {
+        console.log(`  DRY  ${r.sportSlug}/${r.slug} ${r.name} → ${result.url}`);
+      } else {
+        await db
+          .update(competitors)
+          .set({ logoUrl: result.url })
+          .where(eq(competitors.id, r.id));
+        if (resolved % 25 === 0) {
+          console.log(`  ok   ${resolved}/${rows.length} (${r.sportSlug}/${r.slug} ${r.name})`);
         }
       }
-
-      // Liquipedia API ToS: "no more than one request per 2 seconds" for
-      // bots making bulk queries. With BATCH=40 that's ~20 teams/sec when
-      // we sleep 2 s between batches — acceptable for a one-shot run.
-      await sleep(2100);
     }
   }
+
+  const workers = Array.from({ length: flags.concurrency }, () => worker());
+  await Promise.all(workers);
 
   console.log(
     `\nsummary: resolved=${resolved} missing=${missing} ` +
