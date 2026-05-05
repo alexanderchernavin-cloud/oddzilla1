@@ -38,6 +38,7 @@ import { competitors, sports } from "./schema/index.js";
 import {
   downloadAndStore,
   ensureStoreDir,
+  fetchWikipediaLogo,
   respectBackoff as backoffRespect,
   tripBackoff as backoffTrip,
 } from "./lib/logo-store.js";
@@ -128,7 +129,7 @@ function toThumb(originalUrl: string, sizePx: number): string {
 interface FetchedLogo {
   url: string | null;
   status: number;
-  source: "exact" | "search" | "miss" | "error";
+  source: "wikipedia" | "exact" | "search" | "miss" | "error";
 }
 
 // Re-export the shared backoff so the local fetchPageLogo / search
@@ -199,13 +200,26 @@ async function searchPageTitles(
 }
 
 async function fetchLogo(wiki: string, name: string): Promise<FetchedLogo> {
-  // Pass 1: exact title (with underscores). Most popular teams hit here.
+  // Pass 1: Wikipedia. Categorical sanity-check guards against false
+  // positives (a team named "Heroic" must be tagged as an esports
+  // article to count). Wikipedia covers tier-1 orgs cleanly, has a
+  // proper API, and — unlike Liquipedia today — isn't 429-blocking us.
+  try {
+    const wpUrl = await fetchWikipediaLogo(name);
+    if (wpUrl) return { url: wpUrl, status: 200, source: "wikipedia" };
+  } catch {
+    // Wikipedia 5xx / network glitch — fall through to Liquipedia.
+  }
+
+  // Pass 2: Liquipedia exact title. Most non-tier-1 teams are here, with
+  // higher coverage than Wikipedia — but we only reach this branch when
+  // Wikipedia missed, so on a fully un-banned IP this finishes the job.
   const exact = await fetchPageLogo(wiki, name);
   if (exact.url) return { ...exact, source: "exact" };
 
-  // Pass 2: opensearch fallback. Catches teams where the page title
-  // differs from the feed name — "Team Lynx" → "Lynx (esports)",
-  // "1win" → "1win Team", abbreviations, casing differences.
+  // Pass 3: Liquipedia opensearch fallback. Catches teams where the
+  // page title differs from the feed name — "Team Lynx" → "Lynx
+  // (esports)", "1win" → "1win Team", abbreviations, casing.
   let candidates: string[];
   try {
     candidates = await searchPageTitles(wiki, name);
@@ -213,7 +227,7 @@ async function fetchLogo(wiki: string, name: string): Promise<FetchedLogo> {
     return { url: null, status: exact.status, source: "miss" };
   }
   for (const cand of candidates) {
-    if (cand.toLowerCase() === name.toLowerCase()) continue; // already tried
+    if (cand.toLowerCase() === name.toLowerCase()) continue;
     const hit = await fetchPageLogo(wiki, cand);
     if (hit.url) return { ...hit, source: "search" };
   }
