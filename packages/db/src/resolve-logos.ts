@@ -126,12 +126,38 @@ interface FetchedLogo {
 
 // Fetch a single page by title and extract og:image. Returns null when
 // the page either 404s or its og:image is the wiki's default placeholder.
+// Global backoff window — once any worker observes a 429, every fetch
+// waits until this timestamp before issuing more requests. Liquipedia's
+// 429 responses don't always include a Retry-After, so we use a fixed
+// 30 s window which their rate-limit history shows is enough.
+let globalBackoffUntil = 0;
+
+async function respectBackoff() {
+  const now = Date.now();
+  if (now < globalBackoffUntil) {
+    await sleep(globalBackoffUntil - now);
+  }
+}
+
+function tripBackoff(seconds: number) {
+  const target = Date.now() + seconds * 1000;
+  if (target > globalBackoffUntil) globalBackoffUntil = target;
+}
+
 async function fetchPageLogo(
   wiki: string,
   title: string,
 ): Promise<{ url: string | null; status: number }> {
+  await respectBackoff();
   const pageUrl = `https://liquipedia.net/${wiki}/${pageTitle(title)}`;
   const res = await fetch(pageUrl, { headers: REQUEST_HEADERS, redirect: "follow" });
+  if (res.status === 429) {
+    const retryAfter = Number(res.headers.get("retry-after"));
+    const waitS = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 30;
+    console.warn(`  429 on ${title}; backing off ${waitS}s for all workers`);
+    tripBackoff(waitS);
+    return { url: null, status: 429 };
+  }
   if (!res.ok) return { url: null, status: res.status };
   const html = await res.text();
   const m = html.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i);
@@ -152,6 +178,7 @@ async function searchPageTitles(
   wiki: string,
   query: string,
 ): Promise<string[]> {
+  await respectBackoff();
   const url =
     `https://liquipedia.net/${wiki}/api.php?` +
     new URLSearchParams({
@@ -164,6 +191,11 @@ async function searchPageTitles(
   const res = await fetch(url, {
     headers: { ...REQUEST_HEADERS, Accept: "application/json" },
   });
+  if (res.status === 429) {
+    const retryAfter = Number(res.headers.get("retry-after"));
+    tripBackoff(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 30);
+    return [];
+  }
   if (!res.ok) return [];
   const body = (await res.json()) as [string, string[], string[], string[]] | unknown;
   if (!Array.isArray(body) || !Array.isArray(body[1])) return [];
