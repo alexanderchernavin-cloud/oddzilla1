@@ -178,13 +178,19 @@ async function wikipediaTopTitle(name: string): Promise<string | null> {
 
 interface WikipediaPage {
   title?: string;
+  missing?: string;
   original?: { source: string };
+  pageprops?: { page_image?: string; "page_image_free"?: string };
   categories?: Array<{ title: string }>;
 }
 
-// Lookup pageimages + categories for an exact title. Returns the page
-// payload or null on any error / non-2xx / 429. Caller decides whether
-// the result counts as a "hit".
+// Lookup pageimages + pageprops + categories for an exact title.
+// Returns null on 429 / non-2xx / network errors. We ask for both
+// pageimages.original AND pageprops.page_image because the
+// pageimages extension's `original` field is unpopulated for many
+// older articles (the indexer only refreshes on page edits) — but
+// pageprops.page_image is the file name set by the {{infobox}}
+// template so it's reliable. Caller decides which to use.
 async function wikipediaPage(title: string): Promise<WikipediaPage | null> {
   await respectBackoff();
   const url =
@@ -193,7 +199,7 @@ async function wikipediaPage(title: string): Promise<WikipediaPage | null> {
       action: "query",
       format: "json",
       titles: title,
-      prop: "pageimages|categories",
+      prop: "pageimages|pageprops|categories",
       piprop: "original",
       cllimit: "50",
       redirects: "1",
@@ -214,6 +220,59 @@ async function wikipediaPage(title: string): Promise<WikipediaPage | null> {
   return Object.values(pages)[0] ?? null;
 }
 
+// Resolve `File:Foo.svg` (or `Foo.svg`) to its canonical
+// upload.wikimedia.org URL via the imageinfo API.
+async function wikipediaFileUrl(filename: string): Promise<string | null> {
+  const filePrefix = /^File:/i.test(filename) ? "" : "File:";
+  await respectBackoff();
+  const url =
+    "https://en.wikipedia.org/w/api.php?" +
+    new URLSearchParams({
+      action: "query",
+      format: "json",
+      titles: `${filePrefix}${filename}`,
+      prop: "imageinfo",
+      iiprop: "url",
+      iilimit: "1",
+    }).toString();
+  const res = await fetch(url, {
+    headers: { "User-Agent": WIKIPEDIA_UA, Accept: "application/json" },
+  });
+  if (res.status === 429) {
+    const ra = Number(res.headers.get("retry-after"));
+    tripBackoff(Number.isFinite(ra) && ra > 0 ? ra : 30);
+    return null;
+  }
+  if (!res.ok) return null;
+  const body = (await res.json()) as {
+    query?: {
+      pages?: Record<string, {
+        title?: string;
+        missing?: string;
+        imageinfo?: Array<{ url?: string }>;
+      }>;
+    };
+  };
+  const pages = body.query?.pages ?? {};
+  const page = Object.values(pages)[0];
+  return page?.imageinfo?.[0]?.url ?? null;
+}
+
+// Extract the best logo URL from a Wikipedia page payload, falling
+// through three sources in priority order:
+//   1. pageimages.original — fast, but unpopulated for many articles
+//   2. pageprops.page_image — the {{infobox}} image, almost always set
+//      on team articles, but only the file *name* (needs a second API
+//      call to resolve to a URL)
+//   3. pageprops.page_image_free — same idea, free-licence variant
+async function pickWikipediaLogo(page: WikipediaPage): Promise<string | null> {
+  if (page.original?.source) return page.original.source;
+  const file =
+    page.pageprops?.page_image_free ?? page.pageprops?.page_image ?? null;
+  if (!file) return null;
+  return await wikipediaFileUrl(file);
+}
+
 // Resolve a team to a Wikipedia og:image-equivalent URL. Returns the
 // raw upload.wikimedia.org image URL on success — the caller is expected
 // to pass it through downloadAndStore() to localize the bytes.
@@ -232,7 +291,10 @@ export async function fetchWikipediaLogo(name: string): Promise<string | null> {
   // check needed.
   const qualified = `${trimmed} (esports)`;
   const a = await wikipediaPage(qualified);
-  if (a?.original?.source) return a.original.source;
+  if (a && !a.missing) {
+    const url = await pickWikipediaLogo(a);
+    if (url) return url;
+  }
 
   // Pass B: raw name via opensearch (handles cases where the article
   // is just "Team Liquid" with no qualifier needed). Apply the
@@ -240,8 +302,8 @@ export async function fetchWikipediaLogo(name: string): Promise<string | null> {
   const title = await wikipediaTopTitle(trimmed);
   if (!title) return null;
   const b = await wikipediaPage(title);
-  if (!b?.original?.source) return null;
+  if (!b || b.missing) return null;
   const cats = (b.categories ?? []).map((c) => c.title);
   if (!matchesEsportsCategory(cats)) return null;
-  return b.original.source;
+  return await pickWikipediaLogo(b);
 }
