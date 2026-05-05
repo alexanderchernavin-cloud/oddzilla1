@@ -1,9 +1,14 @@
 # Oddzilla
 
-B2C esports sportsbook MVP. Oddin.gg integration on the **protocol level**
-(raw AMQP + REST, no SDK). CS2, DOTA2, LOL, Valorant with Match Winner and
-Map Winner markets. USDT-only (TRC20 + ERC20) payments. Minimalist dark
-Gen Z aesthetic.
+B2C esports sportsbook. Oddin.gg integration on the **protocol level**
+(raw AMQP + REST, no SDK). Every Oddin esport is surfaced — CS2, Dota 2,
+LoL, Valorant pinned at the top — with the full Oddin market catalogue
+(no whitelist). Multi-currency wallets: USDT (real, on-chain via TRC20
+and ERC20) and OZ (demo currency, every signup gets a 1000 OZ bonus).
+Premium quiet-editorial design with light + dark themes.
+
+Live at **[s.oddzilla.cc](https://s.oddzilla.cc)** (storefront) and
+**[sadmin.oddzilla.cc](https://sadmin.oddzilla.cc)** (admin).
 
 ## Quick start
 
@@ -57,7 +62,6 @@ Each service has its own local README:
 - [services/settlement](services/settlement/README.md)
 - [services/bet-delay](services/bet-delay/README.md)
 - [services/wallet-watcher](services/wallet-watcher/README.md)
-- [services/news-scraper](services/news-scraper/README.md)
 - [apps/web](apps/web/README.md)
 - [packages/db](packages/db/README.md)
 - [packages/types](packages/types/README.md)
@@ -69,25 +73,24 @@ Server access (Hetzner CPX22): [CONNECT.md](CONNECT.md).
 ## Repository layout
 
 ```
-apps/web/            Next.js 16 App Router (Tailwind v4, dark theme)
+apps/web/            Next.js 15 App Router (Tailwind v4, dark + light themes)
 services/
   api/               TS Fastify REST API
   ws-gateway/        TS WebSocket fanout
-  feed-ingester/     Go — Oddin AMQP consumer
+  feed-ingester/     Go — Oddin AMQP consumer + REST auto-mapper
   odds-publisher/    Go — applies payback margin, publishes pub/sub
   settlement/        Go — settle/cancel/rollback with apply-once semantics
   bet-delay/         Go — finalizes pending_delay tickets
   wallet-watcher/    Go — Tron + Ethereum USDT deposits
-  news-scraper/      TS cron
 packages/
   db/                Drizzle schema + SQL migrations
-  types/             Shared API + WS + money + specifier helpers
+  types/             Shared API + WS + money + currency + specifier helpers
   auth/              argon2id + JWT
   config/            zod env parsing
   tsconfig/          tsconfig presets
   eslint-config/     shared ESLint config
 infra/
-  hetzner/           bootstrap.sh for the production box
+  hetzner/           bootstrap.sh + backup scripts for the production box
 docs/                ARCHITECTURE, SCHEMA, ODDIN, PHASES, OPERATIONS
 ```
 
@@ -120,10 +123,12 @@ make nuke      DESTROYS volumes (local only)
 These are the rules every service must follow. Documented in detail in
 [CLAUDE.md](CLAUDE.md); summary:
 
-- **Money is `BIGINT micro_usdt`.** 1 USDT = 1,000,000 micro. Never `float`,
-  `NUMERIC`, or `number`.
+- **Money is `BIGINT _micro` per currency** (6 decimals = 1,000,000 micro
+  per unit) with a sibling `currency CHAR(4)`. Never `float`, `NUMERIC`,
+  or `number`. Two currencies: `USDT` (on-chain) and `OZ` (demo). Every
+  wallet read/write is scoped by `(user_id, currency)`.
 - **Drizzle is the schema source of truth.** Go services read those
-  tables via hand-written `pgx` queries in their `internal/store/`.
+  tables via hand-written `pgx` queries.
 - **Specifier canonicalization.** Sorted `k=v|k=v`, sha256 →
   `specifiers_hash`. Go and TS implementations must match byte-for-byte.
 - **Apply-once settlement.** Unique
@@ -134,15 +139,19 @@ These are the rules every service must follow. Documented in detail in
 - **No localhost in code.** All hostnames come from env.
 - **No emojis anywhere.** UI, logs, commits.
 
-## Current phase
+## Current status
 
-**Phases 1–7 complete** — scaffold, auth, feed ingester, live odds
-pipeline, bet slip + placement + bet-delay, settlement worker, and
-USDT wallet (TRC20 + ERC20 deposit scanner + withdrawal request/admin
-flow + HD address derivation).
+**Phases 1–8 complete + post-Phase-8 hardening + frontend redesign.**
+The stack is live on Hetzner consuming Oddin's integration broker
+(bookmaker 142). Singles + combos + cashout + multi-currency wallets
+(USDT + OZ demo) all wired up. Admin panel covers PnL, users (bettors +
+admins), mapping review, payback margins, cashout config, bet products,
+withdrawal queue, audit log, feed recovery, raw feed-message viewer,
+team logos, and storefront market-display ordering.
 
-Next: Phase 8 — admin dashboard PnL + news scraper. See
-[docs/PHASES.md](docs/PHASES.md) for the full roadmap.
+Next milestone: pre-launch exit gates — KYC, signer isolation, daily
+wallet reconciliation, off-server backup rsync, monitoring, runbook.
+See [docs/PHASES.md](docs/PHASES.md) for the full roadmap.
 
 ## License
 
