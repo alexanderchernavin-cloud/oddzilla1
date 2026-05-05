@@ -581,10 +581,11 @@ func runPhantomDrainTicker(ctx context.Context, pool *pgxpool.Pool, log zerolog.
 }
 
 // runFeedMessageCleanup sweeps the feed_messages table once per hour.
-// Rows whose match's scheduled_at + 24h is in the past get deleted;
-// unmatched rows older than 48h are also purged as a hard safety bound.
-// Admin /admin/logs only surfaces matches that are still within their
-// window, so anything older is effectively invisible anyway.
+// Uniform 7-day retention since received_at; the same call also backfills
+// match_id for rows whose URN now resolves (closes the insert/auto-map
+// race that previously left orphan rows stuck at NULL). Admin /admin/logs
+// only surfaces matches still within the 7-day window, so anything older
+// is invisible anyway.
 func runFeedMessageCleanup(ctx context.Context, st *store.Store, log zerolog.Logger) {
 	const sweepEvery = 1 * time.Hour
 	// Run once on boot so a long-stopped instance doesn't carry a
