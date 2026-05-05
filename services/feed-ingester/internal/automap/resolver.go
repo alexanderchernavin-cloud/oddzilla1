@@ -114,6 +114,10 @@ type MatchContext struct {
 	Status          string    // normalized: not_started|live|closed|cancelled|suspended
 	OddinStatusCode int16
 	BestOf          int16
+	// TvChannelsJSON is set by `merge` from the REST fixture's
+	// <tv_channels> block. nil = no fixture data this round (existing
+	// matches.tv_channels stays); non-nil (including `[]`) = overwrite.
+	TvChannelsJSON []byte
 }
 
 // ResolveMatch returns the matches.id for the supplied URN, creating sport,
@@ -762,7 +766,48 @@ func (r *Resolver) merge(in MatchContext, fx *oddinxml.FixtureResponse) MatchCon
 			}
 		}
 	}
+	if payload, ok := encodeTvChannels(f.TvChannels.Channels); ok {
+		out.TvChannelsJSON = payload
+	}
 	return out
+}
+
+// encodeTvChannels converts the parsed <tv_channels> list into the
+// JSONB shape persisted on matches.tv_channels (see migration 0022).
+// Returns ok=false when the list contains no usable rows so the caller
+// can leave whatever's already in the column.
+//
+// "Usable" means the row has at least a stream_url — Oddin sometimes
+// emits a placeholder entry like `<tv_channel name="" language=""/>`
+// and we don't want to clobber a previously-good list with that noise.
+func encodeTvChannels(channels []oddinxml.FixtureTvChannel) ([]byte, bool) {
+	type tvChannelOut struct {
+		Name      string `json:"name,omitempty"`
+		Language  string `json:"language,omitempty"`
+		StreamURL string `json:"streamUrl"`
+	}
+	out := make([]tvChannelOut, 0, len(channels))
+	for _, c := range channels {
+		url := strings.TrimSpace(c.StreamURL)
+		if url == "" {
+			continue
+		}
+		out = append(out, tvChannelOut{
+			Name:      strings.TrimSpace(c.Name),
+			Language:  strings.TrimSpace(c.Language),
+			StreamURL: url,
+		})
+	}
+	if len(out) == 0 {
+		// Block was missing or contained only placeholders. Don't
+		// overwrite — caller leaves the existing column.
+		return nil, false
+	}
+	payload, err := json.Marshal(out)
+	if err != nil {
+		return nil, false
+	}
+	return payload, true
 }
 
 func (r *Resolver) matchUpsert(c MatchContext, tournamentID int, homeCompID, awayCompID sql.NullInt32) store.MatchUpsert {
@@ -790,6 +835,7 @@ func (r *Resolver) matchUpsert(c MatchContext, tournamentID int, homeCompID, awa
 	if c.BestOf != 0 {
 		out.BestOf = sql.NullInt16{Int16: c.BestOf, Valid: true}
 	}
+	out.TvChannelsJSON = c.TvChannelsJSON
 	return out
 }
 

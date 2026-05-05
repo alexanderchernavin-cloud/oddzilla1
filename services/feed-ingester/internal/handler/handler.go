@@ -299,8 +299,10 @@ func handleFixtureChange(ctx context.Context, d Deps, body []byte) error {
 	// re-fetch the fixture information for the affected match if you
 	// receive [a fixture_change]." Do this for the change types that
 	// actually mutate fixture metadata: NEW (1), DATE_TIME (2), FORMAT
-	// (4), and COVERAGE (5). CANCELLED (3) is already handled above and
-	// STREAM_URL (106) doesn't affect bet placement.
+	// (4), COVERAGE (5), and STREAM_URL (106). CANCELLED (3) is already
+	// handled above. STREAM_URL doesn't affect bet placement, but we
+	// still re-fetch so matches.tv_channels stays in sync with whatever
+	// broadcaster Oddin attached or removed.
 	if shouldRefreshFromREST(msg.ChangeType) {
 		if err := d.Resolver.RefreshFromFixture(ctx, msg.EventID); err != nil {
 			d.Log.Debug().Err(err).Str("match_urn", msg.EventID).
@@ -552,10 +554,12 @@ func nullableProbability(s string) *string {
 
 // shouldRefreshFromREST returns true for fixture_change change_types
 // that materially update match metadata we cache — NEW, DATE_TIME,
-// FORMAT, and COVERAGE per Oddin docs §2.4.6.
+// FORMAT, COVERAGE per Oddin docs §2.4.6, plus STREAM_URL (106) so
+// the storefront's Twitch/YouTube embed reflects the current
+// broadcaster.
 func shouldRefreshFromREST(changeType string) bool {
 	switch changeType {
-	case "1", "2", "4", "5", "new", "datetime", "format", "coverage":
+	case "1", "2", "4", "5", "106", "new", "datetime", "format", "coverage", "stream_url":
 		return true
 	}
 	return false
@@ -587,7 +591,8 @@ func isMatchScopedKind(k oddinxml.MessageKind) bool {
 //   3   CANCELLED   — fixture cancelled; mark match cancelled
 //   4   FORMAT      — Bo3 → Bo5 etc.; status unchanged
 //   5   COVERAGE    — coverage changed; status unchanged
-//   106 STREAM_URL  — stream URL changed; status unchanged
+//   106 STREAM_URL  — stream URL changed; status unchanged (refreshed
+//                     from REST so matches.tv_channels stays current)
 // When unknown / unset / "" we return "" so the resolver keeps whatever
 // status the match row already has.
 func mapFixtureStatus(changeType string) string {

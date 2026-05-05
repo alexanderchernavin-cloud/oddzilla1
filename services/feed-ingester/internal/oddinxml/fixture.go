@@ -12,6 +12,9 @@
 //     <extra_info>
 //       <info key="best_of" value="1"/>
 //     </extra_info>
+//     <tv_channels>
+//       <tv_channel name="Twitch EN" language="en" stream_url="https://www.twitch.tv/esl_csgo"/>
+//     </tv_channels>
 //   </fixture></fixtures_fixture>
 //
 // /v1/sports/{lang}/sports
@@ -36,6 +39,7 @@ type FixturePayload struct {
 	Tournament  FixtureTournament      `xml:"tournament"`
 	Competitors FixtureCompetitorsList `xml:"competitors"`
 	ExtraInfo   FixtureExtraInfoList   `xml:"extra_info"`
+	TvChannels  FixtureTvChannelsList  `xml:"tv_channels"`
 }
 
 type FixtureTournament struct {
@@ -68,6 +72,21 @@ type FixtureExtraInfoList struct {
 type FixtureExtraInfo struct {
 	Key   string `xml:"key,attr"`
 	Value string `xml:"value,attr"`
+}
+
+// FixtureTvChannelsList wraps the <tv_channels> block; matches the
+// schema/rest/fixtures_fixture.xsd `tvChannels` complex type.
+type FixtureTvChannelsList struct {
+	Channels []FixtureTvChannel `xml:"tv_channel"`
+}
+
+// FixtureTvChannel mirrors the `tvChannel` complex type. `StreamURL` is
+// optional in the schema and frequently empty for placeholder broadcasts;
+// the resolver filters those rows out before persisting.
+type FixtureTvChannel struct {
+	Name      string `xml:"name,attr"`
+	Language  string `xml:"language,attr"`
+	StreamURL string `xml:"stream_url,attr"`
 }
 
 // TournamentInfoResponse wraps /v1/sports/{lang}/tournaments/{urn}/info.

@@ -63,6 +63,12 @@ type MatchUpsert struct {
 	Status           string // normalized: not_started|live|closed|cancelled|suspended
 	OddinStatusCode  sql.NullInt16
 	BestOf           sql.NullInt16
+	// TvChannelsJSON is the JSON-encoded tv_channels array (see migration
+	// 0022). When non-nil it overwrites the existing tv_channels column;
+	// nil leaves the existing value untouched. odds_change messages don't
+	// carry channel data — only fixture refreshes do — so the hot path
+	// passes nil here.
+	TvChannelsJSON []byte
 }
 
 func UpsertMatch(ctx context.Context, db pgxRunner, m MatchUpsert) (int64, error) {
@@ -74,12 +80,18 @@ func UpsertMatch(ctx context.Context, db pgxRunner, m MatchUpsert) (int64, error
 	// regression — re-pointing a properly-mapped match BACK to a
 	// placeholder — would happen on every odds_change for a known match
 	// without fixture context, and is what the "real-only" guard prevents.
+	// $13 (tv_channels) is NULL when the caller didn't refresh from a
+	// fixture this round — the COALESCE preserves whatever was already
+	// stored. When the caller passes a real payload (including an empty
+	// `[]`) we overwrite, so STREAM_URL fixture_change messages can null
+	// out a since-removed broadcaster cleanly.
 	const q = `
 INSERT INTO matches (tournament_id, provider_urn, home_team, away_team,
                      home_team_urn, away_team_urn,
                      home_competitor_id, away_competitor_id,
-                     scheduled_at, status, oddin_status_code, best_of, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::match_status, $11, $12, NOW())
+                     scheduled_at, status, oddin_status_code, best_of,
+                     tv_channels, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::match_status, $11, $12, $13::jsonb, NOW())
 ON CONFLICT (provider_urn) DO UPDATE
    SET tournament_id      = CASE
                               WHEN EXISTS (
@@ -97,14 +109,20 @@ ON CONFLICT (provider_urn) DO UPDATE
        status             = EXCLUDED.status,
        oddin_status_code  = COALESCE(EXCLUDED.oddin_status_code, matches.oddin_status_code),
        best_of            = COALESCE(EXCLUDED.best_of, matches.best_of),
+       tv_channels        = COALESCE(EXCLUDED.tv_channels, matches.tv_channels),
        updated_at         = NOW()
 RETURNING id`
+	var tvChannels any
+	if m.TvChannelsJSON != nil {
+		tvChannels = string(m.TvChannelsJSON)
+	}
 	var id int64
 	err := db.QueryRow(ctx, q,
 		m.TournamentID, m.ProviderURN, m.HomeTeam, m.AwayTeam,
 		m.HomeTeamURN, m.AwayTeamURN,
 		m.HomeCompetitorID, m.AwayCompetitorID,
 		m.ScheduledAt, m.Status, m.OddinStatusCode, m.BestOf,
+		tvChannels,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("upsert match: %w", err)

@@ -229,7 +229,13 @@ esport. `provider_urn` may be NULL (dummy) or hold a real Oddin URN later.
 like `od:match:1234`. `live_score` is a free-form JSONB (different games have
 different scoring). `best_of` captures BO1/BO3/BO5. `oddin_status_code` keeps
 the raw Oddin status byte for debugging; our normalized `status` column is
-the one code should branch on.
+the one code should branch on. `tv_channels` (jsonb, migration 0022) holds
+the parsed `<tv_channels>` block from Oddin's fixture endpoint —
+`[{"name":"Twitch EN","language":"en","streamUrl":"https://www.twitch.tv/…"}, …]`.
+NULL = fixture not fetched yet or block missing; `[]` is unused (the
+resolver only writes when at least one row carries a stream_url so a
+later refresh can't blank a known list with placeholders). Display-only;
+bet placement does not consult it.
 
 ### Markets & odds
 
