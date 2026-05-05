@@ -108,9 +108,12 @@ async function resolveBatch(
 
   const res = await fetch(url, {
     headers: {
-      // Liquipedia requests a descriptive UA per their API ToS.
+      // Liquipedia requests a descriptive UA per their API ToS, AND
+      // requires `Accept-Encoding: gzip` on every API request — they
+      // 406 otherwise (https://liquipedia.net/api-terms-of-use).
       "User-Agent": "OddzillaLogoResolver/1.0 (https://oddzilla.cc; admin contact via repo)",
       Accept: "application/json",
+      "Accept-Encoding": "gzip",
     },
   });
   if (!res.ok) throw new Error(`liquipedia ${wiki}: HTTP ${res.status}`);
