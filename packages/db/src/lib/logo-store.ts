@@ -176,13 +176,16 @@ async function wikipediaTopTitle(name: string): Promise<string | null> {
   return titles[0] ?? null;
 }
 
-// Resolve a team to a Wikipedia og:image-equivalent URL. Returns the
-// raw upload.wikimedia.org image URL on success — the caller is expected
-// to pass it through downloadAndStore() to localize the bytes.
-export async function fetchWikipediaLogo(name: string): Promise<string | null> {
-  const title = await wikipediaTopTitle(name);
-  if (!title) return null;
+interface WikipediaPage {
+  title?: string;
+  original?: { source: string };
+  categories?: Array<{ title: string }>;
+}
 
+// Lookup pageimages + categories for an exact title. Returns the page
+// payload or null on any error / non-2xx / 429. Caller decides whether
+// the result counts as a "hit".
+async function wikipediaPage(title: string): Promise<WikipediaPage | null> {
   await respectBackoff();
   const url =
     "https://en.wikipedia.org/w/api.php?" +
@@ -205,21 +208,40 @@ export async function fetchWikipediaLogo(name: string): Promise<string | null> {
   }
   if (!res.ok) return null;
   const body = (await res.json()) as {
-    query?: {
-      pages?: Record<string, {
-        title?: string;
-        original?: { source: string };
-        categories?: Array<{ title: string }>;
-      }>;
-    };
+    query?: { pages?: Record<string, WikipediaPage> };
   };
   const pages = body.query?.pages ?? {};
-  const page = Object.values(pages)[0];
-  if (!page?.original?.source) return null;
-  // Sanity-check: the article must be tagged as an esports team. Without
-  // this filter we'd happily pull the Wikipedia photo of a person named
-  // "T1" or a basketball franchise called "Heroic" onto the team row.
-  const cats = (page.categories ?? []).map((c) => c.title);
+  return Object.values(pages)[0] ?? null;
+}
+
+// Resolve a team to a Wikipedia og:image-equivalent URL. Returns the
+// raw upload.wikimedia.org image URL on success — the caller is expected
+// to pass it through downloadAndStore() to localize the bytes.
+//
+// Strategy: try `{name} (esports)` first — that's how Wikipedia
+// disambiguates e.g. "Dignitas" (which by itself is a charity / Roman
+// concept disambiguation page). If the qualified title doesn't exist,
+// fall back to the raw name and require an esports category tag to
+// avoid grabbing a generic article's image.
+export async function fetchWikipediaLogo(name: string): Promise<string | null> {
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+
+  // Pass A: explicit (esports) qualifier. When this article exists,
+  // its primary image is by definition the team logo, no category
+  // check needed.
+  const qualified = `${trimmed} (esports)`;
+  const a = await wikipediaPage(qualified);
+  if (a?.original?.source) return a.original.source;
+
+  // Pass B: raw name via opensearch (handles cases where the article
+  // is just "Team Liquid" with no qualifier needed). Apply the
+  // categorical filter to skip non-team matches.
+  const title = await wikipediaTopTitle(trimmed);
+  if (!title) return null;
+  const b = await wikipediaPage(title);
+  if (!b?.original?.source) return null;
+  const cats = (b.categories ?? []).map((c) => c.title);
   if (!matchesEsportsCategory(cats)) return null;
-  return page.original.source;
+  return b.original.source;
 }
