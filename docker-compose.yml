@@ -75,6 +75,10 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
+      # Team logos written by the api container's resolve-logos / apply-
+      # logo-seed scripts. Read-only here so the static `file_server`
+      # block can stream them with long-cache headers.
+      - team-logos:/srv/team-logos:ro
     environment:
       FRONTEND_HOST: ${FRONTEND_HOST:-localhost}
       ADMIN_HOST: ${ADMIN_HOST:-admin.localhost}
@@ -92,6 +96,13 @@ services:
     environment:
       SERVICE_NAME: api
       PORT: ${API_PORT:-3001}
+      # Where the resolve-logos / apply-logo-seed scripts write downloaded
+      # team logos. Caddy mounts the same volume read-only and serves it
+      # at /team-logos/* (see Caddyfile). DB rows store paths like
+      # `/team-logos/42.png` rather than third-party URLs.
+      LOGO_STORE_DIR: /data/team-logos
+    volumes:
+      - team-logos:/data/team-logos
     ports:
       - "127.0.0.1:${API_PORT:-3001}:${API_PORT:-3001}"
     healthcheck:
@@ -211,3 +222,7 @@ volumes:
   redis-data:
   caddy-data:
   caddy-config:
+  # Persists downloaded team logos across container recreates. Written
+  # by api (resolve-logos / apply-logo-seed scripts), read by caddy via
+  # /team-logos/*.
+  team-logos:

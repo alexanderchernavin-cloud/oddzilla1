@@ -385,43 +385,63 @@ Idempotent — re-run any time. Missing rows (no matching `(sport_slug,
 competitor_slug)` pair) are reported with their reason; this is
 expected for teams the feed hasn't delivered yet.
 
+**Storage architecture (self-hosted, not hot-linked).** A docker
+named volume `team-logos` is mounted into `api` (read-write at
+`/data/team-logos`) and `caddy` (read-only at `/srv/team-logos`).
+Caddy serves any file in there at `/team-logos/*` with a year-long
+immutable cache header. The resolver / seed scripts download each
+asset, save it as `{competitor_id}.{ext}` (extension chosen from
+Content-Type), and store the local path
+`/team-logos/{id}.{ext}` on `competitors.logo_url`. Nothing on the
+storefront ever fetches from liquipedia.net at runtime — that
+dependency lives only in the offline resolver scripts.
+
 **Bulk auto-resolve via Liquipedia (every team):**
 
-For exhaustive coverage, [`packages/db/src/resolve-logos.ts`](../packages/db/src/resolve-logos.ts)
+For exhaustive coverage,
+[`packages/db/src/resolve-logos.ts`](../packages/db/src/resolve-logos.ts)
 iterates every active competitor across the supported esports
 (`cs2`, `lol`, `valorant`, `dota2`, `ml`, `kog`, `r6`, `sc2`, `cod`,
 `aov`, `rocketleague`, `overwatch`, `crossfire`, `sc1`, `w3`),
-queries Liquipedia's MediaWiki API in batches of 40 with `prop=
-pageimages&piprop=original`, and writes the returned URL back to
-`competitors.logo_url`. Idempotent — only fills nulls unless `--force`.
-Run **on the production box** so the script has direct DB access and
-the data flow stays local:
+fetches each team's Liquipedia page, extracts `<meta property=
+"og:image">`, downloads the image, writes it to the volume, and
+flips `competitors.logo_url` to the local path. Cooperative 429
+backoff: when any worker sees a Liquipedia 429, every worker pauses
+for `Retry-After` (or 30 s).
 
 ```bash
 ssh team@178.104.174.24
-cd /home/team/oddzilla
-sudo -n docker exec -i oddzilla-api-1 sh -c '
-  cd /repo && DATABASE_URL=$DATABASE_URL pnpm --filter @oddzilla/db db:resolve-logos --dry-run
-'
+sudo -n docker exec -w /app/packages/db oddzilla-api-1 \
+  sh -c "pnpm db:resolve-logos --dry-run"
 # Review the output, then run for real:
-sudo -n docker exec -i oddzilla-api-1 sh -c '
-  cd /repo && DATABASE_URL=$DATABASE_URL pnpm --filter @oddzilla/db db:resolve-logos
-'
+sudo -n docker exec -w /app/packages/db oddzilla-api-1 \
+  sh -c "pnpm db:resolve-logos --concurrency=2"
 ```
 
 Flags: `--force` (overwrite existing logo_url), `--sport=cs2`
 (scope to one sport), `--dry-run` (report without writing),
-`--concurrency=N` (parallel HTTP, capped at 16 — leave at 4 to
-respect Liquipedia's rate limits).
-
-The resolver pauses 2.1 s between batches to honour Liquipedia's
-"≤1 query per 2 s" guideline. ~430 active teams across the supported
-esports → ≈30 s wall clock.
+`--concurrency=N` (parallel page fetches, capped at 16 — keep at 2
+once Liquipedia has 429'd you, otherwise 4 is safe).
 
 After the resolver runs, hand-tune any teams whose Liquipedia entry
 was wrong via `/admin/competitors`. Curated overrides in the seed
-JSON above always take precedence over the resolver because they're
-applied last.
+JSON above always take precedence because they're applied last.
+
+**Localize legacy hot-link URLs:**
+
+If `competitors.logo_url` still contains a third-party URL from
+before the volume existed (early-deploy state), run:
+
+```bash
+sudo -n docker exec -w /app/packages/db oddzilla-api-1 \
+  sh -c "pnpm db:localize-logos --dry-run"
+sudo -n docker exec -w /app/packages/db oddzilla-api-1 \
+  sh -c "pnpm db:localize-logos"
+```
+
+Idempotent — rows already at `/team-logos/...` are skipped. Failed
+downloads keep the original URL so the storefront keeps rendering
+whatever it had; re-run after the rate limit lifts.
 
 ### HD master mnemonic management
 

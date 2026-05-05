@@ -1,21 +1,27 @@
 // resolve-logos.ts
 //
 // Server-side bulk logo resolver. Connects directly to Postgres, iterates
-// every active competitor in real esports (cs2/lol/valorant/dota2 + the
-// secondary set), fetches each team's Liquipedia page and extracts the
-// `og:image` meta tag, then writes a 256-px thumbnail URL back to
-// `competitors.logo_url`.
+// every active competitor in real esports, fetches each team's Liquipedia
+// page, extracts the `og:image` meta tag, **downloads the actual image
+// file** to LOGO_STORE_DIR (a docker volume Caddy serves at /team-logos),
+// then writes the LOCAL path (`/team-logos/{competitor_id}.{ext}`) into
+// `competitors.logo_url`. Self-hosting the assets means:
+//   - No third-party hot-link fragility (Liquipedia 429s, file renames).
+//   - No leak of user IPs to liquipedia.net on every page render.
+//   - Long-cache headers via Caddy (filename is content-stable).
+//   - The site keeps working when liquipedia.net is down.
 //
 // We don't use Liquipedia's MediaWiki `prop=pageimages` API because the
-// extension isn't installed on their wikis (the API returns "Unrecognized
-// value for parameter prop"); the og:image scrape is the canonical
+// extension isn't installed on their wikis; og:image is the canonical
 // alternative — Liquipedia's standard team-page template populates
 // `<meta property="og:image">` from the team-card logo on every wiki.
 //
 // Idempotent: rows that already have logo_url stay put unless --force.
+// Already-downloaded files on disk are reused (never re-downloaded).
 //
 // Usage (from inside the api container so the docker network resolves
-// `postgres` and the script picks up DATABASE_URL):
+// `postgres`, DATABASE_URL/LOGO_STORE_DIR are set, and the team-logos
+// volume is mounted at /data/team-logos):
 //
 //   sudo -n docker exec -w /app/packages/db oddzilla-api-1 \
 //     sh -c "pnpm db:resolve-logos --dry-run"
@@ -25,15 +31,16 @@
 //   --sport=<slug>     limit to one sport (cs2 | lol | valorant | dota2 | ...)
 //   --dry-run          report what would change without writing
 //   --concurrency=N    parallel page fetches (default 4, max 16)
-//
-// Why server-side: the sandbox blocks chaining a prod-DB read with web
-// fetches that consume that data from a developer workstation (treats it
-// as exfil). Running the resolver on the box keeps the data flow local —
-// DB → script → Liquipedia → DB — with no external observer.
 
 import { sql, eq } from "drizzle-orm";
 import { createDb } from "./index.js";
 import { competitors, sports } from "./schema/index.js";
+import {
+  downloadAndStore,
+  ensureStoreDir,
+  respectBackoff as backoffRespect,
+  tripBackoff as backoffTrip,
+} from "./lib/logo-store.js";
 
 interface CliFlags {
   force: boolean;
@@ -124,26 +131,15 @@ interface FetchedLogo {
   source: "exact" | "search" | "miss" | "error";
 }
 
+// Re-export the shared backoff so the local fetchPageLogo / search
+// helpers throttle in lock-step with the downloader. All three (page
+// scrape, opensearch, image download) hit liquipedia.net so they share
+// one 429 window.
+const respectBackoff = backoffRespect;
+const tripBackoff = backoffTrip;
+
 // Fetch a single page by title and extract og:image. Returns null when
 // the page either 404s or its og:image is the wiki's default placeholder.
-// Global backoff window — once any worker observes a 429, every fetch
-// waits until this timestamp before issuing more requests. Liquipedia's
-// 429 responses don't always include a Retry-After, so we use a fixed
-// 30 s window which their rate-limit history shows is enough.
-let globalBackoffUntil = 0;
-
-async function respectBackoff() {
-  const now = Date.now();
-  if (now < globalBackoffUntil) {
-    await sleep(globalBackoffUntil - now);
-  }
-}
-
-function tripBackoff(seconds: number) {
-  const target = Date.now() + seconds * 1000;
-  if (target > globalBackoffUntil) globalBackoffUntil = target;
-}
-
 async function fetchPageLogo(
   wiki: string,
   title: string,
@@ -231,12 +227,22 @@ async function main() {
     console.error("DATABASE_URL is required");
     process.exit(1);
   }
+  const storeDir = process.env.LOGO_STORE_DIR ?? "/data/team-logos";
+  if (!flags.dryRun) {
+    try {
+      await ensureStoreDir(storeDir);
+    } catch (err) {
+      console.error(`LOGO_STORE_DIR=${storeDir} is not writable: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  }
 
   const { db, sql: pg } = createDb(databaseUrl);
 
   console.log(
     `resolve-logos: dry-run=${flags.dryRun} force=${flags.force} ` +
-      `concurrency=${flags.concurrency} sport=${flags.sport ?? "all-supported"}`,
+      `concurrency=${flags.concurrency} sport=${flags.sport ?? "all-supported"} ` +
+      `storeDir=${storeDir}`,
   );
 
   const supportedSlugs = Object.keys(WIKI_BY_SPORT);
@@ -305,17 +311,35 @@ async function main() {
         }
         continue;
       }
-      resolved++;
+      // Found a remote URL — download it and store locally so the DB
+      // points at our own /team-logos/* path, not liquipedia.net.
       if (flags.dryRun) {
+        resolved++;
         console.log(`  DRY  ${r.sportSlug}/${r.slug} ${r.name} → ${result.url}`);
-      } else {
-        await db
-          .update(competitors)
-          .set({ logoUrl: result.url })
-          .where(eq(competitors.id, r.id));
-        if (resolved % 25 === 0) {
-          console.log(`  ok   ${resolved}/${rows.length} (${r.sportSlug}/${r.slug} ${r.name})`);
-        }
+        continue;
+      }
+      let localPath: string | null;
+      try {
+        localPath = await downloadAndStore(result.url, r.id, storeDir);
+      } catch (err) {
+        failures++;
+        console.warn(`  dl-err ${r.sportSlug}/${r.slug} ${r.name}: ${(err as Error).message}`);
+        continue;
+      }
+      if (!localPath) {
+        // Backoff tripped or non-2xx download. Don't write a stale URL —
+        // surface as a miss so the operator can re-run.
+        missing++;
+        console.log(`  dl-miss ${r.sportSlug}/${r.slug} ${r.name}`);
+        continue;
+      }
+      resolved++;
+      await db
+        .update(competitors)
+        .set({ logoUrl: localPath })
+        .where(eq(competitors.id, r.id));
+      if (resolved % 25 === 0) {
+        console.log(`  ok   ${resolved}/${rows.length} (${r.sportSlug}/${r.slug} ${r.name})`);
       }
     }
   }
