@@ -20,6 +20,7 @@ interface Market {
   id: string;
   matchId: string;
   providerMarketId: number;
+  name: string;
   specifiers: Record<string, string>;
   status: number;
   outcomes: Outcome[];
@@ -154,7 +155,10 @@ export default async function MarketHistoryPage({
 
       <div className="mt-2">
         <h1 className="text-2xl font-semibold tracking-tight">
-          Market #{data.market.providerMarketId}
+          {data.market.name}
+          <span className="ml-2 font-mono text-base text-[var(--color-fg-subtle)]">
+            #{data.market.providerMarketId}
+          </span>
         </h1>
         <p className="mt-1 text-sm text-[var(--color-fg-muted)]">
           {specifierSummary(data.market.specifiers) ? (

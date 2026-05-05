@@ -30,6 +30,10 @@ import {
   feMarketDisplayOrder,
 } from "@oddzilla/db";
 import { NotFoundError } from "../../lib/errors.js";
+import {
+  substituteTemplate,
+  renderOutcomeLabel,
+} from "../../lib/market-naming.js";
 
 // Two aliases of `competitors` so a single match query can pull the home
 // and away team's branding columns (logo_url, brand_color) in one round
@@ -37,53 +41,6 @@ import { NotFoundError } from "../../lib/errors.js";
 // names from the feed before the auto-mapper resolved a URN).
 const homeCompetitor = alias(competitors, "home_competitor");
 const awayCompetitor = alias(competitors, "away_competitor");
-
-// substituteTemplate replaces {specifier} placeholders in an Oddin name
-// template with the supplied specifier values. Unknown placeholders are
-// kept verbatim so broken descriptions degrade visibly rather than
-// silently. E.g.:
-//   "Match handicap {handicap}" + {handicap: "-1.5"} -> "Match handicap -1.5"
-//   "First half winner {way}way - map {map}" + {way: "two", map: "1"}
-//     -> "First half winner twoway - map 1"
-// Trims double spaces and trailing hyphens left over when a specifier is
-// empty (occurs for optional variant specifiers in Oddin's catalog).
-function substituteTemplate(template: string, specs: Record<string, string>): string {
-  const out = template.replace(/\{([a-z0-9_]+)\}/gi, (_, key: string) => {
-    const v = specs[key];
-    return v == null ? `{${key}}` : v;
-  });
-  return out.replace(/\s{2,}/g, " ").replace(/\s-\s$/, "").trim();
-}
-
-// renderOutcomeLabel translates an outcome-template placeholder to the
-// user-facing label. "home"/"away" resolve to team names, "draw" to
-// "Draw", literal values (scores, "under"/"over", numeric outcomes) pass
-// through. Specifier substitution is applied for templates like
-// "{side} wins at least one map" where side ∈ {home, away}.
-function renderOutcomeLabel(
-  template: string,
-  specs: Record<string, string>,
-  homeTeam: string,
-  awayTeam: string,
-): string {
-  const sub = substituteTemplate(template, specs);
-  const lower = sub.trim().toLowerCase();
-  if (lower === "home") return homeTeam;
-  if (lower === "away") return awayTeam;
-  if (lower === "draw") return "Draw";
-  if (lower === "under") return "Under";
-  if (lower === "over") return "Over";
-  // "home / draw", "home / away" — resolve each token, keep separator.
-  if (/^(home|away|draw)(\s*[/&,]\s*(home|away|draw))+$/i.test(lower)) {
-    return lower
-      .split(/\s*([/&,])\s*/)
-      .map((t) =>
-        t === "home" ? homeTeam : t === "away" ? awayTeam : t === "draw" ? "Draw" : t,
-      )
-      .join(" ");
-  }
-  return sub;
-}
 
 // deriveScope reads a market's specifiers and returns a short tag used
 // by the UI to group markets into sections. "match" is the default;

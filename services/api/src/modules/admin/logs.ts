@@ -24,9 +24,19 @@ import {
   matches,
   markets,
   marketOutcomes,
+  marketDescriptions,
+  outcomeDescriptions,
+  competitorProfiles,
+  playerProfiles,
   feedMessages,
 } from "@oddzilla/db";
 import { NotFoundError } from "../../lib/errors.js";
+import {
+  substituteTemplate,
+  renderOutcomeLabel,
+  descKey,
+  outcomeDescKey,
+} from "../../lib/market-naming.js";
 
 // A match shows up in the admin logs panel iff it has at least one
 // feed_messages row keyed to its provider_urn. The 7-day retention on
@@ -238,6 +248,109 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
           .where(inArray(marketOutcomes.marketId, marketIds))
       : [];
 
+    // Resolve human-readable market + outcome names the same way
+    // /catalog/matches/:id does — so what an admin sees in the logs panel
+    // matches what bettors see on the storefront.
+    const distinctProviderIds = Array.from(
+      new Set(marketRows.map((m) => m.providerMarketId)),
+    );
+    const [marketDescs, outcomeDescs] = distinctProviderIds.length
+      ? await Promise.all([
+          app.db
+            .select({
+              providerMarketId: marketDescriptions.providerMarketId,
+              variant: marketDescriptions.variant,
+              nameTemplate: marketDescriptions.nameTemplate,
+            })
+            .from(marketDescriptions)
+            .where(
+              inArray(marketDescriptions.providerMarketId, distinctProviderIds),
+            ),
+          app.db
+            .select({
+              providerMarketId: outcomeDescriptions.providerMarketId,
+              variant: outcomeDescriptions.variant,
+              outcomeId: outcomeDescriptions.outcomeId,
+              nameTemplate: outcomeDescriptions.nameTemplate,
+            })
+            .from(outcomeDescriptions)
+            .where(
+              inArray(outcomeDescriptions.providerMarketId, distinctProviderIds),
+            ),
+        ])
+      : [[], []];
+    const marketDescMap = new Map<string, string>();
+    for (const d of marketDescs) {
+      marketDescMap.set(descKey(d.providerMarketId, d.variant), d.nameTemplate);
+    }
+    const outcomeDescMap = new Map<string, string>();
+    for (const d of outcomeDescs) {
+      outcomeDescMap.set(
+        outcomeDescKey(d.providerMarketId, d.variant, d.outcomeId),
+        d.nameTemplate,
+      );
+    }
+
+    const competitorUrns = new Set<string>();
+    const playerUrns = new Set<string>();
+    for (const o of outcomeRows) {
+      if (o.outcomeId.startsWith("od:competitor:")) competitorUrns.add(o.outcomeId);
+      else if (o.outcomeId.startsWith("od:player:")) playerUrns.add(o.outcomeId);
+    }
+    const competitorNameMap = new Map<string, string>();
+    const playerNameMap = new Map<string, string>();
+    if (competitorUrns.size > 0) {
+      const cps = await app.db
+        .select({ urn: competitorProfiles.urn, name: competitorProfiles.name })
+        .from(competitorProfiles)
+        .where(inArray(competitorProfiles.urn, Array.from(competitorUrns)));
+      for (const c of cps) competitorNameMap.set(c.urn, c.name);
+    }
+    if (playerUrns.size > 0) {
+      const pps = await app.db
+        .select({ urn: playerProfiles.urn, name: playerProfiles.name })
+        .from(playerProfiles)
+        .where(inArray(playerProfiles.urn, Array.from(playerUrns)));
+      for (const p of pps) playerNameMap.set(p.urn, p.name);
+    }
+
+    const renderMarketName = (
+      providerMarketId: number,
+      specs: Record<string, string>,
+    ): string => {
+      const variant = specs.variant ?? "";
+      const template =
+        marketDescMap.get(descKey(providerMarketId, variant)) ??
+        marketDescMap.get(descKey(providerMarketId, "")) ??
+        `Market #${providerMarketId}`;
+      return substituteTemplate(template, specs);
+    };
+    const renderOutcomeName = (
+      providerMarketId: number,
+      specs: Record<string, string>,
+      outcomeId: string,
+      fallback: string | null,
+    ): string => {
+      if (outcomeId.startsWith("od:competitor:")) {
+        return competitorNameMap.get(outcomeId) ?? fallback ?? outcomeId;
+      }
+      if (outcomeId.startsWith("od:player:")) {
+        return playerNameMap.get(outcomeId) ?? fallback ?? outcomeId;
+      }
+      const variant = specs.variant ?? "";
+      const template =
+        outcomeDescMap.get(outcomeDescKey(providerMarketId, variant, outcomeId)) ??
+        outcomeDescMap.get(outcomeDescKey(providerMarketId, "", outcomeId)) ??
+        fallback ??
+        outcomeId;
+      return renderOutcomeLabel(
+        template,
+        specs,
+        match.homeTeam,
+        match.awayTeam,
+      );
+    };
+
     // Bound the chart payload to 24h to keep this page snappy. The
     // per-market history endpoint serves the full 7-day window when the
     // admin needs the long view.
@@ -281,6 +394,7 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
     type MarketBlock = {
       id: string;
       providerMarketId: number;
+      name: string;
       specifiers: Record<string, string>;
       status: number;
       settled: boolean;
@@ -290,10 +404,12 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
 
     const byMarket = new Map<string, MarketBlock>();
     for (const m of marketRows) {
+      const specs = (m.specifiersJson ?? {}) as Record<string, string>;
       byMarket.set(m.id.toString(), {
         id: m.id.toString(),
         providerMarketId: m.providerMarketId,
-        specifiers: (m.specifiersJson ?? {}) as Record<string, string>,
+        name: renderMarketName(m.providerMarketId, specs),
+        specifiers: specs,
         status: m.status,
         settled: false,
         outcomes: [],
@@ -302,13 +418,19 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
     }
     const outcomeNameByKey = new Map<string, string>();
     for (const o of outcomeRows) {
-      const key = `${o.marketId.toString()}::${o.outcomeId}`;
-      outcomeNameByKey.set(key, o.name);
       const mb = byMarket.get(o.marketId.toString());
       if (!mb) continue;
+      const resolvedName = renderOutcomeName(
+        mb.providerMarketId,
+        mb.specifiers,
+        o.outcomeId,
+        o.name,
+      );
+      const key = `${o.marketId.toString()}::${o.outcomeId}`;
+      outcomeNameByKey.set(key, resolvedName);
       mb.outcomes.push({
         outcomeId: o.outcomeId,
-        name: o.name,
+        name: resolvedName,
         rawOdds: o.rawOdds,
         publishedOdds: o.publishedOdds,
         result: o.result,
@@ -372,13 +494,16 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
         providerMarketId: markets.providerMarketId,
         specifiersJson: markets.specifiersJson,
         status: markets.status,
+        homeTeam: matches.homeTeam,
+        awayTeam: matches.awayTeam,
       })
       .from(markets)
+      .innerJoin(matches, eq(matches.id, markets.matchId))
       .where(and(eq(markets.id, marketId), eq(markets.matchId, id)))
       .limit(1);
     if (!market) throw new NotFoundError("market_not_found", "market_not_found");
 
-    const outcomes = await app.db
+    const rawOutcomes = await app.db
       .select({
         outcomeId: marketOutcomes.outcomeId,
         name: marketOutcomes.name,
@@ -389,6 +514,83 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
       })
       .from(marketOutcomes)
       .where(eq(marketOutcomes.marketId, market.id));
+
+    // Resolve display-friendly names so the history page header reads
+    // the same as the storefront / match-detail page.
+    const specs = (market.specifiersJson ?? {}) as Record<string, string>;
+    const variant = specs.variant ?? "";
+    const [marketDescRow] = await app.db
+      .select({ nameTemplate: marketDescriptions.nameTemplate })
+      .from(marketDescriptions)
+      .where(
+        and(
+          eq(marketDescriptions.providerMarketId, market.providerMarketId),
+          inArray(marketDescriptions.variant, [variant, ""]),
+        ),
+      )
+      .orderBy(desc(marketDescriptions.variant))
+      .limit(1);
+    const marketName = marketDescRow
+      ? substituteTemplate(marketDescRow.nameTemplate, specs)
+      : `Market #${market.providerMarketId}`;
+
+    const outcomeDescRows = await app.db
+      .select({
+        variant: outcomeDescriptions.variant,
+        outcomeId: outcomeDescriptions.outcomeId,
+        nameTemplate: outcomeDescriptions.nameTemplate,
+      })
+      .from(outcomeDescriptions)
+      .where(
+        and(
+          eq(outcomeDescriptions.providerMarketId, market.providerMarketId),
+          inArray(outcomeDescriptions.variant, [variant, ""]),
+        ),
+      );
+    const outcomeTemplateMap = new Map<string, string>();
+    for (const d of outcomeDescRows) {
+      // Variant-specific entries override the empty-variant fallback.
+      const existing = outcomeTemplateMap.get(d.outcomeId);
+      if (!existing || d.variant === variant) {
+        outcomeTemplateMap.set(d.outcomeId, d.nameTemplate);
+      }
+    }
+
+    const compUrns = new Set<string>();
+    const playerUrns = new Set<string>();
+    for (const o of rawOutcomes) {
+      if (o.outcomeId.startsWith("od:competitor:")) compUrns.add(o.outcomeId);
+      else if (o.outcomeId.startsWith("od:player:")) playerUrns.add(o.outcomeId);
+    }
+    const compNames = new Map<string, string>();
+    const playerNames = new Map<string, string>();
+    if (compUrns.size > 0) {
+      const cps = await app.db
+        .select({ urn: competitorProfiles.urn, name: competitorProfiles.name })
+        .from(competitorProfiles)
+        .where(inArray(competitorProfiles.urn, Array.from(compUrns)));
+      for (const c of cps) compNames.set(c.urn, c.name);
+    }
+    if (playerUrns.size > 0) {
+      const pps = await app.db
+        .select({ urn: playerProfiles.urn, name: playerProfiles.name })
+        .from(playerProfiles)
+        .where(inArray(playerProfiles.urn, Array.from(playerUrns)));
+      for (const p of pps) playerNames.set(p.urn, p.name);
+    }
+
+    const outcomes = rawOutcomes.map((o) => {
+      let name: string;
+      if (o.outcomeId.startsWith("od:competitor:")) {
+        name = compNames.get(o.outcomeId) ?? o.name ?? o.outcomeId;
+      } else if (o.outcomeId.startsWith("od:player:")) {
+        name = playerNames.get(o.outcomeId) ?? o.name ?? o.outcomeId;
+      } else {
+        const tmpl = outcomeTemplateMap.get(o.outcomeId) ?? o.name ?? o.outcomeId;
+        name = renderOutcomeLabel(tmpl, specs, market.homeTeam, market.awayTeam);
+      }
+      return { ...o, name };
+    });
 
     const since = new Date(Date.now() - HISTORY_MS);
     const rows = (await app.db.execute(sql`
@@ -411,7 +613,8 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
         id: market.id.toString(),
         matchId: market.matchId.toString(),
         providerMarketId: market.providerMarketId,
-        specifiers: (market.specifiersJson ?? {}) as Record<string, string>,
+        name: marketName,
+        specifiers: specs,
         status: market.status,
         outcomes,
       },

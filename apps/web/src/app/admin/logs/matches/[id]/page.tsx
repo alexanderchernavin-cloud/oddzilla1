@@ -24,6 +24,7 @@ interface Outcome {
 interface MarketBlock {
   id: string;
   providerMarketId: number;
+  name: string;
   specifiers: Record<string, string>;
   status: number;
   settled: boolean;
@@ -184,7 +185,10 @@ export default async function LogsMatchPage({
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs">
                   <div>
                     <p className="text-sm font-medium">
-                      Market #{m.providerMarketId}
+                      {m.name}
+                      <span className="ml-2 font-mono text-[var(--color-fg-subtle)]">
+                        #{m.providerMarketId}
+                      </span>
                       {m.settled ? (
                         <span className="ml-2 rounded-[6px] border border-[var(--color-border-strong)] px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-fg-muted)]">
                           settled
