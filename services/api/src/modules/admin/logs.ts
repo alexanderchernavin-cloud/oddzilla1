@@ -28,18 +28,20 @@ import {
 } from "@oddzilla/db";
 import { NotFoundError } from "../../lib/errors.js";
 
-// A match is "in the admin logs window" when its scheduled_at is at most
-// 7 days in the past OR the match is still live/not_started. This mirrors
-// the retention rule in feed-ingester so what the UI shows is queryable.
-const matchInWindow = sql`(
-  ${matches.scheduledAt} IS NULL
-  OR ${matches.scheduledAt} > NOW() - INTERVAL '7 days'
-  OR ${matches.status} IN ('not_started', 'live')
+// A match shows up in the admin logs panel iff it has at least one
+// feed_messages row keyed to its provider_urn. The 7-day retention on
+// feed_messages is what bounds the view — once a match's messages age
+// out, the match disappears from the panel. This keeps the list focused
+// on matches that actually carry data instead of every scheduled or
+// already-closed fixture in the catalog.
+const matchInWindow = sql`EXISTS (
+  SELECT 1 FROM ${feedMessages} fm
+   WHERE fm.event_urn = ${matches.providerUrn}
 )`;
 
-// Correlated subquery that counts feed_messages for a given match.id
-// using event_urn = matches.provider_urn so orphan rows (inserted before
-// the match existed) still get tallied.
+// Correlated subquery that counts feed_messages for a given match using
+// event_urn = matches.provider_urn so orphan rows (inserted before the
+// match existed) still get tallied.
 const messageCountSql = sql<string>`(
   SELECT COUNT(*)::text FROM ${feedMessages}
    WHERE ${feedMessages.eventUrn} = ${matches.providerUrn}
