@@ -271,6 +271,13 @@ func (s *Settler) maybeSettleTicket(ctx context.Context, tx pgx.Tx, ticketID, so
 		s.log.Warn().Err(err).Str("ticket", t.ID).
 			Msg("community projection write failed; continuing")
 	}
+	// Phase 10.4 achievement evaluation. Idempotent on the (user_id,
+	// achievement_id) composite PK — re-runs are no-ops. Best-effort
+	// for the same reason as the projection write.
+	if err := store.EvaluateAchievements(ctx, tx, t.ID); err != nil {
+		s.log.Warn().Err(err).Str("ticket", t.ID).
+			Msg("achievement evaluation failed; continuing")
+	}
 	return true, nil
 }
 

@@ -555,6 +555,70 @@ ON CONFLICT (ticket_id) DO UPDATE
 	return nil
 }
 
+// EvaluateAchievements scans `user_id`'s `community_tickets` aggregates
+// (after the projection write has landed for `ticketID`) and inserts
+// any newly-earned badge unlock rows. Idempotent on
+// `(user_id, achievement_id)` composite PK — running this on every
+// settlement, including replays and re-settle generations, can never
+// produce a duplicate unlock.
+//
+// Predicates are currency-agnostic by design (Phase 10.4 starter set);
+// see migration 0029_community_achievements.sql for the catalog. The
+// SQL mirrors services/api/src/modules/community/achievements.ts on
+// the TS side; both write the same rows so any of the four projection
+// paths (settle, rollback, cashout, admin backfill) can drive unlocks
+// without divergence.
+//
+// Failure semantics match WriteCommunityProjection — log + continue
+// at the call site; never unwind a real settlement.
+func EvaluateAchievements(ctx context.Context, tx pgx.Tx, ticketID string) error {
+	const q = `
+WITH target AS (
+  SELECT user_id FROM community_tickets WHERE ticket_id = $1
+),
+stats AS (
+  SELECT
+    c.user_id,
+    COUNT(*) FILTER (
+      WHERE c.payout_micro > c.stake_micro
+        AND c.status::text IN ('settled', 'cashed_out')
+    )::int                                                       AS wins,
+    MAX(c.num_legs) FILTER (
+      WHERE c.payout_micro > c.stake_micro
+        AND c.status::text IN ('settled', 'cashed_out')
+    )                                                            AS max_legs_won,
+    MAX(c.total_odds) FILTER (
+      WHERE c.payout_micro > c.stake_micro
+        AND c.status::text IN ('settled', 'cashed_out')
+    )                                                            AS max_odds_won,
+    MAX(c.payout_micro::float8 / NULLIF(c.stake_micro, 0)::float8) FILTER (
+      WHERE c.payout_micro > c.stake_micro
+        AND c.status::text IN ('settled', 'cashed_out')
+    )                                                            AS max_payout_ratio
+    FROM community_tickets c
+    JOIN target t ON t.user_id = c.user_id
+   GROUP BY c.user_id
+)
+INSERT INTO user_achievements (user_id, achievement_id)
+SELECT user_id, ach FROM (
+  SELECT user_id, 'first_win'   AS ach FROM stats WHERE wins             >= 1
+  UNION ALL
+  SELECT user_id, 'combo_5'           FROM stats WHERE max_legs_won      >= 5
+  UNION ALL
+  SELECT user_id, 'odds_20'           FROM stats WHERE max_odds_won      >= 20
+  UNION ALL
+  SELECT user_id, 'payout_100x'       FROM stats WHERE max_payout_ratio  >= 100
+  UNION ALL
+  SELECT user_id, 'streak_10'         FROM stats WHERE wins              >= 10
+) candidates
+ON CONFLICT (user_id, achievement_id) DO NOTHING
+`
+	if _, err := tx.Exec(ctx, q, ticketID); err != nil {
+		return fmt.Errorf("evaluate achievements: %w", err)
+	}
+	return nil
+}
+
 // nextPayoutRefID returns the ref_id to use for a new ledger row of
 // `ledgerType`. The first generation is the bare ticket UUID; subsequent
 // generations append ":N" so a re-settle after rollback gets its own row.
