@@ -167,7 +167,9 @@ services:
       - "127.0.0.1:8086:8086"
     healthcheck:
       <<: *hc
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8086/healthz"]
+      # Distroless static has no wget/curl. The signer binary supports
+      # a -healthcheck self-probe that dials its own /healthz and exits 0/1.
+      test: ["CMD", "/signer", "-healthcheck"]
 
   api:
     <<: *ts-service

@@ -23,7 +23,9 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -38,6 +40,12 @@ import (
 )
 
 func main() {
+	healthcheckFlag := flag.Bool("healthcheck", false, "probe own /healthz on $HEALTH_PORT and exit 0/1; used by docker compose healthcheck since distroless has no wget/curl")
+	flag.Parse()
+	if *healthcheckFlag {
+		os.Exit(runHealthcheck())
+	}
+
 	log := zerolog.New(os.Stdout).
 		With().
 		Timestamp().
@@ -146,4 +154,27 @@ func parentDir(p string) string {
 		}
 	}
 	return "."
+}
+
+// runHealthcheck dials the signer's own /healthz endpoint and returns
+// an exit code. We do this instead of shipping wget/curl because the
+// runtime image is distroless static (no shell, no busybox).
+func runHealthcheck() int {
+	port := os.Getenv("HEALTH_PORT")
+	if port == "" {
+		port = "8086"
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://127.0.0.1:" + port + "/healthz")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "healthcheck:", err)
+		return 1
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != 200 {
+		fmt.Fprintln(os.Stderr, "healthcheck: status", resp.StatusCode)
+		return 1
+	}
+	return 0
 }
