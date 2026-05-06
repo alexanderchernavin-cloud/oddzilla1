@@ -770,7 +770,10 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
     const { q } = z
       .object({ q: z.string().trim().min(1).max(64) })
       .parse(request.query);
-    const like = `%${q}%`;
+    // Escape `%`, `_`, `\` so the operator's free-text query can't
+    // accidentally match everything (a leading `%` token would).
+    const escaped = q.replace(/[\\%_]/g, (c) => `\\${c}`);
+    const like = `%${escaped}%`;
     const LIMIT = 6;
 
     // Sports: match by slug or display name; only those containing at

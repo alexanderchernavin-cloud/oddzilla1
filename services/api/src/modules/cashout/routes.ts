@@ -15,9 +15,11 @@ const acceptBody = z.object({
 });
 
 // Per-user rate-limit keys: many users can sit behind a single corporate
-// or ISP NAT, so per-IP limits collide unfairly. After requireAuth() the
-// userId is the right unit. Falls back to IP for the (impossible-here)
-// case where preHandler hasn't decorated the request yet.
+// or ISP NAT, so per-IP limits collide unfairly. The auth plugin's
+// preHandler populates request.user before the handler runs; for the
+// (registration-order-dependent) case where keyGenerator fires before
+// the auth hook, fall back to IP rather than failing closed — the
+// requireAuth() call inside the handler is the real authn gate.
 function userKey(request: FastifyRequest): string {
   return request.user?.id ?? request.ip ?? "anon";
 }

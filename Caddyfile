@@ -54,6 +54,15 @@
 		request_body {
 			max_size 1MB
 		}
+		# Belt + suspenders against browser/proxy caching of authenticated
+		# JSON. Fastify routes don't set Cache-Control by default, so a
+		# misbehaving CDN or caching proxy could stash a /me / /wallet
+		# response and leak it to the next user behind the same NAT. Edge
+		# header forces no-store on every API response regardless.
+		header Cache-Control "no-store"
+		# Strip Fastify's X-Powered-By if any handler ever forgets to
+		# disable it — small attack-surface reduction (server identity).
+		header -X-Powered-By
 		reverse_proxy api:3001 {
 			# Overwrite (not append) X-Forwarded-For so an attacker can't
 			# spoof their inbound IP. {remote_host} is the actual
@@ -67,7 +76,10 @@
 		header Connection *Upgrade*
 		header Upgrade    websocket
 	}
-	handle /ws* {
+	# Match /ws exactly, not /ws* — the glob also matches /wsanything,
+	# /wsedmin, etc. ws-gateway 404s those paths anyway, but a tighter
+	# matcher keeps the routing surface honest.
+	handle /ws {
 		reverse_proxy ws-gateway:3002
 	}
 
@@ -94,6 +106,15 @@
 		request_body {
 			max_size 1MB
 		}
+		# Belt + suspenders against browser/proxy caching of authenticated
+		# JSON. Fastify routes don't set Cache-Control by default, so a
+		# misbehaving CDN or caching proxy could stash a /me / /wallet
+		# response and leak it to the next user behind the same NAT. Edge
+		# header forces no-store on every API response regardless.
+		header Cache-Control "no-store"
+		# Strip Fastify's X-Powered-By if any handler ever forgets to
+		# disable it — small attack-surface reduction (server identity).
+		header -X-Powered-By
 		reverse_proxy api:3001 {
 			# Overwrite (not append) X-Forwarded-For so an attacker can't
 			# spoof their inbound IP. {remote_host} is the actual
@@ -107,7 +128,10 @@
 		header Connection *Upgrade*
 		header Upgrade    websocket
 	}
-	handle /ws* {
+	# Match /ws exactly, not /ws* — the glob also matches /wsanything,
+	# /wsedmin, etc. ws-gateway 404s those paths anyway, but a tighter
+	# matcher keeps the routing surface honest.
+	handle /ws {
 		reverse_proxy ws-gateway:3002
 	}
 

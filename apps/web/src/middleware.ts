@@ -47,13 +47,26 @@ function generateNonce(): string {
 // `style-src 'unsafe-inline'` stays — JSX `style={…}` props throughout
 // the codebase rely on it.
 function buildCsp(nonce: string): string {
+  // connect-src enumerates the explicit fetch / WebSocket destinations the
+  // storefront actually uses:
+  //   - 'self' for /api/*, /ws (Caddy proxies same-origin)
+  //   - https://cdn.oddin.gg for the team-logo cross-origin <img> credit
+  //     fallback (img-src already permits this; keeping it here is
+  //     defensive in case fetch() ever loads from there directly)
+  //   - wss://*.oddzilla.cc for the production WS origin (s.oddzilla.cc
+  //     in the storefront, sadmin.oddzilla.cc in admin)
+  // Locked tighter than `https: wss:` per Sec S5 — without an enumerated
+  // list, an injected script (CSP-unblocked via nonce reuse) could
+  // exfiltrate to any HTTPS origin.
+  const wsOrigins = "wss://*.oddzilla.cc wss://localhost:* ws://localhost:*";
+  const apiOrigins = "https://*.oddzilla.cc http://localhost:*";
   return [
     "default-src 'self'",
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`,
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: https:",
     "font-src 'self' data:",
-    "connect-src 'self' https: wss:",
+    `connect-src 'self' ${apiOrigins} ${wsOrigins} https://cdn.oddin.gg`,
     "frame-src 'self' https://player.twitch.tv https://www.twitch.tv https://www.youtube.com https://www.youtube-nocookie.com https://player.kick.com https://video.gjirafa.com",
     "frame-ancestors 'none'",
     "base-uri 'self'",
