@@ -25,7 +25,15 @@ export default async function adminAuditRoutes(app: FastifyInstance) {
     if (q.actorId) filters.push(eq(adminAuditLog.actorUserId, q.actorId));
     if (q.targetType) filters.push(eq(adminAuditLog.targetType, q.targetType));
     if (q.targetId) filters.push(eq(adminAuditLog.targetId, q.targetId));
-    if (q.action) filters.push(ilike(adminAuditLog.action, `${q.action}%`));
+    if (q.action) {
+      // Escape `%`, `_`, and `\` so an attacker (or careless operator)
+      // can't smuggle wildcards into the filter — `action=%` would
+      // otherwise match every row, and `action=_user` would match any
+      // five-char-action ending in "user". The competitors search uses
+      // the same escape; share once we have a third site.
+      const escaped = q.action.replace(/[\\%_]/g, (c) => `\\${c}`);
+      filters.push(ilike(adminAuditLog.action, `${escaped}%`));
+    }
     const whereClause = filters.length > 0 ? and(...filters) : sql`TRUE`;
 
     const rows = await app.db
