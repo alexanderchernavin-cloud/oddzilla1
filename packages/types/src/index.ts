@@ -7,3 +7,4 @@ export * from "./bets.js";
 export * from "./cashout.js";
 export * from "./wallet.js";
 export * from "./products.js";
+export * from "./community.js";

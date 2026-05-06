@@ -7,6 +7,7 @@ import {
   smallint,
   timestamp,
   char,
+  boolean,
   index,
   check,
   customType,
@@ -32,6 +33,10 @@ export const users = pgTable(
     globalLimitMicro: bigint({ mode: "bigint" }).notNull().default(0n),
     betDelaySeconds: smallint().notNull().default(0),
     displayName: text(),
+    ticketsPublic: boolean().notNull().default(true),
+    nickname: citext().unique(),
+    bio: text(),
+    isAi: boolean().notNull().default(false),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     lastLoginAt: timestamp({ withTimezone: true }),
@@ -41,6 +46,11 @@ export const users = pgTable(
     index("users_role_idx").on(t.role).where(sql`${t.role} <> 'user'`),
     check("users_global_limit_nonneg", sql`${t.globalLimitMicro} >= 0`),
     check("users_bet_delay_range", sql`${t.betDelaySeconds} >= 0 AND ${t.betDelaySeconds} <= 300`),
+    check(
+      "users_nickname_format",
+      sql`${t.nickname} IS NULL OR ${t.nickname} ~ '^[A-Za-z0-9_]{3,20}$'`,
+    ),
+    check("users_bio_length", sql`${t.bio} IS NULL OR length(${t.bio}) <= 280`),
   ],
 );
 

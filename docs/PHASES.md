@@ -589,6 +589,62 @@ plus a security audit yielded a small fix list.
   a different shape (any-leg-wins / tiered). Engine returns
   `bet_type_unsupported` for those today.
 
+## Phase 10 — Community
+
+Public profiles, a feed of recently-settled tickets, copy-to-bet,
+achievements, and AI seed bettors. Plan in
+[`COMMUNITY_PLAN.md`](./COMMUNITY_PLAN.md). Locked decisions: D1
+(`tickets_public` defaults true), D2 (`is_ai` is DB-only, never
+serialised), D3 (real-money USDT leaderboards in scope), D4 (per-currency
+profile stats, USDT default, OZ tab toggle).
+
+### Phase 10.1 — Profiles + visibility ✔ (2026-05-06)
+
+- Migration `0024_community_profiles.sql` — `users.tickets_public`
+  (default TRUE), `users.nickname citext UNIQUE`, `users.bio`,
+  `users.is_ai` (default FALSE). DB-side CHECK constraints mirror the
+  API zod caps on bio length (≤280) and the
+  `[A-Za-z0-9_]{3,20}` nickname format.
+- API module `services/api/src/modules/community/` —
+  `GET /community/users/:nickname/profile?currency=USDT|OZ` (anonymous,
+  per-currency stats placeholder until the projection lands in 10.2),
+  `GET /community/me`, `PATCH /community/me/visibility`,
+  `PATCH /community/me/profile`. Nickname collisions surface as 409
+  `nickname_taken`; the citext UNIQUE makes case-insensitive squat
+  protection automatic. `is_ai` is filtered out of every response.
+- Storefront pages — `/u/[nickname]` (public profile with USDT/OZ tab
+  toggle, zeroed stats placeholder pending Phase 10.2 projection) and
+  `/account/community` (nickname / bio / visibility forms). Sidebar
+  gains a "Community" entry under Account.
+- DTOs in `packages/types/src/community.ts`: `CommunityProfile`,
+  `CommunityMe`, `CommunityVisibilityRequest`, `CommunityProfileRequest`.
+
+**Acceptance bar:**
+- Migration applies cleanly under live traffic (defaults are non-rewriting).
+- `PATCH /community/me/profile` rejects malformed nicknames at zod and
+  the DB CHECK, returns 409 on case-insensitive collision.
+- `GET /community/users/:nickname/profile` returns 404 for users with
+  `tickets_public=false` (no leak that the handle exists).
+- `is_ai` is absent from every public response surface.
+
+### Phase 10.2 — Feed + projection (next)
+
+See [`COMMUNITY_PLAN.md`](./COMMUNITY_PLAN.md) §10.2. Migration
+`0025_community_tickets.sql` + `WriteCommunityProjection` hook in
+`services/settlement/internal/store/store.go`, called inside the
+settle-ticket transaction.
+
+### Phase 10.3 — Scoring + Best Wins + Copy
+
+Deterministic scoring formula
+(Recency 30 / Inspiration 25 / Odds 15 / Reputation 15 / Copyability 15),
+copy-to-bet via the existing `POST /bets`, `community:feed` WS channel.
+
+### Phase 10.4 — Achievements + AI seed bettors
+
+`achievement_definitions` + `user_achievements`; AI seed bettors flagged
+via `users.is_ai=true` (excluded from `/admin/stats/pnl-by-day`).
+
 ## Post-MVP candidates (not in scope yet)
 
 - Outright markets (tournament winners) — requires dynamic outcome handling.

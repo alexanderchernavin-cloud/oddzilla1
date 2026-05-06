@@ -164,9 +164,15 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
             label="Wallet"
           />
           <Item
+            href="/account/community"
+            icon={<I.User size={15} />}
+            active={isActive("/account/community")}
+            label="Community"
+          />
+          <Item
             href="/account"
             icon={<I.Gear size={15} />}
-            active={isActive("/account")}
+            active={pathname === "/account"}
             label="Settings"
           />
           {isAdmin && (
