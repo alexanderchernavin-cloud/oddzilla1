@@ -26,32 +26,17 @@
 	# its own strict default-src 'none' CSP from @fastify/helmet.
 	# Backticks preserve semicolons/quotes inside the value.
 	# `frame-src` whitelists Twitch + YouTube so the live-stream embed on
-	# the match-detail page can load. Everything else still falls back to
-	# default-src 'self'.
+	# the match-detail page can load.
+	# `img-src` allows `https:` so team logos hot-link cleanly from
+	# Oddin's CDN (cdn.oddin.gg) — they're our authorised data partner so
+	# we don't bother proxying them through our own server.
 	header Content-Security-Policy `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https: wss:; frame-src 'self' https://player.twitch.tv https://www.twitch.tv https://www.youtube.com https://www.youtube-nocookie.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests`
-}
-
-# Static team logos written to the `team-logos` volume by the api
-# container's resolve-logos / apply-logo-seed scripts. Served with a
-# year-long cache because the file path is keyed on competitor.id +
-# content hash — overwrites use a different filename, so the URL itself
-# is the cache buster.
-(team_logos) {
-	handle_path /team-logos/* {
-		root * /srv/team-logos
-		file_server {
-			hide .* _*
-		}
-		header Cache-Control "public, max-age=31536000, immutable"
-		header Access-Control-Allow-Origin "*"
-	}
 }
 
 # ── Public frontend ──────────────────────────────────────────────────────────
 {$FRONTEND_HOST} {
 	encode zstd gzip
 	import security_headers
-	import team_logos
 
 	handle_path /api/* {
 		reverse_proxy api:3001
@@ -78,7 +63,6 @@
 {$ADMIN_HOST} {
 	encode zstd gzip
 	import security_headers
-	import team_logos
 
 	redir / /admin 302
 
