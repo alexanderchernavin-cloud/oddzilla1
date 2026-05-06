@@ -62,7 +62,9 @@ x-ts-service: &ts-service
 
 services:
   postgres:
-    image: postgres:16-alpine
+    # Pinned by manifest-list digest. Refresh: docker buildx imagetools
+    # inspect postgres:16-alpine.
+    image: postgres:16-alpine@sha256:4e6e670bb069649261c9c18031f0aded7bb249a5b6664ddec29c013a89310d50
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 1024m
@@ -90,7 +92,7 @@ services:
       - "max_connections=100"
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:286bd4264adb303147270bb2d735352497e950f7b73b2ca42364d63d7daf61ee
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 320m
@@ -109,7 +111,7 @@ services:
       test: ["CMD", "redis-cli", "ping"]
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2-alpine@sha256:834468128c7696cec0ceea6172f7d692daf645ae51983ca76e39da54a97c570d
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 96m
