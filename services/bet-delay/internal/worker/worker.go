@@ -46,6 +46,21 @@ type Worker struct {
 	promoted int64
 	rejected int64
 	errors   int64
+
+	// Healthcheck signals. listenConnected flips false during the 2s
+	// reconnect window after a LISTEN error; the sweep loop is the
+	// fallback path so a brief disconnect doesn't strand tickets, but
+	// a sustained-false signal is the operator's "the LISTEN side is
+	// broken" tripwire. lastNotifyTsUnix is the Unix-timestamp of the
+	// most recent NOTIFY we processed (zero = none yet).
+	listenConnected  uint32
+	lastNotifyTsUnix int64
+}
+
+// Health is the snapshot the /healthz handler renders. Read-only.
+type Health struct {
+	ListenConnected bool   `json:"listenConnected"`
+	LastNotifyAt    string `json:"lastNotifyAt,omitempty"`
 }
 
 func New(pool *pgxpool.Pool, rdb *redis.Client, st *store.Store, driftBp, batchSize int, sweep time.Duration, log zerolog.Logger) *Worker {
@@ -75,11 +90,24 @@ func (w *Worker) Stats() (promoted, rejected, errs int64) {
 		atomic.LoadInt64(&w.errors)
 }
 
+// Health returns the LISTEN-side liveness snapshot for /healthz. The
+// underlying counters are updated atomically by the listen loop.
+func (w *Worker) Health() Health {
+	h := Health{
+		ListenConnected: atomic.LoadUint32(&w.listenConnected) == 1,
+	}
+	if ts := atomic.LoadInt64(&w.lastNotifyTsUnix); ts > 0 {
+		h.LastNotifyAt = time.Unix(ts, 0).UTC().Format(time.RFC3339)
+	}
+	return h
+}
+
 // ─── LISTEN loop ───────────────────────────────────────────────────────────
 
 func (w *Worker) listen(ctx context.Context) {
 	for ctx.Err() == nil {
 		if err := w.listenOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			atomic.StoreUint32(&w.listenConnected, 0)
 			w.log.Warn().Err(err).Msg("LISTEN loop errored; reconnecting in 2s")
 			select {
 			case <-ctx.Done():
@@ -101,6 +129,8 @@ func (w *Worker) listenOnce(ctx context.Context) error {
 	if _, err := conn.Exec(ctx, "LISTEN bet_delay"); err != nil {
 		return fmt.Errorf("LISTEN: %w", err)
 	}
+	atomic.StoreUint32(&w.listenConnected, 1)
+	defer atomic.StoreUint32(&w.listenConnected, 0)
 	w.log.Info().Msg("listening on bet_delay channel")
 
 	for ctx.Err() == nil {
@@ -114,6 +144,7 @@ func (w *Worker) listenOnce(ctx context.Context) error {
 		if n == nil {
 			continue
 		}
+		atomic.StoreInt64(&w.lastNotifyTsUnix, time.Now().Unix())
 		if err := w.processOne(ctx, n.Payload); err != nil {
 			w.log.Warn().Err(err).Str("ticket", n.Payload).Msg("process from NOTIFY failed")
 		}

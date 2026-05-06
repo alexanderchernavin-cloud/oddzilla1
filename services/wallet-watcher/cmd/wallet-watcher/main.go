@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -29,6 +30,18 @@ import (
 	"github.com/oddzilla/wallet-watcher/internal/store"
 	"github.com/oddzilla/wallet-watcher/internal/tron"
 )
+
+// Per-chain healthcheck state. The scanner loop writes after each
+// successful Tick + HeadBlock; the healthz handler reads. Stale values
+// (lastTickUnix more than ~5 min ago) signal an RPC outage that the
+// operator should escalate before deposits start backing up. Without
+// this, an hours-long Tron / Alchemy outage would leave the container
+// "healthy" while no user got credited.
+type chainHealth struct {
+	enabled       bool
+	lastTickUnix  int64 // 0 = never
+	lastHeadBlock int64
+}
 
 func main() {
 	cfg, err := config.Load()
@@ -53,7 +66,10 @@ func main() {
 	st := store.New(pool)
 	processor := deposits.New(st, logger)
 
-	healthSrv := startHealth(cfg.HealthPort, pool, processor, logger)
+	tronHealth := &chainHealth{enabled: cfg.Tron.Enabled}
+	ethHealth := &chainHealth{enabled: cfg.Ethereum.Enabled}
+
+	healthSrv := startHealth(cfg.HealthPort, pool, processor, tronHealth, ethHealth, logger)
 	defer func() {
 		shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutCancel()
@@ -64,7 +80,7 @@ func main() {
 		client := tron.NewClient(cfg.Tron.RPCURL)
 		scanner := tron.NewScanner(client, st, cfg.Tron.USDTContract,
 			cfg.Tron.MaxBlockRange, cfg.Tron.Confirmations, cfg.Tron.StartBlock, logger)
-		go runChain(ctx, "TRC20", store.ChainTRC20, scanner, processor, cfg.PollInterval, logger)
+		go runChain(ctx, "TRC20", store.ChainTRC20, scanner, processor, cfg.PollInterval, tronHealth, logger)
 	} else {
 		logger.Warn().Msg("Tron RPC URL absent; TRC20 scanner disabled")
 	}
@@ -73,7 +89,7 @@ func main() {
 		client := ethereum.NewClient(cfg.Ethereum.RPCURL)
 		scanner := ethereum.NewScanner(client, st, cfg.Ethereum.USDTContract,
 			cfg.Ethereum.MaxBlockRange, cfg.Ethereum.Confirmations, cfg.Ethereum.StartBlock, logger)
-		go runChain(ctx, "ERC20", store.ChainERC20, scanner, processor, cfg.PollInterval, logger)
+		go runChain(ctx, "ERC20", store.ChainERC20, scanner, processor, cfg.PollInterval, ethHealth, logger)
 	} else {
 		logger.Warn().Msg("Ethereum RPC URL absent; ERC20 scanner disabled")
 	}
@@ -99,7 +115,7 @@ type chainScanner interface {
 	VerifyDeposit(ctx context.Context, dep store.PendingDeposit) (bool, error)
 }
 
-func runChain(ctx context.Context, name string, chain store.Chain, sc chainScanner, p *deposits.Processor, poll time.Duration, log zerolog.Logger) {
+func runChain(ctx context.Context, name string, chain store.Chain, sc chainScanner, p *deposits.Processor, poll time.Duration, h *chainHealth, log zerolog.Logger) {
 	clog := log.With().Str("loop", name).Logger()
 	clog.Info().Dur("poll_interval", poll).Msg("scanner loop running")
 
@@ -111,8 +127,18 @@ func runChain(ctx context.Context, name string, chain store.Chain, sc chainScann
 			return
 		case <-t.C:
 		}
-		if err := sc.Tick(ctx); err != nil {
-			clog.Warn().Err(err).Msg("scanner tick failed")
+		tickErr := sc.Tick(ctx)
+		if tickErr != nil {
+			clog.Warn().Err(tickErr).Msg("scanner tick failed")
+		} else {
+			// Update healthz signal only on success — staleness is the
+			// signal we want operators to alert on. HeadBlock is a
+			// secondary read; if it's down too, leave the previous
+			// value (operators can still see lastTickAt advancing).
+			atomic.StoreInt64(&h.lastTickUnix, time.Now().Unix())
+			if head, err := sc.HeadBlock(ctx); err == nil {
+				atomic.StoreInt64(&h.lastHeadBlock, head)
+			}
 		}
 		if err := p.TickChain(ctx, chain, sc); err != nil {
 			clog.Warn().Err(err).Msg("deposit processor tick failed")
@@ -122,7 +148,7 @@ func runChain(ctx context.Context, name string, chain store.Chain, sc chainScann
 
 // ─── Health ────────────────────────────────────────────────────────────────
 
-func startHealth(port string, pool *pgxpool.Pool, p *deposits.Processor, log zerolog.Logger) *http.Server {
+func startHealth(port string, pool *pgxpool.Pool, p *deposits.Processor, tronH, ethH *chainHealth, log zerolog.Logger) *http.Server {
 	startedAt := time.Now()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -139,6 +165,8 @@ func startHealth(port string, pool *pgxpool.Pool, p *deposits.Processor, log zer
 			"db":            okOrDown(dbOk),
 			"uptimeSeconds": int64(time.Since(startedAt).Seconds()),
 			"credited":      p.Stats(),
+			"tron":          chainSnapshot(tronH),
+			"ethereum":      chainSnapshot(ethH),
 		})
 	})
 	srv := &http.Server{
@@ -172,4 +200,22 @@ func okOrDown(b bool) string {
 		return "ok"
 	}
 	return "down"
+}
+
+func chainSnapshot(h *chainHealth) map[string]any {
+	if !h.enabled {
+		return map[string]any{"enabled": false}
+	}
+	out := map[string]any{
+		"enabled":       true,
+		"lastHeadBlock": atomic.LoadInt64(&h.lastHeadBlock),
+	}
+	ts := atomic.LoadInt64(&h.lastTickUnix)
+	if ts > 0 {
+		out["lastTickAt"] = time.Unix(ts, 0).UTC().Format(time.RFC3339)
+		out["staleSeconds"] = int64(time.Since(time.Unix(ts, 0)).Seconds())
+	} else {
+		out["lastTickAt"] = nil
+	}
+	return out
 }

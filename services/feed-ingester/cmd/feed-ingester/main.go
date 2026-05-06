@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -479,6 +480,9 @@ func runAMQP(ctx context.Context, cfg config.Config, deps handler.Deps, log zero
 			Heartbeat:  cfg.Oddin.Heartbeat,
 		},
 		func(ctx context.Context, rk string, body []byte) error {
+			// Update the healthz signal first — even a delivery the
+			// handler later rejects proves the AMQP transport is live.
+			lastAmqpMessageUnix.Store(time.Now().Unix())
 			return handler.Handle(ctx, deps, rk, body)
 		},
 		func(ctx context.Context) error {
@@ -522,12 +526,21 @@ func resolveFallback(ctx context.Context, st *store.Store) (int, int, error) {
 
 // ─── Health + logging ──────────────────────────────────────────────────────
 
+// lastAmqpMessageUnix is updated by the consumer's handler closure on
+// every successfully-decoded delivery. Read by /healthz so operators
+// can alert on staleness during live matches (Oddin sends `alive`
+// messages every ~10s on each producer; > 60s of silence is the canary
+// for a feed outage). Zero = no message yet.
+var lastAmqpMessageUnix atomic.Int64
+
 type healthResp struct {
-	Status        string `json:"status"`
-	Service       string `json:"service"`
-	DB            string `json:"db"`
-	Redis         string `json:"redis"`
-	UptimeSeconds int64  `json:"uptimeSeconds"`
+	Status            string `json:"status"`
+	Service           string `json:"service"`
+	DB                string `json:"db"`
+	Redis             string `json:"redis"`
+	UptimeSeconds     int64  `json:"uptimeSeconds"`
+	LastAmqpMessageAt string `json:"lastAmqpMessageAt,omitempty"`
+	StaleSeconds      *int64 `json:"amqpStaleSeconds,omitempty"`
 }
 
 func startHealth(port string, pool *pgxpool.Pool, rdb *redis.Client, log zerolog.Logger) *http.Server {
@@ -541,14 +554,20 @@ func startHealth(port string, pool *pgxpool.Pool, rdb *redis.Client, log zerolog
 			status = "degraded"
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(healthResp{
+		resp := healthResp{
 			Status:        status,
 			Service:       "feed-ingester",
 			DB:            okOrDown(dbOk),
 			Redis:         okOrDown(redisOk),
 			UptimeSeconds: int64(time.Since(startedAt).Seconds()),
-		})
+		}
+		if ts := lastAmqpMessageUnix.Load(); ts > 0 {
+			resp.LastAmqpMessageAt = time.Unix(ts, 0).UTC().Format(time.RFC3339)
+			stale := int64(time.Since(time.Unix(ts, 0)).Seconds())
+			resp.StaleSeconds = &stale
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 
 	srv := &http.Server{
