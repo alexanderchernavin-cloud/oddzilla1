@@ -162,6 +162,13 @@
       "when": 1700000022000,
       "tag": "0022_match_tv_channels",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1700000023000,
+      "tag": "0023_settlements_market_id_idx",
+      "breakpoints": true
     }
   ]
 }
