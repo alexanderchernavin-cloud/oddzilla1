@@ -103,6 +103,18 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
         active={isActive("/upcoming")}
         label="Upcoming"
       />
+      {/*
+        Community feed sits in the primary navigation cluster — same
+        weight as Lobby / Live / Upcoming so the entry doesn't get
+        buried at the bottom of the long sport list. Signed-out users
+        see it too; the feed is anonymous.
+      */}
+      <Item
+        href="/community"
+        icon={<I.User size={15} />}
+        active={isActive("/community")}
+        label="Community"
+      />
 
       <SectionLabel>Sports</SectionLabel>
       {orderSports(sports).map((s) => {
@@ -147,18 +159,6 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
           </div>
         );
       })}
-
-      {/*
-        Phase 10.2 community feed. Top-level entry sits after the sport
-        list (per the plan) so the public surface is one click away from
-        every page. Signed-out users see it too — the feed is anonymous.
-      */}
-      <Item
-        href="/community"
-        icon={<I.User size={15} />}
-        active={isActive("/community")}
-        label="Community"
-      />
 
       <SectionLabel>Account</SectionLabel>
       {signedIn ? (
