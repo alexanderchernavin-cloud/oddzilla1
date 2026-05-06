@@ -254,6 +254,27 @@ export default async function walletRoutes(app: FastifyInstance) {
         })
         .returning();
       if (!inserted) throw new Error("withdrawal insert returned no row");
+
+      // Audit ledger row paired to the request. delta_micro = 0 because
+      // no money has actually moved (the user's balance is unchanged;
+      // the lock is just a reservation). Pairs with the existing
+      // `withdrawal_cancel` / `withdrawal_reject` adjustment rows the
+      // cancel / admin-reject paths write so a ledger-only walk gives
+      // a complete withdrawal lifecycle. Apply-once via the unique
+      // partial index on (type, ref_type, ref_id) — replays no-op.
+      await tx
+        .insert(walletLedger)
+        .values({
+          userId: u.id,
+          currency: "USDT",
+          deltaMicro: 0n,
+          type: "adjustment",
+          refType: "withdrawal_request",
+          refId: inserted.id,
+          memo: `withdrawal requested ${amount.toString()} ${body.network}`,
+        })
+        .onConflictDoNothing();
+
       return inserted.id;
     });
 

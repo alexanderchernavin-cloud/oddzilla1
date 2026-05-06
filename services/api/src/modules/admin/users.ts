@@ -427,41 +427,50 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
       throw new BadRequestError("cannot_delete_self", "cannot_delete_self");
     }
 
-    const [existing] = await app.db
-      .select()
-      .from(users)
-      .where(eq(users.id, params.id))
-      .limit(1);
-    if (!existing) throw new NotFoundError("user_not_found", "user_not_found");
-
-    const [activity] = (await app.db.execute(sql`
-      SELECT
-        (SELECT COUNT(*)::int FROM ${tickets} WHERE user_id = ${params.id}) AS ticket_count,
-        (SELECT COUNT(*)::int FROM ${walletLedger} WHERE user_id = ${params.id}) AS ledger_count,
-        (SELECT COUNT(*)::int FROM ${deposits} WHERE user_id = ${params.id}) AS deposit_count,
-        (SELECT COUNT(*)::int FROM ${withdrawals} WHERE user_id = ${params.id}) AS withdrawal_count,
-        (SELECT COALESCE(SUM(balance_micro), 0)::text FROM ${wallets} WHERE user_id = ${params.id}) AS balance_micro
-    `)) as unknown as Array<{
-      ticket_count: number;
-      ledger_count: number;
-      deposit_count: number;
-      withdrawal_count: number;
-      balance_micro: string | null;
-    }>;
-    const hasHistory =
-      (activity?.ticket_count ?? 0) > 0 ||
-      (activity?.ledger_count ?? 0) > 0 ||
-      (activity?.deposit_count ?? 0) > 0 ||
-      (activity?.withdrawal_count ?? 0) > 0 ||
-      BigInt(activity?.balance_micro ?? "0") !== 0n;
-    if (hasHistory) {
-      throw new ConflictError(
-        "user_has_financial_history",
-        "user_has_financial_history",
-      );
-    }
-
+    // Read + history precheck + delete all happen INSIDE one tx with
+    // FOR UPDATE on the user row, so a concurrent bet placement / ledger
+    // insert can't slip in between the precheck and the delete and leave
+    // an orphan ledger row pointing at a now-deleted user. The financial
+    // FKs on tickets/wallet_ledger/deposits/withdrawals are RESTRICT on
+    // delete, so the worst case is a constraint violation rather than
+    // money loss — this just makes the failure mode "ConflictError" not
+    // "internal_error".
     await app.db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select()
+        .from(users)
+        .where(eq(users.id, params.id))
+        .for("update")
+        .limit(1);
+      if (!existing) throw new NotFoundError("user_not_found", "user_not_found");
+
+      const [activity] = (await tx.execute(sql`
+        SELECT
+          (SELECT COUNT(*)::int FROM ${tickets} WHERE user_id = ${params.id}) AS ticket_count,
+          (SELECT COUNT(*)::int FROM ${walletLedger} WHERE user_id = ${params.id}) AS ledger_count,
+          (SELECT COUNT(*)::int FROM ${deposits} WHERE user_id = ${params.id}) AS deposit_count,
+          (SELECT COUNT(*)::int FROM ${withdrawals} WHERE user_id = ${params.id}) AS withdrawal_count,
+          (SELECT COALESCE(SUM(balance_micro), 0)::text FROM ${wallets} WHERE user_id = ${params.id}) AS balance_micro
+      `)) as unknown as Array<{
+        ticket_count: number;
+        ledger_count: number;
+        deposit_count: number;
+        withdrawal_count: number;
+        balance_micro: string | null;
+      }>;
+      const hasHistory =
+        (activity?.ticket_count ?? 0) > 0 ||
+        (activity?.ledger_count ?? 0) > 0 ||
+        (activity?.deposit_count ?? 0) > 0 ||
+        (activity?.withdrawal_count ?? 0) > 0 ||
+        BigInt(activity?.balance_micro ?? "0") !== 0n;
+      if (hasHistory) {
+        throw new ConflictError(
+          "user_has_financial_history",
+          "user_has_financial_history",
+        );
+      }
+
       await tx.insert(adminAuditLog).values({
         actorUserId: admin.id,
         action: "user.delete",

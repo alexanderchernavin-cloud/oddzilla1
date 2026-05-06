@@ -25,6 +25,30 @@ CONTAINER="oddzilla-postgres-1"
 ENV_FILE="/home/team/oddzilla/.env"
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 
+# Page on failure. The cron's only output is a JSON line to journal —
+# without an explicit alert path, a string of failed backups goes
+# unnoticed until someone needs a restore. SLACK_WEBHOOK_URL is shared
+# with disk_fill_alert.sh.
+alert_failure() {
+    local exit_code="$?"
+    [ "${exit_code}" -eq 0 ] && return 0
+    local hook
+    hook=$(grep -E '^SLACK_WEBHOOK_URL=' "${ENV_FILE}" 2>/dev/null \
+        | head -1 | cut -d= -f2- || true)
+    local hostname
+    hostname=$(hostname)
+    printf '{"service":"pg-backup","event":"failed","exit":%d,"host":"%s","ts":"%s"}\n' \
+        "${exit_code}" "${hostname}" "${TS}" >&2
+    if [ -n "${hook}" ]; then
+        local payload
+        payload=$(printf 'pg-backup FAILED on %s — exit %d at %s' "${hostname}" "${exit_code}" "${TS}" \
+            | python3 -c 'import json,sys; print(json.dumps({"text": sys.stdin.read()}))')
+        curl -fsS -X POST -H "Content-Type: application/json" \
+            --data "${payload}" "${hook}" >/dev/null 2>&1 || true
+    fi
+}
+trap alert_failure EXIT
+
 mkdir -p "${BACKUP_DIR}"
 # Dir + dumps owned root:team mode 750/640 so the `team` user (operator
 # SSH login) can scp dumps to a workstation without sudo. Other local

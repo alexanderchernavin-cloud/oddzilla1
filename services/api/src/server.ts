@@ -53,6 +53,14 @@ const app = Fastify({
   // dropped. trustProxy: true (the previous default) trusted the entire
   // chain, which on a single-Caddy deploy is strictly weaker.
   trustProxy: 1,
+  // Default Fastify limit is 1 MiB. Most API endpoints take small JSON
+  // bodies (auth: ≤512B, bets: ≤4KiB, withdrawals: ≤1KiB). Tighten the
+  // floor so a slow-uploader can't stream 1 MiB into api memory on
+  // every endpoint. Routes that legitimately need more (currently only
+  // /admin/competitors/bulk-logos at ~200 KiB) override via route
+  // config { bodyLimit: ... }. Caddy already caps at 1 MiB; this is
+  // belt + suspenders.
+  bodyLimit: 64 * 1024,
   disableRequestLogging: false,
 });
 

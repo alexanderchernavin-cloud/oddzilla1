@@ -51,6 +51,13 @@ export const users = pgTable(
       sql`${t.nickname} IS NULL OR ${t.nickname} ~ '^[A-Za-z0-9_]{3,20}$'`,
     ),
     check("users_bio_length", sql`${t.bio} IS NULL OR length(${t.bio}) <= 280`),
+    // Migration 0030: defensive cap (matches the TS zod limit of 320).
+    // Existing rows are unaffected — Postgres validates only on
+    // INSERT/UPDATE and every prior email is well below this.
+    check(
+      "users_email_length_chk",
+      sql`char_length(${t.email}) BETWEEN 3 AND 320`,
+    ),
   ],
 );
 

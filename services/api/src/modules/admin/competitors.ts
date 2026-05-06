@@ -93,7 +93,13 @@ const bulkBody = z.object({
       }),
     )
     .min(1)
-    .max(500),
+    // Capped at 100 (was 500). Each entry runs a SELECT + UPDATE inside
+    // the same transaction; with N=500 the loop holds row locks on
+    // competitors for tens of seconds and stalls feed-ingester's
+    // automap upserts during peak match windows. Operators with larger
+    // batches can issue multiple back-to-back requests — the audit
+    // row pairs with each call.
+    .max(100),
 });
 
 interface CompetitorRow {
@@ -289,7 +295,15 @@ export default async function adminCompetitorsRoutes(app: FastifyInstance) {
   // Idempotent: rows with no matching (sport_slug, competitor_slug) pair
   // are reported back as `missing` so the operator can see what didn't
   // land. brand_color is optional per row.
-  app.post("/admin/competitors/bulk-logos", async (request) => {
+  app.post(
+    "/admin/competitors/bulk-logos",
+    {
+      // 100 entries × ~2 KiB-each-with-logo-URL puts the realistic
+      // body around 200 KiB; 512 KiB gives slack without inviting a
+      // megabyte upload. Global bodyLimit (server.ts) is 64 KiB.
+      bodyLimit: 512 * 1024,
+    },
+    async (request) => {
     const admin = request.requireRole("admin");
     const body = bulkBody.parse(request.body);
 
