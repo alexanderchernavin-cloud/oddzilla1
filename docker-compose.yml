@@ -136,14 +136,17 @@ services:
     # Holds HD_MASTER_MNEMONIC. The API and the (future) withdrawal
     # broadcaster talk to it over a Unix socket on a shared volume —
     # never over the network. cap_drop ALL + no-new-privileges + a
-    # tmpfs root mean RCE inside this container yields a process that
-    # cannot escalate, persist anywhere, or reach the internet. The
-    # mnemonic itself is unset from the environment as soon as the
+    # read_only rootfs mean RCE inside this container yields a process
+    # that cannot escalate, persist anywhere, or reach the internet.
+    # The mnemonic itself is unset from the environment as soon as the
     # binary parses it (see cmd/signer/main.go), so /proc/<pid>/environ
-    # is uninteresting after boot.
+    # is uninteresting after boot. The container runs as UID 1000
+    # directly (matches signer-socket's pre-owned tmpfs) so we never
+    # need CAP_CHOWN.
     build:
       context: ./services/signer
       dockerfile: Dockerfile
+    user: "1000:1000"
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 64m
@@ -323,4 +326,8 @@ volumes:
     driver_opts:
       type: tmpfs
       device: tmpfs
-      o: "size=4m,mode=750"
+      # Pre-own the tmpfs volume to UID 1000 / GID 1000 (the signer +
+      # api containers' non-root user) so the signer process can create
+      # the socket file without needing CAP_CHOWN — which we strip via
+      # cap_drop ALL on every service.
+      o: "size=4m,mode=750,uid=1000,gid=1000"
