@@ -46,7 +46,13 @@ const app = Fastify({
     base: { service: env.SERVICE_NAME },
     redact: ["req.headers.cookie", "req.headers.authorization"],
   },
-  trustProxy: true,
+  // Single hop in front of api: Caddy. trustProxy: 1 makes Fastify
+  // honour ONLY the last X-Forwarded-For entry, which Caddy appends —
+  // an attacker spoofing the inbound X-Forwarded-For can't poison
+  // request.ip / audit-log ip_inet because the spoofed entries are
+  // dropped. trustProxy: true (the previous default) trusted the entire
+  // chain, which on a single-Caddy deploy is strictly weaker.
+  trustProxy: 1,
   disableRequestLogging: false,
 });
 
