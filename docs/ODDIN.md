@@ -43,8 +43,12 @@ Oddin uses an 8-section dot-separated routing key:
 - `pre`: `pre` / `-`
 - `live`: `live` / `-`
 - `message_type`: `odds_change`, `bet_settlement`, `bet_cancel`, `fixture_change`,
-  `match_status_change`, `bet_stop`, `alive`, `snapshot_complete`,
-  `rollback_bet_settlement`, `rollback_bet_cancel`
+  `alive`, `snapshot_complete`, `rollback_bet_settlement`, `rollback_bet_cancel`.
+  Older internal docs also listed `match_status_change` and `bet_stop`, but the
+  upstream Oddin spec (§2.4) does **not** include them and the integration
+  broker for bookmaker 142 never emits them — our handlers stay wired for
+  graceful behavior on bookmakers that do, but the lifecycle source of truth
+  is `<sport_event_status status="…"/>` carried inside every `odds_change`.
 - `sport`: numeric Oddin sport id
 - `urn`: `od:match` / `od:tournament` / `-`
 - `event_id`: the numeric id part of the URN, or `-`
@@ -128,19 +132,19 @@ compensating `settlements` row and reverses the ledger entries, resetting
 ticket's compensating `adjustment` ledger row uses the same `ref_id` as
 the `bet_payout` it's reversing (see "Ledger generation suffix" below).
 
-### `match_status_change`
+### `match_status_change` (NOT in Oddin's protocol)
 
-Announces a transition in the match's lifecycle status. Sparsely emitted
-in practice — many matches end without one ever arriving — so we treat it
-as a fast path on top of the periodic REST drain rather than the
-authoritative source.
+Listed in older versions of this doc; the upstream Oddin spec (§2.4) does
+**not** include it. Bookmaker 142 has never emitted one. Our
+`handleMatchStatusChange` handler stays wired for graceful behavior on
+any bookmaker that does emit it — using the same `MapMatchStatusCode`
+table and `UpdateMatchStatus` forward-only guard as the in-band path.
 
-- `event_id` — `od:match:1234`
-- `product` — `1` or `2`
-- `timestamp` — ms
-- `status` — numeric code per Sportradar UOF (Oddin's
-  `GET /v1/descriptions/en/match_status`); see
-  `oddinxml.MapMatchStatusCode`:
+The lifecycle source of truth is `<sport_event_status status="…"/>`
+inside every `odds_change` (see "Live scoreboard" below).
+Documented status values per spec §2.4.1.2: `0` not_started, `1` live,
+`4` closed, `5` cancelled. `MapMatchStatusCode` carries the broader UOF
+table for any bookmaker that does send richer codes:
 
 | Code | Meaning | Mapped to |
 | --- | --- | --- |
@@ -155,9 +159,9 @@ authoritative source.
 | 8 | Postponed | `not_started` (rescheduled) |
 | 9 | Abandoned | `cancelled` |
 
-Unknown codes leave `matches.status` untouched. The hourly
-`runPhantomDrainTicker` (see CLAUDE.md "Recovery flow") catches any match
-that ended without a `match_status_change` message.
+Unknown codes leave `matches.status` untouched. `runPhantomDrainTicker`
+(see CLAUDE.md "Recovery flow") catches the rare match that none of the
+in-band signals reached.
 
 ### `alive`
 

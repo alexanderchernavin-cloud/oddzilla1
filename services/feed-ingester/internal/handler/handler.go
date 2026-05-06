@@ -166,25 +166,26 @@ func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 			d.Log.Warn().Err(perr).Int64("match_id", matchID).Msg("build live_score payload failed; continuing")
 		}
 
-		// Forward-only lifecycle update from <sport_event_status>.
-		// Oddin's integration broker often skips match_status_change
-		// entirely for esports — many fixtures transition not_started
-		// → closed without ever emitting one — but the same lifecycle
-		// code rides on every odds_change inside this same status
-		// block, which we already decode for the scoreboard. We act
-		// only on terminal codes (closed / cancelled): non-terminal
-		// values like "live" or "suspended" are ignored to avoid
-		// flapping match.status on every odds tick, and the forward-
-		// only SQL guard inside UpdateMatchStatus prevents any
-		// reactivation if a stale post-game odds_change arrives.
+		// Lifecycle status from <sport_event_status> drives matches.status.
+		// Per Oddin's spec (§2.4.1.2) the documented values are exactly:
+		//   0 = not_started, 1 = live, 4 = closed, 5 = cancelled
+		// And per §2.4 the message-type list does NOT include
+		// match_status_change — odds_change carries the only
+		// authoritative lifecycle signal, on every tick. So we use it as
+		// the source of truth: every transition we observe is forwarded
+		// through UpdateMatchStatus, whose SQL guard rejects the only
+		// invalid moves (terminal → anything else, anything → not_started).
+		// Net effect: a match shows up on the live offer the first
+		// odds_change it ships with status=1, and drops off the offer the
+		// odds_change it ships with status=4 or 5.
 		if msg.SportEventStatus.Status != nil {
 			newStatus := oddinxml.MapMatchStatusCode(*msg.SportEventStatus.Status)
-			if newStatus == "closed" || newStatus == "cancelled" {
+			if newStatus != "" {
 				if uerr := store.UpdateMatchStatus(ctx, d.Store.Pool(), matchID, newStatus); uerr != nil {
 					d.Log.Warn().Err(uerr).Int64("match_id", matchID).
 						Str("status", newStatus).
 						Int("oddin_code", *msg.SportEventStatus.Status).
-						Msg("odds_change: terminal status update failed; continuing")
+						Msg("odds_change: status update failed; continuing")
 				}
 			}
 		}
