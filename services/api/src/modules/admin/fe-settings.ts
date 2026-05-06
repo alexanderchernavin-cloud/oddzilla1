@@ -40,6 +40,15 @@ const reorderBody = z.object({
     .max(1000),
 });
 
+// Each PUT is a transactional DELETE+INSERT on fe_market_display_order
+// (held lock = O(N) where N is the supplied order length). Spamming
+// 1000-id PUTs from a stolen admin token would bloat the audit log
+// and churn the table. 30/hour is plenty for legitimate operators
+// (the storefront ordering changes once per launch, not continuously).
+const writeRateLimit = {
+  rateLimit: { max: 30, timeWindow: "1 hour" },
+};
+
 export default async function feSettingsRoutes(app: FastifyInstance) {
   // ── Sport list with per-scope row counts ────────────────────────────
   // Used by the FE Settings landing screen as a sport picker. Counts are
@@ -186,7 +195,10 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
   });
 
   // ── Replace the order list for a (sport, scope) in one shot ────────
-  app.put("/admin/fe-settings/markets-order/:sportId/:scope", async (request) => {
+  app.put(
+    "/admin/fe-settings/markets-order/:sportId/:scope",
+    { config: writeRateLimit },
+    async (request) => {
     const admin = request.requireRole("admin");
     const params = z
       .object({
@@ -274,7 +286,10 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
   });
 
   // ── Delete the per-(sport, scope) override (revert to default) ─────
-  app.delete("/admin/fe-settings/markets-order/:sportId/:scope", async (request) => {
+  app.delete(
+    "/admin/fe-settings/markets-order/:sportId/:scope",
+    { config: writeRateLimit },
+    async (request) => {
     const admin = request.requireRole("admin");
     const params = z
       .object({

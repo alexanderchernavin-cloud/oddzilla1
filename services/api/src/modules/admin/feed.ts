@@ -39,10 +39,17 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { sql } from "drizzle-orm";
 import { adminAuditLog, amqpState } from "@oddzilla/db";
+import { BadRequestError } from "../../lib/errors.js";
 
 const bodySchema = z.object({
   flushOdds: z.boolean().optional(),
   hours: z.coerce.number().int().min(1).max(72).optional(),
+  // Required when flushOdds is true (i.e. the caller is asking to
+  // wipe the active catalog before the replay). Raises the cost to a
+  // stolen-admin-token attacker spamming this endpoint to disrupt
+  // service: they now need to know the exact confirm string in
+  // addition to the cookie. Legitimate operators paste it once.
+  confirm: z.literal("flush-active-catalog").optional(),
 });
 
 // Recovery rewinds the AMQP cursor by up to 72 h and triggers Oddin to
@@ -71,6 +78,25 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
     // visibly stale, which is exactly when we want a clean slate before
     // the replay. They can opt out via { flushOdds: false }.
     const flush = body.flushOdds ?? true;
+
+    if (flush && body.confirm !== "flush-active-catalog") {
+      // Catalog wipe needs the magic string, so a one-shot stolen-token
+      // POST {} silently re-runs the destructive default. The audit log
+      // captures the rejection too — investigate.
+      await app.db.insert(adminAuditLog).values({
+        actorUserId: admin.id,
+        action: "feed.recovery.confirm_missing",
+        targetType: "amqp_state",
+        targetId: "producer:1,producer:2",
+        beforeJson: null,
+        afterJson: { reason: "missing_or_wrong_confirm_string", flush, hours: body.hours ?? 48 },
+        ipInet: request.ip ?? null,
+      });
+      throw new BadRequestError(
+        "confirm_required",
+        'flushOdds=true requires {"confirm":"flush-active-catalog"} in the body',
+      );
+    }
 
     // Target cursor = now - hours. Oddin rejects recovery requests older
     // than ~3 days so this is clamped at 72h by the schema above.
