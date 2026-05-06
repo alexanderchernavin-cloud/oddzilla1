@@ -16,6 +16,7 @@ import {
 } from "@oddzilla/db";
 import {
   BadRequestError,
+  ConflictError,
   NotFoundError,
 } from "../../lib/errors.js";
 
@@ -65,29 +66,40 @@ export default async function adminTicketsRoutes(app: FastifyInstance) {
     const params = z.object({ id: z.string().uuid() }).parse(request.params);
     const body = voidBody.parse(request.body);
 
-    const [existing] = await app.db
-      .select()
-      .from(tickets)
-      .where(eq(tickets.id, params.id))
-      .limit(1);
-    if (!existing) throw new NotFoundError("ticket_not_found", "ticket_not_found");
+    // Read ticket + status check + status-guarded UPDATE all happen
+    // inside ONE transaction with FOR UPDATE on the row, so settlement
+    // can't slip a payout in between our read and our write. Without
+    // this, an admin clicking Void on an actively-settling ticket can
+    // corrupt locked_micro (negative locked → inflated available) and
+    // double-credit the ledger (bet_payout from settlement + bet_refund
+    // from the void are distinct rows under the unique partial index).
+    const userIdForPublish = await app.db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select()
+        .from(tickets)
+        .where(eq(tickets.id, params.id))
+        .for("update")
+        .limit(1);
+      if (!existing) throw new NotFoundError("ticket_not_found", "ticket_not_found");
 
-    // Only `accepted` tickets can be manually voided. Settled tickets go
-    // through rollback (handled by the settlement worker); rejected +
-    // pending_delay are already out of the live set.
-    if (existing.status !== "accepted") {
-      throw new BadRequestError(
-        `cannot_void_status_${existing.status}`,
-        `cannot_void_status_${existing.status}`,
-      );
-    }
+      // Only `accepted` tickets can be manually voided. Settled tickets go
+      // through rollback (handled by the settlement worker); rejected +
+      // pending_delay are already out of the live set.
+      if (existing.status !== "accepted") {
+        throw new BadRequestError(
+          `cannot_void_status_${existing.status}`,
+          `cannot_void_status_${existing.status}`,
+        );
+      }
 
-    const stakeMicro = existing.stakeMicro;
-    const ticketCurrency = existing.currency;
+      const stakeMicro = existing.stakeMicro;
+      const ticketCurrency = existing.currency;
 
-    await app.db.transaction(async (tx) => {
-      // Flip to voided with a full refund.
-      await tx
+      // Flip to voided with a full refund. Status guard on the WHERE is
+      // redundant given FOR UPDATE above, but cheap defense-in-depth —
+      // RETURNING.length catches any future drift where the lock is
+      // dropped.
+      const updated = await tx
         .update(tickets)
         .set({
           status: "voided",
@@ -95,7 +107,11 @@ export default async function adminTicketsRoutes(app: FastifyInstance) {
           settledAt: new Date(),
           rejectReason: body.reason,
         })
-        .where(eq(tickets.id, params.id));
+        .where(and(eq(tickets.id, params.id), eq(tickets.status, "accepted")))
+        .returning({ id: tickets.id });
+      if (updated.length !== 1) {
+        throw new ConflictError("ticket_status_changed", "ticket_status_changed");
+      }
 
       // Release the lock + credit back the full stake on the ticket's
       // currency wallet.
@@ -140,12 +156,14 @@ export default async function adminTicketsRoutes(app: FastifyInstance) {
         },
         ipInet: request.ip ?? null,
       });
+
+      return existing.userId;
     });
 
     // Notify the user via ws-gateway user channel.
     try {
       await app.redis.publish(
-        USER_CHANNEL_PREFIX + existing.userId,
+        USER_CHANNEL_PREFIX + userIdForPublish,
         JSON.stringify({
           type: "ticket",
           ticketId: params.id,

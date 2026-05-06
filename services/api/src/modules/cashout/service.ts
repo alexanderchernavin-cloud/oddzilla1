@@ -369,20 +369,21 @@ export class CashoutService {
         })
         .where(eq(cashouts.id, quoteId));
 
-      // Phase 10.2 community projection. The cashout flow is the only
-      // settle path that doesn't go through the Go settlement service,
-      // so it has to write the projection itself. Best-effort — a
-      // failure here would unwind the cashout, which is unsafe; the
-      // admin backfill recovers any miss. Log inside the catch so the
-      // tx still commits.
-      try {
-        await writeCommunityProjection(tx, [ticketId]);
-      } catch {
-        // ignore — backfill will recover
-      }
-
       return { payoutMicro: offer, cashedOutAt };
     });
+
+    // Phase 10.2 community projection — runs OUTSIDE the cashout tx on
+    // purpose. If we ran it inside, any SQL error in the projection
+    // would leave the underlying tx in an aborted state; even though
+    // the JS catch absorbs the error, the implicit COMMIT then fails
+    // and rolls back the cashout. Backfill (`POST /admin/community/
+    // backfill`) sweeps any miss, so a projection failure is genuinely
+    // best-effort here — the cashout is already durably committed.
+    try {
+      await writeCommunityProjection(this.db, [ticketId]);
+    } catch {
+      // best-effort — backfill recovers any miss
+    }
 
     // Best-effort WS push so the user's open-bets list flips immediately.
     try {
