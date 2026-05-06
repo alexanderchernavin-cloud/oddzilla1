@@ -349,99 +349,60 @@ oddzilla-api-1` if it ever feels slow.
 
 ### Team logos runbook
 
-Storefront match cards and the match-detail header render team logos
-when the matching `competitors.logo_url` is set; otherwise they fall
-back to the existing initials TeamMark. Admin UI at
-`/admin/competitors` lists every team scoped per sport with sport,
-search, and "missing logo only" filters.
+Logos are self-hosted in the `team-logos` docker named volume —
+mounted RW into `api` at `/data/team-logos`, RO into `caddy` at
+`/srv/team-logos`. Caddy serves them at `/team-logos/*` with
+`Cache-Control: public, max-age=31536000, immutable`. Files are
+named `{competitor_id}.{ext}` so the URL itself is the cache buster
+on overwrite. **Nothing on the storefront ever fetches an external
+host at render time.**
 
-**One-off edit:**
+The single source is Oddin's own `/v1/sports/{lang}/competitors/{urn}/profile`
+endpoint, which returns `icon_path` pointing at
+`cdn.oddin.gg/assets/teams/icons/<file>.png`. Feed-ingester already
+calls that endpoint and caches each `icon_path` into
+`competitor_profiles.icon_path` for every team in the match feed
+(see `services/feed-ingester/internal/automap/resolver.go`
+`CacheCompetitorProfile`). Coverage on prod: ~1861/2135 cached
+profiles have an `icon_path` set; the rest fall back to the
+`TeamMark` initials block on the storefront.
 
-1. `/admin/competitors`, filter to the relevant sport.
-2. Click "Edit" on the row, paste the logo URL (https or absolute
-   `/path`), optionally set a `#RRGGBB` brand colour and a short
-   abbreviation, Save. The change is audit-logged
-   (`admin_audit_log.action = 'competitor.update'`).
-3. The `<img onError>` handler in `TeamMark` falls back to the
-   initials block silently if the URL 404s; check the row preview to
-   confirm it loaded.
+**Resolver:**
 
-**Bulk seed (curated overrides):**
-
-A small curated seed of popular teams with hand-picked URLs and
-brand colours lives in [`packages/db/seeds/competitor-logos.json`](../packages/db/seeds/competitor-logos.json)
-keyed by `(sport_slug, competitor_slug)`. Use this for teams whose
-Liquipedia logo is wrong, missing, or where you want a brand colour
-that the resolver can't infer. Apply with:
-
-```bash
-ADMIN_EMAIL=admin@oddzilla.local \
-ADMIN_PASSWORD='ChangeMeAdmin123!' \
-API_BASE_URL=http://localhost:3001 \
-  pnpm --filter @oddzilla/db db:seed-logos
-```
-
-Idempotent — re-run any time. Missing rows (no matching `(sport_slug,
-competitor_slug)` pair) are reported with their reason; this is
-expected for teams the feed hasn't delivered yet.
-
-**Storage architecture (self-hosted, not hot-linked).** A docker
-named volume `team-logos` is mounted into `api` (read-write at
-`/data/team-logos`) and `caddy` (read-only at `/srv/team-logos`).
-Caddy serves any file in there at `/team-logos/*` with a year-long
-immutable cache header. The resolver / seed scripts download each
-asset, save it as `{competitor_id}.{ext}` (extension chosen from
-Content-Type), and store the local path
-`/team-logos/{id}.{ext}` on `competitors.logo_url`. Nothing on the
-storefront ever fetches from liquipedia.net at runtime — that
-dependency lives only in the offline resolver scripts.
-
-**Bulk auto-resolve via Liquipedia (every team):**
-
-For exhaustive coverage,
 [`packages/db/src/resolve-logos.ts`](../packages/db/src/resolve-logos.ts)
-iterates every active competitor across the supported esports
-(`cs2`, `lol`, `valorant`, `dota2`, `ml`, `kog`, `r6`, `sc2`, `cod`,
-`aov`, `rocketleague`, `overwatch`, `crossfire`, `sc1`, `w3`),
-fetches each team's Liquipedia page, extracts `<meta property=
-"og:image">`, downloads the image, writes it to the volume, and
-flips `competitors.logo_url` to the local path. Cooperative 429
-backoff: when any worker sees a Liquipedia 429, every worker pauses
-for `Retry-After` (or 30 s).
+joins `competitors` to the cache, downloads each icon into the
+volume, and writes the local `/team-logos/{id}.{ext}` path back to
+`competitors.logo_url`.
 
 ```bash
-ssh team@178.104.174.24
 sudo -n docker exec -w /app/packages/db oddzilla-api-1 \
   sh -c "pnpm db:resolve-logos --dry-run"
 # Review the output, then run for real:
 sudo -n docker exec -w /app/packages/db oddzilla-api-1 \
-  sh -c "pnpm db:resolve-logos --concurrency=2"
+  sh -c "pnpm db:resolve-logos --concurrency=6"
 ```
 
-Flags: `--force` (overwrite existing logo_url), `--sport=cs2`
-(scope to one sport), `--dry-run` (report without writing),
-`--concurrency=N` (parallel page fetches, capped at 16 — keep at 2
-once Liquipedia has 429'd you, otherwise 4 is safe).
+~1800 teams resolves in ~30 s end-to-end on the box (cdn.oddin.gg
+is fast and we're an authenticated customer — no rate limits).
 
-After the resolver runs, hand-tune any teams whose Liquipedia entry
-was wrong via `/admin/competitors`. Curated overrides in the seed
-JSON above always take precedence because they're applied last.
+Flags: `--force` (overwrite existing local paths so a refreshed
+Oddin icon picks up), `--sport=cs2` (scope to one sport),
+`--dry-run` (report without writing), `--concurrency=N` (capped at
+16, default 4).
 
-**Localize legacy hot-link URLs:**
+**One-off edit:** `/admin/competitors` lets you paste a manual
+logo URL (or `/team-logos/...` path) for any team — useful when a
+team's Oddin logo is wrong/missing. Edits are audit-logged
+(`admin_audit_log.action = 'competitor.update'`); `TeamMark`
+falls back to the initials block on `<img onError>` so a stale
+URL never breaks the layout.
 
-If `competitors.logo_url` still contains a third-party URL from
-before the volume existed (early-deploy state), run:
-
-```bash
-sudo -n docker exec -w /app/packages/db oddzilla-api-1 \
-  sh -c "pnpm db:localize-logos --dry-run"
-sudo -n docker exec -w /app/packages/db oddzilla-api-1 \
-  sh -c "pnpm db:localize-logos"
-```
-
-Idempotent — rows already at `/team-logos/...` are skipped. Failed
-downloads keep the original URL so the storefront keeps rendering
-whatever it had; re-run after the rate limit lifts.
+**Re-run after every match-feed boot:** when feed-ingester ingests
+a team for the first time, it caches the team's Oddin profile
+asynchronously. Rows added to `competitors` *after* the resolver
+ran end up with `logo_url IS NULL` until the next resolver run.
+There's no scheduled job today — re-run manually, or wire one up
+via `cron` once the feed catches steady traffic.
 
 ### HD master mnemonic management
 
