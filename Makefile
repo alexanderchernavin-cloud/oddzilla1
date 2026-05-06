@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 COMPOSE := docker compose
 
-.PHONY: help up down logs ps restart build migrate seed psql redis-cli fmt lint test typecheck clean nuke
+.PHONY: help up down logs ps restart build recreate migrate seed psql redis-cli fmt lint test typecheck clean nuke
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -23,8 +23,22 @@ ps: ## Show container status
 restart: ## Restart all services
 	$(COMPOSE) restart
 
-build: ## Rebuild all images
-	$(COMPOSE) build
+build: ## Rebuild one service image: make build SVC=api
+	@if [ -z "$(SVC)" ]; then \
+		echo "ERROR: Specify a service: make build SVC=api"; \
+		echo "Bare 'docker compose build' OOMs the 4 GB CPX22 (see project_build_oom_incident memory)."; \
+		echo "Loop services serially:"; \
+		echo "  for s in api web feed-ingester; do make build SVC=\$$s; done"; \
+		exit 1; \
+	fi
+	$(COMPOSE) -f docker-compose.yml build $(SVC)
+
+recreate: ## Recreate one service: make recreate SVC=api
+	@if [ -z "$(SVC)" ]; then \
+		echo "ERROR: Specify a service: make recreate SVC=api"; \
+		exit 1; \
+	fi
+	$(COMPOSE) -f docker-compose.yml up -d --no-deps --force-recreate $(SVC)
 
 migrate: ## Apply database migrations
 	pnpm --filter @oddzilla/db db:migrate

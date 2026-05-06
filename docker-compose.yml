@@ -141,8 +141,8 @@ services:
     environment:
       SERVICE_NAME: api
       PORT: ${API_PORT:-3001}
-    ports:
-      - "127.0.0.1:${API_PORT:-3001}:${API_PORT:-3001}"
+    # Host port binding lives in docker-compose.dev.yml — prod exposes only
+    # Caddy on 80/443. Healthcheck below uses the container's own loopback.
     healthcheck:
       <<: *hc
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${API_PORT:-3001}/healthz"]
@@ -156,8 +156,6 @@ services:
     environment:
       SERVICE_NAME: ws-gateway
       PORT: ${WS_GATEWAY_PORT:-3002}
-    ports:
-      - "127.0.0.1:${WS_GATEWAY_PORT:-3002}:${WS_GATEWAY_PORT:-3002}"
     healthcheck:
       <<: *hc
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${WS_GATEWAY_PORT:-3002}/healthz"]
@@ -183,8 +181,6 @@ services:
       # Shared with Caddy so the app can recognize admin-backoffice requests
       # (e.g. suppress the signup surface there).
       ADMIN_HOST: ${ADMIN_HOST:-admin.localhost}
-    ports:
-      - "127.0.0.1:${WEB_PORT:-3000}:${WEB_PORT:-3000}"
     depends_on:
       - api
       - ws-gateway
@@ -200,8 +196,6 @@ services:
     environment:
       SERVICE_NAME: feed-ingester
       HEALTH_PORT: ${FEED_INGESTER_HEALTH_PORT:-8081}
-    ports:
-      - "127.0.0.1:${FEED_INGESTER_HEALTH_PORT:-8081}:${FEED_INGESTER_HEALTH_PORT:-8081}"
     healthcheck:
       <<: *hc
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${FEED_INGESTER_HEALTH_PORT:-8081}/healthz"]
@@ -214,8 +208,6 @@ services:
     environment:
       SERVICE_NAME: odds-publisher
       HEALTH_PORT: ${ODDS_PUBLISHER_HEALTH_PORT:-8082}
-    ports:
-      - "127.0.0.1:${ODDS_PUBLISHER_HEALTH_PORT:-8082}:${ODDS_PUBLISHER_HEALTH_PORT:-8082}"
     healthcheck:
       <<: *hc
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${ODDS_PUBLISHER_HEALTH_PORT:-8082}/healthz"]
@@ -228,8 +220,6 @@ services:
     environment:
       SERVICE_NAME: settlement
       HEALTH_PORT: ${SETTLEMENT_HEALTH_PORT:-8083}
-    ports:
-      - "127.0.0.1:${SETTLEMENT_HEALTH_PORT:-8083}:${SETTLEMENT_HEALTH_PORT:-8083}"
     healthcheck:
       <<: *hc
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${SETTLEMENT_HEALTH_PORT:-8083}/healthz"]
@@ -242,8 +232,6 @@ services:
     environment:
       SERVICE_NAME: bet-delay
       HEALTH_PORT: ${BET_DELAY_HEALTH_PORT:-8084}
-    ports:
-      - "127.0.0.1:${BET_DELAY_HEALTH_PORT:-8084}:${BET_DELAY_HEALTH_PORT:-8084}"
     healthcheck:
       <<: *hc
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${BET_DELAY_HEALTH_PORT:-8084}/healthz"]
@@ -256,8 +244,6 @@ services:
     environment:
       SERVICE_NAME: wallet-watcher
       HEALTH_PORT: ${WALLET_WATCHER_HEALTH_PORT:-8085}
-    ports:
-      - "127.0.0.1:${WALLET_WATCHER_HEALTH_PORT:-8085}:${WALLET_WATCHER_HEALTH_PORT:-8085}"
     healthcheck:
       <<: *hc
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${WALLET_WATCHER_HEALTH_PORT:-8085}/healthz"]

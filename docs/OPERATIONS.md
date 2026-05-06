@@ -36,8 +36,13 @@ bash infra/hetzner/bootstrap.sh      # UFW, Docker, swap, team in docker group
 sudo usermod -aG docker team          # if bootstrap missed it; then re-ssh
 cp .env.example .env
 $EDITOR .env                          # fill real secrets, set ODDIN_CUSTOMER_ID via /v1/users/whoami
-sg docker -c 'docker compose -f docker-compose.yml build'
-sg docker -c 'docker compose -f docker-compose.yml up -d'
+# Build services SERIALLY — `docker compose build` (no service arg)
+# parallel-builds 7 services and OOMs the 4 GB CPX22 (see
+# project_build_oom_incident; took the site down ~30 min on 2026-05-06).
+for svc in postgres redis caddy api web ws-gateway feed-ingester odds-publisher settlement bet-delay wallet-watcher; do
+  sudo -n docker compose -f docker-compose.yml build $svc
+done
+sudo -n docker compose -f docker-compose.yml up -d
 pnpm install --frozen-lockfile=false
 PGUSER=$(grep ^POSTGRES_USER= .env | cut -d= -f2) \
   PGPASS=$(grep ^POSTGRES_PASSWORD= .env | cut -d= -f2) \
@@ -53,14 +58,33 @@ explicitly.
 
 ## Daily deploy
 
-After pushing to `main`:
+After pushing to `main`. Build only what changed, ONE service at a time —
+`docker compose build` (no service arg) parallel-builds every service and
+OOMs the 4 GB CPX22 (see `project_build_oom_incident`; the site went dark
+~30 min on 2026-05-06 until a Hetzner power cycle). The `make build` /
+`make recreate` targets enforce this — they refuse without `SVC=name`.
 
 ```bash
+# 1. Fast-forward the worktree on the box.
 ssh team@178.104.174.24 "cd /home/team/oddzilla && \
-  git fetch origin main && git reset --hard origin/main && \
-  sg docker -c 'docker compose -f docker-compose.yml build && \
-                docker compose -f docker-compose.yml up -d --force-recreate'"
+  git fetch origin main && git reset --hard origin/main"
+
+# 2. (If migrations shipped — see next block.) Run them BEFORE recreating.
+
+# 3. Build the changed services serially and recreate them with --no-deps
+#    so dependency containers (postgres, redis, caddy, …) keep running.
+for svc in api web feed-ingester; do  # <-- only the services this PR touched
+  ssh team@178.104.174.24 "cd /home/team/oddzilla && make build SVC=$svc"
+done
+ssh team@178.104.174.24 "cd /home/team/oddzilla && \
+  sudo -n docker compose -f docker-compose.yml up -d --no-deps \
+  --force-recreate api web feed-ingester"
 ```
+
+> **Never run `docker compose build` without a service argument on this
+> box.** The `make build` target now refuses bare invocations; `sudo -n
+> docker compose build api` (or the `make build SVC=api` shortcut) is the
+> safe form.
 
 Migrations are additive — only run when you've shipped one:
 
@@ -115,20 +139,25 @@ public launch.
 
 ### Health endpoints
 
-Each service exposes `/healthz` that pings its dependencies:
+Each service exposes `/healthz` that pings its dependencies. In **prod**
+the host loopback ports are not bound (Caddy reaches upstreams via the
+compose DNS network), so health checks run via `docker compose exec`:
 
-| Service | URL (from box) |
-| --- | --- |
-| api | http://localhost:3001/healthz |
-| ws-gateway | http://localhost:3002/healthz |
-| web | http://localhost:3000 (HTTP 200) |
-| feed-ingester | http://localhost:8081/healthz |
-| odds-publisher | http://localhost:8082/healthz |
-| settlement | http://localhost:8083/healthz |
-| bet-delay | http://localhost:8084/healthz |
-| wallet-watcher | http://localhost:8085/healthz |
+```bash
+sudo -n docker compose exec api          wget -qO- http://127.0.0.1:3001/healthz
+sudo -n docker compose exec ws-gateway   wget -qO- http://127.0.0.1:3002/healthz
+sudo -n docker compose exec feed-ingester wget -qO- http://127.0.0.1:8081/healthz
+# … same pattern for odds-publisher (8082), settlement (8083),
+#   bet-delay (8084), wallet-watcher (8085).
+sudo -n docker compose exec web          wget -qO- http://127.0.0.1:3000
+```
 
-Docker Compose healthchecks poll these; unhealthy containers restart.
+In **dev** (`-f docker-compose.yml -f docker-compose.dev.yml`) the same
+ports are also published on `127.0.0.1` of the host for direct
+`curl localhost:3001/healthz` access.
+
+Docker Compose healthchecks poll these endpoints inside the container;
+unhealthy containers restart.
 
 ### Logs
 
@@ -182,16 +211,68 @@ matching `ledger = same` — it nets to zero like USDT does.
 The daily dump is wired up via root cron at 03:00 UTC, running
 [`infra/hetzner/backup/pg_backup.sh`](../infra/hetzner/backup/pg_backup.sh).
 The script `docker exec`s into the postgres container and writes
-`/var/backups/oddzilla/oddzilla-<TS>.sql.gz` (root:root mode 600), with
+`/var/backups/oddzilla/oddzilla-<TS>.sql.gz` (root:team mode 640), with
 14-day retention. Set `BACKUP_GPG_RECIPIENT` in `.env` to GPG-encrypt
 the dump in addition to gzipping; the file extension becomes
-`.sql.gz.gpg`. Off-host copy is still a manual rsync — pre-launch todo.
+`.sql.gz.gpg`.
 
 Hardening applied in PR #130: the script no longer sources the entire
 `.env` into the cron shell environment (every secret was being exported
 into the cron PID's `/proc/<pid>/environ`); it now reads only
 `POSTGRES_USER`, `POSTGRES_DB`, `POSTGRES_PASSWORD`, and
 `BACKUP_GPG_RECIPIENT`.
+
+### Off-server copy — pull to operator workstation
+
+[`infra/local/pull-backup.ps1`](../infra/local/pull-backup.ps1) is a
+PowerShell script that runs on the operator's PC and `scp`s every dump
+not already present locally. Schedule via Windows Task Scheduler:
+
+```text
+Program:    powershell.exe
+Arguments:  -ExecutionPolicy Bypass -NoProfile -File "D:\path\to\pull-backup.ps1"
+            -RemoteHost team@178.104.174.24 -DestDir D:\backups\oddzilla
+Trigger:    Daily, 04:00 local (one hour after the server-side cron at 03:00 UTC).
+```
+
+Pre-condition: the server-side dir + dumps must be readable by the
+`team` group. After deploying the updated `pg_backup.sh`, one-shot fix
+existing files:
+
+```bash
+ssh team@178.104.174.24 "sudo chgrp -R team /var/backups/oddzilla && \
+  sudo chmod 750 /var/backups/oddzilla && \
+  sudo chmod 640 /var/backups/oddzilla/*.sql.gz*"
+```
+
+New dumps inherit those modes from the script.
+
+### Disk-fill alert (Slack)
+
+[`infra/hetzner/backup/disk_fill_alert.sh`](../infra/hetzner/backup/disk_fill_alert.sh)
+posts to a Slack incoming webhook when the root filesystem crosses
+`DISK_FILL_THRESHOLD_PCT` (default 80%). Install on the server:
+
+```bash
+ssh team@178.104.174.24
+sudo cp /home/team/oddzilla/infra/hetzner/backup/disk_fill_alert.sh \
+  /usr/local/bin/oddzilla-disk-fill-alert
+sudo chmod 750 /usr/local/bin/oddzilla-disk-fill-alert
+
+# Append to root's crontab — every 15 minutes:
+sudo crontab -e
+# */15 * * * * /usr/local/bin/oddzilla-disk-fill-alert
+```
+
+Set `SLACK_WEBHOOK_URL` (and optionally `DISK_FILL_THRESHOLD_PCT`) in
+`/home/team/oddzilla/.env`. Without the webhook the script logs a
+single JSON line to journal and exits 0 — the next on-call can wire
+up an alternative channel without redeploying.
+
+The 2026-04-22 → 2026-04-28 disk-full incident
+(`project_disk_full_incident` memory) ran for 6 days before anyone
+noticed because postgres was the only loud signal and the
+`docker_prune.sh` mitigation is passive. This is the active page.
 
 ### Audit-log integrity probe
 
@@ -214,10 +295,12 @@ through the trigger and stays consistent).
 
 Before accepting real money:
 
-1. Off-host copy: rsync the encrypted `.sql.gz.gpg` files to a Hetzner
-   Storage Box / S3 bucket on the same cron schedule.
+1. ~~Off-host copy~~ — solved via the PC pull script
+   ([`infra/local/pull-backup.ps1`](../infra/local/pull-backup.ps1)).
+   Once the operator workstation's Task Scheduler is wired up, dumps
+   land off-server within an hour of the server-side cron.
 2. Continuous WAL archiving (`archive_mode=on`, `archive_command` to
-   the same bucket). Enables point-in-time recovery.
+   a Hetzner Storage Box or S3 bucket). Enables point-in-time recovery.
 3. Weekly restore drill on a sandbox box. A backup you haven't
    restored is a backup you don't have.
 
