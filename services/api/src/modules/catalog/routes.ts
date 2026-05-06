@@ -1212,11 +1212,12 @@ export default async function catalogRoutes(app: FastifyInstance) {
   // live/upcoming match that still has active markets — empty
   // tournaments (every match closed/cancelled or phantom-stale) are
   // filtered out so the sidebar never lists a tournament that produces
-  // an empty page when clicked. `matchCount` uses the same phantom
-  // filter as /catalog/sports/:slug. Sort: risk_tier desc (higher-tier
-  // tournaments at the top, NULLs last so unbackfilled rows don't
-  // crowd out the ones we know about), then matches-with-action first,
-  // then alphabetical.
+  // an empty page when clicked. `matchCount` and `liveCount` use the
+  // same phantom filter as /catalog/sports/:slug. Sort: risk_tier asc
+  // so Oddin tier 1/2 (the featured ones with the gold star) float to
+  // the top, NULLs last so unbackfilled rows don't crowd out the ones
+  // we know about, then live-first, then more-matches-first, then
+  // alphabetical.
   app.get("/catalog/sports/:slug/tournaments", async (request) => {
     const params = z.object({ slug: z.string().min(1).max(32) }).parse(request.params);
     const [sport] = await app.db
@@ -1230,12 +1231,17 @@ export default async function catalogRoutes(app: FastifyInstance) {
       WHERE ${matches.status} IN ('not_started','live')
         AND ${hasActiveMarket}
     )::text`;
+    const liveCountExpr = sql<string>`COUNT(DISTINCT ${matches.id}) FILTER (
+      WHERE ${matches.status} = 'live'
+        AND ${hasActiveMarket}
+    )::text`;
     const rows = await app.db
       .select({
         id: tournaments.id,
         name: tournaments.name,
         riskTier: tournaments.riskTier,
         matchCount: matchCountExpr,
+        liveCount: liveCountExpr,
       })
       .from(tournaments)
       .innerJoin(categories, eq(categories.id, tournaments.categoryId))
@@ -1256,11 +1262,16 @@ export default async function catalogRoutes(app: FastifyInstance) {
         name: r.name,
         riskTier: r.riskTier,
         matchCount: Number(r.matchCount),
+        liveCount: Number(r.liveCount),
       }))
       .sort((a, b) => {
-        const at = a.riskTier ?? -Infinity;
-        const bt = b.riskTier ?? -Infinity;
-        if (at !== bt) return bt - at;
+        // Number.MAX_SAFE_INTEGER puts NULL-tier rows after every
+        // tiered row when sorting ASC, matching the SQL "NULLS LAST"
+        // convention without an extra branch.
+        const at = a.riskTier ?? Number.MAX_SAFE_INTEGER;
+        const bt = b.riskTier ?? Number.MAX_SAFE_INTEGER;
+        if (at !== bt) return at - bt;
+        if (a.liveCount !== b.liveCount) return b.liveCount - a.liveCount;
         if (a.matchCount !== b.matchCount) return b.matchCount - a.matchCount;
         return a.name.localeCompare(b.name);
       });
