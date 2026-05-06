@@ -169,6 +169,13 @@
       "when": 1700000023000,
       "tag": "0023_settlements_market_id_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1700000024000,
+      "tag": "0024_community_profiles",
+      "breakpoints": true
     }
   ]
 }
