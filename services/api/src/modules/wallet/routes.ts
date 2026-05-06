@@ -324,6 +324,20 @@ export default async function walletRoutes(app: FastifyInstance) {
           updatedAt: new Date(),
         })
         .where(and(eq(wallets.userId, u.id), eq(wallets.currency, "USDT")));
+
+      // Audit-trail ledger row for the lock release.
+      await tx
+        .insert(walletLedger)
+        .values({
+          userId: u.id,
+          currency: "USDT",
+          deltaMicro: 0n,
+          type: "adjustment",
+          refType: "withdrawal_cancel",
+          refId: params.id,
+          memo: "user_cancelled",
+        })
+        .onConflictDoNothing();
     });
 
     return { ok: true };

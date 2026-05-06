@@ -119,6 +119,7 @@ func (s *Scanner) Tick(ctx context.Context) error {
 			ToAddress:   lg.To,
 			AmountMicro: amount,
 			BlockNumber: lg.BlockNumber,
+			BlockHash:   lg.BlockHash,
 			SeenAt:      time.Now().UTC(),
 		})
 		if err != nil {
@@ -152,3 +153,22 @@ func (s *Scanner) HeadBlock(ctx context.Context) (int64, error) {
 
 // Confirmations returns the confirmation threshold this scanner uses.
 func (s *Scanner) Confirmations() int { return s.confirmations }
+
+// VerifyDeposit returns true if the deposit's stored block_hash still
+// matches the canonical chain at its block_number — i.e. the transaction
+// is still on-chain. A rolling reorg that drops the original block will
+// flip this to false; the processor then marks the deposit `orphaned`
+// instead of crediting.
+//
+// Returns true (skip-verify) for pre-migration rows that have no stored
+// hash. Those rows can only exist in dev/test data.
+func (s *Scanner) VerifyDeposit(ctx context.Context, dep store.PendingDeposit) (bool, error) {
+	if dep.BlockHash == "" {
+		return true, nil
+	}
+	got, err := s.client.BlockHashAt(ctx, dep.BlockNumber)
+	if err != nil {
+		return false, fmt.Errorf("block hash %d: %w", dep.BlockNumber, err)
+	}
+	return got != "" && got == dep.BlockHash, nil
+}

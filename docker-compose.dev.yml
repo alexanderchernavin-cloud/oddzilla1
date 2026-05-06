@@ -1,7 +1,13 @@
-# Development-only overrides. Applied automatically by `docker compose`
-# when present. For production on Hetzner, run:
+# Development-only overrides. NOT auto-loaded — Compose only auto-merges
+# `docker-compose.override.yml`, and we deliberately renamed away from
+# that name so a forgotten `-f` flag in production cannot quietly mount
+# the source tree as a writable volume and switch services into
+# `pnpm dev` / `go run`.
+#
+# Local dev:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+# Production:
 #   docker compose -f docker-compose.yml up -d
-# (omits this file).
 
 services:
   api:

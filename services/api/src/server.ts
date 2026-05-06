@@ -12,6 +12,7 @@ import type { HealthResponse } from "@oddzilla/types";
 import dbPlugin from "./plugins/db.js";
 import redisPlugin from "./plugins/redis.js";
 import authPlugin from "./plugins/auth.js";
+import csrfPlugin from "./plugins/csrf.js";
 import authRoutes from "./modules/auth/routes.js";
 import usersRoutes from "./modules/users/routes.js";
 import walletRoutes from "./modules/wallet/routes.js";
@@ -78,6 +79,7 @@ await app.register(rateLimit, {
 await app.register(dbPlugin, { databaseUrl: env.DATABASE_URL });
 await app.register(redisPlugin, { redisUrl: env.REDIS_URL });
 await app.register(authPlugin, { auth });
+await app.register(csrfPlugin, { allowedOrigins: corsOrigins(env) });
 
 // ─── Error handler ──────────────────────────────────────────────────────────
 

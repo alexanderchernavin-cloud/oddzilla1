@@ -10,7 +10,28 @@ x-healthcheck-defaults: &hc
   retries: 12
   start_period: 10s
 
+# Per-service log rotation. Without this the JSON log driver writes
+# unbounded files into /var/lib/docker/containers/*-json.log and one
+# busy service (feed-ingester during AMQP recovery) can fill the box's
+# disk over a few days. See project_disk_full_incident memory.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+# Sandbox profile applied to every long-running service. cap_drop ALL
+# strips the default Linux capability set; only the few services that
+# need a capability re-add it explicitly. no-new-privileges blocks any
+# in-container exec from regaining a capability via setuid.
+x-sandbox: &sandbox
+  security_opt:
+    - "no-new-privileges:true"
+  cap_drop:
+    - ALL
+
 x-go-service: &go-service
+  <<: *sandbox
   restart: unless-stopped
   depends_on:
     postgres:
@@ -18,8 +39,11 @@ x-go-service: &go-service
     redis:
       condition: service_healthy
   env_file: .env
+  logging: *default-logging
+  mem_limit: 320m
 
 x-ts-service: &ts-service
+  <<: *sandbox
   restart: unless-stopped
   depends_on:
     postgres:
@@ -27,11 +51,16 @@ x-ts-service: &ts-service
     redis:
       condition: service_healthy
   env_file: .env
+  logging: *default-logging
 
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 1024m
+    security_opt:
+      - "no-new-privileges:true"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-oddzilla}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-strong}
@@ -55,6 +84,12 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 320m
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
     command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
     volumes:
       - redis-data:/data
@@ -67,6 +102,19 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 96m
+    # Caddy needs to bind privileged ports 80 and 443. cap_drop ALL strips
+    # every capability and we only re-add NET_BIND_SERVICE so a Caddy RCE
+    # cannot, for example, modify routing tables (NET_ADMIN) or read raw
+    # sockets (NET_RAW). no-new-privileges blocks regaining anything via
+    # in-container setuid binaries.
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
     ports:
       - "80:80"
       - "443:443"
@@ -86,6 +134,7 @@ services:
 
   api:
     <<: *ts-service
+    mem_limit: 512m
     build:
       context: .
       dockerfile: services/api/Dockerfile
@@ -100,6 +149,7 @@ services:
 
   ws-gateway:
     <<: *ts-service
+    mem_limit: 256m
     build:
       context: .
       dockerfile: services/ws-gateway/Dockerfile
@@ -114,6 +164,12 @@ services:
 
   web:
     restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 640m
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
     build:
       context: .
       dockerfile: apps/web/Dockerfile

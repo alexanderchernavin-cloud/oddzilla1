@@ -128,10 +128,16 @@ function parseMatchStreams(raw: unknown): StreamSource[] {
     const e = entry as Record<string, unknown>;
     const url = typeof e.streamUrl === "string" ? e.streamUrl.trim() : "";
     if (!url) continue;
+    const classified = classifyStreamUrl(url);
+    // classified === null means the URL had a non-http(s) scheme (e.g.
+    // `javascript:`) or was unparseable. Drop the entry entirely so the
+    // storefront never rendered a malicious anchor — the Oddin feed is
+    // a semi-trusted source and we strip dangerous schemes at the API
+    // boundary rather than the React layer.
+    if (classified === null) continue;
     const name = typeof e.name === "string" && e.name.trim() ? e.name.trim() : null;
     const language =
       typeof e.language === "string" && e.language.trim() ? e.language.trim() : null;
-    const classified = classifyStreamUrl(url);
     out.push({ ...classified, url, name, language });
   }
   return out;
@@ -139,12 +145,19 @@ function parseMatchStreams(raw: unknown): StreamSource[] {
 
 function classifyStreamUrl(
   url: string,
-): Pick<StreamSource, "platform" | "embedId"> {
+): Pick<StreamSource, "platform" | "embedId"> | null {
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
-    return { platform: "other", embedId: null };
+    return null;
+  }
+  // Hard scheme allow-list. `javascript:`, `data:`, `vbscript:`, `file:`,
+  // `mailto:` and friends all parse as valid URLs but executing them
+  // server-side or rendering them as anchors is a stored-XSS surface
+  // when the source (Oddin AMQP feed) is semi-trusted.
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    return null;
   }
   const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
   if (host === "twitch.tv" || host === "player.twitch.tv" || host === "m.twitch.tv") {

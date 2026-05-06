@@ -425,8 +425,8 @@ func (r *Resolver) resolveTournament(
 	if fixture != nil && fixture.Fixture.Tournament.ID == tURN {
 		// REST gave us the full tournament+sport context.
 		ft := fixture.Fixture.Tournament
-		if ft.Name != "" {
-			tournamentName = ft.Name
+		if cleaned := sanitizeName(ft.Name); cleaned != "" {
+			tournamentName = cleaned
 		}
 		if sid, err := r.resolveSport(ctx, ft.Sport); err != nil {
 			r.log.Warn().Err(err).Str("sport_urn", ft.Sport.ID).
@@ -521,7 +521,7 @@ func (r *Resolver) resolveCompetitor(
 	if sportID == 0 {
 		return sql.NullInt32{}
 	}
-	trimmed := strings.TrimSpace(name)
+	trimmed := sanitizeName(name)
 	if trimmed == "" || trimmed == "TBD" {
 		return sql.NullInt32{}
 	}
@@ -602,7 +602,7 @@ func (r *Resolver) resolveSport(ctx context.Context, fs oddinxml.FixtureSport) (
 	} else if ok {
 		return id, nil
 	}
-	name := fs.Name
+	name := sanitizeName(fs.Name)
 	if name == "" {
 		name = "Sport " + tailOfURN(fs.ID)
 	}
@@ -841,6 +841,49 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…(truncated)"
+}
+
+// sanitizeName trims whitespace, strips control characters and NUL bytes
+// (libpq's \x00 truncation behaviour mid-string is a known foot-gun and
+// would also break full-text search), and caps length to a reasonable
+// maximum. The Oddin REST source is semi-trusted — we treat names as
+// untrusted input for storage hygiene even though XSS is closed by
+// React's auto-escaping at render time. Returns "" when nothing readable
+// remains; callers should fall back to a synthetic name in that case.
+func sanitizeName(s string) string {
+	const maxLen = 256
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		// Drop NUL and the C0 control range; keep tab + CRLF translated to
+		// a space so the visual line stays single-line.
+		if r == 0 {
+			continue
+		}
+		if r < 0x20 || r == 0x7f {
+			b.WriteByte(' ')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	out := strings.TrimSpace(b.String())
+	if out == "" {
+		return ""
+	}
+	if len(out) > maxLen {
+		// Cut at maxLen bytes, then trim back to the previous rune
+		// boundary so we don't leave a half-rune trailing.
+		cut := out[:maxLen]
+		for len(cut) > 0 && (cut[len(cut)-1]&0xC0 == 0x80) {
+			cut = cut[:len(cut)-1]
+		}
+		out = strings.TrimSpace(cut)
+	}
+	return out
 }
 
 // tailOfURN extracts the segment after the last colon — the numeric id for

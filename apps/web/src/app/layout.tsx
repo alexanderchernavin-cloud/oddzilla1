@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { headers } from "next/headers";
 import { Instrument_Serif, Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { BetSlipProvider } from "@/lib/bet-slip";
@@ -48,7 +49,14 @@ export const viewport: Viewport = {
 // must match `apps/web/src/components/shell/theme-toggle.tsx`.
 const themeBootScript = `(function(){try{var t=localStorage.getItem("oz:theme");if(t==="light"||t==="dark"){document.documentElement.setAttribute("data-theme",t);}}catch(e){}})();`;
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // The CSP-emitting middleware mints a per-request nonce and pushes it
+  // into the request headers. Without applying it to the inline boot
+  // script the browser would refuse to execute (CSP nonce-mode forbids
+  // 'unsafe-inline'), and users would briefly see a dark flash on a
+  // light-themed page before hydration patched up.
+  const nonce = (await headers()).get("x-csp-nonce") ?? undefined;
+
   return (
     <html
       lang="en"
@@ -56,7 +64,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       className={`${geist.variable} ${geistMono.variable} ${instrumentSerif.variable}`}
     >
       <head>
-        <script dangerouslySetInnerHTML={{ __html: themeBootScript }} />
+        <script nonce={nonce} dangerouslySetInnerHTML={{ __html: themeBootScript }} />
       </head>
       <body>
         <BetSlipProvider>{children}</BetSlipProvider>

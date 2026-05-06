@@ -2,6 +2,7 @@ import { SignJWT, jwtVerify, type JWTPayload } from "jose";
 import { randomBytes, createHash } from "node:crypto";
 
 const ISSUER = "oddzilla";
+const AUDIENCE = "oddzilla-api";
 
 export interface AccessTokenClaims extends JWTPayload {
   sub: string;
@@ -21,6 +22,7 @@ export async function signAccessToken(
   return new SignJWT(claims)
     .setProtectedHeader({ alg: "HS256" })
     .setIssuer(ISSUER)
+    .setAudience(AUDIENCE)
     .setSubject(claims.sub)
     .setIssuedAt()
     .setExpirationTime(Math.floor(Date.now() / 1000) + ttlSeconds)
@@ -33,9 +35,14 @@ export async function verifyAccessToken(
 ): Promise<AccessTokenClaims> {
   // Pin the algorithm explicitly. With a symmetric secret jose would reject
   // asymmetric algs at runtime, but naming HS256 forecloses future confusion.
+  // Audience is verified non-strictly during the rollout — once every
+  // existing access token has refreshed (≤ 15 minutes after deploy) the
+  // verifier accepts only tokens that carry our aud. New tokens always
+  // include it, so steady-state behaviour is strict.
   const { payload } = await jwtVerify(token, secret, {
     issuer: ISSUER,
     algorithms: ["HS256"],
+    audience: AUDIENCE,
   });
   return payload as AccessTokenClaims;
 }

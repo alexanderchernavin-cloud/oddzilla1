@@ -28,7 +28,7 @@ import {
   FE_MARKET_SCOPES,
   type FeMarketScope,
 } from "@oddzilla/db";
-import { NotFoundError } from "../../lib/errors.js";
+import { BadRequestError, NotFoundError } from "../../lib/errors.js";
 
 const scopeEnum = z.enum(FE_MARKET_SCOPES as unknown as [FeMarketScope, ...FeMarketScope[]]);
 
@@ -199,7 +199,10 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
     const seen = new Set<number>();
     for (const id of body.order) {
       if (seen.has(id)) {
-        throw new Error(`duplicate provider_market_id ${id} in order`);
+        throw new BadRequestError(
+          `duplicate_provider_market_id_${id}`,
+          `duplicate_provider_market_id_${id}_in_order`,
+        );
       }
       seen.add(id);
     }

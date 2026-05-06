@@ -46,6 +46,7 @@ export const deposits = pgTable(
     confirmations: integer().notNull().default(0),
     status: depositStatusEnum().notNull().default("seen"),
     blockNumber: bigint({ mode: "bigint" }),
+    blockHash: text("block_hash"),
     seenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     creditedAt: timestamp({ withTimezone: true }),
   },
@@ -75,6 +76,10 @@ export const withdrawals = pgTable(
     submittedAt: timestamp({ withTimezone: true }),
     confirmedAt: timestamp({ withTimezone: true }),
     failureReason: text(),
+    // 4-eyes actors. The DB constraint enforces approver != confirmer.
+    approvedByUserId: uuid("approved_by_user_id").references(() => users.id),
+    submittedByUserId: uuid("submitted_by_user_id").references(() => users.id),
+    confirmedByUserId: uuid("confirmed_by_user_id").references(() => users.id),
   },
   (t) => [
     check("withdrawals_amount_pos", sql`${t.amountMicro} > 0`),

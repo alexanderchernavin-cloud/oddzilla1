@@ -110,6 +110,7 @@ type DepositInsert struct {
 	ToAddress   string
 	AmountMicro int64
 	BlockNumber int64
+	BlockHash   string
 	SeenAt      time.Time
 }
 
@@ -118,14 +119,14 @@ type DepositInsert struct {
 func (s *Store) InsertSeen(ctx context.Context, d DepositInsert) (string, bool, error) {
 	const q = `
 INSERT INTO deposits
-  (user_id, network, tx_hash, log_index, to_address, amount_micro, block_number, status, seen_at)
-VALUES ($1, $2::chain_network, $3, $4, $5, $6, $7, 'seen', $8)
+  (user_id, network, tx_hash, log_index, to_address, amount_micro, block_number, block_hash, status, seen_at)
+VALUES ($1, $2::chain_network, $3, $4, $5, $6, $7, NULLIF($8, ''), 'seen', $9)
 ON CONFLICT (network, tx_hash, log_index) DO NOTHING
 RETURNING id`
 	var id string
 	err := s.pool.QueryRow(ctx, q,
 		d.UserID, string(d.Chain), d.TxHash, d.LogIndex, d.ToAddress,
-		d.AmountMicro, d.BlockNumber, d.SeenAt,
+		d.AmountMicro, d.BlockNumber, d.BlockHash, d.SeenAt,
 	).Scan(&id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -163,6 +164,7 @@ type PendingDeposit struct {
 	LogIndex      int
 	AmountMicro   int64
 	BlockNumber   int64
+	BlockHash     string
 	Confirmations int
 	Status        string
 }
@@ -171,7 +173,7 @@ type PendingDeposit struct {
 func (s *Store) ListPending(ctx context.Context, chain Chain, limit int) ([]PendingDeposit, error) {
 	const q = `
 SELECT id, user_id, network::text, tx_hash, log_index, amount_micro,
-       COALESCE(block_number, 0), confirmations, status::text
+       COALESCE(block_number, 0), COALESCE(block_hash, ''), confirmations, status::text
   FROM deposits
  WHERE network = $1::chain_network
    AND status IN ('seen', 'confirming')
@@ -188,13 +190,28 @@ SELECT id, user_id, network::text, tx_hash, log_index, amount_micro,
 		var p PendingDeposit
 		var chainStr string
 		if err := rows.Scan(&p.ID, &p.UserID, &chainStr, &p.TxHash, &p.LogIndex,
-			&p.AmountMicro, &p.BlockNumber, &p.Confirmations, &p.Status); err != nil {
+			&p.AmountMicro, &p.BlockNumber, &p.BlockHash, &p.Confirmations, &p.Status); err != nil {
 			return nil, err
 		}
 		p.Chain = Chain(chainStr)
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// MarkOrphaned flips a not-yet-credited deposit to status='orphaned'
+// when chain reorg verification fails. The unique partial index on
+// wallet_ledger means even an inadvertent later credit would be a no-op,
+// but flagging here gives operators a visible signal.
+func (s *Store) MarkOrphaned(ctx context.Context, id string) error {
+	_, err := s.pool.Exec(ctx, `
+UPDATE deposits
+   SET status = 'orphaned'
+ WHERE id = $1 AND status IN ('seen', 'confirming')`, id)
+	if err != nil {
+		return fmt.Errorf("mark orphaned: %w", err)
+	}
+	return nil
 }
 
 // UpdateConfirmations bumps the confirmation count on a not-yet-credited

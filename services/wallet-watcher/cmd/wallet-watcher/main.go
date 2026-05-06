@@ -91,10 +91,12 @@ func main() {
 
 // chainScanner unifies the two scanner types under one loop. We use a
 // small interface so the loop body doesn't care which chain it runs.
+// Must mirror deposits.HeadProvider so the same value can satisfy both.
 type chainScanner interface {
 	Tick(ctx context.Context) error
 	HeadBlock(ctx context.Context) (int64, error)
 	Confirmations() int
+	VerifyDeposit(ctx context.Context, dep store.PendingDeposit) (bool, error)
 }
 
 func runChain(ctx context.Context, name string, chain store.Chain, sc chainScanner, p *deposits.Processor, poll time.Duration, log zerolog.Logger) {

@@ -52,7 +52,7 @@ interface PublicAuthResponse {
 }
 
 export default async function authRoutes(app: FastifyInstance) {
-  const svc = new AuthService(app.db, app.auth, app.jwtKey);
+  const svc = new AuthService(app.db, app.auth, app.jwtKey, app.redis);
 
   app.post("/auth/signup", { config: writeRateLimit }, async (request, reply): Promise<PublicAuthResponse> => {
     const body = signupBody.parse(request.body);

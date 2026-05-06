@@ -1,4 +1,4 @@
-// Edge middleware. Two responsibilities:
+// Edge middleware. Three responsibilities:
 //
 //   1. Silent refresh. The 15-minute access cookie expires often; without a
 //      refresh on every page the user is "kicked out". When the access cookie
@@ -12,6 +12,14 @@
 //      session, /account, /wallet, /bets, /admin redirect to /login.
 //      Public pages (home, /sport/:slug, /match/:id) render logged-out.
 //
+//   3. Nonce-based CSP. Generate a per-request nonce, push it into the
+//      request headers so RootLayout can attach it to the inline theme
+//      boot script, and emit a Content-Security-Policy header that allows
+//      only nonce-tagged scripts. Closes the XSS amplification surface
+//      that 'unsafe-inline' creates: even if a stored / reflected XSS
+//      slips past React's escaping, the injected script has no nonce
+//      and the browser refuses to execute it.
+//
 // The middleware runs on every page route (not on /api/* — Caddy proxies
 // those directly to api:3001 and Next.js never sees them).
 
@@ -21,6 +29,46 @@ const ACCESS_COOKIE = "oddzilla_access";
 const REFRESH_COOKIE = "oddzilla_refresh";
 
 const PROTECTED_PREFIXES = ["/account", "/wallet", "/bets", "/admin"];
+
+function generateNonce(): string {
+  // 16 bytes of entropy as base64. Edge runtime exposes
+  // crypto.getRandomValues; Node 20+ does too via the Web Crypto global.
+  const arr = new Uint8Array(16);
+  crypto.getRandomValues(arr);
+  let s = "";
+  for (const b of arr) s += String.fromCharCode(b);
+  return btoa(s);
+}
+
+// Build the CSP. `nonce` is per-request and ties to the inline theme
+// boot script in app/layout.tsx. `frame-src` whitelists Twitch + YouTube
+// so the live-stream embed on match-detail can load. `img-src https:`
+// accommodates Oddin's CDN for team logos. `style-src 'unsafe-inline'`
+// stays — JSX `style={…}` props throughout the codebase rely on it.
+function buildCsp(nonce: string): string {
+  return [
+    "default-src 'self'",
+    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: https:",
+    "font-src 'self' data:",
+    "connect-src 'self' https: wss:",
+    "frame-src 'self' https://player.twitch.tv https://www.twitch.tv https://www.youtube.com https://www.youtube-nocookie.com",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "object-src 'none'",
+    "upgrade-insecure-requests",
+  ].join("; ");
+}
+
+function applyCsp(req: NextRequest, response: NextResponse, nonce: string): void {
+  // Pass the nonce into the rendered request via a custom header so the
+  // root layout can attach it to its inline script. Next.js's RSC pipeline
+  // exposes request headers to Server Components via `headers()`.
+  req.headers.set("x-csp-nonce", nonce);
+  response.headers.set("Content-Security-Policy", buildCsp(nonce));
+}
 
 function isProtectedPath(pathname: string): boolean {
   return PROTECTED_PREFIXES.some(
@@ -68,19 +116,36 @@ function getSetCookieHeaders(headers: Headers): string[] {
 }
 
 export async function middleware(req: NextRequest) {
+  const nonce = generateNonce();
+  // Mutate the inbound request so the layout can read the nonce via
+  // `headers()`. We then echo it onto whichever response we eventually
+  // return below.
+  req.headers.set("x-csp-nonce", nonce);
+
   const access = req.cookies.get(ACCESS_COOKIE);
   if (access) {
-    return NextResponse.next();
+    const response = NextResponse.next({
+      request: { headers: req.headers },
+    });
+    applyCsp(req, response, nonce);
+    return response;
   }
 
   const refresh = req.cookies.get(REFRESH_COOKIE);
   if (refresh) {
     try {
+      // Forward the Origin header. The API's CSRF preHandler requires
+      // an Origin or Referer in CORS_ORIGINS for state-changing methods,
+      // and a server-to-server fetch from middleware doesn't set one
+      // automatically. We mirror the request's own origin so refresh
+      // works for both s.oddzilla.cc and sadmin.oddzilla.cc.
+      const reqOrigin = `${req.nextUrl.protocol}//${req.nextUrl.host}`;
       const apiRes = await fetch(`${internalApiUrl()}/auth/refresh`, {
         method: "POST",
         headers: {
           cookie: `${REFRESH_COOKIE}=${refresh.value}`,
           accept: "application/json",
+          origin: reqOrigin,
         },
       });
       if (apiRes.ok) {
@@ -117,6 +182,7 @@ export async function middleware(req: NextRequest) {
         for (const sc of setCookies) {
           response.headers.append("set-cookie", sc);
         }
+        applyCsp(req, response, nonce);
         return response;
       }
     } catch {
@@ -131,10 +197,15 @@ export async function middleware(req: NextRequest) {
     const redirect = NextResponse.redirect(url);
     redirect.cookies.delete(ACCESS_COOKIE);
     redirect.cookies.delete(REFRESH_COOKIE);
+    applyCsp(req, redirect, nonce);
     return redirect;
   }
 
-  return NextResponse.next();
+  const passThrough = NextResponse.next({
+    request: { headers: req.headers },
+  });
+  applyCsp(req, passThrough, nonce);
+  return passThrough;
 }
 
 export const config = {

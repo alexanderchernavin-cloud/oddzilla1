@@ -22,6 +22,7 @@ import {
 } from "@oddzilla/db";
 import {
   BadRequestError,
+  ForbiddenError,
   NotFoundError,
 } from "../../lib/errors.js";
 
@@ -39,6 +40,27 @@ const approveBody = z.object({
 const rejectBody = z.object({
   reason: z.string().min(3).max(500),
 });
+// Per-chain tx-hash format. ERC20 tx hashes are 32 bytes shown as 0x +
+// 64 hex; TRC20 tx ids are also 32 bytes but conventionally hex without
+// the 0x prefix (accept either form for operator paste convenience).
+const ETH_TX_HASH = /^0x[0-9a-fA-F]{64}$/;
+const TRON_TX_HASH = /^(0x)?[0-9a-fA-F]{64}$/;
+function validateTxHash(network: "TRC20" | "ERC20", txHash: string): void {
+  const ok =
+    network === "ERC20" ? ETH_TX_HASH.test(txHash) : TRON_TX_HASH.test(txHash);
+  if (!ok) {
+    throw new BadRequestError(
+      "invalid_tx_hash_format",
+      `tx_hash must match ${network} format`,
+    );
+  }
+}
+function normaliseTxHash(network: "TRC20" | "ERC20", txHash: string): string {
+  // Store TRC20 hashes without the leading 0x so the unique index matches
+  // regardless of what form an operator pastes.
+  if (network === "TRC20" && txHash.startsWith("0x")) return txHash.slice(2);
+  return txHash;
+}
 const submittedBody = z.object({
   txHash: z.string().min(8).max(128),
 });
@@ -75,6 +97,9 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
         submittedAt: r.submittedAt?.toISOString() ?? null,
         confirmedAt: r.confirmedAt?.toISOString() ?? null,
         failureReason: r.failureReason,
+        approvedByUserId: r.approvedByUserId,
+        submittedByUserId: r.submittedByUserId,
+        confirmedByUserId: r.confirmedByUserId,
       })),
     };
   });
@@ -106,6 +131,7 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
           status: "approved",
           feeMicro,
           approvedAt: new Date(),
+          approvedByUserId: admin.id,
         })
         .where(eq(withdrawalsTable.id, params.id));
 
@@ -140,7 +166,10 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
         .for("update")
         .limit(1);
       if (!row) throw new NotFoundError("withdrawal_not_found", "withdrawal_not_found");
-      if (row.status !== "requested" && row.status !== "approved") {
+      // Already-approved rows are en route to the signer. Allowing reject
+      // here would let two admins ping-pong between approve and reject;
+      // use mark-failed (which records a reason) for that path.
+      if (row.status !== "requested") {
         throw new BadRequestError(
           `cannot_reject_status_${row.status}`,
           `cannot_reject_status_${row.status}`,
@@ -155,6 +184,23 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
           updatedAt: new Date(),
         })
         .where(and(eq(wallets.userId, row.userId), eq(wallets.currency, "USDT")));
+
+      // Audit-trail ledger row for the lock release. Idempotent via the
+      // unique partial index on (type, ref_type, ref_id); a second reject
+      // would already be blocked by the row.status guard above, so the
+      // onConflictDoNothing is purely defence-in-depth.
+      await tx
+        .insert(walletLedger)
+        .values({
+          userId: row.userId,
+          currency: "USDT",
+          deltaMicro: 0n,
+          type: "adjustment",
+          refType: "withdrawal_reject",
+          refId: params.id,
+          memo: body.reason,
+        })
+        .onConflictDoNothing();
 
       await tx
         .update(withdrawalsTable)
@@ -202,13 +248,16 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
           `cannot_submit_status_${row.status}`,
         );
       }
+      validateTxHash(row.network, body.txHash);
+      const txHash = normaliseTxHash(row.network, body.txHash);
 
       await tx
         .update(withdrawalsTable)
         .set({
           status: "submitted",
-          txHash: body.txHash,
+          txHash,
           submittedAt: new Date(),
+          submittedByUserId: admin.id,
         })
         .where(eq(withdrawalsTable.id, params.id));
 
@@ -218,7 +267,7 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
         targetType: "withdrawal",
         targetId: params.id,
         beforeJson: { status: row.status },
-        afterJson: { status: "submitted", txHash: body.txHash },
+        afterJson: { status: "submitted", txHash },
         ipInet: request.ip ?? null,
       });
     });
@@ -246,6 +295,18 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
         throw new BadRequestError(
           `cannot_confirm_status_${row.status}`,
           `cannot_confirm_status_${row.status}`,
+        );
+      }
+      validateTxHash(row.network, body.txHash);
+      const txHash = normaliseTxHash(row.network, body.txHash);
+      // 4-eyes: the actor confirming the on-chain debit must differ from
+      // whoever approved it. The approve → mark-submitted → mark-confirmed
+      // path is the wallet-draining path; requiring two distinct actors
+      // raises the bar from "one stolen admin token" to two.
+      if (row.approvedByUserId && row.approvedByUserId === admin.id) {
+        throw new ForbiddenError(
+          "approver_cannot_confirm",
+          "approver_cannot_confirm",
         );
       }
 
@@ -290,7 +351,7 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
           type: "withdrawal",
           refType: "withdrawal",
           refId: params.id,
-          txHash: body.txHash,
+          txHash,
           memo: null,
         })
         .onConflictDoNothing();
@@ -300,7 +361,8 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
         .set({
           status: "confirmed",
           confirmedAt: new Date(),
-          txHash: body.txHash,
+          txHash,
+          confirmedByUserId: admin.id,
         })
         .where(eq(withdrawalsTable.id, params.id));
 
@@ -310,7 +372,7 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
         targetType: "withdrawal",
         targetId: params.id,
         beforeJson: { status: row.status },
-        afterJson: { status: "confirmed", txHash: body.txHash },
+        afterJson: { status: "confirmed", txHash },
         ipInet: request.ip ?? null,
       });
     });
@@ -338,6 +400,12 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
         );
       }
 
+      let failedTxHash: string | null = row.txHash;
+      if (body.txHash) {
+        validateTxHash(row.network, body.txHash);
+        failedTxHash = normaliseTxHash(row.network, body.txHash);
+      }
+
       // Release the lock — user gets their funds back. USDT-only.
       await tx
         .update(wallets)
@@ -347,12 +415,26 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
         })
         .where(and(eq(wallets.userId, row.userId), eq(wallets.currency, "USDT")));
 
+      // Audit-trail ledger row for the lock release.
+      await tx
+        .insert(walletLedger)
+        .values({
+          userId: row.userId,
+          currency: "USDT",
+          deltaMicro: 0n,
+          type: "adjustment",
+          refType: "withdrawal_fail",
+          refId: params.id,
+          memo: body.reason,
+        })
+        .onConflictDoNothing();
+
       await tx
         .update(withdrawalsTable)
         .set({
           status: "failed",
           failureReason: body.reason,
-          txHash: body.txHash ?? row.txHash,
+          txHash: failedTxHash,
         })
         .where(eq(withdrawalsTable.id, params.id));
 
@@ -362,7 +444,7 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
         targetType: "withdrawal",
         targetId: params.id,
         beforeJson: { status: row.status },
-        afterJson: { status: "failed", reason: body.reason, txHash: body.txHash ?? null },
+        afterJson: { status: "failed", reason: body.reason, txHash: failedTxHash },
         ipInet: request.ip ?? null,
       });
     });

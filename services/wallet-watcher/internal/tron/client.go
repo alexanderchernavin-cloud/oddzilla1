@@ -86,12 +86,13 @@ func (c *Client) LatestBlock(ctx context.Context) (int64, error) {
 
 // Event is a decoded TRC20 Transfer event relevant to us.
 type Event struct {
-	BlockNumber  int64
-	BlockTime    int64
-	TxID         string
-	From         string // T-prefixed Base58Check
-	To           string
-	Value        *big.Int
+	BlockNumber int64
+	BlockTime   int64
+	TxID        string
+	EventIndex  int    // position of this event within the tx
+	From        string // T-prefixed Base58Check
+	To          string
+	Value       *big.Int
 }
 
 type rawEvent struct {
@@ -99,6 +100,7 @@ type rawEvent struct {
 	BlockTimestamp  int64                  `json:"block_timestamp"`
 	TransactionID   string                 `json:"transaction_id"`
 	EventName       string                 `json:"event_name"`
+	EventIndex      int                    `json:"event_index"`
 	ContractAddress string                 `json:"contract_address"`
 	Result          map[string]interface{} `json:"result"`
 }
@@ -131,6 +133,11 @@ func (c *Client) GetUSDTTransferEvents(ctx context.Context, contract string, min
 	}
 
 	out := make([]Event, 0, len(resp.Data))
+	// Per-tx event counter as a fallback when TronGrid omits event_index
+	// (older API versions / partial responses). We still need a unique
+	// (tx, index) pair per event so multiple Transfer events in one tx
+	// don't collide on (network, tx_hash, log_index) at insert time.
+	perTxFallback := make(map[string]int)
 	for _, ev := range resp.Data {
 		if ev.EventName != "Transfer" {
 			continue
@@ -145,12 +152,27 @@ func (c *Client) GetUSDTTransferEvents(ctx context.Context, contract string, min
 		if _, ok := v.SetString(valueStr, 10); !ok {
 			continue
 		}
+		fromNorm, ok1 := normalizeTronAddressOK(from)
+		toNorm, ok2 := normalizeTronAddressOK(to)
+		// A normalisation miss means the address shape is something we
+		// don't understand. Surfacing this as an error stops the scanner
+		// before it advances the cursor, so a deposit cannot be silently
+		// dropped on the floor.
+		if !ok1 || !ok2 {
+			return nil, fmt.Errorf("unrecognised tron address from=%q to=%q (tx %s)", from, to, ev.TransactionID)
+		}
+		idx := ev.EventIndex
+		if idx <= 0 {
+			idx = perTxFallback[ev.TransactionID]
+			perTxFallback[ev.TransactionID] = idx + 1
+		}
 		out = append(out, Event{
 			BlockNumber: ev.BlockNumber,
 			BlockTime:   ev.BlockTimestamp,
 			TxID:        ev.TransactionID,
-			From:        normalizeTronAddress(from),
-			To:          normalizeTronAddress(to),
+			EventIndex:  idx,
+			From:        fromNorm,
+			To:          toNorm,
 			Value:       v,
 		})
 	}
@@ -171,37 +193,45 @@ func stringField(m map[string]interface{}, key string) (string, bool) {
 	return "", false
 }
 
-// normalizeTronAddress converts whatever shape TronGrid returns into the
-// Base58Check ("T...") form we store in deposit_addresses.
+// normalizeTronAddressOK converts whatever shape TronGrid returns into
+// the Base58Check ("T...") form we store in deposit_addresses. Returns
+// (address, true) on success or (raw, false) if the input doesn't match
+// any known Tron address shape — callers MUST treat (_, false) as a
+// hard error rather than silently using `raw`.
 //
 // Accepts:
-//   • Already Base58: "T..." → returned as-is.
-//   • Hex with 0x41 prefix: "41xxx..." (42 hex chars) → Base58Check.
-//   • Hex with 0x00..0x20 padding: "000000000000000000000000xxx..." → strip
-//     leading zeros, prepend 0x41, Base58Check.
-func normalizeTronAddress(raw string) string {
-	if strings.HasPrefix(raw, "T") {
-		return raw
+//   • Already Base58: "T..." (33 chars after the prefix).
+//   • Hex with 0x41 prefix: "41xxx..." (42 hex chars).
+//   • Hex with 0x00..0x20 padding: 64 hex chars → strip the leading
+//     zero-padding, prepend 0x41, Base58Check.
+func normalizeTronAddressOK(raw string) (string, bool) {
+	if strings.HasPrefix(raw, "T") && len(raw) == 34 {
+		return raw, true
 	}
 	s := strings.TrimPrefix(raw, "0x")
-	// 42-char Tron-encoded address (21 bytes hex with 41 prefix)
 	if len(s) == 42 && strings.HasPrefix(s, "41") {
 		bytes, err := hex.DecodeString(s)
 		if err != nil {
-			return raw
+			return raw, false
 		}
-		return base58check(bytes)
+		return base58check(bytes), true
 	}
-	// 64-char zero-padded → take last 40 hex chars, prepend 41
 	if len(s) == 64 {
 		short := s[24:]
 		bytes, err := hex.DecodeString("41" + short)
 		if err != nil {
-			return raw
+			return raw, false
 		}
-		return base58check(bytes)
+		return base58check(bytes), true
 	}
-	return raw
+	return raw, false
+}
+
+// normalizeTronAddress is retained as a thin wrapper for tests / external
+// callers that don't care about the failure path.
+func normalizeTronAddress(raw string) string {
+	out, _ := normalizeTronAddressOK(raw)
+	return out
 }
 
 func base58check(payload []byte) string {

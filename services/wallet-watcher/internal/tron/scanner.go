@@ -110,7 +110,11 @@ func (s *Scanner) Tick(ctx context.Context) error {
 			UserID:      userID,
 			Chain:       store.ChainTRC20,
 			TxHash:      ev.TxID,
-			LogIndex:    0, // TRC20 events don't have a per-tx log index in the same way
+			// Use the event's position within the tx so multiple Transfer
+			// events in one tx (e.g. via a contract that fans out USDT)
+			// produce distinct deposits rather than colliding on
+			// (network, tx_hash, log_index).
+			LogIndex:    ev.EventIndex,
 			ToAddress:   ev.To,
 			AmountMicro: amount,
 			BlockNumber: ev.BlockNumber,
@@ -144,3 +148,14 @@ func (s *Scanner) HeadBlock(ctx context.Context) (int64, error) {
 }
 
 func (s *Scanner) Confirmations() int { return s.confirmations }
+
+// VerifyDeposit defends against on-chain reorgs at credit time. Tron
+// reaches finality at ~19 confirmations and TronGrid's `only_confirmed`
+// filter means events delivered to us are already past finality, so a
+// purely confirmation-driven verification is safe in practice. We keep
+// the method on the interface for symmetry with the Ethereum scanner.
+func (s *Scanner) VerifyDeposit(ctx context.Context, dep store.PendingDeposit) (bool, error) {
+	_ = ctx
+	_ = dep
+	return true, nil
+}

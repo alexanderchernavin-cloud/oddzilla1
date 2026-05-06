@@ -12,7 +12,7 @@
 
 (security_headers) {
 	header {
-		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
@@ -21,17 +21,10 @@
 	}
 }
 
-(web_csp) {
-	# CSP applied only to responses from web:3000 (Next.js HTML). /api/* has
-	# its own strict default-src 'none' CSP from @fastify/helmet.
-	# Backticks preserve semicolons/quotes inside the value.
-	# `frame-src` whitelists Twitch + YouTube so the live-stream embed on
-	# the match-detail page can load.
-	# `img-src` allows `https:` so team logos hot-link cleanly from
-	# Oddin's CDN (cdn.oddin.gg) — they're our authorised data partner so
-	# we don't bother proxying them through our own server.
-	header Content-Security-Policy `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https: wss:; frame-src 'self' https://player.twitch.tv https://www.twitch.tv https://www.youtube.com https://www.youtube-nocookie.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests`
-}
+# Note: Content-Security-Policy is emitted by the Next.js middleware so
+# it can mint a per-request nonce and tag the inline theme-boot script.
+# Caddy intentionally does NOT set CSP for the web origin; the API origin
+# uses @fastify/helmet's strict default-src 'none' policy on /api/*.
 
 # ── Public frontend ──────────────────────────────────────────────────────────
 {$FRONTEND_HOST} {
@@ -51,7 +44,6 @@
 	}
 
 	handle {
-		import web_csp
 		reverse_proxy web:3000
 	}
 }
@@ -79,7 +71,6 @@
 	}
 
 	handle {
-		import web_csp
 		reverse_proxy web:3000
 	}
 }
