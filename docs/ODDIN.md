@@ -159,9 +159,9 @@ table for any bookmaker that does send richer codes:
 | 8 | Postponed | `not_started` (rescheduled) |
 | 9 | Abandoned | `cancelled` |
 
-Unknown codes leave `matches.status` untouched. `runPhantomDrainTicker`
-(see CLAUDE.md "Recovery flow") catches the rare match that none of the
-in-band signals reached.
+Unknown codes leave `matches.status` untouched. There is no background
+reconciliation — a match that drifts out of sync with the AMQP feed is
+treated as a bug to investigate, not noise to mop up.
 
 ### `alive`
 

@@ -23,9 +23,6 @@ interface RecoveryResponse {
   flushedMarkets: number;
   flushedOutcomes: number;
   activeMarketsBefore: number;
-  drainPhantoms: boolean;
-  drainAgeHours: number | null;
-  phantomCandidates: number;
 }
 
 export function RecoveryPanel({ initialStatus }: { initialStatus: FeedStatus }) {
@@ -36,7 +33,6 @@ export function RecoveryPanel({ initialStatus }: { initialStatus: FeedStatus }) 
   // missing on idle pre-match markets. Oddin's hard cap is 72h.
   const [hours, setHours] = useState(48);
   const [flushOdds, setFlushOdds] = useState(true);
-  const [drainPhantoms, setDrainPhantoms] = useState(true);
   const [confirming, setConfirming] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<RecoveryResponse | null>(null);
@@ -49,7 +45,7 @@ export function RecoveryPanel({ initialStatus }: { initialStatus: FeedStatus }) 
     try {
       const body = await clientApi<RecoveryResponse>("/admin/feed/recovery", {
         method: "POST",
-        body: JSON.stringify({ flushOdds, hours, drainPhantoms }),
+        body: JSON.stringify({ flushOdds, hours }),
       });
       setResult(body);
       setConfirming(false);
@@ -145,33 +141,6 @@ export function RecoveryPanel({ initialStatus }: { initialStatus: FeedStatus }) 
           </span>
         </label>
 
-        <label
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            fontSize: 13,
-            color: "var(--color-fg-muted)",
-          }}
-        >
-          <input
-            type="checkbox"
-            checked={drainPhantoms}
-            onChange={(e) => setDrainPhantoms(e.target.checked)}
-          />
-          <span>
-            Drain phantom-stale matches — re-pull every match still
-            flagged <span className="mono">live</span> or{" "}
-            <span className="mono">not_started</span> more than 6 h
-            after its scheduled start from Oddin REST so closed/ended
-            fixtures we missed (during an outage, or because Oddin
-            never emitted a match_status_change) get their{" "}
-            <span className="mono">matches.status</span> corrected.
-            AMQP replay alone cannot fix these (Oddin won&apos;t replay
-            match_status_change beyond ~3 days).
-          </span>
-        </label>
-
         {error && (
           <p
             role="alert"
@@ -203,11 +172,6 @@ export function RecoveryPanel({ initialStatus }: { initialStatus: FeedStatus }) 
             . {result.flushedMarkets > 0
               ? `Suspended ${result.flushedMarkets} market${result.flushedMarkets === 1 ? "" : "s"} and cleared ${result.flushedOutcomes} outcome price${result.flushedOutcomes === 1 ? "" : "s"}.`
               : `${result.activeMarketsBefore} active market${result.activeMarketsBefore === 1 ? "" : "s"} were left in place.`}{" "}
-            {result.drainPhantoms
-              ? result.phantomCandidates > 0
-                ? `Phantom-stale drain queued for ${result.phantomCandidates} match${result.phantomCandidates === 1 ? "" : "es"} (REST-paced at 5/sec).`
-                : "No phantom-stale matches to drain."
-              : "Phantom-stale drain skipped."}{" "}
             Feed-ingester should start re-populating within seconds.
           </div>
         )}
