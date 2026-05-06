@@ -42,6 +42,7 @@ import {
 } from "../../lib/errors.js";
 import { compute } from "./algorithm.js";
 import { writeCommunityProjection } from "../community/projection.js";
+import { evaluateAchievements } from "../community/achievements.js";
 
 // Quote validity. Long enough for the user to read + click + sit
 // through the acceptance delay; short enough that stale offers don't
@@ -379,6 +380,14 @@ export class CashoutService {
         await writeCommunityProjection(tx, [ticketId]);
       } catch {
         // ignore — backfill will recover
+      }
+      // Phase 10.4 achievement evaluation. Idempotent; safe even when
+      // the projection write above failed (the eval reads the prior
+      // state). Best-effort for the same reason as the projection.
+      try {
+        await evaluateAchievements(tx, [ticketId]);
+      } catch {
+        // ignore — re-run on next projection write recovers
       }
 
       return { payoutMicro: offer, cashedOutAt };

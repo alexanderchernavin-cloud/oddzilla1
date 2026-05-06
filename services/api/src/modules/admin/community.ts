@@ -17,6 +17,7 @@ import type { FastifyInstance } from "fastify";
 import { sql } from "drizzle-orm";
 import type { CommunityBackfillResponse } from "@oddzilla/types";
 import { writeCommunityProjection } from "../community/projection.js";
+import { evaluateAchievements } from "../community/achievements.js";
 
 // One transaction per batch keeps the lock window short on the
 // multi-row upsert. 500 is small enough that the GIN-index update on
@@ -58,6 +59,11 @@ export default async function adminCommunityRoutes(app: FastifyInstance) {
       for (let i = 0; i < ticketIds.length; i += BATCH_SIZE) {
         const batch = ticketIds.slice(i, i + BATCH_SIZE);
         upserted += await writeCommunityProjection(app.db, batch);
+        // Achievement evaluation runs against the same batch so a
+        // backfill catches up missed unlocks too. The composite-PK
+        // upsert dedupes against existing rows; this never produces
+        // duplicates regardless of how many times backfill runs.
+        await evaluateAchievements(app.db, batch);
       }
 
       return {

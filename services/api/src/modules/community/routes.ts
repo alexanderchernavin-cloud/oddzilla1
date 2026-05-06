@@ -15,7 +15,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { and, eq, sql, desc } from "drizzle-orm";
+import { and, eq, sql, desc, asc } from "drizzle-orm";
 import {
   users,
   communityTickets,
@@ -26,6 +26,8 @@ import {
   tournaments,
   categories,
   sports,
+  achievementDefinitions,
+  userAchievements,
 } from "@oddzilla/db";
 import type {
   CommunityProfile,
@@ -36,6 +38,7 @@ import type {
   CommunityUserTicketsResponse,
   CommunityTicketSummary,
   CommunityCopyResponse,
+  CommunityAchievement,
   Currency,
 } from "@oddzilla/types";
 import { isCurrency, DEFAULT_CURRENCY } from "@oddzilla/types";
@@ -206,7 +209,10 @@ export default async function communityRoutes(app: FastifyInstance) {
 
     if (!u || !u.nickname || !u.ticketsPublic) throw new NotFoundError();
 
-    const stats = await loadProfileStats(app.db, u.id, currency);
+    const [stats, achievements] = await Promise.all([
+      loadProfileStats(app.db, u.id, currency),
+      loadAchievements(app.db, u.id),
+    ]);
 
     const profile: CommunityProfile = {
       nickname: u.nickname,
@@ -218,8 +224,9 @@ export default async function communityRoutes(app: FastifyInstance) {
         wins: stats.wins,
         winRatePct: stats.winRatePct,
         roiPct: stats.roiPct,
-        badgeCount: 0, // Phase 10.4
+        badgeCount: achievements.length,
       },
+      achievements,
     };
     return profile;
   });
@@ -577,6 +584,42 @@ function toFeedSummary(r: FeedRow): CommunityTicketSummary {
     sportIds: r.sportIds,
     settledAt: r.settledAt.toISOString(),
   };
+}
+
+// Loads the user's achievement unlock list joined to the catalog.
+// Sorted by the catalog's display order so the profile renders the
+// same badge ordering across users; ties broken by unlock recency.
+async function loadAchievements(
+  db: FastifyInstance["db"],
+  userId: string,
+): Promise<CommunityAchievement[]> {
+  const rows = await db
+    .select({
+      id: achievementDefinitions.id,
+      title: achievementDefinitions.title,
+      description: achievementDefinitions.description,
+      icon: achievementDefinitions.icon,
+      sortOrder: achievementDefinitions.sortOrder,
+      unlockedAt: userAchievements.unlockedAt,
+    })
+    .from(userAchievements)
+    .innerJoin(
+      achievementDefinitions,
+      eq(achievementDefinitions.id, userAchievements.achievementId),
+    )
+    .where(eq(userAchievements.userId, userId))
+    .orderBy(
+      asc(achievementDefinitions.sortOrder),
+      desc(userAchievements.unlockedAt),
+    );
+
+  return rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    description: r.description,
+    icon: r.icon,
+    unlockedAt: r.unlockedAt.toISOString(),
+  }));
 }
 
 function isUniqueViolation(err: unknown): boolean {

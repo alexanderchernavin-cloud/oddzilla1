@@ -9,6 +9,7 @@ import { isCurrency, type Currency } from "@oddzilla/types/currencies";
 import { serverApi } from "@/lib/server-fetch";
 import { CurrencyTabs } from "@/components/community/currency-tabs";
 import { CommunityTicketCard } from "@/components/community/ticket-card";
+import { CommunityAchievementsSection } from "@/components/community/achievements";
 
 interface SportsResponse {
   sports: Array<{ id: number; slug: string; name: string }>;
@@ -75,6 +76,8 @@ export default async function PublicProfilePage({
           value={`${profile.stats.roiPct >= 0 ? "+" : ""}${profile.stats.roiPct}%`}
         />
       </section>
+
+      <CommunityAchievementsSection achievements={profile.achievements} />
 
       <section className="mt-8">
         <h2 className="text-sm uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">

@@ -58,23 +58,34 @@ export default async function adminDashboardRoutes(app: FastifyInstance) {
   app.get("/admin/stats/kpis", async (request) => {
     request.requireRole("admin");
 
+    // Same is_ai exclusion as /admin/stats/pnl-by-day (Phase 10.4 /
+    // Decision D2): seed bettors place real tickets through the real
+    // ledger, but their volume isn't real revenue or real engagement.
     const ledgerRows = (await app.db.execute(sql`
       SELECT
-        COALESCE(SUM(CASE WHEN type = 'bet_stake'  THEN -delta_micro ELSE 0 END), 0)::text AS stake_micro,
-        COALESCE(SUM(CASE WHEN type = 'bet_payout' THEN  delta_micro ELSE 0 END), 0)::text AS payout_micro,
-        COALESCE(SUM(CASE WHEN type = 'bet_refund' THEN  delta_micro ELSE 0 END), 0)::text AS refund_micro
-      FROM wallet_ledger
-      WHERE created_at >= date_trunc('day', now() AT TIME ZONE 'UTC')
+        COALESCE(SUM(CASE WHEN wl.type = 'bet_stake'  THEN -wl.delta_micro ELSE 0 END), 0)::text AS stake_micro,
+        COALESCE(SUM(CASE WHEN wl.type = 'bet_payout' THEN  wl.delta_micro ELSE 0 END), 0)::text AS payout_micro,
+        COALESCE(SUM(CASE WHEN wl.type = 'bet_refund' THEN  wl.delta_micro ELSE 0 END), 0)::text AS refund_micro
+      FROM wallet_ledger wl
+      JOIN users u ON u.id = wl.user_id
+      WHERE wl.created_at >= date_trunc('day', now() AT TIME ZONE 'UTC')
+        AND u.is_ai = false
     `)) as unknown as Array<{ stake_micro: string; payout_micro: string; refund_micro: string }>;
     const l = ledgerRows[0];
 
     const openTicketRows = (await app.db.execute(sql`
-      SELECT COUNT(*)::int AS n FROM tickets
-      WHERE status IN ('accepted', 'pending_delay')
+      SELECT COUNT(*)::int AS n
+        FROM tickets t
+        JOIN users u ON u.id = t.user_id
+       WHERE t.status IN ('accepted', 'pending_delay')
+         AND u.is_ai = false
     `)) as unknown as Array<{ n: number }>;
     const activeUserRows = (await app.db.execute(sql`
-      SELECT COUNT(DISTINCT user_id)::int AS n FROM tickets
-      WHERE placed_at >= now() - INTERVAL '7 days'
+      SELECT COUNT(DISTINCT t.user_id)::int AS n
+        FROM tickets t
+        JOIN users u ON u.id = t.user_id
+       WHERE t.placed_at >= now() - INTERVAL '7 days'
+         AND u.is_ai = false
     `)) as unknown as Array<{ n: number }>;
 
     const payload: KpiRow = {
@@ -94,6 +105,12 @@ export default async function adminDashboardRoutes(app: FastifyInstance) {
     request.requireRole("admin");
     const q = pnlQuery.parse(request.query);
 
+    // AI seed bettor accounts (users.is_ai = true, Phase 10.4) are
+    // excluded from operator PnL aggregation per Decision D2 — their
+    // bets settle through the real ledger so the per-row PnL math
+    // still works, but their volume isn't real revenue. The funding
+    // pool for seed accounts lives separately (admin credit / weekly
+    // budget cap), so dropping them here keeps the dashboard honest.
     const result = (await app.db.execute(sql`
       SELECT
         to_char(date_trunc('day', wl.created_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
@@ -105,6 +122,7 @@ export default async function adminDashboardRoutes(app: FastifyInstance) {
         COUNT(DISTINCT t.id)::int AS ticket_count
       FROM wallet_ledger wl
       JOIN tickets t             ON wl.ref_type = 'ticket' AND wl.ref_id = t.id::text
+      JOIN users u_t             ON u_t.id = t.user_id
       JOIN ticket_selections ts  ON ts.ticket_id = t.id
       JOIN markets m             ON m.id = ts.market_id
       JOIN matches ma            ON ma.id = m.match_id
@@ -113,6 +131,7 @@ export default async function adminDashboardRoutes(app: FastifyInstance) {
       JOIN sports s              ON s.id = c.sport_id
       WHERE wl.created_at >= now() - (${q.days}::int || ' days')::interval
         AND wl.type IN ('bet_stake', 'bet_payout', 'bet_refund')
+        AND u_t.is_ai = false
       GROUP BY day, s.slug, s.name
       ORDER BY day DESC, s.slug
     `)) as unknown as Array<{
@@ -172,6 +191,7 @@ export default async function adminDashboardRoutes(app: FastifyInstance) {
         AND t.actual_payout_micro IS NOT NULL
         AND t.actual_payout_micro > t.stake_micro
         AND t.settled_at >= now() - (${q.days}::int || ' days')::interval
+        AND u.is_ai = false
       ORDER BY t.actual_payout_micro DESC
       LIMIT ${q.limit}
     `)) as unknown as Array<{

@@ -727,12 +727,60 @@ profile stats, USDT default, OZ tab toggle).
   cards on the next page navigation), and adding ws-gateway routing
   is its own concern. Tracking as a 10.3a follow-up.
 
-### Phase 10.4 — Achievements + AI seed bettors
+### Phase 10.4 — Achievements + AI seed bettor PnL filter ✔ (2026-05-06)
 
-`achievement_definitions` + `user_achievements`; AI seed bettors flagged
-via `users.is_ai=true` (excluded from `/admin/stats/pnl-by-day`).
-Also lights up the Copyability score component (15 pts): the per-leg
-share of markets still in `status=1` at scoring time.
+- Migration `0029_community_achievements.sql` adds:
+  - `achievement_definitions` (id TEXT PK, title, description, icon
+    lucide-slug, sort_order). Hand-curated catalog; no admin CRUD.
+  - `user_achievements` (composite PK on `(user_id, achievement_id)`
+    for idempotent unlocks; cascade on user delete).
+  - Five starter badges seeded inline: `first_win`, `combo_5`,
+    `odds_20`, `payout_100x`, `streak_10`. Currency-agnostic
+    predicates by design.
+- Evaluation co-located with the projection write hook. Same SQL on
+  Go (`store.EvaluateAchievements`) and TS
+  (`services/api/src/modules/community/achievements.ts ::
+  evaluateAchievements`); called from `settler.maybeSettleTicket`,
+  the cashout transaction, and the admin backfill loop. `INSERT ...
+  ON CONFLICT DO NOTHING` makes re-runs no-ops. Rollback paths
+  don't revoke — achievements are facts about user history.
+- Public profile API now returns the unlock list inline (catalog
+  metadata denormalised into the response so the web client renders
+  without a second roundtrip). `/u/[nickname]` adds an Achievements
+  grid that maps `icon` slug onto the existing storefront icon set
+  (Trophy / Star / Bell / Arrow); unknown slugs fall back to Trophy.
+- AI seed bettor PnL filter (Decision D2). `users.is_ai=true`
+  accounts are now excluded from `/admin/stats/{kpis,pnl-by-day,
+  big-wins}`. Their bets settle through the real ledger but their
+  volume isn't real revenue or real engagement; dropping them keeps
+  the dashboard honest. The seeding script and bet generator are a
+  10.4b follow-up.
+
+**Acceptance bar:**
+- Migration applies cleanly; the 5 starter badges land in
+  `achievement_definitions`.
+- Settling a winning ticket inserts a `first_win` row in
+  `user_achievements` (idempotent — re-running settle never
+  duplicates).
+- A 5-leg combo win unlocks `combo_5`; a 25.0-odds win unlocks
+  `odds_20`.
+- `/community/users/:nickname/profile` returns the unlock list with
+  catalog metadata.
+- `/u/[nickname]` renders the Achievements grid.
+- `/admin/stats/pnl-by-day` excludes any `users.is_ai=true` account.
+
+### Phase 10.4 carry-overs (10.4b — separate PR)
+
+- AI bet generator: scheduled job that reads the next-24h fixture
+  board, picks 1-3 leg bets, submits via the normal `POST /bets`
+  path. Funded via a separate admin-credit pool with a capped weekly
+  budget. Plan calls it out under Phase 10.4 — splitting it out
+  because the placement loop is a meaningful new system, while the
+  schema + flag enforcement (this PR) lights up Decision D2 today.
+- Copyability score component (15 pts) on `community_tickets`. Spec
+  is ambiguous (per-leg market-still-open share, but evaluated when
+  exactly?); deferred until the leaderboard surface is mature
+  enough to reason about it concretely.
 
 ## Security audit pass (PR #130, 2026-05-06)
 

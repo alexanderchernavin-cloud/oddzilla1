@@ -7,8 +7,10 @@ import {
   integer,
   bigint,
   numeric,
+  text,
   timestamp,
   doublePrecision,
+  primaryKey,
   index,
   check,
 } from "drizzle-orm/pg-core";
@@ -68,3 +70,43 @@ export const communityTickets = pgTable(
 
 export type CommunityTicket = typeof communityTickets.$inferSelect;
 export type NewCommunityTicket = typeof communityTickets.$inferInsert;
+
+// ─── Achievements (Phase 10.4) ──────────────────────────────────────────────
+//
+// Hand-curated badge catalog and per-user unlock log. The
+// (user_id, achievement_id) composite PK + ON CONFLICT DO NOTHING is
+// the idempotency story for the unlock evaluator that runs after every
+// projection write — see migration 0029_community_achievements.sql.
+
+export const achievementDefinitions = pgTable("achievement_definitions", {
+  id: text().primaryKey(),
+  title: text().notNull(),
+  description: text().notNull(),
+  // lucide-icon slug; the web client falls back when the slug isn't in
+  // apps/web/src/components/ui/icons.tsx.
+  icon: text().notNull(),
+  sortOrder: integer().notNull().default(0),
+});
+
+export const userAchievements = pgTable(
+  "user_achievements",
+  {
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    achievementId: text()
+      .notNull()
+      .references(() => achievementDefinitions.id),
+    unlockedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.achievementId] }),
+    index("user_achievements_user_idx").on(
+      t.userId,
+      sql`${t.unlockedAt} DESC`,
+    ),
+  ],
+);
+
+export type AchievementDefinition = typeof achievementDefinitions.$inferSelect;
+export type UserAchievement = typeof userAchievements.$inferSelect;

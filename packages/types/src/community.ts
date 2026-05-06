@@ -6,6 +6,17 @@ import type { TicketStatus, BetType } from "./bets.js";
 
 // ─── Profile ────────────────────────────────────────────────────────────────
 
+// One unlocked achievement on the public profile. Catalog metadata
+// (title / description / icon) is denormalised into the response so
+// the web client can render without a second roundtrip.
+export interface CommunityAchievement {
+  id: string;
+  title: string;
+  description: string;
+  icon: string; // lucide-icon slug
+  unlockedAt: string; // ISO-8601
+}
+
 // Public profile shape — what /community/users/:nickname/profile returns.
 // Stats are scoped per currency (Decision D4 in docs/COMMUNITY_PLAN.md).
 // The `is_ai` flag is intentionally absent from every API response.
@@ -21,6 +32,11 @@ export interface CommunityProfile {
     roiPct: number; // signed, integer
     badgeCount: number;
   };
+  // Unlocked badges in display order (sort_order then unlocked_at).
+  // Cross-currency — badges live on the user, not the currency, so a
+  // profile carries the same achievements regardless of the
+  // ?currency= query param.
+  achievements: CommunityAchievement[];
 }
 
 // Self-view returned by /community/me. Includes editable fields (the
