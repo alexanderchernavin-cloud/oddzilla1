@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import type { CommunityMe } from "@oddzilla/types";
 import { getSessionUser } from "@/lib/auth";
@@ -27,6 +28,21 @@ export default async function CommunitySettingsPage() {
         Pick a public handle, write a short bio, and choose whether your
         settled tickets show up in the community feed.
       </p>
+
+      {initial.nickname ? (
+        <div className="mt-4 flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-4 py-3 text-sm">
+          <span className="text-[var(--color-fg-subtle)]">
+            Your public profile:
+          </span>
+          <Link
+            href={`/u/${encodeURIComponent(initial.nickname)}`}
+            className="font-medium text-[var(--color-accent)] hover:underline"
+          >
+            /u/{initial.nickname}
+          </Link>
+        </div>
+      ) : null}
+
       <CommunitySettingsForms initial={initial} />
     </div>
   );
