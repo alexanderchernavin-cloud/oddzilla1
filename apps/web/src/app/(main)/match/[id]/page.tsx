@@ -6,10 +6,10 @@ import { LiveMarkets, type MarketGroup, type MarketSnapshot } from "./live-marke
 import { Pill, LiveDot, TeamMark } from "@/components/ui/primitives";
 import { TierMark } from "@/components/ui/tier-mark";
 import { I } from "@/components/ui/icons";
-import {
-  MatchStreams,
-  type MatchStream,
-} from "@/components/match/match-streams";
+import { type MatchStream } from "@/components/match/match-streams";
+import { MatchLiveMedia } from "@/components/widgets/match-live-media";
+import { MatchPrematchMobile } from "@/components/widgets/match-prematch-mobile";
+import { MatchPageRegistrar } from "@/lib/match-page-context";
 import {
   mapCellValue,
   type LiveScore,
@@ -158,9 +158,30 @@ export default async function MatchPage({
         />
       </div>
 
-      {streams.length > 0 ? (
-        <MatchStreams streams={streams} parentHost={parentHost} />
-      ) : null}
+      <MatchLiveMedia
+        matchId={String(match.id)}
+        sportSlug={match.sport.slug}
+        homeTeam={match.homeTeam}
+        awayTeam={match.awayTeam}
+        streams={streams}
+        parentHost={parentHost}
+        isLive={isLive}
+      />
+
+      <MatchPrematchMobile
+        matchId={String(match.id)}
+        sportSlug={match.sport.slug}
+        homeTeam={match.homeTeam}
+        awayTeam={match.awayTeam}
+      />
+
+      <MatchPageRegistrar
+        matchId={String(match.id)}
+        sportSlug={match.sport.slug}
+        sportName={match.sport.name}
+        homeTeam={match.homeTeam}
+        awayTeam={match.awayTeam}
+      />
 
       {markets.length === 0 ? (
         <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>

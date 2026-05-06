@@ -19,6 +19,7 @@ import { I } from "@/components/ui/icons";
 import { Button } from "@/components/ui/primitives";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { useMobileDrawers } from "./mobile-drawer-context";
+import { RailPrematchPanel } from "@/components/widgets/rail-prematch-panel";
 import type {
   SlipSelection,
   TicketListResponse,
@@ -262,6 +263,11 @@ export function BetSlipRail() {
         position: "sticky",
         top: 60,
         maxHeight: "calc(100vh - 60px)",
+        // Widget panels and long histories can exceed the viewport-bounded
+        // sticky aside — let the entire rail column scroll as one. The
+        // selections list inside still has its own overflow so a mid-slip
+        // scroll doesn't push the form out of view.
+        overflowY: "auto",
       }}
     >
       {/* Drag handle — only visible when the rail is rendered as a
@@ -676,6 +682,7 @@ export function BetSlipRail() {
       )}
         </>
       )}
+      <RailPrematchPanel />
     </aside>
   );
 }
