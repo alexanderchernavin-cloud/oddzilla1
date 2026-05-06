@@ -5,6 +5,7 @@ import { MobileBetSlipBar } from "@/components/shell/mobile-bet-slip-bar";
 import { MobileDrawersProvider } from "@/components/shell/mobile-drawer-context";
 import { MobileShellOverlay } from "@/components/shell/mobile-shell-overlay";
 import { ShellContainer } from "@/components/shell/shell-container";
+import { MatchPageProvider } from "@/lib/match-page-context";
 import { getSessionUser } from "@/lib/auth";
 import { serverApi } from "@/lib/server-fetch";
 import type { WalletListResponse } from "@oddzilla/types";
@@ -27,6 +28,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
 
   return (
     <MobileDrawersProvider>
+      <MatchPageProvider>
       <ShellContainer>
         <TopBar
           signedIn={Boolean(user)}
@@ -52,6 +54,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
         <MobileShellOverlay />
         <MobileBetSlipBar />
       </ShellContainer>
+      </MatchPageProvider>
     </MobileDrawersProvider>
   );
 }

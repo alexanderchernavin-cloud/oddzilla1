@@ -35,6 +35,16 @@ const EnvSchema = z.object({
     z.string().url().optional(),
   ),
   NEXT_PUBLIC_WS_URL: z.string().optional(),
+
+  // Oddin Disir widgets (services/api). Empty token = widget routes
+  // return 503 widget_disabled and the storefront silently skips
+  // rendering the iframes.
+  DISIR_BASE_URL: z.string().url().default("https://api-disir.oddin.gg"),
+  DISIR_BRAND_TOKEN: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.string().min(8).optional(),
+  ),
+  DISIR_ENV: z.enum(["integration", "main"]).default("integration"),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

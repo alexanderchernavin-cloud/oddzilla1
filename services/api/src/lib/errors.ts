@@ -47,3 +47,9 @@ export class InternalError extends ApiError {
     super(500, "internal_error", message);
   }
 }
+
+export class ServiceUnavailableError extends ApiError {
+  constructor(message = "Service unavailable", code = "service_unavailable") {
+    super(503, code, message);
+  }
+}

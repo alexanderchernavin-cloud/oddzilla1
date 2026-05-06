@@ -272,6 +272,17 @@ body {
 /* Mobile-only toggle buttons in the top bar; hidden on desktop. */
 .oz-topbar-toggle { display: none !important; }
 
+/* Inline widget toggle + container on the match page is mobile-only;
+   on desktop the same widget renders in the right rail. */
+.oz-match-prematch-mobile { display: none !important; }
+
+/* Live-media composer (stream + live scoreboard widget). Desktop
+   stacks both panes vertically; mobile uses the pill switcher to
+   toggle between them so the iframe area never doubles up. */
+.oz-live-media-tabs { display: none; }
+.oz-live-media-stream,
+.oz-live-media-stats { display: block; }
+
 /* The old FAB slip trigger in the top bar is replaced by the sticky
    bottom bar on mobile. Kept hidden unconditionally so stray instances
    don't render. */
@@ -316,6 +327,19 @@ body {
   .oz-shell {
     grid-template-columns: 240px 1fr;
     grid-template-areas: "top top" "side main";
+  }
+  /* Below desktop the rail collapses into a bottom-sheet bet-slip; the
+     prematch widget belongs inline on the match page (toggle button)
+     on these breakpoints, not stacked under the slip. */
+  .oz-rail-prematch { display: none !important; }
+  .oz-match-prematch-mobile { display: flex !important; }
+
+  /* Mobile live-media: show the pill switcher and only render the
+     active pane via [data-active="true"]. Desktop keeps both stacked. */
+  .oz-live-media-tabs { display: inline-flex !important; }
+  .oz-live-media-stream[data-active="false"],
+  .oz-live-media-stats[data-active="false"] {
+    display: none !important;
   }
   /* Rail becomes a bottom sheet on anything below desktop: slides up
      from the bottom, stops short of the top bar, rounded top corners.

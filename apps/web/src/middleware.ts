@@ -41,11 +41,12 @@ function generateNonce(): string {
 }
 
 // Build the CSP. `nonce` is per-request and ties to the inline theme
-// boot script in app/layout.tsx. `frame-src` whitelists Twitch, YouTube,
-// Kick and Gjirafa so the live-stream embed on match-detail can load.
-// `img-src https:` accommodates Oddin's CDN for team logos.
-// `style-src 'unsafe-inline'` stays — JSX `style={…}` props throughout
-// the codebase rely on it.
+// boot script in app/layout.tsx. `frame-src` whitelists Twitch / YouTube /
+// Kick / Gjirafa so the live-stream embed on match-detail can load, and
+// the Oddin Disir widget hosts (prematch + live-scoreboard iframes
+// returned by /widgets/*). `img-src https:` accommodates Oddin's CDN
+// for team logos. `style-src 'unsafe-inline'` stays — JSX `style={…}`
+// props throughout the codebase rely on it.
 function buildCsp(nonce: string): string {
   // connect-src enumerates the explicit fetch / WebSocket destinations the
   // storefront actually uses:
@@ -67,7 +68,7 @@ function buildCsp(nonce: string): string {
     "img-src 'self' data: https:",
     "font-src 'self' data:",
     `connect-src 'self' ${apiOrigins} ${wsOrigins} https://cdn.oddin.gg`,
-    "frame-src 'self' https://player.twitch.tv https://www.twitch.tv https://www.youtube.com https://www.youtube-nocookie.com https://player.kick.com https://video.gjirafa.com",
+    "frame-src 'self' https://player.twitch.tv https://www.twitch.tv https://www.youtube.com https://www.youtube-nocookie.com https://player.kick.com https://video.gjirafa.com https://*.oddin.gg",
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
