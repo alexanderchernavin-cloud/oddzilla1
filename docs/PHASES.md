@@ -817,6 +817,47 @@ this PR + 2 Phase 10 catch-up). 6 service images rebuilt serially. All
 enforces (no-Origin → 403, attacker-Origin → 403, allowlisted-Origin → 400
 on bad creds, expected).
 
+## Signer container (PR #132, 2026-05-06)
+
+Closes one of the pre-launch exit gates: `HD_MASTER_MNEMONIC` no longer
+lives in the API container. A new Go service [`services/signer`](../services/signer/)
+holds the mnemonic and exposes two operations over a Unix socket on a
+tmpfs volume shared only with the API:
+
+- `POST /derive` — `{network, userIndex}` → `{address, derivationPath}`.
+- `POST /sign` — `{derivationPath, messageHash, auditTag}` → `{signature, address}`.
+  ECDSA over a 32-byte hash; no chain-specific encoding (caller hashes
+  RLP / protobuf and asks for a signature). Keeps the signer
+  chain-agnostic and tiny.
+
+Hardening: `cap_drop: ALL`, `no_new_privileges:true`, `read_only: true`,
+`mem_limit: 64m`. The mnemonic is read once at boot then
+`os.Unsetenv("HD_MASTER_MNEMONIC")` so `/proc/<pid>/environ` is
+uninteresting after startup. The socket lives on a tmpfs volume
+(`size=4m, mode=750`) — no on-disk artefacts of the secret.
+
+API side: [`services/api/src/lib/hdwallet.ts`](../services/api/src/lib/hdwallet.ts)
+loses its local derivation code (it had a latent bug — `HDNodeWallet.fromMnemonic(m)`
+returns the leaf at the default ETH path, not the BIP32 root — that
+crashed for any `userIndex != 0` and was hidden by `HD_MASTER_MNEMONIC`
+being empty in prod). The TS file now keeps only `userIndexFromUUID`
++ `derivationPath` + a re-export of [`signer-client.ts`](../services/api/src/lib/signer-client.ts),
+which dials the Unix socket via undici. There is no offline fallback;
+`SIGNER_SOCKET_PATH` is required for any HD operation.
+
+Parity: a Go test in [`services/signer/internal/derive/derive_test.go`](../services/signer/internal/derive/derive_test.go)
+pins ETH idx=0 of the BIP44 abandon-mnemonic vector to the canonical
+`0x9858EfFD232B4033E47d90003D41EC34EcaEda94` (verified against
+MetaMask import, ethers.js, and Trezor). The Tron path uses the same
+secp256k1 derivation, only the address-encoding wrapper differs
+(`0x41 || keccak256(uncompressed_pubkey[1:])[-20:]` then base58check).
+
+What's NOT done yet (follow-up): auto-broadcast withdrawals through the
+signer. Today the admin still pastes `tx_hash` from an external signer
+into mark-submitted, even though the signer container could now sign
+the tx itself. That's the next iteration; the isolation work was the
+load-bearing part.
+
 ## Post-MVP candidates (not in scope yet)
 
 - Outright markets (tournament winners) — requires dynamic outcome handling.
@@ -835,7 +876,12 @@ Independent of phase numbering — these must all be true:
 
 1. KYC/AML flow live and legally reviewed.
 2. Sportsbook licensing in place.
-3. HD master key moved out of env into isolated signer.
+3. HD master key moved out of env into isolated signer. **Done in PR #132**
+   ([`services/signer`](../services/signer/)) — the mnemonic now lives
+   only in that container's startup env (immediately unset post-parse)
+   and the API talks to it over a Unix socket. Outstanding follow-up:
+   auto-broadcast signed withdrawals through the signer instead of the
+   current admin-pastes-tx-hash flow.
 4. Wallet reconciliation job (daily sum of ledger == sum of balances)
    running and alerting.
 5. Backups: Postgres daily full + WAL archived off-box. (PR #130 added
