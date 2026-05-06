@@ -132,6 +132,46 @@ services:
       - api
       - ws-gateway
 
+  signer:
+    # Holds HD_MASTER_MNEMONIC. The API and the (future) withdrawal
+    # broadcaster talk to it over a Unix socket on a shared volume —
+    # never over the network. cap_drop ALL + no-new-privileges + a
+    # read_only rootfs mean RCE inside this container yields a process
+    # that cannot escalate, persist anywhere, or reach the internet.
+    # The mnemonic itself is unset from the environment as soon as the
+    # binary parses it (see cmd/signer/main.go), so /proc/<pid>/environ
+    # is uninteresting after boot. The container runs as UID 1000
+    # directly (matches signer-socket's pre-owned tmpfs) so we never
+    # need CAP_CHOWN.
+    build:
+      context: ./services/signer
+      dockerfile: Dockerfile
+    user: "1000:1000"
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 64m
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    env_file: .env
+    environment:
+      SIGNER_SOCKET_PATH: /run/signer/signer.sock
+      HEALTH_PORT: 8086
+    volumes:
+      - signer-socket:/run/signer
+    # Host port binding lives in docker-compose.dev.yml — prod exposes
+    # only Caddy on 80/443. The api talks to the signer via the Unix
+    # socket on signer-socket; nothing else needs the health port.
+    healthcheck:
+      <<: *hc
+      # Distroless static has no wget/curl. The signer binary supports
+      # a -healthcheck self-probe that dials its own /healthz and exits 0/1.
+      test: ["CMD", "/signer", "-healthcheck"]
+
   api:
     <<: *ts-service
     mem_limit: 512m
@@ -141,6 +181,19 @@ services:
     environment:
       SERVICE_NAME: api
       PORT: ${API_PORT:-3001}
+      SIGNER_SOCKET_PATH: /run/signer/signer.sock
+    volumes:
+      # Read-write because Unix socket clients need to write to the socket
+      # file to send requests. cap_drop + the API's existing isolation are
+      # the security boundary, not the mount mode.
+      - signer-socket:/run/signer
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      signer:
+        condition: service_healthy
     # Host port binding lives in docker-compose.dev.yml — prod exposes only
     # Caddy on 80/443. Healthcheck below uses the container's own loopback.
     healthcheck:
@@ -253,3 +306,17 @@ volumes:
   redis-data:
   caddy-data:
   caddy-config:
+  # Shared between signer (writes the socket file) and api (read-only
+  # mount). Tmpfs so the socket lives in RAM only — restart of the
+  # signer recreates it; nothing about the secret material survives a
+  # crash on disk.
+  signer-socket:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      # Pre-own the tmpfs volume to UID 1000 / GID 1000 (the signer +
+      # api containers' non-root user) so the signer process can create
+      # the socket file without needing CAP_CHOWN — which we strip via
+      # cap_drop ALL on every service.
+      o: "size=4m,mode=750,uid=1000,gid=1000"

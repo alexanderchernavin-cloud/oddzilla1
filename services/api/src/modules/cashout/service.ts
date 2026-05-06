@@ -42,6 +42,7 @@ import {
 } from "../../lib/errors.js";
 import { compute } from "./algorithm.js";
 import { writeCommunityProjection } from "../community/projection.js";
+import { evaluateAchievements } from "../community/achievements.js";
 
 // Quote validity. Long enough for the user to read + click + sit
 // through the acceptance delay; short enough that stale offers don't
@@ -372,17 +373,25 @@ export class CashoutService {
       return { payoutMicro: offer, cashedOutAt };
     });
 
-    // Phase 10.2 community projection — runs OUTSIDE the cashout tx on
-    // purpose. If we ran it inside, any SQL error in the projection
-    // would leave the underlying tx in an aborted state; even though
-    // the JS catch absorbs the error, the implicit COMMIT then fails
-    // and rolls back the cashout. Backfill (`POST /admin/community/
-    // backfill`) sweeps any miss, so a projection failure is genuinely
-    // best-effort here — the cashout is already durably committed.
+    // Phase 10.2 community projection + Phase 10.4 achievement eval.
+    // Both run OUTSIDE the cashout tx on purpose. If we ran them inside,
+    // any SQL error in either statement would leave the underlying tx
+    // in an aborted state; even though the JS catch absorbs the error,
+    // the implicit COMMIT then fails and rolls back the cashout.
+    // Backfill (`POST /admin/community/backfill`) sweeps any miss, so a
+    // projection failure is genuinely best-effort here — the cashout is
+    // already durably committed. Achievement eval is idempotent on
+    // (user_id, achievement_id), so a re-run on the next projection
+    // write recovers any miss.
     try {
       await writeCommunityProjection(this.db, [ticketId]);
     } catch {
       // best-effort — backfill recovers any miss
+    }
+    try {
+      await evaluateAchievements(this.db, [ticketId]);
+    } catch {
+      // best-effort — next projection write re-evaluates
     }
 
     // Best-effort WS push so the user's open-bets list flips immediately.

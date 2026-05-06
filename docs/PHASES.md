@@ -727,12 +727,60 @@ profile stats, USDT default, OZ tab toggle).
   cards on the next page navigation), and adding ws-gateway routing
   is its own concern. Tracking as a 10.3a follow-up.
 
-### Phase 10.4 — Achievements + AI seed bettors
+### Phase 10.4 — Achievements + AI seed bettor PnL filter ✔ (2026-05-06)
 
-`achievement_definitions` + `user_achievements`; AI seed bettors flagged
-via `users.is_ai=true` (excluded from `/admin/stats/pnl-by-day`).
-Also lights up the Copyability score component (15 pts): the per-leg
-share of markets still in `status=1` at scoring time.
+- Migration `0029_community_achievements.sql` adds:
+  - `achievement_definitions` (id TEXT PK, title, description, icon
+    lucide-slug, sort_order). Hand-curated catalog; no admin CRUD.
+  - `user_achievements` (composite PK on `(user_id, achievement_id)`
+    for idempotent unlocks; cascade on user delete).
+  - Five starter badges seeded inline: `first_win`, `combo_5`,
+    `odds_20`, `payout_100x`, `streak_10`. Currency-agnostic
+    predicates by design.
+- Evaluation co-located with the projection write hook. Same SQL on
+  Go (`store.EvaluateAchievements`) and TS
+  (`services/api/src/modules/community/achievements.ts ::
+  evaluateAchievements`); called from `settler.maybeSettleTicket`,
+  the cashout transaction, and the admin backfill loop. `INSERT ...
+  ON CONFLICT DO NOTHING` makes re-runs no-ops. Rollback paths
+  don't revoke — achievements are facts about user history.
+- Public profile API now returns the unlock list inline (catalog
+  metadata denormalised into the response so the web client renders
+  without a second roundtrip). `/u/[nickname]` adds an Achievements
+  grid that maps `icon` slug onto the existing storefront icon set
+  (Trophy / Star / Bell / Arrow); unknown slugs fall back to Trophy.
+- AI seed bettor PnL filter (Decision D2). `users.is_ai=true`
+  accounts are now excluded from `/admin/stats/{kpis,pnl-by-day,
+  big-wins}`. Their bets settle through the real ledger but their
+  volume isn't real revenue or real engagement; dropping them keeps
+  the dashboard honest. The seeding script and bet generator are a
+  10.4b follow-up.
+
+**Acceptance bar:**
+- Migration applies cleanly; the 5 starter badges land in
+  `achievement_definitions`.
+- Settling a winning ticket inserts a `first_win` row in
+  `user_achievements` (idempotent — re-running settle never
+  duplicates).
+- A 5-leg combo win unlocks `combo_5`; a 25.0-odds win unlocks
+  `odds_20`.
+- `/community/users/:nickname/profile` returns the unlock list with
+  catalog metadata.
+- `/u/[nickname]` renders the Achievements grid.
+- `/admin/stats/pnl-by-day` excludes any `users.is_ai=true` account.
+
+### Phase 10.4 carry-overs (10.4b — separate PR)
+
+- AI bet generator: scheduled job that reads the next-24h fixture
+  board, picks 1-3 leg bets, submits via the normal `POST /bets`
+  path. Funded via a separate admin-credit pool with a capped weekly
+  budget. Plan calls it out under Phase 10.4 — splitting it out
+  because the placement loop is a meaningful new system, while the
+  schema + flag enforcement (this PR) lights up Decision D2 today.
+- Copyability score component (15 pts) on `community_tickets`. Spec
+  is ambiguous (per-leg market-still-open share, but evaluated when
+  exactly?); deferred until the leaderboard surface is mature
+  enough to reason about it concretely.
 
 ## Security audit pass (PR #130, 2026-05-06)
 
@@ -817,6 +865,47 @@ this PR + 2 Phase 10 catch-up). 6 service images rebuilt serially. All
 enforces (no-Origin → 403, attacker-Origin → 403, allowlisted-Origin → 400
 on bad creds, expected).
 
+## Signer container (PR #132, 2026-05-06)
+
+Closes one of the pre-launch exit gates: `HD_MASTER_MNEMONIC` no longer
+lives in the API container. A new Go service [`services/signer`](../services/signer/)
+holds the mnemonic and exposes two operations over a Unix socket on a
+tmpfs volume shared only with the API:
+
+- `POST /derive` — `{network, userIndex}` → `{address, derivationPath}`.
+- `POST /sign` — `{derivationPath, messageHash, auditTag}` → `{signature, address}`.
+  ECDSA over a 32-byte hash; no chain-specific encoding (caller hashes
+  RLP / protobuf and asks for a signature). Keeps the signer
+  chain-agnostic and tiny.
+
+Hardening: `cap_drop: ALL`, `no_new_privileges:true`, `read_only: true`,
+`mem_limit: 64m`. The mnemonic is read once at boot then
+`os.Unsetenv("HD_MASTER_MNEMONIC")` so `/proc/<pid>/environ` is
+uninteresting after startup. The socket lives on a tmpfs volume
+(`size=4m, mode=750`) — no on-disk artefacts of the secret.
+
+API side: [`services/api/src/lib/hdwallet.ts`](../services/api/src/lib/hdwallet.ts)
+loses its local derivation code (it had a latent bug — `HDNodeWallet.fromMnemonic(m)`
+returns the leaf at the default ETH path, not the BIP32 root — that
+crashed for any `userIndex != 0` and was hidden by `HD_MASTER_MNEMONIC`
+being empty in prod). The TS file now keeps only `userIndexFromUUID`
++ `derivationPath` + a re-export of [`signer-client.ts`](../services/api/src/lib/signer-client.ts),
+which dials the Unix socket via undici. There is no offline fallback;
+`SIGNER_SOCKET_PATH` is required for any HD operation.
+
+Parity: a Go test in [`services/signer/internal/derive/derive_test.go`](../services/signer/internal/derive/derive_test.go)
+pins ETH idx=0 of the BIP44 abandon-mnemonic vector to the canonical
+`0x9858EfFD232B4033E47d90003D41EC34EcaEda94` (verified against
+MetaMask import, ethers.js, and Trezor). The Tron path uses the same
+secp256k1 derivation, only the address-encoding wrapper differs
+(`0x41 || keccak256(uncompressed_pubkey[1:])[-20:]` then base58check).
+
+What's NOT done yet (follow-up): auto-broadcast withdrawals through the
+signer. Today the admin still pastes `tx_hash` from an external signer
+into mark-submitted, even though the signer container could now sign
+the tx itself. That's the next iteration; the isolation work was the
+load-bearing part.
+
 ## Post-MVP candidates (not in scope yet)
 
 - Outright markets (tournament winners) — requires dynamic outcome handling.
@@ -835,7 +924,12 @@ Independent of phase numbering — these must all be true:
 
 1. KYC/AML flow live and legally reviewed.
 2. Sportsbook licensing in place.
-3. HD master key moved out of env into isolated signer.
+3. HD master key moved out of env into isolated signer. **Done in PR #132**
+   ([`services/signer`](../services/signer/)) — the mnemonic now lives
+   only in that container's startup env (immediately unset post-parse)
+   and the API talks to it over a Unix socket. Outstanding follow-up:
+   auto-broadcast signed withdrawals through the signer instead of the
+   current admin-pastes-tx-hash flow.
 4. Wallet reconciliation job (daily sum of ledger == sum of balances)
    running and alerting.
 5. Backups: Postgres daily full + WAL archived off-box. (PR #130 added

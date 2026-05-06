@@ -45,6 +45,7 @@ jobs:
           - settlement
           - bet-delay
           - wallet-watcher
+          - signer
     steps:
       - uses: actions/checkout@v4
 

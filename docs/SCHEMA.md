@@ -100,6 +100,30 @@ Canonical SQL lives in [`../packages/db/migrations/`](../packages/db/migrations/
   `ReverseSettledTicket`; cashout (`services/api`, TS) writes the
   projection inline; the admin endpoint `POST /admin/community/
   backfill` recovers any miss.
+- `0029_community_achievements.sql` — Phase 10.4 starter badges.
+  - `achievement_definitions` — hand-curated badge catalog. `id` is a
+    stable text slug; `icon` references a lucide-icon slug from
+    `apps/web/src/components/ui/icons.tsx`; `sort_order` controls
+    profile display ordering. No admin CRUD planned — edit via direct
+    DB ops if the product team renames or retires a badge.
+  - `user_achievements` — unlock log. Composite PK
+    `(user_id, achievement_id)` is the idempotency story for the
+    evaluator that runs after every projection write. Cascade on user
+    delete; achievement definitions never delete in practice but the
+    cascade prevents orphan rows if one ever does.
+  - Five starter badges seeded inline: `first_win`, `combo_5` (5+ leg
+    combo win), `odds_20` (win at 20.00+ total odds), `payout_100x`
+    (single ticket payout ≥ 100× stake), `streak_10` (10+ wins
+    cross-currency). All predicates are currency-agnostic — absolute-
+    payout badges that need currency segregation belong to a later
+    iteration once leaderboards mature.
+  - Evaluation runs co-located with the projection write hook. See
+    [`services/settlement/internal/store/store.go`](../services/settlement/internal/store/store.go)
+    `EvaluateAchievements` (Go) and
+    [`services/api/src/modules/community/achievements.ts`](../services/api/src/modules/community/achievements.ts)
+    `evaluateAchievements` (TS). Both run the same SQL — `INSERT ...
+    ON CONFLICT DO NOTHING` against the composite PK. Rollback paths
+    don't revoke; achievements are facts about user history.
 
 Drizzle mirror is [`../packages/db/src/schema/`](../packages/db/src/schema/).
 

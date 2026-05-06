@@ -15,6 +15,10 @@
 # `docker compose exec <svc> wget -qO- http://127.0.0.1:PORT/healthz`
 # for health debugging — no host loopback exposure.
 services:
+  signer:
+    ports:
+      - "127.0.0.1:8086:8086"
+
   api:
     command: ["pnpm", "--filter", "@oddzilla/api", "dev"]
     ports:
