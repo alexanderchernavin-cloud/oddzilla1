@@ -145,6 +145,22 @@ export function LiveMarkets({
 
   const [scope, setScope] = useState<string>("all");
   const visible = scope === "all" ? mergedGroups : mergedGroups.filter((g) => g.id === scope);
+  const hasAnyMarket = mergedGroups.some((g) => g.markets.length > 0);
+
+  if (!hasAnyMarket) {
+    // Subscription is still mounted via useLiveOdds above — when ticks
+    // arrive carrying market ids we don't have an SSR shape for, the
+    // page falls back to its placeholder. Adding new market shapes
+    // mid-session would require a client-side fetch on first-tick-for-
+    // unknown-market; for now the SSR filter (status IN 1,0,-1) covers
+    // the common case (in-play suspension windows).
+    return (
+      <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
+        No markets from the feed yet. This page will update live when odds start
+        flowing.
+      </p>
+    );
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -246,6 +262,18 @@ function ScopeTab({
   );
 }
 
+// Whether the market is currently bettable. Derived from the OUTCOMES
+// rather than `m.status` because the WS only carries outcome-level
+// updates (active flag + publishedOdds) — the parent market.status
+// stays at whatever the SSR snapshot baked in. If we keyed off m.status
+// alone, a market that was suspended at SSR would never visually
+// "unlock" again, even after an odds_change re-activates every outcome.
+// Symmetric on the way out: when every outcome flips inactive, the
+// market is suspended regardless of m.status.
+function isMarketBettable(m: MarketSnapshot): boolean {
+  return m.outcomes.some((o) => o.active && !!o.publishedOdds);
+}
+
 function SingleMarketCard({
   market: m,
   match,
@@ -255,7 +283,7 @@ function SingleMarketCard({
   match: MatchMeta;
   slip: ReturnType<typeof useBetSlip>;
 }) {
-  const suspended = m.status !== 1;
+  const suspended = !isMarketBettable(m);
   const cols = m.outcomes.length <= 2 ? 2 : m.outcomes.length <= 3 ? 3 : 4;
   return (
     <div className="card" style={{ padding: 16, borderRadius: "var(--r-md)" }}>
@@ -385,7 +413,7 @@ function LineFamilyCard({
           </div>
         ))}
         {family.markets.map((m) => {
-          const suspended = m.status !== 1;
+          const suspended = !isMarketBettable(m);
           return (
             <LineRow
               key={m.id}
@@ -488,7 +516,7 @@ function toggle(
   match: MatchMeta,
   outcomeLabel: string,
 ) {
-  const suspended = m.status !== 1;
+  const suspended = !isMarketBettable(m);
   if (!o.publishedOdds || !o.active || suspended) return;
   if (slip.has(m.id, o.outcomeId)) {
     slip.remove(m.id, o.outcomeId);
