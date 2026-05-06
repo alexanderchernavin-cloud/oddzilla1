@@ -12,6 +12,8 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { openSocket } from "./ws-client.js";
+
 export interface LiveOddsTick {
   marketId: string;
   outcomeId: string;
@@ -23,8 +25,6 @@ export interface LiveOddsTick {
   active: boolean;
   ts: string; // ISO
 }
-
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:3002";
 
 export interface TicketFrame {
   type: "ticket";
@@ -80,7 +80,10 @@ function ensureConnected(conn: SharedConnection) {
   if (conn.opening) return;
 
   conn.opening = true;
-  const ws = new WebSocket(`${WS_URL}/ws`);
+  // openSocket() resolves the URL from window.location when
+  // NEXT_PUBLIC_WS_URL is empty — matches the ws-client.ts pattern and
+  // avoids baking `ws://localhost:3002` into the prod bundle.
+  const ws = openSocket("/ws");
   conn.socket = ws;
 
   ws.addEventListener("open", () => {
