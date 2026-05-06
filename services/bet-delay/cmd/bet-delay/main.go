@@ -89,16 +89,24 @@ func startHealth(port string, pool *pgxpool.Pool, rdb *redis.Client, w *worker.W
 			httpW.WriteHeader(http.StatusServiceUnavailable)
 		}
 		promoted, rejected, errs := w.Stats()
+		health := w.Health()
+		// LISTEN being down isn't fatal — the sweep loop is the
+		// fallback path so tickets still finalise on the configured
+		// cadence — but it's a real signal an operator should see.
+		// Keep the response 200 (no Compose restart) and surface the
+		// `listenConnected: false` field instead.
 		httpW.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(httpW).Encode(map[string]any{
-			"status":        status,
-			"service":       "bet-delay",
-			"db":            okOrDown(dbOk),
-			"redis":         okOrDown(redisOk),
-			"uptimeSeconds": int64(time.Since(startedAt).Seconds()),
-			"promoted":      promoted,
-			"rejected":      rejected,
-			"errors":        errs,
+			"status":          status,
+			"service":         "bet-delay",
+			"db":              okOrDown(dbOk),
+			"redis":           okOrDown(redisOk),
+			"listenConnected": health.ListenConnected,
+			"lastNotifyAt":    health.LastNotifyAt,
+			"uptimeSeconds":   int64(time.Since(startedAt).Seconds()),
+			"promoted":        promoted,
+			"rejected":        rejected,
+			"errors":          errs,
 		})
 	})
 	srv := &http.Server{
