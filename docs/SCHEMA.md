@@ -164,6 +164,17 @@ token; the raw token only ever lives in the user's httpOnly cookie. Rotation
 on each refresh sets `revoked_at` on the old row and creates a new one. The
 partial index `WHERE revoked_at IS NULL` makes active-session lookups cheap.
 
+`family_id UUID NOT NULL` + `parent_session_id UUID` (PR #130) implement
+refresh-token replay detection. Login starts a fresh family
+(`family_id=randomUUID()`); refresh continues an existing one
+(`family_id=parent.family_id`, `parent_session_id=parent.id`). If a
+client presents a refresh token whose session is **already revoked**,
+that's the canonical theft signal — `AuthService.refresh` then revokes
+every active session in the family in one statement and flips each
+session's Redis `session:status:{sid}` cache to `revoked`, so any access
+JWT that was minted in that family stops working immediately rather
+than hanging around for its 15-minute lifetime.
+
 ### Wallet
 
 **`wallets`** — one row per `(user_id, currency)`. Composite primary key
@@ -246,6 +257,21 @@ reorg). `wallet-watcher` writes new rows from chain events; the
 deposit processor ticks confirmations and credits at threshold (Tron
 19, ETH 12 — configurable in `services/wallet-watcher/internal/config`).
 
+`block_hash TEXT` (PR #130) is captured at insert time for ETH
+deposits. Before crediting, the processor calls
+`Scanner.VerifyDeposit(dep)` — for ETH this looks up
+`eth_getBlockByNumber(block_number)` and compares the canonical hash;
+mismatch flips the row to `status='orphaned'` instead of crediting.
+Tron path is confirmation-driven (TronGrid `only_confirmed=true` filter
+already means events are past finality at ~19 confirmations) and
+returns true unconditionally. Pre-migration rows have `block_hash=NULL`
+and skip-verify.
+
+For TRC20, multi-Transfer txs no longer collide on
+`(network, tx_hash, log_index=0)` — the scanner now captures
+`event_index` per Transfer (PR #130), so two events to the same address
+in one tx produce two distinct deposit rows.
+
 **`withdrawals`** — user-initiated. **MVP is admin-driven** (no signer
 service yet): `requested` → admin approves (`approved`) → human or
 signer broadcasts on-chain → admin posts tx hash (`submitted`) → admin
@@ -253,6 +279,19 @@ posts confirmation (`confirmed`). At `confirmed`, the wallet is
 debited and a `withdrawal` ledger row is written. Failure escapes:
 `requested` can be `cancelled` by the user; admin can `mark-failed`
 from `approved` or `submitted`, releasing the lock.
+
+`approved_by_user_id`, `submitted_by_user_id`, `confirmed_by_user_id`
+(PR #130) record the admin actor at each lifecycle step. The CHECK
+constraint `withdrawals_distinct_approver_confirmer` enforces
+`confirmed_by_user_id ≠ approved_by_user_id` so a single compromised
+admin token cannot drain a wallet by approving + confirming alone.
+The unique partial index on `(network, tx_hash) WHERE tx_hash IS NOT NULL`
+rejects a duplicate hash at DB layer (also enforced per-network at the
+route via regex). Lock-release paths (user cancel, admin reject, admin
+fail) write `wallet_ledger` audit rows (`adjustment` type with
+`withdrawal_cancel` / `withdrawal_reject` / `withdrawal_fail`
+ref_type) so every `wallets.locked_micro` decrement has a visible
+trail.
 
 ### Catalog (Sport > Category > Tournament > Match)
 
@@ -405,6 +444,31 @@ partial index `WHERE status='pending'` keeps the queue scan fast.
 
 **`admin_audit_log`** — structured record of every admin mutation. Includes
 JSONB before/after snapshots so we can reconstruct state post-hoc.
+
+`prev_hash BYTEA` and `row_hash BYTEA` (PR #130) form a SHA-256 hash
+chain across the table. The BEFORE INSERT trigger
+`admin_audit_log_chain_trg` reads the previous row's `row_hash`,
+computes `digest(prev_hash || canonical_payload, 'sha256')`, and
+populates both columns on the new row. A transaction-scoped advisory
+lock (`pg_advisory_xact_lock(hashtext('admin_audit_log_chain'))`)
+serialises concurrent inserts so the chain is deterministic. Existing
+rows were backfilled by migration 0026 so the chain is valid from
+row 1.
+
+The verifier function `admin_audit_chain_check()` returns `(id, ok)`
+per row by recomputing the expected hashes in id order; any `ok=false`
+row has been tampered with after insert (or the chain has a structural
+break at that id). Run it from oncall:
+
+```sql
+SELECT COUNT(*) FILTER (WHERE ok) AS valid,
+       COUNT(*) FILTER (WHERE NOT ok) AS broken,
+       COUNT(*) AS total
+  FROM admin_audit_chain_check();
+```
+
+`broken=0` always. Non-zero is the canonical "someone modified the
+audit table via direct DB access" signal.
 
 **`amqp_state`** — persists Oddin producer recovery watermarks. Row keys are
 namespaced strings (`"producer:1"` for pre-match, `"producer:2"` for live).
