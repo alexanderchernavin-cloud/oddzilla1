@@ -1,6 +1,8 @@
 import Link from "next/link";
-import type { Currency } from "@oddzilla/types";
-import { SUPPORTED_CURRENCIES } from "@oddzilla/types";
+// Runtime values must come from the /currencies subpath — Next.js webpack
+// can't resolve the ".js" re-exports in the package root (see
+// `apps/web/src/components/shell/bet-slip-rail.tsx` for the same workaround).
+import { SUPPORTED_CURRENCIES, type Currency } from "@oddzilla/types/currencies";
 
 // Per-currency stats toggle on /u/[nickname]. Driven by `?currency=`
 // rather than client state so the server-rendered numbers stay

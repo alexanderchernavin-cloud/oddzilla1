@@ -1,6 +1,8 @@
 import { notFound } from "next/navigation";
-import type { CommunityProfile, Currency } from "@oddzilla/types";
-import { isCurrency } from "@oddzilla/types";
+import type { CommunityProfile } from "@oddzilla/types";
+// Runtime values must come from the /currencies subpath — Next.js webpack
+// can't resolve the ".js" re-exports in the package root.
+import { isCurrency, type Currency } from "@oddzilla/types/currencies";
 import { serverApi } from "@/lib/server-fetch";
 import { CurrencyTabs } from "@/components/community/currency-tabs";
 

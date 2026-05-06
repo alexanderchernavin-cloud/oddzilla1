@@ -10,7 +10,8 @@
     "./money": "./src/money.ts",
     "./currencies": "./src/currencies.ts",
     "./products": "./src/products.ts",
-    "./specifiers": "./src/specifiers.ts"
+    "./specifiers": "./src/specifiers.ts",
+    "./community": "./src/community.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
