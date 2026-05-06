@@ -26,7 +26,11 @@ ENV_FILE="/home/team/oddzilla/.env"
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 
 mkdir -p "${BACKUP_DIR}"
-chmod 700 "${BACKUP_DIR}"
+# Dir + dumps owned root:team mode 750/640 so the `team` user (operator
+# SSH login) can scp dumps to a workstation without sudo. Other local
+# users (none today, but defensive) still can't read them.
+chown root:team "${BACKUP_DIR}" 2>/dev/null || true
+chmod 750 "${BACKUP_DIR}"
 
 # Extract only the postgres credentials we need. Falls back to the same
 # defaults that docker-compose.yml uses so a missing var doesn't kill
@@ -83,7 +87,8 @@ fi
 # Wipe the password from the shell as soon as we're done with it.
 unset POSTGRES_PASSWORD
 
-chmod 600 "${DUMP}"
+chown root:team "${DUMP}" 2>/dev/null || true
+chmod 640 "${DUMP}"
 
 # Rotate — delete anything older than RETENTION_DAYS.
 find "${BACKUP_DIR}" -maxdepth 1 -type f \
