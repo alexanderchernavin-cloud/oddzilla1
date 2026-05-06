@@ -4,6 +4,9 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { eq, desc, and, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { getAddress } from "ethers";
+import bs58 from "bs58";
 import {
   users,
   wallets,
@@ -339,17 +342,52 @@ export default async function walletRoutes(app: FastifyInstance) {
   });
 }
 
-// Minimal sanity checks on destination addresses. Real validation
-// (checksum verification) happens inside wallet-watcher when it signs.
+// Validate destination addresses by checksum so a single-character typo
+// doesn't pass the request and (post-launch, once the signer broadcasts)
+// move funds to an unrecoverable address. ERC20 uses EIP-55 mixed-case;
+// TRC20 uses base58check with the mainnet 0x41 prefix.
 function validateDestinationAddress(network: "TRC20" | "ERC20", address: string) {
   if (network === "ERC20") {
     if (!/^0x[0-9a-fA-F]{40}$/.test(address)) {
       throw new BadRequestError("invalid_erc20_address", "invalid_erc20_address");
     }
-  } else {
-    // Tron base58 T-prefixed, 34 chars typical.
-    if (!/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(address)) {
-      throw new BadRequestError("invalid_trc20_address", "invalid_trc20_address");
+    // ethers' getAddress validates the EIP-55 checksum and throws
+    // INVALID_ARGUMENT for typo'd capitalisation. All-lowercase /
+    // all-uppercase forms are accepted (no checksum claimed).
+    let canonical: string;
+    try {
+      canonical = getAddress(address);
+    } catch {
+      throw new BadRequestError("invalid_erc20_address", "invalid_erc20_address");
     }
+    // Reject mixed-case addresses whose checksum doesn't match — the
+    // user clearly intended a checksummed address but typo'd it.
+    const isAllLower = address === address.toLowerCase();
+    const isAllUpper = address === address.toUpperCase();
+    if (!isAllLower && !isAllUpper && address !== canonical) {
+      throw new BadRequestError("invalid_erc20_address", "invalid_erc20_address");
+    }
+    return;
+  }
+  // TRC20: base58 T-prefixed, 34 chars; mainnet payload starts with 0x41.
+  if (!/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(address)) {
+    throw new BadRequestError("invalid_trc20_address", "invalid_trc20_address");
+  }
+  let decoded: Uint8Array;
+  try {
+    decoded = bs58.decode(address);
+  } catch {
+    throw new BadRequestError("invalid_trc20_address", "invalid_trc20_address");
+  }
+  // 21-byte payload (1 prefix + 20 pubkey-hash) + 4-byte checksum.
+  if (decoded.length !== 25 || decoded[0] !== 0x41) {
+    throw new BadRequestError("invalid_trc20_address", "invalid_trc20_address");
+  }
+  const payload = Buffer.from(decoded.subarray(0, 21));
+  const checksum = Buffer.from(decoded.subarray(21));
+  const sha1 = createHash("sha256").update(payload).digest();
+  const sha2 = createHash("sha256").update(sha1).digest();
+  if (!sha2.subarray(0, 4).equals(checksum)) {
+    throw new BadRequestError("invalid_trc20_address", "invalid_trc20_address");
   }
 }

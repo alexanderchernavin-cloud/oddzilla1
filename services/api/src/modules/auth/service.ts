@@ -162,10 +162,24 @@ export class AuthService {
     password: string,
     ctx: { ip: string | null; userAgent: string | null; deviceId: string | null },
   ): Promise<{ user: PublicUser; tokens: IssuedTokens }> {
+    const lowerEmail = email.toLowerCase();
+    // Per-account rate limit on top of the per-IP @fastify/rate-limit
+    // (5/min/IP). An attacker rotating residential proxies otherwise
+    // sustains effectively unlimited per-account guesses; this caps any
+    // single email at LOGIN_FAIL_THRESHOLD failures inside the window.
+    // Counter increments BEFORE we know whether the email is registered,
+    // so the response shape doesn't leak account existence.
+    if (await this.isLoginRateLimited(lowerEmail)) {
+      // Equalise timing so the lockout response isn't visibly faster
+      // than a successful argon2 verify.
+      await verifyDummyPassword(password);
+      throw new UnauthorizedError("too_many_login_attempts", "too_many_login_attempts");
+    }
+
     const [user] = await this.db
       .select()
       .from(users)
-      .where(eq(users.email, email.toLowerCase()))
+      .where(eq(users.email, lowerEmail))
       .limit(1);
     if (!user) {
       // Equalise wall-clock time so an attacker can't tell registered
@@ -173,15 +187,23 @@ export class AuthService {
       // this branch a missing-user request returns in ~1 ms while a found
       // user spends ~50 ms inside argon2.verify.
       await verifyDummyPassword(password);
+      await this.recordLoginFailure(lowerEmail);
       throw new UnauthorizedError("invalid_credentials", "invalid_credentials");
     }
 
     const ok = await verifyPassword(user.passwordHash, password);
-    if (!ok) throw new UnauthorizedError("invalid_credentials", "invalid_credentials");
+    if (!ok) {
+      await this.recordLoginFailure(lowerEmail);
+      throw new UnauthorizedError("invalid_credentials", "invalid_credentials");
+    }
 
     if (user.status === "blocked") {
       throw new UnauthorizedError("account_blocked", "account_blocked");
     }
+
+    // Success — clear the failure counter so prior typos don't lock out
+    // this user later.
+    await this.clearLoginFailures(lowerEmail);
 
     await this.db
       .update(users)
@@ -190,6 +212,42 @@ export class AuthService {
 
     const tokens = await this.issueTokens(user.id, user.role, ctx);
     return { user: publicUser(user), tokens };
+  }
+
+  // Per-account login throttle. Sliding window, Redis-backed; survives
+  // api restarts (the in-memory @fastify/rate-limit state doesn't).
+  private static readonly LOGIN_FAIL_THRESHOLD = 10;
+  private static readonly LOGIN_FAIL_WINDOW_SECONDS = 15 * 60;
+  private loginFailKey(emailLower: string): string {
+    return `auth:login_fail:${emailLower}`;
+  }
+  private async isLoginRateLimited(emailLower: string): Promise<boolean> {
+    try {
+      const raw = await this.redis.get(this.loginFailKey(emailLower));
+      return Boolean(raw) && Number(raw) > AuthService.LOGIN_FAIL_THRESHOLD;
+    } catch {
+      // Redis blip — fail open. Better one extra attempt than locking
+      // every user out of an outage.
+      return false;
+    }
+  }
+  private async recordLoginFailure(emailLower: string): Promise<void> {
+    try {
+      const key = this.loginFailKey(emailLower);
+      const count = await this.redis.incr(key);
+      if (count === 1) {
+        await this.redis.expire(key, AuthService.LOGIN_FAIL_WINDOW_SECONDS);
+      }
+    } catch {
+      // ignore — telemetry only
+    }
+  }
+  private async clearLoginFailures(emailLower: string): Promise<void> {
+    try {
+      await this.redis.del(this.loginFailKey(emailLower));
+    } catch {
+      // ignore
+    }
   }
 
   /**

@@ -152,7 +152,14 @@ function ensureConnected(conn: SharedConnection) {
       conn.subscriptionCounts.size > 0 || conn.ticketListeners.size > 0;
     if (!hasSubscribers) return;
 
-    const delay = Math.min(16_000, 1000 * 2 ** conn.reconnectAttempts);
+    // Exponential backoff with full jitter so a synchronised reconnect
+    // storm (Caddy restart, network blip) doesn't all hit ws-gateway at
+    // exactly the same instant. Without jitter, every browser
+    // recomputes the same `1000 * 2 ** N` delay and stampedes — which
+    // is exactly what triggers the MAX_CLIENTS=503 rejection on the
+    // server side.
+    const cap = Math.min(16_000, 1000 * 2 ** conn.reconnectAttempts);
+    const delay = Math.floor(cap * (0.5 + Math.random() * 0.5));
     conn.reconnectAttempts += 1;
     if (conn.reconnectTimer) clearTimeout(conn.reconnectTimer);
     conn.reconnectTimer = setTimeout(() => ensureConnected(conn), delay);

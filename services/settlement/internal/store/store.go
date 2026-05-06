@@ -641,16 +641,24 @@ SELECT COUNT(*) FROM wallet_ledger
 }
 
 // LatestUnreversedPayoutRefID returns the ref_id of the most recent
-// `bet_payout` ledger row for `ticketID` that has NOT been compensated by
-// an `adjustment` row sharing the same ref_id. Returns ("", false, nil)
-// when no such row exists (either no settle ever happened, the prior
-// payout was zero, or every settle has already been reversed).
+// `bet_payout` OR `bet_refund` ledger row for `ticketID` that has NOT
+// been compensated by an `adjustment` row sharing the same ref_id.
+// Returns ("", false, nil) when no such row exists (either no settle
+// ever happened or every settle has already been reversed).
+//
+// `bet_refund` is included so all-void combos (where the prior credit
+// was a refund of the stake, not a payout) get a paired adjustment row
+// when rolled back. Without it the audit invariant "every reversed
+// credit has a matching adjustment" silently breaks for the all-void
+// case. No money moves either way (refund == stake), but downstream
+// reconciliation tools that expect every unreversed ledger row to map
+// 1:1 with current ticket state would otherwise miscount.
 func LatestUnreversedPayoutRefID(ctx context.Context, tx pgx.Tx, ticketID string) (string, bool, error) {
 	var refID string
 	err := tx.QueryRow(ctx, `
 SELECT ref_id FROM wallet_ledger p
  WHERE p.ref_type = 'ticket'
-   AND p.type = 'bet_payout'
+   AND p.type IN ('bet_payout', 'bet_refund')
    AND (p.ref_id = $1 OR p.ref_id LIKE $1 || ':%')
    AND NOT EXISTS (
        SELECT 1 FROM wallet_ledger r

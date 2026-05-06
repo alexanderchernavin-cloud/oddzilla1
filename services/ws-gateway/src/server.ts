@@ -37,6 +37,18 @@ const USER_CHANNEL_PREFIX = "user:";
 const MAX_SUBSCRIPTIONS_PER_CLIENT = 100;
 const TOKEN_BUCKET_CAPACITY = 5;
 const TOKEN_BUCKET_REFILL_MS = 200; // 5/s
+// Hard cap on concurrent connections. Without it, a reconnect storm
+// during a Caddy / network blip stacks every browser's reconnects on
+// this single process and OOM-kills the container (mem_limit: 256m).
+// Tuned for a 256 MiB ws-gateway sized at ~50 KiB-per-client overhead.
+// At the cap we send HTTP 503 on the upgrade so the browser keeps its
+// existing exponential backoff (with jitter, see use-live-odds.ts).
+const MAX_CLIENTS = Number(process.env.WS_MAX_CLIENTS ?? 5000);
+// Idle sweep — every minute walk `clients` and drop entries whose
+// socket has already closed but `ws.on("close")` somehow never fired
+// (TCP-RST without a clean close, GFW-style packet drops). Defensive:
+// the close handler is the primary cleanup path.
+const STALE_SWEEP_INTERVAL_MS = 60_000;
 
 interface HelloMessage {
   type: "hello";
@@ -76,6 +88,26 @@ const jwtKey = secretKey(auth.jwtSecret);
 const sub = new Redis(env.REDIS_URL, { lazyConnect: false });
 const ctl = new Redis(env.REDIS_URL, { lazyConnect: false });
 
+// Track the subscribe-side connection so /healthz can fail when it goes
+// down — without this, the control client stays green while user/odds
+// frames silently stop being delivered and Compose keeps the container
+// healthy. ioredis emits 'ready'/'end'/'reconnecting' state events.
+let subReady = false;
+sub.on("ready", () => {
+  subReady = true;
+  log.info("sub redis ready");
+});
+sub.on("end", () => {
+  subReady = false;
+  log.warn("sub redis ended");
+});
+sub.on("reconnecting", () => {
+  subReady = false;
+});
+sub.on("error", (err: Error) => {
+  log.warn({ err: err.message }, "sub redis error");
+});
+
 interface ClientState {
   socket: WebSocket;
   userId: string;
@@ -108,16 +140,23 @@ const startedAt = Date.now();
 
 const http = createServer(async (req, res) => {
   if (req.url === "/healthz") {
-    const redisOk = await ctl
+    const ctlOk = await ctl
       .ping()
       .then((r: string) => r === "PONG")
       .catch(() => false);
+    // Both Redis clients must be live for fanout to work. The control
+    // client serves admin pings; the sub client carries every odds and
+    // user frame — degrading either should restart the container.
+    const redisOk = ctlOk && subReady;
     res.writeHead(redisOk ? 200 : 503, { "content-type": "application/json" });
     res.end(
       JSON.stringify({
         status: redisOk ? "ok" : "degraded",
         redis: redisOk ? "ok" : "down",
+        redisCtl: ctlOk ? "ok" : "down",
+        redisSub: subReady ? "ok" : "down",
         clients: clients.size,
+        maxClients: MAX_CLIENTS,
         matchSubscriptions: matchRefs.size,
         userSubscriptions: userRefs.size,
         uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
@@ -142,6 +181,17 @@ http.on("upgrade", (req, socket, head) => {
     const claims = await authenticate(req);
     if (!claims) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    if (clients.size >= MAX_CLIENTS) {
+      // Reject new upgrades over the cap. Browser-side reconnect logic
+      // (use-live-odds.ts) backs off with jitter, so this isn't a busy
+      // loop — it's a load-shed signal.
+      log.warn({ clients: clients.size, max: MAX_CLIENTS }, "rejecting upgrade — client cap reached");
+      socket.write(
+        "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 5\r\nConnection: close\r\n\r\n",
+      );
       socket.destroy();
       return;
     }
@@ -331,8 +381,32 @@ http.listen(env.WS_GATEWAY_PORT, "0.0.0.0", () => {
   log.info({ port: env.WS_GATEWAY_PORT }, "ws-gateway listening");
 });
 
+// Periodic sweep — drop ClientState entries whose underlying socket is
+// already CLOSED. The ws.on('close') handler is the primary cleanup
+// path; this catches edge cases where the close event never fired
+// (TCP-RST without a clean FIN).
+const staleSweep = setInterval(() => {
+  let dropped = 0;
+  for (const client of clients) {
+    if (
+      client.socket.readyState === WebSocket.CLOSED ||
+      client.socket.readyState === WebSocket.CLOSING
+    ) {
+      for (const matchId of client.matchIds) decrementMatchRef(matchId);
+      client.matchIds.clear();
+      decrementUserRef(client.userId);
+      clients.delete(client);
+      dropped += 1;
+    }
+  }
+  if (dropped > 0) log.info({ dropped, remaining: clients.size }, "stale sweep");
+}, STALE_SWEEP_INTERVAL_MS);
+// Don't block process exit on the timer.
+staleSweep.unref();
+
 function shutdown(signal: string) {
   log.info({ signal }, "shutting down");
+  clearInterval(staleSweep);
   for (const client of clients) {
     try {
       client.socket.close(1001, "server_shutdown");

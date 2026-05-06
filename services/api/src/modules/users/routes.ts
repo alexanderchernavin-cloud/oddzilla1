@@ -33,8 +33,18 @@ const passwordBody = z.object({
 // intentionally ~50ms per call; without a limit a stolen-cookie attacker
 // can brute-force `currentPassword` while also turning the endpoint into
 // a CPU-DoS surface.
+//
+// Default @fastify/rate-limit keys on IP, which means a stolen-cookie
+// attacker rotating residential proxies sustains effectively unlimited
+// guesses against a single user's `currentPassword`. Pin to req.user.id
+// (preHandler runs requireAuth) so the cap is per-user.
 const passwordChangeRateLimit = {
-  rateLimit: { max: 5, timeWindow: "5 minutes" },
+  rateLimit: {
+    max: 5,
+    timeWindow: "5 minutes",
+    keyGenerator: (request: { user?: { id?: string }; ip?: string }) =>
+      request.user?.id ?? request.ip ?? "anon",
+  },
 };
 
 export default async function usersRoutes(app: FastifyInstance) {
