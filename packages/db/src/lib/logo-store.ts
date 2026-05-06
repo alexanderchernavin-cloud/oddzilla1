@@ -21,20 +21,45 @@ const REQUEST_HEADERS = {
   Accept: "image/*",
 };
 
-// Cooperative 429 window. Once any caller observes a Liquipedia 429,
-// every subsequent fetch via this module pauses until `backoffUntil`.
-let backoffUntil = 0;
+// Cooperative 429 windows are PER-HOST. The original implementation
+// had a single global window — but a Liquipedia 429 (we hit those
+// constantly while the IP block is in effect) would also block the
+// Wikipedia fallback path, defeating the whole point of having one.
+// Keying on the URL host means Liquipedia's 30 s ban doesn't stall
+// upload.wikimedia.org / en.wikipedia.org calls.
+const backoffByHost = new Map<string, number>();
 
-export function tripBackoff(seconds: number): void {
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "";
+  }
+}
+
+export function tripBackoffFor(host: string, seconds: number): void {
   const target = Date.now() + seconds * 1000;
-  if (target > backoffUntil) backoffUntil = target;
+  const existing = backoffByHost.get(host) ?? 0;
+  if (target > existing) backoffByHost.set(host, target);
+}
+
+export async function respectBackoffFor(host: string): Promise<void> {
+  const until = backoffByHost.get(host) ?? 0;
+  const now = Date.now();
+  if (now < until) {
+    await new Promise((r) => setTimeout(r, until - now));
+  }
+}
+
+// Legacy non-host-keyed wrappers — kept so resolve-logos.ts compiles
+// without a churnier diff. They throttle on a synthetic "liquipedia.net"
+// host because every existing caller is the Liquipedia path.
+export function tripBackoff(seconds: number): void {
+  tripBackoffFor("liquipedia.net", seconds);
 }
 
 export async function respectBackoff(): Promise<void> {
-  const now = Date.now();
-  if (now < backoffUntil) {
-    await new Promise((r) => setTimeout(r, backoffUntil - now));
-  }
+  await respectBackoffFor("liquipedia.net");
 }
 
 export async function ensureStoreDir(storeDir: string): Promise<void> {
@@ -52,11 +77,12 @@ export async function downloadAndStore(
   competitorId: number,
   storeDir: string,
 ): Promise<string | null> {
-  await respectBackoff();
+  const host = hostOf(remoteUrl);
+  await respectBackoffFor(host);
   const res = await fetch(remoteUrl, { headers: REQUEST_HEADERS });
   if (res.status === 429) {
     const retryAfter = Number(res.headers.get("retry-after"));
-    tripBackoff(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 30);
+    tripBackoffFor(host, Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 30);
     return null;
   }
   if (!res.ok) return null;
@@ -151,7 +177,7 @@ function matchesEsportsCategory(categories: string[]): boolean {
 // care about the first hit — the resolver burns through too many teams
 // to backtrack.
 async function wikipediaTopTitle(name: string): Promise<string | null> {
-  await respectBackoff();
+  await respectBackoffFor("en.wikipedia.org");
   const url =
     "https://en.wikipedia.org/w/api.php?" +
     new URLSearchParams({
@@ -166,7 +192,7 @@ async function wikipediaTopTitle(name: string): Promise<string | null> {
   });
   if (res.status === 429) {
     const ra = Number(res.headers.get("retry-after"));
-    tripBackoff(Number.isFinite(ra) && ra > 0 ? ra : 30);
+    tripBackoffFor("en.wikipedia.org", Number.isFinite(ra) && ra > 0 ? ra : 30);
     return null;
   }
   if (!res.ok) return null;
@@ -192,7 +218,7 @@ interface WikipediaPage {
 // pageprops.page_image is the file name set by the {{infobox}}
 // template so it's reliable. Caller decides which to use.
 async function wikipediaPage(title: string): Promise<WikipediaPage | null> {
-  await respectBackoff();
+  await respectBackoffFor("en.wikipedia.org");
   const url =
     "https://en.wikipedia.org/w/api.php?" +
     new URLSearchParams({
@@ -209,7 +235,7 @@ async function wikipediaPage(title: string): Promise<WikipediaPage | null> {
   });
   if (res.status === 429) {
     const ra = Number(res.headers.get("retry-after"));
-    tripBackoff(Number.isFinite(ra) && ra > 0 ? ra : 30);
+    tripBackoffFor("en.wikipedia.org", Number.isFinite(ra) && ra > 0 ? ra : 30);
     return null;
   }
   if (!res.ok) return null;
@@ -224,7 +250,7 @@ async function wikipediaPage(title: string): Promise<WikipediaPage | null> {
 // upload.wikimedia.org URL via the imageinfo API.
 async function wikipediaFileUrl(filename: string): Promise<string | null> {
   const filePrefix = /^File:/i.test(filename) ? "" : "File:";
-  await respectBackoff();
+  await respectBackoffFor("en.wikipedia.org");
   const url =
     "https://en.wikipedia.org/w/api.php?" +
     new URLSearchParams({
@@ -240,7 +266,7 @@ async function wikipediaFileUrl(filename: string): Promise<string | null> {
   });
   if (res.status === 429) {
     const ra = Number(res.headers.get("retry-after"));
-    tripBackoff(Number.isFinite(ra) && ra > 0 ? ra : 30);
+    tripBackoffFor("en.wikipedia.org", Number.isFinite(ra) && ra > 0 ? ra : 30);
     return null;
   }
   if (!res.ok) return null;
