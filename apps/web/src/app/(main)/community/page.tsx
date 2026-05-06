@@ -16,12 +16,19 @@ interface SportsResponse {
   sports: Array<{ id: number; slug: string; name: string }>;
 }
 
+type SortKind = "recent" | "best";
+
+function parseSort(raw: string | undefined): SortKind {
+  return raw === "best" ? "best" : "recent";
+}
+
 export default async function CommunityFeedPage({
   searchParams,
 }: {
   searchParams: Promise<{
     currency?: string;
     sport?: string;
+    sort?: string;
     page?: string;
   }>;
 }) {
@@ -29,11 +36,12 @@ export default async function CommunityFeedPage({
   const currency: Currency | null =
     params.currency && isCurrency(params.currency) ? params.currency : null;
   const sportId = parseSportId(params.sport);
+  const sort = parseSort(params.sort);
   const page = parsePage(params.page);
 
   // Build feed query string from validated params; omit when null so
   // the API's defaults apply.
-  const queryParts: string[] = [`page=${page}`];
+  const queryParts: string[] = [`page=${page}`, `sort=${sort}`];
   if (currency) queryParts.push(`currency=${currency}`);
   if (sportId) queryParts.push(`sport=${sportId}`);
 
@@ -51,14 +59,18 @@ export default async function CommunityFeedPage({
       <header>
         <h1 className="text-2xl font-semibold tracking-tight">Community</h1>
         <p className="mt-2 text-sm text-[var(--color-fg-muted)]">
-          What other bettors are winning right now.
+          {sort === "best"
+            ? "Best wins of the last 7 days."
+            : "What other bettors are winning right now."}
         </p>
       </header>
+
+      <SortTabs activeSort={sort} currency={currency} sportId={sportId} />
 
       <FeedFilters sports={sports} activeSportId={sportId} activeCurrency={currency} />
 
       {tickets.length === 0 ? (
-        <EmptyState filtered={Boolean(currency || sportId)} />
+        <EmptyState filtered={Boolean(currency || sportId)} sort={sort} />
       ) : (
         <ul className="mt-6 space-y-3">
           {tickets.map((t: CommunityTicketSummary) => (
@@ -76,12 +88,83 @@ export default async function CommunityFeedPage({
   );
 }
 
-function EmptyState({ filtered }: { filtered: boolean }) {
+// Tab bar for Recent / Best Wins. Matches the existing visual
+// language of the [Match | Top] toggle on the match list cards
+// (apps/web/src/components/match/match-list-tabs.tsx).
+function SortTabs({
+  activeSort,
+  currency,
+  sportId,
+}: {
+  activeSort: SortKind;
+  currency: Currency | null;
+  sportId: number | null;
+}) {
+  const baseParams: string[] = [];
+  if (currency) baseParams.push(`currency=${encodeURIComponent(currency)}`);
+  if (sportId) baseParams.push(`sport=${encodeURIComponent(sportId)}`);
+  const link = (sort: SortKind) =>
+    `/community?${[...baseParams, `sort=${sort}`].join("&")}`;
+
+  return (
+    <div
+      role="tablist"
+      aria-label="Sort"
+      className="mt-5 inline-flex rounded-[10px] border border-[var(--color-border-strong)] p-1"
+    >
+      <Tab href={link("recent")} active={activeSort === "recent"}>
+        Recent
+      </Tab>
+      <Tab href={link("best")} active={activeSort === "best"}>
+        Best wins
+      </Tab>
+    </div>
+  );
+}
+
+function Tab({
+  href,
+  active,
+  children,
+}: {
+  href: string;
+  active: boolean;
+  children: React.ReactNode;
+}) {
+  // Imported lazily so the page stays a server component (no client
+  // navigation needed — sort change is a full reload, which keeps the
+  // server-rendered data fresh).
+  const cls =
+    "rounded-[8px] px-3 py-1.5 text-xs uppercase tracking-[0.15em] transition " +
+    (active
+      ? "bg-[var(--color-bg-elevated)] text-[var(--color-fg)]"
+      : "text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)]");
+  return (
+    <a role="tab" aria-selected={active} href={href} className={cls}>
+      {children}
+    </a>
+  );
+}
+
+function EmptyState({
+  filtered,
+  sort,
+}: {
+  filtered: boolean;
+  sort: SortKind;
+}) {
+  let body: string;
+  if (filtered) {
+    body = "No tickets match these filters yet. Try a different sport or currency.";
+  } else if (sort === "best") {
+    body =
+      "No big wins in the last 7 days. Switch to Recent to see fresh action.";
+  } else {
+    body = "No settled tickets yet. Check back after a few matches close.";
+  }
   return (
     <div className="card mt-6 p-10 text-center text-sm text-[var(--color-fg-muted)]">
-      {filtered
-        ? "No tickets match these filters yet. Try a different sport or currency."
-        : "No settled tickets yet. Check back after a few matches close."}
+      {body}
     </div>
   );
 }

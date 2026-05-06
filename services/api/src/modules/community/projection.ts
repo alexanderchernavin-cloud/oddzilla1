@@ -65,17 +65,48 @@ WITH legs AS (
 )
 INSERT INTO community_tickets (
   ticket_id, user_id, currency, status, bet_type,
-  stake_micro, payout_micro, total_odds, num_legs, sport_ids, settled_at
+  stake_micro, payout_micro, total_odds, num_legs, sport_ids, settled_at, score
 )
 SELECT
-  ticket_id, user_id, currency, status, bet_type,
-  stake_micro, payout_micro, total_odds, num_legs, sport_ids,
-  COALESCE(settled_at, NOW())
-  FROM legs
+  l.ticket_id, l.user_id, l.currency, l.status, l.bet_type,
+  l.stake_micro, l.payout_micro, l.total_odds, l.num_legs, l.sport_ids,
+  COALESCE(l.settled_at, NOW()),
+  -- Phase 10.3 deterministic score, frozen at settlement time.
+  -- Components and weights mirror docs/COMMUNITY_PLAN.md:
+  --   Inspiration 25  log10(payout/stake) capped at 1, only on wins
+  --   Odds        15  log10(total_odds) / log10(20), capped at 1
+  --   Reputation  15  prior_wins / max(prior, 1), 0 if user has no
+  --                   prior settled tickets in this currency
+  --   Copyability 15  reserved (Phase 10.4); 0 today
+  --   Recency     30  applied at QUERY time (the feed's Best Wins
+  --                   path filters to the last 7 days), so the stored
+  --                   score stays time-invariant and the existing
+  --                   (score DESC, settled_at DESC) index powers
+  --                   ranking without a cron recompute.
+  COALESCE((
+    SELECT
+      (CASE WHEN l.payout_micro > l.stake_micro THEN
+              25 * LEAST(1.0, LN(l.payout_micro::float8 / l.stake_micro::float8) / LN(10))
+            ELSE 0
+       END)
+    + 15 * LEAST(1.0, LN(GREATEST(l.total_odds::float8, 1.0001)) / LN(20))
+    + 15 * COALESCE(
+        (SELECT (COUNT(*) FILTER (WHERE prior.payout_micro > prior.stake_micro))::float8
+              / NULLIF(COUNT(*), 0)
+           FROM community_tickets prior
+          WHERE prior.user_id  = l.user_id
+            AND prior.currency = l.currency
+            AND prior.settled_at < COALESCE(l.settled_at, NOW())
+            AND prior.status::text IN ('settled', 'cashed_out')),
+        0
+      )
+  ), 0)
+  FROM legs l
 ON CONFLICT (ticket_id) DO UPDATE
    SET status       = EXCLUDED.status,
        payout_micro = EXCLUDED.payout_micro,
-       settled_at   = EXCLUDED.settled_at
+       settled_at   = EXCLUDED.settled_at,
+       score        = EXCLUDED.score
 RETURNING ticket_id
 `);
 

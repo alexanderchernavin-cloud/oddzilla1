@@ -16,7 +16,17 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { and, eq, sql, desc } from "drizzle-orm";
-import { users, communityTickets } from "@oddzilla/db";
+import {
+  users,
+  communityTickets,
+  ticketSelections,
+  markets,
+  marketOutcomes,
+  matches,
+  tournaments,
+  categories,
+  sports,
+} from "@oddzilla/db";
 import type {
   CommunityProfile,
   CommunityMe,
@@ -25,6 +35,7 @@ import type {
   CommunityFeedResponse,
   CommunityUserTicketsResponse,
   CommunityTicketSummary,
+  CommunityCopyResponse,
   Currency,
 } from "@oddzilla/types";
 import { isCurrency, DEFAULT_CURRENCY } from "@oddzilla/types";
@@ -43,6 +54,12 @@ const writeRateLimit = {
 // Mirrors the DB-side CHECK constraint from migration 0024.
 const NICKNAME_RE = /^[A-Za-z0-9_]{3,20}$/;
 
+// UUID v4 with hyphens — the format Drizzle's defaultRandom() emits
+// for tickets.id. Used to fail-fast on malformed copy IDs without
+// touching the DB.
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const visibilityBody = z.object({
   ticketsPublic: z.boolean(),
 });
@@ -60,13 +77,23 @@ const profileBody = z
 
 // Feed query. Defaults match the storefront: 20 cards a page, USDT
 // (the locked-leaderboards currency under D4) gets the default tab,
-// "all sports" when sport is omitted.
+// "all sports" when sport is omitted. `sort=best` switches to the
+// Phase 10.3 Best Wins ranking — score-then-recency, restricted to a
+// 7-day rolling window so old rows can't dominate the leaderboard
+// (the stored score is time-invariant by design; the recency cutoff
+// is applied at query time).
 const feedQuery = z.object({
   currency: z.string().optional(),
   sport: z.coerce.number().int().positive().optional(),
+  sort: z.enum(["recent", "best"]).default("recent"),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(50).default(20),
 });
+
+// Best Wins window. Long enough to catch a slow Sunday afternoon;
+// short enough that ancient blowout wins don't squat the top of the
+// feed indefinitely. See docs/COMMUNITY_PLAN.md §scoring.
+const BEST_WINS_WINDOW = sql`now() - interval '7 days'`;
 
 const userTicketsQuery = z.object({
   currency: z.string().optional(),
@@ -101,6 +128,18 @@ export default async function communityRoutes(app: FastifyInstance) {
     if (q.sport !== undefined) {
       filters.push(sql`${communityTickets.sportIds} @> ARRAY[${q.sport}]::int[]`);
     }
+    // Best Wins narrows to a recent window. The stored score is
+    // time-invariant by design (recency = applied here, not stored),
+    // so without this cutoff a one-time monster ROI from a year ago
+    // would squat #1 forever.
+    if (q.sort === "best") {
+      filters.push(sql`${communityTickets.settledAt} >= ${BEST_WINS_WINDOW}`);
+    }
+
+    const orderBy =
+      q.sort === "best"
+        ? [desc(communityTickets.score), desc(communityTickets.settledAt)]
+        : [desc(communityTickets.settledAt)];
 
     const rows = await app.db
       .select({
@@ -120,7 +159,7 @@ export default async function communityRoutes(app: FastifyInstance) {
       .from(communityTickets)
       .innerJoin(users, eq(users.id, communityTickets.userId))
       .where(and(...filters))
-      .orderBy(desc(communityTickets.settledAt))
+      .orderBy(...orderBy)
       .limit(q.pageSize + 1)
       .offset((q.page - 1) * q.pageSize);
 
@@ -251,6 +290,102 @@ export default async function communityRoutes(app: FastifyInstance) {
         page: q.page,
         pageSize: q.pageSize,
         hasMore,
+      };
+    },
+  );
+
+  // ─── Copy-to-bet (Phase 10.3) ────────────────────────────────────────────
+  //
+  // Returns a prefill payload in the shape POST /bets accepts. The web
+  // client adds the selections to the bet-slip; the user confirms and
+  // submits via the normal placement flow. Authentication is NOT
+  // required here — this is a read endpoint and the actual placement
+  // is gated downstream. We still respect the same visibility filter
+  // as the public profile / feed: a copy from a non-public profile
+  // 404s to avoid leaking the handle.
+  app.post<{ Params: { communityTicketId: string } }>(
+    "/community/copy/:communityTicketId",
+    { config: writeRateLimit },
+    async (request): Promise<CommunityCopyResponse> => {
+      const id = request.params.communityTicketId;
+      if (!UUID_RE.test(id)) throw new NotFoundError();
+
+      const [ct] = await app.db
+        .select({
+          ticketId: communityTickets.ticketId,
+          currency: communityTickets.currency,
+          betType: communityTickets.betType,
+        })
+        .from(communityTickets)
+        .innerJoin(users, eq(users.id, communityTickets.userId))
+        .where(
+          and(
+            eq(communityTickets.ticketId, id),
+            eq(users.ticketsPublic, true),
+            sql`${users.nickname} IS NOT NULL`,
+          ),
+        )
+        .limit(1);
+      if (!ct) throw new NotFoundError();
+
+      const rows = await app.db
+        .select({
+          matchId: matches.id,
+          marketId: ticketSelections.marketId,
+          outcomeId: ticketSelections.outcomeId,
+          odds: ticketSelections.oddsAtPlacement,
+          providerMarketId: markets.providerMarketId,
+          marketStatus: markets.status,
+          matchStatus: matches.status,
+          homeTeam: matches.homeTeam,
+          awayTeam: matches.awayTeam,
+          outcomeName: marketOutcomes.name,
+          sportSlug: sports.slug,
+        })
+        .from(ticketSelections)
+        .innerJoin(markets, eq(markets.id, ticketSelections.marketId))
+        .innerJoin(matches, eq(matches.id, markets.matchId))
+        .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
+        .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+        .innerJoin(sports, eq(sports.id, categories.sportId))
+        .leftJoin(
+          marketOutcomes,
+          and(
+            eq(marketOutcomes.marketId, markets.id),
+            eq(marketOutcomes.outcomeId, ticketSelections.outcomeId),
+          ),
+        )
+        .where(eq(ticketSelections.ticketId, id))
+        // Order by selection id so the slip prefill matches the
+        // visual order of the original ticket card.
+        .orderBy(ticketSelections.id);
+
+      const selections = rows.map((r) => ({
+        matchId: r.matchId.toString(),
+        marketId: r.marketId.toString(),
+        outcomeId: r.outcomeId,
+        odds: r.odds,
+        homeTeam: r.homeTeam,
+        awayTeam: r.awayTeam,
+        // Mirrors the storefront naming convention for unlabeled
+        // markets — see CLAUDE.md "Which markets?" entry.
+        marketLabel: `Market #${r.providerMarketId}`,
+        outcomeLabel: r.outcomeName ?? r.outcomeId,
+        sportSlug: r.sportSlug,
+        // Available = market is open AND match isn't already over.
+        // Same predicate the storefront uses to decide whether to
+        // show odds buttons. POST /bets re-validates anyway, so this
+        // is a UX hint, not a security gate.
+        available:
+          r.marketStatus === 1 &&
+          (r.matchStatus === "not_started" || r.matchStatus === "live"),
+      }));
+
+      return {
+        currency: ct.currency as Currency,
+        betType: ct.betType,
+        selections,
+        anyAvailable: selections.some((s) => s.available),
       };
     },
   );

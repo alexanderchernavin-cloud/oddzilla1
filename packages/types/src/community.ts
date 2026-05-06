@@ -87,6 +87,45 @@ export interface CommunityBackfillResponse {
   upserted: number; // rows actually written or updated
 }
 
+// ─── Copy-to-bet (Phase 10.3) ───────────────────────────────────────────────
+
+// POST /community/copy/:communityTicketId — returns a prefill payload.
+// Each selection is shaped exactly like the web bet-slip's
+// SlipSelection so the client can forward it via the existing
+// `add()` API without reshaping. POST /bets re-validates everything
+// at placement time, so the `odds` here is the source ticket's
+// placement-time odds — the slip rail surfaces drift before the user
+// confirms.
+export interface CommunityCopySelection {
+  matchId: string; // BIGINT as string
+  marketId: string; // BIGINT as string
+  outcomeId: string;
+  odds: string;
+  homeTeam: string;
+  awayTeam: string;
+  marketLabel: string;
+  outcomeLabel: string;
+  sportSlug: string;
+  // True when the underlying market is currently `status=1` and the
+  // match hasn't started or finished. UX hint only — POST /bets
+  // re-validates at placement.
+  available: boolean;
+}
+
+export interface CommunityCopyResponse {
+  // The original ticket's currency. The web client warns on a
+  // mismatch (e.g. "this ticket was OZ; your slip is USDT") rather
+  // than auto-switching, since the user's current slip may already
+  // contain other selections.
+  currency: Currency;
+  betType: BetType;
+  selections: CommunityCopySelection[];
+  // Whether at least one selection is currently `available`. The web
+  // client uses this to decide between "Add to slip" and a soft
+  // warning state.
+  anyAvailable: boolean;
+}
+
 // ─── Errors (community-specific codes) ──────────────────────────────────────
 
 // Returned as ApiErrorBody.error from the community endpoints.

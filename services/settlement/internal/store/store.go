@@ -511,17 +511,40 @@ WITH legs AS (
 )
 INSERT INTO community_tickets (
   ticket_id, user_id, currency, status, bet_type,
-  stake_micro, payout_micro, total_odds, num_legs, sport_ids, settled_at
+  stake_micro, payout_micro, total_odds, num_legs, sport_ids, settled_at, score
 )
 SELECT
-  ticket_id, user_id, currency, status, bet_type,
-  stake_micro, payout_micro, total_odds, num_legs, sport_ids,
-  COALESCE(settled_at, NOW())
-  FROM legs
+  l.ticket_id, l.user_id, l.currency, l.status, l.bet_type,
+  l.stake_micro, l.payout_micro, l.total_odds, l.num_legs, l.sport_ids,
+  COALESCE(l.settled_at, NOW()),
+  -- Phase 10.3 deterministic score, frozen at settlement time.
+  -- Mirrors services/api/src/modules/community/projection.ts. See
+  -- docs/COMMUNITY_PLAN.md for component weights. Recency (30 pts) is
+  -- applied at query time so the stored value stays time-invariant.
+  COALESCE((
+    SELECT
+      (CASE WHEN l.payout_micro > l.stake_micro THEN
+              25 * LEAST(1.0, LN(l.payout_micro::float8 / l.stake_micro::float8) / LN(10))
+            ELSE 0
+       END)
+    + 15 * LEAST(1.0, LN(GREATEST(l.total_odds::float8, 1.0001)) / LN(20))
+    + 15 * COALESCE(
+        (SELECT (COUNT(*) FILTER (WHERE prior.payout_micro > prior.stake_micro))::float8
+              / NULLIF(COUNT(*), 0)
+           FROM community_tickets prior
+          WHERE prior.user_id  = l.user_id
+            AND prior.currency = l.currency
+            AND prior.settled_at < COALESCE(l.settled_at, NOW())
+            AND prior.status::text IN ('settled', 'cashed_out')),
+        0
+      )
+  ), 0)
+  FROM legs l
 ON CONFLICT (ticket_id) DO UPDATE
    SET status       = EXCLUDED.status,
        payout_micro = EXCLUDED.payout_micro,
-       settled_at   = EXCLUDED.settled_at
+       settled_at   = EXCLUDED.settled_at,
+       score        = EXCLUDED.score
 `
 	// Single-ticket upsert. Failure is non-fatal at the call site —
 	// callers wrap this and log+continue so a projection bug never
