@@ -373,15 +373,46 @@ commit changelog.
 For the production server, after a `git push` to main:
 
 ```bash
+# 1. Fast-forward the worktree on the box.
 ssh team@178.104.174.24 "cd /home/team/oddzilla && \
-  git fetch origin main && git reset --hard origin/main && \
-  sg docker -c 'docker compose -f docker-compose.yml build && \
-                 docker compose -f docker-compose.yml up -d --force-recreate'"
+  git fetch origin main && git reset --hard origin/main"
+
+# 2. Run migrations FIRST (drizzle migrations are safe under the
+#    running images — every column added so far has been nullable).
+#    DATABASE_URL points at host `postgres` for in-container access;
+#    swap it to 127.0.0.1 because the migrate runner is on the host.
+ssh team@178.104.174.24 "set -a; . /home/team/oddzilla/.env; set +a; \
+  export DATABASE_URL=\$(echo \"\$DATABASE_URL\" | sed 's|@postgres:|@127.0.0.1:|'); \
+  pnpm --filter @oddzilla/db db:migrate"
+
+# 3. Build ONLY the services this PR changed, ONE AT A TIME, then
+#    recreate just those. NEVER run `docker compose build` (no
+#    service argument) on this box.
+for svc in api web feed-ingester; do
+  ssh team@178.104.174.24 "cd /home/team/oddzilla && \
+    sudo -n docker compose -f docker-compose.yml build $svc"
+done
+ssh team@178.104.174.24 "cd /home/team/oddzilla && \
+  sudo -n docker compose -f docker-compose.yml up -d --no-deps --force-recreate api web feed-ingester"
 ```
 
-Migrations are run with `pnpm --filter @oddzilla/db db:migrate` from the
-host (Node 22 + pnpm 9.12 are installed there); the `.env` provides
-`DATABASE_URL`. Skip if no schema changes shipped.
+> **DO NOT run `docker compose build` without a service argument on
+> this box.** CPX22 has 4 GB RAM — building all 7 services in
+> parallel exhausts memory, drives the kernel into swap thrash
+> (CPU pegged at 200%, disk reads sustained at ~1 GB/s), and SSH
+> banner exchange starts timing out. The site goes dark until
+> someone power-cycles the VM via the Hetzner console. The serial
+> per-service form above stays well under the RAM ceiling.
+>
+> Migration → build → recreate is the right order. The new column
+> appears before the new code reads it; running images can ignore
+> a nullable column they don't know about. Use `--no-deps` so
+> dependency services (postgres, redis, caddy, …) keep running
+> across the rollout.
+>
+> SSH+`sg docker` is also a trap (`$`-escaping, see the
+> `project_ssh_dollar_escaping` memory) — `sudo -n docker compose`
+> is the safe form.
 
 ## Handoff notes for the next session
 
