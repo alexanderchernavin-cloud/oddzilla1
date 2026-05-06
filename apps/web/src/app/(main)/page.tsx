@@ -74,34 +74,6 @@ export default async function HomePage() {
         >
           Today · {dayLabel}
         </div>
-        <h1
-          className="display"
-          style={{
-            margin: "6px 0 0",
-            fontSize: "clamp(26px, 6.5vw, 40px)",
-            fontWeight: 500,
-            letterSpacing: "-0.025em",
-            lineHeight: 1.05,
-          }}
-        >
-          {live.length === 0 ? (
-            <>
-              No live matches right now.
-              <br />
-              <span style={{ color: "var(--fg-muted)" }}>
-                {upcoming.length} coming up today.
-              </span>
-            </>
-          ) : (
-            <>
-              {live.length} {live.length === 1 ? "match" : "matches"} live now.
-              <br />
-              <span style={{ color: "var(--fg-muted)" }}>
-                {upcoming.length} more coming up.
-              </span>
-            </>
-          )}
-        </h1>
       </header>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
@@ -151,7 +123,25 @@ export default async function HomePage() {
                     {
                       key: "live",
                       label: (
-                        <SectionHeader kicker="Live" title="In play" count={live.length} />
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "baseline",
+                            gap: 28,
+                            flexWrap: "wrap",
+                          }}
+                        >
+                          <SectionHeader
+                            kicker="Live"
+                            title="In play"
+                            count={live.length}
+                          />
+                          <SectionHeader
+                            kicker="Next"
+                            title="Upcoming"
+                            count={upcoming.length}
+                          />
+                        </div>
                       ),
                       matches: liveEnriched,
                     },
