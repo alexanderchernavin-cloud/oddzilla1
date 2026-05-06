@@ -23,6 +23,11 @@ import (
 const (
 	defaultTimeout = 15 * time.Second
 	userAgent      = "oddzilla-feed-ingester/0.1"
+	// Cap REST response bodies. The largest legitimate response we see
+	// is descriptions/markets at ~80 KB; 32 MiB is generous-but-bounded
+	// so a malicious or runaway upstream cannot OOM-kill the ingester
+	// (the host has 4 GB total RAM, see project_build_oom_incident).
+	maxResponseBytes = 32 * 1024 * 1024
 )
 
 // Config for a REST client instance.
@@ -100,7 +105,7 @@ func (c *Client) Get(ctx context.Context, path string, query url.Values) ([]byte
 			continue
 		}
 
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(http.MaxBytesReader(nil, resp.Body, maxResponseBytes))
 		resp.Body.Close()
 		if readErr != nil {
 			lastErr = fmt.Errorf("oddinrest: read body: %w", readErr)
@@ -229,7 +234,7 @@ func (c *Client) post(ctx context.Context, path string, query url.Values) ([]byt
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(nil, resp.Body, maxResponseBytes))
 	if err != nil {
 		return nil, fmt.Errorf("oddinrest: read body: %w", err)
 	}

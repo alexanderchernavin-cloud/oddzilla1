@@ -317,29 +317,30 @@ func PeekEvent(body []byte) (eventURN string, product int, err error) {
 // Codes follow the Sportradar UOF convention used by Oddin:
 //
 //	0  not started     → not_started
+// Per Oddin's spec (§2.4.1.2) the documented set is exactly:
+//
+//	0  not_started     → not_started
 //	1  live            → live
-//	2  suspended       → suspended
-//	3  ended           → closed (final whistle, awaiting confirm)
-//	4  closed          → closed (settlement complete)
+//	4  closed          → closed
 //	5  cancelled       → cancelled
-//	6  delayed         → live (still expected to play)
-//	7  interrupted     → suspended
-//	8  postponed       → not_started (rescheduled in fixture later)
-//	9  abandoned       → cancelled
+//
+// Anything else is undocumented for this message type. Mapping
+// undocumented codes to terminal states gives a malformed or hostile
+// feed message a single-step path to flip a live match to cancelled
+// (closing all bettable markets immediately and effectively voiding
+// in-flight tickets via the bet_cancel cascade). We refuse the
+// translation and the caller leaves matches.status untouched, where
+// the next valid odds_change will rectify state.
 func MapMatchStatusCode(code int) string {
 	switch code {
 	case 0:
 		return "not_started"
-	case 1, 6:
+	case 1:
 		return "live"
-	case 2, 7:
-		return "suspended"
-	case 3, 4:
+	case 4:
 		return "closed"
-	case 5, 9:
+	case 5:
 		return "cancelled"
-	case 8:
-		return "not_started"
 	}
 	return ""
 }

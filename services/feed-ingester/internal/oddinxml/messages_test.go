@@ -128,17 +128,22 @@ func TestMapMatchStatusCode(t *testing.T) {
 		code int
 		want string
 	}{
+		// Per Oddin spec §2.4.1.2 the documented set is exactly
+		// {0,1,4,5}. Mapping any undocumented code (including 2/3/6/7/8/9
+		// which earlier code translated to terminal states) to a real
+		// status would let a malformed/spoofed feed message immediately
+		// flip a live match to cancelled. Refuse the translation; caller
+		// leaves matches.status untouched.
 		{0, "not_started"},
 		{1, "live"},
-		{2, "suspended"},
-		{3, "closed"},  // Ended (awaiting confirm) — same destination as Closed
-		{4, "closed"},  // Closed (settlement complete)
+		{4, "closed"},
 		{5, "cancelled"},
-		{6, "live"},     // Delayed, still expected to play
-		{7, "suspended"},
-		{8, "not_started"}, // Postponed → rescheduled later
-		{9, "cancelled"},
-		// Unknown codes leave the existing status untouched.
+		{2, ""},
+		{3, ""},
+		{6, ""},
+		{7, ""},
+		{8, ""},
+		{9, ""},
 		{42, ""},
 		{-1, ""},
 		{99, ""},
