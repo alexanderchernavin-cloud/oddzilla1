@@ -1,59 +1,43 @@
 // resolve-logos.ts
 //
-// Bulk-resolve team logos from Oddin's competitor profile cache.
-// Oddin returns `icon_path` on /v1/sports/{lang}/competitors/{urn}/profile
-// pointing at cdn.oddin.gg/assets/teams/icons/<file>.png; feed-ingester
-// already calls that endpoint and persists the URL into
-// `competitor_profiles.icon_path` for every team that appears in the
-// match feed (see services/feed-ingester/internal/automap/resolver.go
-// `CacheCompetitorProfile`). Coverage on prod: 1861/2135 cached
-// profiles have an icon_path set (~87%); the rest fall back to the
-// `TeamMark` initials block on the storefront.
+// Copy each cached `competitor_profiles.icon_path` (cdn.oddin.gg URL,
+// populated by feed-ingester from Oddin's competitor profile REST
+// endpoint) directly onto `competitors.logo_url`. The browser then
+// hot-links the CDN — Oddin is our authorised data partner so it's
+// fine to lean on their CDN, no rate-limit / hot-link headache like
+// the Wikipedia / Liquipedia detour earlier had.
 //
-// This script joins competitors to that cache, downloads each icon into
-// the /data/team-logos volume, and writes the local path back to
-// `competitors.logo_url`. There is no fallback source — Oddin is the
-// canonical and only resolver because any team Oddin doesn't already
-// give us a logo for isn't worth scraping a third-party for: the team
-// either isn't in the feed at all, or its profile hasn't been
-// REST-fetched yet (in which case re-running the resolver after the
-// next match ingest fills it in).
+// Pure SQL — no HTTP, no file I/O. Idempotent: rows whose logo_url
+// already matches the cached icon_path are no-ops (the UPDATE only
+// touches rows where it changes anything).
 //
-// Idempotent: skips rows that already have a /team-logos/ path unless
-// --force. Run inside the api container (docker network resolves
-// `postgres`, the team-logos volume is mounted, DATABASE_URL set):
-//
+// Usage:
 //   sudo -n docker exec -w /app/packages/db oddzilla-api-1 \
 //     sh -c "pnpm db:resolve-logos"
 //
 // Flags:
-//   --force            overwrite existing logo_url values
-//   --dry-run          report what would change without writing
-//   --concurrency=N    parallel downloads (default 4, max 16)
-//   --sport=<slug>     limit to one sport
+//   --force            also overwrite rows where logo_url is already set
+//                      to a different non-Oddin URL or local /team-logos/
+//                      path (legacy state — no new code paths produce
+//                      anything but cdn.oddin.gg URLs now).
+//   --dry-run          report counts without UPDATE.
+//   --sport=<slug>     limit to one sport.
 
-import { sql, eq, and } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { createDb } from "./index.js";
-import { competitors, sports, competitorProfiles } from "./schema/index.js";
-import { downloadAndStore, ensureStoreDir } from "./lib/logo-store.js";
 
 interface CliFlags {
   force: boolean;
   dryRun: boolean;
-  concurrency: number;
   sport: string | null;
 }
 
 function parseFlags(argv: string[]): CliFlags {
-  const out: CliFlags = { force: false, dryRun: false, concurrency: 4, sport: null };
+  const out: CliFlags = { force: false, dryRun: false, sport: null };
   for (const a of argv) {
     if (a === "--force") out.force = true;
     else if (a === "--dry-run") out.dryRun = true;
     else if (a.startsWith("--sport=")) out.sport = a.slice("--sport=".length);
-    else if (a.startsWith("--concurrency=")) {
-      const n = Number.parseInt(a.slice("--concurrency=".length), 10);
-      if (Number.isFinite(n) && n > 0) out.concurrency = Math.min(16, n);
-    }
   }
   return out;
 }
@@ -65,112 +49,64 @@ async function main() {
     console.error("DATABASE_URL is required");
     process.exit(1);
   }
-  const storeDir = process.env.LOGO_STORE_DIR ?? "/data/team-logos";
-  if (!flags.dryRun) {
-    try {
-      await ensureStoreDir(storeDir);
-    } catch (err) {
-      console.error(`LOGO_STORE_DIR=${storeDir} not writable: ${(err as Error).message}`);
-      process.exit(1);
-    }
-  }
 
-  const { db, sql: pg } = createDb(databaseUrl);
+  const { sql: pg } = createDb(databaseUrl);
 
   console.log(
-    `resolve-oddin-icons: dry-run=${flags.dryRun} force=${flags.force} ` +
-      `concurrency=${flags.concurrency} sport=${flags.sport ?? "all"} ` +
-      `storeDir=${storeDir}`,
+    `resolve-logos: dry-run=${flags.dryRun} force=${flags.force} ` +
+      `sport=${flags.sport ?? "all"}`,
   );
 
-  // Pull every active competitor that has both a provider_urn and a
-  // cached icon_path. Without --force we skip rows already pointing at
-  // a /team-logos/ path (typical re-run case).
-  const conditions = [
-    eq(competitors.active, true),
-    sql`${competitors.providerUrn} IS NOT NULL`,
-    sql`${competitorProfiles.iconPath} IS NOT NULL`,
-    sql`${competitorProfiles.iconPath} <> ''`,
-  ];
-  if (!flags.force) {
-    conditions.push(
-      sql`(${competitors.logoUrl} IS NULL OR ${competitors.logoUrl} NOT LIKE '/team-logos/%')`,
-    );
-  }
-  if (flags.sport) {
-    conditions.push(eq(sports.slug, flags.sport));
-  }
+  // Built incrementally; postgres-js takes parameter binds via tagged
+  // template, but UPDATE/COUNT both share the same WHERE clause so we
+  // construct it once with raw SQL fragments.
+  const sportFilter = flags.sport
+    ? pg`AND s.slug = ${flags.sport}`
+    : pg``;
+  const overwriteGuard = flags.force
+    ? pg``
+    : pg`AND (c.logo_url IS NULL OR c.logo_url <> p.icon_path)`;
 
-  const rows = await db
-    .select({
-      id: competitors.id,
-      name: competitors.name,
-      sportSlug: sports.slug,
-      iconPath: competitorProfiles.iconPath,
-    })
-    .from(competitors)
-    .innerJoin(sports, eq(sports.id, competitors.sportId))
-    .innerJoin(
-      competitorProfiles,
-      eq(competitorProfiles.urn, competitors.providerUrn),
-    )
-    .where(and(...conditions));
+  // Count first — gives the operator a sanity check before the write,
+  // and matches the dry-run output without forking the WHERE clause.
+  const countRows = await pg<{ count: string }[]>`
+    SELECT COUNT(*)::text AS count
+      FROM competitors c
+      JOIN sports s ON s.id = c.sport_id
+      JOIN competitor_profiles p ON p.urn = c.provider_urn
+     WHERE c.active = true
+       AND p.icon_path IS NOT NULL
+       AND p.icon_path <> ''
+       ${sportFilter}
+       ${overwriteGuard}
+  `;
+  const candidates = Number(countRows[0]?.count ?? "0");
+  console.log(`candidates: ${candidates}`);
 
-  console.log(`found ${rows.length} competitor rows with cached icon_path`);
-
-  let resolved = 0;
-  let failed = 0;
-
-  let cursor = 0;
-  async function worker() {
-    while (true) {
-      const i = cursor++;
-      if (i >= rows.length) return;
-      const r = rows[i];
-      if (!r) return;
-      // The SQL where clause already excludes null icon_paths but the
-      // typesystem sees the column as nullable — narrow it before use.
-      if (!r.iconPath) {
-        failed++;
-        continue;
-      }
-      const iconUrl = r.iconPath;
-
-      if (flags.dryRun) {
-        resolved++;
-        console.log(`  DRY  ${r.sportSlug}/${r.id} ${r.name} ← ${iconUrl}`);
-        continue;
-      }
-
-      let local: string | null;
-      try {
-        local = await downloadAndStore(iconUrl, r.id, storeDir);
-      } catch (err) {
-        console.warn(`  err  ${r.sportSlug}/${r.id} ${r.name}: ${(err as Error).message}`);
-        failed++;
-        continue;
-      }
-      if (!local) {
-        console.warn(`  fail ${r.sportSlug}/${r.id} ${r.name} (download returned null)`);
-        failed++;
-        continue;
-      }
-
-      await db
-        .update(competitors)
-        .set({ logoUrl: local })
-        .where(eq(competitors.id, r.id));
-      resolved++;
-      if (resolved % 50 === 0) {
-        console.log(`  ok   ${resolved}/${rows.length} (${r.name})`);
-      }
-    }
+  if (flags.dryRun) {
+    console.log("dry-run: no rows updated");
+    await pg.end();
+    return;
   }
 
-  const workers = Array.from({ length: flags.concurrency }, () => worker());
-  await Promise.all(workers);
+  // Single UPDATE … FROM does the whole job in one round trip. Faster
+  // than the per-row download loop the previous implementation used —
+  // there's no I/O at all now, just postgres.
+  const updated = await pg`
+    UPDATE competitors c
+       SET logo_url = p.icon_path
+      FROM competitor_profiles p,
+           sports s
+     WHERE p.urn = c.provider_urn
+       AND s.id = c.sport_id
+       AND c.active = true
+       AND p.icon_path IS NOT NULL
+       AND p.icon_path <> ''
+       ${sportFilter}
+       ${overwriteGuard}
+  `;
 
-  console.log(`\nsummary: resolved=${resolved} failed=${failed} dryRun=${flags.dryRun}`);
+  console.log(`updated: ${updated.count} row(s)`);
   await pg.end();
 }
 

@@ -46,21 +46,20 @@ Canonical SQL lives in [`../packages/db/migrations/`](../packages/db/migrations/
   toggle on match list cards via `loadTopMarketIdsBySport` /
   `loadTopMarketsForMatches` in `services/api/src/modules/catalog/routes.ts`).
 - `0021_competitor_logos.sql` — adds `competitors.logo_url TEXT` and
-  `competitors.brand_color TEXT` for storefront team branding. Both are
-  nullable; a CHECK constraint requires
-  `brand_color ~ '^#[0-9A-Fa-f]{6}$'` when present. The `logo_url`
-  column always points at a self-hosted `/team-logos/{id}.{ext}` path
-  served by Caddy from a docker named volume; external URLs are not
-  used at render time. Catalog endpoints LEFT JOIN `competitors`
-  twice (home + away aliases) to surface `homeLogoUrl` / `awayLogoUrl`
-  on every match row + match detail. Admins can paste a manual URL
-  via `/admin/competitors` (PATCH /admin/competitors/:id); the bulk
+  `competitors.brand_color TEXT` for storefront team branding. Both
+  are nullable; a CHECK constraint requires
+  `brand_color ~ '^#[0-9A-Fa-f]{6}$'` when present. `logo_url` holds
+  the cdn.oddin.gg URL Oddin returns from its competitor-profile REST
+  endpoint — we hot-link the CDN directly (they're our authorised
+  data partner). Catalog endpoints LEFT JOIN `competitors` twice
+  (home + away aliases) to surface `homeLogoUrl` / `awayLogoUrl` on
+  every match row + match detail. Admins can paste a manual URL via
+  `/admin/competitors` (PATCH /admin/competitors/:id); the bulk
   resolver `pnpm --filter @oddzilla/db db:resolve-logos`
   ([`packages/db/src/resolve-logos.ts`](../packages/db/src/resolve-logos.ts))
-  joins `competitors` to `competitor_profiles.icon_path` (already
-  populated by feed-ingester from Oddin's REST profile endpoint),
-  downloads each `cdn.oddin.gg/...` icon to the volume, and writes
-  `/team-logos/{id}.{ext}` back to `logo_url`.
+  is a single SQL UPDATE that copies
+  `competitor_profiles.icon_path` (cached by feed-ingester from
+  Oddin's REST profile endpoint) onto `competitors.logo_url`.
 
 Drizzle mirror is [`../packages/db/src/schema/`](../packages/db/src/schema/).
 

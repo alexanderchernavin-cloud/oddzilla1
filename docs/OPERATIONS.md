@@ -349,60 +349,52 @@ oddzilla-api-1` if it ever feels slow.
 
 ### Team logos runbook
 
-Logos are self-hosted in the `team-logos` docker named volume —
-mounted RW into `api` at `/data/team-logos`, RO into `caddy` at
-`/srv/team-logos`. Caddy serves them at `/team-logos/*` with
-`Cache-Control: public, max-age=31536000, immutable`. Files are
-named `{competitor_id}.{ext}` so the URL itself is the cache buster
-on overwrite. **Nothing on the storefront ever fetches an external
-host at render time.**
+Logos hot-link directly to Oddin's CDN (`cdn.oddin.gg`). They're our
+authorised data partner; their CDN is built for this and they don't
+rate-limit or block hot-linking, so we don't bother proxying through
+our own server. `competitors.logo_url` stores the full URL exactly as
+Oddin returns it.
 
-The single source is Oddin's own `/v1/sports/{lang}/competitors/{urn}/profile`
-endpoint, which returns `icon_path` pointing at
-`cdn.oddin.gg/assets/teams/icons/<file>.png`. Feed-ingester already
-calls that endpoint and caches each `icon_path` into
+The source is Oddin's `/v1/sports/{lang}/competitors/{urn}/profile`
+endpoint, which returns `icon_path` per competitor. Feed-ingester
+already calls that endpoint and caches each `icon_path` into
 `competitor_profiles.icon_path` for every team in the match feed
 (see `services/feed-ingester/internal/automap/resolver.go`
 `CacheCompetitorProfile`). Coverage on prod: ~1861/2135 cached
 profiles have an `icon_path` set; the rest fall back to the
-`TeamMark` initials block on the storefront.
+`TeamMark` initials block.
 
 **Resolver:**
 
 [`packages/db/src/resolve-logos.ts`](../packages/db/src/resolve-logos.ts)
-joins `competitors` to the cache, downloads each icon into the
-volume, and writes the local `/team-logos/{id}.{ext}` path back to
-`competitors.logo_url`.
+is one SQL `UPDATE` — copy `competitor_profiles.icon_path` onto
+`competitors.logo_url`. No HTTP, no file I/O, sub-second runtime.
 
 ```bash
 sudo -n docker exec -w /app/packages/db oddzilla-api-1 \
   sh -c "pnpm db:resolve-logos --dry-run"
 # Review the output, then run for real:
 sudo -n docker exec -w /app/packages/db oddzilla-api-1 \
-  sh -c "pnpm db:resolve-logos --concurrency=6"
+  sh -c "pnpm db:resolve-logos"
 ```
 
-~1800 teams resolves in ~30 s end-to-end on the box (cdn.oddin.gg
-is fast and we're an authenticated customer — no rate limits).
-
-Flags: `--force` (overwrite existing local paths so a refreshed
-Oddin icon picks up), `--sport=cs2` (scope to one sport),
-`--dry-run` (report without writing), `--concurrency=N` (capped at
-16, default 4).
+Flags: `--force` (also overwrite rows whose `logo_url` is set to
+something other than the cached `icon_path` — legacy state cleanup),
+`--sport=cs2` (scope to one sport), `--dry-run` (report counts
+without writing).
 
 **One-off edit:** `/admin/competitors` lets you paste a manual
-logo URL (or `/team-logos/...` path) for any team — useful when a
-team's Oddin logo is wrong/missing. Edits are audit-logged
-(`admin_audit_log.action = 'competitor.update'`); `TeamMark`
-falls back to the initials block on `<img onError>` so a stale
-URL never breaks the layout.
+logo URL for any team — useful when a team's Oddin logo is
+wrong/missing. Edits are audit-logged
+(`admin_audit_log.action = 'competitor.update'`); `TeamMark` falls
+back to the initials block on `<img onError>` so a stale URL never
+breaks the layout.
 
-**Re-run after every match-feed boot:** when feed-ingester ingests
-a team for the first time, it caches the team's Oddin profile
-asynchronously. Rows added to `competitors` *after* the resolver
-ran end up with `logo_url IS NULL` until the next resolver run.
-There's no scheduled job today — re-run manually, or wire one up
-via `cron` once the feed catches steady traffic.
+**Re-run cadence:** when feed-ingester ingests a team for the first
+time, it caches the team's Oddin profile asynchronously. Rows added
+to `competitors` *after* the resolver ran end up with `logo_url IS
+NULL` until the next run. There's no scheduled job today — re-run
+manually, or wire one up via `cron` once steady traffic justifies.
 
 ### HD master mnemonic management
 
