@@ -277,9 +277,15 @@ function Scoreboard({
 
   const cols = mapCount > 0 ? Array.from({ length: mapCount }, (_, i) => i + 1) : [];
 
+  const extraRows =
+    isLive && scoreboard ? extraScoreRows(scoreboard, sportSlug) : [];
+
   // Grid template: [team] [score] [map1] [map2] … [mapN]
   // Team column flexes; numeric columns are fixed-width and centered.
-  const gridTemplate = `minmax(0, 1fr) 60px${cols.length ? " " + cols.map(() => "44px").join(" ") : ""}`;
+  // Bump per-map width when extras render so paired values like
+  // "23k:28k" fit on the same row without crowding.
+  const mapColWidth = extraRows.length > 0 ? "56px" : "44px";
+  const gridTemplate = `minmax(0, 1fr) 60px${cols.length ? " " + cols.map(() => mapColWidth).join(" ") : ""}`;
 
   return (
     <div
@@ -331,39 +337,22 @@ function Scoreboard({
           getValue={(n) => mapCellValue("away", n, periodByNumber.get(n), scoreboard, currentMap, sportSlug)}
           isLiveCol={(n) => currentMap === n}
         />
-      </div>
 
-      {isLive && scoreboard && currentMap != null
-        ? (() => {
-            const extras = formatScoreboardExtras(scoreboard, sportSlug);
-            if (extras.length === 0) return null;
-            return (
-              <div
-                className="mono"
-                style={{
-                  fontSize: 11,
-                  color: "var(--fg-muted)",
-                  display: "flex",
-                  flexWrap: "wrap",
-                  gap: "4px 14px",
-                  marginTop: 12,
-                  paddingTop: 10,
-                  borderTop: "1px solid var(--border)",
-                }}
-              >
-                <span style={{ color: "var(--fg-dim)" }}>
-                  Map {currentMap} live
-                </span>
-                {extras.map((line) => (
-                  <span key={line.label}>
-                    <span style={{ color: "var(--fg-dim)" }}>{line.label}</span>{" "}
-                    <span className="tnum">{line.value}</span>
-                  </span>
-                ))}
-              </div>
-            );
-          })()
-        : null}
+        {/* Secondary stats (Towers, Gold for Dota/LoL). Same grid columns
+            as the team rows so values line up under the live map column,
+            but smaller + dimmer so kills stays the primary metric. */}
+        {extraRows.map((row, i) => (
+          <ExtraRow
+            key={row.label}
+            label={row.label}
+            cols={cols}
+            currentMap={currentMap}
+            homeValue={row.homeValue}
+            awayValue={row.awayValue}
+            firstExtra={i === 0}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -470,63 +459,114 @@ function TeamRow({
   );
 }
 
-function formatScoreboardExtras(
+// extraScoreRows returns one row per secondary metric (Towers/Turrets/Gold
+// for Dota & LoL). Kills is intentionally omitted — it's already rendered
+// as the primary per-map cell in the team rows above. Returns [] for
+// games where the team-row cell already shows the most useful stat
+// (rounds for CS2 / Valorant), so no extras render at all.
+function extraScoreRows(
   sb: LiveScoreScoreboard,
   sportSlug: string,
-): { label: string; value: string }[] {
+): { label: string; homeValue: string; awayValue: string }[] {
   const slug = sportSlug.toLowerCase();
-  const out: { label: string; value: string }[] = [];
+  const out: { label: string; homeValue: string; awayValue: string }[] = [];
 
-  if (slug === "cs2" || slug === "csgo" || slug === "counter-strike" || slug === "valorant") {
-    if (sb.homeWonRounds != null && sb.awayWonRounds != null) {
-      out.push({ label: "Rounds", value: `${sb.homeWonRounds} : ${sb.awayWonRounds}` });
-    }
-  } else if (
+  const isDotaLikeSlug =
     slug === "dota2" ||
     slug === "dota" ||
     slug === "lol" ||
     slug === "leagueoflegends" ||
-    slug === "league-of-legends"
-  ) {
-    if (sb.homeKills != null && sb.awayKills != null) {
-      out.push({ label: "Kills", value: `${sb.homeKills} : ${sb.awayKills}` });
-    }
-    if (sb.homeDestroyedTowers != null && sb.awayDestroyedTowers != null) {
-      out.push({
-        label: "Towers",
-        value: `${sb.homeDestroyedTowers} : ${sb.awayDestroyedTowers}`,
-      });
-    }
-    if (sb.homeDestroyedTurrets != null && sb.awayDestroyedTurrets != null) {
-      out.push({
-        label: "Turrets",
-        value: `${sb.homeDestroyedTurrets} : ${sb.awayDestroyedTurrets}`,
-      });
-    }
-    if (sb.homeGold != null && sb.awayGold != null) {
-      out.push({
-        label: "Gold",
-        value: `${formatGold(sb.homeGold)} : ${formatGold(sb.awayGold)}`,
-      });
-    }
-  }
+    slug === "league-of-legends";
 
-  if (sb.time) {
-    out.push({ label: "Time", value: sb.time });
-  } else if (sb.gameTime != null) {
-    out.push({ label: "Time", value: formatSeconds(sb.gameTime) });
+  if (!isDotaLikeSlug) return out;
+
+  if (sb.homeDestroyedTowers != null && sb.awayDestroyedTowers != null) {
+    out.push({
+      label: "Towers",
+      homeValue: String(sb.homeDestroyedTowers),
+      awayValue: String(sb.awayDestroyedTowers),
+    });
+  }
+  if (sb.homeDestroyedTurrets != null && sb.awayDestroyedTurrets != null) {
+    out.push({
+      label: "Turrets",
+      homeValue: String(sb.homeDestroyedTurrets),
+      awayValue: String(sb.awayDestroyedTurrets),
+    });
+  }
+  if (sb.homeGold != null && sb.awayGold != null) {
+    out.push({
+      label: "Gold",
+      homeValue: formatGold(sb.homeGold),
+      awayValue: formatGold(sb.awayGold),
+    });
   }
 
   return out;
 }
 
-function formatGold(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
-  return n.toString();
+// ExtraRow renders one secondary-stat row across the same grid columns
+// as the team rows. The label sits in the team-name column (right-aligned
+// to visually pair with the team-mark column), the score column stays
+// empty, and only the live map cell carries a value (e.g. "0:4" or
+// "23k:28k"). All cells are dimmer + smaller than the team rows so the
+// kills score remains the primary read.
+function ExtraRow({
+  label,
+  cols,
+  currentMap,
+  homeValue,
+  awayValue,
+  firstExtra,
+}: {
+  label: string;
+  cols: number[];
+  currentMap: number | null;
+  homeValue: string;
+  awayValue: string;
+  firstExtra: boolean;
+}) {
+  const topPad = firstExtra ? 6 : 0;
+  return (
+    <>
+      <div
+        className="mono"
+        style={{
+          fontSize: 10.5,
+          color: "var(--fg-dim)",
+          letterSpacing: "0.06em",
+          textTransform: "uppercase",
+          textAlign: "right",
+          paddingTop: topPad,
+        }}
+      >
+        {label}
+      </div>
+      <div style={{ paddingTop: topPad }} />
+      {cols.map((n) => {
+        const live = currentMap === n;
+        return (
+          <div
+            key={n}
+            className="mono tnum"
+            style={{
+              textAlign: "center",
+              fontSize: 11,
+              fontWeight: 400,
+              color: "var(--fg-dim)",
+              paddingTop: topPad,
+            }}
+          >
+            {live ? `${homeValue}:${awayValue}` : ""}
+          </div>
+        );
+      })}
+    </>
+  );
 }
 
-function formatSeconds(s: number): string {
-  const mins = Math.floor(s / 60);
-  const secs = s % 60;
-  return `${mins}:${secs.toString().padStart(2, "0")}`;
+function formatGold(n: number): string {
+  if (n >= 10000) return `${Math.round(n / 1000)}k`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return n.toString();
 }
