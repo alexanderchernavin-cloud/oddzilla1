@@ -12,7 +12,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { openSocket } from "./ws-client.js";
+import { openSocket } from "./ws-client";
 
 export interface LiveOddsTick {
   marketId: string;
