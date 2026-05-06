@@ -187,6 +187,7 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
         COALESCE(SUM(actual_payout_micro) FILTER (WHERE status = 'settled'), 0)::text AS total_payout_micro
       FROM tickets
       WHERE user_id = ${params.id}
+        AND currency = 'USDT'
     `)) as unknown as Array<{
       total_tickets: number;
       open_tickets: number;
