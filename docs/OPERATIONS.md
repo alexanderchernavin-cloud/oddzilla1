@@ -93,6 +93,7 @@ what's sensitive:
 | `HD_MASTER_MNEMONIC` | BIP39 12/24-word phrase | never in normal ops — rotating is a customer-facing event |
 | `TRON_RPC_URL` | TronGrid (mainnet `https://api.trongrid.io`, testnet `https://api.shasta.trongrid.io`) | when plan changes |
 | `ETH_RPC_URL` | Alchemy / Infura / QuickNode / self-hosted | when plan changes |
+| `BACKUP_GPG_RECIPIENT` (optional, PR #130) | GPG key id of an off-host operator. Set → daily pg dump is GPG-encrypted (`.sql.gz.gpg`); unset → plain gzip. | rotate when the operator's key rotates |
 
 Each service can boot WITHOUT certain optional vars and degrades
 gracefully:
@@ -178,21 +179,47 @@ matching `ledger = same` — it nets to zero like USDT does.
 
 ## Backups
 
-Phase-1 baseline: `postgres-data` and `redis-data` are Docker volumes on the
-same box. Good enough for dev; not enough for production.
+The daily dump is wired up via root cron at 03:00 UTC, running
+[`infra/hetzner/backup/pg_backup.sh`](../infra/hetzner/backup/pg_backup.sh).
+The script `docker exec`s into the postgres container and writes
+`/var/backups/oddzilla/oddzilla-<TS>.sql.gz` (root:root mode 600), with
+14-day retention. Set `BACKUP_GPG_RECIPIENT` in `.env` to GPG-encrypt
+the dump in addition to gzipping; the file extension becomes
+`.sql.gz.gpg`. Off-host copy is still a manual rsync — pre-launch todo.
+
+Hardening applied in PR #130: the script no longer sources the entire
+`.env` into the cron shell environment (every secret was being exported
+into the cron PID's `/proc/<pid>/environ`); it now reads only
+`POSTGRES_USER`, `POSTGRES_DB`, `POSTGRES_PASSWORD`, and
+`BACKUP_GPG_RECIPIENT`.
+
+### Audit-log integrity probe
+
+The `admin_audit_log` table has a SHA-256 hash chain (PR #130). To
+verify no row has been tampered with after insert:
+
+```sh
+ssh team@178.104.174.24 'set -a; . /home/team/oddzilla/.env; set +a; \
+  sudo -n docker exec oddzilla-postgres-1 psql -U "$POSTGRES_USER" \
+  -d "$POSTGRES_DB" -c "SELECT COUNT(*) FILTER (WHERE ok) AS valid, \
+  COUNT(*) FILTER (WHERE NOT ok) AS broken, COUNT(*) AS total \
+  FROM admin_audit_chain_check();"'
+```
+
+`broken` should always be `0`. Non-zero is the canonical signal that
+someone modified an audit row via direct DB access (the API path goes
+through the trigger and stays consistent).
+
+### Pre-launch todos
 
 Before accepting real money:
 
-1. Daily full dump, encrypted, to off-site object storage (Hetzner Storage
-   Box or S3 elsewhere):
-   ```bash
-   docker compose exec -T postgres pg_dump -U oddzilla oddzilla \
-     | age -r <recipient-key> | aws s3 cp - s3://bucket/backups/$(date +%F).sql.age
-   ```
-2. Continuous WAL archiving (`archive_mode=on`, `archive_command` to same
-   bucket). Enables point-in-time recovery.
-3. Weekly restore drill on a sandbox box. A backup you haven't restored is
-   a backup you don't have.
+1. Off-host copy: rsync the encrypted `.sql.gz.gpg` files to a Hetzner
+   Storage Box / S3 bucket on the same cron schedule.
+2. Continuous WAL archiving (`archive_mode=on`, `archive_command` to
+   the same bucket). Enables point-in-time recovery.
+3. Weekly restore drill on a sandbox box. A backup you haven't
+   restored is a backup you don't have.
 
 ## Restore playbook
 
@@ -234,17 +261,22 @@ Before accepting real money:
 
 Rare but possible. `deposits` with `status='confirming'` rolled back off-chain:
 
-1. **Today**: wallet-watcher only reads forward — it does not detect
-   reorgs. If a deposit gets reorged out before reaching the
-   confirmation threshold, it just stops getting confirmations and sits
-   stale. If you find one in `confirming` for far longer than
-   `Confirmations × block_time` should take, mark it `orphaned`
+1. **Reorg detection (PR #130)**: the ETH path captures
+   `deposits.block_hash` at insert time and re-verifies the canonical
+   chain via `eth_getBlockByNumber` before crediting. If the block hash
+   no longer matches at credit time, the row is flipped to
+   `status='orphaned'` and the wallet is never credited. Tron path is
+   confirmation-driven only (TronGrid's `only_confirmed=true` already
+   means events are past finality, ~19 confirmations).
+2. If you find a deposit stuck in `confirming` indefinitely (e.g. the
+   verifier kept failing because the RPC endpoint was slow), mark it
    manually:
    ```sql
    UPDATE deposits SET status = 'orphaned' WHERE id = '...';
    ```
-2. If a credit already happened (chain reorg AFTER N confirmations —
-   essentially a deep reorg, very unusual on Tron and ETH):
+3. If a credit already happened AND the chain reorg dropped the tx
+   AFTER N confirmations (essentially a deep reorg — very unusual on
+   Tron, possible-but-rare on ETH if the verifier was bypassed):
    - Insert a compensating `wallet_ledger` entry:
      `INSERT INTO wallet_ledger (user_id, delta_micro, type, ref_type,
      ref_id, memo) VALUES (?, -?, 'adjustment', 'deposit', ?,
@@ -252,11 +284,9 @@ Rare but possible. `deposits` with `status='confirming'` rolled back off-chain:
      key is distinct from the original `(deposit, deposit, X)` so the
      unique partial index allows it).
    - `UPDATE wallets SET balance_micro = balance_micro - ? WHERE user_id = ?`.
-   - Insert an `admin_audit_log` row describing the situation.
-
-A future reorg-detection feature would compare deposit `block_number`
-against current chain head + a small lookback to detect deep reorgs;
-out of scope for MVP.
+   - Insert an `admin_audit_log` row describing the situation. The
+     row will hash-chain into the audit log automatically — verifier
+     confirms via `admin_audit_chain_check()`.
 
 ### Withdrawal admin runbook
 
@@ -283,6 +313,23 @@ Workflow per request:
    wallet, releases the lock, writes the `withdrawal` ledger row.
 6. If the broadcast fails or the tx is dropped: click **Mark failed**
    with a reason. Lock is released; user gets their funds back.
+
+**4-eyes (PR #130)**: the API enforces that the actor that confirms
+must differ from the actor that approved. So the operator workflow is:
+
+- Admin A clicks **Approve**.
+- Admin B (anyone different) clicks **Mark submitted** → broadcasts the
+  tx → clicks **Mark confirmed**.
+
+A 403 `approver_cannot_confirm` rejects the same actor at the
+**Mark confirmed** step. The DB-level CHECK constraint
+`withdrawals_distinct_approver_confirmer` is the second line of defence.
+
+The `tx_hash` field is regex-validated per network: ERC20 must be
+`^0x[0-9a-fA-F]{64}$`, TRC20 must be `^(0x)?[0-9a-fA-F]{64}$`. TRC20
+hashes are normalised to no-prefix form before storage, so the unique
+partial index on `(network, tx_hash)` matches operator paste form
+regardless of whether they prefixed `0x`.
 
 **Important:** there is no automated check that the on-chain tx
 actually paid out the right amount to the right address. Admin is

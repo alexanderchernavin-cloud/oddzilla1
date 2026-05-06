@@ -734,6 +734,89 @@ via `users.is_ai=true` (excluded from `/admin/stats/pnl-by-day`).
 Also lights up the Copyability score component (15 pts): the per-leg
 share of markets still in `status=1` at scoring time.
 
+## Security audit pass (PR #130, 2026-05-06)
+
+Full-project defensive review against the Critical + High + selected
+Medium findings of an 8-agent audit run. Six logical commits squashed
+into one merge.
+
+**1. `admin+db: 4-eyes withdrawals + tamper-evident audit log`** —
+migration `0026_audit_hardening`. `withdrawals.{approved,submitted,
+confirmed}_by_user_id` + CHECK enforcing `confirmed_by ≠ approved_by`.
+Per-network tx_hash regex on `mark-submitted` / `mark-confirmed` /
+`mark-failed`; TRC20 normalised to no-prefix form. Unique partial
+index on `(network, tx_hash) WHERE tx_hash IS NOT NULL`.
+`admin_audit_log` gets `prev_hash` + `row_hash BYTEA` + a BEFORE INSERT
+trigger building a SHA-256 chain (advisory-locked for concurrent
+inserts). Migration backfills existing rows so the chain is valid from
+row 1; verifier `admin_audit_chain_check()` returns `(id, ok)` per row.
+Withdrawal lock-release paths (user cancel, admin reject / fail) write
+`wallet_ledger` audit rows so `locked_micro` decrements always have a
+trail.
+
+**2. `wallet+db: reorg detection, ETH log re-verify, Tron hard-fail`** —
+migration `0027_deposit_reorg_safety`. `deposits.block_hash` captured at
+insert; processor calls `Scanner.VerifyDeposit(dep)` before crediting
+(ETH path: `eth_getBlockByNumber` lookup, compare). Reorg → row flips
+to `status='orphaned'`. ETH client re-verifies log `Address` per row
+and hard-errors on missing `0x` in `Data` (was silently 0 +
+cursor-advance, losing real Transfers). Tron `normalizeTronAddressOK`
+returns `(_, false)` on unrecognised shapes; scanner aborts the batch.
+TRC20 `event_index` captured so multi-Transfer txs no longer collide
+on `(network, tx_hash, log_index=0)`.
+
+**3. `infra: per-service mem limits, log rotation, cap_drop, encrypted backups`** —
+`cap_drop: ALL` + `no-new-privileges:true` everywhere; Caddy keeps only
+`NET_BIND_SERVICE`. Per-service `mem_limit` budget for the 4 GB CPX22.
+`json-file` log rotation (10 MiB × 5 files). `docker-compose.override.yml`
+renamed to `docker-compose.dev.yml`. `pg_backup.sh` reads only
+`POSTGRES_*` + optional `BACKUP_GPG_RECIPIENT` (encrypts dump with GPG
+when set). `.env.example` defaults `NEXT_PUBLIC_*` empty;
+`next.config.ts` build-time guard refuses `localhost:` in `NEXT_PUBLIC_*`
+when `NODE_ENV=production`.
+
+**4. `auth: family-based refresh rotation, session revocation, CSRF, no-shared-secret web`** —
+migration `0028_session_family`. `sessions.{family_id, parent_session_id}`
+for refresh-token replay detection (reuse of revoked session id →
+revoke whole family). JWT `aud=oddzilla-api`. Per-request session-
+revocation check via Redis cache `session:status:{sid}` (60s TTL);
+revoke paths flip the cache to `revoked` so stolen access tokens stop
+working immediately. `plugins/csrf.ts` requires Origin/Referer in
+`CORS_ORIGINS` for every state-changing method. argon2id bumped to
+m=46 MiB / t=1 (OWASP 2026 minimum). Login timing equalisation via
+`verifyDummyPassword`. `/users/me/password` rate-limited 5/5min and
+revokes every other-device session immediately. Web container drops
+`JWT_SECRET` dependency — `apps/web/src/lib/auth.ts` uses `/auth/me`.
+`safeNextPath` blocks `//` and `/\\` open-redirect navigation.
+
+**5. `feed+web: javascript: URL filter, status allow-list, REST cap, nonce CSP`** —
+`parseMatchStreams` drops non-http(s) URLs (closes `javascript:` stored-
+XSS). `MapMatchStatusCode` strict allow-list `{0,1,4,5}` per Oddin
+§2.4.1.2. `http.MaxBytesReader(32 MiB)` cap on Oddin REST. `sanitizeName`
+on REST-supplied tournament/sport/competitor names. Nonce-based CSP
+emitted by Next.js middleware (per-request nonce, applied to inline
+theme-boot script via `headers().get("x-csp-nonce")`); Caddy's static
+CSP removed. HSTS gets `preload`.
+
+**6. `admin+settle+cashout: self-edit guard, payload hash, bulk-logos eq, recovery limit`** —
+self-edit guard now blocks `globalLimitMicro` and `betDelaySeconds` on
+own row. `bulk-logos` uses `eq()` not `ilike()` (closes wildcard
+injection). `/admin/feed/recovery` rate-limited 3/hr. `hashMarketPayload`
+no longer mixes raw AMQP body bytes (closes whitespace-replay duplicate-
+payout path through the 5-tuple dedup). Cashout drift floor in bigint
+arithmetic instead of `| 0` (was 32-bit truncating for stakes >
+~2147 USDT, bypassing drift defence). Admin config endpoints throw
+`BadRequestError` instead of bare `Error` so validation failures
+surface as 400 not 500.
+
+**Deploy:** PR #130 merged as `29bfa77`. 5 migrations applied (3 from
+this PR + 2 Phase 10 catch-up). 6 service images rebuilt serially. All
+11 containers healthy. Audit chain verifier on prod reports
+`76/76 valid, 0 broken`. Smoke tests: storefront 200, admin 302,
+`/api/healthz` 200, nonce CSP header live, HSTS preload live, CSRF gate
+enforces (no-Origin → 403, attacker-Origin → 403, allowlisted-Origin → 400
+on bad creds, expected).
+
 ## Post-MVP candidates (not in scope yet)
 
 - Outright markets (tournament winners) — requires dynamic outcome handling.
@@ -755,6 +838,8 @@ Independent of phase numbering — these must all be true:
 3. HD master key moved out of env into isolated signer.
 4. Wallet reconciliation job (daily sum of ledger == sum of balances)
    running and alerting.
-5. Backups: Postgres daily full + WAL archived off-box.
+5. Backups: Postgres daily full + WAL archived off-box. (PR #130 added
+   optional `BACKUP_GPG_RECIPIENT` so the daily dump can already be
+   encrypted; the off-host rsync target is still manual.)
 6. Runbook for feed outage, settlement lag, wallet-watcher chain reorg,
    ws-gateway storm.
