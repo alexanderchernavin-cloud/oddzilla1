@@ -167,21 +167,42 @@
       "idx": 23,
       "version": "7",
       "when": 1700000023000,
-      "tag": "0023_audit_hardening",
+      "tag": "0023_settlements_market_id_idx",
       "breakpoints": true
     },
     {
       "idx": 24,
       "version": "7",
       "when": 1700000024000,
-      "tag": "0024_deposit_reorg_safety",
+      "tag": "0024_community_profiles",
       "breakpoints": true
     },
     {
       "idx": 25,
       "version": "7",
       "when": 1700000025000,
-      "tag": "0025_session_family",
+      "tag": "0025_community_tickets",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1700000026000,
+      "tag": "0026_audit_hardening",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1700000027000,
+      "tag": "0027_deposit_reorg_safety",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1700000028000,
+      "tag": "0028_session_family",
       "breakpoints": true
     }
   ]
