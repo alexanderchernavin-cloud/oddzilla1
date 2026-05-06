@@ -133,13 +133,11 @@ func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 		return nil
 	}
 
-	// Don't overwrite the match status from odds_change. Per the Oddin
-	// docs, score-correction odds_change messages can arrive AFTER a match
-	// is closed; reactivating the match in that case is a known anti-
-	// pattern. ResolveMatch() will leave the existing status intact when
-	// the URN is already known. For new matches, the REST fetch inside
-	// ResolveMatch will set a more accurate status than the assumption
-	// "live".
+	// ResolveMatch only sets matches.status on insert; for an existing
+	// match we leave it alone here and apply lifecycle changes further
+	// down via UpdateMatchStatus when <sport_event_status> carries a
+	// terminal code. ResolveMatch's REST fallback for fresh inserts is
+	// always more accurate than the constant "live" assumption.
 	matchID, err := d.Resolver.ResolveMatch(ctx, automap.MatchContext{
 		MatchURN: msg.EventID,
 	}, body)
@@ -166,6 +164,29 @@ func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 			}
 		} else if perr != nil {
 			d.Log.Warn().Err(perr).Int64("match_id", matchID).Msg("build live_score payload failed; continuing")
+		}
+
+		// Forward-only lifecycle update from <sport_event_status>.
+		// Oddin's integration broker often skips match_status_change
+		// entirely for esports — many fixtures transition not_started
+		// → closed without ever emitting one — but the same lifecycle
+		// code rides on every odds_change inside this same status
+		// block, which we already decode for the scoreboard. We act
+		// only on terminal codes (closed / cancelled): non-terminal
+		// values like "live" or "suspended" are ignored to avoid
+		// flapping match.status on every odds tick, and the forward-
+		// only SQL guard inside UpdateMatchStatus prevents any
+		// reactivation if a stale post-game odds_change arrives.
+		if msg.SportEventStatus.Status != nil {
+			newStatus := oddinxml.MapMatchStatusCode(*msg.SportEventStatus.Status)
+			if newStatus == "closed" || newStatus == "cancelled" {
+				if uerr := store.UpdateMatchStatus(ctx, d.Store.Pool(), matchID, newStatus); uerr != nil {
+					d.Log.Warn().Err(uerr).Int64("match_id", matchID).
+						Str("status", newStatus).
+						Int("oddin_code", *msg.SportEventStatus.Status).
+						Msg("odds_change: terminal status update failed; continuing")
+				}
+			}
 		}
 	}
 
@@ -381,20 +402,53 @@ func handleMatchStatusChange(ctx context.Context, d Deps, body []byte) error {
 
 // ─── bet_stop ─────────────────────────────────────────────────────────────
 
-// bet_stop suspends a whole group of markets for a match. For phase 3 we
-// don't yet know which markets a group applies to (needs market_descriptions
-// REST). We log + bump cursor so settlement/publisher can pick it up later.
+// handleBetStop applies blanket bet_stop messages (groups="all") to every
+// non-terminal market on the event. Group-specific suspensions (e.g.
+// `groups="main_markets,prematch_markets"`) need market_descriptions REST
+// data to know which markets fall in which group — those are logged and
+// skipped for now.
+//
+// The common case Oddin emits at end-of-match is
+// `<bet_stop groups="all" market_status="-1"/>`, which is exactly the
+// signal we need to shut the storefront down for that fixture. Without
+// this handler, markets sat at status=1 indefinitely until either
+// bet_settlement landed (per-market) or the phantom-drain rebuilt them
+// from REST.
 func handleBetStop(ctx context.Context, d Deps, body []byte) error {
 	var msg oddinxml.BetStop
 	if err := xml.Unmarshal(body, &msg); err != nil {
 		d.Log.Warn().Err(err).Msg("bet_stop: unmarshal failed; dropping")
 		return nil
 	}
-	d.Log.Info().
-		Str("event", msg.EventID).
-		Str("groups", msg.Groups).
-		Int("market_status", msg.MarketStatus).
-		Msg("bet_stop received (phase 3: log only; phase 4 will apply)")
+
+	if msg.Groups == "all" {
+		matchID, ok, ferr := store.FindMatchByURN(ctx, d.Store.Pool(), msg.EventID)
+		if ferr != nil {
+			return fmt.Errorf("bet_stop: find match %s: %w", msg.EventID, ferr)
+		}
+		if !ok {
+			d.Log.Debug().Str("event", msg.EventID).
+				Msg("bet_stop: unknown match; will resolve on next odds_change")
+		} else if uerr := store.UpdateAllMarketsStatusForMatch(ctx, d.Store.Pool(),
+			matchID, int16(msg.MarketStatus), msg.Timestamp); uerr != nil {
+			d.Log.Warn().Err(uerr).
+				Int64("match_id", matchID).
+				Int("market_status", msg.MarketStatus).
+				Msg("bet_stop: blanket market update failed")
+		} else {
+			d.Log.Info().
+				Str("event", msg.EventID).
+				Int64("match_id", matchID).
+				Int("market_status", msg.MarketStatus).
+				Msg("bet_stop: blanket market status applied")
+		}
+	} else {
+		d.Log.Debug().
+			Str("event", msg.EventID).
+			Str("groups", msg.Groups).
+			Int("market_status", msg.MarketStatus).
+			Msg("bet_stop: group-specific suspension; skipping (needs market_descriptions)")
+	}
 
 	if err := store.BumpAfterTs(ctx, d.Store.Pool(), afterTsKey(msg.Product), msg.Timestamp); err != nil {
 		d.Log.Warn().Err(err).Msg("bump after_ts failed")
