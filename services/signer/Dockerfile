@@ -10,19 +10,15 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-s -w" \
     -o /out/signer ./cmd/signer
 
-# Runtime stage — alpine + a non-root user. We need a real shell for the
-# entrypoint that chowns the shared socket volume on startup; distroless
-# would force an init sidecar. cap_drop ALL + no_new_privileges in
-# compose still apply, and the binary is the only thing that matters
-# at runtime.
-FROM alpine:3.20
+# Runtime stage — distroless static. No shell, no package manager, no
+# busybox. The compose entry runs the container as UID 1000 directly
+# and the signer-socket tmpfs is pre-owned at that UID/GID, so we
+# never need a chown / dropper-entrypoint shell — the binary is the
+# only executable.
+FROM gcr.io/distroless/static-debian12
 
-RUN addgroup -g 1000 signer && adduser -u 1000 -G signer -D -s /sbin/nologin signer
-RUN apk add --no-cache su-exec
+COPY --from=build /out/signer /signer
 
-COPY --from=build /out/signer /usr/local/bin/signer
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod 0755 /entrypoint.sh
-
+USER 1000:1000
 EXPOSE 8086
-ENTRYPOINT ["/entrypoint.sh"]
+ENTRYPOINT ["/signer"]
