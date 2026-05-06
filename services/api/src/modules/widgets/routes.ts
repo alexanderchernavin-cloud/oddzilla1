@@ -229,7 +229,7 @@ export default async function widgetsRoutes(app: FastifyInstance) {
       const url = await fetchDisirUrl(
         app,
         cacheKey,
-        `/statistics/${disirEnv}/match/${encodeURIComponent(urn)}`,
+        `/statistics/${disirEnv}/match/${urn}`,
         qs,
         token,
         baseUrl,
@@ -259,7 +259,7 @@ export default async function widgetsRoutes(app: FastifyInstance) {
       const url = await fetchDisirUrl(
         app,
         cacheKey,
-        `/statistics/${disirEnv}/tournament/${encodeURIComponent(urn)}`,
+        `/statistics/${disirEnv}/tournament/${urn}`,
         qs,
         token,
         baseUrl,
@@ -288,7 +288,7 @@ export default async function widgetsRoutes(app: FastifyInstance) {
       const url = await fetchDisirUrl(
         app,
         cacheKey,
-        `/live/${disirEnv}/scoreboard/${encodeURIComponent(urn)}`,
+        `/live/${disirEnv}/scoreboard/${urn}`,
         qs,
         token,
         baseUrl,
@@ -298,6 +298,14 @@ export default async function widgetsRoutes(app: FastifyInstance) {
   );
 }
 
+// Disir's path parser does NOT decode percent-escaped colons — passing
+// `od%3Amatch%3AN` returns 405. So URNs must be interpolated literally
+// into the upstream path. These regexes guard against any character
+// outside the legitimate URN shape so the literal interpolation can't
+// be turned into path traversal or a host-swap with a crafted input.
+const MATCH_URN_RE = /^od:match:\d+$/;
+const TOURNAMENT_URN_RE = /^od:tournament:\d+$/;
+
 // resolveMatchUrn accepts either a numeric matches.id (the form the
 // catalog routes return on the storefront) or a provider URN
 // (`od:match:N`) and yields the URN — the only form Disir accepts.
@@ -305,7 +313,15 @@ async function resolveMatchUrn(
   app: FastifyInstance,
   matchIdOrUrn: string,
 ): Promise<string> {
-  if (matchIdOrUrn.startsWith("od:match:")) return matchIdOrUrn;
+  if (matchIdOrUrn.startsWith("od:match:")) {
+    if (!MATCH_URN_RE.test(matchIdOrUrn)) {
+      throw new BadRequestError(
+        "Match URN must match od:match:<digits>",
+        "invalid_match_id",
+      );
+    }
+    return matchIdOrUrn;
+  }
   let asBigint: bigint;
   try {
     asBigint = BigInt(matchIdOrUrn);
@@ -328,6 +344,12 @@ async function resolveMatchUrn(
     .limit(1);
   const urn = row[0]?.urn ?? null;
   if (!urn) throw new NotFoundError("Match not found", "match_not_found");
+  if (!MATCH_URN_RE.test(urn)) {
+    // Defence in depth: every row in matches.provider_urn we've seen
+    // matches od:match:N, but a future provider could store something
+    // exotic. Bail out before interpolating it into the upstream path.
+    throw new NotFoundError("Match URN unsupported by widget proxy", "match_urn_unsupported");
+  }
   return urn;
 }
 
@@ -335,7 +357,15 @@ async function resolveTournamentUrn(
   app: FastifyInstance,
   tournamentIdOrUrn: string,
 ): Promise<string> {
-  if (tournamentIdOrUrn.startsWith("od:tournament:")) return tournamentIdOrUrn;
+  if (tournamentIdOrUrn.startsWith("od:tournament:")) {
+    if (!TOURNAMENT_URN_RE.test(tournamentIdOrUrn)) {
+      throw new BadRequestError(
+        "Tournament URN must match od:tournament:<digits>",
+        "invalid_tournament_id",
+      );
+    }
+    return tournamentIdOrUrn;
+  }
   const numeric = Number.parseInt(tournamentIdOrUrn, 10);
   if (!Number.isFinite(numeric) || numeric <= 0) {
     throw new BadRequestError(
@@ -349,6 +379,12 @@ async function resolveTournamentUrn(
     .where(eq(tournaments.id, numeric))
     .limit(1);
   const urn = row[0]?.urn ?? null;
+  if (urn && !TOURNAMENT_URN_RE.test(urn)) {
+    throw new NotFoundError(
+      "Tournament URN unsupported by widget proxy",
+      "tournament_urn_unsupported",
+    );
+  }
   if (!urn) throw new NotFoundError("Tournament not found", "tournament_not_found");
   return urn;
 }
