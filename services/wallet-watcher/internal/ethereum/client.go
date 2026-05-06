@@ -112,6 +112,7 @@ type Log struct {
 	TxHash      string
 	LogIndex    int
 	BlockNumber int64
+	BlockHash   string // 0x-prefixed, lowercase
 	From        string // 0x-prefixed, lowercase
 	To          string // 0x-prefixed, lowercase
 	Amount      *big.Int
@@ -122,6 +123,7 @@ type rawLog struct {
 	Topics      []string `json:"topics"`
 	Data        string   `json:"data"`
 	BlockNumber string   `json:"blockNumber"`
+	BlockHash   string   `json:"blockHash"`
 	TxHash      string   `json:"transactionHash"`
 	LogIndex    string   `json:"logIndex"`
 	Removed     bool     `json:"removed"`
@@ -129,7 +131,14 @@ type rawLog struct {
 
 // GetUSDTLogs returns every Transfer log for the given USDT contract in
 // block range [fromBlock, toBlock] (inclusive).
+//
+// Each row is double-checked against the contract address to defend
+// against a malicious or buggy RPC endpoint returning logs from arbitrary
+// contracts. A log with a missing 0x-prefixed Data is also rejected
+// rather than silently parsed as zero — that pattern would advance the
+// scanner cursor past a real Transfer with no credit.
 func (c *Client) GetUSDTLogs(ctx context.Context, contract string, fromBlock, toBlock int64) ([]Log, error) {
+	contractLower := strings.ToLower(contract)
 	params := []any{
 		map[string]any{
 			"address":   contract,
@@ -150,31 +159,58 @@ func (c *Client) GetUSDTLogs(ctx context.Context, contract string, fromBlock, to
 		if len(r.Topics) < 3 {
 			continue
 		}
+		// Defence against an RPC endpoint that ignores the address filter.
+		if strings.ToLower(r.Address) != contractLower {
+			return nil, fmt.Errorf("rpc returned log for wrong contract %q (expected %q)", r.Address, contractLower)
+		}
 		blockNumber, err := parseHexInt(r.BlockNumber)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("decode blockNumber: %w", err)
 		}
 		logIndex, err := parseHexInt(r.LogIndex)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("decode logIndex: %w", err)
+		}
+		// A Transfer log carries a 32-byte uint256 in `data`. Modern RPCs
+		// always return the 0x prefix; treating the missing-prefix case as
+		// "amount=0" (the previous behaviour) silently drops the row but
+		// still advances the cursor — losing the deposit. Reject the
+		// whole batch instead so the cursor stays put and the next tick
+		// can retry.
+		if !strings.HasPrefix(r.Data, "0x") {
+			return nil, fmt.Errorf("log data missing 0x prefix: %q", r.Data)
+		}
+		amount := new(big.Int)
+		if _, ok := amount.SetString(strings.TrimPrefix(r.Data, "0x"), 16); !ok {
+			return nil, fmt.Errorf("decode log data: %q", r.Data)
 		}
 		from, to := topicToAddress(r.Topics[1]), topicToAddress(r.Topics[2])
-		amount := new(big.Int)
-		if strings.HasPrefix(r.Data, "0x") {
-			if _, ok := amount.SetString(strings.TrimPrefix(r.Data, "0x"), 16); !ok {
-				continue
-			}
-		}
 		out = append(out, Log{
 			TxHash:      strings.ToLower(r.TxHash),
 			LogIndex:    int(logIndex),
 			BlockNumber: blockNumber,
+			BlockHash:   strings.ToLower(r.BlockHash),
 			From:        from,
 			To:          to,
 			Amount:      amount,
 		})
 	}
 	return out, nil
+}
+
+// BlockHashAt returns the canonical block hash for `blockNumber`. Used by
+// the deposit processor to detect reorgs before crediting: if the stored
+// block_hash differs from the current canonical chain's block_hash at
+// the same height, the deposit's tx is no longer on-chain.
+func (c *Client) BlockHashAt(ctx context.Context, blockNumber int64) (string, error) {
+	var resp struct {
+		Hash string `json:"hash"`
+	}
+	params := []any{fmt.Sprintf("0x%x", blockNumber), false}
+	if err := c.call(ctx, "eth_getBlockByNumber", params, &resp); err != nil {
+		return "", err
+	}
+	return strings.ToLower(resp.Hash), nil
 }
 
 // topicToAddress extracts a 0x-lowercase address from a 32-byte topic.

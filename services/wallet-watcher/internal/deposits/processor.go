@@ -23,10 +23,15 @@ import (
 	"github.com/oddzilla/wallet-watcher/internal/store"
 )
 
-// HeadProvider is what we need from a chain to tick confirmations.
+// HeadProvider is what we need from a chain to tick confirmations and
+// reorg-verify a deposit before crediting.
 type HeadProvider interface {
 	HeadBlock(ctx context.Context) (int64, error)
 	Confirmations() int
+	// VerifyDeposit returns true if the deposit's recorded block is still
+	// on the canonical chain. False means a reorg dropped it; the
+	// processor must not credit such a deposit.
+	VerifyDeposit(ctx context.Context, dep store.PendingDeposit) (bool, error)
 }
 
 type Processor struct {
@@ -81,7 +86,24 @@ func (p *Processor) TickChain(ctx context.Context, chain store.Chain, head HeadP
 			continue
 		}
 
-		// Reached threshold. Credit + mark.
+		// Reached threshold. Verify the block_hash is still on the
+		// canonical chain — a reorg between insert and now would otherwise
+		// credit an orphaned tx.
+		ok, err := head.VerifyDeposit(ctx, d)
+		if err != nil {
+			p.log.Warn().Err(err).Str("deposit", d.ID).Msg("reorg verify failed (will retry next tick)")
+			continue
+		}
+		if !ok {
+			if err := p.st.MarkOrphaned(ctx, d.ID); err != nil {
+				p.log.Error().Err(err).Str("deposit", d.ID).Msg("mark orphaned failed")
+				continue
+			}
+			p.log.Warn().Str("deposit", d.ID).Str("tx", d.TxHash).Int64("block", d.BlockNumber).Msg("deposit orphaned by reorg")
+			continue
+		}
+
+		// Credit + mark.
 		if err := p.st.Credit(ctx, d); err != nil {
 			p.log.Error().Err(err).Str("deposit", d.ID).Msg("credit failed")
 			continue
