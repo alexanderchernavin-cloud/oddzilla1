@@ -49,6 +49,16 @@ export const tickets = pgTable(
       .on(t.notBeforeTs)
       .where(sql`${t.status} = 'pending_delay'`),
     index("tickets_open_idx").on(t.status).where(sql`${t.status} IN ('accepted', 'pending_delay')`),
+    // Migration 0030: bet history filtered by currency. The
+    // _user_status_idx above doesn't include currency, so post-0014
+    // queries scan and filter in heap; this index serves them
+    // directly.
+    index("tickets_user_currency_status_idx").on(
+      t.userId,
+      t.currency,
+      t.status,
+      sql`${t.placedAt} DESC`,
+    ),
   ],
 );
 

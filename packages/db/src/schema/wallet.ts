@@ -58,6 +58,18 @@ export const walletLedger = pgTable(
     uniqueIndex("wallet_ledger_unique_ref")
       .on(t.type, t.refType, t.refId)
       .where(sql`${t.refId} IS NOT NULL`),
+    // Migration 0030: per-user-per-currency time-ordered scan, used by
+    // /wallet/ledger?currency=X and admin per-user PnL.
+    index("wallet_ledger_user_currency_ts_idx").on(
+      t.userId,
+      t.currency,
+      sql`${t.createdAt} DESC`,
+    ),
+    // Migration 0030: dashboard PnL aggregation. Partial — only the
+    // three financial types — so the index stays small.
+    index("wallet_ledger_pnl_idx")
+      .on(sql`${t.createdAt} DESC`, t.type, t.currency)
+      .where(sql`${t.type} IN ('bet_stake', 'bet_payout', 'bet_refund')`),
   ],
 );
 

@@ -211,6 +211,13 @@
       "when": 1700000029000,
       "tag": "0029_community_achievements",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1700000030000,
+      "tag": "0030_audit_round3_indexes",
+      "breakpoints": true
     }
   ]
 }
