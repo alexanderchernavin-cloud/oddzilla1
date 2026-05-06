@@ -8,6 +8,7 @@ import {
   uniqueIndex,
   index,
   customType,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { users } from "./users.js";
 
@@ -39,7 +40,10 @@ export const sessions = pgTable(
     // session in the family — the canonical "stolen token detected"
     // response.
     familyId: uuid("family_id").notNull(),
-    parentSessionId: uuid("parent_session_id"),
+    parentSessionId: uuid("parent_session_id").references(
+      (): AnyPgColumn => sessions.id,
+      { onDelete: "set null" },
+    ),
   },
   (t) => [
     uniqueIndex("sessions_refresh_idx").on(t.refreshTokenHash),

@@ -10,9 +10,18 @@ import {
   inet,
   unique,
   index,
+  customType,
 } from "drizzle-orm/pg-core";
 import { mappingStatusEnum, chainNetworkEnum } from "../enums.js";
 import { users } from "./users.js";
+
+// Mirrors the bytea customType in sessions.ts. Kept local to each schema
+// file to avoid cross-file circular imports inside `packages/db`.
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType() {
+    return "bytea";
+  },
+});
 
 export const mappingReviewQueue = pgTable(
   "mapping_review_queue",
@@ -48,6 +57,11 @@ export const adminAuditLog = pgTable(
     afterJson: jsonb(),
     ipInet: inet(),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    // Hash chain (migration 0026). Both columns are populated by the
+    // `admin_audit_log_chain()` BEFORE INSERT trigger; never write them
+    // from app code. Verifier: SELECT * FROM admin_audit_chain_check().
+    prevHash: bytea("prev_hash"),
+    rowHash: bytea("row_hash"),
   },
   (t) => [
     index("admin_audit_actor_idx").on(t.actorUserId, sql`${t.createdAt} DESC`),
