@@ -463,6 +463,75 @@ ON CONFLICT (type, ref_type, ref_id) WHERE ref_id IS NOT NULL DO NOTHING`,
 	return nil
 }
 
+// WriteCommunityProjection upserts a community_tickets row for `ticketID`
+// based on the current state of the source-of-truth `tickets` table. It
+// is called from the settlement transaction immediately after
+// SettleTicket / ReverseSettledTicket; passing the same `tx` keeps the
+// projection consistent with the underlying state without an
+// eventual-write worker.
+//
+// The function reads the current ticket row inside the tx (so it sees
+// the just-applied UPDATE) and joins through ticket_selections →
+// markets → matches → tournaments → categories to compute total_odds,
+// num_legs, and sport_ids. Idempotent on `community_tickets.ticket_id
+// UNIQUE`: an UPSERT that updates status / payout / settled_at / odds
+// keeps the row in sync across re-settle generations and rollback flows.
+//
+// Failure must NOT unwind the surrounding settlement transaction —
+// callers log+continue. The admin backfill endpoint
+// (`POST /admin/community/backfill`) recovers any miss.
+func WriteCommunityProjection(ctx context.Context, tx pgx.Tx, ticketID string) error {
+	const q = `
+WITH legs AS (
+  SELECT
+    t.id           AS ticket_id,
+    t.user_id      AS user_id,
+    t.currency     AS currency,
+    t.status       AS status,
+    t.bet_type     AS bet_type,
+    t.stake_micro  AS stake_micro,
+    COALESCE(t.actual_payout_micro, 0) AS payout_micro,
+    t.settled_at   AS settled_at,
+    COUNT(*)::int                                                AS num_legs,
+    COALESCE(
+      ARRAY_AGG(DISTINCT c.sport_id) FILTER (WHERE c.sport_id IS NOT NULL),
+      '{}'::int[]
+    )                                                            AS sport_ids,
+    -- Combine leg odds the same way placement does: simple product
+    -- across selections. Truncated to NUMERIC(10,4) by the column cast.
+    EXP(SUM(LN(ts2.odds_at_placement::float8)))::numeric(10, 4)  AS total_odds
+    FROM tickets t
+    JOIN ticket_selections ts2 ON ts2.ticket_id = t.id
+    JOIN markets mk            ON mk.id = ts2.market_id
+    JOIN matches mt            ON mt.id = mk.match_id
+    JOIN tournaments tn        ON tn.id = mt.tournament_id
+    JOIN categories c          ON c.id = tn.category_id
+   WHERE t.id = $1
+   GROUP BY t.id
+)
+INSERT INTO community_tickets (
+  ticket_id, user_id, currency, status, bet_type,
+  stake_micro, payout_micro, total_odds, num_legs, sport_ids, settled_at
+)
+SELECT
+  ticket_id, user_id, currency, status, bet_type,
+  stake_micro, payout_micro, total_odds, num_legs, sport_ids,
+  COALESCE(settled_at, NOW())
+  FROM legs
+ON CONFLICT (ticket_id) DO UPDATE
+   SET status       = EXCLUDED.status,
+       payout_micro = EXCLUDED.payout_micro,
+       settled_at   = EXCLUDED.settled_at
+`
+	// Single-ticket upsert. Failure is non-fatal at the call site —
+	// callers wrap this and log+continue so a projection bug never
+	// unwinds a real settlement transaction.
+	if _, err := tx.Exec(ctx, q, ticketID); err != nil {
+		return fmt.Errorf("write community projection: %w", err)
+	}
+	return nil
+}
+
 // nextPayoutRefID returns the ref_id to use for a new ledger row of
 // `ledgerType`. The first generation is the bare ticket UUID; subsequent
 // generations append ":N" so a re-settle after rollback gets its own row.

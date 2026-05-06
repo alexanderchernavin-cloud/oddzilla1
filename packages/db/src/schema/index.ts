@@ -14,4 +14,5 @@ export * from "./settlements.js";
 export * from "./admin.js";
 export * from "./feed.js";
 export * from "./fe-settings.js";
+export * from "./community.js";
 export * from "../enums.js";

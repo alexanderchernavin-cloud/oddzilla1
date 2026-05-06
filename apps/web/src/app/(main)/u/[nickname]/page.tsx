@@ -1,10 +1,18 @@
 import { notFound } from "next/navigation";
-import type { CommunityProfile } from "@oddzilla/types";
+import type {
+  CommunityProfile,
+  CommunityUserTicketsResponse,
+} from "@oddzilla/types";
 // Runtime values must come from the /currencies subpath — Next.js webpack
 // can't resolve the ".js" re-exports in the package root.
 import { isCurrency, type Currency } from "@oddzilla/types/currencies";
 import { serverApi } from "@/lib/server-fetch";
 import { CurrencyTabs } from "@/components/community/currency-tabs";
+import { CommunityTicketCard } from "@/components/community/ticket-card";
+
+interface SportsResponse {
+  sports: Array<{ id: number; slug: string; name: string }>;
+}
 
 export const dynamic = "force-dynamic";
 
@@ -20,15 +28,25 @@ export default async function PublicProfilePage({
   const currency: Currency =
     rawCurrency && isCurrency(rawCurrency) ? rawCurrency : "USDT";
 
-  const profile = await serverApi<CommunityProfile>(
-    `/community/users/${encodeURIComponent(nickname)}/profile?currency=${currency}`,
-  );
+  const [profile, ticketsRes, sportsRes] = await Promise.all([
+    serverApi<CommunityProfile>(
+      `/community/users/${encodeURIComponent(nickname)}/profile?currency=${currency}`,
+    ),
+    serverApi<CommunityUserTicketsResponse>(
+      `/community/users/${encodeURIComponent(nickname)}/tickets?currency=${currency}&pageSize=10`,
+    ),
+    serverApi<SportsResponse>("/catalog/sports"),
+  ]);
   if (!profile) notFound();
 
   const joined = new Date(profile.joinedAt).toLocaleDateString("en-US", {
     month: "short",
     year: "numeric",
   });
+  const tickets = ticketsRes?.tickets ?? [];
+  const sportsById = new Map(
+    (sportsRes?.sports ?? []).map((s) => [s.id, s]),
+  );
 
   return (
     <div>
@@ -62,10 +80,21 @@ export default async function PublicProfilePage({
         <h2 className="text-sm uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
           Recent tickets
         </h2>
-        <div className="card mt-3 p-6 text-sm text-[var(--color-fg-muted)]">
-          Recent tickets land in Phase 10.2 once the community feed
-          projection is live.
-        </div>
+        {tickets.length === 0 ? (
+          <div className="card mt-3 p-6 text-sm text-[var(--color-fg-muted)]">
+            No settled {currency} tickets yet.
+          </div>
+        ) : (
+          <ul className="mt-3 space-y-3">
+            {tickets.map((t) => (
+              <CommunityTicketCard
+                key={t.ticketId}
+                ticket={t}
+                sportsById={sportsById}
+              />
+            ))}
+          </ul>
+        )}
       </section>
     </div>
   );
