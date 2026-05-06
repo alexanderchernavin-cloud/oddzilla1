@@ -291,6 +291,15 @@ export class BetsService {
         if (!Number.isFinite(currentOdds) || !Number.isFinite(submittedOdds)) {
           throw new BadRequestError("odds_parse_error", "odds_parse_error");
         }
+        // Distinct rejection when the published price is non-positive —
+        // that's a feed-pipeline bug (NUMERIC(10,4) shouldn't carry 0
+        // or negatives, but defense in depth). Without this guard a
+        // zero price falls through to the drift calc, the
+        // `Math.abs(0 - x) / x = 1` ratio always exceeds tolerance,
+        // and the user sees `odds_drift_exceeded` — misleading. Sec M6.
+        if (currentOdds <= 0 || submittedOdds <= 0) {
+          throw new BadRequestError("outcome_no_price", "outcome_no_price");
+        }
         const drift = Math.abs(currentOdds - submittedOdds) / submittedOdds;
         if (drift > tolerance) {
           throw new BadRequestError("odds_drift_exceeded", "odds_drift_exceeded");
@@ -399,10 +408,17 @@ export class BetsService {
           userAgent: ctx.userAgent,
           betMeta: betMeta as unknown as Record<string, unknown> | null,
         })
+        // Two concurrent placements with the same idempotencyKey both
+        // pass the SELECT-then-INSERT check above; the unique
+        // constraint blocks the second. ON CONFLICT DO NOTHING converts
+        // the loser into a no-op so we re-fetch the original ticket
+        // instead of throwing a 500. The pre-check still catches a
+        // user-A vs user-B collision (caller-side races stay 409). M-3.
+        .onConflictDoNothing({ target: tickets.idempotencyKey })
         .returning();
       if (!inserted) {
-        // ON CONFLICT path shouldn't hit here because we checked above,
-        // but belt + suspenders: re-fetch.
+        // Loser of the concurrent insert race — re-fetch and surface
+        // the same ticket the winner created.
         const again = await tx
           .select()
           .from(tickets)
@@ -410,6 +426,9 @@ export class BetsService {
           .limit(1);
         if (again.length === 0) {
           throw new Error("ticket insert returned no row");
+        }
+        if (again[0]!.userId !== ctx.userId) {
+          throw new ConflictError("idempotency_key_collision", "idempotency_key_collision");
         }
         return this.hydrateSummary(tx, again[0]!.id);
       }
