@@ -41,10 +41,11 @@ function generateNonce(): string {
 }
 
 // Build the CSP. `nonce` is per-request and ties to the inline theme
-// boot script in app/layout.tsx. `frame-src` whitelists Twitch + YouTube
-// so the live-stream embed on match-detail can load. `img-src https:`
-// accommodates Oddin's CDN for team logos. `style-src 'unsafe-inline'`
-// stays — JSX `style={…}` props throughout the codebase rely on it.
+// boot script in app/layout.tsx. `frame-src` whitelists Twitch, YouTube,
+// Kick and Gjirafa so the live-stream embed on match-detail can load.
+// `img-src https:` accommodates Oddin's CDN for team logos.
+// `style-src 'unsafe-inline'` stays — JSX `style={…}` props throughout
+// the codebase rely on it.
 function buildCsp(nonce: string): string {
   return [
     "default-src 'self'",
@@ -53,7 +54,7 @@ function buildCsp(nonce: string): string {
     "img-src 'self' data: https:",
     "font-src 'self' data:",
     "connect-src 'self' https: wss:",
-    "frame-src 'self' https://player.twitch.tv https://www.twitch.tv https://www.youtube.com https://www.youtube-nocookie.com",
+    "frame-src 'self' https://player.twitch.tv https://www.twitch.tv https://www.youtube.com https://www.youtube-nocookie.com https://player.kick.com https://video.gjirafa.com",
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",

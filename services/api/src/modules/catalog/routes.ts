@@ -105,15 +105,18 @@ function formatOdds(s: string | null | undefined): string | null {
 
 // Stream embed helper. matches.tv_channels is a JSONB array of
 // `{ name, language, streamUrl }` (see migration 0022 + the
-// feed-ingester resolver). The frontend embeds Twitch + YouTube; for
-// every other host we hand back a passthrough row that renders as a
-// link. We classify here so the Next.js page can stay dumb — and so a
-// future admin override (e.g. blocking a misbehaving channel) has one
-// place to land.
+// feed-ingester resolver). The frontend embeds Twitch, YouTube, Kick
+// and Gjirafa; anything else falls back to a single card pointing at
+// the source URL. We classify here so the Next.js page can stay dumb
+// — and so a future admin override (e.g. blocking a misbehaving
+// channel) has one place to land.
 type StreamSource = {
-  platform: "twitch" | "youtube" | "other";
-  // For Twitch: the channel slug (`esl_csgo`). For YouTube: the video
-  // id (`abc123XYZ`). null for `other` — caller falls back to the URL.
+  platform: "twitch" | "youtube" | "kick" | "gjirafa" | "other";
+  // For Twitch / Kick: the channel slug (`esl_csgo`, `xqc`).
+  // For YouTube: the video id (`abc123XYZ`).
+  // For Gjirafa: the page slug (`gjirafa50-masters-league-...`).
+  // null for `other` and for malformed URLs — caller falls back to
+  // the original URL.
   embedId: string | null;
   url: string;
   name: string | null;
@@ -198,6 +201,29 @@ function classifyStreamUrl(
       return { platform: "youtube", embedId: videoId };
     }
     return { platform: "youtube", embedId: null };
+  }
+  if (host === "kick.com" || host === "m.kick.com" || host === "player.kick.com") {
+    // https://kick.com/<channel> | https://player.kick.com/<channel>
+    // Kick channel slugs allow lowercase letters, digits, underscore
+    // and hyphen; length 3..25 in practice. Embed URL is
+    // https://player.kick.com/<channel>.
+    const seg = parsed.pathname.split("/").filter(Boolean)[0] ?? "";
+    if (seg && /^[a-zA-Z0-9_-]{2,25}$/.test(seg)) {
+      return { platform: "kick", embedId: seg.toLowerCase() };
+    }
+    return { platform: "kick", embedId: null };
+  }
+  if (host === "video.gjirafa.com") {
+    // Page: https://video.gjirafa.com/<slug>
+    // Embed: https://video.gjirafa.com/embed/<slug>
+    // Some feeds may already point at the /embed/ form — strip the
+    // prefix so we don't double-embed.
+    const segs = parsed.pathname.split("/").filter(Boolean);
+    const slug = segs[0] === "embed" ? segs[1] ?? "" : segs[0] ?? "";
+    if (slug && /^[a-z0-9-]{2,120}$/i.test(slug)) {
+      return { platform: "gjirafa", embedId: slug.toLowerCase() };
+    }
+    return { platform: "gjirafa", embedId: null };
   }
   return { platform: "other", embedId: null };
 }
