@@ -20,6 +20,8 @@ interface RecoveryResponse {
   ok: true;
   cursorMs: number;
   hours: number;
+  deletedMarkets: number;
+  deletedMatches: number;
   flushedMarkets: number;
   flushedOutcomes: number;
   activeMarketsBefore: number;
@@ -134,10 +136,12 @@ export function RecoveryPanel({ initialStatus }: { initialStatus: FeedStatus }) 
             onChange={(e) => setFlushOdds(e.target.checked)}
           />
           <span>
-            Flush odds — suspend every active market and clear published
-            odds, raw odds, and probability until the replay re-populates
-            them. Recommended: prevents stale probabilities from feeding
-            Tiple / Tippot pricing while recovery is in flight.
+            Reset catalog — delete every market and match on a not-started
+            or live fixture that has no bets or settlements attached, then
+            suspend whatever survives (the money-attached ones) and clear
+            their published odds, raw odds, and probability. The replay
+            re-creates everything Oddin still has within the rewind
+            window. Closed and cancelled matches are never touched.
           </span>
         </label>
 
@@ -169,8 +173,11 @@ export function RecoveryPanel({ initialStatus }: { initialStatus: FeedStatus }) 
             <span className="mono">
               {new Date(result.cursorMs).toISOString()}
             </span>
-            . {result.flushedMarkets > 0
-              ? `Suspended ${result.flushedMarkets} market${result.flushedMarkets === 1 ? "" : "s"} and cleared ${result.flushedOutcomes} outcome price${result.flushedOutcomes === 1 ? "" : "s"}.`
+            . {result.deletedMarkets > 0 || result.deletedMatches > 0
+              ? `Deleted ${result.deletedMarkets} orphan market${result.deletedMarkets === 1 ? "" : "s"} and ${result.deletedMatches} match${result.deletedMatches === 1 ? "" : "es"}.`
+              : "No orphan rows to delete."}{" "}
+            {result.flushedMarkets > 0
+              ? `Suspended ${result.flushedMarkets} surviving market${result.flushedMarkets === 1 ? "" : "s"} (with bets or settlements) and cleared ${result.flushedOutcomes} outcome price${result.flushedOutcomes === 1 ? "" : "s"}.`
               : `${result.activeMarketsBefore} active market${result.activeMarketsBefore === 1 ? "" : "s"} were left in place.`}{" "}
             Feed-ingester should start re-populating within seconds.
           </div>
