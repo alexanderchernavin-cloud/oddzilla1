@@ -262,6 +262,15 @@ func (s *Settler) maybeSettleTicket(ctx context.Context, tx pgx.Tx, ticketID, so
 	if err := store.SettleTicket(ctx, tx, t, payout, ledgerType, sourceTag); err != nil {
 		return false, err
 	}
+
+	// Phase 10.2 community projection. Best-effort inside the settle tx —
+	// a projection failure must not unwind a real settlement, so we log
+	// and continue. The admin backfill endpoint (POST /admin/community/
+	// backfill) recovers any miss.
+	if err := store.WriteCommunityProjection(ctx, tx, t.ID); err != nil {
+		s.log.Warn().Err(err).Str("ticket", t.ID).
+			Msg("community projection write failed; continuing")
+	}
 	return true, nil
 }
 
@@ -425,6 +434,14 @@ func (s *Settler) reverseSettledForCancel(ctx context.Context, tx pgx.Tx, ticket
 	}
 	if err := store.ReverseSettledTicket(ctx, tx, ticketID, t.UserID, t.Currency, "bet_cancel", t.StakeMicro, prior); err != nil {
 		return false, err
+	}
+	// Mirror the reversal onto the community projection. ON CONFLICT DO
+	// UPDATE flips status='accepted' and clears payout to 0 so feed
+	// queries (which filter on status IN ('settled', 'cashed_out'))
+	// stop surfacing this ticket until it re-settles.
+	if err := store.WriteCommunityProjection(ctx, tx, ticketID); err != nil {
+		s.log.Warn().Err(err).Str("ticket", ticketID).
+			Msg("community projection reverse (bet_cancel) failed; continuing")
 	}
 	return true, nil
 }
@@ -616,6 +633,12 @@ func (s *Settler) reverseTicket(ctx context.Context, tx pgx.Tx, ticketID, reason
 
 	if err := store.ReverseSettledTicket(ctx, tx, ticketID, t.UserID, t.Currency, reason, t.StakeMicro, prior); err != nil {
 		return false, err
+	}
+	// Same reversal projection update as the bet_cancel path. Best-effort
+	// inside the rollback tx — backfill recovers any miss.
+	if err := store.WriteCommunityProjection(ctx, tx, ticketID); err != nil {
+		s.log.Warn().Err(err).Str("ticket", ticketID).Str("reason", reason).
+			Msg("community projection reverse (rollback) failed; continuing")
 	}
 	return true, nil
 }

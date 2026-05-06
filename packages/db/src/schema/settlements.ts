@@ -42,6 +42,11 @@ export const settlements = pgTable(
       t.payloadHash,
     ),
     index("settlements_event_idx").on(t.eventUrn, sql`${t.processedAt} DESC`),
+    // Reverse FK probe: "is this market_id referenced by any settlement?"
+    // Used by the admin recovery flush (NOT EXISTS subquery) and any
+    // future per-market settlement lookup. The unique index above starts
+    // with event_urn so it can't satisfy a market_id-alone predicate.
+    index("settlements_market_id_idx").on(t.marketId),
   ],
 );
 

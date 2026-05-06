@@ -60,6 +60,46 @@ Canonical SQL lives in [`../packages/db/migrations/`](../packages/db/migrations/
   is a single SQL UPDATE that copies
   `competitor_profiles.icon_path` (cached by feed-ingester from
   Oddin's REST profile endpoint) onto `competitors.logo_url`.
+- `0022_match_tv_channels.sql` — `matches.tv_channels jsonb` storing
+  the parsed `<tv_channels>` block from Oddin's fixture endpoint.
+  Twitch / YouTube broadcasters render as a live-stream embed above
+  the markets on the match-detail page; fixture_change `STREAM_URL`
+  (106) triggers a REST refresh.
+- `0023_settlements_market_id_idx.sql` — plain btree on
+  `settlements(market_id)` so reverse-FK probes by market_id can use
+  an index. The existing `(event_urn, market_id, …)` unique can't
+  because event_urn leads. Without it, the recovery flush's
+  `NOT EXISTS` over 4M settlement rows seq-scanned and ran for over a
+  minute.
+- `0024_community_profiles.sql` — Phase 10.1 community surface. Adds
+  four columns to `users`:
+  - `tickets_public BOOLEAN NOT NULL DEFAULT TRUE` — Decision D1 in
+    [`COMMUNITY_PLAN.md`](./COMMUNITY_PLAN.md). Maximises feed density
+    on day one; one-click opt-out at `/account/community`.
+  - `nickname citext UNIQUE` — public handle in `/u/[nickname]` and on
+    every community card. citext keeps comparisons case-insensitive
+    without a separate `lower()` index. NULL until the user picks one.
+    A CHECK constraint enforces the `[A-Za-z0-9_]{3,20}` format,
+    mirroring the zod cap at the API layer.
+  - `bio TEXT` — short profile bio. NULL by default; CHECK caps
+    `length <= 280`, mirroring the API zod cap.
+  - `is_ai BOOLEAN NOT NULL DEFAULT FALSE` — internal flag for AI seed
+    accounts (Phase 10.4). Decision D2: never serialised by any API
+    endpoint. Transparency-on-request only.
+- `0025_community_tickets.sql` — Phase 10.2 community feed projection.
+  Adds `community_tickets`: a denormalised read model of every
+  publicly-resolved ticket (`status IN ('settled', 'cashed_out',
+  'voided')`). `UNIQUE (ticket_id)` makes the upsert idempotent under
+  settlement replay; `ON CONFLICT DO UPDATE` keeps status / payout /
+  settled_at synchronised with the source-of-truth `tickets` row across
+  rollback / re-settle generations. `sport_ids INTEGER[]` is computed
+  by joining `ticket_selections → markets → matches → tournaments →
+  categories` and is used (via the GIN index) for the
+  filter-by-sport feed query. Authoritative writer is
+  `services/settlement` (Go) inside `SettleTicket` /
+  `ReverseSettledTicket`; cashout (`services/api`, TS) writes the
+  projection inline; the admin endpoint `POST /admin/community/
+  backfill` recovers any miss.
 
 Drizzle mirror is [`../packages/db/src/schema/`](../packages/db/src/schema/).
 

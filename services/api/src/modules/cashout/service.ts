@@ -41,6 +41,7 @@ import {
   ForbiddenError,
 } from "../../lib/errors.js";
 import { compute } from "./algorithm.js";
+import { writeCommunityProjection } from "../community/projection.js";
 
 // Quote validity. Long enough for the user to read + click + sit
 // through the acceptance delay; short enough that stale offers don't
@@ -367,6 +368,18 @@ export class CashoutService {
           executedAt: cashedOutAt,
         })
         .where(eq(cashouts.id, quoteId));
+
+      // Phase 10.2 community projection. The cashout flow is the only
+      // settle path that doesn't go through the Go settlement service,
+      // so it has to write the projection itself. Best-effort — a
+      // failure here would unwind the cashout, which is unsafe; the
+      // admin backfill recovers any miss. Log inside the catch so the
+      // tx still commits.
+      try {
+        await writeCommunityProjection(tx, [ticketId]);
+      } catch {
+        // ignore — backfill will recover
+      }
 
       return { payoutMicro: offer, cashedOutAt };
     });

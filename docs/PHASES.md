@@ -589,6 +589,151 @@ plus a security audit yielded a small fix list.
   a different shape (any-leg-wins / tiered). Engine returns
   `bet_type_unsupported` for those today.
 
+## Phase 10 — Community
+
+Public profiles, a feed of recently-settled tickets, copy-to-bet,
+achievements, and AI seed bettors. Plan in
+[`COMMUNITY_PLAN.md`](./COMMUNITY_PLAN.md). Locked decisions: D1
+(`tickets_public` defaults true), D2 (`is_ai` is DB-only, never
+serialised), D3 (real-money USDT leaderboards in scope), D4 (per-currency
+profile stats, USDT default, OZ tab toggle).
+
+### Phase 10.1 — Profiles + visibility ✔ (2026-05-06)
+
+- Migration `0024_community_profiles.sql` — `users.tickets_public`
+  (default TRUE), `users.nickname citext UNIQUE`, `users.bio`,
+  `users.is_ai` (default FALSE). DB-side CHECK constraints mirror the
+  API zod caps on bio length (≤280) and the
+  `[A-Za-z0-9_]{3,20}` nickname format.
+- API module `services/api/src/modules/community/` —
+  `GET /community/users/:nickname/profile?currency=USDT|OZ` (anonymous,
+  per-currency stats placeholder until the projection lands in 10.2),
+  `GET /community/me`, `PATCH /community/me/visibility`,
+  `PATCH /community/me/profile`. Nickname collisions surface as 409
+  `nickname_taken`; the citext UNIQUE makes case-insensitive squat
+  protection automatic. `is_ai` is filtered out of every response.
+- Storefront pages — `/u/[nickname]` (public profile with USDT/OZ tab
+  toggle, zeroed stats placeholder pending Phase 10.2 projection) and
+  `/account/community` (nickname / bio / visibility forms). Sidebar
+  gains a "Community" entry under Account.
+- DTOs in `packages/types/src/community.ts`: `CommunityProfile`,
+  `CommunityMe`, `CommunityVisibilityRequest`, `CommunityProfileRequest`.
+
+**Acceptance bar:**
+- Migration applies cleanly under live traffic (defaults are non-rewriting).
+- `PATCH /community/me/profile` rejects malformed nicknames at zod and
+  the DB CHECK, returns 409 on case-insensitive collision.
+- `GET /community/users/:nickname/profile` returns 404 for users with
+  `tickets_public=false` (no leak that the handle exists).
+- `is_ai` is absent from every public response surface.
+
+### Phase 10.2 — Feed + projection ✔ (2026-05-06)
+
+- Migration `0025_community_tickets.sql` adds the denormalised
+  `community_tickets` read-projection. `UNIQUE (ticket_id)` +
+  `ON CONFLICT DO UPDATE` makes the upsert idempotent under settlement
+  replay; rollback / re-settle generations land on the same row.
+  `sport_ids INTEGER[]` (GIN-indexed) is computed by joining
+  `ticket_selections → markets → matches → tournaments → categories`
+  so the per-sport feed filter is an index lookup instead of a 6-way
+  join per scroll.
+- Authoritative writer is `services/settlement` (Go).
+  `WriteCommunityProjection(tx, ticketID)` lives in
+  [`services/settlement/internal/store/store.go`](../services/settlement/internal/store/store.go)
+  and is called from `settler.maybeSettleTicket` after `SettleTicket`
+  and from both `ReverseSettledTicket` callsites
+  (`reverseSettledForCancel` and the rollback handler). Failure is
+  best-effort — log and continue, never unwind a real settlement.
+- Cashout (`services/api`, TS) writes the projection inline in the
+  same transaction that flips `tickets.status='cashed_out'`. Shared
+  SQL lives in [`services/api/src/modules/community/projection.ts`](../services/api/src/modules/community/projection.ts);
+  the upsert mirrors the Go side line-for-line so both paths land
+  identical rows.
+- API: `GET /community/feed?currency=&sport=&page=&pageSize=` (anon,
+  recent sort, filters out `tickets_public=false`),
+  `GET /community/users/:nickname/tickets` (per-user list, same
+  shape). `/community/users/:nickname/profile` now aggregates real
+  per-currency stats (settled / wins / win rate / ROI) from
+  `community_tickets`.
+- Admin recovery: `POST /admin/community/backfill` sweeps any miss
+  (settled / cashed_out / voided tickets where the projection row is
+  missing or has drifted) in 500-row batches. Idempotent.
+- Storefront: [`/community`](../apps/web/src/app/(main)/community/page.tsx)
+  page with sport + currency filter pills server-rendered as URL
+  links; [`CommunityTicketCard`](../apps/web/src/components/community/ticket-card.tsx)
+  with status pill + currency + odds + payout. `/u/[nickname]` now
+  surfaces a "Recent tickets" section using the same card. Sidebar
+  gains a top-level "Community" entry → /community; the
+  `/account/community` settings link is renamed "Profile".
+
+**Acceptance bar:**
+- Migration applies cleanly (CREATE TABLE + indexes; nothing else
+  touched).
+- Settling a ticket through `services/settlement` writes a matching
+  `community_tickets` row inside the same tx.
+- A ticket cashed out via `POST /tickets/:id/cashout` writes a row
+  with `status='cashed_out'`, `payout_micro` = cashout amount.
+- `GET /community/feed?currency=USDT&sport=1` returns only USDT
+  tickets on sport 1, ordered by `settled_at DESC`.
+- `POST /admin/community/backfill` returns `{scanned, upserted}` and
+  is safe to re-run.
+
+### Phase 10.3 — Scoring + Best Wins + Copy ✔ (2026-05-06)
+
+- Deterministic score baked into the projection upsert SQL on both
+  the Go and TS write paths. Formula:
+  - **Inspiration (25)** — `25 × min(1, log10(payout/stake))` on wins.
+  - **Odds (15)** — `15 × min(1, log(total_odds)/log(20))`.
+  - **Reputation (15)** — user's prior win-rate in this currency
+    aggregated from `community_tickets` where `settled_at <`
+    this row's. Snapshot at settlement time.
+  - **Copyability (15)** — reserved for 10.4 (per-leg market-still-
+    open share); 0 in 10.3.
+  - **Recency (30)** — applied at QUERY time via a 7-day rolling
+    window on `?sort=best`. The stored score is time-invariant by
+    design, so the existing `(score DESC, settled_at DESC)` index
+    powers Best Wins without a cron recompute.
+- API: `?sort=recent|best` on `GET /community/feed`. `best` filters
+  `settled_at >= now() - interval '7 days'` and orders by
+  `(score DESC, settled_at DESC)`.
+- API: `POST /community/copy/:communityTicketId` returns a prefill
+  payload (matchId/marketId/outcomeId/odds + match/market/outcome
+  labels + sportSlug + per-leg `available` flag). Visibility filter
+  matches the public profile/feed (404s on `tickets_public=false`).
+  Same UUID format guard as the rest of the API. POST /bets remains
+  the single placement entry point — copy is a *prefill*, not a
+  separate placement flow.
+- Web: Recent / Best Wins tab strip on `/community`. Copy this bet
+  button on every `CommunityTicketCard` calls the API, drops every
+  available leg into the bet-slip via `useBetSlip().add()`, sets
+  mode to single/combo to match the original ticket, and opens the
+  slip rail.
+
+**Acceptance bar:**
+- Settling a winning ticket writes a `community_tickets` row with
+  `score > 0` (inspiration + odds at minimum).
+- `GET /community/feed?sort=best` orders by score; switching to
+  `sort=recent` orders by `settled_at` only.
+- `POST /community/copy/<id>` for a public ticket returns the
+  selections in slip-ready shape; for a non-public user 404s.
+- Copy button on the feed adds the ticket's still-active legs to the
+  slip and opens the rail. Closed legs are dropped with a count.
+
+### Phase 10.3 carry-overs (defer to 10.4 or follow-up)
+
+- Real `community:feed` WebSocket channel with live `{ticketId,
+  userId, score}` frames on each projection write. Plan calls for it
+  in 10.3; the read paths so far don't depend on it (clients see new
+  cards on the next page navigation), and adding ws-gateway routing
+  is its own concern. Tracking as a 10.3a follow-up.
+
+### Phase 10.4 — Achievements + AI seed bettors
+
+`achievement_definitions` + `user_achievements`; AI seed bettors flagged
+via `users.is_ai=true` (excluded from `/admin/stats/pnl-by-day`).
+Also lights up the Copyability score component (15 pts): the per-leg
+share of markets still in `status=1` at scoring time.
+
 ## Post-MVP candidates (not in scope yet)
 
 - Outright markets (tournament winners) — requires dynamic outcome handling.

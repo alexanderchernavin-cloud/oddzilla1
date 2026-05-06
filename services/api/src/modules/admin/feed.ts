@@ -14,13 +14,26 @@
 //   timestamp. Markets that were stuck "LIVE" without odds get
 //   re-populated; new matches that were missed appear.
 //
-//   When `flushOdds=true` (default), also suspends all currently-active
-//   markets (status=-1) and nulls their published_odds, raw_odds, AND
-//   probability, plus flips market_outcomes.active=false, so the UI
-//   shows a clean "Suspended" state with no stale prices and Tiple/
-//   Tippot can't price off pre-flush probability snapshots until the
-//   replay refills them. Does not touch settled/closed matches. Never
-//   touches `settlements` — that table is append-only and apply-once.
+//   When `flushOdds=true` (default), the active catalog is wiped and
+//   reset before the replay so only what Oddin sends back over the
+//   rewind window survives. Three steps, in order:
+//
+//     1. DELETE every market on a not_started/live match that has no
+//        ticket_selections row AND no settlements row. Cascades to
+//        market_outcomes. The settlements/ticket_selections FKs are
+//        RESTRICT, so money-attached markets are physically protected
+//        — they fall through to step 3.
+//     2. DELETE every not_started/live match left with no markets
+//        (orphaned by step 1). Cascades to feed_messages, which the
+//        replay re-populates naturally.
+//     3. SUSPEND surviving active markets (the money-attached ones
+//        that step 1 couldn't touch): status=-1, null published_odds /
+//        raw_odds / probability, market_outcomes.active=false. So bet
+//        placement stays blocked and Tiple/Tippot can't price off
+//        stale probability snapshots until the replay refills them.
+//
+//   Closed/cancelled matches are never touched (terminal history). The
+//   `settlements` table is never touched — append-only and apply-once.
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -77,8 +90,49 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
 
     let flushedMarkets = 0;
     let flushedOutcomes = 0;
+    let deletedMarkets = 0;
+    let deletedMatches = 0;
 
     if (flush) {
+      // Step 1: hard-delete markets on not_started/live matches that
+      // have no money attached. Cascades to market_outcomes via FK.
+      // The settlements + ticket_selections FKs are RESTRICT so any
+      // market with bets or settlements physically can't be deleted —
+      // those fall through to the SUSPEND step below.
+      const deletedMarketsResult = await app.db.execute(sql`
+        DELETE FROM markets m
+         USING matches ma
+         WHERE m.match_id = ma.id
+           AND ma.status IN ('not_started', 'live')
+           AND NOT EXISTS (
+             SELECT 1 FROM ticket_selections ts WHERE ts.market_id = m.id
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM settlements s WHERE s.market_id = m.id
+           )
+      `);
+      deletedMarkets =
+        typeof (deletedMarketsResult as { count?: number }).count === "number"
+          ? (deletedMarketsResult as { count: number }).count
+          : 0;
+
+      // Step 2: hard-delete matches that no longer have any markets.
+      // Cascades to feed_messages — replay refills as messages land.
+      const deletedMatchesResult = await app.db.execute(sql`
+        DELETE FROM matches ma
+         WHERE ma.status IN ('not_started', 'live')
+           AND NOT EXISTS (
+             SELECT 1 FROM markets m WHERE m.match_id = ma.id
+           )
+      `);
+      deletedMatches =
+        typeof (deletedMatchesResult as { count?: number }).count === "number"
+          ? (deletedMatchesResult as { count: number }).count
+          : 0;
+
+      // Step 3: suspend whatever active markets survived (money-
+      // attached ones) and null their odds so bet placement stays
+      // blocked until the replay republishes prices.
       const marketResult = await app.db.execute(sql`
         UPDATE markets
            SET status = -1, updated_at = NOW()
@@ -147,6 +201,8 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
         cursorMs,
         hours,
         flush,
+        deletedMarkets,
+        deletedMatches,
         flushedMarkets,
         flushedOutcomes,
       },
@@ -157,6 +213,8 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
       ok: true,
       cursorMs,
       hours,
+      deletedMarkets,
+      deletedMatches,
       flushedMarkets,
       flushedOutcomes,
       activeMarketsBefore: activeMarkets,
