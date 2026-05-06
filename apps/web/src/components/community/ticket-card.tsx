@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { CommunityTicketSummary } from "@oddzilla/types";
 import { fromMicro } from "@oddzilla/types/money";
+import { CopyButton } from "./copy-button";
 
 // One card on the community feed and the per-user tickets list. The
 // shape is deliberately minimal for 10.2 — Phase 10.3 will add a
@@ -83,6 +84,10 @@ export function CommunityTicketCard({
             stake {stake} {ticket.currency}
           </p>
         </div>
+      </div>
+
+      <div className="mt-3 flex justify-end border-t border-[var(--color-border-strong)] pt-3">
+        <CopyButton ticketId={ticket.ticketId} />
       </div>
     </li>
   );

@@ -678,18 +678,61 @@ profile stats, USDT default, OZ tab toggle).
 - `POST /admin/community/backfill` returns `{scanned, upserted}` and
   is safe to re-run.
 
-### Phase 10.3 — Scoring + Best Wins + Copy
+### Phase 10.3 — Scoring + Best Wins + Copy ✔ (2026-05-06)
 
-### Phase 10.3 — Scoring + Best Wins + Copy
+- Deterministic score baked into the projection upsert SQL on both
+  the Go and TS write paths. Formula:
+  - **Inspiration (25)** — `25 × min(1, log10(payout/stake))` on wins.
+  - **Odds (15)** — `15 × min(1, log(total_odds)/log(20))`.
+  - **Reputation (15)** — user's prior win-rate in this currency
+    aggregated from `community_tickets` where `settled_at <`
+    this row's. Snapshot at settlement time.
+  - **Copyability (15)** — reserved for 10.4 (per-leg market-still-
+    open share); 0 in 10.3.
+  - **Recency (30)** — applied at QUERY time via a 7-day rolling
+    window on `?sort=best`. The stored score is time-invariant by
+    design, so the existing `(score DESC, settled_at DESC)` index
+    powers Best Wins without a cron recompute.
+- API: `?sort=recent|best` on `GET /community/feed`. `best` filters
+  `settled_at >= now() - interval '7 days'` and orders by
+  `(score DESC, settled_at DESC)`.
+- API: `POST /community/copy/:communityTicketId` returns a prefill
+  payload (matchId/marketId/outcomeId/odds + match/market/outcome
+  labels + sportSlug + per-leg `available` flag). Visibility filter
+  matches the public profile/feed (404s on `tickets_public=false`).
+  Same UUID format guard as the rest of the API. POST /bets remains
+  the single placement entry point — copy is a *prefill*, not a
+  separate placement flow.
+- Web: Recent / Best Wins tab strip on `/community`. Copy this bet
+  button on every `CommunityTicketCard` calls the API, drops every
+  available leg into the bet-slip via `useBetSlip().add()`, sets
+  mode to single/combo to match the original ticket, and opens the
+  slip rail.
 
-Deterministic scoring formula
-(Recency 30 / Inspiration 25 / Odds 15 / Reputation 15 / Copyability 15),
-copy-to-bet via the existing `POST /bets`, `community:feed` WS channel.
+**Acceptance bar:**
+- Settling a winning ticket writes a `community_tickets` row with
+  `score > 0` (inspiration + odds at minimum).
+- `GET /community/feed?sort=best` orders by score; switching to
+  `sort=recent` orders by `settled_at` only.
+- `POST /community/copy/<id>` for a public ticket returns the
+  selections in slip-ready shape; for a non-public user 404s.
+- Copy button on the feed adds the ticket's still-active legs to the
+  slip and opens the rail. Closed legs are dropped with a count.
+
+### Phase 10.3 carry-overs (defer to 10.4 or follow-up)
+
+- Real `community:feed` WebSocket channel with live `{ticketId,
+  userId, score}` frames on each projection write. Plan calls for it
+  in 10.3; the read paths so far don't depend on it (clients see new
+  cards on the next page navigation), and adding ws-gateway routing
+  is its own concern. Tracking as a 10.3a follow-up.
 
 ### Phase 10.4 — Achievements + AI seed bettors
 
 `achievement_definitions` + `user_achievements`; AI seed bettors flagged
 via `users.is_ai=true` (excluded from `/admin/stats/pnl-by-day`).
+Also lights up the Copyability score component (15 pts): the per-leg
+share of markets still in `status=1` at scoring time.
 
 ## Post-MVP candidates (not in scope yet)
 
