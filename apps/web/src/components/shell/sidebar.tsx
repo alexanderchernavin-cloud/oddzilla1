@@ -5,6 +5,7 @@ import { usePathname, useSearchParams } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { I } from "@/components/ui/icons";
+import { LiveDot } from "@/components/ui/primitives";
 import { TierMark, isFeaturedTier } from "@/components/ui/tier-mark";
 import { clientApi } from "@/lib/api-client";
 
@@ -20,6 +21,7 @@ interface Tournament {
   name: string;
   riskTier?: number | null;
   matchCount: number;
+  liveCount: number;
 }
 
 interface TournamentsResponse {
@@ -288,6 +290,7 @@ function TournamentItem({
 }) {
   const tier = tournament.riskTier ?? null;
   const featured = isFeaturedTier(tier);
+  const hasLive = tournament.liveCount > 0;
   return (
     <Link
       href={`/sport/${sportSlug}?tournament=${tournament.id}`}
@@ -317,6 +320,23 @@ function TournamentItem({
       >
         {tournament.name}
       </span>
+      {hasLive && (
+        <span
+          className="mono tnum"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
+            fontSize: 10.5,
+            color: "var(--live)",
+            fontWeight: 600,
+          }}
+          title={`${tournament.liveCount} live now`}
+        >
+          <LiveDot size={6} />
+          {tournament.liveCount}
+        </span>
+      )}
       {tournament.matchCount > 0 && (
         <span
           className="mono tnum"
