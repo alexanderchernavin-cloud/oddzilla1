@@ -90,7 +90,8 @@ what's sensitive:
 | `ODDIN_TOKEN` | from Oddin | when Oddin rotates (~1 yr) |
 | `ODDIN_CUSTOMER_ID` | `GET /v1/users/whoami` with the token (`/users/whoami` returns 404 — the legacy path is gone) | only when Oddin reissues |
 | `ODDIN_AMQP_PORT` | always **5672** for both integration and production (Oddin runs AMQPS on the plain-AMQP port; 5671 is closed) | n/a |
-| `HD_MASTER_MNEMONIC` | BIP39 12/24-word phrase | never in normal ops — rotating is a customer-facing event |
+| `HD_MASTER_MNEMONIC` | BIP39 12/24-word phrase | **read only by the [signer container](../services/signer/), not the API**. Rotating is a customer-facing event (every deposit address changes). |
+| `SIGNER_SOCKET_PATH` (default `/run/signer/signer.sock`) | tmpfs volume mount path | n/a |
 | `TRON_RPC_URL` | TronGrid (mainnet `https://api.trongrid.io`, testnet `https://api.shasta.trongrid.io`) | when plan changes |
 | `ETH_RPC_URL` | Alchemy / Infura / QuickNode / self-hosted | when plan changes |
 | `BACKUP_GPG_RECIPIENT` (optional, PR #130) | GPG key id of an off-host operator. Set → daily pg dump is GPG-encrypted (`.sql.gz.gpg`); unset → plain gzip. | rotate when the operator's key rotates |
@@ -100,7 +101,8 @@ gracefully:
 
 | Service | Required | Optional → effect when absent |
 | --- | --- | --- |
-| api | DATABASE_URL, REDIS_URL, JWT_SECRET, REFRESH_COOKIE_SECRET | HD_MASTER_MNEMONIC absent → `/wallet/deposit-addresses` returns 500 |
+| api | DATABASE_URL, REDIS_URL, JWT_SECRET, REFRESH_COOKIE_SECRET, SIGNER_SOCKET_PATH | signer unreachable → `/wallet/deposit-addresses` returns 500 with `SignerUnavailableError` |
+| signer | HD_MASTER_MNEMONIC | n/a — only this service reads the mnemonic |
 | feed-ingester | DATABASE_URL, REDIS_URL | ODDIN_TOKEN+ODDIN_CUSTOMER_ID absent → idle, health-only |
 | settlement | DATABASE_URL, REDIS_URL | ODDIN_TOKEN+ODDIN_CUSTOMER_ID absent → idle, health-only |
 | odds-publisher | DATABASE_URL, REDIS_URL | none — runs as soon as redis stream `odds.raw` has entries |
@@ -442,6 +444,35 @@ time, it caches the team's Oddin profile asynchronously. Rows added
 to `competitors` *after* the resolver ran end up with `logo_url IS
 NULL` until the next run. There's no scheduled job today — re-run
 manually, or wire one up via `cron` once steady traffic justifies.
+
+### Signer container
+
+The signer ([`services/signer/`](../services/signer/)) is the only
+process that holds `HD_MASTER_MNEMONIC`. The API and wallet-watcher
+talk to it over a Unix socket on a tmpfs volume.
+
+**Boot check:**
+```sh
+curl -fsS http://localhost:8086/healthz
+# {"status":"ok","uptime_seconds":42}
+```
+
+**Signer logs every `/sign` request** at INFO level with the derivation
+path, hash, and audit tag. To reconcile the most recent N hashes
+against `admin_audit_log`:
+
+```sh
+sudo -n docker logs oddzilla-signer-1 --since 24h | jq -c 'select(.event=="sign")'
+```
+
+**Restart consequences:** the tmpfs socket volume is recreated on each
+container restart; the API reconnects automatically. No on-disk
+artefacts of the secret survive a restart.
+
+**Rotation runbook:** see [HD master mnemonic management](#hd-master-mnemonic-management)
+below. The signer reads the env var once at boot and `os.Unsetenv`s it,
+so updating `.env` and restarting just the signer container rolls a new
+mnemonic without exposing the old one to any other process.
 
 ### HD master mnemonic management
 

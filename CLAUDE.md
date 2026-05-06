@@ -64,7 +64,7 @@ See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full picture, and
 
 ## Tech stack (locked)
 
-- **Go 1.23** — `services/{feed-ingester, odds-publisher, settlement, bet-delay, wallet-watcher}`.
+- **Go 1.23** — `services/{feed-ingester, odds-publisher, settlement, bet-delay, wallet-watcher, signer}`.
   Each service is its own Go module. Shared libs across services:
   `rabbitmq/amqp091-go`, `encoding/xml`, `jackc/pgx/v5` + `pgxpool`,
   `redis/go-redis/v9`, `rs/zerolog`. wallet-watcher uses stdlib `net/http`
@@ -174,7 +174,9 @@ These rules are load-bearing. Breaking them causes money or data loss.
 | Env parsing (zod) | [`packages/config/src/env.ts`](./packages/config/src/env.ts) |
 | API plugins (db, redis, auth, csrf) | [`services/api/src/plugins/`](./services/api/src/plugins/) — `db.ts` (drizzle), `redis.ts`, `auth.ts` (JWT verify + Redis-cached session-revocation check, `SESSION_STATUS_KEY` exported so revoke paths can flip the cache to `revoked`), `csrf.ts` (Origin/Referer must match `CORS_ORIGINS` for every POST/PUT/PATCH/DELETE — same-site fetch always sets Origin, so legitimate traffic is unaffected) |
 | API route modules | [`services/api/src/modules/`](./services/api/src/modules/) — `auth`, `users`, `wallet`, `bets`, `catalog`, `admin/{routes,odds-config,tickets,withdrawals,dashboard,users,audit,feed,logs,fe-settings,competitors,community}`, `community` (Phase 10.1–10.3 — `GET /community/feed?sort=recent\|best&currency=&sport=`, `GET /community/users/:nickname/{profile,tickets}`, `GET /community/me`, `PATCH /community/me/{visibility,profile}`, `POST /community/copy/:communityTicketId`; admin `POST /admin/community/backfill`). `users` accepts `?roles=admin,support` (CSV) for the Admin user-management view. `logs` powers the sport→tournament→match browser with per-match odds-history + raw feed-message endpoints. `fe-settings` exposes storefront-display knobs (currently per-sport market order). `competitors` exposes team-branding management (`GET /admin/competitors`, `PATCH /admin/competitors/:id`, `POST /admin/competitors/bulk-logos`). |
-| HD wallet derivation (TS, address-only) | [`services/api/src/lib/hdwallet.ts`](./services/api/src/lib/hdwallet.ts) |
+| HD wallet derivation (Go, isolated container) | [`services/signer/`](./services/signer/) — holds `HD_MASTER_MNEMONIC`, exposes `POST /derive` and `POST /sign` over a Unix socket on a tmpfs volume shared only with the API container. Parity-tested against the canonical BIP44 abandon-mnemonic test vector for ETH (m/44'/60'/0'/0/0 → 0x9858EfFD232B4033E47d90003D41EC34EcaEda94) and the matching Tron derivation. |
+| HD wallet utilities (TS, no-secret helpers) | [`services/api/src/lib/hdwallet.ts`](./services/api/src/lib/hdwallet.ts) — only `userIndexFromUUID` + `derivationPath` + a re-export of the signer client; the actual derivation lives in the signer. |
+| Signer client (TS, undici over Unix socket) | [`services/api/src/lib/signer-client.ts`](./services/api/src/lib/signer-client.ts) |
 | Oddin XML structs (Go) | `services/feed-ingester/internal/oddinxml/` (msg + fixture decoders; also duplicated in `services/settlement/internal/oddinxml/`) |
 | Oddin REST client (Go) | `services/feed-ingester/internal/oddinrest/` — `WhoAmI`, `Fixtures`, `SportEventFixture`, `Sports`, `SnapshotRecovery`, `InitiateRecovery` |
 | Auto-mapping resolver (Go) | `services/feed-ingester/internal/automap/` — REST-driven sport/category/tournament/match auto-creation; `RefreshFromFixture` for fixture_change re-fetch |
@@ -271,11 +273,14 @@ These rules are load-bearing. Breaking them causes money or data loss.
   transactional and records history in `_migrations`.
 - **Don't add a service without adding a healthcheck to compose.** A service
   with no `/healthz` will fail silently.
-- **Don't sign withdrawals from the API.** HD derivation in
-  `services/api/src/lib/hdwallet.ts` derives **addresses only**. Signing
-  is intentionally not implemented in the API — pre-launch, signing moves
-  into a dedicated isolated container (see Phase 7 exit criteria in
-  [`docs/PHASES.md`](./docs/PHASES.md)).
+- **The signer container is the only place `HD_MASTER_MNEMONIC` lives.**
+  PR #132 moved derivation out of the API into [`services/signer/`](./services/signer/).
+  The API talks to it over a Unix socket on a tmpfs volume; no
+  other container mounts it. Putting `HD_MASTER_MNEMONIC` back into
+  the API's env (or compose service entry) defeats the entire isolation
+  layer — if you find yourself needing to, talk to the signer instead.
+  The signer also calls `os.Unsetenv("HD_MASTER_MNEMONIC")` at boot so
+  `/proc/<pid>/environ` is uninteresting after startup.
 - **Don't disable the audit-log trigger.** `admin_audit_log_chain_trg`
   computes `prev_hash` + `row_hash` on every INSERT under an advisory
   lock. Bypassing it (e.g. via `ALTER TABLE … DISABLE TRIGGER`) breaks
@@ -333,7 +338,7 @@ post-Phase-8 Oddin-workflow hardening pass; production stack is live at
 | Server security hardening | Live | Non-root inside every container (`node:1000` for TS, `app:100` for Go); `cap_drop: ALL` + `no-new-privileges:true` on every service in `docker-compose.yml`; Caddy keeps only `NET_BIND_SERVICE` (PR #130). Per-service `mem_limit` budgeted for the 4 GB CPX22 (postgres 1G, web 640M, api 512M, ws-gateway 256M, Go workers 320M, redis 320M, caddy 96M). Per-service `json-file` log rotation (10 MiB × 5 files) closes the disk-full repeat surface from `project_disk_full_incident`. SSH `PasswordAuthentication no`, `PermitRootLogin no`, `MaxAuthTries 3`, `X11Forwarding no`; repo dir `chmod 750`. **Nonce-based CSP** emitted by Next.js middleware (per-request nonce passed to the inline theme-boot script via `headers().get("x-csp-nonce")`); Caddy's static CSP removed. HSTS now has `preload`. `NODE_ENV=production` on server so auth cookies get `Secure` flag. `docker-compose.override.yml` renamed to `docker-compose.dev.yml` so a forgotten `-f` in production cannot auto-mount the source tree. `fail2ban` was installed briefly then removed (kept banning legit operator connections — password auth off makes brute force impossible anyway, see `project_security_hardening.md` memory). |
 | Postgres backups | Live | `/usr/local/bin/oddzilla-pg-backup` (from `infra/hetzner/backup/pg_backup.sh`) runs daily at 03:00 UTC via root cron, `docker exec` into postgres container, writes `/var/backups/oddzilla/*.sql.gz` (root:root 600), 14-day rotation. PR #130 hardening: script no longer sources the entire `.env` into the cron shell (every secret was exported to `/proc/<pid>/environ`); reads only `POSTGRES_USER` / `POSTGRES_DB` / `POSTGRES_PASSWORD` / `BACKUP_GPG_RECIPIENT`. Setting `BACKUP_GPG_RECIPIENT` to an off-host operator's GPG key id encrypts each dump in addition to gzipping (extension becomes `.sql.gz.gpg`). **Off-server copy is still manual** — pre-launch todo. |
 | Published odds margin | Active but **0 bp globally** | `odds_config` row `scope='global'` has `payback_margin_bp=0` because Oddin already ships odds with margin baked in. `applyMargin()` divides `raw / (1 + bp/10000)` with floor-truncate to 2 decimals. Admin `/admin/margins` still works for per-sport/tournament/market-type overrides when needed. |
-| Wallet HD address derivation | Live | TS, requires `HD_MASTER_MNEMONIC` |
+| Wallet HD address derivation | Live | Done by the isolated [`services/signer`](./services/signer/) Go service. The API talks to it over a Unix socket on a tmpfs volume that only those two containers mount. The signer reads `HD_MASTER_MNEMONIC` once at boot and `os.Unsetenv`s it; no other process holds the secret. `cap_drop: ALL`, `no_new_privileges`, `read_only: true`, `mem_limit: 64m`. The API has no offline derivation fallback — `SIGNER_SOCKET_PATH` is required. Parity test pins ETH idx=0 to the canonical 0x9858EfFD232B4033E47d90003D41EC34EcaEda94 from the BIP44 abandon-mnemonic vector. |
 | Wallet deposit scanners | Live, gated on RPC URLs | Boots idle if `TRON_RPC_URL` / `ETH_RPC_URL` absent. **Reorg-safe (PR #130)**: ETH scanner captures `blockHash` per Transfer log into `deposits.block_hash`; processor calls `Scanner.VerifyDeposit(dep)` before crediting (`eth_getBlockByNumber` lookup, compares hash). On divergence the row flips to `status='orphaned'` instead of crediting. ETH client also re-verifies log `Address` per row (defends against an RPC endpoint that ignores the address filter) and hard-errors on missing `0x` prefix in `Data` (the previous behaviour silently parsed as 0 and advanced the cursor — losing real Transfers). Tron `normalizeTronAddressOK` returns `(_, false)` on unrecognised shapes; scanner aborts the batch (cursor stays put) so a deposit cannot be quietly dropped. TRC20 `event_index` captured so multi-Transfer txs no longer collide on `(network, tx_hash, log_index=0)`. |
 | Wallet withdrawal on-chain submission | **Manual** | Admin marks-submitted with tx hash from external signer/wallet. Pre-launch needs a dedicated signer container |
 | News scraper | **Removed** | Service + `news_articles` table deleted via migration 0003; no longer in scope |

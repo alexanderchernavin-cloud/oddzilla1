@@ -41,16 +41,6 @@ const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 
-function masterMnemonic(): string {
-  const m = process.env.HD_MASTER_MNEMONIC;
-  if (!m) {
-    throw new Error(
-      "HD_MASTER_MNEMONIC is not set. Cannot derive deposit addresses.",
-    );
-  }
-  return m;
-}
-
 export default async function walletRoutes(app: FastifyInstance) {
   // ── Balance summary ──────────────────────────────────────────────────
   // Returns one snapshot per currency the user has a wallet row for.
@@ -122,7 +112,12 @@ export default async function walletRoutes(app: FastifyInstance) {
 
     if (missing.length > 0) {
       const userIndex = userIndexFromUUID(u.id);
-      const derived = deriveAddressesForUser(masterMnemonic(), userIndex);
+      // Address derivation goes through the signer service. The mnemonic
+      // lives only in that container; the API has no offline fallback,
+      // so a SignerUnavailableError surfaces as a clean 503-ish error
+      // for the user (Fastify error handler maps to 500 by default;
+      // catching here and rethrowing as 503 would be a polish item).
+      const derived = await deriveAddressesForUser(userIndex);
 
       for (const network of missing) {
         await app.db
