@@ -44,7 +44,17 @@ const app = Fastify({
   logger: {
     level: env.LOG_LEVEL,
     base: { service: env.SERVICE_NAME },
-    redact: ["req.headers.cookie", "req.headers.authorization"],
+    // Broad redaction so a future endpoint accepting a custom auth or
+    // signature header doesn't leak secrets to journal/Loki by default.
+    // The wildcard form covers x-csrf-token, x-api-key, x-signer-token,
+    // etc. — anything we wouldn't want in plain log output.
+    redact: [
+      "req.headers.cookie",
+      "req.headers.authorization",
+      'req.headers["x-api-key"]',
+      'req.headers["x-csrf-token"]',
+      'req.headers["x-signer-token"]',
+    ],
   },
   // Single hop in front of api: Caddy. trustProxy: 1 makes Fastify
   // honour ONLY the last X-Forwarded-For entry, which Caddy appends —
