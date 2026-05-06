@@ -40,6 +40,7 @@ import {
   DEFAULT_CURRENCY,
   DEFAULT_ODDS_DRIFT_TOLERANCE,
   isCurrency,
+  multiplyMicroByOdds,
   parseProbability,
   priceTiple,
   priceTippot,
@@ -348,9 +349,7 @@ export class BetsService {
           // ticket. Mirrors the floor odds-publisher applies elsewhere.
           throw new BadRequestError("tiple_odds_too_low", "tiple_odds_too_low");
         }
-        potentialPayoutMicro = BigInt(
-          Math.floor(Number(stake) * Number(quote.offeredOdds)),
-        );
+        potentialPayoutMicro = multiplyMicroByOdds(stake, quote.offeredOdds);
         const meta: TipleMeta = {
           product: "tiple",
           n: quote.n,
@@ -362,8 +361,8 @@ export class BetsService {
         const quote = priceTippot(probabilities, effectiveMarginBp);
         // Top tier (all legs win) sets the displayed potential payout —
         // matches what users intuitively expect to see in the slip.
-        const topMultiplier = Number(quote.tiers[quote.tiers.length - 1]!.multiplier);
-        potentialPayoutMicro = BigInt(Math.floor(Number(stake) * topMultiplier));
+        const topMultiplier = quote.tiers[quote.tiers.length - 1]!.multiplier;
+        potentialPayoutMicro = multiplyMicroByOdds(stake, topMultiplier);
         const meta: TippotMeta = {
           product: "tippot",
           n: quote.n,
@@ -372,10 +371,8 @@ export class BetsService {
         };
         betMeta = meta;
       } else {
-        // single / combo — existing odds-product math.
-        potentialPayoutMicro = BigInt(
-          Math.floor(Number(stake) * productOdds),
-        );
+        // single / combo — existing odds-product math, now bigint-safe.
+        potentialPayoutMicro = multiplyMicroByOdds(stake, productOdds);
       }
 
       // ── Insert ticket ────────────────────────────────────────────────

@@ -23,7 +23,12 @@
 // down to the nearest micro and then capped at potentialPayout so we
 // never offer more than the win.
 
-import type { BetType, CashoutLadderStep, CashoutUnavailableReason } from "@oddzilla/types";
+import {
+  multiplyMicroByOdds,
+  type BetType,
+  type CashoutLadderStep,
+  type CashoutUnavailableReason,
+} from "@oddzilla/types";
 
 export interface LegInput {
   /** Decimal odds at placement (the price the user got). */
@@ -174,12 +179,13 @@ export function compute(input: ComputeInput): ComputeOutput {
   }
 
   // Simple cashout (no margin): stake × ticketOdds × probability.
-  // We compute in floats then convert to micro to keep the implementation
-  // close to the Sportradar reference. Precision loss is a few atomic
-  // micro_usdt at worst.
-  const stakeNum = Number(input.stakeMicro);
-  const fairOfferFloat = stakeNum * ticketOdds * probability;
-  const ticketValueFairMicro = BigInt(Math.floor(fairOfferFloat));
+  // The dimensionless ratio (ticketOdds × probability) stays in Number
+  // domain — both factors are typically <100 and their product is well
+  // inside the 2^53 safe range. The stake-scaling step uses the bigint
+  // helper so high-stake combos don't lose precision (CLAUDE.md
+  // invariant #1: never use Number for money math).
+  const valueRatio = ticketOdds * probability;
+  const ticketValueFairMicro = multiplyMicroByOdds(input.stakeMicro, valueRatio);
 
   let offerMicro = ticketValueFairMicro;
   let deductionFactor: number | null = null;
@@ -187,9 +193,11 @@ export function compute(input: ComputeInput): ComputeOutput {
   if (input.config.deductionLadder && input.config.deductionLadder.length > 0) {
     deductionFactor = lookupLadder(
       input.config.deductionLadder,
-      stakeNum > 0 ? fairOfferFloat / stakeNum : 1,
+      input.stakeMicro > 0n ? valueRatio : 1,
     );
-    offerMicro = BigInt(Math.floor(Number(ticketValueFairMicro) / deductionFactor));
+    // deductionFactor ≥ 1 in practice; 1/deductionFactor stays in safe
+    // Number range and quantizes cleanly to 4 decimals via the helper.
+    offerMicro = multiplyMicroByOdds(ticketValueFairMicro, 1 / deductionFactor);
   }
 
   if (fullPaybackWindow) {
@@ -208,10 +216,9 @@ export function compute(input: ComputeInput): ComputeOutput {
   if (
     !fullPaybackWindow &&
     input.config.minValueChangeBp > 0 &&
-    stakeNum > 0
+    input.stakeMicro > 0n
   ) {
-    const ratio = fairOfferFloat / stakeNum;
-    const change = Math.abs(ratio - 1) * 10000;
+    const change = Math.abs(valueRatio - 1) * 10000;
     if (change < input.config.minValueChangeBp) {
       return {
         available: false,
