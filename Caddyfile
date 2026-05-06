@@ -8,6 +8,21 @@
 {
 	admin off
 	email {$ACME_EMAIL}
+	# Edge timeouts shed slowloris-style holders so a few thousand
+	# half-open sockets don't exhaust ws-gateway / api file
+	# descriptors. Read budget is split between header (5s) and body
+	# (30s) — enough for legitimate /admin uploads, tight enough that
+	# stalled clients drop. WebSocket upgrades inherit `idle` because
+	# the upgraded connection no longer counts as an HTTP read.
+	servers {
+		timeouts {
+			read_header 5s
+			read_body   30s
+			write       30s
+			idle        120s
+		}
+		max_header_size 16KB
+	}
 }
 
 (security_headers) {
@@ -32,7 +47,20 @@
 	import security_headers
 
 	handle_path /api/* {
-		reverse_proxy api:3001
+		# Cap request bodies at the edge — Fastify's per-route default is
+		# 1 MiB but slow uploaders still tie up api memory while the body
+		# streams in. Matches the largest legitimate admin payload (the
+		# 500-entry bulk-logos PUT at ~2 KiB each).
+		request_body {
+			max_size 1MB
+		}
+		reverse_proxy api:3001 {
+			# Overwrite (not append) X-Forwarded-For so an attacker can't
+			# spoof their inbound IP. {remote_host} is the actual
+			# connecting client; combined with `trustProxy: 1` on the
+			# Fastify side this pins request.ip to the real client.
+			header_up X-Forwarded-For {remote_host}
+		}
 	}
 
 	@websocket {
@@ -59,7 +87,20 @@
 	redir / /admin 302
 
 	handle_path /api/* {
-		reverse_proxy api:3001
+		# Cap request bodies at the edge — Fastify's per-route default is
+		# 1 MiB but slow uploaders still tie up api memory while the body
+		# streams in. Matches the largest legitimate admin payload (the
+		# 500-entry bulk-logos PUT at ~2 KiB each).
+		request_body {
+			max_size 1MB
+		}
+		reverse_proxy api:3001 {
+			# Overwrite (not append) X-Forwarded-For so an attacker can't
+			# spoof their inbound IP. {remote_host} is the actual
+			# connecting client; combined with `trustProxy: 1` on the
+			# Fastify side this pins request.ip to the real client.
+			header_up X-Forwarded-For {remote_host}
+		}
 	}
 
 	@websocket {

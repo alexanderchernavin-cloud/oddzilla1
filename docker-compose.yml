@@ -41,6 +41,13 @@ x-go-service: &go-service
   env_file: .env
   logging: *default-logging
   mem_limit: 320m
+  # CPU cap per Go service. Box is 2 vCPU; without caps a runaway loop
+  # in any one service starves the rest (an admin endpoint seq-scanning
+  # a hot table has been observed pegging both cores and dropping
+  # ws-gateway / feed-ingester to milliseconds). Per-service caps
+  # oversubscribe in aggregate (sum > 2.0) which is fine — they only
+  # bind under contention.
+  cpus: 0.75
 
 x-ts-service: &ts-service
   <<: *sandbox
@@ -59,6 +66,7 @@ services:
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 1024m
+    cpus: 1.5
     security_opt:
       - "no-new-privileges:true"
     environment:
@@ -86,6 +94,7 @@ services:
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 320m
+    cpus: 0.5
     security_opt:
       - "no-new-privileges:true"
     cap_drop:
@@ -104,6 +113,7 @@ services:
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 96m
+    cpus: 0.5
     # Caddy needs to bind privileged ports 80 and 443. cap_drop ALL strips
     # every capability and we only re-add NET_BIND_SERVICE so a Caddy RCE
     # cannot, for example, modify routing tables (NET_ADMIN) or read raw
@@ -150,6 +160,7 @@ services:
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 64m
+    cpus: 0.25
     security_opt:
       - "no-new-privileges:true"
     cap_drop:
@@ -175,6 +186,7 @@ services:
   api:
     <<: *ts-service
     mem_limit: 512m
+    cpus: 1.0
     build:
       context: .
       dockerfile: services/api/Dockerfile
@@ -203,6 +215,7 @@ services:
   ws-gateway:
     <<: *ts-service
     mem_limit: 256m
+    cpus: 0.5
     build:
       context: .
       dockerfile: services/ws-gateway/Dockerfile
@@ -217,6 +230,7 @@ services:
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 640m
+    cpus: 0.75
     security_opt:
       - "no-new-privileges:true"
     cap_drop:
