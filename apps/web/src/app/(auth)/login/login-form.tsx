@@ -21,7 +21,15 @@ export function LoginForm({ next }: { next: string }) {
         method: "POST",
         body: JSON.stringify({ email: email.trim(), password }),
       });
-      router.push(next);
+      // Defence-in-depth open-redirect check at the client layer too.
+      // The page already calls safeNextPath, but a future caller might
+      // forget; "//evil.com/x" through router.push would navigate cross
+      // origin and leak the just-set session cookie.
+      const safe =
+        next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\")
+          ? next
+          : "/account";
+      router.push(safe);
       router.refresh();
     } catch (err) {
       if (err instanceof ApiFetchError) {

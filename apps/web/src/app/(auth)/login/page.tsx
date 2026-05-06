@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { getSessionClaims } from "@/lib/auth";
+import { getSessionUser, safeNextPath } from "@/lib/auth";
 import { isAdminHost } from "@/lib/host";
 import { Monogram } from "@/components/ui/monogram";
 import { LoginForm } from "./login-form";
@@ -10,10 +10,10 @@ export default async function LoginPage({
 }: {
   searchParams: Promise<{ next?: string }>;
 }) {
-  const claims = await getSessionClaims();
+  const user = await getSessionUser();
   const params = await searchParams;
-  if (claims) {
-    redirect(params.next && params.next.startsWith("/") ? params.next : "/account");
+  if (user) {
+    redirect(safeNextPath(params.next, "/account"));
   }
   const adminHost = await isAdminHost();
 
@@ -35,7 +35,7 @@ export default async function LoginPage({
         Log in to place bets and track your history.
       </p>
 
-      <LoginForm next={params.next ?? (adminHost ? "/admin" : "/account")} />
+      <LoginForm next={safeNextPath(params.next, adminHost ? "/admin" : "/account")} />
 
       {!adminHost && (
         <div
