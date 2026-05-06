@@ -126,15 +126,26 @@ async function main() {
   await upsertUser(adminEmail, adminPassword, "admin");
   await upsertUser(userEmail, userPassword, "user");
 
-  // Global payback margin = 500 bp (5%)
+  // Global payback margin defaults to 0 bp — Oddin already ships
+  // margined odds. Operators can apply per-sport/tournament/market-type
+  // overrides via /admin/margins.
+  //
+  // Targets the `odds_config_global_unique` PARTIAL unique index from
+  // migration 0010, not the (scope, scope_ref_id) unique above. Postgres
+  // treats NULL as DISTINCT in regular uniques, so the (global, NULL)
+  // row never conflicts on the regular constraint and the partial
+  // unique catches the duplicate at INSERT time. Using `targetWhere`
+  // here makes the upsert match the partial index — without it,
+  // re-running seed against a post-0010 DB raises a unique-violation.
   await db
     .insert(oddsConfig)
-    .values({ scope: "global", scopeRefId: null, paybackMarginBp: 500 })
+    .values({ scope: "global", scopeRefId: null, paybackMarginBp: 0 })
     .onConflictDoUpdate({
-      target: [oddsConfig.scope, oddsConfig.scopeRefId],
+      target: oddsConfig.scope,
+      targetWhere: sql`${oddsConfig.scope} = 'global'`,
       set: { paybackMarginBp: sql`EXCLUDED.payback_margin_bp`, updatedAt: sql`NOW()` },
     });
-  console.log("seeded global odds_config (500 bp)");
+  console.log("seeded global odds_config (0 bp — Oddin margins built-in)");
 
   console.log("seed complete");
   await pg.end();

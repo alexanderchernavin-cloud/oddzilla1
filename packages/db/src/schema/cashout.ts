@@ -11,6 +11,7 @@ import {
   timestamp,
   jsonb,
   unique,
+  uniqueIndex,
   index,
   check,
 } from "drizzle-orm/pg-core";
@@ -35,6 +36,12 @@ export const cashoutConfig = pgTable(
   },
   (t) => [
     unique("cashout_config_scope").on(t.scope, t.scopeRefId),
+    // Migration 0015 partial unique — same NULL trick as
+    // odds_config_global_unique (0010). Guarantees a single
+    // scope='global' row.
+    uniqueIndex("cashout_config_global_unique")
+      .on(t.scope)
+      .where(sql`${t.scope} = 'global'`),
     check(
       "cashout_config_prematch_range",
       sql`${t.prematchFullPaybackSeconds} BETWEEN 0 AND 86400`,
@@ -79,6 +86,13 @@ export const cashouts = pgTable(
   (t) => [
     index("cashouts_ticket_idx").on(t.ticketId, sql`${t.requestedAt} DESC`),
     index("cashouts_user_idx").on(t.userId, sql`${t.requestedAt} DESC`),
+    // Migration 0015 partial unique — at most one accepted cashout per
+    // ticket. Other statuses can repeat (offer history). settlement Go
+    // also reads this invariant when blocking a re-settle on a
+    // cashed-out ticket.
+    uniqueIndex("cashouts_ticket_accepted_unique")
+      .on(t.ticketId)
+      .where(sql`${t.status} = 'accepted'`),
     check("cashouts_offered_nonneg", sql`${t.offeredMicro} >= 0`),
     check(
       "cashouts_payout_nonneg",

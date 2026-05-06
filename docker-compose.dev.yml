@@ -9,21 +9,36 @@
 # Production:
 #   docker compose -f docker-compose.yml up -d
 
+# Each service exposes its host port ONLY in dev. In prod (-f
+# docker-compose.yml only) Caddy reaches upstreams via the compose
+# DNS network (`api:3001`, `ws-gateway:3002`, …) and operators use
+# `docker compose exec <svc> wget -qO- http://127.0.0.1:PORT/healthz`
+# for health debugging — no host loopback exposure.
 services:
+  signer:
+    ports:
+      - "127.0.0.1:8086:8086"
+
   api:
     command: ["pnpm", "--filter", "@oddzilla/api", "dev"]
+    ports:
+      - "127.0.0.1:${API_PORT:-3001}:${API_PORT:-3001}"
     volumes:
       - ./:/app
       - /app/node_modules
 
   ws-gateway:
     command: ["pnpm", "--filter", "@oddzilla/ws-gateway", "dev"]
+    ports:
+      - "127.0.0.1:${WS_GATEWAY_PORT:-3002}:${WS_GATEWAY_PORT:-3002}"
     volumes:
       - ./:/app
       - /app/node_modules
 
   web:
     command: ["pnpm", "--filter", "@oddzilla/web", "dev"]
+    ports:
+      - "127.0.0.1:${WEB_PORT:-3000}:${WEB_PORT:-3000}"
     volumes:
       - ./:/app
       - /app/node_modules
@@ -31,30 +46,40 @@ services:
 
   feed-ingester:
     command: ["go", "run", "./cmd/feed-ingester"]
+    ports:
+      - "127.0.0.1:${FEED_INGESTER_HEALTH_PORT:-8081}:${FEED_INGESTER_HEALTH_PORT:-8081}"
     volumes:
       - ./services/feed-ingester:/app
       - go-mod-cache:/go/pkg/mod
 
   odds-publisher:
     command: ["go", "run", "./cmd/odds-publisher"]
+    ports:
+      - "127.0.0.1:${ODDS_PUBLISHER_HEALTH_PORT:-8082}:${ODDS_PUBLISHER_HEALTH_PORT:-8082}"
     volumes:
       - ./services/odds-publisher:/app
       - go-mod-cache:/go/pkg/mod
 
   settlement:
     command: ["go", "run", "./cmd/settlement"]
+    ports:
+      - "127.0.0.1:${SETTLEMENT_HEALTH_PORT:-8083}:${SETTLEMENT_HEALTH_PORT:-8083}"
     volumes:
       - ./services/settlement:/app
       - go-mod-cache:/go/pkg/mod
 
   bet-delay:
     command: ["go", "run", "./cmd/bet-delay"]
+    ports:
+      - "127.0.0.1:${BET_DELAY_HEALTH_PORT:-8084}:${BET_DELAY_HEALTH_PORT:-8084}"
     volumes:
       - ./services/bet-delay:/app
       - go-mod-cache:/go/pkg/mod
 
   wallet-watcher:
     command: ["go", "run", "./cmd/wallet-watcher"]
+    ports:
+      - "127.0.0.1:${WALLET_WATCHER_HEALTH_PORT:-8085}:${WALLET_WATCHER_HEALTH_PORT:-8085}"
     volumes:
       - ./services/wallet-watcher:/app
       - go-mod-cache:/go/pkg/mod

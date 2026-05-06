@@ -43,3 +43,31 @@ export const MicroUsdt = {
   perUnit: MICRO_PER_USDT,
   perUnitNumber: MICRO_PER_USDT_NUM,
 };
+
+/**
+ * Multiply a micro-amount by a decimal odds/multiplier value, returning
+ * `floor(amount × odds)` in micro. Pure bigint math — avoids the 2^53
+ * precision cliff that hits `BigInt(Math.floor(Number(stake) * odds))`
+ * for high-stake combos (a 20-leg combo at 5.0/leg has product 9.5e13;
+ * `Number(1e10 micro) * 9.5e13 = 9.5e23`, far above `Number.MAX_SAFE_INTEGER`).
+ *
+ * Odds are quantized to 4 decimals (`ODDS_FIXED_SCALE = 10_000`) before
+ * multiplication, matching the publishing precision (`NUMERIC(10,4)`)
+ * for outcome rows. Returns floor — we never want to over-credit.
+ */
+const ODDS_FIXED_SCALE = 10_000n;
+
+export function multiplyMicroByOdds(
+  amountMicro: bigint,
+  odds: number | string,
+): bigint {
+  const oddsNum = typeof odds === "number" ? odds : Number(odds);
+  if (!Number.isFinite(oddsNum) || oddsNum < 0) {
+    throw new Error(`invalid odds: ${odds}`);
+  }
+  const scaled = BigInt(Math.round(oddsNum * 10_000));
+  const product = amountMicro * scaled;
+  // bigint integer division floors toward zero; amounts are non-negative
+  // in every payout site we use this from, so floor(/ 10000) is correct.
+  return product / ODDS_FIXED_SCALE;
+}

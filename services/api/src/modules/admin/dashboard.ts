@@ -8,6 +8,16 @@
 //     perspective → operator_payout = SUM(delta_micro) on those rows
 //   operator PnL = gross_stake - payout - refund
 //
+// All queries filter on `currency = 'USDT'` — the OZ demo currency has
+// no dollar value and would otherwise pollute every figure with the
+// 1000 OZ signup bonus and demo-bet activity (migration 0014).
+//
+// Re-settlements: the settlement service writes `wl.ref_id` as
+// `<ticketID>:N` for the second and later generations of a re-settled
+// ticket (services/settlement/internal/store/store.go nextPayoutRefID).
+// JOIN predicates accept both bare-uuid and `:N` suffixed forms so
+// rolled-back-then-resettled payouts stay visible in PnL.
+//
 // All amounts serialize as decimal strings to preserve bigint precision.
 
 import type { FastifyInstance } from "fastify";
@@ -69,6 +79,7 @@ export default async function adminDashboardRoutes(app: FastifyInstance) {
       FROM wallet_ledger wl
       JOIN users u ON u.id = wl.user_id
       WHERE wl.created_at >= date_trunc('day', now() AT TIME ZONE 'UTC')
+        AND wl.currency = 'USDT'
         AND u.is_ai = false
     `)) as unknown as Array<{ stake_micro: string; payout_micro: string; refund_micro: string }>;
     const l = ledgerRows[0];
@@ -78,6 +89,7 @@ export default async function adminDashboardRoutes(app: FastifyInstance) {
         FROM tickets t
         JOIN users u ON u.id = t.user_id
        WHERE t.status IN ('accepted', 'pending_delay')
+         AND t.currency = 'USDT'
          AND u.is_ai = false
     `)) as unknown as Array<{ n: number }>;
     const activeUserRows = (await app.db.execute(sql`
@@ -85,6 +97,7 @@ export default async function adminDashboardRoutes(app: FastifyInstance) {
         FROM tickets t
         JOIN users u ON u.id = t.user_id
        WHERE t.placed_at >= now() - INTERVAL '7 days'
+         AND t.currency = 'USDT'
          AND u.is_ai = false
     `)) as unknown as Array<{ n: number }>;
 
@@ -99,8 +112,11 @@ export default async function adminDashboardRoutes(app: FastifyInstance) {
   });
 
   // PnL by day x sport for the dashboard chart/table. One row per
-  // (utc_day, sport). Singles-only in this MVP so each ticket has exactly
-  // one selection; for combos we'd need to pro-rate across sports.
+  // (utc_day, sport). Combo tickets are pro-rated across the sports
+  // they touch via per-(ticket,sport) weights summing to 1, so a 3-leg
+  // combo split across two sports doesn't double-count its stake. A
+  // single-leg ticket gets weight=1 in its sport (no behaviour change
+  // for the common path).
   app.get("/admin/stats/pnl-by-day", async (request) => {
     request.requireRole("admin");
     const q = pnlQuery.parse(request.query);
@@ -112,28 +128,61 @@ export default async function adminDashboardRoutes(app: FastifyInstance) {
     // pool for seed accounts lives separately (admin credit / weekly
     // budget cap), so dropping them here keeps the dashboard honest.
     const result = (await app.db.execute(sql`
+      WITH relevant_tickets AS (
+        -- Strip the ":N" generation suffix used by re-settled tickets
+        -- (services/settlement/internal/store/store.go nextPayoutRefID)
+        -- so we recover the bare ticket UUID for the join. Also drops
+        -- AI-seed bettors (Phase 10.4 Decision D2) here at the source —
+        -- their bets settle through the real ledger but their volume
+        -- isn't real revenue, so excluding once at the candidate-set
+        -- level keeps the rest of the query unchanged.
+        SELECT DISTINCT split_part(wl.ref_id, ':', 1)::uuid AS ticket_id
+          FROM wallet_ledger wl
+          JOIN users u ON u.id = wl.user_id
+         WHERE wl.created_at >= now() - (${q.days}::int || ' days')::interval
+           AND wl.type IN ('bet_stake', 'bet_payout', 'bet_refund')
+           AND wl.ref_type = 'ticket'
+           AND wl.ref_id IS NOT NULL
+           AND wl.currency = 'USDT'
+           AND u.is_ai = false
+      ),
+      ticket_sport_weights AS (
+        -- For each (ticket, sport): weight = legs_in_sport / total_legs.
+        -- Weights sum to 1 per ticket.
+        SELECT
+          t.id AS ticket_id,
+          s.id AS sport_id,
+          s.slug AS sport_slug,
+          s.name AS sport_name,
+          COUNT(*)::numeric / SUM(COUNT(*)) OVER (PARTITION BY t.id) AS weight
+        FROM relevant_tickets rt
+        JOIN tickets t            ON t.id = rt.ticket_id
+        JOIN ticket_selections ts ON ts.ticket_id = t.id
+        JOIN markets m            ON m.id = ts.market_id
+        JOIN matches ma           ON ma.id = m.match_id
+        JOIN tournaments tu       ON tu.id = ma.tournament_id
+        JOIN categories c         ON c.id = tu.category_id
+        JOIN sports s             ON s.id = c.sport_id
+        GROUP BY t.id, s.id, s.slug, s.name
+      )
       SELECT
         to_char(date_trunc('day', wl.created_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
-        s.slug AS sport_slug,
-        s.name AS sport_name,
-        COALESCE(SUM(CASE WHEN wl.type = 'bet_stake'  THEN -wl.delta_micro ELSE 0 END), 0)::text AS stake_micro,
-        COALESCE(SUM(CASE WHEN wl.type = 'bet_payout' THEN  wl.delta_micro ELSE 0 END), 0)::text AS payout_micro,
-        COALESCE(SUM(CASE WHEN wl.type = 'bet_refund' THEN  wl.delta_micro ELSE 0 END), 0)::text AS refund_micro,
-        COUNT(DISTINCT t.id)::int AS ticket_count
+        tsw.sport_slug,
+        tsw.sport_name,
+        COALESCE(ROUND(SUM(CASE WHEN wl.type = 'bet_stake'  THEN -wl.delta_micro * tsw.weight ELSE 0 END)), 0)::bigint::text AS stake_micro,
+        COALESCE(ROUND(SUM(CASE WHEN wl.type = 'bet_payout' THEN  wl.delta_micro * tsw.weight ELSE 0 END)), 0)::bigint::text AS payout_micro,
+        COALESCE(ROUND(SUM(CASE WHEN wl.type = 'bet_refund' THEN  wl.delta_micro * tsw.weight ELSE 0 END)), 0)::bigint::text AS refund_micro,
+        COUNT(DISTINCT tsw.ticket_id)::int AS ticket_count
       FROM wallet_ledger wl
-      JOIN tickets t             ON wl.ref_type = 'ticket' AND wl.ref_id = t.id::text
-      JOIN users u_t             ON u_t.id = t.user_id
-      JOIN ticket_selections ts  ON ts.ticket_id = t.id
-      JOIN markets m             ON m.id = ts.market_id
-      JOIN matches ma            ON ma.id = m.match_id
-      JOIN tournaments tu        ON tu.id = ma.tournament_id
-      JOIN categories c          ON c.id = tu.category_id
-      JOIN sports s              ON s.id = c.sport_id
+      JOIN ticket_sport_weights tsw
+        ON tsw.ticket_id = split_part(wl.ref_id, ':', 1)::uuid
       WHERE wl.created_at >= now() - (${q.days}::int || ' days')::interval
         AND wl.type IN ('bet_stake', 'bet_payout', 'bet_refund')
-        AND u_t.is_ai = false
-      GROUP BY day, s.slug, s.name
-      ORDER BY day DESC, s.slug
+        AND wl.ref_type = 'ticket'
+        AND wl.ref_id IS NOT NULL
+        AND wl.currency = 'USDT'
+      GROUP BY day, tsw.sport_slug, tsw.sport_name
+      ORDER BY day DESC, tsw.sport_slug
     `)) as unknown as Array<{
       day: string;
       sport_slug: string;
@@ -188,6 +237,7 @@ export default async function adminDashboardRoutes(app: FastifyInstance) {
       JOIN categories c         ON c.id = tu.category_id
       JOIN sports s             ON s.id = c.sport_id
       WHERE t.status = 'settled'
+        AND t.currency = 'USDT'
         AND t.actual_payout_micro IS NOT NULL
         AND t.actual_payout_micro > t.stake_micro
         AND t.settled_at >= now() - (${q.days}::int || ' days')::interval

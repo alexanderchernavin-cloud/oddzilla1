@@ -370,28 +370,29 @@ export class CashoutService {
         })
         .where(eq(cashouts.id, quoteId));
 
-      // Phase 10.2 community projection. The cashout flow is the only
-      // settle path that doesn't go through the Go settlement service,
-      // so it has to write the projection itself. Best-effort — a
-      // failure here would unwind the cashout, which is unsafe; the
-      // admin backfill recovers any miss. Log inside the catch so the
-      // tx still commits.
-      try {
-        await writeCommunityProjection(tx, [ticketId]);
-      } catch {
-        // ignore — backfill will recover
-      }
-      // Phase 10.4 achievement evaluation. Idempotent; safe even when
-      // the projection write above failed (the eval reads the prior
-      // state). Best-effort for the same reason as the projection.
-      try {
-        await evaluateAchievements(tx, [ticketId]);
-      } catch {
-        // ignore — re-run on next projection write recovers
-      }
-
       return { payoutMicro: offer, cashedOutAt };
     });
+
+    // Phase 10.2 community projection + Phase 10.4 achievement eval.
+    // Both run OUTSIDE the cashout tx on purpose. If we ran them inside,
+    // any SQL error in either statement would leave the underlying tx
+    // in an aborted state; even though the JS catch absorbs the error,
+    // the implicit COMMIT then fails and rolls back the cashout.
+    // Backfill (`POST /admin/community/backfill`) sweeps any miss, so a
+    // projection failure is genuinely best-effort here — the cashout is
+    // already durably committed. Achievement eval is idempotent on
+    // (user_id, achievement_id), so a re-run on the next projection
+    // write recovers any miss.
+    try {
+      await writeCommunityProjection(this.db, [ticketId]);
+    } catch {
+      // best-effort — backfill recovers any miss
+    }
+    try {
+      await evaluateAchievements(this.db, [ticketId]);
+    } catch {
+      // best-effort — next projection write re-evaluates
+    }
 
     // Best-effort WS push so the user's open-bets list flips immediately.
     try {

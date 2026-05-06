@@ -9,6 +9,7 @@ import {
   numeric,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
   check,
   index,
@@ -47,6 +48,13 @@ export const oddsConfig = pgTable(
   },
   (t) => [
     unique("odds_config_scope").on(t.scope, t.scopeRefId),
+    // Migration 0010 partial unique — guarantees a single scope='global'
+    // row even though Postgres treats NULL scope_ref_id as DISTINCT in
+    // the regular unique above. Re-running seed against a post-0010 DB
+    // requires the upsert to target this index (see seed.ts).
+    uniqueIndex("odds_config_global_unique")
+      .on(t.scope)
+      .where(sql`${t.scope} = 'global'`),
     check(
       "odds_config_margin_range",
       sql`${t.paybackMarginBp} BETWEEN 0 AND 5000`,
