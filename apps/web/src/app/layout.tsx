@@ -37,17 +37,22 @@ export const viewport: Viewport = {
   initialScale: 1,
 };
 
-// Runs before body paints — keeps `oz:theme` in sync with the SSR
-// `data-theme="dark"` attribute so users who picked light don't see a
-// dark flash on every navigation. Storage key must match
-// `apps/web/src/components/shell/theme-toggle.tsx`.
+// Runs before body paints — sets `data-theme` on <html> from
+// `oz:theme` in localStorage so users who picked light don't see a
+// dark flash on every navigation. We deliberately do NOT declare
+// `data-theme` on the JSX <html> element below: if we did, React
+// would reconcile the attribute back to its server-rendered value
+// during hydration and the script's choice would be lost. With no
+// JSX attribute, hydration leaves the DOM alone, and CSS's :root
+// rules supply the dark default until the script runs. Storage key
+// must match `apps/web/src/components/shell/theme-toggle.tsx`.
 const themeBootScript = `(function(){try{var t=localStorage.getItem("oz:theme");if(t==="light"||t==="dark"){document.documentElement.setAttribute("data-theme",t);}}catch(e){}})();`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html
       lang="en"
-      data-theme="dark"
+      suppressHydrationWarning
       className={`${geist.variable} ${geistMono.variable} ${instrumentSerif.variable}`}
     >
       <head>

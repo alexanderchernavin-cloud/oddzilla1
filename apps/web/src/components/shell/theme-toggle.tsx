@@ -11,11 +11,26 @@ export function ThemeToggle() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
 
   useEffect(() => {
-    // Pre-hydration script in the root layout has already set
-    // <html data-theme>; trust it as the source of truth so the icon
-    // renders correctly on first paint without a second flip.
-    const current = document.documentElement.getAttribute("data-theme");
-    setTheme(current === "light" ? "light" : "dark");
+    // The pre-hydration script in the root layout has already set
+    // <html data-theme>. Trust localStorage as the source of truth and
+    // re-apply it here as a safety net — if anything else stripped the
+    // attribute (extension, hydration corner case), this restores it.
+    let stored: string | null = null;
+    try {
+      stored = window.localStorage.getItem(STORAGE_KEY);
+    } catch {
+      // storage disabled — fall through to attribute / default
+    }
+    const fromAttr = document.documentElement.getAttribute("data-theme");
+    const initial = stored === "light" || stored === "dark"
+      ? stored
+      : fromAttr === "light"
+        ? "light"
+        : "dark";
+    setTheme(initial);
+    if (fromAttr !== initial) {
+      document.documentElement.setAttribute("data-theme", initial);
+    }
   }, []);
 
   function toggle() {
