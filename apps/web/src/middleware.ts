@@ -185,8 +185,19 @@ export async function middleware(req: NextRequest) {
         applyCsp(req, response, nonce);
         return response;
       }
-    } catch {
-      // Network blip or API down — fall through to the no-session path.
+    } catch (err) {
+      // Network blip or API down — fall through to the no-session
+      // path. Log so ops has a signal when the silent-refresh path
+      // breaks intermittently (the only user-visible symptom is a
+      // mid-session logout).
+      console.warn(
+        JSON.stringify({
+          service: "web-middleware",
+          event: "silent_refresh_failed",
+          path: req.nextUrl.pathname,
+          error: (err as Error).message,
+        }),
+      );
     }
   }
 

@@ -27,9 +27,31 @@ export async function serverApi<T>(path: string): Promise<T | null> {
       },
       cache: "no-store",
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // Surface non-2xx in operator logs — without this, pages render
+      // empty fallbacks during an api outage and ops has no signal.
+      // Don't expose path-querystring details that might carry user
+      // identifiers; the path component is enough to triage.
+      console.error(
+        JSON.stringify({
+          service: "web",
+          event: "server_fetch_non2xx",
+          path,
+          status: res.status,
+        }),
+      );
+      return null;
+    }
     return (await res.json()) as T;
-  } catch {
+  } catch (err) {
+    console.error(
+      JSON.stringify({
+        service: "web",
+        event: "server_fetch_error",
+        path,
+        error: (err as Error).message,
+      }),
+    );
     return null;
   }
 }
