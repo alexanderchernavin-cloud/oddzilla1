@@ -27,6 +27,32 @@ func (s *Store) BeginTx(ctx context.Context) (pgx.Tx, error) {
 	return s.pool.Begin(ctx)
 }
 
+// ─── Match lifecycle ──────────────────────────────────────────────────────
+
+// MarkMatchClosedByURN flips matches.status to 'closed' when settlement
+// receives a bet_settlement with certainty=2 (post-game). The forward-
+// only guard rejects regressions from a terminal status, so calling
+// this on an already-cancelled match is a no-op. Used as the
+// authoritative "match is over" signal because Oddin's integration
+// broker frequently never emits a standalone match_status_change for
+// esports — the bet_settlement that follows the final whistle is the
+// only on-wire indicator we get.
+//
+// Returns nil when the row doesn't exist (settlement reached us before
+// feed-ingester ingested the fixture) or when the guard skipped the
+// update; callers don't need to distinguish these.
+func MarkMatchClosedByURN(ctx context.Context, pool *pgxpool.Pool, providerURN string) error {
+	_, err := pool.Exec(ctx, `
+UPDATE matches
+   SET status = 'closed'::match_status, updated_at = NOW()
+ WHERE provider_urn = $1
+   AND status::text NOT IN ('closed','cancelled')`, providerURN)
+	if err != nil {
+		return fmt.Errorf("mark match closed: %w", err)
+	}
+	return nil
+}
+
 // ─── Apply-once settlement insert ──────────────────────────────────────────
 
 // SettlementInsert is one market-worth of settlement action. A single

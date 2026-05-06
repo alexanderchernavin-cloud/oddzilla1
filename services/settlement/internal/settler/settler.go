@@ -115,6 +115,19 @@ func (s *Settler) handleBetSettlement(ctx context.Context, body []byte) error {
 			// succeed, and we don't want to requeue a partial failure.
 		}
 	}
+
+	// certainty=2 is Oddin's post-game indicator — once that lands the
+	// match is definitively over. Use it to flip matches.status to
+	// 'closed' since Oddin's integration broker rarely emits a
+	// standalone match_status_change for esports. The forward-only
+	// guard inside MarkMatchClosedByURN keeps this idempotent and
+	// prevents regressing an already-cancelled match.
+	if msg.Certainty == 2 {
+		if err := store.MarkMatchClosedByURN(ctx, s.store.Pool(), msg.EventID); err != nil {
+			s.log.Warn().Err(err).Str("event", msg.EventID).
+				Msg("bet_settlement: mark match closed failed; continuing")
+		}
+	}
 	return nil
 }
 

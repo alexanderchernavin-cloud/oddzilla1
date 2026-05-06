@@ -194,14 +194,22 @@ function classifyStreamUrl(
 // the card would render empty. Intentionally lenient: a real live
 // match can have its match-winner briefly suspended (mid-round, post-
 // goal in football) while secondary markets stay open, and we still
-// want the row visible. Phantom-live matches are corrected at the
-// source by the phantom_drain sweeper (REST fixture refetch updates
-// matches.status to closed/ended), not by filtering them out here.
+// want the row visible.
+//
+// Defense in depth on the storefront side: also gate on
+// matches.status. After the bet_settlement / odds_change / bet_stop
+// fixes that flip matches.status forward to closed/cancelled, this
+// belt-and-braces check guarantees a closed match drops out of every
+// list even if a stray market row is still sitting at status=1
+// (settlement only flips markets it touches; an untouched market on a
+// closed event would otherwise keep the card visible). The
+// phantom-drain stays as the upstream safety net for matches Oddin
+// never sends a terminal signal for at all.
 const hasActiveMarket = sql`EXISTS (
   SELECT 1 FROM markets mk
    WHERE mk.match_id = ${matches.id}
      AND mk.status = 1
-)`;
+) AND ${matches.status} IN ('not_started','live')`;
 
 // Tournaments whose name matches one of these strings are hidden from
 // every list/count endpoint. Oddin's integration broker exposes test

@@ -279,16 +279,57 @@ RETURNING id`
 	return id, nil
 }
 
-// UpdateMatchStatus updates only the match_status column on an existing
-// match — used by fixture_change handlers when we need to flip status to
-// 'cancelled' without rewriting the rest of the match row.
+// UpdateMatchStatus updates matches.status with a forward-only guard:
+// once a match is in a terminal state ('closed' or 'cancelled'), any
+// non-idempotent transition is rejected at the SQL level. Re-applying
+// the same terminal status is a no-op. Transitions to 'not_started'
+// are also rejected so a stray score-correction or rollback message
+// can never regress a live/closed match back to pre-game.
+//
+// Callers (any AMQP handler that wants to flip lifecycle status):
+//   - fixture_change with change_type=CANCELLED
+//   - match_status_change (when Oddin's broker emits one)
+//   - odds_change with terminal <sport_event_status status="3|4|5|9"/>
+//
+// Returns nil even when the guard skips the update — callers don't
+// need to distinguish "already terminal" from "applied". The phantom-
+// drain remains the safety net for matches Oddin never sends a
+// terminal signal for at all.
 func UpdateMatchStatus(ctx context.Context, db pgxRunner, matchID int64, status string) error {
-	_, err := db.Exec(ctx,
-		`UPDATE matches SET status = $2::match_status, updated_at = NOW() WHERE id = $1`,
+	_, err := db.Exec(ctx, `
+UPDATE matches
+   SET status = $2::match_status, updated_at = NOW()
+ WHERE id = $1
+   AND (status::text NOT IN ('closed','cancelled') OR status::text = $2)
+   AND $2 <> 'not_started'`,
 		matchID, status,
 	)
 	if err != nil {
 		return fmt.Errorf("update match status: %w", err)
+	}
+	return nil
+}
+
+// UpdateAllMarketsStatusForMatch flips every non-terminal market on a
+// match to the given Oddin status code. Called by the bet_stop handler
+// when Oddin signals a blanket suspension or shutdown across the whole
+// event (groups="all"). Markets already at -3 (settled) or -4
+// (cancelled) are left untouched — those are terminal statuses owned
+// by the settlement service and re-flipping to -1 would lose audit
+// information about why the market is closed.
+func UpdateAllMarketsStatusForMatch(ctx context.Context, db pgxRunner, matchID int64, status int16, oddinTs int64) error {
+	_, err := db.Exec(ctx, `
+UPDATE markets
+   SET status = $2,
+       last_oddin_ts = GREATEST(last_oddin_ts, $3),
+       updated_at = NOW()
+ WHERE match_id = $1
+   AND status NOT IN (-3, -4)
+   AND status <> $2`,
+		matchID, status, oddinTs,
+	)
+	if err != nil {
+		return fmt.Errorf("update all markets status: %w", err)
 	}
 	return nil
 }
