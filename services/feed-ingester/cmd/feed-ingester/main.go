@@ -43,16 +43,6 @@ func main() {
 		false,
 		"Run tournament risk_tier backfill and exit (does not start the AMQP consumer).",
 	)
-	drainPhantomStale := flag.Bool(
-		"drain-phantom-stale",
-		false,
-		"Re-fetch every match still flagged `live` or `not_started` whose scheduled start is more than --phantom-age-hours in the past, then exit. Use after a feed/postgres outage, or to mop up matches whose match_status_change Oddin's broker never emitted.",
-	)
-	phantomAgeHours := flag.Int(
-		"phantom-age-hours",
-		0,
-		"Age threshold (hours past scheduled_at) for --drain-phantom-stale. Default 0 — any match still in live/not_started after its scheduled start is a candidate. Oddin's broker often skips match_status_change entirely, so REST is the authoritative state and waiting longer just leaves stale rows in the catalog.",
-	)
 	flag.Parse()
 
 	cfg, err := config.Load()
@@ -148,19 +138,6 @@ func main() {
 		return
 	}
 
-	if *drainPhantomStale {
-		if restClient == nil {
-			logger.Fatal().Msg("drain requires ODDIN_TOKEN")
-		}
-		logger.Info().Int("age_hours", *phantomAgeHours).Msg("running phantom-stale drain")
-		n, err := resolver.DrainPhantomStale(ctx, *phantomAgeHours)
-		if err != nil {
-			logger.Fatal().Err(err).Int("refreshed", n).Msg("drain failed")
-		}
-		logger.Info().Int("refreshed", n).Msg("drain finished")
-		return
-	}
-
 	deps := handler.Deps{
 		Store:    st,
 		Resolver: resolver,
@@ -218,25 +195,13 @@ func main() {
 			// cache shouldn't hold up the main AMQP loop.
 			go backfillCompetitorProfiles(ctx, resolver, st, logger)
 			// LISTEN on fixture_refresh so the API can ask us to re-pull
-			// a single fixture from REST when it spots a phantom-stale
-			// match (status='live' or 'not_started' long after scheduled
-			// start). Per-URN cooldown lives inside the listener.
+			// a single fixture from REST when an admin clicks through to
+			// a specific match. Per-URN cooldown lives inside the
+			// listener. (No periodic phantom-drain — `<sport_event_status>`
+			// inside every odds_change is the lifecycle source of truth;
+			// matches that drift out of sync are a real bug to surface,
+			// not noise to mop up.)
 			go runFixtureRefreshListener(ctx, pool, resolver, logger)
-			// LISTEN on phantom_drain so the admin recovery flow can
-			// trigger a full DrainPhantomStale sweep without restarting
-			// the container or shelling in to run the CLI flag. Mutex
-			// inside the listener prevents two concurrent drains from
-			// fighting for Oddin's REST budget.
-			go runPhantomDrainListener(ctx, pool, resolver, logger)
-			// Periodic auto-drain. Oddin emits match_status_change only
-			// sparsely so matches that end without one accumulate as
-			// status='live' or 'not_started' phantoms; the REST-driven
-			// drain is the only authoritative cleanup. Going through
-			// pg_notify (rather than calling DrainPhantomStale directly)
-			// reuses the listener's single-flight mutex, so this ticker
-			// can never collide with a manual click on
-			// /admin/feed/recovery.
-			go runPhantomDrainTicker(ctx, pool, logger)
 		}
 	}
 
@@ -438,146 +403,6 @@ func listenFixtureRefreshOnce(
 		}
 	}
 	return nil
-}
-
-// runPhantomDrainListener subscribes to Postgres notifications on the
-// `phantom_drain` channel. Each NOTIFY's payload is JSON of the form
-// `{"requestedBy": <userID>, "hours": <ageHours>}`; we run
-// resolver.DrainPhantomStale against the requested age threshold to
-// re-pull every stuck match's fixture from Oddin REST (covers both
-// status='live' and status='not_started' phantoms). Used by the admin
-// recovery endpoint so the operator's "Recovery" button cleans up stuck
-// matches.status in addition to replaying AMQP.
-//
-// Drains are serialized via the supplied mutex: a second NOTIFY that
-// arrives mid-sweep is skipped. Phantom counts barely move within a few
-// minutes, so dropping the duplicate is the right call (the next
-// recovery click will pick up anything new).
-func runPhantomDrainListener(ctx context.Context, pool *pgxpool.Pool, res *automap.Resolver, log zerolog.Logger) {
-	var draining sync.Mutex
-	for ctx.Err() == nil {
-		if err := listenPhantomDrainOnce(ctx, pool, res, &draining, log); err != nil && !errors.Is(err, context.Canceled) {
-			log.Warn().Err(err).Msg("phantom_drain LISTEN errored; reconnecting in 2s")
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(2 * time.Second):
-			}
-		}
-	}
-}
-
-func listenPhantomDrainOnce(
-	ctx context.Context,
-	pool *pgxpool.Pool,
-	res *automap.Resolver,
-	draining *sync.Mutex,
-	log zerolog.Logger,
-) error {
-	conn, err := pool.Acquire(ctx)
-	if err != nil {
-		return err
-	}
-	defer conn.Release()
-	if _, err := conn.Exec(ctx, "LISTEN phantom_drain"); err != nil {
-		return err
-	}
-	log.Info().Msg("listening on phantom_drain channel")
-	for ctx.Err() == nil {
-		n, err := conn.Conn().WaitForNotification(ctx)
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				return nil
-			}
-			return err
-		}
-		if n == nil {
-			continue
-		}
-		var payload struct {
-			RequestedBy any  `json:"requestedBy"`
-			Hours       *int `json:"hours"`
-		}
-		if err := json.Unmarshal([]byte(n.Payload), &payload); err != nil {
-			log.Warn().Err(err).Str("payload", n.Payload).Msg("phantom_drain payload invalid; using defaults")
-		}
-		// Default to 0: any match still in live/not_started past its
-		// scheduled start is a candidate. Only clamp negatives — explicit
-		// hours=0 is a legitimate value, not a missing field.
-		hours := 0
-		if payload.Hours != nil {
-			hours = *payload.Hours
-			if hours < 0 {
-				hours = 0
-			}
-		}
-		if !draining.TryLock() {
-			log.Info().Int("hours", hours).Msg("phantom_drain skipped: another sweep is already running")
-			continue
-		}
-		go func(hours int) {
-			defer draining.Unlock()
-			log.Info().Int("hours", hours).Msg("phantom_drain: starting sweep")
-			n, err := res.DrainPhantomStale(ctx, hours)
-			if err != nil {
-				log.Warn().Err(err).Int("hours", hours).Int("refreshed", n).Msg("phantom_drain failed")
-				return
-			}
-			log.Info().Int("hours", hours).Int("refreshed", n).Msg("phantom_drain finished")
-		}(hours)
-	}
-	return nil
-}
-
-// runPhantomDrainTicker fires pg_notify('phantom_drain', ...) every 15min
-// so runPhantomDrainListener performs its REST-driven cleanup sweep.
-// Going through pg_notify (rather than calling DrainPhantomStale directly)
-// keeps a single mutex governing every code path that can drain — manual
-// admin click, periodic ticker, and the on-boot listener all share the
-// same single-flight guard.
-//
-// One sweep fires immediately on boot so a freshly-restarted ingester
-// doesn't wait up to an hour to catch up on phantoms accumulated during
-// the outage.
-//
-// Payload hours=0 means any match whose scheduled_at is in the past is a
-// candidate. Oddin's integration broker frequently skips
-// match_status_change entirely (matches transition not_started → closed
-// without ever passing through live in AMQP), so REST is the authoritative
-// state — there is no value in waiting hours past scheduled_at before
-// validating. The cleanup itself paces at 5 RPS inside DrainPhantomStale,
-// well under Oddin's REST budget; a 15-minute cadence catches a fresh
-// match within ~15min of its actual start.
-func runPhantomDrainTicker(ctx context.Context, pool *pgxpool.Pool, log zerolog.Logger) {
-	const (
-		sweepEvery = 15 * time.Minute
-		bootDelay  = 30 * time.Second
-		payload    = `{"requestedBy":"ticker","hours":0}`
-	)
-	fire := func() {
-		if _, err := pool.Exec(ctx, `SELECT pg_notify('phantom_drain', $1)`, payload); err != nil {
-			log.Warn().Err(err).Msg("phantom_drain ticker: pg_notify failed")
-		}
-	}
-	// Initial sweep on boot, after a short delay so the LISTEN goroutine
-	// has time to register on the phantom_drain channel — pg_notify is
-	// fire-and-forget; if no session is listening yet, the NOTIFY is lost.
-	select {
-	case <-ctx.Done():
-		return
-	case <-time.After(bootDelay):
-	}
-	fire()
-	t := time.NewTicker(sweepEvery)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			fire()
-		}
-	}
 }
 
 // runFeedMessageCleanup sweeps the feed_messages table once per hour.

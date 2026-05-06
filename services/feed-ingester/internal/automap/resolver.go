@@ -326,53 +326,6 @@ func (r *Resolver) BackfillTournamentRiskTier(ctx context.Context) (int, error) 
 	return updated, nil
 }
 
-// DrainPhantomStale walks every match still flagged `live` or `not_started`
-// more than `ageHours` after its scheduled start and re-pulls the fixture
-// from Oddin REST. Used after a feed-ingester / postgres outage where we
-// missed match_status_change messages, and as a steady-state safety net for
-// matches whose status_change Oddin's integration broker never emitted at
-// all (many fixtures end in REST without the expected AMQP transition).
-// Both shapes leave the row visible on listings — phantom-live with zero
-// markets, phantom-not_started with stale active markets — so we cover
-// both via the same REST refetch. RefreshFromFixture overwrites
-// matches.status with whatever the fixture reports, so closed/ended
-// matches drop out cleanly.
-//
-// Pace is 5 requests/sec, matching the risk_tier backfill. Returns
-// the number of URNs successfully refreshed (REST 404s and other
-// best-effort failures are skipped).
-func (r *Resolver) DrainPhantomStale(ctx context.Context, ageHours int) (int, error) {
-	if r.rc == nil {
-		return 0, errors.New("oddin rest client not configured")
-	}
-	urns, err := store.PhantomStaleMatchURNs(ctx, r.st.Pool(), ageHours)
-	if err != nil {
-		return 0, err
-	}
-	if len(urns) == 0 {
-		r.log.Info().Int("age_hours", ageHours).Msg("no phantom-stale matches to drain")
-		return 0, nil
-	}
-	r.log.Info().Int("count", len(urns)).Int("age_hours", ageHours).Msg("draining phantom-stale matches")
-	updated := 0
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-	for _, urn := range urns {
-		select {
-		case <-ctx.Done():
-			return updated, ctx.Err()
-		case <-ticker.C:
-		}
-		if err := r.RefreshFromFixture(ctx, urn); err != nil {
-			r.log.Warn().Err(err).Str("urn", urn).Msg("drain: refresh failed")
-			continue
-		}
-		updated++
-	}
-	r.log.Info().Int("considered", len(urns)).Int("refreshed", updated).Msg("phantom-stale drain complete")
-	return updated, nil
-}
-
 func nullableTimeISO(t time.Time) any {
 	if t.IsZero() {
 		return nil
