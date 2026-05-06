@@ -86,6 +86,20 @@ Canonical SQL lives in [`../packages/db/migrations/`](../packages/db/migrations/
   - `is_ai BOOLEAN NOT NULL DEFAULT FALSE` — internal flag for AI seed
     accounts (Phase 10.4). Decision D2: never serialised by any API
     endpoint. Transparency-on-request only.
+- `0025_community_tickets.sql` — Phase 10.2 community feed projection.
+  Adds `community_tickets`: a denormalised read model of every
+  publicly-resolved ticket (`status IN ('settled', 'cashed_out',
+  'voided')`). `UNIQUE (ticket_id)` makes the upsert idempotent under
+  settlement replay; `ON CONFLICT DO UPDATE` keeps status / payout /
+  settled_at synchronised with the source-of-truth `tickets` row across
+  rollback / re-settle generations. `sport_ids INTEGER[]` is computed
+  by joining `ticket_selections → markets → matches → tournaments →
+  categories` and is used (via the GIN index) for the
+  filter-by-sport feed query. Authoritative writer is
+  `services/settlement` (Go) inside `SettleTicket` /
+  `ReverseSettledTicket`; cashout (`services/api`, TS) writes the
+  projection inline; the admin endpoint `POST /admin/community/
+  backfill` recovers any miss.
 
 Drizzle mirror is [`../packages/db/src/schema/`](../packages/db/src/schema/).
 

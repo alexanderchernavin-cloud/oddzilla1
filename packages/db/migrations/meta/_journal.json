@@ -176,6 +176,13 @@
       "when": 1700000024000,
       "tag": "0024_community_profiles",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1700000025000,
+      "tag": "0025_community_tickets",
+      "breakpoints": true
     }
   ]
 }

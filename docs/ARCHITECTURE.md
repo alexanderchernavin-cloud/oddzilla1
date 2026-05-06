@@ -215,6 +215,17 @@ therefore safe.
 5. Commit, then publish `{type:'ticket', status:'settled'}` on
    `user:{userId}`. On any error the transaction aborts, AMQP is nacked
    with requeue.
+6. **Community projection** (Phase 10.2). Inside the same tx, after the
+   wallet/ledger writes, `WriteCommunityProjection(tx, ticketID)` upserts
+   a `community_tickets` row driving the public feed at `/community`.
+   Idempotent on `community_tickets.ticket_id UNIQUE`. Failure is logged
+   and the tx still commits — a projection-write bug must never unwind
+   a real settlement; the admin endpoint
+   `POST /admin/community/backfill` recovers any miss. The same hook
+   fires inside `ReverseSettledTicket` so the projection row's status
+   tracks the source-of-truth ticket across rollback / re-settle
+   generations. Cashout (`services/api`, TS) writes the projection
+   inline in its own transaction; backfill is the safety net there too.
 
 **Rollback messages** (`rollback_bet_settlement`, `rollback_bet_cancel`)
 insert their own `settlements` row (apply-once still applies — replays

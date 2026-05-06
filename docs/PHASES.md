@@ -627,12 +627,58 @@ profile stats, USDT default, OZ tab toggle).
   `tickets_public=false` (no leak that the handle exists).
 - `is_ai` is absent from every public response surface.
 
-### Phase 10.2 — Feed + projection (next)
+### Phase 10.2 — Feed + projection ✔ (2026-05-06)
 
-See [`COMMUNITY_PLAN.md`](./COMMUNITY_PLAN.md) §10.2. Migration
-`0025_community_tickets.sql` + `WriteCommunityProjection` hook in
-`services/settlement/internal/store/store.go`, called inside the
-settle-ticket transaction.
+- Migration `0025_community_tickets.sql` adds the denormalised
+  `community_tickets` read-projection. `UNIQUE (ticket_id)` +
+  `ON CONFLICT DO UPDATE` makes the upsert idempotent under settlement
+  replay; rollback / re-settle generations land on the same row.
+  `sport_ids INTEGER[]` (GIN-indexed) is computed by joining
+  `ticket_selections → markets → matches → tournaments → categories`
+  so the per-sport feed filter is an index lookup instead of a 6-way
+  join per scroll.
+- Authoritative writer is `services/settlement` (Go).
+  `WriteCommunityProjection(tx, ticketID)` lives in
+  [`services/settlement/internal/store/store.go`](../services/settlement/internal/store/store.go)
+  and is called from `settler.maybeSettleTicket` after `SettleTicket`
+  and from both `ReverseSettledTicket` callsites
+  (`reverseSettledForCancel` and the rollback handler). Failure is
+  best-effort — log and continue, never unwind a real settlement.
+- Cashout (`services/api`, TS) writes the projection inline in the
+  same transaction that flips `tickets.status='cashed_out'`. Shared
+  SQL lives in [`services/api/src/modules/community/projection.ts`](../services/api/src/modules/community/projection.ts);
+  the upsert mirrors the Go side line-for-line so both paths land
+  identical rows.
+- API: `GET /community/feed?currency=&sport=&page=&pageSize=` (anon,
+  recent sort, filters out `tickets_public=false`),
+  `GET /community/users/:nickname/tickets` (per-user list, same
+  shape). `/community/users/:nickname/profile` now aggregates real
+  per-currency stats (settled / wins / win rate / ROI) from
+  `community_tickets`.
+- Admin recovery: `POST /admin/community/backfill` sweeps any miss
+  (settled / cashed_out / voided tickets where the projection row is
+  missing or has drifted) in 500-row batches. Idempotent.
+- Storefront: [`/community`](../apps/web/src/app/(main)/community/page.tsx)
+  page with sport + currency filter pills server-rendered as URL
+  links; [`CommunityTicketCard`](../apps/web/src/components/community/ticket-card.tsx)
+  with status pill + currency + odds + payout. `/u/[nickname]` now
+  surfaces a "Recent tickets" section using the same card. Sidebar
+  gains a top-level "Community" entry → /community; the
+  `/account/community` settings link is renamed "Profile".
+
+**Acceptance bar:**
+- Migration applies cleanly (CREATE TABLE + indexes; nothing else
+  touched).
+- Settling a ticket through `services/settlement` writes a matching
+  `community_tickets` row inside the same tx.
+- A ticket cashed out via `POST /tickets/:id/cashout` writes a row
+  with `status='cashed_out'`, `payout_micro` = cashout amount.
+- `GET /community/feed?currency=USDT&sport=1` returns only USDT
+  tickets on sport 1, ordered by `settled_at DESC`.
+- `POST /admin/community/backfill` returns `{scanned, upserted}` and
+  is safe to re-run.
+
+### Phase 10.3 — Scoring + Best Wins + Copy
 
 ### Phase 10.3 — Scoring + Best Wins + Copy
 

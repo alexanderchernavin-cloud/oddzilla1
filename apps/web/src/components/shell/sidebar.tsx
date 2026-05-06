@@ -148,6 +148,18 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
         );
       })}
 
+      {/*
+        Phase 10.2 community feed. Top-level entry sits after the sport
+        list (per the plan) so the public surface is one click away from
+        every page. Signed-out users see it too — the feed is anonymous.
+      */}
+      <Item
+        href="/community"
+        icon={<I.User size={15} />}
+        active={isActive("/community")}
+        label="Community"
+      />
+
       <SectionLabel>Account</SectionLabel>
       {signedIn ? (
         <>
@@ -163,11 +175,16 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
             active={isActive("/wallet")}
             label="Wallet"
           />
+          {/*
+            "/account/community" is the settings page (nickname / bio /
+            visibility), not the feed. Renamed from "Community" so it
+            doesn't collide with the new top-level Community entry above.
+          */}
           <Item
             href="/account/community"
             icon={<I.User size={15} />}
             active={isActive("/account/community")}
-            label="Community"
+            label="Profile"
           />
           <Item
             href="/account"
