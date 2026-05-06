@@ -183,23 +183,24 @@ export default async function MatchPage({
         awayTeam={match.awayTeam}
       />
 
-      {markets.length === 0 ? (
-        <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
-          No markets from the feed yet. This page will update live when odds start
-          flowing.
-        </p>
-      ) : (
-        <LiveMarkets
-          matchId={match.id}
-          match={{
-            id: match.id,
-            homeTeam: match.homeTeam,
-            awayTeam: match.awayTeam,
-            sportSlug: match.sport.slug,
-          }}
-          initialGroups={marketGroups}
-        />
-      )}
+      {/* Always mount LiveMarkets — even when the SSR snapshot has zero
+          markets — so the WebSocket subscription is up and ready. The
+          previous early-return rendered a static placeholder with no
+          subscription, so when markets re-activated mid-game (a common
+          basketball / hockey pattern between possessions) the user
+          needed a hard refresh to see them. The empty-state copy now
+          lives inside LiveMarkets and disappears the moment any market
+          appears in the merged tree. */}
+      <LiveMarkets
+        matchId={match.id}
+        match={{
+          id: match.id,
+          homeTeam: match.homeTeam,
+          awayTeam: match.awayTeam,
+          sportSlug: match.sport.slug,
+        }}
+        initialGroups={marketGroups}
+      />
     </div>
   );
 }

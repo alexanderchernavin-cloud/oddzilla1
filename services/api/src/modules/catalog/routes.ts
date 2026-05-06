@@ -726,7 +726,22 @@ export default async function catalogRoutes(app: FastifyInstance) {
       })
       .from(markets)
       .leftJoin(marketOutcomes, eq(marketOutcomes.marketId, markets.id))
-      .where(and(eq(markets.matchId, params.id), eq(markets.status, 1)))
+      // Include in-play-suspended markets too — between possessions /
+      // free throws / mid-round Oddin briefly flips the whole offer to
+      // status 0 (deactivated) or -1 (suspended). If we filter to only
+      // status=1 here, the page goes blank during those windows and
+      // the WS subscription is never mounted, so when markets come
+      // back active a few seconds later the user sees nothing until
+      // they hard-refresh. The rendered button shows a Suspended pill
+      // and locks until an outcome tick lands with active=true (see
+      // live-markets.tsx). Settled / cancelled / pre-match-stuck
+      // (-2/-3/-4) stay excluded — those don't recover.
+      .where(
+        and(
+          eq(markets.matchId, params.id),
+          inArray(markets.status, [1, 0, -1]),
+        ),
+      )
       .orderBy(markets.providerMarketId);
 
     // Collect URN-style outcome ids (od:competitor:N / od:player:N) so
