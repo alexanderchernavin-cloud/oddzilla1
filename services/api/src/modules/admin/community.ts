@@ -25,9 +25,18 @@ import { evaluateAchievements } from "../community/achievements.js";
 // per batch dominates over the SQL execution.
 const BATCH_SIZE = 500;
 
+// Backfill is admin-only but still expensive — a stolen-admin-token
+// attacker could spam the LEFT JOIN scan to DoS the api container. Same
+// shape /admin/feed/recovery uses; legitimate operators rarely need
+// more than one or two per hour.
+const backfillRateLimit = {
+  rateLimit: { max: 5, timeWindow: "1 hour" },
+};
+
 export default async function adminCommunityRoutes(app: FastifyInstance) {
   app.post(
     "/admin/community/backfill",
+    { config: backfillRateLimit },
     async (request): Promise<CommunityBackfillResponse> => {
       request.requireRole("admin");
 

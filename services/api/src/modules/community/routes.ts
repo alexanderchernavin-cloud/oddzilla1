@@ -54,6 +54,14 @@ const writeRateLimit = {
   rateLimit: { max: 30, timeWindow: "1 minute" },
 };
 
+// Cap public reads so a scraper can't paginate the entire feed in linear
+// time. Anonymous endpoints, so per-IP is the only key we have. Bumping
+// the page-size limit doesn't help an attacker because each call still
+// counts towards the cap.
+const readRateLimit = {
+  rateLimit: { max: 60, timeWindow: "1 minute" },
+};
+
 // Mirrors the DB-side CHECK constraint from migration 0024.
 const NICKNAME_RE = /^[A-Za-z0-9_]{3,20}$/;
 
@@ -117,7 +125,7 @@ export default async function communityRoutes(app: FastifyInstance) {
   // surface the nickname / bio per card. Filters out users with
   // `tickets_public = false` and users without a nickname (no public
   // surface to link to).
-  app.get("/community/feed", async (request): Promise<CommunityFeedResponse> => {
+  app.get("/community/feed", { config: readRateLimit }, async (request): Promise<CommunityFeedResponse> => {
     const q = feedQuery.parse(request.query);
     const currency: Currency | null =
       q.currency && isCurrency(q.currency) ? q.currency : null;
@@ -186,7 +194,7 @@ export default async function communityRoutes(app: FastifyInstance) {
   app.get<{
     Params: { nickname: string };
     Querystring: { currency?: string };
-  }>("/community/users/:nickname/profile", async (request) => {
+  }>("/community/users/:nickname/profile", { config: readRateLimit }, async (request) => {
     const nickname = request.params.nickname;
     if (!NICKNAME_RE.test(nickname)) throw new NotFoundError();
 
@@ -241,6 +249,7 @@ export default async function communityRoutes(app: FastifyInstance) {
     Params: { nickname: string };
   }>(
     "/community/users/:nickname/tickets",
+    { config: readRateLimit },
     async (request): Promise<CommunityUserTicketsResponse> => {
       const nickname = request.params.nickname;
       if (!NICKNAME_RE.test(nickname)) throw new NotFoundError();
