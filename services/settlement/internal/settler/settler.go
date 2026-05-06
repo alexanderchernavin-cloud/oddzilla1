@@ -116,17 +116,18 @@ func (s *Settler) handleBetSettlement(ctx context.Context, body []byte) error {
 		}
 	}
 
-	// certainty=2 is Oddin's post-game indicator — once that lands the
-	// match is definitively over. Use it to flip matches.status to
-	// 'closed' since Oddin's integration broker rarely emits a
-	// standalone match_status_change for esports. The forward-only
-	// guard inside MarkMatchClosedByURN keeps this idempotent and
-	// prevents regressing an already-cancelled match.
-	if msg.Certainty == 2 {
-		if err := store.MarkMatchClosedByURN(ctx, s.store.Pool(), msg.EventID); err != nil {
-			s.log.Warn().Err(err).Str("event", msg.EventID).
-				Msg("bet_settlement: mark match closed failed; continuing")
-		}
+	// After every bet_settlement, check whether the match is now wholly
+	// terminal — every market in -3 (settled) or -4 (cancelled). Per
+	// Oddin's spec the match disappears from odds_change once every
+	// market settles, so a final <sport_event_status status="4"> may
+	// never arrive. The all-markets-terminal predicate inside
+	// MarkMatchClosedIfAllMarketsTerminal makes this safe to call
+	// unconditionally: per-map market settlements during a live match
+	// won't false-positive because the match-winner market is still at
+	// status=1.
+	if err := store.MarkMatchClosedIfAllMarketsTerminal(ctx, s.store.Pool(), msg.EventID); err != nil {
+		s.log.Warn().Err(err).Str("event", msg.EventID).
+			Msg("bet_settlement: mark match closed (all-terminal) failed; continuing")
 	}
 	return nil
 }
@@ -280,6 +281,15 @@ func (s *Settler) handleBetCancel(ctx context.Context, body []byte) error {
 				Int("market", market.ID).
 				Msg("apply cancel failed")
 		}
+	}
+
+	// Same all-terminal check as bet_settlement — a bet_cancel that
+	// closes the last remaining bettable market should also flip the
+	// match. Unconditional / forward-only / no-op when active markets
+	// remain.
+	if err := store.MarkMatchClosedIfAllMarketsTerminal(ctx, s.store.Pool(), msg.EventID); err != nil {
+		s.log.Warn().Err(err).Str("event", msg.EventID).
+			Msg("bet_cancel: mark match closed (all-terminal) failed; continuing")
 	}
 	return nil
 }

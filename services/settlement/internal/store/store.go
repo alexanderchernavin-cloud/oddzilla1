@@ -29,26 +29,42 @@ func (s *Store) BeginTx(ctx context.Context) (pgx.Tx, error) {
 
 // ─── Match lifecycle ──────────────────────────────────────────────────────
 
-// MarkMatchClosedByURN flips matches.status to 'closed' when settlement
-// receives a bet_settlement with certainty=2 (post-game). The forward-
-// only guard rejects regressions from a terminal status, so calling
-// this on an already-cancelled match is a no-op. Used as the
-// authoritative "match is over" signal because Oddin's integration
-// broker frequently never emits a standalone match_status_change for
-// esports — the bet_settlement that follows the final whistle is the
-// only on-wire indicator we get.
+// MarkMatchClosedIfAllMarketsTerminal flips matches.status to 'closed'
+// when every market on the match has reached a terminal state — -3
+// (settled) or -4 (cancelled). Per Oddin's spec (§2.4.2): "When a
+// market or market line is settled with a bet_settlement message, it
+// will be automatically removed from all subsequent match odds_change
+// messages." So once the last market settles, the match disappears
+// from the odds_change stream and a final <sport_event_status
+// status="4"> may never arrive. This function is the safety net for
+// that case.
+//
+// The single SQL statement does both checks atomically:
+//   - WHERE provider_urn = $1 AND status NOT IN ('closed','cancelled')
+//     keeps it forward-only (re-running on an already-terminal match
+//     is a no-op).
+//   - NOT EXISTS (...) ensures we only close the match when no market
+//     remains in 1 / 0 / -1 / -2 — i.e. nothing bettable, suspended,
+//     or in handover. If a per-map market settles mid-match the
+//     match-winner market keeps the match active, so this won't
+//     false-positive.
 //
 // Returns nil when the row doesn't exist (settlement reached us before
-// feed-ingester ingested the fixture) or when the guard skipped the
+// feed-ingester ingested the fixture) or when either gate skipped the
 // update; callers don't need to distinguish these.
-func MarkMatchClosedByURN(ctx context.Context, pool *pgxpool.Pool, providerURN string) error {
+func MarkMatchClosedIfAllMarketsTerminal(ctx context.Context, pool *pgxpool.Pool, providerURN string) error {
 	_, err := pool.Exec(ctx, `
 UPDATE matches
    SET status = 'closed'::match_status, updated_at = NOW()
  WHERE provider_urn = $1
-   AND status::text NOT IN ('closed','cancelled')`, providerURN)
+   AND status::text NOT IN ('closed','cancelled')
+   AND NOT EXISTS (
+     SELECT 1 FROM markets mk
+      WHERE mk.match_id = matches.id
+        AND mk.status NOT IN (-3, -4)
+   )`, providerURN)
 	if err != nil {
-		return fmt.Errorf("mark match closed: %w", err)
+		return fmt.Errorf("mark match closed if all markets terminal: %w", err)
 	}
 	return nil
 }
