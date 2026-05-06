@@ -1,7 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { CSSProperties, ReactNode, MouseEvent } from "react";
+
+import { useOddsFlash } from "@/lib/use-odds-flash";
 
 // ── Button ──────────────────────────────────────────────────────────────
 type ButtonVariant = "primary" | "secondary" | "ghost" | "outline" | "danger";
@@ -265,8 +267,17 @@ export function OddButton({
   const arrow = trend === "up" ? "↑" : trend === "down" ? "↓" : null;
   const arrowColor =
     trend === "up" ? "var(--positive)" : trend === "down" ? "var(--negative)" : "var(--fg-dim)";
+  // Background flash on every actual price change. The hook diffs the
+  // price prop and runs a Web Animations API tween on the button — a
+  // soft green tint for an increase, red for a decrease, ~1s hold then
+  // fade over the remaining 9s. Skipped while the button is locked:
+  // an inactive→active transition would otherwise flash on resume,
+  // which isn't what the user is signalling.
+  const flashRef = useRef<HTMLButtonElement | null>(null);
+  useOddsFlash(locked ? null : price ?? null, flashRef);
   return (
     <button
+      ref={flashRef}
       type="button"
       onClick={onClick}
       disabled={locked}

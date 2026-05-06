@@ -1,12 +1,14 @@
 "use client";
 
 import Link from "next/link";
+import { useRef } from "react";
 import type { CSSProperties, MouseEvent, ReactNode } from "react";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { Pill, LiveDot, TeamMark } from "@/components/ui/primitives";
 import { TierMark, isFeaturedTier } from "@/components/ui/tier-mark";
 import { useBetSlip } from "@/lib/bet-slip";
 import { mapCellValue, type LiveScore } from "@/lib/live-score";
+import { useOddsFlash } from "@/lib/use-odds-flash";
 import type { SlipSelection } from "@oddzilla/types";
 
 export interface ListMatch {
@@ -604,6 +606,10 @@ function RowOddBtn({
   locked: boolean;
   onClick: (e: MouseEvent<HTMLButtonElement>) => void;
 }) {
+  // Same green/red flash as OddButton. Skipped while locked so an
+  // inactive→active transition doesn't flash on resume.
+  const flashRef = useRef<HTMLButtonElement | null>(null);
+  useOddsFlash(locked ? null : price, flashRef);
   const baseStyle: CSSProperties = {
     display: "inline-flex",
     alignItems: "center",
@@ -628,6 +634,7 @@ function RowOddBtn({
   // at the same breakpoint. See globals.css.
   return (
     <button
+      ref={flashRef}
       type="button"
       disabled={locked}
       onClick={onClick}
