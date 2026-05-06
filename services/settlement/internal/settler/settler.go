@@ -647,17 +647,22 @@ func (s *Settler) publishTicketEvent(ctx context.Context, ticketID, status, reas
 	}
 }
 
-func hashMarketPayload(settlementType, eventURN string, market oddinxml.Market, raw []byte) []byte {
+func hashMarketPayload(settlementType, eventURN string, market oddinxml.Market, _ []byte) []byte {
 	// Hash a canonical representation so retries of the same data (but
-	// re-serialized XML) map to the same key.
+	// re-serialized XML) map to the same key. We deliberately exclude
+	// the raw AMQP body — including it meant two semantically-identical
+	// messages with whitespace differences (e.g. broker-side
+	// serializer change, or a replayed message routed through a
+	// different proxy) produced different hashes, defeating the
+	// `(event_urn, market_id, specifiers_hash, type, payload_hash)`
+	// dedup tuple and creating a path to double-payouts on near-replays.
+	// Specifier canonicalisation already covers attribute reorderings;
+	// outcome iteration order is deterministic per the XML schema.
 	h := sha256.New()
 	fmt.Fprintf(h, "%s|%s|%d|%s", settlementType, eventURN, market.ID, market.Specifiers)
 	for _, o := range market.Outcomes {
 		fmt.Fprintf(h, "|%s=%s,%s", o.ID, o.Result, o.VoidFactor)
 	}
-	// Mix in a hash of the raw body too — catches changes we didn't
-	// anticipate (new attributes) so we err on the side of "new event".
-	h.Write(raw)
 	return h.Sum(nil)
 }
 

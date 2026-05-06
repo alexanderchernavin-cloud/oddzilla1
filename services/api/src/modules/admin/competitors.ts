@@ -17,7 +17,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { and, asc, eq, ilike, inArray, isNull, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { competitors, sports, adminAuditLog } from "@oddzilla/db";
 import { NotFoundError } from "../../lib/errors.js";
 
@@ -316,9 +316,13 @@ export default async function adminCompetitorsRoutes(app: FastifyInstance) {
           continue;
         }
 
-        // Match the competitor by exact slug *or* by slugified name in case
-        // the seed file used the team's display name. Per-sport scope keeps
-        // the same slug from colliding across disciplines.
+        // Match the competitor by exact slug. Per-sport scope keeps the
+        // same slug from colliding across disciplines. We use eq(), not
+        // ilike(), because slugs are lowercase/dash-separated by
+        // construction — and ilike() would interpret `%` and `_` in
+        // attacker-supplied (or careless-operator-supplied) slugs as
+        // wildcards, allowing a single bulk entry like `competitorSlug:"%"`
+        // to overwrite the first-by-id competitor in the sport.
         const [match] = await tx
           .select({
             id: competitors.id,
@@ -329,7 +333,7 @@ export default async function adminCompetitorsRoutes(app: FastifyInstance) {
           .where(
             and(
               eq(competitors.sportId, sportId),
-              ilike(competitors.slug, entry.competitorSlug),
+              eq(competitors.slug, entry.competitorSlug.toLowerCase()),
             ),
           )
           .limit(1);

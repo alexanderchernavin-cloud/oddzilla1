@@ -252,9 +252,16 @@ export class CashoutService {
 
     // If the offer is no longer available (a leg went inactive, lost,
     // etc.) or has dropped beyond the drift tolerance, reject.
-    const driftFloor =
-      (Number(quote.offeredMicro) * (1 - ACCEPTANCE_DRIFT_TOLERANCE)) | 0;
-    if (!recomputed.available || Number(recomputed.offerMicro) < driftFloor) {
+    //
+    // Drift floor in bigint micro to avoid the 32-bit truncation that the
+    // previous `| 0` operator would apply: for any offer above ~2147 USDT
+    // (2^31 micro), `(Number * 0.95) | 0` wraps to a negative int32, and
+    // the subsequent `< driftFloor` check becomes `< 0` → always false →
+    // drift defence bypassed for high-stake tickets. House loses money
+    // when probabilities drift down during the acceptance delay.
+    const tolBp = BigInt(Math.round(ACCEPTANCE_DRIFT_TOLERANCE * 10_000));
+    const driftFloor = quote.offeredMicro - (quote.offeredMicro * tolBp) / 10_000n;
+    if (!recomputed.available || recomputed.offerMicro < driftFloor) {
       await this.db
         .update(cashouts)
         .set({

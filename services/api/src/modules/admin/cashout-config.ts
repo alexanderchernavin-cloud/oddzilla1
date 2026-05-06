@@ -15,7 +15,7 @@ import {
   sports,
   tournaments,
 } from "@oddzilla/db";
-import { NotFoundError } from "../../lib/errors.js";
+import { BadRequestError, NotFoundError } from "../../lib/errors.js";
 
 const scopeEnum = z.enum(["global", "sport", "tournament", "market_type"]);
 
@@ -103,10 +103,16 @@ export default async function cashoutConfigRoutes(app: FastifyInstance) {
 
     if (body.scope === "global") {
       if (body.scopeRefId) {
-        throw new Error("scopeRefId must be null for global scope");
+        throw new BadRequestError(
+          "scope_ref_id_must_be_null_for_global",
+          "scope_ref_id_must_be_null_for_global",
+        );
       }
     } else if (!body.scopeRefId) {
-      throw new Error(`scopeRefId is required for scope=${body.scope}`);
+      throw new BadRequestError(
+        `scope_ref_id_required_for_${body.scope}`,
+        `scope_ref_id_required_for_${body.scope}`,
+      );
     }
 
     const refId = body.scope === "global" ? null : (body.scopeRefId ?? null);
@@ -222,7 +228,10 @@ export default async function cashoutConfigRoutes(app: FastifyInstance) {
       throw new NotFoundError("cashout_config_not_found", "cashout_config_not_found");
     }
     if (existing.scope === "global") {
-      throw new Error("global scope cannot be deleted");
+      throw new BadRequestError(
+        "cannot_delete_global_scope",
+        "cannot_delete_global_scope",
+      );
     }
 
     await app.db.transaction(async (tx) => {

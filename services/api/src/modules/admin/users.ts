@@ -260,13 +260,30 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
       throw new BadRequestError("no_changes", "no_changes");
     }
 
-    // Self-guard: admins cannot demote or block themselves.
+    // Self-guard: admins cannot demote, block, or self-grant relaxed
+    // bet limits / delay through this endpoint. The original guard
+    // covered status + role; without limit + bet-delay locked too, an
+    // admin (or a compromised admin token) could hit /admin/users/:self
+    // with `globalLimitMicro=999999999999, betDelaySeconds=0` to grant
+    // themselves unlimited stake without any 4-eyes check.
     if (params.id === admin.id) {
       if (body.role !== undefined && body.role !== "admin") {
         throw new BadRequestError("cannot_demote_self", "cannot_demote_self");
       }
       if (body.status !== undefined && body.status !== "active") {
         throw new BadRequestError("cannot_block_self", "cannot_block_self");
+      }
+      if (body.globalLimitMicro !== undefined) {
+        throw new BadRequestError(
+          "cannot_self_edit_limit",
+          "cannot_self_edit_limit",
+        );
+      }
+      if (body.betDelaySeconds !== undefined) {
+        throw new BadRequestError(
+          "cannot_self_edit_bet_delay",
+          "cannot_self_edit_bet_delay",
+        );
       }
     }
 

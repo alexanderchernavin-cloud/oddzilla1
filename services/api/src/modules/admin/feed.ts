@@ -32,8 +32,21 @@ const bodySchema = z.object({
   hours: z.coerce.number().int().min(1).max(72).optional(),
 });
 
+// Recovery rewinds the AMQP cursor by up to 72 h and triggers Oddin to
+// replay every message in that window. It's an expensive operation
+// against Oddin's REST quota AND it nukes published_odds for every
+// active market until the replay refills them. A scripted replay (e.g.
+// from a compromised admin token in a loop) would tar-pit the
+// storefront and burn quota. 3-per-hour is plenty for legitimate ops.
+const recoveryRateLimit = {
+  rateLimit: { max: 3, timeWindow: "1 hour" },
+};
+
 export default async function adminFeedRoutes(app: FastifyInstance) {
-  app.post("/admin/feed/recovery", async (request) => {
+  app.post(
+    "/admin/feed/recovery",
+    { config: recoveryRateLimit },
+    async (request) => {
     const admin = request.requireRole("admin");
     const body = bodySchema.parse(request.body ?? {});
     // Default 48h (2 days). Wide enough to catch any future fixture that
@@ -148,7 +161,8 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
       flushedOutcomes,
       activeMarketsBefore: activeMarkets,
     };
-  });
+  },
+  );
 
   // Read-only status so the admin UI can show the current cursor lag
   // before the operator hits the button.

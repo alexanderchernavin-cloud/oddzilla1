@@ -6,7 +6,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { betProductConfig, adminAuditLog } from "@oddzilla/db";
-import { NotFoundError } from "../../lib/errors.js";
+import { BadRequestError, NotFoundError } from "../../lib/errors.js";
 
 const productEnum = z.enum(["tiple", "tippot"]);
 
@@ -44,7 +44,10 @@ export default async function betProductsRoutes(app: FastifyInstance) {
     const params = z.object({ product: productEnum }).parse(request.params);
     const body = updateBody.parse(request.body);
     if (body.minLegs > body.maxLegs) {
-      throw new Error("min_legs must be ≤ max_legs");
+      throw new BadRequestError(
+        "min_legs_must_be_less_or_equal_max_legs",
+        "min_legs_must_be_less_or_equal_max_legs",
+      );
     }
 
     const [before] = await app.db
