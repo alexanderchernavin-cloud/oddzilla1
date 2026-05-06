@@ -1,4 +1,7 @@
-FROM node:22-alpine AS base
+# node:22-alpine pinned by manifest-list digest (multi-arch). Refresh
+# with `docker buildx imagetools inspect node:22-alpine` and bump in
+# every services/*/Dockerfile + apps/web/Dockerfile when bumping.
+FROM node:22-alpine@sha256:8ea2348b068a9544dae7317b4f3aafcdc032df1647bb7d768a05a5cad1a7683f AS base
 RUN corepack enable
 WORKDIR /app
 
