@@ -1,3 +1,11 @@
+-- 0034_combi_boost_config.sql
+--
+-- Renumbered from 0032 in a follow-up after the original PR landed
+-- on disk without a matching _journal.json entry. Drizzle reads the
+-- journal (not the filesystem) to decide what to apply, so without
+-- the entry below this migration would silently never run. The
+-- migration body is unchanged from the original.
+
 -- Combi Boost configuration. Single-row table (key = "default") that
 -- stores the four payout-multiplier tiers, the per-leg odds floor, and a
 -- master enable flag. Mutated only via /admin/combi-boost-config; every

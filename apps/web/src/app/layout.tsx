@@ -30,6 +30,24 @@ export const metadata: Metadata = {
   title: "Oddzilla — Esports sportsbook",
   description:
     "Premium, quiet esports sportsbook. CS2, Dota 2, League of Legends, Valorant.",
+  // Next.js auto-resolves icon.png, apple-icon.png and
+  // opengraph-image.png placed in this directory and emits the right
+  // <link>/<meta> tags. The block below adds the surrounding OG +
+  // Twitter copy so social previews carry the brand image with proper
+  // titles instead of the bare URL.
+  openGraph: {
+    title: "Oddzilla — Esports sportsbook",
+    description:
+      "Premium, quiet esports sportsbook. CS2, Dota 2, League of Legends, Valorant.",
+    siteName: "Oddzilla",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Oddzilla — Esports sportsbook",
+    description:
+      "Premium, quiet esports sportsbook. CS2, Dota 2, League of Legends, Valorant.",
+  },
 };
 
 export const viewport: Viewport = {

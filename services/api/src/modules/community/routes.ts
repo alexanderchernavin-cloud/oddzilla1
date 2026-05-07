@@ -101,7 +101,7 @@ const profileBody = z
 // `sort` values when tab=best:
 //   recent  — settled_at DESC (default).
 //   copied  — inspiration_count DESC, settled_at DESC. Powered by
-//             community_tickets_inspirations_idx (migration 0032).
+//             community_tickets_inspirations_idx (migration 0033).
 //   stakes  — profit DESC, settled_at DESC. PRD calls it "High
 //             Stakes" but spec'd it as profit ranking; we honour
 //             the spec.
