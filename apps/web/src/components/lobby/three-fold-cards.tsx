@@ -6,6 +6,7 @@ import { useBetSlip } from "@/lib/bet-slip";
 import { useOddsFlash } from "@/lib/use-odds-flash";
 import { useLiveOddsForMatches, type LiveOddsTick } from "@/lib/use-live-odds";
 import { SportGlyph } from "@/components/ui/sport-glyph";
+import { computeCombiBoost } from "@oddzilla/types/combi-boost";
 import type {
   ThreeFoldLeg,
   ThreeFoldSuggestion,
@@ -150,10 +151,22 @@ function Card({
     (p, l) => p * Number.parseFloat(l.odds),
     1,
   );
-  const combinedNum = Number.isFinite(product) ? product : NaN;
-  const combinedStr = Number.isFinite(combinedNum)
-    ? (Math.floor(combinedNum * 100) / 100).toFixed(2)
+  const baseCombinedNum = Number.isFinite(product) ? product : NaN;
+  const baseCombinedStr = Number.isFinite(baseCombinedNum)
+    ? (Math.floor(baseCombinedNum * 100) / 100).toFixed(2)
     : suggestion.combinedOdds;
+
+  // Combi Boost preview. Mirrors what the slip + API will compute when
+  // the user clicks the card — the click handler doesn't need to do
+  // anything extra, the slip's `add` flow already triggers the boost.
+  const boost = computeCombiBoost(liveLegs.map((l) => l.odds));
+  const boostActive = boost.multiplier > 1.0;
+  const boostedNum = Number.isFinite(baseCombinedNum)
+    ? baseCombinedNum * boost.multiplier
+    : NaN;
+  const boostedStr = Number.isFinite(boostedNum)
+    ? (Math.floor(boostedNum * 100) / 100).toFixed(2)
+    : baseCombinedStr;
 
   const cardStyle: CSSProperties = {
     background: "var(--surface)",
@@ -180,7 +193,7 @@ function Card({
       onMouseLeave={(e) => {
         (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--border)";
       }}
-      aria-label={`Load ${tier.label} 3-fold suggestion at combined odds ${combinedStr}`}
+      aria-label={`Load ${tier.label} 3-fold suggestion at combined odds ${boostedStr}${boostActive ? ` (boosted from ${baseCombinedStr})` : ""}`}
     >
       <div
         style={{
@@ -210,8 +223,29 @@ function Card({
           </span>
         </div>
         <div style={{ flex: 1 }} />
-        <OddsChip price={combinedNum} size="md">
-          {combinedStr}
+        <OddsChip price={boostActive ? boostedNum : baseCombinedNum} size="md">
+          {boostActive ? (
+            <span
+              style={{ display: "inline-flex", alignItems: "baseline", gap: 6 }}
+            >
+              <span
+                className="mono tnum"
+                style={{
+                  fontSize: 11,
+                  fontWeight: 500,
+                  color: "var(--fg-dim)",
+                  textDecoration: "line-through",
+                }}
+              >
+                {baseCombinedStr}
+              </span>
+              <span style={{ color: "var(--positive, #16a34a)" }}>
+                {boostedStr}
+              </span>
+            </span>
+          ) : (
+            baseCombinedStr
+          )}
         </OddsChip>
       </div>
       <div
