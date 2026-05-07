@@ -19,11 +19,14 @@ import {
   adminAuditLog,
 } from "@oddzilla/db";
 import { hashPassword } from "@oddzilla/auth";
+import { randomUUID } from "node:crypto";
+import { SUPPORTED_CURRENCIES } from "@oddzilla/types";
 import {
   BadRequestError,
   ConflictError,
   NotFoundError,
 } from "../../lib/errors.js";
+import { requireBalanceEditAdmin } from "../../lib/balance-edit-gate.js";
 
 const listQuery = z.object({
   q: z.string().trim().max(128).optional(),
@@ -490,5 +493,109 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
     });
 
     return { ok: true };
+  });
+
+  // ── Adjust a user's balance (gated to balance-edit operator) ──────────
+  // Signed delta_micro applied to (user, currency). Use case: operator
+  // promo, support credit, manual reversal of a misattributed deposit.
+  // Refuses to push balance below 0 or below locked_micro (the wallets
+  // CHECK constraints would reject anyway, but we surface a clean 400).
+  // Records a wallet_ledger row + admin_audit_log row keyed to a fresh
+  // adjustment UUID so each call is replay-safe.
+  app.post("/admin/users/:id/adjust-balance", async (request) => {
+    const admin = await requireBalanceEditAdmin(app, request);
+    const params = z.object({ id: z.string().uuid() }).parse(request.params);
+    const body = z
+      .object({
+        currency: z.enum(SUPPORTED_CURRENCIES),
+        deltaMicro: z
+          .string()
+          .regex(/^-?\d+$/u, "deltaMicro must be a signed integer string"),
+        reason: z.string().min(3).max(500),
+      })
+      .parse(request.body);
+    const delta = BigInt(body.deltaMicro);
+    if (delta === 0n) {
+      throw new BadRequestError("delta_zero", "delta_zero");
+    }
+    const adjustmentId = randomUUID();
+
+    await app.db.transaction(async (tx) => {
+      const [target] = await tx
+        .select({ id: users.id, email: users.email })
+        .from(users)
+        .where(eq(users.id, params.id))
+        .limit(1);
+      if (!target) throw new NotFoundError("user_not_found", "user_not_found");
+
+      const [wallet] = await tx
+        .select()
+        .from(wallets)
+        .where(
+          and(
+            eq(wallets.userId, params.id),
+            eq(wallets.currency, body.currency),
+          ),
+        )
+        .for("update")
+        .limit(1);
+      if (!wallet) throw new NotFoundError("wallet_not_found", "wallet_not_found");
+
+      const newBalance = wallet.balanceMicro + delta;
+      if (newBalance < 0n) {
+        throw new BadRequestError("would_go_negative", "would_go_negative");
+      }
+      if (newBalance < wallet.lockedMicro) {
+        throw new BadRequestError(
+          "would_violate_locked",
+          "would_violate_locked",
+        );
+      }
+
+      await tx
+        .update(wallets)
+        .set({ balanceMicro: newBalance, updatedAt: new Date() })
+        .where(
+          and(
+            eq(wallets.userId, params.id),
+            eq(wallets.currency, body.currency),
+          ),
+        );
+
+      await tx
+        .insert(walletLedger)
+        .values({
+          userId: params.id,
+          currency: body.currency,
+          deltaMicro: delta,
+          type: "adjustment",
+          refType: "admin_adjustment",
+          refId: adjustmentId,
+          memo: body.reason,
+        })
+        .onConflictDoNothing();
+
+      await tx.insert(adminAuditLog).values({
+        actorUserId: admin.id,
+        action: "wallet.adjust",
+        targetType: "user",
+        targetId: params.id,
+        beforeJson: {
+          currency: body.currency,
+          balanceMicro: wallet.balanceMicro.toString(),
+        },
+        afterJson: {
+          currency: body.currency,
+          balanceMicro: newBalance.toString(),
+          deltaMicro: delta.toString(),
+          reason: body.reason,
+          adjustmentId,
+          targetEmail: target.email,
+        },
+        ipInet: request.ip ?? null,
+      });
+    });
+
+    return { ok: true, adjustmentId };
   });
 }
