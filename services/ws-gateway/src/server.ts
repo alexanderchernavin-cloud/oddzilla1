@@ -16,17 +16,17 @@
 // per-match subscriptions are refcounted so we only SUBSCRIBE once
 // regardless of client count.
 //
-// Rate limit: 200-frame burst, 20 frames/s sustained per client. The
-// limit is here to protect the gateway from a runaway publisher, NOT to
-// pace normal traffic. A single Oddin odds_change for a live esports
-// match expands to ~30–60 frames (one per outcome × active market) all
-// pushed in the same millisecond — under the previous 5/s/cap=5 the
-// match-winner outcome was silently dropped at the tail of every burst,
-// and users saw "odds moved" errors at placement because the server had
-// updated but the WS frame never landed in the slip's auto-refresh path
-// (see bet-slip-rail.tsx). Bigger bucket lets a whole tick land in one
-// burst; refill is fast enough that subsequent ticks aren't starved.
-// Drops silently over budget — clients re-read from DB on reconnect.
+// No rate limit. The gateway is a pure forwarder — every odds frame
+// pushed by odds-publisher reaches every interested, OPEN client. A
+// sportsbook UI cannot tolerate dropped odds: the bet slip's
+// auto-refresh keys off WS ticks (bet-slip-rail.tsx) and a missed
+// frame surfaces as "odds moved since you clicked" at placement. The
+// upstream rate is naturally bounded by Oddin's broker (~one
+// odds_change burst per match per few seconds); the per-client bound
+// is volume × fan-in × match count. Hard ceilings stay on the
+// connection cap (MAX_CLIENTS) and per-client subscription cap
+// (MAX_SUBSCRIPTIONS_PER_CLIENT) — those are about gateway memory,
+// not throughput.
 
 import { createServer, type IncomingMessage } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
@@ -44,8 +44,6 @@ const ACCESS_COOKIE = "oddzilla_access";
 const PUB_CHANNEL_PREFIX = "odds:match:";
 const USER_CHANNEL_PREFIX = "user:";
 const MAX_SUBSCRIPTIONS_PER_CLIENT = 100;
-const TOKEN_BUCKET_CAPACITY = 200;
-const TOKEN_BUCKET_REFILL_MS = 50; // 20/s sustained
 // Hard cap on concurrent connections. Without it, a reconnect storm
 // during a Caddy / network blip stacks every browser's reconnects on
 // this single process and OOM-kills the container (mem_limit: 256m).
@@ -122,8 +120,6 @@ interface ClientState {
   userId: string;
   role: AccessTokenClaims["role"];
   matchIds: Set<string>;
-  tokens: number;
-  lastRefill: number;
 }
 
 const clients = new Set<ClientState>();
@@ -216,8 +212,6 @@ wss.on("connection", (ws: WebSocket, _req: IncomingMessage, claims: AccessTokenC
     userId: claims.sub,
     role: claims.role,
     matchIds: new Set(),
-    tokens: TOKEN_BUCKET_CAPACITY,
-    lastRefill: Date.now(),
   };
   clients.add(state);
   incrementUserRef(claims.sub);
@@ -342,11 +336,6 @@ function dispatchOdds(matchId: string, payload: string) {
   for (const client of clients) {
     if (!client.matchIds.has(matchId)) continue;
     if (client.socket.readyState !== WebSocket.OPEN) continue;
-
-    refillTokens(client);
-    if (client.tokens <= 0) continue;
-    client.tokens -= 1;
-
     try {
       client.socket.send(payload);
     } catch (err) {
@@ -355,8 +344,6 @@ function dispatchOdds(matchId: string, payload: string) {
   }
 }
 
-// User frames (ticket state changes) bypass the odds rate-limit: they
-// are low-volume and the user explicitly cares about them.
 function dispatchUser(userId: string, payload: string) {
   for (const client of clients) {
     if (client.userId !== userId) continue;
@@ -367,15 +354,6 @@ function dispatchUser(userId: string, payload: string) {
       log.debug({ err: (err as Error).message }, "send user failed");
     }
   }
-}
-
-function refillTokens(c: ClientState) {
-  const now = Date.now();
-  const elapsed = now - c.lastRefill;
-  if (elapsed < TOKEN_BUCKET_REFILL_MS) return;
-  const add = Math.floor(elapsed / TOKEN_BUCKET_REFILL_MS);
-  c.tokens = Math.min(TOKEN_BUCKET_CAPACITY, c.tokens + add);
-  c.lastRefill = now;
 }
 
 function send(ws: WebSocket, msg: OutboundFrame) {
