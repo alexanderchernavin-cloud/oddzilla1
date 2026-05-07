@@ -234,7 +234,7 @@ function SlipPanel() {
           <div className="space-y-3 border-t border-[var(--color-border)] px-4 py-4">
             <label className="block">
               <span className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-                {effectiveMode === "combo" ? "Stake (USDT)" : "Stake per bet (USDT)"}
+                {effectiveMode === "combo" ? "Stake (USDC)" : "Stake per bet (USDC)"}
               </span>
               <input
                 type="number"
@@ -252,7 +252,7 @@ function SlipPanel() {
                   {selections.length} separate bets · total stake
                 </span>
                 <span className="font-mono">
-                  {stakeValid ? totalStake.toFixed(2) : "0.00"} USDT
+                  {stakeValid ? totalStake.toFixed(2) : "0.00"} USDC
                 </span>
               </div>
             ) : null}
@@ -271,7 +271,7 @@ function SlipPanel() {
                 {effectiveMode === "combo" ? "To win" : "Max payout"}
               </span>
               <span className="font-mono text-[var(--color-accent)]">
-                {stakeValid ? potentialPayout.toFixed(2) : "0.00"} USDT
+                {stakeValid ? potentialPayout.toFixed(2) : "0.00"} USDC
               </span>
             </div>
 

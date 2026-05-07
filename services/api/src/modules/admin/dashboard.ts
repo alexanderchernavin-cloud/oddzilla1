@@ -8,7 +8,7 @@
 //     perspective → operator_payout = SUM(delta_micro) on those rows
 //   operator PnL = gross_stake - payout - refund
 //
-// All queries filter on `currency = 'USDT'` — the OZ demo currency has
+// All queries filter on `currency = 'USDC'` — the OZ demo currency has
 // no dollar value and would otherwise pollute every figure with the
 // 1000 OZ signup bonus and demo-bet activity (migration 0014).
 //
@@ -79,7 +79,7 @@ export default async function adminDashboardRoutes(app: FastifyInstance) {
       FROM wallet_ledger wl
       JOIN users u ON u.id = wl.user_id
       WHERE wl.created_at >= date_trunc('day', now() AT TIME ZONE 'UTC')
-        AND wl.currency = 'USDT'
+        AND wl.currency = 'USDC'
         AND u.is_ai = false
     `)) as unknown as Array<{ stake_micro: string; payout_micro: string; refund_micro: string }>;
     const l = ledgerRows[0];
@@ -89,7 +89,7 @@ export default async function adminDashboardRoutes(app: FastifyInstance) {
         FROM tickets t
         JOIN users u ON u.id = t.user_id
        WHERE t.status IN ('accepted', 'pending_delay')
-         AND t.currency = 'USDT'
+         AND t.currency = 'USDC'
          AND u.is_ai = false
     `)) as unknown as Array<{ n: number }>;
     const activeUserRows = (await app.db.execute(sql`
@@ -97,7 +97,7 @@ export default async function adminDashboardRoutes(app: FastifyInstance) {
         FROM tickets t
         JOIN users u ON u.id = t.user_id
        WHERE t.placed_at >= now() - INTERVAL '7 days'
-         AND t.currency = 'USDT'
+         AND t.currency = 'USDC'
          AND u.is_ai = false
     `)) as unknown as Array<{ n: number }>;
 
@@ -143,7 +143,7 @@ export default async function adminDashboardRoutes(app: FastifyInstance) {
            AND wl.type IN ('bet_stake', 'bet_payout', 'bet_refund')
            AND wl.ref_type = 'ticket'
            AND wl.ref_id IS NOT NULL
-           AND wl.currency = 'USDT'
+           AND wl.currency = 'USDC'
            AND u.is_ai = false
       ),
       ticket_sport_weights AS (
@@ -180,7 +180,7 @@ export default async function adminDashboardRoutes(app: FastifyInstance) {
         AND wl.type IN ('bet_stake', 'bet_payout', 'bet_refund')
         AND wl.ref_type = 'ticket'
         AND wl.ref_id IS NOT NULL
-        AND wl.currency = 'USDT'
+        AND wl.currency = 'USDC'
       GROUP BY day, tsw.sport_slug, tsw.sport_name
       ORDER BY day DESC, tsw.sport_slug
     `)) as unknown as Array<{
@@ -237,7 +237,7 @@ export default async function adminDashboardRoutes(app: FastifyInstance) {
       JOIN categories c         ON c.id = tu.category_id
       JOIN sports s             ON s.id = c.sport_id
       WHERE t.status = 'settled'
-        AND t.currency = 'USDT'
+        AND t.currency = 'USDC'
         AND t.actual_payout_micro IS NOT NULL
         AND t.actual_payout_micro > t.stake_micro
         AND t.settled_at >= now() - (${q.days}::int || ' days')::interval

@@ -1,21 +1,15 @@
-// Deposit processor.
+// Deposit processor — intent-driven (post-migration 0032).
 //
-// Responsibility split with the chain scanners:
-//   • Scanner:   chain head → INSERT new deposits (status='seen').
-//   • Processor: walk pending deposits → tick confirmations → credit.
-//
-// Confirmations come from `(currentHead - depositBlock) + 1`. Once that
-// hits the per-chain threshold, the deposit is credited atomically:
-//   UPDATE deposits SET status='credited', credited_at=NOW()
-//   UPDATE wallets  SET balance_micro += amount
-//   INSERT wallet_ledger (deposit, ref_id=deposit.id) — unique partial
-//                       index on (type, ref_type, ref_id) is the
-//                       last-resort double-credit guard.
+// Loop: pull deposit_intents in {pending, confirming}, ask the verifier
+// to look up the tx receipt, validate the Transfer event, count
+// confirmations, and credit when the threshold is met. Reject when
+// the on-chain truth says the user-submitted hash isn't valid.
 
 package deposits
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 
 	"github.com/rs/zerolog"
@@ -23,99 +17,169 @@ import (
 	"github.com/oddzilla/wallet-watcher/internal/store"
 )
 
-// HeadProvider is what we need from a chain to tick confirmations and
-// reorg-verify a deposit before crediting.
-type HeadProvider interface {
+// Verifier is what the processor needs from a chain client. The
+// concrete impl lives in internal/ethereum.
+type Verifier interface {
 	HeadBlock(ctx context.Context) (int64, error)
 	Confirmations() int
-	// VerifyDeposit returns true if the deposit's recorded block is still
-	// on the canonical chain. False means a reorg dropped it; the
-	// processor must not credit such a deposit.
-	VerifyDeposit(ctx context.Context, dep store.PendingDeposit) (bool, error)
+	// Inspect resolves the user-submitted tx hash on the canonical
+	// chain. Possible outcomes encoded in InspectResult:
+	//   • Found = false  → tx not yet on-chain (or fake hash)
+	//   • Reverted = true → tx mined but reverted
+	//   • Match = false  → tx exists but no matching Transfer to our
+	//                       receive address from the configured contract
+	//   • Match = true   → BlockNumber/BlockHash/LogIndex/From/Amount set
+	Inspect(ctx context.Context, txHash string) (InspectResult, error)
+	// BlockHashAt returns the canonical block hash at `blockNumber`,
+	// used to detect reorgs between first sighting and credit.
+	BlockHashAt(ctx context.Context, blockNumber int64) (string, error)
+}
+
+// InspectResult is the verdict on one tx receipt.
+type InspectResult struct {
+	Found       bool
+	Reverted    bool
+	Match       bool
+	BlockNumber int64
+	BlockHash   string
+	LogIndex    int
+	From        string
+	To          string
+	AmountMicro int64
 }
 
 type Processor struct {
-	st  *store.Store
-	log zerolog.Logger
-
-	credited int64
+	st   *store.Store
+	vfy  Verifier
+	log  zerolog.Logger
+	done int64
 }
 
-func New(st *store.Store, log zerolog.Logger) *Processor {
+func New(st *store.Store, vfy Verifier, log zerolog.Logger) *Processor {
 	return &Processor{
 		st:  st,
+		vfy: vfy,
 		log: log.With().Str("component", "deposits").Logger(),
 	}
 }
 
-func (p *Processor) Stats() int64 {
-	return atomic.LoadInt64(&p.credited)
-}
+func (p *Processor) Stats() int64 { return atomic.LoadInt64(&p.done) }
 
-// TickChain processes pending deposits for a single chain.
-func (p *Processor) TickChain(ctx context.Context, chain store.Chain, head HeadProvider) error {
-	currentHead, err := head.HeadBlock(ctx)
+// Tick processes one batch of pending intents.
+func (p *Processor) Tick(ctx context.Context) error {
+	head, err := p.vfy.HeadBlock(ctx)
 	if err != nil {
 		return err
 	}
-	threshold := head.Confirmations()
+	threshold := p.vfy.Confirmations()
 
-	pending, err := p.st.ListPending(ctx, chain, 200)
+	intents, err := p.st.ListPendingIntents(ctx, 200)
 	if err != nil {
 		return err
 	}
-	for _, d := range pending {
-		// Skip rows the scanner inserted with no block number (shouldn't
-		// happen for ETH; can happen briefly for TRC20 if event API
-		// elides it — we'll re-evaluate on the next tick).
-		if d.BlockNumber == 0 {
-			continue
-		}
 
-		confirmations := int(currentHead - d.BlockNumber + 1)
-		if confirmations < 0 {
-			confirmations = 0
-		}
-
-		if confirmations < threshold {
-			if confirmations != d.Confirmations {
-				if err := p.st.UpdateConfirmations(ctx, d.ID, confirmations); err != nil {
-					p.log.Warn().Err(err).Str("deposit", d.ID).Msg("update confirmations failed")
-				}
-			}
-			continue
-		}
-
-		// Reached threshold. Verify the block_hash is still on the
-		// canonical chain — a reorg between insert and now would otherwise
-		// credit an orphaned tx.
-		ok, err := head.VerifyDeposit(ctx, d)
-		if err != nil {
-			p.log.Warn().Err(err).Str("deposit", d.ID).Msg("reorg verify failed (will retry next tick)")
-			continue
-		}
-		if !ok {
-			if err := p.st.MarkOrphaned(ctx, d.ID); err != nil {
-				p.log.Error().Err(err).Str("deposit", d.ID).Msg("mark orphaned failed")
-				continue
-			}
-			p.log.Warn().Str("deposit", d.ID).Str("tx", d.TxHash).Int64("block", d.BlockNumber).Msg("deposit orphaned by reorg")
-			continue
-		}
-
-		// Credit + mark.
-		if err := p.st.Credit(ctx, d); err != nil {
-			p.log.Error().Err(err).Str("deposit", d.ID).Msg("credit failed")
-			continue
-		}
-		atomic.AddInt64(&p.credited, 1)
-		p.log.Info().
-			Str("deposit", d.ID).
-			Str("user", d.UserID).
-			Str("chain", chain.String()).
-			Str("tx", d.TxHash).
-			Int64("amount_micro", d.AmountMicro).
-			Msg("deposit credited")
+	for _, it := range intents {
+		p.handleOne(ctx, it, head, threshold)
 	}
 	return nil
+}
+
+func (p *Processor) handleOne(ctx context.Context, it store.PendingIntent, head int64, threshold int) {
+	res, err := p.vfy.Inspect(ctx, it.TxHash)
+	if err != nil {
+		// Transient RPC error — leave pending, retry next tick.
+		p.log.Warn().Err(err).Str("intent", it.ID).Msg("inspect failed")
+		return
+	}
+
+	if !res.Found {
+		// Tx not on-chain yet. Could be still in mempool, could be a
+		// typo / fake hash. Leave pending; an admin can reject manually
+		// after enough time has passed.
+		return
+	}
+
+	if res.Reverted {
+		_ = p.st.RejectIntent(ctx, it.ID, "tx_reverted")
+		p.log.Info().Str("intent", it.ID).Str("tx", it.TxHash).Msg("intent rejected: tx_reverted")
+		return
+	}
+
+	if !res.Match {
+		_ = p.st.RejectIntent(ctx, it.ID, "no_usdc_transfer_to_receive_address")
+		p.log.Info().
+			Str("intent", it.ID).
+			Str("tx", it.TxHash).
+			Msg("intent rejected: no matching Transfer")
+		return
+	}
+
+	confirmations := int(head - res.BlockNumber + 1)
+	if confirmations < 0 {
+		confirmations = 0
+	}
+
+	// First time we resolve this intent, persist the Transfer details.
+	if it.Status == "pending" || it.BlockNumber == 0 {
+		if err := p.st.MarkConfirming(ctx, it.ID, store.IntentReceipt{
+			BlockNumber: res.BlockNumber,
+			BlockHash:   res.BlockHash,
+			LogIndex:    res.LogIndex,
+			FromAddress: res.From,
+			ToAddress:   res.To,
+			AmountMicro: res.AmountMicro,
+		}, confirmations); err != nil {
+			p.log.Warn().Err(err).Str("intent", it.ID).Msg("mark confirming failed")
+			return
+		}
+		// Reflect into local copy for downstream credit step.
+		it.BlockNumber = res.BlockNumber
+		it.BlockHash = res.BlockHash
+		it.LogIndex = res.LogIndex
+		it.FromAddress = res.From
+		it.ToAddress = res.To
+		it.AmountMicro = res.AmountMicro
+		it.Status = "confirming"
+	}
+
+	if confirmations < threshold {
+		if confirmations != it.Confirmations {
+			_ = p.st.UpdateIntentConfirmations(ctx, it.ID, confirmations)
+		}
+		return
+	}
+
+	// Reached threshold. Verify the block_hash is still on the canonical
+	// chain — a reorg between sighting and now would otherwise credit
+	// an orphaned tx.
+	canonical, err := p.vfy.BlockHashAt(ctx, res.BlockNumber)
+	if err != nil {
+		p.log.Warn().Err(err).Str("intent", it.ID).Msg("reorg verify failed; will retry")
+		return
+	}
+	if canonical == "" || !strings.EqualFold(canonical, res.BlockHash) {
+		// Canonical chain doesn't carry this block any more. Leave the
+		// intent in confirming; the verifier will re-inspect next tick
+		// and either find the tx at a new block (re-included) or never
+		// see it again. Operators can reject manually if it stays.
+		p.log.Warn().
+			Str("intent", it.ID).
+			Str("recorded_hash", res.BlockHash).
+			Str("canonical_hash", canonical).
+			Int64("block", res.BlockNumber).
+			Msg("reorg suspected; holding intent")
+		return
+	}
+
+	if err := p.st.CreditIntent(ctx, it); err != nil {
+		p.log.Error().Err(err).Str("intent", it.ID).Msg("credit failed")
+		return
+	}
+	atomic.AddInt64(&p.done, 1)
+	p.log.Info().
+		Str("intent", it.ID).
+		Str("user", it.UserID).
+		Str("tx", it.TxHash).
+		Int64("amount_micro", it.AmountMicro).
+		Msg("deposit credited")
 }

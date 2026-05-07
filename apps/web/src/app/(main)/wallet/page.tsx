@@ -1,8 +1,8 @@
 import { fromMicro } from "@oddzilla/types/money";
 import type {
   Currency,
-  DepositAddressesResponse,
-  DepositListResponse,
+  DepositAddressResponse,
+  DepositIntentListResponse,
   WalletListResponse,
   WalletSnapshot,
   WithdrawalListResponse,
@@ -27,36 +27,38 @@ interface LedgerResponse {
 }
 
 export default async function WalletPage() {
-  const [walletRes, ledger, addresses, deposits, withdrawals] = await Promise.all([
-    serverApi<WalletListResponse>("/wallet"),
-    serverApi<LedgerResponse>("/wallet/ledger?limit=25"),
-    serverApi<DepositAddressesResponse>("/wallet/deposit-addresses"),
-    serverApi<DepositListResponse>("/wallet/deposits?limit=25"),
-    serverApi<WithdrawalListResponse>("/wallet/withdrawals?limit=25"),
-  ]);
+  const [walletRes, ledger, addressRes, deposits, withdrawals] =
+    await Promise.all([
+      serverApi<WalletListResponse>("/wallet"),
+      serverApi<LedgerResponse>("/wallet/ledger?limit=25"),
+      serverApi<DepositAddressResponse>("/wallet/deposit-address"),
+      serverApi<DepositIntentListResponse>("/wallet/deposits?limit=25"),
+      serverApi<WithdrawalListResponse>("/wallet/withdrawals?limit=25"),
+    ]);
 
   const wallets = walletRes?.wallets ?? [];
-  const usdt = wallets.find((w) => w.currency === "USDT");
+  const usdc = wallets.find((w) => w.currency === "USDC");
   const oz = wallets.find((w) => w.currency === "OZ");
 
   return (
     <div>
       <h1 className="text-2xl font-semibold tracking-tight">Wallet</h1>
       <p className="mt-2 text-sm text-[var(--color-fg-muted)]">
-        Real-money USDT plus the OZ demo balance for testing the bet flow.
-        Deposits and withdrawals are USDT only.
+        Real-money USDC plus the OZ demo balance for testing the bet
+        flow. Deposits and withdrawals are USDC on Ethereum (ERC20).
       </p>
 
       <section className="mt-8 grid gap-4 md:grid-cols-2">
-        <CurrencyCard wallet={usdt} currency="USDT" tag={null} />
+        <CurrencyCard wallet={usdc} currency="USDC" tag={null} />
         <CurrencyCard wallet={oz} currency="OZ" tag="demo" />
       </section>
 
       <WalletPanels
-        addresses={addresses?.addresses ?? []}
+        depositAddress={addressRes?.address ?? null}
+        depositsAvailable={addressRes?.available ?? false}
         deposits={deposits?.deposits ?? []}
         withdrawals={withdrawals?.withdrawals ?? []}
-        availableMicro={usdt?.availableMicro ?? "0"}
+        availableMicro={usdc?.availableMicro ?? "0"}
       />
 
       <section className="mt-12">

@@ -2,7 +2,7 @@
 //
 // Public reads:
 //   GET    /community/feed?currency=&sport=&page=&pageSize=
-//   GET    /community/users/:nickname/profile?currency=USDT|OZ
+//   GET    /community/users/:nickname/profile?currency=USDC|OZ
 //   GET    /community/users/:nickname/tickets?currency=&page=&pageSize=
 //
 // Authed self-management:
@@ -86,7 +86,7 @@ const profileBody = z
   })
   .strict();
 
-// Feed query. Defaults match the storefront: 20 cards a page, USDT
+// Feed query. Defaults match the storefront: 20 cards a page, USDC
 // (the locked-leaderboards currency under D4) gets the default tab,
 // "all sports" when sport is omitted. `sort=best` switches to the
 // Phase 10.3 Best Wins ranking — score-then-recency, restricted to a
@@ -243,7 +243,7 @@ export default async function communityRoutes(app: FastifyInstance) {
   //
   // Returns the user's recent settled / cashed-out / voided tickets in
   // the same shape as the feed. Same visibility filter as the profile
-  // — non-public users 404. Default currency is USDT to match the
+  // — non-public users 404. Default currency is USDC to match the
   // profile-stats default.
   app.get<{
     Params: { nickname: string };

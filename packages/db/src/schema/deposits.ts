@@ -10,27 +10,17 @@ import {
   index,
   check,
 } from "drizzle-orm/pg-core";
-import { chainNetworkEnum, depositStatusEnum, withdrawalStatusEnum } from "../enums.js";
+import {
+  chainNetworkEnum,
+  depositStatusEnum,
+  depositIntentStatusEnum,
+  withdrawalStatusEnum,
+} from "../enums.js";
 import { users } from "./users.js";
 
-export const depositAddresses = pgTable(
-  "deposit_addresses",
-  {
-    id: uuid().primaryKey().defaultRandom(),
-    userId: uuid()
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    network: chainNetworkEnum().notNull(),
-    address: text().notNull(),
-    derivationPath: text(),
-    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    unique("deposit_addresses_network_addr").on(t.network, t.address),
-    unique("deposit_addresses_user_network").on(t.userId, t.network),
-  ],
-);
-
+// Legacy deposits table — written to by the pre-0032 per-user HD-address
+// flow. Migration 0032 stopped writes; rows remain for historical audit.
+// New deposits land in `deposit_intents` instead.
 export const deposits = pgTable(
   "deposits",
   {
@@ -55,6 +45,45 @@ export const deposits = pgTable(
     check("deposits_amount_pos", sql`${t.amountMicro} > 0`),
     index("deposits_user_idx").on(t.userId, sql`${t.seenAt} DESC`),
     index("deposits_status_idx").on(t.status).where(sql`${t.status} <> 'credited'`),
+  ],
+);
+
+// User-submitted tx-hash claims (migration 0032). With a single shared
+// receive address, the watcher can't attribute a Transfer to a user
+// from on-chain data alone — the user pastes the hash they sent and the
+// watcher verifies / credits.
+export const depositIntents = pgTable(
+  "deposit_intents",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    network: chainNetworkEnum().notNull().default("ERC20"),
+    txHash: text("tx_hash").notNull(),
+    toAddress: text("to_address"),
+    fromAddress: text("from_address"),
+    amountMicro: bigint("amount_micro", { mode: "bigint" }),
+    blockNumber: bigint("block_number", { mode: "bigint" }),
+    blockHash: text("block_hash"),
+    logIndex: integer("log_index"),
+    confirmations: integer().notNull().default(0),
+    status: depositIntentStatusEnum().notNull().default("pending"),
+    failureReason: text("failure_reason"),
+    submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull().defaultNow(),
+    creditedAt: timestamp("credited_at", { withTimezone: true }),
+    rejectedAt: timestamp("rejected_at", { withTimezone: true }),
+  },
+  (t) => [
+    unique("deposit_intents_tx_unique").on(t.network, t.txHash),
+    check(
+      "deposit_intents_amount_pos",
+      sql`${t.amountMicro} IS NULL OR ${t.amountMicro} > 0`,
+    ),
+    index("deposit_intents_user_idx").on(t.userId, sql`${t.submittedAt} DESC`),
+    index("deposit_intents_pending_idx")
+      .on(t.status)
+      .where(sql`${t.status} IN ('pending', 'confirming')`),
   ],
 );
 
@@ -91,6 +120,6 @@ export const withdrawals = pgTable(
   ],
 );
 
-export type DepositAddress = typeof depositAddresses.$inferSelect;
 export type Deposit = typeof deposits.$inferSelect;
+export type DepositIntent = typeof depositIntents.$inferSelect;
 export type Withdrawal = typeof withdrawals.$inferSelect;

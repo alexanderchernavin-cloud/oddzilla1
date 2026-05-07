@@ -27,7 +27,7 @@ export const tickets = pgTable(
       .references(() => users.id),
     status: ticketStatusEnum().notNull().default("pending_delay"),
     betType: betTypeEnum().notNull().default("single"),
-    currency: char({ length: 4 }).notNull().default("USDT"),
+    currency: char({ length: 4 }).notNull().default("USDC"),
     stakeMicro: bigint({ mode: "bigint" }).notNull(),
     potentialPayoutMicro: bigint({ mode: "bigint" }).notNull(),
     actualPayoutMicro: bigint({ mode: "bigint" }),

@@ -148,7 +148,7 @@ function ConfigTable({ entries }: { entries: CashoutConfigEntry[] }) {
                 {e.acceptanceDelaySeconds}s
               </td>
               <td className="px-5 py-3 text-right font-mono">
-                {microToUsdt(e.minOfferMicro)} USDT
+                {microToUsdt(e.minOfferMicro)} USDC
               </td>
               <td className="px-5 py-3 text-right font-mono">
                 {(e.minValueChangeBp / 100).toFixed(2)}%
@@ -384,7 +384,7 @@ function UpsertForm({ options }: { options: CashoutOptions }) {
 
       <label className="block">
         <span className="text-xs text-[var(--color-fg-subtle)]">
-          Minimum offer (USDT)
+          Minimum offer (USDC)
         </span>
         <input
           type="number"

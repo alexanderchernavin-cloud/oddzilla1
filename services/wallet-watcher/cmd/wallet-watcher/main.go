@@ -1,13 +1,16 @@
-// wallet-watcher: TRC20 + ERC20 USDT deposit poller.
+// wallet-watcher — Ethereum USDC deposit verifier.
 //
-// Each enabled chain runs two loops:
-//   1. Scanner: pulls fresh Transfer events into the deposits table.
-//   2. Processor: walks pending deposits, ticks confirmations, and
-//      credits via wallet_ledger when the per-chain threshold is met.
+// Post-0032 the service runs a single intent-driven loop:
+//   1. Poll deposit_intents for rows in {pending, confirming}.
+//   2. Resolve each user-submitted tx hash via eth_getTransactionReceipt.
+//   3. Validate the Transfer event (USDC contract, recipient = the
+//      shared receive address, positive amount).
+//   4. Count confirmations against the chain head, reorg-verify the
+//      block hash at threshold, and credit atomically.
 //
-// Boot order matches the other Go services (Postgres → optional chain
-// clients → health → loops). Both chains are independent — one missing
-// RPC URL doesn't block the other from running.
+// Boots cleanly when ETH_RPC_URL or DEPOSIT_RECEIVE_ADDRESS is empty —
+// the loop is skipped, /healthz reports the disabled state, and the
+// process serves as a no-op until both vars are set.
 
 package main
 
@@ -28,18 +31,15 @@ import (
 	"github.com/oddzilla/wallet-watcher/internal/deposits"
 	"github.com/oddzilla/wallet-watcher/internal/ethereum"
 	"github.com/oddzilla/wallet-watcher/internal/store"
-	"github.com/oddzilla/wallet-watcher/internal/tron"
 )
 
-// Per-chain healthcheck state. The scanner loop writes after each
-// successful Tick + HeadBlock; the healthz handler reads. Stale values
-// (lastTickUnix more than ~5 min ago) signal an RPC outage that the
-// operator should escalate before deposits start backing up. Without
-// this, an hours-long Tron / Alchemy outage would leave the container
+// chainHealth tracks the last successful tick + observed head block.
+// Stale lastTickUnix (>5 min) is the canonical "RPC is dead" signal
+// for monitoring; without it an outage would leave the container
 // "healthy" while no user got credited.
 type chainHealth struct {
 	enabled       bool
-	lastTickUnix  int64 // 0 = never
+	lastTickUnix  int64
 	lastHeadBlock int64
 }
 
@@ -64,39 +64,40 @@ func main() {
 	logger.Info().Msg("connected to postgres")
 
 	st := store.New(pool)
-	processor := deposits.New(st, logger)
 
-	tronHealth := &chainHealth{enabled: cfg.Tron.Enabled}
 	ethHealth := &chainHealth{enabled: cfg.Ethereum.Enabled}
+	var processor *deposits.Processor
 
-	healthSrv := startHealth(cfg.HealthPort, pool, processor, tronHealth, ethHealth, logger)
+	if cfg.Ethereum.Enabled {
+		client := ethereum.NewClient(cfg.Ethereum.RPCURL)
+		verifier := ethereum.NewVerifier(
+			client,
+			cfg.Ethereum.USDCContract,
+			cfg.Ethereum.ReceiveAddress,
+			cfg.Ethereum.Confirmations,
+			logger,
+		)
+		processor = deposits.New(st, verifier, logger)
+		go runLoop(ctx, processor, verifier, cfg.PollInterval, ethHealth, logger)
+		logger.Info().
+			Str("contract", cfg.Ethereum.USDCContract).
+			Str("receive", cfg.Ethereum.ReceiveAddress).
+			Int("confirmations", cfg.Ethereum.Confirmations).
+			Dur("poll", cfg.PollInterval).
+			Msg("ERC20 USDC verifier running")
+	} else {
+		logger.Warn().
+			Bool("rpc_set", cfg.Ethereum.RPCURL != "").
+			Bool("receive_set", cfg.Ethereum.ReceiveAddress != "").
+			Msg("Ethereum verifier disabled (ETH_RPC_URL or DEPOSIT_RECEIVE_ADDRESS missing)")
+	}
+
+	healthSrv := startHealth(cfg.HealthPort, pool, processor, ethHealth, logger)
 	defer func() {
 		shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutCancel()
 		_ = healthSrv.Shutdown(shutCtx)
 	}()
-
-	if cfg.Tron.Enabled {
-		client := tron.NewClient(cfg.Tron.RPCURL)
-		scanner := tron.NewScanner(client, st, cfg.Tron.USDTContract,
-			cfg.Tron.MaxBlockRange, cfg.Tron.Confirmations, cfg.Tron.StartBlock, logger)
-		go runChain(ctx, "TRC20", store.ChainTRC20, scanner, processor, cfg.PollInterval, tronHealth, logger)
-	} else {
-		logger.Warn().Msg("Tron RPC URL absent; TRC20 scanner disabled")
-	}
-
-	if cfg.Ethereum.Enabled {
-		client := ethereum.NewClient(cfg.Ethereum.RPCURL)
-		scanner := ethereum.NewScanner(client, st, cfg.Ethereum.USDTContract,
-			cfg.Ethereum.MaxBlockRange, cfg.Ethereum.Confirmations, cfg.Ethereum.StartBlock, logger)
-		go runChain(ctx, "ERC20", store.ChainERC20, scanner, processor, cfg.PollInterval, ethHealth, logger)
-	} else {
-		logger.Warn().Msg("Ethereum RPC URL absent; ERC20 scanner disabled")
-	}
-
-	if !cfg.Tron.Enabled && !cfg.Ethereum.Enabled {
-		logger.Warn().Msg("no chains enabled; wallet-watcher idling on health endpoint only")
-	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -105,20 +106,11 @@ func main() {
 	cancel()
 }
 
-// chainScanner unifies the two scanner types under one loop. We use a
-// small interface so the loop body doesn't care which chain it runs.
-// Must mirror deposits.HeadProvider so the same value can satisfy both.
-type chainScanner interface {
-	Tick(ctx context.Context) error
+type headProvider interface {
 	HeadBlock(ctx context.Context) (int64, error)
-	Confirmations() int
-	VerifyDeposit(ctx context.Context, dep store.PendingDeposit) (bool, error)
 }
 
-func runChain(ctx context.Context, name string, chain store.Chain, sc chainScanner, p *deposits.Processor, poll time.Duration, h *chainHealth, log zerolog.Logger) {
-	clog := log.With().Str("loop", name).Logger()
-	clog.Info().Dur("poll_interval", poll).Msg("scanner loop running")
-
+func runLoop(ctx context.Context, p *deposits.Processor, head headProvider, poll time.Duration, h *chainHealth, log zerolog.Logger) {
 	t := time.NewTicker(poll)
 	defer t.Stop()
 	for {
@@ -127,28 +119,18 @@ func runChain(ctx context.Context, name string, chain store.Chain, sc chainScann
 			return
 		case <-t.C:
 		}
-		tickErr := sc.Tick(ctx)
-		if tickErr != nil {
-			clog.Warn().Err(tickErr).Msg("scanner tick failed")
-		} else {
-			// Update healthz signal only on success — staleness is the
-			// signal we want operators to alert on. HeadBlock is a
-			// secondary read; if it's down too, leave the previous
-			// value (operators can still see lastTickAt advancing).
-			atomic.StoreInt64(&h.lastTickUnix, time.Now().Unix())
-			if head, err := sc.HeadBlock(ctx); err == nil {
-				atomic.StoreInt64(&h.lastHeadBlock, head)
-			}
+		if err := p.Tick(ctx); err != nil {
+			log.Warn().Err(err).Msg("processor tick failed")
+			continue
 		}
-		if err := p.TickChain(ctx, chain, sc); err != nil {
-			clog.Warn().Err(err).Msg("deposit processor tick failed")
+		atomic.StoreInt64(&h.lastTickUnix, time.Now().Unix())
+		if hb, err := head.HeadBlock(ctx); err == nil {
+			atomic.StoreInt64(&h.lastHeadBlock, hb)
 		}
 	}
 }
 
-// ─── Health ────────────────────────────────────────────────────────────────
-
-func startHealth(port string, pool *pgxpool.Pool, p *deposits.Processor, tronH, ethH *chainHealth, log zerolog.Logger) *http.Server {
+func startHealth(port string, pool *pgxpool.Pool, p *deposits.Processor, h *chainHealth, log zerolog.Logger) *http.Server {
 	startedAt := time.Now()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -159,14 +141,17 @@ func startHealth(port string, pool *pgxpool.Pool, p *deposits.Processor, tronH, 
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
 		w.Header().Set("Content-Type", "application/json")
+		var credited int64
+		if p != nil {
+			credited = p.Stats()
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status":        status,
 			"service":       "wallet-watcher",
 			"db":            okOrDown(dbOk),
 			"uptimeSeconds": int64(time.Since(startedAt).Seconds()),
-			"credited":      p.Stats(),
-			"tron":          chainSnapshot(tronH),
-			"ethereum":      chainSnapshot(ethH),
+			"credited":      credited,
+			"ethereum":      chainSnapshot(h),
 		})
 	})
 	srv := &http.Server{
@@ -189,10 +174,7 @@ func newLogger(levelStr, service string) zerolog.Logger {
 		lvl = zerolog.InfoLevel
 	}
 	zerolog.SetGlobalLevel(lvl)
-	return zerolog.New(os.Stdout).With().
-		Timestamp().
-		Str("service", service).
-		Logger()
+	return zerolog.New(os.Stdout).With().Timestamp().Str("service", service).Logger()
 }
 
 func okOrDown(b bool) string {

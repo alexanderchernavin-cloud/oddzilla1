@@ -1,11 +1,13 @@
-// Money is always stored and transported as micro-USDT (1 USDT = 1e6 micro).
-// Matches TRC20/ERC20 USDT on-chain decimals (6). Never use number for money.
+// Money is always stored and transported as micro-units (1 unit = 1e6
+// micro). Matches ERC20 USDC on-chain decimals (6). The legacy `MicroUsdt`
+// type name is retained so call-sites don't churn — the math is currency-
+// agnostic; OZ uses the same precision.
 
-const MICRO_PER_USDT = 1_000_000n;
-const MICRO_PER_USDT_NUM = 1_000_000;
+const MICRO_PER_UNIT = 1_000_000n;
+const MICRO_PER_UNIT_NUM = 1_000_000;
 
-declare const MicroUsdtBrand: unique symbol;
-export type MicroUsdt = bigint & { readonly [MicroUsdtBrand]: true };
+declare const MicroUnitBrand: unique symbol;
+export type MicroUsdt = bigint & { readonly [MicroUnitBrand]: true };
 
 export function toMicro(decimal: string | number): MicroUsdt {
   const asString = typeof decimal === "number" ? decimal.toString() : decimal;
@@ -16,7 +18,7 @@ export function toMicro(decimal: string | number): MicroUsdt {
   const unsigned = negative ? asString.slice(1) : asString;
   const [whole = "0", frac = ""] = unsigned.split(".");
   const paddedFrac = (frac + "000000").slice(0, 6);
-  const combined = BigInt(whole) * MICRO_PER_USDT + BigInt(paddedFrac);
+  const combined = BigInt(whole) * MICRO_PER_UNIT + BigInt(paddedFrac);
   return (negative ? -combined : combined) as MicroUsdt;
 }
 
@@ -24,8 +26,8 @@ export function fromMicro(m: MicroUsdt | bigint): string {
   const value = typeof m === "bigint" ? m : (m as bigint);
   const negative = value < 0n;
   const abs = negative ? -value : value;
-  const whole = abs / MICRO_PER_USDT;
-  const frac = abs % MICRO_PER_USDT;
+  const whole = abs / MICRO_PER_UNIT;
+  const frac = abs % MICRO_PER_UNIT;
   const fracStr = frac.toString().padStart(6, "0").replace(/0+$/, "");
   const body = fracStr.length > 0 ? `${whole}.${fracStr}` : whole.toString();
   return negative ? `-${body}` : body;
@@ -38,10 +40,10 @@ export function formatMicro(m: MicroUsdt | bigint, options: { sign?: boolean } =
 
 export const MicroUsdt = {
   zero: 0n as MicroUsdt,
-  one: MICRO_PER_USDT as MicroUsdt,
+  one: MICRO_PER_UNIT as MicroUsdt,
   decimals: 6,
-  perUnit: MICRO_PER_USDT,
-  perUnitNumber: MICRO_PER_USDT_NUM,
+  perUnit: MICRO_PER_UNIT,
+  perUnitNumber: MICRO_PER_UNIT_NUM,
 };
 
 /**

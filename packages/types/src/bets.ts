@@ -50,7 +50,7 @@ export interface SlipSelection {
 export interface PlaceBetRequest {
   stakeMicro: string;        // bigint as string
   idempotencyKey: string;    // client-supplied UUID
-  currency?: Currency;       // wallet to debit; defaults to USDT for compat
+  currency?: Currency;       // wallet to debit; defaults to USDC for compat
   /**
    * Optional explicit product. Inferred when absent: 1 leg → "single",
    * ≥ 2 → "combo". For tiple/tippot the client must send it explicitly;

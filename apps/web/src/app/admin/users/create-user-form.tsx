@@ -246,7 +246,7 @@ export function CreateUserForm({ mode = "bettor" }: Props) {
 
             <label className="flex flex-col gap-1 text-sm">
               <span className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-                Stake limit (USDT / ticket)
+                Stake limit (USDC / ticket)
               </span>
               <input
                 value={limit}

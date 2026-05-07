@@ -99,7 +99,7 @@ export class AuthService {
     const passwordHash = await hashPassword(input.password);
 
     // Create user + per-currency wallets atomically. Every signup gets a
-    // zero-balance USDT wallet (real money) and an OZ wallet pre-funded
+    // zero-balance USDC wallet (real money) and an OZ wallet pre-funded
     // with the demo signup bonus so the bet slip and settlement are
     // testable end-to-end without on-chain top-up.
     const user = await this.db.transaction(async (tx) => {
@@ -120,7 +120,7 @@ export class AuthService {
       await tx
         .insert(wallets)
         .values([
-          { userId: created.id, currency: "USDT", balanceMicro: 0n },
+          { userId: created.id, currency: "USDC", balanceMicro: 0n },
           {
             userId: created.id,
             currency: "OZ",
