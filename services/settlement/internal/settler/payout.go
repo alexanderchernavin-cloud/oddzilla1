@@ -106,7 +106,13 @@ func SinglePayout(stakeMicro int64, oddsStr, result, voidFactor string) (int64, 
 // its stake and the resolved legs. All legs must already be resolved
 // (the caller gates on UnresolvedCount==0). The payout floors so we
 // never over-pay a fractional micro on irrational products of odds.
-func ComboPayout(stakeMicro int64, selections []store.SelectionResult) (int64, string, error) {
+//
+// betMetaJSON optionally carries a Combi Boost multiplier frozen at
+// placement. When present (`{"product":"combo","boostMultiplier":"1.05",
+// ...}`) the base combo payout is multiplied by it before flooring.
+// All-void tickets still refund stake, ignoring the boost — boosts only
+// apply to actual winnings, mirroring how betby/competitors render it.
+func ComboPayout(stakeMicro int64, betMetaJSON []byte, selections []store.SelectionResult) (int64, string, error) {
 	if len(selections) < 2 {
 		return 0, "", fmt.Errorf("combo needs ≥2 selections, got %d", len(selections))
 	}
@@ -125,6 +131,13 @@ func ComboPayout(stakeMicro int64, selections []store.SelectionResult) (int64, s
 	if factor < 0 {
 		factor = 0
 	}
+	if !allVoid {
+		boost, err := parseComboBoost(betMetaJSON)
+		if err != nil {
+			return 0, "", err
+		}
+		factor *= boost
+	}
 	f := float64(stakeMicro) * factor
 	if math.IsNaN(f) || math.IsInf(f, 0) {
 		return 0, "", fmt.Errorf("combo payout not finite")
@@ -135,6 +148,35 @@ func ComboPayout(stakeMicro int64, selections []store.SelectionResult) (int64, s
 		ledger = "bet_refund"
 	}
 	return payout, ledger, nil
+}
+
+// parseComboBoost reads the boost multiplier from a ticket's
+// bet_meta JSONB. Returns 1.0 (no boost) for nil/empty meta, for meta
+// with `product` other than "combo", or for an absent/unparseable
+// boostMultiplier. A boost < 1.0 is treated as no boost — settlement
+// must never penalise a winning ticket.
+func parseComboBoost(betMetaJSON []byte) (float64, error) {
+	if len(betMetaJSON) == 0 {
+		return 1.0, nil
+	}
+	var meta struct {
+		Product         string `json:"product"`
+		BoostMultiplier string `json:"boostMultiplier"`
+	}
+	if err := json.Unmarshal(betMetaJSON, &meta); err != nil {
+		// Don't fail the settlement on a meta-shape mismatch — log via
+		// returning err would block the ticket forever. Treat as
+		// "no boost" so the customer at least receives the base payout.
+		return 1.0, nil
+	}
+	if meta.Product != "combo" || meta.BoostMultiplier == "" {
+		return 1.0, nil
+	}
+	v, err := strconv.ParseFloat(meta.BoostMultiplier, 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 1.0 {
+		return 1.0, nil
+	}
+	return v, nil
 }
 
 // LedgerTypeFor picks the right wallet_tx_type value for the payout.

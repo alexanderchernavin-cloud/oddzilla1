@@ -11,7 +11,8 @@
     "./currencies": "./src/currencies.ts",
     "./products": "./src/products.ts",
     "./specifiers": "./src/specifiers.ts",
-    "./community": "./src/community.ts"
+    "./community": "./src/community.ts",
+    "./combi-boost": "./src/combi-boost.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

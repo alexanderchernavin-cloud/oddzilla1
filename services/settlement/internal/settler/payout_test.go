@@ -99,6 +99,7 @@ func TestComboPayout(t *testing.T) {
 	cases := []struct {
 		name       string
 		stake      int64
+		betMeta    []byte
 		selections []store.SelectionResult
 		wantMicro  int64
 		wantLedger string
@@ -175,10 +176,45 @@ func TestComboPayout(t *testing.T) {
 			wantMicro:  6_049_999,
 			wantLedger: "bet_payout",
 		},
+		{
+			name:    "combi-boost x1.05 applied on 2-leg win",
+			stake:   10_000_000,
+			betMeta: []byte(`{"product":"combo","boostMultiplier":"1.05","boostEligibleLegCount":4}`),
+			selections: legs(
+				[3]string{"2.00", "won", ""},
+				[3]string{"3.00", "won", ""},
+			),
+			// 10 * 2 * 3 * 1.05 = 63
+			wantMicro:  63_000_000,
+			wantLedger: "bet_payout",
+		},
+		{
+			name:    "all-void ticket ignores boost and refunds stake",
+			stake:   10_000_000,
+			betMeta: []byte(`{"product":"combo","boostMultiplier":"1.12","boostEligibleLegCount":8}`),
+			selections: legs(
+				[3]string{"2.00", "void", ""},
+				[3]string{"3.00", "void", ""},
+			),
+			wantMicro:  10_000_000,
+			wantLedger: "bet_refund",
+		},
+		{
+			name:    "boost ignored on malformed bet_meta",
+			stake:   10_000_000,
+			betMeta: []byte(`not-json`),
+			selections: legs(
+				[3]string{"2.00", "won", ""},
+				[3]string{"3.00", "won", ""},
+			),
+			// Same as the no-boost case — defensive parse swallows shape errors.
+			wantMicro:  60_000_000,
+			wantLedger: "bet_payout",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			payout, ledger, err := ComboPayout(tc.stake, tc.selections)
+			payout, ledger, err := ComboPayout(tc.stake, tc.betMeta, tc.selections)
 			if err != nil {
 				t.Fatalf("unexpected err: %v", err)
 			}
@@ -193,10 +229,10 @@ func TestComboPayout(t *testing.T) {
 }
 
 func TestComboPayout_Errors(t *testing.T) {
-	if _, _, err := ComboPayout(10_000_000, legs([3]string{"2.00", "won", ""})); err == nil {
+	if _, _, err := ComboPayout(10_000_000, nil, legs([3]string{"2.00", "won", ""})); err == nil {
 		t.Fatal("expected error on <2 selections")
 	}
-	if _, _, err := ComboPayout(10_000_000, legs(
+	if _, _, err := ComboPayout(10_000_000, nil, legs(
 		[3]string{"2.00", "won", ""},
 		[3]string{"bad", "won", ""},
 	)); err == nil {

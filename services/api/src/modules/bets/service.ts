@@ -39,6 +39,7 @@ import {
 import {
   DEFAULT_CURRENCY,
   DEFAULT_ODDS_DRIFT_TOLERANCE,
+  computeCombiBoost,
   isCurrency,
   multiplyMicroByOdds,
   parseProbability,
@@ -47,6 +48,7 @@ import {
   type BetBuilderMeta,
   type BetMeta,
   type BetType,
+  type ComboMeta,
   type Currency,
   type PlaceBetRequest,
   type TicketSummary,
@@ -518,7 +520,31 @@ export class BetsService {
         betMeta = meta;
       } else {
         // single / combo — existing odds-product math, now bigint-safe.
-        potentialPayoutMicro = multiplyMicroByOdds(stake, productOdds);
+        // Combi Boost: only combo (>= 2 legs) ever reaches a tier;
+        // single's leg count of 1 is below the minimum threshold so
+        // computeCombiBoost returns multiplier 1.0 there. We still
+        // route singles through the same branch to keep the no-boost
+        // path cheap. Boosted combos freeze the multiplier into
+        // bet_meta so settlement can re-apply it without recomputing
+        // eligibility from leg odds (those may differ from final
+        // settlement odds after voids).
+        let combiMultiplier = 1.0;
+        if (betType === "combo") {
+          const boost = computeCombiBoost(req.selections.map((s) => s.odds));
+          combiMultiplier = boost.multiplier;
+          if (combiMultiplier > 1.0) {
+            const meta: ComboMeta = {
+              product: "combo",
+              boostMultiplier: combiMultiplier.toFixed(2),
+              boostEligibleLegCount: boost.eligibleLegCount,
+            };
+            betMeta = meta;
+          }
+        }
+        potentialPayoutMicro = multiplyMicroByOdds(
+          stake,
+          productOdds * combiMultiplier,
+        );
       }
 
       // ── Insert ticket ────────────────────────────────────────────────

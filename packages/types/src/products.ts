@@ -249,4 +249,24 @@ export interface BetBuilderMeta {
   selectionIds: string[];
 }
 
-export type BetMeta = TipleMeta | TippotMeta | BetBuilderMeta;
+/**
+ * What gets serialized into tickets.bet_meta for combo tickets that
+ * earned a Combi Boost at placement. Single-leg combos and combos
+ * without an active boost (e.g., < 2 legs at >= 1.50) leave bet_meta
+ * null instead — only boosted combos carry this object.
+ *
+ *   - boostMultiplier         Decimal string, e.g. "1.03" for +3%.
+ *                             Frozen at placement; settlement multiplies
+ *                             the base combo payout by this verbatim.
+ *   - boostEligibleLegCount   Number of legs at placement whose odds were
+ *                             >= COMBI_BOOST_MIN_ODDS. Audit only — the
+ *                             multiplier above is the source of truth at
+ *                             payout time.
+ */
+export interface ComboMeta {
+  product: "combo";
+  boostMultiplier: string;
+  boostEligibleLegCount: number;
+}
+
+export type BetMeta = TipleMeta | TippotMeta | BetBuilderMeta | ComboMeta;

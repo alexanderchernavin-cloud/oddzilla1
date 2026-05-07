@@ -11,6 +11,11 @@ import { SUPPORTED_CURRENCIES, type Currency } from "@oddzilla/types/currencies"
 // Type-only `BetMeta` etc go through the bare path since they're erased.
 import { parseProbability, priceTiple, priceTippot } from "@oddzilla/types/products";
 import type { TippotTier } from "@oddzilla/types/products";
+import {
+  computeCombiBoost,
+  COMBI_BOOST_MIN_ODDS,
+  COMBI_BOOST_TIERS,
+} from "@oddzilla/types/combi-boost";
 import type {
   BetBuilderQuoteAcceptedResponse,
   BetBuilderQuoteResponse,
@@ -202,6 +207,14 @@ export function BetSlipRail() {
     return selections.reduce((acc, s) => acc * Number(s.odds || 0), 1);
   }, [selections]);
 
+  // Combi Boost preview. The server re-runs computeCombiBoost at
+  // placement and freezes the multiplier into bet_meta — this is just a
+  // live preview for the user as they add legs.
+  const combiBoost = useMemo(
+    () => computeCombiBoost(selections.map((s) => s.odds)),
+    [selections],
+  );
+
   // Tiple/Tippot quotes — only computable when every selection carries a
   // probability. Server prices authoritatively at placement; this is
   // strictly preview.
@@ -269,8 +282,13 @@ export function BetSlipRail() {
       return top ? stake * Number(top.multiplier) : 0;
     }
     if (combinedOdds <= 0) return 0;
-    return stake * combinedOdds;
-  }, [stakeInput, combinedOdds, effectiveMode, tipleQuote, tippotQuote, builderQuote]);
+    // Combo mode applies the Combi Boost multiplier; single mode (one
+    // ticket per leg) doesn't. The server enforces the same rule at
+    // placement, so the displayed potential return is what the user
+    // will actually be credited on a winning ticket.
+    const boostMul = effectiveMode === "combo" ? combiBoost.multiplier : 1.0;
+    return stake * combinedOdds * boostMul;
+  }, [stakeInput, combinedOdds, effectiveMode, tipleQuote, tippotQuote, builderQuote, combiBoost]);
 
   // Show a whole-number amount without trailing ".00"; keep up to
   // 2 decimals otherwise, trimming trailing zeros (e.g. "14.5" not "14.50").
@@ -688,9 +706,19 @@ export function BetSlipRail() {
             >
               <span>Combo · {selections.length} legs</span>
               <span className="mono tnum" style={{ fontSize: 14, fontWeight: 600, color: "var(--fg)" }}>
-                {combinedOdds.toFixed(2)}
+                {(combinedOdds * combiBoost.multiplier).toFixed(2)}
               </span>
             </div>
+          )}
+
+          {isCombo && selections.length >= 2 && (
+            <CombiBoostPanel
+              eligibleLegCount={combiBoost.eligibleLegCount}
+              currentTier={combiBoost.currentTier}
+              nextTier={combiBoost.nextTier}
+              legsToNext={combiBoost.legsToNextTier}
+              ineligibleLegCount={selections.length - combiBoost.eligibleLegCount}
+            />
           )}
 
           <CurrencyTabs
@@ -1664,6 +1692,180 @@ function HistoryTicketCard({
           View match →
         </Link>
       ) : null}
+    </div>
+  );
+}
+
+// ─── Combi Boost progress panel ────────────────────────────────────────
+//
+// Renders only in combo mode with >= 2 selections. Shows the active tier
+// (or a prompt to start earning one), the next tier and how many more
+// legs unlock it, plus a segmented bar with markers at each tier
+// threshold (2, 4, 6, 8 legs). The segments fill green up to the user's
+// current eligible-leg count.
+
+type BoostTier = (typeof COMBI_BOOST_TIERS)[number];
+
+function CombiBoostPanel({
+  eligibleLegCount,
+  currentTier,
+  nextTier,
+  legsToNext,
+  ineligibleLegCount,
+}: {
+  eligibleLegCount: number;
+  currentTier: BoostTier | null;
+  nextTier: BoostTier | null;
+  legsToNext: number;
+  ineligibleLegCount: number;
+}) {
+  const cells = COMBI_BOOST_TIERS[COMBI_BOOST_TIERS.length - 1]!.minLegs;
+  const filled = Math.min(eligibleLegCount, cells);
+
+  let statusText: string;
+  if (currentTier && nextTier) {
+    statusText = `${currentTier.label} boost active — ${legsToNext} more leg${legsToNext === 1 ? "" : "s"} to ${nextTier.label}`;
+  } else if (currentTier && !nextTier) {
+    statusText = `${currentTier.label} boost active — top tier reached`;
+  } else if (nextTier) {
+    const need = Math.max(0, nextTier.minLegs - eligibleLegCount);
+    statusText = `Add ${need} more leg${need === 1 ? "" : "s"} (odds ≥ ${COMBI_BOOST_MIN_ODDS.toFixed(2)}) to unlock ${nextTier.label} boost`;
+  } else {
+    statusText = "";
+  }
+
+  return (
+    <div
+      role="status"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+        padding: "10px 12px",
+        background: "var(--surface-2)",
+        border: "1px solid var(--border)",
+        borderRadius: 8,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
+        }}
+      >
+        <span
+          className="mono"
+          style={{
+            fontSize: 10,
+            letterSpacing: "0.14em",
+            textTransform: "uppercase",
+            color: "var(--fg-dim)",
+          }}
+        >
+          Combi Boost
+        </span>
+        <span
+          className="mono"
+          style={{
+            fontSize: 10,
+            letterSpacing: "0.04em",
+            color: "var(--fg-muted)",
+          }}
+        >
+          MIN ODDS {COMBI_BOOST_MIN_ODDS.toFixed(2)}
+        </span>
+      </div>
+      <div style={{ fontSize: 12, color: "var(--fg)", lineHeight: 1.35 }}>
+        {statusText}
+      </div>
+      <BoostProgressBar filled={filled} totalCells={cells} currentTier={currentTier} />
+      {ineligibleLegCount > 0 && (
+        <div style={{ fontSize: 10.5, color: "var(--fg-muted)", lineHeight: 1.3 }}>
+          {ineligibleLegCount} leg{ineligibleLegCount === 1 ? "" : "s"} below {COMBI_BOOST_MIN_ODDS.toFixed(2)} odds and won&apos;t count toward the boost.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BoostProgressBar({
+  filled,
+  totalCells,
+  currentTier,
+}: {
+  filled: number;
+  totalCells: number;
+  currentTier: BoostTier | null;
+}) {
+  // Tier thresholds expressed as cell indices — we mark each one with a
+  // tick line above the bar so the user can see at a glance which step
+  // they're on.
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: `repeat(${totalCells}, minmax(0, 1fr))`,
+          gap: 0,
+          fontSize: 9.5,
+          color: "var(--fg-muted)",
+        }}
+        className="mono"
+      >
+        {Array.from({ length: totalCells }, (_, i) => {
+          const cellLegs = i + 1;
+          const tier = COMBI_BOOST_TIERS.find((t) => t.minLegs === cellLegs);
+          const isActive = currentTier ? currentTier.minLegs === cellLegs : false;
+          return (
+            <div
+              key={i}
+              style={{
+                textAlign: "center",
+                color: isActive ? "var(--positive, #16a34a)" : "var(--fg-muted)",
+                fontWeight: isActive ? 600 : 400,
+                opacity: tier ? 1 : 0,
+              }}
+            >
+              {tier ? tier.label : "·"}
+            </div>
+          );
+        })}
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: `repeat(${totalCells}, minmax(0, 1fr))`,
+          gap: 2,
+          height: 6,
+        }}
+      >
+        {Array.from({ length: totalCells }, (_, i) => {
+          const cellLegs = i + 1;
+          const isFilled = cellLegs <= filled;
+          const isTierBoundary = COMBI_BOOST_TIERS.some(
+            (t) => t.minLegs === cellLegs,
+          );
+          return (
+            <div
+              key={i}
+              style={{
+                height: "100%",
+                background: isFilled
+                  ? "var(--positive, #16a34a)"
+                  : "var(--border)",
+                borderRadius: 2,
+                outline: isTierBoundary && !isFilled
+                  ? "1px solid var(--fg-muted)"
+                  : "none",
+                outlineOffset: -1,
+                transition: "background 160ms var(--ease)",
+              }}
+            />
+          );
+        })}
+      </div>
     </div>
   );
 }

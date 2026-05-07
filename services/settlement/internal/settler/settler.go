@@ -777,7 +777,7 @@ func computePayout(t store.TicketForSettle, selections []store.SelectionResult) 
 		}
 		return payout, LedgerTypeFor(sel.Result), nil
 	case "combo":
-		return ComboPayout(t.StakeMicro, selections)
+		return ComboPayout(t.StakeMicro, t.BetMetaJSON, selections)
 	case "tiple":
 		return TiplePayout(t.StakeMicro, t.PotentialPayoutMicro, selections)
 	case "tippot":
