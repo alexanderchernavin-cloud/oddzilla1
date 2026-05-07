@@ -121,12 +121,12 @@ function TicketRow({
     cashedOutAt: string,
   ) => void;
 }) {
-  const selection = ticket.selections[0];
   const stake = fromMicro(BigInt(ticket.stakeMicro));
   const potential = fromMicro(BigInt(ticket.potentialPayoutMicro));
   const actual = ticket.actualPayoutMicro
     ? fromMicro(BigInt(ticket.actualPayoutMicro))
     : null;
+  const legCount = ticket.selections.length;
 
   return (
     <li className="card p-5">
@@ -134,6 +134,12 @@ function TicketRow({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
             <span>{ticket.betType}</span>
+            {legCount > 1 ? (
+              <>
+                <span>·</span>
+                <span>{legCount} legs</span>
+              </>
+            ) : null}
             <span>·</span>
             <time dateTime={ticket.placedAt}>
               {new Date(ticket.placedAt).toLocaleString()}
@@ -142,38 +148,74 @@ function TicketRow({
             <span className="font-mono">{ticket.id.slice(0, 8)}</span>
           </div>
 
-          {selection?.market ? (
-            <p className="mt-2 text-sm">
-              {selection.market.homeTeam}{" "}
-              <span className="text-[var(--color-fg-subtle)]">vs</span>{" "}
-              {selection.market.awayTeam}
-            </p>
+          {/* Per-leg list. Singles render as one row; combos / tiples /
+              tippots / betbuilder render every leg with its odds and
+              per-leg result colour. Each row deep-links to the match. */}
+          {ticket.selections.length > 0 ? (
+            <ul className="mt-2 flex flex-col gap-1.5">
+              {ticket.selections.map((s, i) => {
+                const m = s.market;
+                const legResultClass =
+                  s.result === "won" || s.result === "half_won"
+                    ? "text-[var(--color-positive)]"
+                    : s.result === "lost" || s.result === "half_lost"
+                      ? "text-[var(--color-negative)]"
+                      : s.result === "void"
+                        ? "text-[var(--color-fg-muted)]"
+                        : "text-[var(--color-fg)]";
+                const legOdds = Number(s.oddsAtPlacement);
+                const oddsLabel = Number.isFinite(legOdds)
+                  ? legOdds.toFixed(2)
+                  : s.oddsAtPlacement;
+                const matchLabel = m
+                  ? `${m.homeTeam} vs ${m.awayTeam}`
+                  : "Match unavailable";
+                const inner = (
+                  <div className="flex items-center justify-between gap-3 text-sm">
+                    <span
+                      className={
+                        "min-w-0 flex-1 truncate " + legResultClass
+                      }
+                    >
+                      {matchLabel}
+                      <span className="ml-2 text-xs text-[var(--color-fg-subtle)]">
+                        outcome {s.outcomeId}
+                      </span>
+                    </span>
+                    <span className="font-mono text-xs text-[var(--color-fg-muted)]">
+                      {oddsLabel}
+                    </span>
+                  </div>
+                );
+                return (
+                  <li
+                    key={`${s.marketId}:${s.outcomeId}:${i}`}
+                    className="block"
+                  >
+                    {m ? (
+                      <Link
+                        href={`/match/${m.matchId}`}
+                        className="block hover:underline decoration-[var(--color-border-strong)] hover:decoration-[var(--color-accent)]"
+                      >
+                        {inner}
+                      </Link>
+                    ) : (
+                      inner
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
           ) : (
             <p className="mt-2 text-sm text-[var(--color-fg-muted)]">
               Selection metadata unavailable
             </p>
           )}
 
-          {selection ? (
-            <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">
-              Market {selection.market?.providerMarketId ?? "?"} · outcome{" "}
-              {selection.outcomeId} @ {selection.oddsAtPlacement}
-            </p>
-          ) : null}
-
           {ticket.rejectReason ? (
             <p className="mt-2 text-xs text-[var(--color-negative)]">
               Reason: {ticket.rejectReason}
             </p>
-          ) : null}
-
-          {selection?.market ? (
-            <Link
-              href={`/match/${selection.market.matchId}`}
-              className="mt-2 inline-block text-xs text-[var(--color-fg-muted)] underline decoration-[var(--color-border-strong)] hover:decoration-[var(--color-accent)]"
-            >
-              View match →
-            </Link>
           ) : null}
         </div>
 

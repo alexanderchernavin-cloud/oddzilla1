@@ -1684,7 +1684,85 @@ function HistoryTicketCard({
           {badge.label}
         </span>
       </div>
-      {first?.market ? (
+      {legCount > 1 ? (
+        // Combo / tiple / tippot / betbuilder — list every leg with
+        // its odds + per-leg result colour. Each row links to its
+        // match so the user can drill back in. No more "+1" hidden
+        // legs.
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {ticket.selections.map((s, i) => {
+            const m = s.market;
+            const legHref = m ? `/match/${m.matchId}` : null;
+            const legOdds = Number(s.oddsAtPlacement);
+            const oddsLabel = Number.isFinite(legOdds)
+              ? legOdds.toFixed(2)
+              : s.oddsAtPlacement;
+            const resultColor =
+              s.result === "won" || s.result === "half_won"
+                ? "var(--positive)"
+                : s.result === "lost" || s.result === "half_lost"
+                  ? "var(--negative)"
+                  : s.result === "void"
+                    ? "var(--fg-muted)"
+                    : "var(--fg)";
+            const content = (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  fontSize: 12.5,
+                  overflow: "hidden",
+                }}
+              >
+                {m ? <SportGlyph sport={m.sportSlug} size={11} /> : null}
+                <span
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    color: resultColor,
+                  }}
+                >
+                  {m ? (
+                    <>
+                      {m.homeTeam}{" "}
+                      <span style={{ color: "var(--fg-muted)" }}>vs</span>{" "}
+                      {m.awayTeam}
+                    </>
+                  ) : (
+                    "Match unavailable"
+                  )}
+                </span>
+                <span
+                  className="mono tnum"
+                  style={{ fontSize: 11, color: "var(--fg-muted)" }}
+                >
+                  {oddsLabel}
+                </span>
+              </div>
+            );
+            return legHref ? (
+              <Link
+                key={`${s.marketId}:${s.outcomeId}:${i}`}
+                href={legHref}
+                style={{
+                  textDecoration: "none",
+                  color: "inherit",
+                  borderRadius: 6,
+                  padding: "2px 0",
+                }}
+              >
+                {content}
+              </Link>
+            ) : (
+              <div key={`${s.marketId}:${s.outcomeId}:${i}`}>{content}</div>
+            );
+          })}
+        </div>
+      ) : first?.market ? (
         <div
           style={{
             fontSize: 13,
@@ -1698,9 +1776,6 @@ function HistoryTicketCard({
           {first.market.homeTeam}{" "}
           <span style={{ color: "var(--fg-muted)" }}>vs</span>{" "}
           {first.market.awayTeam}
-          {legCount > 1 ? (
-            <span style={{ color: "var(--fg-muted)" }}> +{legCount - 1}</span>
-          ) : null}
         </div>
       ) : (
         <div style={{ fontSize: 13, color: "var(--fg-muted)" }}>
@@ -1730,7 +1805,10 @@ function HistoryTicketCard({
           {ticket.rejectReason}
         </div>
       ) : null}
-      {matchHref ? (
+      {matchHref && legCount === 1 ? (
+        // Singles: deep-link to the one match. For combos each leg
+        // above is already its own clickable row, so a single "View
+        // match" link would be misleading.
         <Link
           href={matchHref}
           style={{
