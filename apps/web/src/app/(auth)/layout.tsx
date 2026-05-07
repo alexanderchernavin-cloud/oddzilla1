@@ -7,7 +7,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
     <div style={{ minHeight: "100dvh", background: "var(--bg)", color: "var(--fg)" }}>
       <header className="oz-auth-header">
         <Link href="/" style={{ textDecoration: "none", color: "var(--fg)" }}>
-          <Wordmark size={256} />
+          <Wordmark size={36} priority />
         </Link>
         <div style={{ flex: 1 }} />
         <ThemeToggle />
