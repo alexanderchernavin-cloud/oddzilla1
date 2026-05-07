@@ -86,9 +86,28 @@ export interface CommunityTicketSummary {
   betType: BetType;
   stakeMicro: string;
   payoutMicro: string;
+  // Profit in micro units. For accepted tickets this is the
+  // *potential* profit (potentialPayout − stake) so the Recent tab
+  // can show "to win" parity with the Best Wins payout label. For
+  // settled / cashed_out / voided it's the realised profit; can be
+  // negative on cashed_out where the offer landed below stake.
+  // String to preserve bigint precision over the wire — the Big
+  // Wins threshold check happens server-side, this is presentation.
+  profitMicro: string;
   totalOdds: string; // 4-decimal string
   numLegs: number;
   sportIds: number[];
+  // Number of times this ticket has been used as the source of a
+  // /community/copy call. Drives the Most Copied sort. Always 0 on
+  // accepted tickets (the counter only ever increments on the
+  // settled projection row). See migration 0032 for the rationale.
+  inspirationCount: number;
+  // True when the ticket's profit (payout − stake) clears the
+  // per-currency Big Win threshold. Server-computed so the UI never
+  // re-implements the threshold rule and operators can tune the
+  // floor without a frontend deploy. Always false on accepted /
+  // voided tickets; only ever true on a real win.
+  isBigWin: boolean;
   // ISO-8601. For accepted tickets this is the placed-at time; for
   // settled/cashed_out/voided it's the settled-at time. The two are
   // collapsed into one field because the storefront only ever needs

@@ -3,10 +3,21 @@ import type { CommunityTicketSummary } from "@oddzilla/types";
 import { fromMicro } from "@oddzilla/types/money";
 import { CopyButton } from "./copy-button";
 
-// One card on the community feed and the per-user tickets list. The
-// shape is deliberately minimal for 10.2 — Phase 10.3 will add a
-// "Copy this bet" CTA and individual leg breakdown. Money is rendered
-// via fromMicro so we never lose precision converting to Number.
+// One card on the community feed and the per-user tickets list.
+//
+// The card has three escalating presentations:
+//   • Recent (status='accepted')           — Live pill, "to win" payout label.
+//   • Settled / cashed_out / voided        — Won / Lost / Cashed out / Void pill.
+//   • isBigWin && tab='bigWins' && idx=0   — hero card variant.
+//                                            Larger profit number, gold
+//                                            accent border on the
+//                                            stat block. Restraint is
+//                                            the rule per PRD: one
+//                                            differentiator, not three.
+//
+// Money is rendered via fromMicro so we never lose precision converting
+// to Number — a winning combo can clear several thousand units in
+// micros, comfortably above MAX_SAFE_INTEGER on multi-leg.
 
 interface SportEntry {
   id: number;
@@ -16,9 +27,11 @@ interface SportEntry {
 export function CommunityTicketCard({
   ticket,
   sportsById,
+  isHero = false,
 }: {
   ticket: CommunityTicketSummary;
   sportsById: Map<number, SportEntry>;
+  isHero?: boolean;
 }) {
   const sport = ticket.sportIds
     .map((id) => sportsById.get(id))
@@ -26,6 +39,7 @@ export function CommunityTicketCard({
 
   const stake = fromMicro(BigInt(ticket.stakeMicro));
   const payout = fromMicro(BigInt(ticket.payoutMicro));
+  const profit = fromMicro(BigInt(ticket.profitMicro));
   const isWin =
     (ticket.status === "settled" || ticket.status === "cashed_out") &&
     BigInt(ticket.payoutMicro) > BigInt(ticket.stakeMicro);
@@ -38,29 +52,46 @@ export function CommunityTicketCard({
     minute: "2-digit",
   });
   // Accepted tickets show the *potential* payout, settled show actual.
-  // The label change clarifies which the user is looking at.
   const payoutLabel = isLive ? "to win" : "payout";
 
+  // Gold border on the entire card when a Big Win renders. Sibling
+  // Big-Win cards (non-hero) keep the standard slate border and only
+  // wear the badge — restraint per the PRD design notes.
+  const cardCls = isHero
+    ? "card p-5 border-[var(--color-accent)]"
+    : "card p-5";
+  // Hero uses text-h3-equivalent (PRD: "text-h3 profit on hero, text-h4
+  // elsewhere"). Tailwind doesn't ship those tokens here, so we
+  // approximate the intent: hero gets text-2xl tabular-nums, sibling
+  // gets text-base. Matches the existing typography ramp in
+  // apps/web/src/app/globals.css.
+  const profitTextCls = isHero
+    ? "font-mono text-2xl text-[var(--color-positive)]"
+    : "font-mono text-sm text-[var(--color-positive)]";
+
   return (
-    <li className="card p-5">
+    <li className={cardCls}>
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
+          <div className="flex flex-wrap items-center gap-2">
+            {ticket.isBigWin ? <BigWinBadge /> : null}
             <Link
               href={`/u/${encodeURIComponent(ticket.nickname)}`}
-              className="text-[var(--color-fg)] hover:text-[var(--color-accent)]"
+              className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg)] hover:text-[var(--color-accent)]"
             >
               {ticket.nickname}
             </Link>
-            <span aria-hidden>·</span>
-            <span>{at}</span>
-            <span aria-hidden>·</span>
-            <span>{ticket.currency}</span>
-            {sport ? (
-              <>
-                <span aria-hidden>·</span>
-                <span>{sport.name}</span>
-              </>
+            <DotMeta>{at}</DotMeta>
+            <DotMeta>{ticket.currency}</DotMeta>
+            {sport ? <DotMeta>{sport.name}</DotMeta> : null}
+            {ticket.inspirationCount > 0 ? (
+              <span
+                className="ml-auto inline-flex items-center gap-1 text-[10px] uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]"
+                title="Times this bet has been copied"
+              >
+                <span aria-hidden>🔥</span>
+                {ticket.inspirationCount}
+              </span>
             ) : null}
           </div>
 
@@ -81,11 +112,21 @@ export function CommunityTicketCard({
 
         <div className="text-right">
           <StatusPill status={ticket.status} isWin={isWin} />
-          <p className="mt-2 font-mono text-sm">
-            {payout} {ticket.currency}
-          </p>
+          {/* Settled wins lead with profit (the focal value); accepted
+              tickets lead with potential payout since profit there is
+              speculative. Hero variant just enlarges the profit; the
+              data is the same. */}
+          {isWin ? (
+            <p className={`mt-2 ${profitTextCls}`}>
+              +{profit} {ticket.currency}
+            </p>
+          ) : (
+            <p className="mt-2 font-mono text-sm">
+              {payout} {ticket.currency}
+            </p>
+          )}
           <p className="font-mono text-xs text-[var(--color-fg-muted)]">
-            {payoutLabel} · stake {stake} {ticket.currency}
+            {isWin ? `payout ${payout} · stake ${stake}` : `${payoutLabel} · stake ${stake} ${ticket.currency}`}
           </p>
         </div>
       </div>
@@ -97,6 +138,32 @@ export function CommunityTicketCard({
   );
 }
 
+// Gold-bordered Big Win pill with a trophy. PRD calls for `--chart-3`
+// text and a `--background` fill; the existing token names in
+// globals.css are different so we lean on the accent token (gold)
+// which carries the same Big Win identity.
+function BigWinBadge() {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-[var(--color-accent)] bg-[var(--color-bg)] px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-[var(--color-accent)]">
+      <span aria-hidden>🏆</span>
+      Big win
+    </span>
+  );
+}
+
+function DotMeta({ children }: { children: React.ReactNode }) {
+  return (
+    <>
+      <span aria-hidden className="text-xs text-[var(--color-fg-subtle)]">
+        ·
+      </span>
+      <span className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
+        {children}
+      </span>
+    </>
+  );
+}
+
 function StatusPill({
   status,
   isWin,
@@ -105,8 +172,6 @@ function StatusPill({
   isWin: boolean;
 }) {
   if (status === "accepted") {
-    // Recent feed — bet is in-flight on a still-bettable match.
-    // The accent colour cues "happening now / actionable".
     return (
       <span className="inline-block rounded-full bg-[var(--color-accent)]/15 px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-[var(--color-accent)]">
         Live
@@ -127,7 +192,6 @@ function StatusPill({
       </span>
     );
   }
-  // settled
   return (
     <span
       className={
