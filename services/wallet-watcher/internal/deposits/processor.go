@@ -33,6 +33,11 @@ type Verifier interface {
 	// BlockHashAt returns the canonical block hash at `blockNumber`,
 	// used to detect reorgs between first sighting and credit.
 	BlockHashAt(ctx context.Context, blockNumber int64) (string, error)
+	// DiscoverIncoming polls fresh Transfer logs to the receive
+	// address since the last cursor and inserts pre-attributed
+	// `confirming` intents for senders on the linked-wallet
+	// whitelist. No-op if no new blocks have arrived.
+	DiscoverIncoming(ctx context.Context) error
 }
 
 // InspectResult is the verdict on one tx receipt.
@@ -65,8 +70,21 @@ func New(st *store.Store, vfy Verifier, log zerolog.Logger) *Processor {
 
 func (p *Processor) Stats() int64 { return atomic.LoadInt64(&p.done) }
 
-// Tick processes one batch of pending intents.
+// Tick runs one full pass:
+//
+//  1. Discover new Transfers to the receive address from registered
+//     wallets and insert pre-attributed `confirming` intents.
+//  2. Walk pending+confirming intents — count confirmations, reorg-
+//     verify at threshold, credit atomically.
+//
+// Step 1 is best-effort — discovery failure logs and proceeds to
+// step 2 so a transient eth_getLogs hiccup doesn't stall pending
+// credits.
 func (p *Processor) Tick(ctx context.Context) error {
+	if err := p.vfy.DiscoverIncoming(ctx); err != nil {
+		p.log.Warn().Err(err).Msg("discovery tick failed (continuing to processor)")
+	}
+
 	head, err := p.vfy.HeadBlock(ctx)
 	if err != nil {
 		return err

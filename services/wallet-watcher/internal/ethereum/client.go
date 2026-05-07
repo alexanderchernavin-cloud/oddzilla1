@@ -122,11 +122,14 @@ type rawReceipt struct {
 }
 
 type rawLog struct {
-	Address  string   `json:"address"`
-	Topics   []string `json:"topics"`
-	Data     string   `json:"data"`
-	LogIndex string   `json:"logIndex"`
-	Removed  bool     `json:"removed"`
+	Address     string   `json:"address"`
+	Topics      []string `json:"topics"`
+	Data        string   `json:"data"`
+	LogIndex    string   `json:"logIndex"`
+	Removed     bool     `json:"removed"`
+	BlockNumber string   `json:"blockNumber"` // populated by eth_getLogs; absent on receipt logs
+	BlockHash   string   `json:"blockHash"`
+	TxHash      string   `json:"transactionHash"`
 }
 
 // TransactionReceipt resolves a tx hash. Returns Found=false (no error)
@@ -181,6 +184,86 @@ func (c *Client) BlockHashAt(ctx context.Context, blockNumber int64) (string, er
 		return "", err
 	}
 	return strings.ToLower(resp.Hash), nil
+}
+
+// TransferLog is one decoded Transfer event matching the discovery
+// filter (USDC contract, recipient = receive address).
+type TransferLog struct {
+	TxHash      string
+	LogIndex    int
+	BlockNumber int64
+	BlockHash   string
+	From        string // 0x-lowercase
+	To          string // 0x-lowercase (always equals receive address)
+	Amount      *big.Int
+}
+
+// GetTransfersTo fetches all USDC `Transfer` logs whose `to` topic
+// equals `receiveAddress`, in inclusive block range [fromBlock, toBlock].
+// The recipient filter is applied server-side via topics[2] — Alchemy
+// only returns matching logs, no client-side filtering bandwidth waste.
+func (c *Client) GetTransfersTo(ctx context.Context, contract, receiveAddress string, fromBlock, toBlock int64) ([]TransferLog, error) {
+	contractLower := strings.ToLower(contract)
+	toTopic := padAddressTopic(receiveAddress)
+	params := []any{
+		map[string]any{
+			"address":   contract,
+			"topics":    []any{TransferTopic, nil, toTopic},
+			"fromBlock": fmt.Sprintf("0x%x", fromBlock),
+			"toBlock":   fmt.Sprintf("0x%x", toBlock),
+		},
+	}
+	var raws []rawLog
+	if err := c.call(ctx, "eth_getLogs", params, &raws); err != nil {
+		return nil, err
+	}
+	out := make([]TransferLog, 0, len(raws))
+	for _, r := range raws {
+		if r.Removed {
+			continue
+		}
+		if len(r.Topics) < 3 {
+			continue
+		}
+		// Defence-in-depth: if the RPC ignored the address filter,
+		// fail the batch rather than ingest cross-contract logs.
+		if !strings.EqualFold(r.Address, contractLower) {
+			return nil, fmt.Errorf("rpc returned log for wrong contract %q (expected %q)", r.Address, contractLower)
+		}
+		blockNumber, err := parseHexInt(r.BlockNumber)
+		if err != nil {
+			return nil, fmt.Errorf("decode blockNumber: %w", err)
+		}
+		logIndex, err := parseHexInt(r.LogIndex)
+		if err != nil {
+			return nil, fmt.Errorf("decode logIndex: %w", err)
+		}
+		if !strings.HasPrefix(r.Data, "0x") {
+			return nil, fmt.Errorf("log data missing 0x prefix: %q", r.Data)
+		}
+		amount := new(big.Int)
+		if _, ok := amount.SetString(strings.TrimPrefix(r.Data, "0x"), 16); !ok {
+			return nil, fmt.Errorf("decode log data: %q", r.Data)
+		}
+		out = append(out, TransferLog{
+			TxHash:      strings.ToLower(r.TxHash),
+			LogIndex:    int(logIndex),
+			BlockNumber: blockNumber,
+			BlockHash:   strings.ToLower(r.BlockHash),
+			From:        topicToAddress(r.Topics[1]),
+			To:          topicToAddress(r.Topics[2]),
+			Amount:      amount,
+		})
+	}
+	return out, nil
+}
+
+// padAddressTopic encodes a 20-byte address as a 32-byte topic by
+// left-padding with zeros — the form Ethereum uses for indexed
+// `address` fields in event topics.
+func padAddressTopic(addr string) string {
+	hex := strings.TrimPrefix(strings.ToLower(addr), "0x")
+	return "0x" + strings.Repeat("0", 64-len(hex)) + hex
 }
 
 // ParseTransferLog decodes a Transfer event log into (from, to, amount).

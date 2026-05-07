@@ -120,6 +120,33 @@ export const withdrawals = pgTable(
   ],
 );
 
+// Per-user from-address whitelist (migration 0033). Lets the
+// wallet-watcher attribute Transfers to the shared receive address
+// without the user pasting a tx hash. Address is stored lowercase;
+// the API normalises on insert.
+export const userWalletAddresses = pgTable(
+  "user_wallet_addresses",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    network: chainNetworkEnum().notNull().default("ERC20"),
+    address: text().notNull(),
+    label: text(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("user_wallet_addresses_addr_unique").on(t.network, t.address),
+    check(
+      "user_wallet_addresses_addr_format",
+      sql`${t.address} ~ '^0x[0-9a-f]{40}$'`,
+    ),
+    index("user_wallet_addresses_user_idx").on(t.userId, sql`${t.createdAt} DESC`),
+  ],
+);
+
 export type Deposit = typeof deposits.$inferSelect;
 export type DepositIntent = typeof depositIntents.$inferSelect;
 export type Withdrawal = typeof withdrawals.$inferSelect;
+export type UserWalletAddress = typeof userWalletAddresses.$inferSelect;

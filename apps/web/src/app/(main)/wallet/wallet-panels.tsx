@@ -7,6 +7,7 @@ import { fromMicro, toMicro } from "@oddzilla/types/money";
 import type {
   DepositAddress,
   DepositIntentSummary,
+  LinkedWalletAddress,
   WithdrawalSummary,
 } from "@oddzilla/types";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
@@ -30,21 +31,29 @@ export function WalletPanels({
   deposits,
   withdrawals,
   availableMicro,
+  linkedWallets,
 }: {
   depositAddress: DepositAddress | null;
   depositsAvailable: boolean;
   deposits: DepositIntentSummary[];
   withdrawals: WithdrawalSummary[];
   availableMicro: string;
+  linkedWallets: LinkedWalletAddress[];
 }) {
+  const hasLinkedWallets = linkedWallets.length > 0;
   return (
     <>
       <section className="mt-10 grid gap-6 md:grid-cols-2">
         <DepositCard
           address={depositAddress}
           available={depositsAvailable}
+          hasLinkedWallets={hasLinkedWallets}
         />
         <WithdrawCard availableMicro={availableMicro} />
+      </section>
+
+      <section className="mt-10">
+        <LinkedWalletsCard linkedWallets={linkedWallets} />
       </section>
 
       <section className="mt-10 grid gap-6 lg:grid-cols-2">
@@ -60,9 +69,11 @@ export function WalletPanels({
 function DepositCard({
   address,
   available,
+  hasLinkedWallets,
 }: {
   address: DepositAddress | null;
   available: boolean;
+  hasLinkedWallets: boolean;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -123,9 +134,19 @@ function DepositCard({
               <CopyButton text={address.address} />
               <p className="text-xs text-[var(--color-fg-muted)]">
                 Send only USDC on Ethereum (ERC20). Tokens on the wrong
-                network or contract will be lost. After sending, paste
-                the transaction hash below — credits arrive after the
-                required confirmations.
+                network or contract will be lost.
+                {hasLinkedWallets ? (
+                  <>
+                    {" "}Deposits from your linked wallets are credited
+                    automatically — no further action needed.
+                  </>
+                ) : (
+                  <>
+                    {" "}Link your sending wallet below to skip the
+                    paste-hash step on future deposits, or paste the
+                    transaction hash here after sending.
+                  </>
+                )}
               </p>
             </div>
           </div>
@@ -183,6 +204,176 @@ function mapDepositError(err: unknown): string {
     }
   }
   return "Could not submit transaction hash.";
+}
+
+// ─── Linked wallets ────────────────────────────────────────────────────────
+
+function LinkedWalletsCard({
+  linkedWallets,
+}: {
+  linkedWallets: LinkedWalletAddress[];
+}) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [address, setAddress] = useState("");
+  const [label, setLabel] = useState("");
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
+
+  function onSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setMsg(null);
+    const trimmed = address.trim();
+    if (!/^0x[0-9a-fA-F]{40}$/.test(trimmed)) {
+      setMsg({ kind: "err", text: "Address must be 0x followed by 40 hex characters." });
+      return;
+    }
+    startTransition(async () => {
+      try {
+        await clientApi("/wallet/addresses", {
+          method: "POST",
+          body: JSON.stringify({
+            address: trimmed.toLowerCase(),
+            label: label.trim() || undefined,
+          }),
+        });
+        setMsg({ kind: "ok", text: "Wallet linked. Future deposits from it will credit automatically." });
+        setAddress("");
+        setLabel("");
+        router.refresh();
+      } catch (err) {
+        setMsg({ kind: "err", text: mapLinkError(err) });
+      }
+    });
+  }
+
+  function remove(id: string) {
+    setMsg(null);
+    setRemovingId(id);
+    startTransition(async () => {
+      try {
+        await clientApi(`/wallet/addresses/${id}`, { method: "DELETE" });
+        router.refresh();
+      } catch (err) {
+        setMsg({
+          kind: "err",
+          text: err instanceof ApiFetchError ? err.body.message : "Could not unlink.",
+        });
+      } finally {
+        setRemovingId(null);
+      }
+    });
+  }
+
+  return (
+    <div className="card p-6">
+      <h2 className="text-sm uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
+        Linked wallets
+      </h2>
+      <p className="mt-2 text-xs text-[var(--color-fg-muted)]">
+        Register the ERC20 address you send USDC from. Deposits arriving
+        from a linked wallet are auto-credited after confirmations — no
+        tx hash to paste. One address can only be linked to one
+        Oddzilla account.
+      </p>
+
+      {linkedWallets.length === 0 ? (
+        <p className="mt-4 text-sm text-[var(--color-fg-muted)]">
+          No linked wallets yet.
+        </p>
+      ) : (
+        <ul className="mt-4 divide-y divide-[var(--color-border)] rounded-[14px] border border-[var(--color-border)] bg-[var(--color-bg-card)]">
+          {linkedWallets.map((w) => (
+            <li
+              key={w.id}
+              className="flex items-center justify-between gap-3 px-4 py-3 text-sm"
+            >
+              <div className="min-w-0 flex-1">
+                {w.label ? (
+                  <p className="text-sm font-medium">{w.label}</p>
+                ) : null}
+                <p className="break-all font-mono text-xs text-[var(--color-fg-muted)]">
+                  {w.address}
+                </p>
+                <p className="mt-1 text-[10px] uppercase tracking-[0.12em] text-[var(--color-fg-subtle)]">
+                  {w.network} · linked {new Date(w.createdAt).toLocaleDateString()}
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={pending && removingId === w.id}
+                onClick={() => remove(w.id)}
+                className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-muted)] hover:text-[var(--color-negative)] disabled:opacity-50"
+              >
+                {pending && removingId === w.id ? "Removing…" : "Unlink"}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <form onSubmit={onSubmit} className="mt-5 space-y-3">
+        <label className="block">
+          <span className="text-xs text-[var(--color-fg-subtle)]">
+            Sending address
+          </span>
+          <input
+            type="text"
+            required
+            spellCheck={false}
+            autoComplete="off"
+            value={address}
+            onChange={(e) => setAddress(e.target.value)}
+            placeholder="0x…"
+            className="mt-1 w-full break-all rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-3 py-2 font-mono text-sm outline-none focus:border-[var(--color-accent)]"
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs text-[var(--color-fg-subtle)]">
+            Label (optional)
+          </span>
+          <input
+            type="text"
+            maxLength={60}
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder="e.g. Coinbase, Ledger, MetaMask"
+            className="mt-1 w-full rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)]"
+          />
+        </label>
+        {msg ? (
+          <p
+            role={msg.kind === "err" ? "alert" : "status"}
+            className={
+              "text-sm " +
+              (msg.kind === "ok"
+                ? "text-[var(--color-positive)]"
+                : "text-[var(--color-negative)]")
+            }
+          >
+            {msg.text}
+          </p>
+        ) : null}
+        <button type="submit" disabled={pending} className="btn btn-primary w-full">
+          {pending ? "Linking…" : "Link wallet"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function mapLinkError(err: unknown): string {
+  if (err instanceof ApiFetchError) {
+    switch (err.body.error) {
+      case "address_already_linked":
+        return "That address is already linked (possibly to another account).";
+      case "address_is_internal":
+        return "That's the Oddzilla receive address — pick a sending wallet you control.";
+      default:
+        return err.body.message;
+    }
+  }
+  return "Could not link wallet.";
 }
 
 function CopyButton({ text }: { text: string }) {

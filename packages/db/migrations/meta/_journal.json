@@ -232,6 +232,13 @@
       "when": 1700000032000,
       "tag": "0032_usdc_payments",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1700000033000,
+      "tag": "0033_user_wallet_addresses",
+      "breakpoints": true
     }
   ]
 }
