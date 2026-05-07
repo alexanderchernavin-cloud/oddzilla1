@@ -40,6 +40,7 @@ import adminCommunityRoutes from "./modules/admin/community.js";
 import adminAvatarRoutes from "./modules/admin/avatars.js";
 import widgetsRoutes from "./modules/widgets/routes.js";
 import betbuilderRoutes from "./modules/betbuilder/routes.js";
+import riskzillaRoutes from "./modules/admin/riskzilla/routes.js";
 import { ApiError } from "./lib/errors.js";
 
 const env = loadEnv();
@@ -187,6 +188,7 @@ await app.register(adminCommunityRoutes);
 await app.register(adminAvatarRoutes);
 await app.register(widgetsRoutes);
 await app.register(betbuilderRoutes);
+await app.register(riskzillaRoutes);
 
 app.get("/", async () => ({ service: "oddzilla-api", status: "ok" }));
 

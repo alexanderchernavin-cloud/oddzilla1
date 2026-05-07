@@ -51,6 +51,7 @@ const SECTIONS: Section[] = [
   {
     label: "Risk & limits",
     items: [
+      { href: "/admin/riskzilla", label: "RiskZilla", Icon: I.Live, matchPrefix: "/admin/riskzilla" },
       { href: "/admin/margins", label: "Margins", Icon: I.Filter, matchPrefix: "/admin/margins" },
       { href: "/admin/cashout", label: "Cashout", Icon: I.Wallet, matchPrefix: "/admin/cashout" },
       { href: "/admin/bet-products", label: "Products", Icon: I.Ticket, matchPrefix: "/admin/bet-products" },

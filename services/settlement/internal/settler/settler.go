@@ -263,6 +263,28 @@ func (s *Settler) maybeSettleTicket(ctx context.Context, tx pgx.Tx, ticketID, so
 		return false, err
 	}
 
+	// RiskZilla bank update (migration 0037). Decrements open_liability
+	// by the ticket's potential_payout, moves bank_limit by
+	// (stake − payout), writes the ledger row keyed by ticketID:N to
+	// stay idempotent under settle / rollback / re-settle.
+	bankKind := "bet_payout"
+	if payout == 0 {
+		bankKind = "bet_loss"
+	} else if ledgerType == "bet_refund" {
+		bankKind = "bet_refund"
+	}
+	if err := store.UpdateRiskzillaBankOnSettle(
+		ctx, tx, t.ID, t.Currency, t.StakeMicro, payout, t.PotentialPayoutMicro, bankKind,
+	); err != nil {
+		// Best-effort — a riskzilla bank failure must not unwind a real
+		// settlement (the wallet/ledger is already correct). The
+		// /admin/riskzilla/bank/recompute endpoint can rebuild
+		// open_liability + bank_limit from the underlying tickets +
+		// wallet_ledger if a write here is silently dropped.
+		s.log.Warn().Err(err).Str("ticket", t.ID).
+			Msg("riskzilla bank update failed; continuing")
+	}
+
 	// Phase 10.2 community projection. Best-effort inside the settle tx —
 	// a projection failure must not unwind a real settlement, so we log
 	// and continue. The admin backfill endpoint (POST /admin/community/
@@ -441,6 +463,15 @@ func (s *Settler) reverseSettledForCancel(ctx context.Context, tx pgx.Tx, ticket
 	}
 	if err := store.ReverseSettledTicket(ctx, tx, ticketID, t.UserID, t.Currency, "bet_cancel", t.StakeMicro, prior); err != nil {
 		return false, err
+	}
+	// RiskZilla bank reverse (migration 0037). Re-adds the
+	// open_liability the ticket previously consumed and writes a
+	// compensating ledger row.
+	if err := store.UpdateRiskzillaBankOnReverse(
+		ctx, tx, ticketID, t.Currency, t.StakeMicro, prior, t.PotentialPayoutMicro,
+	); err != nil {
+		s.log.Warn().Err(err).Str("ticket", ticketID).
+			Msg("riskzilla bank reverse (bet_cancel) failed; continuing")
 	}
 	// Mirror the reversal onto the community projection. ON CONFLICT DO
 	// UPDATE flips status='accepted' and clears payout to 0 so feed
@@ -640,6 +671,13 @@ func (s *Settler) reverseTicket(ctx context.Context, tx pgx.Tx, ticketID, reason
 
 	if err := store.ReverseSettledTicket(ctx, tx, ticketID, t.UserID, t.Currency, reason, t.StakeMicro, prior); err != nil {
 		return false, err
+	}
+	// RiskZilla bank reverse — same shape as the bet_cancel branch.
+	if err := store.UpdateRiskzillaBankOnReverse(
+		ctx, tx, ticketID, t.Currency, t.StakeMicro, prior, t.PotentialPayoutMicro,
+	); err != nil {
+		s.log.Warn().Err(err).Str("ticket", ticketID).Str("reason", reason).
+			Msg("riskzilla bank reverse (rollback) failed; continuing")
 	}
 	// Same reversal projection update as the bet_cancel path. Best-effort
 	// inside the rollback tx — backfill recovers any miss.

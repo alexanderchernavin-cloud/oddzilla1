@@ -260,6 +260,13 @@
       "when": 1700000036000,
       "tag": "0036_avatar_templates",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1700000037000,
+      "tag": "0037_riskzilla",
+      "breakpoints": true
     }
   ]
 }
