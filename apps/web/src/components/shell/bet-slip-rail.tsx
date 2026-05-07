@@ -402,8 +402,8 @@ export function BetSlipRail() {
         display: "flex",
         flexDirection: "column",
         position: "sticky",
-        top: 280,
-        maxHeight: "calc(100vh - 280px)",
+        top: 60,
+        maxHeight: "calc(100vh - 60px)",
         // Widget panels and long histories can exceed the viewport-bounded
         // sticky aside — let the entire rail column scroll as one. The
         // selections list inside still has its own overflow so a mid-slip
