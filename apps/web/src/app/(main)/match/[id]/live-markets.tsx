@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLiveOdds } from "@/lib/use-live-odds";
 import { useBetSlip } from "@/lib/bet-slip";
 import { OddButton } from "@/components/ui/primitives";
@@ -222,7 +222,6 @@ export function LiveMarkets({
   }, [initialGroups, ticks]);
 
   const [scope, setScope] = useState<string>("all");
-  const visible = scope === "all" ? mergedGroups : mergedGroups.filter((g) => g.id === scope);
   const hasAnyMarket = mergedGroups.some((g) => g.markets.length > 0);
   // BetBuilder availability — probe runs once on mount, hides when the
   // sport / fixture isn't OBB-eligible. We use it both to gate the
@@ -230,7 +229,42 @@ export function LiveMarkets({
   // gate (the eligibility list also feeds slip.betbuilderEligibleMarketIds
   // when the user toggles ON).
   const builder = useBetBuilderProbe(matchId, match.sportSlug);
-  const showScopeRow = mergedGroups.length > 1 || builder.available;
+
+  // When BetBuilder is active for this match, hide markets that have
+  // zero pickable outcomes (every outcome locked by the builderLocked
+  // gate). Without this filter the markets list is dominated by greyed
+  // rows the user can't interact with — for a typical CS2 fixture that
+  // shadows ~75 of the ~125 markets. Markets containing an already-
+  // picked leg (or matching same-market swap exemption) always pass
+  // because builderLocked returns false for them.
+  const isBuilderForThisMatch =
+    slip.mode === "betbuilder" && slip.betbuilderMatchId === matchId;
+  const filteredGroups = useMemo<MarketGroup[]>(() => {
+    if (!isBuilderForThisMatch) return mergedGroups;
+    return mergedGroups
+      .map((g) => ({
+        ...g,
+        markets: g.markets.filter((m) =>
+          m.outcomes.some((o) => !builderLocked(m.id, o.outcomeId)),
+        ),
+      }))
+      .filter((g) => g.markets.length > 0);
+  }, [mergedGroups, isBuilderForThisMatch, builderLocked]);
+
+  // If the active scope just got filtered out (e.g. user was on "Map 3"
+  // and toggled BetBuilder ON, but Map 3 has no OBB-eligible markets),
+  // fall back to "all". Otherwise the list goes blank.
+  useEffect(() => {
+    if (scope === "all") return;
+    if (filteredGroups.some((g) => g.id === scope)) return;
+    setScope("all");
+  }, [filteredGroups, scope]);
+
+  const visible =
+    scope === "all"
+      ? filteredGroups
+      : filteredGroups.filter((g) => g.id === scope);
+  const showScopeRow = filteredGroups.length > 1 || builder.available;
 
   if (!hasAnyMarket) {
     // Subscription is still mounted via useLiveOdds above — when ticks
@@ -262,12 +296,12 @@ export function LiveMarkets({
             alignItems: "center",
           }}
         >
-          {mergedGroups.length > 1 && (
+          {filteredGroups.length > 1 && (
             <>
               <ScopeTab active={scope === "all"} onClick={() => setScope("all")}>
                 All
               </ScopeTab>
-              {mergedGroups.map((g) => (
+              {filteredGroups.map((g) => (
                 <ScopeTab
                   key={g.id}
                   active={scope === g.id}
