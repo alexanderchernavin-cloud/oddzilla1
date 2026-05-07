@@ -4,6 +4,10 @@ import { useMemo, useState } from "react";
 import { useLiveOdds } from "@/lib/use-live-odds";
 import { useBetSlip } from "@/lib/bet-slip";
 import { OddButton } from "@/components/ui/primitives";
+import {
+  BetBuilderTogglePill,
+  useBetBuilderProbe,
+} from "@/components/match/betbuilder-toggle";
 
 export interface MarketOutcome {
   outcomeId: string;
@@ -220,6 +224,13 @@ export function LiveMarkets({
   const [scope, setScope] = useState<string>("all");
   const visible = scope === "all" ? mergedGroups : mergedGroups.filter((g) => g.id === scope);
   const hasAnyMarket = mergedGroups.some((g) => g.markets.length > 0);
+  // BetBuilder availability — probe runs once on mount, hides when the
+  // sport / fixture isn't OBB-eligible. We use it both to gate the
+  // scope-tabs row visibility AND to forward to LiveMarkets' outcome-
+  // gate (the eligibility list also feeds slip.betbuilderEligibleMarketIds
+  // when the user toggles ON).
+  const builder = useBetBuilderProbe(matchId, match.sportSlug);
+  const showScopeRow = mergedGroups.length > 1 || builder.available;
 
   if (!hasAnyMarket) {
     // Subscription is still mounted via useLiveOdds above — when ticks
@@ -236,28 +247,45 @@ export function LiveMarkets({
     );
   }
 
+  // Scope tabs and the BetBuilder pill share one row above the markets.
+  // Render the row only when EITHER has something to show — otherwise
+  // the parent's column-gap would steal 18px of vertical space for an
+  // empty flex container.
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      {mergedGroups.length > 1 && (
+      {showScopeRow && (
         <div
           style={{
             display: "flex",
             gap: 6,
             flexWrap: "wrap",
+            alignItems: "center",
           }}
         >
-          <ScopeTab active={scope === "all"} onClick={() => setScope("all")}>
-            All
-          </ScopeTab>
-          {mergedGroups.map((g) => (
-            <ScopeTab
-              key={g.id}
-              active={scope === g.id}
-              onClick={() => setScope(g.id)}
-            >
-              {g.label}
-            </ScopeTab>
-          ))}
+          {mergedGroups.length > 1 && (
+            <>
+              <ScopeTab active={scope === "all"} onClick={() => setScope("all")}>
+                All
+              </ScopeTab>
+              {mergedGroups.map((g) => (
+                <ScopeTab
+                  key={g.id}
+                  active={scope === g.id}
+                  onClick={() => setScope(g.id)}
+                >
+                  {g.label}
+                </ScopeTab>
+              ))}
+            </>
+          )}
+          {builder.available && builder.eligibleMarketIds && (
+            <div style={{ marginLeft: "auto" }}>
+              <BetBuilderTogglePill
+                matchId={matchId}
+                eligibleMarketIds={builder.eligibleMarketIds}
+              />
+            </div>
+          )}
         </div>
       )}
 
