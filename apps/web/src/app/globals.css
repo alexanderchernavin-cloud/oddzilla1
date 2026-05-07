@@ -33,35 +33,13 @@
   --sport-sc: #2dd4bf;
 }
 
-/* ---------- DARK ---------- */
-[data-theme="dark"] {
-  --bg: #0b0b0c;
-  --bg-elevated: #131314;
-  --bg-sunken: #050506;
-  --surface: #131314;
-  --surface-2: #1a1a1c;
-  --border: #26262a;
-  --border-strong: #3a3a40;
-  --hairline: #1f1f22;
-
-  --fg: #f2f1ec;
-  --fg-muted: #9a9a98;
-  --fg-dim: #6a6a68;
-  --fg-inverse: #0b0b0c;
-
-  --accent: #f2f1ec;
-  --accent-fg: #0b0b0c;
-  --positive: #6fe09a;
-  --negative: #ff6b5c;
-  --live: #ff5a46;
-  --tier-gold: #f5b94a;
-
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 4px 24px -8px rgba(0, 0, 0, 0.6), 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-lg: 0 30px 80px -20px rgba(0, 0, 0, 0.7), 0 2px 6px rgba(0, 0, 0, 0.4);
-}
-
 /* ---------- LIGHT (default) ---------- */
+/* Order matters: `:root` and `[data-theme="dark"]` have identical
+   specificity (one pseudo-class vs one attribute selector), so when
+   `data-theme="dark"` is set BOTH selectors below match the html
+   element. The later block wins on a specificity tie — keep the
+   light block here at the top so the explicit dark block below
+   overrides it when the toggle is flipped on. */
 :root,
 [data-theme="light"] {
   --bg: #f4f2ec;
@@ -88,6 +66,34 @@
   --shadow-sm: 0 1px 2px rgba(10, 10, 10, 0.04);
   --shadow-md: 0 4px 20px -6px rgba(10, 10, 10, 0.08), 0 1px 2px rgba(10, 10, 10, 0.04);
   --shadow-lg: 0 24px 60px -20px rgba(10, 10, 10, 0.18), 0 2px 6px rgba(10, 10, 10, 0.05);
+}
+
+/* ---------- DARK ---------- */
+[data-theme="dark"] {
+  --bg: #0b0b0c;
+  --bg-elevated: #131314;
+  --bg-sunken: #050506;
+  --surface: #131314;
+  --surface-2: #1a1a1c;
+  --border: #26262a;
+  --border-strong: #3a3a40;
+  --hairline: #1f1f22;
+
+  --fg: #f2f1ec;
+  --fg-muted: #9a9a98;
+  --fg-dim: #6a6a68;
+  --fg-inverse: #0b0b0c;
+
+  --accent: #f2f1ec;
+  --accent-fg: #0b0b0c;
+  --positive: #6fe09a;
+  --negative: #ff6b5c;
+  --live: #ff5a46;
+  --tier-gold: #f5b94a;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 24px -8px rgba(0, 0, 0, 0.6), 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 30px 80px -20px rgba(0, 0, 0, 0.7), 0 2px 6px rgba(0, 0, 0, 0.4);
 }
 
 /* Density */
