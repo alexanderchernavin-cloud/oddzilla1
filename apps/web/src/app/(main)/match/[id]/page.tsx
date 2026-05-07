@@ -254,6 +254,15 @@ function teamTag(name: string): string {
     .slice(0, 4);
 }
 
+// Cap the rendered length and append ".." (two dots) when a name is too
+// long. Combines with CSS ellipsis below for narrow viewports. Only
+// applied to the desktop name span — the mobile span has more room
+// after the compact-scoreboard pass and renders the full string.
+function truncateName(name: string, max: number): string {
+  if (name.length <= max) return name;
+  return name.slice(0, max).trimEnd() + "..";
+}
+
 // Scoreboard renders a two-row table:
 //   [team mark] [team name] | Score | 1 | 2 | … | N
 // where Score is the series score (boxed) and the numeric columns are
@@ -298,12 +307,18 @@ function Scoreboard({
   // Grid template: [team] [score] [map1] [map2] … [mapN]
   // Team column flexes; numeric columns are fixed-width and centered.
   // Bump per-map width when extras render so paired values like
-  // "23k:28k" fit on the same row without crowding.
-  const mapColWidth = extraRows.length > 0 ? "44px" : "32px";
-  const gridTemplate = `minmax(0, 1fr) 40px${cols.length ? " " + cols.map(() => mapColWidth).join(" ") : ""}`;
+  // "23k:28k" fit on the same row without crowding. Both score and
+  // map cell widths come from CSS variables on .oz-scoreboard so the
+  // mobile breakpoint (≤1099px) can swap a compact set in without
+  // the JSX needing to know about the viewport.
+  const mapColVar = extraRows.length > 0
+    ? "var(--sb-map-col-extras)"
+    : "var(--sb-map-col)";
+  const gridTemplate = `minmax(0, 1fr) var(--sb-score-col)${cols.length ? " " + cols.map(() => mapColVar).join(" ") : ""}`;
 
   return (
     <div
+      className="oz-scoreboard"
       style={{
         display: "flex",
         flexDirection: "column",
@@ -315,8 +330,8 @@ function Scoreboard({
         style={{
           display: "grid",
           gridTemplateColumns: gridTemplate,
-          rowGap: 4,
-          columnGap: 8,
+          rowGap: "var(--sb-row-gap)",
+          columnGap: "var(--sb-col-gap)",
           alignItems: "center",
         }}
       >
@@ -409,21 +424,32 @@ function TeamRow({
   getValue: (n: number) => number | null;
   isLiveCol: (n: number) => boolean;
 }) {
+  const tag = teamTag(name);
   return (
     <>
       <div
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 8,
+          gap: "var(--sb-cell-gap)",
           minWidth: 0,
         }}
       >
-        <TeamMark tag={teamTag(name)} size={22} logoUrl={logoUrl} name={name} />
+        {/* Two TeamMark instances: CSS toggles which one is visible
+            via the .oz-sb-mark-{desktop,mobile} classes. TeamMark's
+            size flows into width/height/font-size inline so a single
+            CSS variable can't cover all three — duplicating + toggling
+            is cleaner than refactoring the primitive. */}
+        <span className="oz-sb-mark-desktop">
+          <TeamMark tag={tag} size={28} logoUrl={logoUrl} name={name} />
+        </span>
+        <span className="oz-sb-mark-mobile">
+          <TeamMark tag={tag} size={22} logoUrl={logoUrl} name={name} />
+        </span>
         <span
           style={{
             fontWeight: 500,
-            fontSize: 14,
+            fontSize: "var(--sb-team-font)",
             letterSpacing: "-0.01em",
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -432,16 +458,17 @@ function TeamRow({
             flex: 1,
           }}
         >
-          {name}
+          <span className="oz-sb-name-desktop">{truncateName(name, 24)}</span>
+          <span className="oz-sb-name-mobile">{name}</span>
         </span>
       </div>
 
       <div
-        className="mono tnum"
+        className="mono tnum oz-sb-score"
         style={{
           textAlign: "center",
-          fontSize: 14,
-          fontWeight: 600,
+          fontSize: "var(--sb-score-font)",
+          fontWeight: 500,
           color: "var(--fg)",
         }}
       >
@@ -457,7 +484,7 @@ function TeamRow({
             className="mono tnum"
             style={{
               textAlign: "center",
-              fontSize: 13,
+              fontSize: "var(--sb-map-font)",
               fontWeight: 500,
               color: v == null ? "var(--fg-dim)" : live ? "var(--fg)" : "var(--fg-muted)",
             }}

@@ -283,6 +283,32 @@ body {
 .oz-live-media-stream,
 .oz-live-media-stats { display: block; }
 
+/* Match-detail scoreboard. Desktop ships the original roomy bordered
+   SCORE box and 28px logos; the breakpoint block below swaps in
+   tighter variables so team names get the room they need on narrow
+   phones. The two TeamMark spans per row let the logo size follow
+   the breakpoint without resizing the primitive's inline width/height
+   from JS. */
+.oz-scoreboard {
+  --sb-score-col: 60px;
+  --sb-map-col: 44px;
+  --sb-map-col-extras: 56px;
+  --sb-row-gap: 6px;
+  --sb-col-gap: 10px;
+  --sb-cell-gap: 10px;
+  --sb-team-font: 15px;
+  --sb-score-font: 16px;
+  --sb-map-font: 15px;
+}
+.oz-scoreboard .oz-sb-score {
+  padding: 6px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm, 6px);
+  min-width: 44px;
+}
+.oz-sb-mark-mobile,
+.oz-sb-name-mobile { display: none; }
+
 /* The old FAB slip trigger in the top bar is replaced by the sticky
    bottom bar on mobile. Kept hidden unconditionally so stray instances
    don't render. */
@@ -341,6 +367,34 @@ body {
   .oz-live-media-stats[data-active="false"] {
     display: none !important;
   }
+
+  /* Compact scoreboard at and below tablet so long team names
+     ("Carstensz Esports") aren't truncated by the fixed-width score
+     and map columns. Strips the bordered SCORE box and shrinks every
+     metric column. The two TeamMark instances per row swap so the
+     logo follows the breakpoint without resizing inline. */
+  .oz-scoreboard {
+    --sb-score-col: 40px;
+    --sb-map-col: 32px;
+    --sb-map-col-extras: 44px;
+    --sb-row-gap: 4px;
+    --sb-col-gap: 8px;
+    --sb-cell-gap: 8px;
+    --sb-team-font: 14px;
+    --sb-score-font: 14px;
+    --sb-map-font: 13px;
+  }
+  .oz-scoreboard .oz-sb-score {
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    min-width: 0;
+    font-weight: 600;
+  }
+  .oz-sb-mark-desktop,
+  .oz-sb-name-desktop { display: none !important; }
+  .oz-sb-mark-mobile { display: inline-flex !important; }
+  .oz-sb-name-mobile { display: inline !important; }
   /* Rail becomes a bottom sheet on anything below desktop: slides up
      from the bottom, stops short of the top bar, rounded top corners.
      This is far more thumb-friendly than a right-edge drawer. The
