@@ -39,7 +39,7 @@ interface BigWinsResponse {
 }
 
 function formatUsdt(micro: string) {
-  return `${fromMicro(BigInt(micro))} USDT`;
+  return `${fromMicro(BigInt(micro))} USDC`;
 }
 
 function signedMicro(micro: string) {

@@ -1,72 +1,65 @@
 # services/wallet-watcher
 
-Watches Tron and Ethereum USDT deposits, credits wallets on confirmation.
-Go 1.23.
+Verifies user-claimed Ethereum USDC deposits and credits wallets on
+confirmation. Go 1.23.
 
-**Phase 1:** health stub on `:8085`.
-**Phase 7 (current):** real chain watchers — Tron via TronGrid REST,
-Ethereum via stdlib JSON-RPC. Per-chain scanner + shared confirmation
-processor. Gracefully idles when neither RPC URL is configured.
+## How it works (post migration 0032)
 
-Sub-packages (`internal/`):
-- `ethereum` — minimal JSON-RPC client (`eth_blockNumber` + `eth_getLogs`)
-  + scanner that filters USDT Transfer logs
-- `tron` — TronGrid REST client + scanner; address normalizer accepts
-  Base58, hex-with-41-prefix, and 32-byte zero-padded forms
-- `deposits` — shared confirmation tick + atomic credit (deposit row →
-  wallet balance → wallet_ledger), all replay-safe via the unique
-  partial index
-- `store` — pgx queries for cursor + deposit lifecycle
-- `config` — env parsing with per-chain enable flags
+The service no longer scans block ranges. Users send USDC to a single
+shared receive address (configured via `DEPOSIT_RECEIVE_ADDRESS`) and
+post their tx hash through `POST /wallet/deposits/intent`. That writes
+a `deposit_intents` row in `pending` state.
 
-**Not yet:** on-chain withdrawal submission (admin manually broadcasts
-+ records tx hash for MVP). Withdrawal confirmation auto-detection from
-the existing scanner is a follow-up.
+Every poll tick the watcher:
 
-## Chains
+1. Pulls intents in `{pending, confirming}`.
+2. Calls `eth_getTransactionReceipt` for each.
+3. Inspects the receipt for a `Transfer(from, to, amount)` log emitted
+   by the configured USDC contract whose `to` matches the receive
+   address. No matching log → reject the intent. Reverted tx → reject.
+4. Counts confirmations against the chain head.
+5. At threshold, re-checks the canonical block hash to detect a reorg
+   between sighting and credit.
+6. Credits atomically: `UPDATE deposit_intents SET status='credited'`,
+   `UPDATE wallets SET balance_micro += amount` (currency='USDC'),
+   `INSERT wallet_ledger (type='deposit', ref_type='deposit_intent',
+   ref_id=intent.id)`. The wallet_ledger unique partial index on
+   `(type, ref_type, ref_id)` is the last-resort double-credit guard.
 
-Both from day 1:
+Idle behaviour: if `ETH_RPC_URL` or `DEPOSIT_RECEIVE_ADDRESS` is empty
+the loop is skipped and `/healthz` reports `ethereum.enabled = false`.
 
-| Chain | Library | USDT contract | Confirmations |
-| --- | --- | --- | --- |
-| TRC20 | `github.com/fbsobreira/gotron-sdk` | `TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t` | 19 |
-| ERC20 | `github.com/ethereum/go-ethereum` | `0xdAC17F958D2ee523a2206206994597C13D831ec7` | 12 |
+## Sub-packages
 
-## Deposit flow
+- `internal/ethereum` — JSON-RPC client (`eth_blockNumber`,
+  `eth_getTransactionReceipt`, `eth_getBlockByNumber`) + a `Verifier`
+  that adapts the client to the deposits package contract.
+- `internal/deposits` — intent processor (resolves, validates, counts
+  confirmations, credits).
+- `internal/store` — pgx queries against `deposit_intents` (list
+  pending, mark confirming, update confs, credit, reject).
+- `internal/config` — env parsing.
 
-1. Subscribe/scan for USDT `Transfer(from, to, value)` events to any address
-   in `deposit_addresses`.
-2. `INSERT INTO deposits (network, tx_hash, log_index, to_address,
-   amount_micro, confirmations=0, status='seen', block_number)` with
-   unique key `(network, tx_hash, log_index)` dedupe.
-3. Each tick increment `confirmations`. At threshold, one transaction:
-   - `UPDATE deposits SET status='credited', credited_at=NOW()`
-   - `UPDATE wallets SET balance_micro = balance_micro + amount_micro`
-   - `INSERT INTO wallet_ledger (user_id, delta_micro=amount, type='deposit',
-      ref_type='deposit', ref_id=deposits.id, tx_hash=...)` — the unique
-      partial index on `wallet_ledger(type, ref_type, ref_id)` makes this
-      idempotent even across crashes.
+## Chain
 
-## Withdrawal flow (Phase 7 manual approval)
+| Chain | USDC contract | Confirmations |
+| --- | --- | --- |
+| ERC20 | `0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48` | 12 |
 
-1. User `POST /wallet/withdrawals` → `withdrawals` row, `status='requested'`.
-2. Admin approves → `status='approved'`.
-3. Signer service (separate container, Phase 7 exit criterion) signs and
-   submits a tx → `status='submitted'`, `tx_hash=...`.
-4. Watcher confirms → `status='confirmed'`, debit `wallets` + write a
-   ledger `withdrawal` row (`ref_id=withdrawals.id`).
+Override the contract via `ETH_USDC_CONTRACT` for testnets.
+
+## Withdrawal flow (manual)
+
+Withdrawals are admin-driven end-to-end. The user opens a request via
+`POST /wallet/withdrawals`; an admin approves, broadcasts USDC from an
+external wallet, and pastes the tx hash via `mark-submitted`. A
+different admin marks confirmed (4-eyes). wallet-watcher does **not**
+participate in withdrawal lifecycle.
 
 ## Chain reorgs
 
-- If a previously-seen deposit's block is reorged out,
-  `status='orphaned'` and we don't credit. If we already credited at a
-  shallower confirmation than configured (shouldn't), that's an incident
-  and requires an `adjustment` ledger entry with audit log.
-
-## Invariants
-
-- Never credit without the required confirmations.
-- Address → user mapping is derived from `deposit_addresses`; we don't
-  guess.
-- HD master mnemonic is in `.env` for MVP; moves to a dedicated signer
-  container before public launch.
+If a recorded `block_hash` no longer matches the canonical chain at
+its `block_number` when threshold confirmations are reached, the
+intent stays in `confirming` and is re-evaluated on the next tick. If
+the chain settles without re-including the tx, an admin can reject
+the intent manually via `/admin/deposits/:id/reject`.

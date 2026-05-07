@@ -70,11 +70,11 @@ export default async function UserDetailPage({
       <p className="mt-1 font-mono text-xs text-[var(--color-fg-subtle)]">{user.id}</p>
 
       <section className="mt-6 grid gap-4 md:grid-cols-3">
-        <Stat label="Balance" value={`${fromMicro(BigInt(user.balanceMicro))} USDT`} />
-        <Stat label="Locked" value={`${fromMicro(BigInt(user.lockedMicro))} USDT`} />
+        <Stat label="Balance" value={`${fromMicro(BigInt(user.balanceMicro))} USDC`} />
+        <Stat label="Locked" value={`${fromMicro(BigInt(user.lockedMicro))} USDC`} />
         <Stat
           label="Lifetime net (house)"
-          value={`${netLifetime >= 0n ? "+" : ""}${fromMicro(netLifetime)} USDT`}
+          value={`${netLifetime >= 0n ? "+" : ""}${fromMicro(netLifetime)} USDC`}
           tone={netLifetime >= 0n ? "positive" : "negative"}
         />
         <Stat label="Total tickets" value={String(stats.totalTickets)} />
@@ -132,7 +132,7 @@ export default async function UserDetailPage({
                   <div className="text-right">
                     <p className="font-mono">
                       {fromMicro(stake)} →{" "}
-                      {payout !== null ? fromMicro(payout) : "—"} USDT
+                      {payout !== null ? fromMicro(payout) : "—"} USDC
                     </p>
                     {net !== null ? (
                       <p className={"font-mono text-xs " + netTone}>

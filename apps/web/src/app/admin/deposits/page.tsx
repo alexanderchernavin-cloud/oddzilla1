@@ -1,35 +1,36 @@
 import { serverApi } from "@/lib/server-fetch";
 import {
-  AdminWithdrawals,
-  type AdminWithdrawalEntry,
-} from "./admin-withdrawals";
+  AdminDeposits,
+  type AdminDepositEntry,
+} from "./admin-deposits";
 
 interface ListResponse {
-  withdrawals: AdminWithdrawalEntry[];
+  deposits: AdminDepositEntry[];
 }
 
-export default async function WithdrawalsPage({
+export default async function DepositsPage({
   searchParams,
 }: {
   searchParams: Promise<{ status?: string }>;
 }) {
   const params = await searchParams;
-  const allowed = ["requested", "approved", "submitted", "confirmed", "failed", "cancelled"];
+  const allowed = ["pending", "confirming", "credited", "rejected"];
   const status = allowed.includes(params.status ?? "") ? params.status : undefined;
 
   const qs = new URLSearchParams({ limit: "100" });
   if (status) qs.set("status", status);
 
-  const data = await serverApi<ListResponse>(`/admin/withdrawals?${qs.toString()}`);
-  const withdrawals = data?.withdrawals ?? [];
+  const data = await serverApi<ListResponse>(`/admin/deposits?${qs.toString()}`);
+  const deposits = data?.deposits ?? [];
 
   return (
     <div>
-      <h1 className="text-2xl font-semibold tracking-tight">Withdrawals</h1>
+      <h1 className="text-2xl font-semibold tracking-tight">Deposits</h1>
       <p className="mt-2 text-sm text-[var(--color-fg-muted)]">
-        Approve manually, then broadcast USDC on Ethereum from an
-        external wallet and paste the tx hash via mark-submitted.
-        Confirmation requires a different admin to satisfy 4-eyes.
+        Users submit a tx hash after sending USDC to the shared receive
+        address. wallet-watcher resolves the receipt and credits after
+        confirmations. Use this view to manually credit or reject when
+        the watcher can&apos;t auto-resolve a claim.
       </p>
 
       <section className="mt-6 flex flex-wrap items-center gap-2 text-sm">
@@ -37,7 +38,7 @@ export default async function WithdrawalsPage({
           Filter
         </span>
         <a
-          href="/admin/withdrawals"
+          href="/admin/deposits"
           className={
             "rounded-[8px] border px-3 py-1 " +
             (status === undefined
@@ -50,7 +51,7 @@ export default async function WithdrawalsPage({
         {allowed.map((s) => (
           <a
             key={s}
-            href={`/admin/withdrawals?status=${s}`}
+            href={`/admin/deposits?status=${s}`}
             className={
               "rounded-[8px] border px-3 py-1 " +
               (status === s
@@ -64,12 +65,12 @@ export default async function WithdrawalsPage({
       </section>
 
       <section className="mt-6">
-        {withdrawals.length === 0 ? (
+        {deposits.length === 0 ? (
           <p className="text-sm text-[var(--color-fg-muted)]">
-            No withdrawals in this view.
+            No deposits in this view.
           </p>
         ) : (
-          <AdminWithdrawals entries={withdrawals} />
+          <AdminDeposits entries={deposits} />
         )}
       </section>
     </div>

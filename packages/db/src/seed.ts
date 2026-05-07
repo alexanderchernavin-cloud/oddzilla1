@@ -116,7 +116,7 @@ async function main() {
     await db
       .insert(wallets)
       .values([
-        { userId: user.id, currency: "USDT", balanceMicro: 0n },
+        { userId: user.id, currency: "USDC", balanceMicro: 0n },
         { userId: user.id, currency: "OZ", balanceMicro: 0n },
       ])
       .onConflictDoNothing({ target: [wallets.userId, wallets.currency] });

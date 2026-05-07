@@ -15,15 +15,16 @@ import {
 import { walletTxTypeEnum } from "../enums.js";
 import { users } from "./users.js";
 
-// One wallet row per (user, currency). USDT is the production currency;
-// OZ is a demo currency for testing bet flows. See migration 0014.
+// One wallet row per (user, currency). USDC is the production currency
+// (migration 0032 renamed from USDT); OZ is a demo currency for testing
+// bet flows. See migrations 0014 + 0032.
 export const wallets = pgTable(
   "wallets",
   {
     userId: uuid()
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
-    currency: char({ length: 4 }).notNull().default("USDT"),
+    currency: char({ length: 4 }).notNull().default("USDC"),
     balanceMicro: bigint({ mode: "bigint" }).notNull().default(0n),
     lockedMicro: bigint({ mode: "bigint" }).notNull().default(0n),
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
@@ -43,7 +44,7 @@ export const walletLedger = pgTable(
     userId: uuid()
       .notNull()
       .references(() => users.id),
-    currency: char({ length: 4 }).notNull().default("USDT"),
+    currency: char({ length: 4 }).notNull().default("USDC"),
     deltaMicro: bigint({ mode: "bigint" }).notNull(),
     type: walletTxTypeEnum().notNull(),
     refType: text(),

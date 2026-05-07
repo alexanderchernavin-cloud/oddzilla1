@@ -14,7 +14,18 @@ export const walletTxTypeEnum = pgEnum("wallet_tx_type", [
   "cashout",
 ]);
 export const chainNetworkEnum = pgEnum("chain_network", ["TRC20", "ERC20"]);
+// Legacy deposits table status. Kept for the dormant `deposits` table —
+// migration 0032 stopped writing to it but did not DROP it.
 export const depositStatusEnum = pgEnum("deposit_status", ["seen", "confirming", "credited", "orphaned"]);
+// Migration 0032: user-submitted tx-hash claim lifecycle. The
+// wallet-watcher polls pending/confirming rows, validates the on-chain
+// USDC Transfer, counts confirmations, and either credits or rejects.
+export const depositIntentStatusEnum = pgEnum("deposit_intent_status", [
+  "pending",
+  "confirming",
+  "credited",
+  "rejected",
+]);
 export const withdrawalStatusEnum = pgEnum("withdrawal_status", [
   "requested",
   "approved",

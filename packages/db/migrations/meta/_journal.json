@@ -225,6 +225,13 @@
       "when": 1700000031000,
       "tag": "0031_betbuilder",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1700000032000,
+      "tag": "0032_usdc_payments",
+      "breakpoints": true
     }
   ]
 }

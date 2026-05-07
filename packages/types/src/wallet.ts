@@ -2,7 +2,10 @@
 
 import type { Currency } from "./currencies.js";
 
-export type ChainNetwork = "TRC20" | "ERC20";
+// USDC on Ethereum is the only supported on-chain network. The TRC20
+// value is retained in the DB enum for historical rows but new code
+// should not produce it.
+export type ChainNetwork = "ERC20";
 
 export interface WalletSnapshot {
   currency: Currency;
@@ -31,7 +34,12 @@ export interface WalletLedgerResponse {
   entries: WalletLedgerEntryDto[];
 }
 
-export type DepositStatus = "seen" | "confirming" | "credited" | "orphaned";
+export type DepositIntentStatus =
+  | "pending"
+  | "confirming"
+  | "credited"
+  | "rejected";
+
 export type WithdrawalStatus =
   | "requested"
   | "approved"
@@ -40,36 +48,50 @@ export type WithdrawalStatus =
   | "failed"
   | "cancelled";
 
+// Single shared receive address served to every user. The actual
+// address is configured server-side via DEPOSIT_RECEIVE_ADDRESS.
 export interface DepositAddress {
   network: ChainNetwork;
   address: string;
+  // Currency the user is expected to send. Surfaced so the UI can
+  // render "Send USDC on ERC20" without hard-coding labels.
+  currency: Currency;
 }
 
-export interface DepositAddressesResponse {
-  addresses: DepositAddress[];
+export interface DepositAddressResponse {
+  address: DepositAddress | null;
+  // When the operator has not configured a receive address yet, the
+  // API returns null so the UI can render a "Deposits temporarily
+  // unavailable" notice instead of an empty card.
+  available: boolean;
 }
 
-export interface DepositSummary {
+export interface DepositIntentSummary {
   id: string;
   network: ChainNetwork;
   txHash: string;
-  logIndex: number;
-  toAddress: string;
-  amountMicro: string;
+  fromAddress: string | null;
+  toAddress: string | null;
+  amountMicro: string | null;
+  blockNumber: string | null;
   confirmations: number;
   confirmationsRequired: number;
-  status: DepositStatus;
-  blockNumber: string | null;
-  seenAt: string;
+  status: DepositIntentStatus;
+  failureReason: string | null;
+  submittedAt: string;
   creditedAt: string | null;
+  rejectedAt: string | null;
 }
 
-export interface DepositListResponse {
-  deposits: DepositSummary[];
+export interface DepositIntentListResponse {
+  deposits: DepositIntentSummary[];
+}
+
+export interface DepositIntentRequest {
+  txHash: string;
 }
 
 export interface WithdrawalRequest {
-  network: ChainNetwork;
   toAddress: string;
   amountMicro: string;
 }
@@ -93,10 +115,9 @@ export interface WithdrawalListResponse {
   withdrawals: WithdrawalSummary[];
 }
 
-// Minimum Tron/Ethereum confirmation counts the client can use for UI
-// progress bars. These must match wallet-watcher's config for the numbers
-// to line up with on-chain events.
+// Confirmation count the client can use for UI progress bars. Must
+// match wallet-watcher's config so the numbers line up with on-chain
+// events.
 export const CONFIRMATIONS_REQUIRED: Record<ChainNetwork, number> = {
-  TRC20: 19,
   ERC20: 12,
 };

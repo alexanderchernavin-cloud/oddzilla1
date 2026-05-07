@@ -27,7 +27,7 @@ export default async function PublicProfilePage({
   const { nickname } = await params;
   const { currency: rawCurrency } = await searchParams;
   const currency: Currency =
-    rawCurrency && isCurrency(rawCurrency) ? rawCurrency : "USDT";
+    rawCurrency && isCurrency(rawCurrency) ? rawCurrency : "USDC";
 
   const [profile, ticketsRes, sportsRes] = await Promise.all([
     serverApi<CommunityProfile>(

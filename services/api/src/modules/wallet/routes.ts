@@ -1,53 +1,60 @@
-// /wallet endpoints. Phase 7 adds deposit addresses (HD-derived) and the
-// withdrawal request flow.
+// /wallet endpoints.
+//
+// Post-0032 the deposit flow is intent-based: every user is shown the
+// same shared ERC20 receive address (configured via env), and after
+// sending USDC they paste the tx hash here. The wallet-watcher Go
+// service polls deposit_intents, validates the on-chain Transfer,
+// counts confirmations, and credits the wallet atomically.
+//
+// Withdrawals stay manual — the user opens a request and an admin
+// processes it from /admin/withdrawals using an external signer.
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { eq, desc, and, sql } from "drizzle-orm";
-import { createHash } from "node:crypto";
 import { getAddress } from "ethers";
-import bs58 from "bs58";
 import {
   users,
   wallets,
   walletLedger,
-  depositAddresses,
-  deposits as depositsTable,
+  depositIntents,
   withdrawals as withdrawalsTable,
 } from "@oddzilla/db";
 import { CONFIRMATIONS_REQUIRED, SUPPORTED_CURRENCIES } from "@oddzilla/types";
+import { loadEnv } from "@oddzilla/config";
 import {
   BadRequestError,
+  ConflictError,
   ForbiddenError,
   NotFoundError,
 } from "../../lib/errors.js";
-import {
-  deriveAddressesForUser,
-  derivationPath,
-  userIndexFromUUID,
-} from "../../lib/hdwallet.js";
 
 const ledgerQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
   currency: z.enum(SUPPORTED_CURRENCIES).optional(),
 });
 
-const NETWORKS = ["TRC20", "ERC20"] as const;
-
-const withdrawalBody = z.object({
-  network: z.enum(NETWORKS),
-  toAddress: z.string().min(16).max(64),
-  amountMicro: z.string().regex(/^\d+$/, "amount must be a positive integer string"),
-});
-
 const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 
+// ERC20 tx hash: 0x + 32 bytes of hex.
+const ETH_TX_HASH = /^0x[0-9a-fA-F]{64}$/u;
+
+const intentBody = z.object({
+  txHash: z.string().regex(ETH_TX_HASH, "tx_hash must be 0x + 64 hex chars"),
+});
+
+const withdrawalBody = z.object({
+  toAddress: z.string().min(16).max(64),
+  amountMicro: z.string().regex(/^\d+$/, "amount must be a positive integer string"),
+});
+
 export default async function walletRoutes(app: FastifyInstance) {
+  const env = loadEnv();
+  const receiveAddress = env.DEPOSIT_RECEIVE_ADDRESS ?? null;
+
   // ── Balance summary ──────────────────────────────────────────────────
-  // Returns one snapshot per currency the user has a wallet row for.
-  // Order matches SUPPORTED_CURRENCIES so USDT is always first.
   app.get("/wallet", async (request) => {
     const u = request.requireAuth();
     const rows = await app.db
@@ -99,81 +106,112 @@ export default async function walletRoutes(app: FastifyInstance) {
     };
   });
 
-  // ── Deposit addresses ────────────────────────────────────────────────
-  // First-read derives both network addresses and upserts into DB.
-  // Subsequent reads are cheap DB lookups.
-  app.get("/wallet/deposit-addresses", async (request) => {
-    const u = request.requireAuth();
-
-    const existing = await app.db
-      .select()
-      .from(depositAddresses)
-      .where(eq(depositAddresses.userId, u.id));
-
-    const have = new Set(existing.map((r) => r.network));
-    const missing = NETWORKS.filter((n) => !have.has(n));
-
-    if (missing.length > 0) {
-      const userIndex = userIndexFromUUID(u.id);
-      // Address derivation goes through the signer service. The mnemonic
-      // lives only in that container; the API has no offline fallback,
-      // so a SignerUnavailableError surfaces as a clean 503-ish error
-      // for the user (Fastify error handler maps to 500 by default;
-      // catching here and rethrowing as 503 would be a polish item).
-      const derived = await deriveAddressesForUser(userIndex);
-
-      for (const network of missing) {
-        await app.db
-          .insert(depositAddresses)
-          .values({
-            userId: u.id,
-            network,
-            address: derived[network],
-            derivationPath: derivationPath(network, userIndex),
-          })
-          .onConflictDoNothing({
-            target: [depositAddresses.userId, depositAddresses.network],
-          });
-      }
+  // ── Shared deposit address ───────────────────────────────────────────
+  // Single address served to everyone. The actual receive address is
+  // operator-managed; we return null when env isn't configured so the
+  // UI can surface "deposits temporarily unavailable" instead of a
+  // half-rendered card.
+  app.get("/wallet/deposit-address", async (request) => {
+    request.requireAuth();
+    if (!receiveAddress) {
+      return { available: false, address: null };
     }
-
-    // Re-read so the response is authoritative.
-    const rows = await app.db
-      .select({
-        network: depositAddresses.network,
-        address: depositAddresses.address,
-      })
-      .from(depositAddresses)
-      .where(eq(depositAddresses.userId, u.id))
-      .orderBy(depositAddresses.network);
-
-    return { addresses: rows };
+    return {
+      available: true,
+      address: {
+        network: "ERC20" as const,
+        address: receiveAddress,
+        currency: "USDC" as const,
+      },
+    };
   });
 
-  // ── Recent deposits ──────────────────────────────────────────────────
+  // ── Submit a tx-hash claim ───────────────────────────────────────────
+  app.post("/wallet/deposits/intent", async (request) => {
+    const u = request.requireAuth();
+    const body = intentBody.parse(request.body);
+
+    if (!receiveAddress) {
+      throw new BadRequestError(
+        "deposits_unavailable",
+        "deposits_unavailable",
+      );
+    }
+
+    const txHash = body.txHash.toLowerCase();
+
+    // Block non-active users from claiming deposits — same gate we
+    // apply to withdrawal requests.
+    const [account] = await app.db
+      .select({ status: users.status })
+      .from(users)
+      .where(eq(users.id, u.id))
+      .limit(1);
+    if (!account) throw new NotFoundError("user_not_found", "user_not_found");
+    if (account.status !== "active") {
+      throw new ForbiddenError("account_not_active", "account_not_active");
+    }
+
+    try {
+      const [inserted] = await app.db
+        .insert(depositIntents)
+        .values({
+          userId: u.id,
+          network: "ERC20",
+          txHash,
+          status: "pending",
+        })
+        .returning({
+          id: depositIntents.id,
+          status: depositIntents.status,
+        });
+      if (!inserted) throw new Error("intent insert returned no row");
+      return { id: inserted.id, status: inserted.status };
+    } catch (err) {
+      // Postgres error code for unique_violation is "23505". We surface
+      // a 409 so the UI can tell the user "that tx hash is already
+      // recorded" without leaking whose intent it is.
+      if (
+        err &&
+        typeof err === "object" &&
+        "code" in err &&
+        (err as { code?: string }).code === "23505"
+      ) {
+        throw new ConflictError(
+          "tx_hash_already_claimed",
+          "tx_hash_already_claimed",
+        );
+      }
+      throw err;
+    }
+  });
+
+  // ── Recent deposit intents ───────────────────────────────────────────
   app.get("/wallet/deposits", async (request) => {
     const u = request.requireAuth();
     const q = listQuery.parse(request.query);
     const rows = await app.db
       .select()
-      .from(depositsTable)
-      .where(eq(depositsTable.userId, u.id))
-      .orderBy(desc(depositsTable.seenAt))
+      .from(depositIntents)
+      .where(eq(depositIntents.userId, u.id))
+      .orderBy(desc(depositIntents.submittedAt))
       .limit(q.limit);
     return {
       deposits: rows.map((r) => ({
         id: r.id,
-        network: r.network,
+        network: r.network as "ERC20",
         txHash: r.txHash,
-        logIndex: r.logIndex,
+        fromAddress: r.fromAddress,
         toAddress: r.toAddress,
-        amountMicro: r.amountMicro.toString(),
-        confirmations: r.confirmations,
-        confirmationsRequired: CONFIRMATIONS_REQUIRED[r.network],
-        status: r.status,
+        amountMicro: r.amountMicro?.toString() ?? null,
         blockNumber: r.blockNumber?.toString() ?? null,
-        seenAt: r.seenAt.toISOString(),
+        confirmations: r.confirmations,
+        confirmationsRequired: CONFIRMATIONS_REQUIRED.ERC20,
+        status: r.status,
+        failureReason: r.failureReason,
+        submittedAt: r.submittedAt.toISOString(),
         creditedAt: r.creditedAt?.toISOString() ?? null,
+        rejectedAt: r.rejectedAt?.toISOString() ?? null,
       })),
     };
   });
@@ -186,13 +224,9 @@ export default async function walletRoutes(app: FastifyInstance) {
     if (amount <= 0n) {
       throw new BadRequestError("amount_must_be_positive", "amount_must_be_positive");
     }
-    validateDestinationAddress(body.network, body.toAddress);
+    const toAddress = validateErc20Address(body.toAddress);
 
     const withdrawalId = await app.db.transaction(async (tx) => {
-      // Block non-active users inside the txn — FOR UPDATE on the wallet
-      // row serialises concurrent requests, and reading users in the
-      // same txn gives us a consistent snapshot. Mirrors the status
-      // check in bets/service.ts.
       const [account] = await tx
         .select({ status: users.status })
         .from(users)
@@ -203,11 +237,10 @@ export default async function walletRoutes(app: FastifyInstance) {
         throw new ForbiddenError("account_not_active", "account_not_active");
       }
 
-      // Withdrawals are USDT-only — there's no on-chain network for OZ.
       const [wallet] = await tx
         .select()
         .from(wallets)
-        .where(and(eq(wallets.userId, u.id), eq(wallets.currency, "USDT")))
+        .where(and(eq(wallets.userId, u.id), eq(wallets.currency, "USDC")))
         .for("update")
         .limit(1);
       if (!wallet) throw new NotFoundError("wallet_not_found", "wallet_not_found");
@@ -217,37 +250,30 @@ export default async function walletRoutes(app: FastifyInstance) {
         throw new BadRequestError("insufficient_balance", "insufficient_balance");
       }
 
-      // Defensive: reject withdrawing to one of our own deposit addresses —
-      // would create a circular credit path and nothing good.
-      const selfAddresses = await tx
-        .select({ address: depositAddresses.address })
-        .from(depositAddresses)
-        .where(
-          and(
-            eq(depositAddresses.network, body.network),
-            eq(depositAddresses.address, body.toAddress),
-          ),
-        );
-      if (selfAddresses.length > 0) {
+      // Defensive: reject withdrawing to the shared receive address —
+      // that's our hot wallet, not a user destination.
+      if (
+        receiveAddress &&
+        toAddress.toLowerCase() === receiveAddress.toLowerCase()
+      ) {
         throw new BadRequestError("to_address_is_internal", "to_address_is_internal");
       }
 
-      // Lock the stake so it can't be double-spent while the withdrawal
-      // is pending admin approval. When an admin rejects, we release.
+      // Lock the stake until admin processes.
       await tx
         .update(wallets)
         .set({
           lockedMicro: sql`${wallets.lockedMicro} + ${amount}`,
           updatedAt: new Date(),
         })
-        .where(and(eq(wallets.userId, u.id), eq(wallets.currency, "USDT")));
+        .where(and(eq(wallets.userId, u.id), eq(wallets.currency, "USDC")));
 
       const [inserted] = await tx
         .insert(withdrawalsTable)
         .values({
           userId: u.id,
-          network: body.network,
-          toAddress: body.toAddress,
+          network: "ERC20",
+          toAddress,
           amountMicro: amount,
           feeMicro: 0n,
           status: "requested",
@@ -255,23 +281,19 @@ export default async function walletRoutes(app: FastifyInstance) {
         .returning();
       if (!inserted) throw new Error("withdrawal insert returned no row");
 
-      // Audit ledger row paired to the request. delta_micro = 0 because
-      // no money has actually moved (the user's balance is unchanged;
-      // the lock is just a reservation). Pairs with the existing
-      // `withdrawal_cancel` / `withdrawal_reject` adjustment rows the
-      // cancel / admin-reject paths write so a ledger-only walk gives
-      // a complete withdrawal lifecycle. Apply-once via the unique
-      // partial index on (type, ref_type, ref_id) — replays no-op.
+      // Audit ledger row paired to the request. delta_micro = 0 — no
+      // money moves, the lock is just a reservation. Apply-once via the
+      // unique partial index.
       await tx
         .insert(walletLedger)
         .values({
           userId: u.id,
-          currency: "USDT",
+          currency: "USDC",
           deltaMicro: 0n,
           type: "adjustment",
           refType: "withdrawal_request",
           refId: inserted.id,
-          memo: `withdrawal requested ${amount.toString()} ${body.network}`,
+          memo: `withdrawal requested ${amount.toString()} ERC20`,
         })
         .onConflictDoNothing();
 
@@ -281,7 +303,6 @@ export default async function walletRoutes(app: FastifyInstance) {
     return { id: withdrawalId, status: "requested" };
   });
 
-  // ── Withdrawal history (user-scoped) ─────────────────────────────────
   app.get("/wallet/withdrawals", async (request) => {
     const u = request.requireAuth();
     const q = listQuery.parse(request.query);
@@ -294,7 +315,7 @@ export default async function walletRoutes(app: FastifyInstance) {
     return {
       withdrawals: rows.map((r) => ({
         id: r.id,
-        network: r.network,
+        network: r.network as "ERC20",
         toAddress: r.toAddress,
         amountMicro: r.amountMicro.toString(),
         feeMicro: r.feeMicro.toString(),
@@ -309,7 +330,6 @@ export default async function walletRoutes(app: FastifyInstance) {
     };
   });
 
-  // ── Cancel a still-requested withdrawal (user self-service) ──────────
   app.post("/wallet/withdrawals/:id/cancel", async (request) => {
     const u = request.requireAuth();
     const params = z.object({ id: z.string().uuid() }).parse(request.params);
@@ -335,21 +355,19 @@ export default async function walletRoutes(app: FastifyInstance) {
         .set({ status: "cancelled" })
         .where(eq(withdrawalsTable.id, params.id));
 
-      // Release the lock on the USDT wallet (withdrawals are USDT-only).
       await tx
         .update(wallets)
         .set({
           lockedMicro: sql`${wallets.lockedMicro} - ${row.amountMicro}`,
           updatedAt: new Date(),
         })
-        .where(and(eq(wallets.userId, u.id), eq(wallets.currency, "USDT")));
+        .where(and(eq(wallets.userId, u.id), eq(wallets.currency, "USDC")));
 
-      // Audit-trail ledger row for the lock release.
       await tx
         .insert(walletLedger)
         .values({
           userId: u.id,
-          currency: "USDT",
+          currency: "USDC",
           deltaMicro: 0n,
           type: "adjustment",
           refType: "withdrawal_cancel",
@@ -363,52 +381,24 @@ export default async function walletRoutes(app: FastifyInstance) {
   });
 }
 
-// Validate destination addresses by checksum so a single-character typo
-// doesn't pass the request and (post-launch, once the signer broadcasts)
-// move funds to an unrecoverable address. ERC20 uses EIP-55 mixed-case;
-// TRC20 uses base58check with the mainnet 0x41 prefix.
-function validateDestinationAddress(network: "TRC20" | "ERC20", address: string) {
-  if (network === "ERC20") {
-    if (!/^0x[0-9a-fA-F]{40}$/.test(address)) {
-      throw new BadRequestError("invalid_erc20_address", "invalid_erc20_address");
-    }
-    // ethers' getAddress validates the EIP-55 checksum and throws
-    // INVALID_ARGUMENT for typo'd capitalisation. All-lowercase /
-    // all-uppercase forms are accepted (no checksum claimed).
-    let canonical: string;
-    try {
-      canonical = getAddress(address);
-    } catch {
-      throw new BadRequestError("invalid_erc20_address", "invalid_erc20_address");
-    }
-    // Reject mixed-case addresses whose checksum doesn't match — the
-    // user clearly intended a checksummed address but typo'd it.
-    const isAllLower = address === address.toLowerCase();
-    const isAllUpper = address === address.toUpperCase();
-    if (!isAllLower && !isAllUpper && address !== canonical) {
-      throw new BadRequestError("invalid_erc20_address", "invalid_erc20_address");
-    }
-    return;
+// Validate the destination is a well-formed ERC20 address. Accepts
+// all-lower / all-upper (no checksum claim) and properly-checksummed
+// EIP-55. Rejects mixed-case strings whose checksum doesn't match —
+// almost certainly a typo'd paste.
+function validateErc20Address(address: string): string {
+  if (!/^0x[0-9a-fA-F]{40}$/u.test(address)) {
+    throw new BadRequestError("invalid_erc20_address", "invalid_erc20_address");
   }
-  // TRC20: base58 T-prefixed, 34 chars; mainnet payload starts with 0x41.
-  if (!/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(address)) {
-    throw new BadRequestError("invalid_trc20_address", "invalid_trc20_address");
-  }
-  let decoded: Uint8Array;
+  let canonical: string;
   try {
-    decoded = bs58.decode(address);
+    canonical = getAddress(address);
   } catch {
-    throw new BadRequestError("invalid_trc20_address", "invalid_trc20_address");
+    throw new BadRequestError("invalid_erc20_address", "invalid_erc20_address");
   }
-  // 21-byte payload (1 prefix + 20 pubkey-hash) + 4-byte checksum.
-  if (decoded.length !== 25 || decoded[0] !== 0x41) {
-    throw new BadRequestError("invalid_trc20_address", "invalid_trc20_address");
+  const isAllLower = address === address.toLowerCase();
+  const isAllUpper = address === address.toUpperCase();
+  if (!isAllLower && !isAllUpper && address !== canonical) {
+    throw new BadRequestError("invalid_erc20_address", "invalid_erc20_address");
   }
-  const payload = Buffer.from(decoded.subarray(0, 21));
-  const checksum = Buffer.from(decoded.subarray(21));
-  const sha1 = createHash("sha256").update(payload).digest();
-  const sha2 = createHash("sha256").update(sha1).digest();
-  if (!sha2.subarray(0, 4).equals(checksum)) {
-    throw new BadRequestError("invalid_trc20_address", "invalid_trc20_address");
-  }
+  return canonical;
 }

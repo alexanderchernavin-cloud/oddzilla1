@@ -1,15 +1,14 @@
 // /admin/withdrawals endpoints.
 //
-// Lifecycle (per schema):
+// Lifecycle:
 //   requested → approved → submitted → confirmed
 //   requested → rejected
-//   approved  → failed  (signer failure)
+//   approved  → failed   (signer/external broadcast failure)
 //
-// Approve does NOT submit the tx — that's a signer's job (MVP: manual,
-// Phase 7.5: dedicated signer container). The signer calls
-// POST /admin/withdrawals/:id/mark-submitted with the tx_hash once the
-// transaction is broadcast; wallet-watcher then picks up on-chain
-// confirmations and flips to `confirmed`.
+// Approve does NOT broadcast — the admin sends from an external wallet
+// and pastes the tx hash via /mark-submitted. /mark-confirmed performs
+// the actual debit and enforces 4-eyes (the confirmer must be a
+// different admin from the approver).
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -40,27 +39,15 @@ const approveBody = z.object({
 const rejectBody = z.object({
   reason: z.string().min(3).max(500),
 });
-// Per-chain tx-hash format. ERC20 tx hashes are 32 bytes shown as 0x +
-// 64 hex; TRC20 tx ids are also 32 bytes but conventionally hex without
-// the 0x prefix (accept either form for operator paste convenience).
-const ETH_TX_HASH = /^0x[0-9a-fA-F]{64}$/;
-const TRON_TX_HASH = /^(0x)?[0-9a-fA-F]{64}$/;
-function validateTxHash(network: "TRC20" | "ERC20", txHash: string): void {
-  const ok =
-    network === "ERC20" ? ETH_TX_HASH.test(txHash) : TRON_TX_HASH.test(txHash);
-  if (!ok) {
-    throw new BadRequestError(
-      "invalid_tx_hash_format",
-      `tx_hash must match ${network} format`,
-    );
+
+// ERC20 tx hashes are 32 bytes shown as 0x + 64 hex.
+const ETH_TX_HASH = /^0x[0-9a-fA-F]{64}$/u;
+function validateTxHash(txHash: string): void {
+  if (!ETH_TX_HASH.test(txHash)) {
+    throw new BadRequestError("invalid_tx_hash_format", "tx_hash must be 0x + 64 hex chars");
   }
 }
-function normaliseTxHash(network: "TRC20" | "ERC20", txHash: string): string {
-  // Store TRC20 hashes without the leading 0x so the unique index matches
-  // regardless of what form an operator pastes.
-  if (network === "TRC20" && txHash.startsWith("0x")) return txHash.slice(2);
-  return txHash;
-}
+
 const submittedBody = z.object({
   txHash: z.string().min(8).max(128),
 });
@@ -166,9 +153,6 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
         .for("update")
         .limit(1);
       if (!row) throw new NotFoundError("withdrawal_not_found", "withdrawal_not_found");
-      // Already-approved rows are en route to the signer. Allowing reject
-      // here would let two admins ping-pong between approve and reject;
-      // use mark-failed (which records a reason) for that path.
       if (row.status !== "requested") {
         throw new BadRequestError(
           `cannot_reject_status_${row.status}`,
@@ -176,24 +160,19 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
         );
       }
 
-      // Release the lock on the USDT wallet — withdrawals are USDT-only.
       await tx
         .update(wallets)
         .set({
           lockedMicro: sql`${wallets.lockedMicro} - ${row.amountMicro}`,
           updatedAt: new Date(),
         })
-        .where(and(eq(wallets.userId, row.userId), eq(wallets.currency, "USDT")));
+        .where(and(eq(wallets.userId, row.userId), eq(wallets.currency, "USDC")));
 
-      // Audit-trail ledger row for the lock release. Idempotent via the
-      // unique partial index on (type, ref_type, ref_id); a second reject
-      // would already be blocked by the row.status guard above, so the
-      // onConflictDoNothing is purely defence-in-depth.
       await tx
         .insert(walletLedger)
         .values({
           userId: row.userId,
-          currency: "USDT",
+          currency: "USDC",
           deltaMicro: 0n,
           type: "adjustment",
           refType: "withdrawal_reject",
@@ -210,10 +189,6 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
         })
         .where(eq(withdrawalsTable.id, params.id));
 
-      // The audit log's action ('withdrawal.reject') preserves the
-      // semantic distinction between an admin-initiated rejection and a
-      // downstream signer failure even though both terminate as 'failed'
-      // in the schema enum.
       await tx.insert(adminAuditLog).values({
         actorUserId: admin.id,
         action: "withdrawal.reject",
@@ -228,7 +203,6 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
     return { ok: true, status: "failed" };
   });
 
-  // Signer reports the tx is broadcast.
   app.post("/admin/withdrawals/:id/mark-submitted", async (request) => {
     const admin = request.requireRole("admin");
     const params = z.object({ id: z.string().uuid() }).parse(request.params);
@@ -248,8 +222,8 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
           `cannot_submit_status_${row.status}`,
         );
       }
-      validateTxHash(row.network, body.txHash);
-      const txHash = normaliseTxHash(row.network, body.txHash);
+      validateTxHash(body.txHash);
+      const txHash = body.txHash.toLowerCase();
 
       await tx
         .update(withdrawalsTable)
@@ -275,9 +249,6 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
     return { ok: true, status: "submitted" };
   });
 
-  // Manual confirmation endpoint — wallet-watcher can also flip the row
-  // once it sees the tx on chain. Keeping an admin override for cases
-  // where the scanner is down or the tx needs to be force-confirmed.
   app.post("/admin/withdrawals/:id/mark-confirmed", async (request) => {
     const admin = request.requireRole("admin");
     const params = z.object({ id: z.string().uuid() }).parse(request.params);
@@ -297,32 +268,22 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
           `cannot_confirm_status_${row.status}`,
         );
       }
-      validateTxHash(row.network, body.txHash);
-      const txHash = normaliseTxHash(row.network, body.txHash);
-      // 4-eyes: the actor confirming the on-chain debit must differ from
-      // whoever approved it. The approve → mark-submitted → mark-confirmed
-      // path is the wallet-draining path; requiring two distinct actors
-      // raises the bar from "one stolen admin token" to two.
+      validateTxHash(body.txHash);
+      const txHash = body.txHash.toLowerCase();
+      // 4-eyes: confirmer ≠ approver. Raises the bar from "one stolen
+      // admin token" to two for the actual debit.
       if (row.approvedByUserId && row.approvedByUserId === admin.id) {
-        throw new ForbiddenError(
-          "approver_cannot_confirm",
-          "approver_cannot_confirm",
-        );
+        throw new ForbiddenError("approver_cannot_confirm", "approver_cannot_confirm");
       }
 
-      // Debit the balance: release the lock AND subtract the amount.
       const amount = row.amountMicro;
       const fee = row.feeMicro;
       const debit = amount + fee;
 
-      // Lock the wallet row and verify balance covers the debit before
-      // applying the update. The wallets_balance_nonneg CHECK would reject
-      // the update anyway, but that surfaces as a generic 500 — we'd
-      // rather the admin UI see a clean 400 explaining the shortfall.
       const [wallet] = await tx
         .select()
         .from(wallets)
-        .where(and(eq(wallets.userId, row.userId), eq(wallets.currency, "USDT")))
+        .where(and(eq(wallets.userId, row.userId), eq(wallets.currency, "USDC")))
         .for("update")
         .limit(1);
       if (!wallet) throw new NotFoundError("wallet_not_found", "wallet_not_found");
@@ -340,13 +301,13 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
           balanceMicro: sql`${wallets.balanceMicro} - ${debit}`,
           updatedAt: new Date(),
         })
-        .where(and(eq(wallets.userId, row.userId), eq(wallets.currency, "USDT")));
+        .where(and(eq(wallets.userId, row.userId), eq(wallets.currency, "USDC")));
 
       await tx
         .insert(walletLedger)
         .values({
           userId: row.userId,
-          currency: "USDT",
+          currency: "USDC",
           deltaMicro: -debit,
           type: "withdrawal",
           refType: "withdrawal",
@@ -402,25 +363,23 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
 
       let failedTxHash: string | null = row.txHash;
       if (body.txHash) {
-        validateTxHash(row.network, body.txHash);
-        failedTxHash = normaliseTxHash(row.network, body.txHash);
+        validateTxHash(body.txHash);
+        failedTxHash = body.txHash.toLowerCase();
       }
 
-      // Release the lock — user gets their funds back. USDT-only.
       await tx
         .update(wallets)
         .set({
           lockedMicro: sql`${wallets.lockedMicro} - ${row.amountMicro}`,
           updatedAt: new Date(),
         })
-        .where(and(eq(wallets.userId, row.userId), eq(wallets.currency, "USDT")));
+        .where(and(eq(wallets.userId, row.userId), eq(wallets.currency, "USDC")));
 
-      // Audit-trail ledger row for the lock release.
       await tx
         .insert(walletLedger)
         .values({
           userId: row.userId,
-          currency: "USDT",
+          currency: "USDC",
           deltaMicro: 0n,
           type: "adjustment",
           refType: "withdrawal_fail",

@@ -99,7 +99,7 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
     }
     const whereClause = filters.length > 0 ? and(...filters) : sql`TRUE`;
 
-    // Join only the USDT wallet so the listing surfaces real-money balance.
+    // Join only the USDC wallet so the listing surfaces real-money balance.
     // Demo OZ balances are not relevant to admin financial overview.
     const rows = await app.db
       .select({
@@ -120,7 +120,7 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
       .from(users)
       .leftJoin(
         wallets,
-        and(eq(wallets.userId, users.id), eq(wallets.currency, "USDT")),
+        and(eq(wallets.userId, users.id), eq(wallets.currency, "USDC")),
       )
       .where(whereClause)
       .orderBy(desc(users.createdAt))
@@ -172,7 +172,7 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
       .from(users)
       .leftJoin(
         wallets,
-        and(eq(wallets.userId, users.id), eq(wallets.currency, "USDT")),
+        and(eq(wallets.userId, users.id), eq(wallets.currency, "USDC")),
       )
       .where(eq(users.id, params.id))
       .limit(1);
@@ -187,7 +187,7 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
         COALESCE(SUM(actual_payout_micro) FILTER (WHERE status = 'settled'), 0)::text AS total_payout_micro
       FROM tickets
       WHERE user_id = ${params.id}
-        AND currency = 'USDT'
+        AND currency = 'USDC'
     `)) as unknown as Array<{
       total_tickets: number;
       open_tickets: number;
@@ -375,12 +375,12 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
         .returning();
       if (!u) throw new Error("user insert returned no row");
 
-      // Admin-created users get USDT (zero) only. The OZ demo bonus is
+      // Admin-created users get USDC (zero) only. The OZ demo bonus is
       // signup-only — admins can manually credit OZ via the ledger if
       // they want to test on behalf of a created user.
       await tx
         .insert(wallets)
-        .values({ userId: u.id, currency: "USDT", balanceMicro: 0n })
+        .values({ userId: u.id, currency: "USDC", balanceMicro: 0n })
         .onConflictDoNothing({ target: [wallets.userId, wallets.currency] });
 
       await tx.insert(adminAuditLog).values({

@@ -123,7 +123,7 @@ function Row({ entry }: { entry: AdminWithdrawalEntry }) {
             {entry.status}
           </p>
           <p className="mt-1 font-mono text-sm">
-            {fromMicro(BigInt(entry.amountMicro))} USDT
+            {fromMicro(BigInt(entry.amountMicro))} USDC
           </p>
           {BigInt(entry.feeMicro) > 0n ? (
             <p className="font-mono text-xs text-[var(--color-fg-muted)]">

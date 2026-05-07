@@ -30,7 +30,7 @@ export interface AuthMe {
 export interface WalletSummary {
   balanceMicro: string; // bigint serialized as string
   lockedMicro: string;
-  currency: "USDT";
+  currency: "USDC";
 }
 
 export interface HealthResponse {
