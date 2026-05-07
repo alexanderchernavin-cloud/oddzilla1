@@ -35,6 +35,7 @@ import {
   categories,
   tournaments,
   betProductConfig,
+  combiBoostConfig,
 } from "@oddzilla/db";
 import {
   DEFAULT_CURRENCY,
@@ -530,7 +531,46 @@ export class BetsService {
         // settlement odds after voids).
         let combiMultiplier = 1.0;
         if (betType === "combo") {
-          const boost = computeCombiBoost(req.selections.map((s) => s.odds));
+          // Live admin-tunable config from /admin/combi-boost-config.
+          // Read inside the placement transaction so a save in the
+          // admin UI applies to the very next placement.
+          const [cfgRow] = await tx
+            .select()
+            .from(combiBoostConfig)
+            .where(eq(combiBoostConfig.id, "default"))
+            .limit(1);
+          const liveConfig = cfgRow
+            ? {
+                enabled: cfgRow.enabled,
+                minOdds: Number(cfgRow.minOdds),
+                tiers: [
+                  {
+                    minLegs: cfgRow.tier1MinLegs,
+                    multiplier: Number(cfgRow.tier1Multiplier),
+                    label: `x${Number(cfgRow.tier1Multiplier).toFixed(2)}`,
+                  },
+                  {
+                    minLegs: cfgRow.tier2MinLegs,
+                    multiplier: Number(cfgRow.tier2Multiplier),
+                    label: `x${Number(cfgRow.tier2Multiplier).toFixed(2)}`,
+                  },
+                  {
+                    minLegs: cfgRow.tier3MinLegs,
+                    multiplier: Number(cfgRow.tier3Multiplier),
+                    label: `x${Number(cfgRow.tier3Multiplier).toFixed(2)}`,
+                  },
+                  {
+                    minLegs: cfgRow.tier4MinLegs,
+                    multiplier: Number(cfgRow.tier4Multiplier),
+                    label: `x${Number(cfgRow.tier4Multiplier).toFixed(2)}`,
+                  },
+                ],
+              }
+            : undefined;
+          const boost = computeCombiBoost(
+            req.selections.map((s) => s.odds),
+            liveConfig,
+          );
           combiMultiplier = boost.multiplier;
           if (combiMultiplier > 1.0) {
             const meta: ComboMeta = {

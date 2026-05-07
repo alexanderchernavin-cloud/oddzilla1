@@ -28,6 +28,7 @@ import {
   competitorProfiles,
   playerProfiles,
   feMarketDisplayOrder,
+  combiBoostConfig,
 } from "@oddzilla/db";
 import { NotFoundError } from "../../lib/errors.js";
 import {
@@ -456,6 +457,41 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .where(eq(sports.active, true))
       .orderBy(sports.slug);
     return { sports: rows };
+  });
+
+  // ── Combi Boost config (read-only, live-tunable in /admin) ───────────
+  app.get("/catalog/combi-boost-config", async () => {
+    const [row] = await app.db
+      .select()
+      .from(combiBoostConfig)
+      .where(eq(combiBoostConfig.id, "default"))
+      .limit(1);
+    if (!row) {
+      // Migration 0032 seeds the singleton, but on a freshly bootstrapped
+      // dev DB it may briefly not exist. Return the static defaults so
+      // the storefront still renders something coherent.
+      return {
+        enabled: true,
+        minOdds: 1.5,
+        tiers: [
+          { minLegs: 2, multiplier: 1.03, label: "x1.03" },
+          { minLegs: 4, multiplier: 1.05, label: "x1.05" },
+          { minLegs: 6, multiplier: 1.08, label: "x1.08" },
+          { minLegs: 8, multiplier: 1.12, label: "x1.12" },
+        ],
+      };
+    }
+    const tiers = [
+      { minLegs: row.tier1MinLegs, multiplier: Number(row.tier1Multiplier) },
+      { minLegs: row.tier2MinLegs, multiplier: Number(row.tier2Multiplier) },
+      { minLegs: row.tier3MinLegs, multiplier: Number(row.tier3Multiplier) },
+      { minLegs: row.tier4MinLegs, multiplier: Number(row.tier4Multiplier) },
+    ].map((t) => ({ ...t, label: `x${t.multiplier.toFixed(2)}` }));
+    return {
+      enabled: row.enabled,
+      minOdds: Number(row.minOdds),
+      tiers,
+    };
   });
 
   // ── One sport + its upcoming/live matches ───────────────────────────
