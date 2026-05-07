@@ -39,8 +39,14 @@ interface DisirWidgetProps {
   // emits a CLOSE postMessage. Useful for modal / drawer placement.
   allowClose?: boolean;
   onClose?: () => void;
-  // Live widgets are hidden until DATA: true arrives. Pass false to
-  // override (always render the empty state from the widget itself).
+  // When true, the wrapping div is `display:none` until a `DATA:
+  // {available: true}` postMessage arrives. Per the Disir doc, "If the
+  // Widgets are not initially available for an event, the DATA
+  // notification will not be sent" — so for live widgets this would
+  // mean hiding the iframe forever whenever the upstream data hasn't
+  // landed yet. Default off; the iframe renders Oddin's own
+  // "Live stats not available" empty state when data is missing,
+  // which is more discoverable than an invisible widget.
   hideUntilData?: boolean;
   // Container className/style for layout integration (e.g. fixed-aspect
   // wrapper around the iframe).
@@ -96,7 +102,7 @@ export function DisirWidget(props: DisirWidgetProps) {
     title,
     onAvailabilityChange,
     onClose,
-    hideUntilData = variant === "live-scoreboard",
+    hideUntilData = false,
     className,
     style,
   } = props;

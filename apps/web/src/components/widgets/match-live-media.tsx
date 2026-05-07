@@ -7,18 +7,19 @@
 // Mobile:  pill switcher at the top toggles between stream and stats,
 //          only one mounts at a time so we don't pay for two iframes.
 //
-// The live widget URL is generated even before data exists; the
-// underlying DisirWidget component hides the iframe until DATA: true
-// arrives. We additionally hide the entire stats card on mobile until
-// availability resolves to "available", so the user isn't presented
-// with an empty pill that does nothing.
+// The live widget URL is generated even before data exists. We let
+// Oddin's iframe render its own "Live stats not available" empty
+// state if data hasn't arrived — per the Disir doc, "If the Widgets
+// are not initially available for an event, the DATA notification
+// will not be sent", so a hide-until-DATA strategy means an invisible
+// widget area on every match without immediate stats.
 
 import { useState } from "react";
 import {
   MatchStreams,
   type MatchStream,
 } from "@/components/match/match-streams";
-import { DisirWidget, type WidgetAvailability } from "./disir-widget";
+import { DisirWidget } from "./disir-widget";
 import { supportsLiveWidget } from "./supported-sports";
 
 interface Props {
@@ -42,7 +43,6 @@ export function MatchLiveMedia({
   parentHost,
   isLive,
 }: Props) {
-  const [statsAvailable, setStatsAvailable] = useState<WidgetAvailability>("loading");
   const [mobileTab, setMobileTab] = useState<MobileTab>(streams.length > 0 ? "stream" : "stats");
 
   // If a sport doesn't support live widgets at all, skip the whole
@@ -102,17 +102,16 @@ export function MatchLiveMedia({
           className="oz-live-media-stats"
           data-active={mobileTab === "stats" ? "true" : "false"}
         >
-          <LiveStatsHeader sportSlug={sportSlug} availability={statsAvailable} />
+          <LiveStatsHeader sportSlug={sportSlug} />
           <DisirWidget
             variant="live-scoreboard"
             id={matchId}
             theme="dark"
             title={`Live stats — ${homeTeam} vs ${awayTeam}`}
-            onAvailabilityChange={setStatsAvailable}
             minHeight={200}
-            // The DisirWidget hides itself until DATA: true; we keep the
-            // header visible so the user knows the stats panel exists
-            // before data arrives.
+            // hideUntilData defaults off so Oddin's iframe renders its
+            // own "Live stats not available" empty state when data
+            // isn't ready — better UX than an invisible widget.
           />
         </div>
       ) : null}
@@ -122,19 +121,9 @@ export function MatchLiveMedia({
 
 function LiveStatsHeader({
   sportSlug,
-  availability,
 }: {
   sportSlug: string;
-  availability: WidgetAvailability;
 }) {
-  const status =
-    availability === "available"
-      ? "Live"
-      : availability === "unavailable"
-        ? "Waiting for data"
-        : availability === "error"
-          ? "Unavailable"
-          : "Loading";
   return (
     <div
       style={{
@@ -165,7 +154,7 @@ function LiveStatsHeader({
           color: "var(--fg-dim)",
         }}
       >
-        {sportSlug} · {status}
+        {sportSlug}
       </span>
     </div>
   );
