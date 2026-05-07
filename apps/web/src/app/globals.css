@@ -239,7 +239,7 @@ body {
 .oz-shell {
   display: grid;
   grid-template-columns: 240px 1fr 340px;
-  grid-template-rows: 60px 1fr;
+  grid-template-rows: 80px 1fr;
   grid-template-areas: "top top top" "side main rail";
   /* 240 sidebar + 1000 main cap + 340 rail = 1580. The match page
      and the catalog list pages both cap their inner content around
@@ -419,7 +419,7 @@ body {
     top: auto !important;
     width: auto !important;
     height: auto !important;
-    max-height: calc(100dvh - 60px) !important;
+    max-height: calc(100dvh - 80px) !important;
     z-index: 60;
     background: var(--bg);
     border-left: 0 !important;
@@ -472,10 +472,10 @@ body {
   }
   .oz-side {
     position: fixed !important;
-    top: 60px !important;
+    top: 80px !important;
     left: 0 !important;
     width: min(280px, 82vw) !important;
-    height: calc(100dvh - 60px) !important;
+    height: calc(100dvh - 80px) !important;
     z-index: 60;
     background: var(--bg);
     transform: translateX(-100%);

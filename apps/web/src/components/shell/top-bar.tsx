@@ -58,7 +58,7 @@ export function TopBar({ signedIn, user, wallets }: TopBarProps) {
         alignItems: "center",
         gap: 12,
         padding: "0 clamp(12px, 3vw, 24px)",
-        height: 60,
+        height: 80,
         borderBottom: "1px solid var(--hairline)",
         background: "color-mix(in oklab, var(--bg) 80%, transparent)",
         backdropFilter: "blur(12px)",
@@ -87,7 +87,7 @@ export function TopBar({ signedIn, user, wallets }: TopBarProps) {
           flexShrink: 0,
         }}
       >
-        <Wordmark size={44} />
+        <Wordmark size={64} />
       </Link>
 
       {/* Search — hidden under ~900px via .oz-topbar-search CSS */}

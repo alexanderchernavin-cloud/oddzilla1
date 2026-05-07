@@ -15,7 +15,7 @@ export default async function SignupPage() {
 
   return (
     <>
-      <Monogram size={88} />
+      <Monogram size={120} />
       <h1
         className="display"
         style={{
