@@ -298,12 +298,18 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
     setState((prev) => {
       if (matchId === null) {
         if (prev.mode !== "betbuilder") return prev;
+        // Turn-off explicitly drops every selection. The legs in a
+        // builder slip are by definition same-match, so leaving them
+        // in "combo" mode would just hand the user an orphan combo
+        // that POST /bets rejects with `combo_same_match`. Cleaner to
+        // wipe and let the user re-pick.
         return {
           ...prev,
           mode: "combo",
           betbuilderMatchId: null,
           betbuilderQuote: null,
           betbuilderEligibleMarketIds: null,
+          selections: [],
         };
       }
       // Entering builder for a specific match — drop any selections
