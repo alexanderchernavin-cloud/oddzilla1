@@ -254,13 +254,6 @@ function teamTag(name: string): string {
     .slice(0, 4);
 }
 
-// Cap the rendered length and append ".." (two dots) when a name is too
-// long. Combines with CSS ellipsis below for narrow viewports.
-function truncateName(name: string, max: number): string {
-  if (name.length <= max) return name;
-  return name.slice(0, max).trimEnd() + "..";
-}
-
 // Scoreboard renders a two-row table:
 //   [team mark] [team name] | Score | 1 | 2 | … | N
 // where Score is the series score (boxed) and the numeric columns are
@@ -306,8 +299,8 @@ function Scoreboard({
   // Team column flexes; numeric columns are fixed-width and centered.
   // Bump per-map width when extras render so paired values like
   // "23k:28k" fit on the same row without crowding.
-  const mapColWidth = extraRows.length > 0 ? "56px" : "44px";
-  const gridTemplate = `minmax(0, 1fr) 60px${cols.length ? " " + cols.map(() => mapColWidth).join(" ") : ""}`;
+  const mapColWidth = extraRows.length > 0 ? "44px" : "32px";
+  const gridTemplate = `minmax(0, 1fr) 40px${cols.length ? " " + cols.map(() => mapColWidth).join(" ") : ""}`;
 
   return (
     <div
@@ -322,8 +315,8 @@ function Scoreboard({
         style={{
           display: "grid",
           gridTemplateColumns: gridTemplate,
-          rowGap: 6,
-          columnGap: 10,
+          rowGap: 4,
+          columnGap: 8,
           alignItems: "center",
         }}
       >
@@ -422,15 +415,15 @@ function TeamRow({
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 10,
+          gap: 8,
           minWidth: 0,
         }}
       >
-        <TeamMark tag={teamTag(name)} size={28} logoUrl={logoUrl} name={name} />
+        <TeamMark tag={teamTag(name)} size={22} logoUrl={logoUrl} name={name} />
         <span
           style={{
             fontWeight: 500,
-            fontSize: 15,
+            fontSize: 14,
             letterSpacing: "-0.01em",
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -439,7 +432,7 @@ function TeamRow({
             flex: 1,
           }}
         >
-          {truncateName(name, 24)}
+          {name}
         </span>
       </div>
 
@@ -447,13 +440,9 @@ function TeamRow({
         className="mono tnum"
         style={{
           textAlign: "center",
-          fontSize: 16,
-          fontWeight: 500,
+          fontSize: 14,
+          fontWeight: 600,
           color: "var(--fg)",
-          padding: "6px 0",
-          border: "1px solid var(--border)",
-          borderRadius: "var(--r-sm, 6px)",
-          minWidth: 44,
         }}
       >
         {series}
@@ -468,7 +457,7 @@ function TeamRow({
             className="mono tnum"
             style={{
               textAlign: "center",
-              fontSize: 15,
+              fontSize: 13,
               fontWeight: 500,
               color: v == null ? "var(--fg-dim)" : live ? "var(--fg)" : "var(--fg-muted)",
             }}
