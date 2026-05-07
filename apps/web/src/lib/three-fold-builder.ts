@@ -1,10 +1,17 @@
 // Builds four "suggested 3-fold" parlays for the lobby promo cards by
-// scanning the live + upcoming match pool and picking three match-winner
-// legs whose combined decimal odds land in each tier band:
-//   safe        [2.00, 3.00)
-//   challenging [3.00, 5.00)
-//   risky       [5.00, 10.00)
-//   ultimate    [10.00, ∞)
+// scanning the live + upcoming match pool. Each tier has both a per-leg
+// odds constraint and a combined-odds band:
+//
+//   safe        legs <  1.50  →  combined [2.00, 3.00)
+//   challenging legs >= 1.50  →  combined [3.00, 5.00)
+//   risky       legs >  1.80  →  combined [5.00, 10.00)
+//   ultimate    legs >  2.00  →  combined [10.00, 100.00)
+//
+// The per-leg constraint is enforced first: legs that don't qualify are
+// dropped from the tier's candidate pool entirely. Then we enumerate
+// combinations of three distinct matches and try each match's qualifying
+// side(s) until we land in the band — preferring the combo whose product
+// is closest to the band's target.
 //
 // Pure & deterministic: same input → same output. Runs server-side from
 // the home page render; no API call.
@@ -36,23 +43,43 @@ export type TierKey = "safe" | "challenging" | "risky" | "ultimate";
 
 export type ThreeFoldSuggestions = Partial<Record<TierKey, ThreeFoldSuggestion>>;
 
-const TIER_BANDS: Record<TierKey, { lo: number; hi: number; target: number }> = {
-  safe: { lo: 2.0, hi: 3.0, target: 2.5 },
-  challenging: { lo: 3.0, hi: 5.0, target: 4.0 },
-  risky: { lo: 5.0, hi: 10.0, target: 7.0 },
-  ultimate: { lo: 10.0, hi: Infinity, target: 15.0 },
+interface TierBand {
+  lo: number;
+  hi: number;
+  target: number;
+  legAllowed: (oddsNum: number) => boolean;
+}
+
+const TIER_BANDS: Record<TierKey, TierBand> = {
+  safe: {
+    lo: 2.0,
+    hi: 3.0,
+    target: 2.5,
+    legAllowed: (o) => o > 1.0 && o < 1.5,
+  },
+  challenging: {
+    lo: 3.0,
+    hi: 5.0,
+    target: 4.0,
+    legAllowed: (o) => o >= 1.5,
+  },
+  risky: {
+    lo: 5.0,
+    hi: 10.0,
+    target: 7.0,
+    legAllowed: (o) => o > 1.8,
+  },
+  ultimate: {
+    lo: 10.0,
+    hi: 100.0,
+    target: 15.0,
+    legAllowed: (o) => o > 2.0,
+  },
 };
 
-// Cap pool to the matches with the lowest favorite-odds. C(30,3)=4060,
-// C(40,3)=9880 — both trivial. Bigger caps just dilute the suggestions
-// with low-quality matches that nobody would pick.
+// Cap the per-tier candidate pool. C(30,3) × 2-side picks = 32 480 ops
+// per tier — still trivial across 4 tiers per request.
 const POOL_CAP = 30;
-
-interface CandidateMatch {
-  matchId: string;
-  fav: { selection: ThreeFoldLeg; oddsNum: number };
-  dog: { selection: ThreeFoldLeg; oddsNum: number };
-}
 
 function buildLeg(match: MatchInput, side: "home" | "away"): ThreeFoldLeg | null {
   if (!match.matchWinner) return null;
@@ -75,51 +102,47 @@ function buildLeg(match: MatchInput, side: "home" | "away"): ThreeFoldLeg | null
   };
 }
 
-function buildCandidates(matches: MatchInput[]): CandidateMatch[] {
-  const out: CandidateMatch[] = [];
+interface QualSide {
+  selection: ThreeFoldLeg;
+  oddsNum: number;
+}
+
+interface QualMatch {
+  matchId: string;
+  sides: QualSide[];
+}
+
+function dedupeMatches(matches: MatchInput[]): MatchInput[] {
   const seen = new Set<string>();
+  const out: MatchInput[] = [];
   for (const m of matches) {
     if (seen.has(m.id)) continue;
     seen.add(m.id);
-    const home = buildLeg(m, "home");
-    const away = buildLeg(m, "away");
-    if (!home || !away) continue;
-    const homeNum = Number.parseFloat(home.odds);
-    const awayNum = Number.parseFloat(away.odds);
-    const homeIsFav = homeNum <= awayNum;
-    out.push({
-      matchId: m.id,
-      fav: {
-        selection: homeIsFav ? home : away,
-        oddsNum: homeIsFav ? homeNum : awayNum,
-      },
-      dog: {
-        selection: homeIsFav ? away : home,
-        oddsNum: homeIsFav ? awayNum : homeNum,
-      },
-    });
+    out.push(m);
   }
-  out.sort((a, b) => {
-    const d = a.fav.oddsNum - b.fav.oddsNum;
-    if (d !== 0) return d;
-    return a.matchId.localeCompare(b.matchId);
-  });
-  return out.slice(0, POOL_CAP);
+  return out;
+}
+
+function qualifyForTier(matches: MatchInput[], band: TierBand): QualMatch[] {
+  const out: QualMatch[] = [];
+  for (const m of matches) {
+    const sides: QualSide[] = [];
+    for (const side of ["home", "away"] as const) {
+      const leg = buildLeg(m, side);
+      if (!leg) continue;
+      const oddsNum = Number.parseFloat(leg.odds);
+      if (!Number.isFinite(oddsNum)) continue;
+      if (!band.legAllowed(oddsNum)) continue;
+      sides.push({ selection: leg, oddsNum });
+    }
+    if (sides.length > 0) out.push({ matchId: m.id, sides });
+  }
+  return out;
 }
 
 function formatCombinedOdds(n: number): string {
   return (Math.floor(n * 100) / 100).toFixed(2);
 }
-
-// 4 plausible leg-mixes per combo: all favorites, two favorites + one
-// underdog, etc. Skipping a few rarer mixes (e.g. fav-dog-fav) is fine
-// because we permute the combo position itself via i<j<k iteration.
-const LEG_MIXES: Array<readonly [0 | 1, 0 | 1, 0 | 1]> = [
-  [0, 0, 0],
-  [0, 0, 1],
-  [0, 1, 1],
-  [1, 1, 1],
-];
 
 interface PickedTriple {
   legs: ThreeFoldLeg[];
@@ -127,40 +150,60 @@ interface PickedTriple {
 }
 
 function pickForTier(
-  candidates: CandidateMatch[],
-  band: { lo: number; hi: number; target: number },
+  matches: MatchInput[],
+  band: TierBand,
   excludeMatchIds: ReadonlySet<string>,
 ): PickedTriple | null {
-  // Try disjoint pool first; fall back to allowing reuse if no combo
-  // lands in band. With ≥ 9 candidates we usually fill all 3 tiers
+  const qualifying = qualifyForTier(matches, band);
+
+  // Try disjoint pool first; fall back to allowing reuse only if no
+  // combo lands in band. With dense data we usually fill all 4 tiers
   // disjointly; sparse data may force reuse rather than dropping a card.
-  const pools: CandidateMatch[][] = [
-    candidates.filter((c) => !excludeMatchIds.has(c.matchId)),
-    candidates,
+  const pools: QualMatch[][] = [
+    qualifying.filter((q) => !excludeMatchIds.has(q.matchId)),
+    qualifying,
   ];
+
+  // Each leg's "ideal odds" is the cube root of the band target — sorting
+  // matches by how close their best qualifying side is to that ideal
+  // surfaces the combos most likely to land near target first.
+  const targetPerLeg = Math.cbrt(
+    Number.isFinite(band.target) ? band.target : band.lo + 5,
+  );
+
   for (const pool of pools) {
     if (pool.length < 3) continue;
+
+    const ranked = [...pool].sort((a, b) => {
+      const da = Math.min(...a.sides.map((s) => Math.abs(s.oddsNum - targetPerLeg)));
+      const db = Math.min(...b.sides.map((s) => Math.abs(s.oddsNum - targetPerLeg)));
+      if (da !== db) return da - db;
+      return a.matchId.localeCompare(b.matchId);
+    });
+    const capped = ranked.slice(0, POOL_CAP);
+
     let best: PickedTriple | null = null;
     let bestDelta = Infinity;
-    for (let i = 0; i < pool.length; i++) {
-      for (let j = i + 1; j < pool.length; j++) {
-        for (let k = j + 1; k < pool.length; k++) {
-          const a = pool[i]!;
-          const b = pool[j]!;
-          const c = pool[k]!;
-          for (const mix of LEG_MIXES) {
-            const aSide = mix[0] === 0 ? a.fav : a.dog;
-            const bSide = mix[1] === 0 ? b.fav : b.dog;
-            const cSide = mix[2] === 0 ? c.fav : c.dog;
-            const product = aSide.oddsNum * bSide.oddsNum * cSide.oddsNum;
-            if (product < band.lo || product >= band.hi) continue;
-            const delta = Math.abs(product - band.target);
-            if (delta < bestDelta) {
-              bestDelta = delta;
-              best = {
-                legs: [aSide.selection, bSide.selection, cSide.selection],
-                product,
-              };
+    for (let i = 0; i < capped.length; i++) {
+      const a = capped[i]!;
+      for (let j = i + 1; j < capped.length; j++) {
+        const b = capped[j]!;
+        for (let k = j + 1; k < capped.length; k++) {
+          const c = capped[k]!;
+          for (const sa of a.sides) {
+            for (const sb of b.sides) {
+              for (const sc of c.sides) {
+                const product = sa.oddsNum * sb.oddsNum * sc.oddsNum;
+                if (product < band.lo || product >= band.hi) continue;
+                const delta = Math.abs(product - band.target);
+                if (delta < bestDelta) {
+                  bestDelta = delta;
+                  best = {
+                    legs: [sa.selection, sb.selection, sc.selection],
+                    product,
+                  };
+                }
+              }
             }
           }
         }
@@ -174,14 +217,14 @@ function pickForTier(
 export function buildThreeFoldSuggestions(
   matches: MatchInput[],
 ): ThreeFoldSuggestions {
-  const candidates = buildCandidates(matches);
-  if (candidates.length < 3) return {};
+  const deduped = dedupeMatches(matches);
+  if (deduped.length < 3) return {};
 
   const used = new Set<string>();
   const out: ThreeFoldSuggestions = {};
 
   for (const tier of ["safe", "challenging", "risky", "ultimate"] as const) {
-    const picked = pickForTier(candidates, TIER_BANDS[tier], used);
+    const picked = pickForTier(deduped, TIER_BANDS[tier], used);
     if (!picked) continue;
     out[tier] = {
       legs: picked.legs,
