@@ -10,7 +10,78 @@ export const SPORTS = [
   { id: "sc", name: "StarCraft", short: "SC" },
 ] as const;
 
+// Slugs with a brand SVG in /public/sports/<slug>.svg.
+// Keep in sync with the files actually copied into apps/web/public/sports/.
+const BRAND_LOGOS = new Set<string>([
+  "cs2",
+  "dota2",
+  "lol",
+  "valorant",
+  "rocket-league",
+  "overwatch",
+  "starcraft",
+  "starcraft-2",
+  "fortnite",
+  "pubg",
+  "pubg-mobile",
+  "rainbow-six",
+  "call-of-duty",
+  "halo",
+  "deadlock",
+  "marvel-rivals",
+  "mobile-legends",
+  "wild-rift",
+  "world-of-tanks",
+  "world-of-warcraft",
+  "warcraft-3",
+  "age-of-empires-2",
+  "street-fighter",
+  "tekken",
+  "crossfire",
+  "free-fire",
+  "geoguessr",
+  "chess-com",
+  "escape-from-tarkov",
+  "arena-of-valor",
+  "kings-of-glory",
+  "efootball",
+  "ebasketball",
+  "ecricket",
+  "etouchdown",
+  "efootball-bots",
+  "ebasketball-bots",
+  "ecricket-bots",
+  "etouchdown-bots",
+  "cs2-duels",
+  "dota2-duels",
+]);
+
+// Legacy short ids used by the SPORTS list above map onto canonical slugs.
+const SLUG_ALIAS: Record<string, string> = {
+  rl: "rocket-league",
+  ow: "overwatch",
+  sc: "starcraft",
+};
+
 export function SportGlyph({ sport, size = 20 }: { sport: string; size?: number }) {
+  const slug = (SLUG_ALIAS[sport] ?? sport).toLowerCase();
+  if (BRAND_LOGOS.has(slug)) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={`/sports/${slug}.svg`}
+        width={size}
+        height={size}
+        alt=""
+        aria-hidden
+        style={{ display: "inline-block", flexShrink: 0 }}
+      />
+    );
+  }
+  return <FallbackGlyph sport={sport} size={size} />;
+}
+
+function FallbackGlyph({ sport, size }: { sport: string; size: number }) {
   const common: SVGProps<SVGSVGElement> = {
     width: size,
     height: size,
