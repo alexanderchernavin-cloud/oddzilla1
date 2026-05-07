@@ -29,6 +29,7 @@ import {
   sports,
   achievementDefinitions,
   userAchievements,
+  avatarTemplates,
 } from "@oddzilla/db";
 import type {
   CommunityProfile,
@@ -48,6 +49,7 @@ import {
   ConflictError,
   NotFoundError,
 } from "../../lib/errors.js";
+import { resolveOptionalAvatarUrl } from "./avatar-url.js";
 
 // Same shape AuthService uses for `users` writes — limit per-IP-per-user
 // abuse on the nickname squat path.
@@ -167,7 +169,15 @@ const userTicketsQuery = z.object({
 // stake-refund payout, which is still public proof of how a ticket
 // resolved; keeping it lets the feed show all settled outcomes rather
 // than only winners. Phase 10.3 may filter further on the client side.
-const FEED_STATUSES = sql`('settled', 'cashed_out', 'voided')`;
+//
+// Stored as the bare comma-separated list — the IN call site wraps in
+// its own parens. Wrapping here too produces `IN ((...))` which
+// Postgres parses as a record-vs-text comparison and 500s with
+// "operator does not exist: text = record". The original form (with
+// internal parens) shipped behind a path that didn't trigger it
+// because no settled tickets existed; loadProfileStats turned out to
+// be the path that broke once /u/:nickname loaded a user with stats.
+const FEED_STATUSES = sql`'settled', 'cashed_out', 'voided'`;
 
 export default async function communityRoutes(app: FastifyInstance) {
   // ─── Feed ────────────────────────────────────────────────────────────────
@@ -231,8 +241,11 @@ export default async function communityRoutes(app: FastifyInstance) {
         bio: users.bio,
         ticketsPublic: users.ticketsPublic,
         createdAt: users.createdAt,
+        avatarSlug: avatarTemplates.slug,
+        avatarImagePath: avatarTemplates.imagePath,
       })
       .from(users)
+      .leftJoin(avatarTemplates, eq(avatarTemplates.id, users.avatarTemplateId))
       .where(eq(users.nickname, nickname))
       .limit(1);
 
@@ -243,9 +256,16 @@ export default async function communityRoutes(app: FastifyInstance) {
       loadAchievements(app.db, u.id),
     ]);
 
+    const avatarUrl = resolveOptionalAvatarUrl(
+      u.avatarSlug
+        ? { slug: u.avatarSlug, imagePath: u.avatarImagePath }
+        : null,
+    );
+
     const profile: CommunityProfile = {
       nickname: u.nickname,
       bio: u.bio,
+      avatarUrl,
       joinedAt: u.createdAt.toISOString(),
       stats: {
         currency,
@@ -304,12 +324,18 @@ export default async function communityRoutes(app: FastifyInstance) {
           numLegs: communityTickets.numLegs,
           sportIds: communityTickets.sportIds,
           inspirationCount: communityTickets.inspirationCount,
+          avatarSlug: avatarTemplates.slug,
+          avatarImagePath: avatarTemplates.imagePath,
           // Per-user history is settled rows only; `at` carries the
           // settled-at value to match the type's contract.
           at: communityTickets.settledAt,
         })
         .from(communityTickets)
         .innerJoin(users, eq(users.id, communityTickets.userId))
+        .leftJoin(
+          avatarTemplates,
+          eq(avatarTemplates.id, users.avatarTemplateId),
+        )
         .where(
           and(
             eq(communityTickets.userId, u.id),
@@ -453,15 +479,7 @@ export default async function communityRoutes(app: FastifyInstance) {
 
   app.get("/community/me", async (request): Promise<CommunityMe> => {
     const u = request.requireAuth();
-    const [me] = await app.db
-      .select({
-        ticketsPublic: users.ticketsPublic,
-        nickname: users.nickname,
-        bio: users.bio,
-      })
-      .from(users)
-      .where(eq(users.id, u.id))
-      .limit(1);
+    const me = await loadCommunityMe(app, u.id);
     if (!me) throw new NotFoundError();
     return me;
   });
@@ -480,13 +498,14 @@ export default async function communityRoutes(app: FastifyInstance) {
         .update(users)
         .set({ ticketsPublic: body.ticketsPublic, updatedAt: new Date() })
         .where(eq(users.id, u.id))
-        .returning({
-          ticketsPublic: users.ticketsPublic,
-          nickname: users.nickname,
-          bio: users.bio,
-        });
+        .returning({ id: users.id });
       if (!updated) throw new NotFoundError();
-      return updated;
+      // Re-read with the avatar JOIN so the response shape stays
+      // self-contained (matches /community/me). The follow-up SELECT
+      // is bounded to one user and keyed on PK — cheap.
+      const me = await loadCommunityMe(app, u.id);
+      if (!me) throw new NotFoundError();
+      return me;
     },
   );
 
@@ -516,13 +535,11 @@ export default async function communityRoutes(app: FastifyInstance) {
           .update(users)
           .set(patch)
           .where(eq(users.id, u.id))
-          .returning({
-            ticketsPublic: users.ticketsPublic,
-            nickname: users.nickname,
-            bio: users.bio,
-          });
+          .returning({ id: users.id });
         if (!updated) throw new NotFoundError();
-        return updated;
+        const me = await loadCommunityMe(app, u.id);
+        if (!me) throw new NotFoundError();
+        return me;
       } catch (err) {
         // 23505 = unique_violation. The nickname column is the only
         // unique on this UPDATE path — citext makes the comparison
@@ -616,6 +633,12 @@ interface FeedRow {
   // no inspiration counter). The shape stays uniform so every caller
   // hits the same toFeedSummary path.
   inspirationCount: number;
+  // Avatar fields come from a LEFT JOIN onto avatar_templates via
+  // users.avatar_template_id. NULL on every column when the user
+  // hasn't equipped one — toFeedSummary resolves to a NULL avatarUrl
+  // which the UI maps to its monogram fallback.
+  avatarSlug: string | null;
+  avatarImagePath: string | null;
   at: Date;
 }
 
@@ -661,6 +684,11 @@ function toFeedSummary(r: FeedRow): CommunityTicketSummary {
     numLegs: r.numLegs,
     sportIds: r.sportIds,
     inspirationCount: r.inspirationCount,
+    avatarUrl: resolveOptionalAvatarUrl(
+      r.avatarSlug
+        ? { slug: r.avatarSlug, imagePath: r.avatarImagePath }
+        : null,
+    ),
     isBigWin,
     at: r.at.toISOString(),
   };
@@ -752,9 +780,16 @@ SELECT
   -- only exists on the settled projection. Project a literal so
   -- the row shape matches FeedRow / toFeedSummary uniformly.
   0::int                    AS "inspirationCount",
+  -- LEFT JOIN onto avatar_templates via users.avatar_template_id.
+  -- Both columns are NULL when the user has no equipped avatar;
+  -- toFeedSummary maps that to a NULL avatarUrl which the UI uses
+  -- as the signal to render a monogram.
+  av.slug                   AS "avatarSlug",
+  av.image_path             AS "avatarImagePath",
   legs.at                   AS at
   FROM legs
   JOIN users u ON u.id = legs.user_id
+  LEFT JOIN avatar_templates av ON av.id = u.avatar_template_id
  WHERE u.tickets_public = true
    AND u.nickname IS NOT NULL
    AND legs.bettable = true
@@ -839,10 +874,13 @@ async function loadBestWinsFeed(
       numLegs: communityTickets.numLegs,
       sportIds: communityTickets.sportIds,
       inspirationCount: communityTickets.inspirationCount,
+      avatarSlug: avatarTemplates.slug,
+      avatarImagePath: avatarTemplates.imagePath,
       at: communityTickets.settledAt,
     })
     .from(communityTickets)
     .innerJoin(users, eq(users.id, communityTickets.userId))
+    .leftJoin(avatarTemplates, eq(avatarTemplates.id, users.avatarTemplateId))
     .where(and(...filters))
     .orderBy(...orderBy)
     .limit(q.pageSize + 1)
@@ -904,6 +942,8 @@ function normaliseFeedRow(r: Record<string, unknown>): FeedRow {
     numLegs: Number(r.numLegs),
     sportIds: Array.isArray(r.sportIds) ? (r.sportIds as number[]) : [],
     inspirationCount: Number(r.inspirationCount ?? 0),
+    avatarSlug: (r.avatarSlug as string | null) ?? null,
+    avatarImagePath: (r.avatarImagePath as string | null) ?? null,
     at: r.at instanceof Date ? r.at : new Date(r.at as string),
   };
 }
@@ -942,6 +982,43 @@ async function loadAchievements(
     icon: r.icon,
     unlockedAt: r.unlockedAt.toISOString(),
   }));
+}
+
+// Loads a CommunityMe view for `userId`, joining the equipped avatar
+// template so the response carries both the raw FK (for the picker UI
+// to highlight the active row) and the resolved URL (for the topbar
+// chrome). The follow-up SELECT after every PATCH lives here too —
+// .returning() can't LEFT JOIN, and a second roundtrip on a PK lookup
+// is functionally free.
+async function loadCommunityMe(
+  app: FastifyInstance,
+  userId: string,
+): Promise<CommunityMe | null> {
+  const [row] = await app.db
+    .select({
+      ticketsPublic: users.ticketsPublic,
+      nickname: users.nickname,
+      bio: users.bio,
+      avatarTemplateId: users.avatarTemplateId,
+      avatarSlug: avatarTemplates.slug,
+      avatarImagePath: avatarTemplates.imagePath,
+    })
+    .from(users)
+    .leftJoin(avatarTemplates, eq(avatarTemplates.id, users.avatarTemplateId))
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (!row) return null;
+  return {
+    ticketsPublic: row.ticketsPublic,
+    nickname: row.nickname,
+    bio: row.bio,
+    avatarTemplateId: row.avatarTemplateId,
+    avatarUrl: resolveOptionalAvatarUrl(
+      row.avatarSlug
+        ? { slug: row.avatarSlug, imagePath: row.avatarImagePath }
+        : null,
+    ),
+  };
 }
 
 function isUniqueViolation(err: unknown): boolean {

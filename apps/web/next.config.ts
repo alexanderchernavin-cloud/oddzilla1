@@ -39,6 +39,24 @@ const config: NextConfig = {
     NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL ?? "",
     NEXT_PUBLIC_WS_URL: process.env.NEXT_PUBLIC_WS_URL ?? "",
   },
+  // Dev-only rewrite mirroring what Caddy does in prod: any browser
+  // request that lands on `/api/*` is forwarded to the local api
+  // server with the prefix stripped. Without this, server-baked URLs
+  // like `/api/community/avatars/<slug>/image` (which the api emits
+  // because that's the prod path) 404 against the Next dev server.
+  // In production this function returns an empty array so Caddy stays
+  // the only routing surface — assertProdSafePublicEnv above already
+  // guards against bundle-time leaks.
+  async rewrites() {
+    if (process.env.NODE_ENV === "production") return [];
+    const apiOrigin = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+    return [
+      {
+        source: "/api/:path*",
+        destination: `${apiOrigin}/:path*`,
+      },
+    ];
+  },
 };
 
 export default config;

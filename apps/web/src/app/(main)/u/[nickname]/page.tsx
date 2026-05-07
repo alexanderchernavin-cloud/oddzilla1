@@ -10,6 +10,7 @@ import { serverApi } from "@/lib/server-fetch";
 import { CurrencyTabs } from "@/components/community/currency-tabs";
 import { CommunityTicketCard } from "@/components/community/ticket-card";
 import { CommunityAchievementsSection } from "@/components/community/achievements";
+import { Avatar } from "@/components/community/avatar";
 
 interface SportsResponse {
   sports: Array<{ id: number; slug: string; name: string }>;
@@ -51,16 +52,24 @@ export default async function PublicProfilePage({
 
   return (
     <div>
-      <header className="flex flex-col gap-2">
-        <h1 className="text-2xl font-semibold tracking-tight">
-          {profile.nickname}
-        </h1>
-        <p className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-          Joined {joined}
-        </p>
-        {profile.bio ? (
-          <p className="mt-2 max-w-prose text-sm">{profile.bio}</p>
-        ) : null}
+      <header className="flex flex-wrap items-start gap-4">
+        <Avatar
+          imageUrl={profile.avatarUrl}
+          name={profile.nickname}
+          size={96}
+          priority
+        />
+        <div className="min-w-0 flex flex-1 flex-col gap-2">
+          <h1 className="text-2xl font-semibold tracking-tight">
+            {profile.nickname}
+          </h1>
+          <p className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
+            Joined {joined}
+          </p>
+          {profile.bio ? (
+            <p className="mt-2 max-w-prose text-sm">{profile.bio}</p>
+          ) : null}
+        </div>
       </header>
 
       <div className="mt-6">

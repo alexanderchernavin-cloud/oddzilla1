@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { CommunityTicketSummary } from "@oddzilla/types";
 import { fromMicro } from "@oddzilla/types/money";
 import { CopyButton } from "./copy-button";
+import { Avatar } from "./avatar";
 
 // One card on the community feed and the per-user tickets list.
 //
@@ -72,6 +73,17 @@ export function CommunityTicketCard({
   return (
     <li className={cardCls}>
       <div className="flex items-start justify-between gap-4">
+        <Link
+          href={`/u/${encodeURIComponent(ticket.nickname)}`}
+          className="shrink-0 hover:opacity-80"
+          aria-label={`${ticket.nickname}'s profile`}
+        >
+          <Avatar
+            imageUrl={ticket.avatarUrl}
+            name={ticket.nickname}
+            size={isHero ? 56 : 40}
+          />
+        </Link>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             {ticket.isBigWin ? <BigWinBadge /> : null}
