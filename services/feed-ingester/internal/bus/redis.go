@@ -1,12 +1,16 @@
-// Redis Streams abstraction for the internal event bus. Currently only
-// publishes `odds.raw` — odds-publisher is the sole consumer. Designed so a
-// Kafka backend is an adapter swap once we move off the single Hetzner box.
+// Redis Streams abstraction for the internal event bus. `odds.raw` feeds
+// odds-publisher; `odds:match:{id}` is a pub/sub channel ws-gateway
+// fans out to subscribed browsers (live scoreboard + ticket frames).
+// Designed so a Kafka backend is an adapter swap once we move off the
+// single Hetzner box.
 
 package bus
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -106,4 +110,41 @@ func boolInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// PublishLiveScore broadcasts a fresh scoreboard payload to every
+// browser subscribed to this match's WS channel. ws-gateway forwards
+// the JSON verbatim, so the shape matches what the browser already
+// reads from the SSR /catalog/matches/:id response. Without this,
+// match-list cards stay frozen at whatever `live_score` was when the
+// page rendered — markets reprice via the existing odds publisher,
+// but scores only landed in Postgres until the next page load.
+//
+// The payload arg is the same JSON blob that just got written to
+// matches.live_score; we reparse it into the wire envelope so the
+// browser sees `{type:"score", matchId, liveScore}` and the existing
+// useLiveOdds shared-socket dispatcher can route it.
+func (b *Bus) PublishLiveScore(ctx context.Context, matchID int64, payload []byte) error {
+	if len(payload) == 0 {
+		return nil
+	}
+	var liveScore json.RawMessage = payload
+	envelope := struct {
+		Type      string          `json:"type"`
+		MatchID   string          `json:"matchId"`
+		LiveScore json.RawMessage `json:"liveScore"`
+	}{
+		Type:      "score",
+		MatchID:   strconv.FormatInt(matchID, 10),
+		LiveScore: liveScore,
+	}
+	encoded, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("marshal score envelope: %w", err)
+	}
+	channel := "odds:match:" + strconv.FormatInt(matchID, 10)
+	if err := b.rdb.Publish(ctx, channel, encoded).Err(); err != nil {
+		return fmt.Errorf("publish %s: %w", channel, err)
+	}
+	return nil
 }
