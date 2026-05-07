@@ -113,6 +113,17 @@ function partitionIntoFamilies(markets: MarketSnapshot[]): RenderEntry[] {
   );
 }
 
+// BetBuilder reachability gate. Computed once per render in LiveMarkets
+// and threaded down to each outcome button. Returns true when an
+// outcome should be locked because the slip is in BetBuilder mode for
+// THIS match and the outcome's market isn't reachable from the current
+// session (or, before the first leg is picked, isn't OBB-eligible at
+// all). Already-picked legs are exempt so the user can deselect them;
+// outcomes within markets that have a leg in the slip are also exempt
+// so the user can swap a same-market outcome.
+type BuilderLockFn = (marketId: string, outcomeId: string) => boolean;
+const NEVER_LOCK: BuilderLockFn = () => false;
+
 export function LiveMarkets({
   matchId,
   match,
@@ -124,6 +135,69 @@ export function LiveMarkets({
 }) {
   const ticks = useLiveOdds(matchId);
   const slip = useBetSlip();
+
+  const builderLocked = useMemo<BuilderLockFn>(() => {
+    const isBuilderForThisMatch =
+      slip.mode === "betbuilder" && slip.betbuilderMatchId === matchId;
+    if (!isBuilderForThisMatch) return NEVER_LOCK;
+
+    // Markets that already carry a leg — clicks within these markets
+    // are always allowed (deselecting a leg, or swapping outcomes
+    // within the market, both flow through the slip's same-market
+    // replace path).
+    const marketsWithLeg = new Set<string>();
+    const pickedKeys = new Set<string>();
+    for (const s of slip.selections) {
+      if (s.matchId !== matchId) continue;
+      marketsWithLeg.add(s.marketId);
+      pickedKeys.add(`${s.marketId}:${s.outcomeId}`);
+    }
+
+    const quote = slip.betbuilderQuote;
+    if (quote) {
+      // Per-outcome gate. Oddin's SessionCreate response lists exactly
+      // the outcomes the user can add to extend the current session;
+      // anything outside that list is unreachable as a 3rd+ leg. Same-
+      // market swaps bypass the gate (above) — Oddin's response
+      // intentionally omits the markets we already picked.
+      const allowed = new Set<string>();
+      for (const m of quote.availableMarkets) {
+        if (!m.marketId) continue;
+        for (const o of m.outcomes) {
+          allowed.add(`${m.marketId}:${o.outcomeId}`);
+        }
+      }
+      return (mid, oid) => {
+        const k = `${mid}:${oid}`;
+        if (pickedKeys.has(k)) return false;
+        if (marketsWithLeg.has(mid)) return false;
+        return !allowed.has(k);
+      };
+    }
+
+    const eligible = slip.betbuilderEligibleMarketIds;
+    if (eligible) {
+      // First-leg gate. We only have market-level resolution from the
+      // /betbuilder/match/:id/markets probe; lock any outcome whose
+      // market isn't OBB-eligible for this fixture.
+      const allowedMarkets = new Set(eligible);
+      return (mid) => {
+        if (marketsWithLeg.has(mid)) return false;
+        return !allowedMarkets.has(mid);
+      };
+    }
+
+    // Builder mode is on but the probe hasn't landed yet — don't lock
+    // prematurely (would flicker).
+    return NEVER_LOCK;
+  }, [
+    slip.mode,
+    slip.betbuilderMatchId,
+    slip.betbuilderQuote,
+    slip.betbuilderEligibleMarketIds,
+    slip.selections,
+    matchId,
+  ]);
 
   // Merge live odds ticks into the server-rendered group tree while
   // preserving the grouping. A tick keyed by marketId:outcomeId updates
@@ -214,6 +288,7 @@ export function LiveMarkets({
                     market={entry.market}
                     match={match}
                     slip={slip}
+                    builderLocked={builderLocked}
                   />
                 ) : (
                   <LineFamilyCard
@@ -221,6 +296,7 @@ export function LiveMarkets({
                     family={entry}
                     match={match}
                     slip={slip}
+                    builderLocked={builderLocked}
                   />
                 ),
               )}
@@ -278,10 +354,12 @@ function SingleMarketCard({
   market: m,
   match,
   slip,
+  builderLocked,
 }: {
   market: MarketSnapshot;
   match: MatchMeta;
   slip: ReturnType<typeof useBetSlip>;
+  builderLocked: BuilderLockFn;
 }) {
   const suspended = !isMarketBettable(m);
   const cols = m.outcomes.length <= 2 ? 2 : m.outcomes.length <= 3 ? 3 : 4;
@@ -319,7 +397,12 @@ function SingleMarketCard({
               price={price}
               label={label}
               selected={selected}
-              locked={!o.active || !price || suspended}
+              locked={
+                !o.active ||
+                !price ||
+                suspended ||
+                builderLocked(m.id, o.outcomeId)
+              }
               onClick={() =>
                 toggle(slip, m, o, match, label)
               }
@@ -338,10 +421,12 @@ function LineFamilyCard({
   family,
   match,
   slip,
+  builderLocked,
 }: {
   family: LineFamily;
   match: MatchMeta;
   slip: ReturnType<typeof useBetSlip>;
+  builderLocked: BuilderLockFn;
 }) {
   // Identify the stable set of outcome "slots" across the family so each
   // row lines up vertically. Use the rendered outcome name (already
@@ -422,6 +507,7 @@ function LineFamilyCard({
               slip={slip}
               slotNames={slotNames}
               suspended={suspended}
+              builderLocked={builderLocked}
             />
           );
         })}
@@ -436,12 +522,14 @@ function LineRow({
   slip,
   slotNames,
   suspended,
+  builderLocked,
 }: {
   market: MarketSnapshot;
   match: MatchMeta;
   slip: ReturnType<typeof useBetSlip>;
   slotNames: string[];
   suspended: boolean;
+  builderLocked: BuilderLockFn;
 }) {
   const bySlot = new Map<string, MarketOutcome>();
   for (const o of m.outcomes) {
@@ -484,7 +572,12 @@ function LineRow({
             price={price}
             label=""
             selected={selected}
-            locked={!o.active || !price || suspended}
+            locked={
+              !o.active ||
+              !price ||
+              suspended ||
+              builderLocked(m.id, o.outcomeId)
+            }
             onClick={() => toggle(slip, m, o, match, `${slot} ${formatLineValue(m.lineValue, m.lineSpec)}`)}
           />
         );

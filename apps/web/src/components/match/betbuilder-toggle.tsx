@@ -12,7 +12,7 @@
 // non-OBB sports / when Oddin's gRPC channel is offline the user sees
 // no broken affordance.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { BetBuilderAvailableMarketsResponse } from "@oddzilla/types";
 import { useBetSlip } from "@/lib/bet-slip";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
@@ -41,8 +41,16 @@ export function BetBuilderToggle({ matchId, sportSlug }: Props) {
   const [serviceState, setServiceState] = useState<
     "loading" | "available" | "unavailable"
   >("loading");
+  // Cache the eligible-markets probe response so we can push it into
+  // slip state at toggle-on time without a re-fetch. Held in a ref so
+  // an async resolution after toggle-on still pushes through.
+  const eligibleRef = useRef<string[] | null>(null);
 
   const supported = SUPPORTED_SLUGS.has(sportSlug.toLowerCase());
+
+  const setBetbuilderEligibleMarkets = slip.setBetbuilderEligibleMarkets;
+  const isOn =
+    slip.mode === "betbuilder" && slip.betbuilderMatchId === matchId;
 
   // Probe availability on mount. The /markets endpoint also primes
   // Oddin's per-match cache (1d TTL per their docs §2.7), so the first
@@ -53,12 +61,21 @@ export function BetBuilderToggle({ matchId, sportSlug }: Props) {
       return;
     }
     let cancelled = false;
+    eligibleRef.current = null;
     (async () => {
       try {
-        await clientApi<BetBuilderAvailableMarketsResponse>(
+        const res = await clientApi<BetBuilderAvailableMarketsResponse>(
           `/betbuilder/match/${matchId}/markets`,
         );
-        if (!cancelled) setServiceState("available");
+        if (cancelled) return;
+        eligibleRef.current = res.marketIds;
+        setServiceState("available");
+        // If builder was already toggled on for this match before the
+        // probe resolved, push the eligibility list now so the match
+        // page can grey out unreachable outcomes immediately.
+        if (isOn) {
+          setBetbuilderEligibleMarkets(matchId, res.marketIds);
+        }
       } catch (err) {
         if (cancelled) return;
         if (err instanceof ApiFetchError) {
@@ -72,18 +89,20 @@ export function BetBuilderToggle({ matchId, sportSlug }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [matchId, supported]);
+  }, [matchId, supported, isOn, setBetbuilderEligibleMarkets]);
 
   if (serviceState !== "available") return null;
-
-  const isOn =
-    slip.mode === "betbuilder" && slip.betbuilderMatchId === matchId;
 
   function onToggle() {
     if (isOn) {
       slip.setBetbuilderMatch(null);
     } else {
       slip.setBetbuilderMatch(matchId);
+      // Push the (already-resolved) eligible-markets list so LiveMarkets
+      // can gate outcome buttons before the user picks the first leg.
+      if (eligibleRef.current) {
+        slip.setBetbuilderEligibleMarkets(matchId, eligibleRef.current);
+      }
     }
   }
 

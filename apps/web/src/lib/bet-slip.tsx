@@ -59,6 +59,15 @@ interface SlipState {
    * provider hook). Set on every successful POST /betbuilder/match/:id/quote.
    */
   betbuilderQuote: BetBuilderQuoteAcceptedResponse | null;
+  /**
+   * OBB-eligible internal market ids for the current builder match, as
+   * returned by GET /betbuilder/match/:id/markets. Used by the match
+   * page to grey out outcomes whose market isn't OBB-supported BEFORE
+   * the user picks the first leg (we don't have a SessionCreate quote
+   * yet, so per-outcome gating from `betbuilderQuote.availableMarkets`
+   * doesn't apply). Cleared with builder mode.
+   */
+  betbuilderEligibleMarketIds: string[] | null;
 }
 
 interface SlipContextValue extends SlipState {
@@ -93,6 +102,13 @@ interface SlipContextValue extends SlipState {
    * the place-bet payload.
    */
   setBetbuilderQuote(quote: BetBuilderQuoteAcceptedResponse | null): void;
+  /**
+   * Stash the OBB-eligible internal market ids for the current builder
+   * match. The match-page toggle fetches /betbuilder/match/:id/markets
+   * once on mount and pushes the result here so LiveMarkets can grey
+   * out outcomes whose market isn't OBB-supported.
+   */
+  setBetbuilderEligibleMarkets(matchId: string, marketIds: string[]): void;
 }
 
 const SlipContext = createContext<SlipContextValue | null>(null);
@@ -105,6 +121,7 @@ function emptyState(): SlipState {
     currency: DEFAULT_SLIP_CURRENCY,
     betbuilderMatchId: null,
     betbuilderQuote: null,
+    betbuilderEligibleMarketIds: null,
   };
 }
 
@@ -132,6 +149,9 @@ function loadFromStorage(): SlipState {
       // Quote is short-lived (Oddin invalidates a session in 10 min – 2 h);
       // we never restore it from storage. The match page re-quotes on mount.
       betbuilderQuote: null,
+      // Eligible-markets list comes back from /betbuilder/match/:id/markets
+      // on every mount; never restored. The match-page toggle re-probes.
+      betbuilderEligibleMarketIds: null,
     };
   } catch {
     return emptyState();
@@ -192,6 +212,7 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
           mode: "combo",
           betbuilderMatchId: null,
           betbuilderQuote: null,
+          betbuilderEligibleMarketIds: null,
           open: true,
         };
       }
@@ -222,7 +243,11 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
         // Auto-exit builder mode when no legs are left so the slip
         // doesn't leave the user in a weird empty-builder state.
         ...(prev.mode === "betbuilder" && next.length === 0
-          ? { mode: "combo" as const, betbuilderMatchId: null }
+          ? {
+              mode: "combo" as const,
+              betbuilderMatchId: null,
+              betbuilderEligibleMarketIds: null,
+            }
           : null),
       };
     });
@@ -233,7 +258,12 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
       ...prev,
       selections: [],
       ...(prev.mode === "betbuilder"
-        ? { mode: "combo" as const, betbuilderMatchId: null, betbuilderQuote: null }
+        ? {
+            mode: "combo" as const,
+            betbuilderMatchId: null,
+            betbuilderQuote: null,
+            betbuilderEligibleMarketIds: null,
+          }
         : null),
     }));
   }, []);
@@ -254,6 +284,7 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
           mode,
           betbuilderMatchId: null,
           betbuilderQuote: null,
+          betbuilderEligibleMarketIds: null,
         };
       }
       // Switching into betbuilder is normally driven by the match-page
@@ -272,6 +303,7 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
           mode: "combo",
           betbuilderMatchId: null,
           betbuilderQuote: null,
+          betbuilderEligibleMarketIds: null,
         };
       }
       // Entering builder for a specific match — drop any selections
@@ -283,6 +315,12 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
         betbuilderMatchId: matchId,
         selections: prev.selections.filter((s) => s.matchId === matchId),
         betbuilderQuote: null,
+        // Drop the cached eligibility list when builder switches matches —
+        // the match-page toggle re-fetches on mount for the new match.
+        betbuilderEligibleMarketIds:
+          prev.betbuilderMatchId === matchId
+            ? prev.betbuilderEligibleMarketIds
+            : null,
         open: true,
       };
     });
@@ -293,6 +331,21 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
       setState((prev) => {
         if (prev.mode !== "betbuilder") return prev;
         return { ...prev, betbuilderQuote: quote };
+      });
+    },
+    [],
+  );
+
+  const setBetbuilderEligibleMarkets = useCallback(
+    (matchId: string, marketIds: string[]) => {
+      setState((prev) => {
+        // Only accept when builder is on for this exact match. Stops a
+        // late-arriving probe response from a previous match leaking
+        // into the active builder context after the user navigated.
+        if (prev.mode !== "betbuilder" || prev.betbuilderMatchId !== matchId) {
+          return prev;
+        }
+        return { ...prev, betbuilderEligibleMarketIds: marketIds };
       });
     },
     [],
@@ -349,6 +402,7 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
       updateOdds,
       setBetbuilderMatch,
       setBetbuilderQuote,
+      setBetbuilderEligibleMarkets,
     }),
     [
       state,
@@ -362,6 +416,7 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
       updateOdds,
       setBetbuilderMatch,
       setBetbuilderQuote,
+      setBetbuilderEligibleMarkets,
     ],
   );
 
