@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { fromMicro } from "@oddzilla/types/money";
 import type { WalletSnapshot } from "@oddzilla/types";
-import { Wordmark } from "@/components/ui/monogram";
+import { Logo } from "@/components/ui/monogram";
 import { I } from "@/components/ui/icons";
 import { Button, Divider } from "@/components/ui/primitives";
 import { useBetSlip } from "@/lib/bet-slip";
@@ -59,7 +59,7 @@ export function TopBar({ signedIn, user, wallets }: TopBarProps) {
         alignItems: "center",
         gap: 12,
         padding: "0 clamp(12px, 3vw, 24px)",
-        height: 280,
+        height: 60,
         borderBottom: "1px solid var(--hairline)",
         background: "color-mix(in oklab, var(--bg) 80%, transparent)",
         backdropFilter: "blur(12px)",
@@ -88,7 +88,7 @@ export function TopBar({ signedIn, user, wallets }: TopBarProps) {
           flexShrink: 0,
         }}
       >
-        <Wordmark size={256} className="oz-topbar-logo" priority />
+        <Logo size={36} priority />
       </Link>
 
       {/* Search — hidden under ~900px via .oz-topbar-search CSS */}
