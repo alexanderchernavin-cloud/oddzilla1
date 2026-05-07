@@ -6,6 +6,50 @@ import { RsEditor } from "./rs-editor";
 
 export const dynamic = "force-dynamic";
 
+interface WalletDto {
+  currency: string;
+  balanceMicro: string;
+  lockedMicro: string;
+}
+
+interface PhaseStats {
+  ticketsCount: number;
+  wonCount: number;
+  stakedMicro: string;
+  payoutMicro: string;
+  operatorPnlMicro: string;
+}
+
+interface SportStats {
+  sportSlug: string;
+  sportName: string;
+  ticketCount: number;
+  wonCount: number;
+  stakedMicro: string;
+  payoutMicro: string;
+  operatorPnlMicro: string;
+}
+
+interface BiggestStake {
+  ticketId: string;
+  status: string;
+  betType: string;
+  stakeMicro: string;
+  potentialPayoutMicro: string;
+  actualPayoutMicro: string;
+  placedAt: string;
+  settledAt: string | null;
+}
+
+interface BiggestWin {
+  ticketId: string;
+  betType: string;
+  stakeMicro: string;
+  payoutMicro: string;
+  netMicro: string;
+  settledAt: string | null;
+}
+
 interface BettorProfile {
   id: string;
   email: string;
@@ -14,16 +58,24 @@ interface BettorProfile {
   riskScore: string;
   createdAt: string;
   lastLoginAt: string | null;
+  wallets: WalletDto[];
   stats: {
     ticketsCount: number;
     wonCount: number;
+    lostCount: number;
     openCount: number;
     stakedMicro: string;
     payoutMicro: string;
+    operatorPnlMicro: string;
     openMaxLossMicro: string;
+    openPotentialPayoutMicro: string;
     winRate: number;
     lastBetAt: string | null;
   };
+  pnlByPhase: { live: PhaseStats; prematch: PhaseStats };
+  pnlBySport: SportStats[];
+  biggestStakes: BiggestStake[];
+  biggestWins: BiggestWin[];
   decisions: Array<{
     id: string;
     decision: string;
@@ -43,12 +95,18 @@ export default async function BettorProfilePage({
   const data = await serverApi<BettorProfile>(`/admin/riskzilla/bettors/${id}`);
   if (!data) notFound();
 
-  const stake = fromMicro(BigInt(data.stats.stakedMicro));
-  const payout = fromMicro(BigInt(data.stats.payoutMicro));
+  const usdcWallet = data.wallets.find((w) => w.currency === "USDC");
+  const ozWallet = data.wallets.find((w) => w.currency === "OZ");
+
+  const totalStake = fromMicro(BigInt(data.stats.stakedMicro));
+  const totalPayout = fromMicro(BigInt(data.stats.payoutMicro));
+  const pnlMicro = BigInt(data.stats.operatorPnlMicro);
+  const pnlForBettor = -pnlMicro; // bettor's PnL is the inverse of operator's
   const openLoss = fromMicro(BigInt(data.stats.openMaxLossMicro));
+  const openPotential = fromMicro(BigInt(data.stats.openPotentialPayoutMicro));
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
       <Link
         href="/admin/riskzilla/bettors"
         style={{ fontSize: 12, color: "var(--color-fg-muted)", textDecoration: "none" }}
@@ -79,41 +137,210 @@ export default async function BettorProfilePage({
         <RsEditor userId={data.id} initial={data.riskScore} />
       </header>
 
-      <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
-        <Kpi label="Tickets" value={String(data.stats.ticketsCount)} sub={`${data.stats.wonCount} wins`} />
-        <Kpi label="Win rate" value={`${(data.stats.winRate * 100).toFixed(1)}%`} />
-        <Kpi label="Staked" value={`${stake} USDC`} />
-        <Kpi label="Paid out" value={`${payout} USDC`} />
-        <Kpi label="Open exposure" value={`${openLoss} USDC`} sub={`${data.stats.openCount} open tickets`} />
-        <Kpi
-          label="Last bet"
-          value={
-            data.stats.lastBetAt
-              ? new Date(data.stats.lastBetAt).toLocaleString()
-              : "—"
-          }
-        />
-      </section>
-
-      <section>
-        <h2
-          className="mono"
-          style={{
-            fontSize: 11,
-            letterSpacing: "0.14em",
-            textTransform: "uppercase",
-            color: "var(--color-fg-subtle)",
-            marginBottom: 12,
-          }}
-        >
-          Recent risk decisions
-        </h2>
-        {data.decisions.length === 0 ? (
-          <p style={{ fontSize: 13, color: "var(--color-fg-muted)" }}>
-            No decisions logged yet.
-          </p>
+      <Section title="Wallets">
+        {data.wallets.length === 0 ? (
+          <Empty>No wallets — user has never been credited.</Empty>
         ) : (
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
+            {usdcWallet && (
+              <Kpi
+                label="USDC balance"
+                value={`${fromMicro(BigInt(usdcWallet.balanceMicro))} USDC`}
+                sub={`${fromMicro(BigInt(usdcWallet.lockedMicro))} locked`}
+              />
+            )}
+            {ozWallet && (
+              <Kpi
+                label="OZ balance (demo)"
+                value={`${fromMicro(BigInt(ozWallet.balanceMicro))} OZ`}
+                sub={`${fromMicro(BigInt(ozWallet.lockedMicro))} locked`}
+              />
+            )}
+            {data.wallets
+              .filter((w) => w.currency !== "USDC" && w.currency !== "OZ")
+              .map((w) => (
+                <Kpi
+                  key={w.currency}
+                  label={`${w.currency} balance`}
+                  value={`${fromMicro(BigInt(w.balanceMicro))} ${w.currency}`}
+                  sub={`${fromMicro(BigInt(w.lockedMicro))} locked`}
+                />
+              ))}
+          </div>
+        )}
+      </Section>
+
+      <Section title="Lifetime activity (USDC)">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
+          <Kpi
+            label="Tickets"
+            value={String(data.stats.ticketsCount)}
+            sub={`${data.stats.wonCount} won · ${data.stats.lostCount} lost · ${data.stats.openCount} open`}
+          />
+          <Kpi
+            label="Win rate"
+            value={`${(data.stats.winRate * 100).toFixed(1)}%`}
+          />
+          <Kpi label="Staked" value={`${totalStake} USDC`} />
+          <Kpi label="Paid out" value={`${totalPayout} USDC`} />
+          <Kpi
+            label="Bettor PnL"
+            value={`${pnlForBettor >= 0n ? "+" : ""}${fromMicro(pnlForBettor)} USDC`}
+            valueColor={pnlForBettor >= 0n ? "#16a34a" : "#dc2626"}
+            sub={pnlForBettor >= 0n ? "Bettor ahead" : "Bettor down"}
+          />
+          <Kpi
+            label="Open exposure"
+            value={`${openLoss} USDC`}
+            sub={`${openPotential} USDC potential payout`}
+          />
+          <Kpi
+            label="Last bet"
+            value={
+              data.stats.lastBetAt
+                ? new Date(data.stats.lastBetAt).toLocaleDateString()
+                : "—"
+            }
+            sub={
+              data.stats.lastBetAt
+                ? new Date(data.stats.lastBetAt).toLocaleTimeString()
+                : undefined
+            }
+          />
+        </div>
+      </Section>
+
+      <Section title="Live vs prematch">
+        <p style={{ fontSize: 12, color: "var(--color-fg-muted)", margin: "0 0 12px" }}>
+          Tickets are classified by whether <em>any</em> leg was already
+          live (match started) at placement time.
+        </p>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <PhaseCard label="Prematch" phase={data.pnlByPhase.prematch} />
+          <PhaseCard label="In-play" phase={data.pnlByPhase.live} />
+        </div>
+      </Section>
+
+      <Section title="By sport">
+        {data.pnlBySport.length === 0 ? (
+          <Empty>No settled tickets yet.</Empty>
+        ) : (
+          <table style={tableStyle}>
+            <thead>
+              <tr>
+                <Th>Sport</Th>
+                <Th align="right">Tickets</Th>
+                <Th align="right">Won</Th>
+                <Th align="right">Staked</Th>
+                <Th align="right">Paid out</Th>
+                <Th align="right">Bettor PnL</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.pnlBySport.map((s) => {
+                const bettorPnl = -BigInt(s.operatorPnlMicro);
+                return (
+                  <tr key={s.sportSlug}>
+                    <Td>{s.sportName}</Td>
+                    <Td align="right" mono>{s.ticketCount}</Td>
+                    <Td align="right" mono>{s.wonCount}</Td>
+                    <Td align="right" mono>{fromMicro(BigInt(s.stakedMicro))}</Td>
+                    <Td align="right" mono>{fromMicro(BigInt(s.payoutMicro))}</Td>
+                    <Td
+                      align="right"
+                      mono
+                      color={bettorPnl >= 0n ? "#16a34a" : "#dc2626"}
+                    >
+                      {bettorPnl >= 0n ? "+" : ""}
+                      {fromMicro(bettorPnl)}
+                    </Td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </Section>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
+        <Section title="Biggest stakes">
+          {data.biggestStakes.length === 0 ? (
+            <Empty>No tickets yet.</Empty>
+          ) : (
+            <table style={tableStyle}>
+              <thead>
+                <tr>
+                  <Th>When</Th>
+                  <Th>Type</Th>
+                  <Th align="right">Stake</Th>
+                  <Th align="right">Status</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.biggestStakes.map((b) => (
+                  <tr key={b.ticketId}>
+                    <Td>{new Date(b.placedAt).toLocaleDateString()}</Td>
+                    <Td>{b.betType}</Td>
+                    <Td align="right" mono>
+                      {fromMicro(BigInt(b.stakeMicro))}
+                    </Td>
+                    <Td>
+                      <StatusBadge
+                        status={b.status}
+                        win={
+                          b.status === "settled" &&
+                          BigInt(b.actualPayoutMicro) > BigInt(b.stakeMicro)
+                        }
+                      />
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Section>
+
+        <Section title="Biggest wins">
+          {data.biggestWins.length === 0 ? (
+            <Empty>No winning settlements yet.</Empty>
+          ) : (
+            <table style={tableStyle}>
+              <thead>
+                <tr>
+                  <Th>When</Th>
+                  <Th>Type</Th>
+                  <Th align="right">Stake</Th>
+                  <Th align="right">Net win</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.biggestWins.map((b) => (
+                  <tr key={b.ticketId}>
+                    <Td>
+                      {b.settledAt
+                        ? new Date(b.settledAt).toLocaleDateString()
+                        : "—"}
+                    </Td>
+                    <Td>{b.betType}</Td>
+                    <Td align="right" mono>
+                      {fromMicro(BigInt(b.stakeMicro))}
+                    </Td>
+                    <Td align="right" mono color="#16a34a">
+                      +{fromMicro(BigInt(b.netMicro))}
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Section>
+      </div>
+
+      <Section title="Recent risk decisions">
+        {data.decisions.length === 0 ? (
+          <Empty>No decisions logged yet.</Empty>
+        ) : (
+          <table style={tableStyle}>
             <thead>
               <tr>
                 <Th>When</Th>
@@ -140,12 +367,123 @@ export default async function BettorProfilePage({
             </tbody>
           </table>
         )}
-      </section>
+      </Section>
     </div>
   );
 }
 
-function Kpi({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section>
+      <h2
+        className="mono"
+        style={{
+          fontSize: 11,
+          letterSpacing: "0.14em",
+          textTransform: "uppercase",
+          color: "var(--color-fg-subtle)",
+          margin: "0 0 12px 0",
+        }}
+      >
+        {title}
+      </h2>
+      {children}
+    </section>
+  );
+}
+
+function PhaseCard({ label, phase }: { label: string; phase: PhaseStats }) {
+  const stake = BigInt(phase.stakedMicro);
+  const payout = BigInt(phase.payoutMicro);
+  const bettorPnl = payout - stake;
+  return (
+    <div
+      style={{
+        background: "var(--color-bg-subtle)",
+        border: "1px solid var(--color-border)",
+        borderRadius: 10,
+        padding: "14px 16px",
+        display: "grid",
+        gridTemplateColumns: "1fr 1fr",
+        gap: 6,
+      }}
+    >
+      <span
+        className="mono"
+        style={{
+          fontSize: 11,
+          letterSpacing: "0.12em",
+          textTransform: "uppercase",
+          color: "var(--color-fg-subtle)",
+          gridColumn: "1 / -1",
+        }}
+      >
+        {label}
+      </span>
+      <span style={{ fontSize: 12, color: "var(--color-fg-muted)" }}>Tickets</span>
+      <span style={{ fontVariantNumeric: "tabular-nums", textAlign: "right", fontSize: 13 }}>
+        {phase.ticketsCount} <span style={{ color: "var(--color-fg-muted)" }}>· {phase.wonCount} won</span>
+      </span>
+      <span style={{ fontSize: 12, color: "var(--color-fg-muted)" }}>Staked</span>
+      <span style={{ fontVariantNumeric: "tabular-nums", textAlign: "right", fontSize: 13 }}>
+        {fromMicro(stake)}
+      </span>
+      <span style={{ fontSize: 12, color: "var(--color-fg-muted)" }}>Paid out</span>
+      <span style={{ fontVariantNumeric: "tabular-nums", textAlign: "right", fontSize: 13 }}>
+        {fromMicro(payout)}
+      </span>
+      <span style={{ fontSize: 12, color: "var(--color-fg-muted)" }}>Bettor PnL</span>
+      <span
+        style={{
+          fontVariantNumeric: "tabular-nums",
+          textAlign: "right",
+          fontSize: 13,
+          color: bettorPnl >= 0n ? "#16a34a" : "#dc2626",
+        }}
+      >
+        {bettorPnl >= 0n ? "+" : ""}
+        {fromMicro(bettorPnl)}
+      </span>
+    </div>
+  );
+}
+
+function StatusBadge({ status, win }: { status: string; win: boolean }) {
+  const color =
+    status === "accepted" || status === "pending_delay"
+      ? "var(--color-fg-muted)"
+      : win
+        ? "#16a34a"
+        : status === "settled"
+          ? "#dc2626"
+          : "var(--color-fg-muted)";
+  const label = status === "settled" ? (win ? "won" : "lost") : status;
+  return (
+    <span
+      className="mono"
+      style={{
+        fontSize: 11,
+        letterSpacing: "0.06em",
+        textTransform: "uppercase",
+        color,
+      }}
+    >
+      {label}
+    </span>
+  );
+}
+
+function Kpi({
+  label,
+  value,
+  sub,
+  valueColor,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  valueColor?: string;
+}) {
   return (
     <div
       style={{
@@ -169,11 +507,31 @@ function Kpi({ label, value, sub }: { label: string; value: string; sub?: string
       >
         {label}
       </span>
-      <span style={{ fontSize: 18, fontVariantNumeric: "tabular-nums" }}>{value}</span>
+      <span
+        style={{
+          fontSize: 18,
+          fontVariantNumeric: "tabular-nums",
+          color: valueColor,
+        }}
+      >
+        {value}
+      </span>
       {sub && <span style={{ fontSize: 12, color: "var(--color-fg-muted)" }}>{sub}</span>}
     </div>
   );
 }
+
+function Empty({ children }: { children: React.ReactNode }) {
+  return (
+    <p style={{ fontSize: 13, color: "var(--color-fg-muted)" }}>{children}</p>
+  );
+}
+
+const tableStyle: React.CSSProperties = {
+  width: "100%",
+  borderCollapse: "collapse",
+  fontSize: 13,
+};
 
 function Th({ children, align }: { children: React.ReactNode; align?: "right" }) {
   return (
@@ -198,10 +556,12 @@ function Td({
   children,
   align,
   mono,
+  color,
 }: {
   children: React.ReactNode;
   align?: "right";
   mono?: boolean;
+  color?: string;
 }) {
   return (
     <td
@@ -210,6 +570,7 @@ function Td({
         padding: "6px 10px",
         borderBottom: "1px solid var(--color-border)",
         fontVariantNumeric: mono ? "tabular-nums" : "normal",
+        color,
       }}
     >
       {children}
