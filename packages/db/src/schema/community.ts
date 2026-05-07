@@ -45,6 +45,13 @@ export const communityTickets = pgTable(
     sportIds: integer().array().notNull().default(sql`'{}'::integer[]`),
     settledAt: timestamp({ withTimezone: true }).notNull(),
     score: doublePrecision().notNull().default(0),
+    // Number of times this ticket has been used as the source of a
+    // /community/copy call. Drives the Most Copied sort on the Big
+    // Wins tab; see migration 0032_community_big_wins.sql for the
+    // denormalised-counter rationale and inflation analysis. The
+    // projection writers (TS + Go) leave this column alone — the
+    // route handler is the only writer.
+    inspirationCount: integer().notNull().default(0),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -62,6 +69,10 @@ export const communityTickets = pgTable(
       sql`${t.settledAt} DESC`,
     ),
     index("community_tickets_sport_idx").using("gin", t.sportIds),
+    index("community_tickets_inspirations_idx").on(
+      sql`${t.inspirationCount} DESC`,
+      sql`${t.settledAt} DESC`,
+    ),
     check("community_tickets_stake_pos", sql`${t.stakeMicro} > 0`),
     check("community_tickets_payout_nonneg", sql`${t.payoutMicro} >= 0`),
     check("community_tickets_num_legs_pos", sql`${t.numLegs} > 0`),

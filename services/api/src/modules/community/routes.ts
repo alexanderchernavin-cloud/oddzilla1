@@ -15,7 +15,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { and, eq, sql, desc, asc } from "drizzle-orm";
+import { and, eq, sql, desc, asc, type SQL } from "drizzle-orm";
 import {
   users,
   communityTickets,
@@ -89,15 +89,42 @@ const profileBody = z
 
 // Feed query. Defaults match the storefront: 20 cards a page, USDT
 // (the locked-leaderboards currency under D4) gets the default tab,
-// "all sports" when sport is omitted. `sort=best` switches to the
-// Phase 10.3 Best Wins ranking — score-then-recency, restricted to a
-// 7-day rolling window so old rows can't dominate the leaderboard
-// (the stored score is time-invariant by design; the recency cutoff
-// is applied at query time).
+// "all sports" when sport is omitted.
+//
+// `tab=recent` (default) → live in-flight bets on still-bettable
+//   matches (Recent feed).
+// `tab=best`             → settled wins from the projection (Best
+//   Wins / Big Wins surface). `sort` and `bigWinsOnly` then carve
+//   the Best Wins surface into the four UI sort modes. They are
+//   ignored when tab=recent.
+//
+// `sort` values when tab=best:
+//   recent  — settled_at DESC (default).
+//   copied  — inspiration_count DESC, settled_at DESC. Powered by
+//             community_tickets_inspirations_idx (migration 0032).
+//   stakes  — profit DESC, settled_at DESC. PRD calls it "High
+//             Stakes" but spec'd it as profit ranking; we honour
+//             the spec.
+//   live    — Phase A placeholder. The PRD's "Live Matches" sort
+//             requires a still-live underlying match on a settled
+//             ticket — only meaningful for cashed-out bets, and
+//             the catalog join is heavyweight on the Best Wins
+//             query plan. Falls back to recent until a follow-up
+//             adds the live-match flag to the projection. Kept on
+//             the enum so the UI can ship the four-button row now.
 const feedQuery = z.object({
   currency: z.string().optional(),
   sport: z.coerce.number().int().positive().optional(),
-  sort: z.enum(["recent", "best"]).default("recent"),
+  // `tab` and `sort` are decoupled because the Big Wins design has
+  // three sort modes inside the Best Wins tab; the legacy single
+  // enum couldn't express that without ambiguity.
+  tab: z.enum(["recent", "best"]).default("recent"),
+  sort: z.enum(["recent", "copied", "stakes", "live"]).default("recent"),
+  // True restricts Best Wins to tickets whose profit clears the
+  // per-currency Big Win floor. The UI sets it on the dedicated Big
+  // Wins entry point; the standard Best Wins tab leaves it off so
+  // the surface keeps surfacing every win.
+  bigWinsOnly: z.coerce.boolean().default(false),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(50).default(20),
 });
@@ -106,6 +133,22 @@ const feedQuery = z.object({
 // short enough that ancient blowout wins don't squat the top of the
 // feed indefinitely. See docs/COMMUNITY_PLAN.md §scoring.
 const BEST_WINS_WINDOW = sql`now() - interval '7 days'`;
+
+// Per-currency Big Win profit floor in micro units (1e6 per unit).
+// Profit = payout_micro − stake_micro; a row clears the floor when
+// profit ≥ this number. The PRD's flat €500 maps directly to USDT;
+// OZ is a demo currency and the threshold is a placeholder until
+// product picks one. Kept here (not in DB / config) because:
+//   • the floor varies per currency, not per row;
+//   • the PRD's Open Question #8 explicitly anticipates per-operator
+//     re-tuning, and a code-side map is the cheapest seam to revisit;
+//   • a SQL constant per query keeps the planner's predicate inline.
+// Both values are bigint literals — never coerce to Number, the
+// rest of the codebase treats _micro as bigint end-to-end.
+const BIG_WIN_PROFIT_MICRO: Record<Currency, bigint> = {
+  USDT: 500_000_000n, // 500 USDT ≈ €500 (PRD spec).
+  OZ: 500_000_000n,   // 500 OZ — half the signup bonus. Tune later.
+};
 
 // Recent tab freshness window. Per the Community Wall spec
 // (notion.so/oddin/Community-Wall) the Feed tab is "bets you can
@@ -150,8 +193,15 @@ export default async function communityRoutes(app: FastifyInstance) {
     const currency: Currency | null =
       q.currency && isCurrency(q.currency) ? q.currency : null;
 
-    if (q.sort === "best") {
-      return loadBestWinsFeed(app, { currency, sport: q.sport, page: q.page, pageSize: q.pageSize });
+    if (q.tab === "best") {
+      return loadBestWinsFeed(app, {
+        currency,
+        sport: q.sport,
+        page: q.page,
+        pageSize: q.pageSize,
+        sort: q.sort,
+        bigWinsOnly: q.bigWinsOnly,
+      });
     }
     return loadRecentFeed(app, { currency, sport: q.sport, page: q.page, pageSize: q.pageSize });
   });
@@ -253,6 +303,7 @@ export default async function communityRoutes(app: FastifyInstance) {
           totalOdds: communityTickets.totalOdds,
           numLegs: communityTickets.numLegs,
           sportIds: communityTickets.sportIds,
+          inspirationCount: communityTickets.inspirationCount,
           // Per-user history is settled rows only; `at` carries the
           // settled-at value to match the type's contract.
           at: communityTickets.settledAt,
@@ -369,6 +420,23 @@ export default async function communityRoutes(app: FastifyInstance) {
           r.marketStatus === 1 &&
           (r.matchStatus === "not_started" || r.matchStatus === "live"),
       }));
+
+      // Best-effort inspiration counter bump. Drives the Most
+      // Copied sort on the Big Wins tab. Fire-and-forget — a
+      // failed counter must never break the prefill response,
+      // since the user-visible Copy flow is what matters and the
+      // counter is a coarse sort signal (PRD: "Most Copied" is a
+      // sort key, not a number we ask the user to trust).
+      // Inflation is bounded by the route's existing 30/min/IP
+      // rate limit; tighter dedup (per-viewer cookie) is tracked
+      // for the audit-table follow-up.
+      app.db
+        .update(communityTickets)
+        .set({ inspirationCount: sql`${communityTickets.inspirationCount} + 1` })
+        .where(eq(communityTickets.ticketId, id))
+        .catch((err: unknown) => {
+          app.log.warn({ err, ticketId: id }, "inspiration_count bump failed");
+        });
 
       return {
         // CHAR(4) → trim padding at the API boundary, same convention
@@ -543,6 +611,11 @@ interface FeedRow {
   totalOdds: string;
   numLegs: number;
   sportIds: number[];
+  // Always present in projection-backed paths; defaulted to 0 by the
+  // recent loader (which reads the live tickets table where there is
+  // no inspiration counter). The shape stays uniform so every caller
+  // hits the same toFeedSummary path.
+  inspirationCount: number;
   at: Date;
 }
 
@@ -554,20 +627,41 @@ function toFeedSummary(r: FeedRow): CommunityTicketSummary {
   if (r.nickname === null) {
     throw new Error("toFeedSummary: nickname unexpectedly null");
   }
+  // CHAR(4) columns come back space-padded from postgres ("OZ  ").
+  // Trim at the API boundary, matching the wallet + bets convention.
+  const currency = r.currency.trim() as Currency;
+  // Profit derivation matches the Best Wins query plan and the UI's
+  // hero-card focal value. For accepted tickets payoutMicro carries
+  // the *potential* payout (frozen at placement), so this surfaces
+  // the in-flight "to win" number on the Recent tab too.
+  const profitMicro = r.payoutMicro - r.stakeMicro;
+  // isBigWin trips only on real wins: a void or loss never qualifies
+  // even if profitMicro is positive on a fluke (it can't be, but the
+  // status guard makes the invariant explicit). Threshold lookup
+  // falls back to USDT for any unknown currency — safe default since
+  // the per-currency floor is product-tunable, not security-critical.
+  const isWin = r.status === "settled" || r.status === "cashed_out";
+  const floor =
+    currency in BIG_WIN_PROFIT_MICRO
+      ? BIG_WIN_PROFIT_MICRO[currency]
+      : BIG_WIN_PROFIT_MICRO.USDT;
+  const isBigWin =
+    isWin && r.payoutMicro > r.stakeMicro && profitMicro >= floor;
   return {
     ticketId: r.ticketId,
     nickname: r.nickname,
     bio: r.bio,
-    // CHAR(4) columns come back space-padded from postgres ("OZ  ").
-    // Trim at the API boundary, matching the wallet + bets convention.
-    currency: r.currency.trim() as Currency,
+    currency,
     status: r.status as CommunityTicketSummary["status"],
     betType: r.betType as CommunityTicketSummary["betType"],
     stakeMicro: r.stakeMicro.toString(),
     payoutMicro: r.payoutMicro.toString(),
+    profitMicro: profitMicro.toString(),
     totalOdds: r.totalOdds,
     numLegs: r.numLegs,
     sportIds: r.sportIds,
+    inspirationCount: r.inspirationCount,
+    isBigWin,
     at: r.at.toISOString(),
   };
 }
@@ -579,6 +673,11 @@ interface FeedLoaderArgs {
   sport: number | undefined;
   page: number;
   pageSize: number;
+}
+
+interface BestWinsLoaderArgs extends FeedLoaderArgs {
+  sort: "recent" | "copied" | "stakes" | "live";
+  bigWinsOnly: boolean;
 }
 
 // Recent tab — accepted tickets on still-bettable matches. Reads the
@@ -649,6 +748,10 @@ SELECT
   legs.total_odds           AS "totalOdds",
   legs.num_legs             AS "numLegs",
   legs.sport_ids            AS "sportIds",
+  -- Recent feed reads the live tickets table; inspiration_count
+  -- only exists on the settled projection. Project a literal so
+  -- the row shape matches FeedRow / toFeedSummary uniformly.
+  0::int                    AS "inspirationCount",
   legs.at                   AS at
   FROM legs
   JOIN users u ON u.id = legs.user_id
@@ -678,9 +781,14 @@ SELECT
 // payout was below stake). Cashed_out wins are surfaced because the
 // user did profit on them; cashed_out losses (offer < stake) are
 // dropped by the same predicate.
+//
+// `bigWinsOnly` adds a profit-floor predicate keyed by currency.
+// When set without an explicit currency, the floor applies per-row
+// using BIG_WIN_PROFIT_MICRO[r.currency] — encoded inline as a CASE
+// so the planner can still use the existing indexes.
 async function loadBestWinsFeed(
   app: FastifyInstance,
-  q: FeedLoaderArgs,
+  q: BestWinsLoaderArgs,
 ): Promise<CommunityFeedResponse> {
   const filters = [
     eq(users.ticketsPublic, true),
@@ -693,6 +801,29 @@ async function loadBestWinsFeed(
   if (q.sport !== undefined) {
     filters.push(sql`${communityTickets.sportIds} @> ARRAY[${q.sport}]::int[]`);
   }
+  if (q.bigWinsOnly) {
+    filters.push(bigWinFilter(q.currency));
+  }
+
+  // ORDER BY mapping. Tied breaks always fall back to settled_at DESC
+  // so cards within a tied bucket render newest-first.
+  //   recent  → settled_at DESC
+  //   copied  → inspiration_count DESC, settled_at DESC
+  //   stakes  → profit DESC, settled_at DESC
+  //   live    → Phase A fallback to recent (see feedQuery comment)
+  const profit = sql`${communityTickets.payoutMicro} - ${communityTickets.stakeMicro}`;
+  const orderBy = (() => {
+    switch (q.sort) {
+      case "copied":
+        return [desc(communityTickets.inspirationCount), desc(communityTickets.settledAt)];
+      case "stakes":
+        return [sql`${profit} DESC`, desc(communityTickets.settledAt)];
+      case "live":
+      case "recent":
+      default:
+        return [desc(communityTickets.settledAt)];
+    }
+  })();
 
   const rows = await app.db
     .select({
@@ -707,12 +838,13 @@ async function loadBestWinsFeed(
       totalOdds: communityTickets.totalOdds,
       numLegs: communityTickets.numLegs,
       sportIds: communityTickets.sportIds,
+      inspirationCount: communityTickets.inspirationCount,
       at: communityTickets.settledAt,
     })
     .from(communityTickets)
     .innerJoin(users, eq(users.id, communityTickets.userId))
     .where(and(...filters))
-    .orderBy(desc(communityTickets.score), desc(communityTickets.settledAt))
+    .orderBy(...orderBy)
     .limit(q.pageSize + 1)
     .offset((q.page - 1) * q.pageSize);
 
@@ -724,6 +856,28 @@ async function loadBestWinsFeed(
     pageSize: q.pageSize,
     hasMore,
   };
+}
+
+// Builds the WHERE clause that restricts Best Wins to rows whose
+// profit clears the per-currency Big Win floor.
+//
+// Two shapes:
+//   • caller specified a currency → flat `profit >= floor` predicate;
+//     the planner can short-circuit with a literal bigint.
+//   • currency is null (cross-currency feed) → per-row CASE that
+//     looks up the floor by the row's own currency. Slightly less
+//     plan-friendly but correct without a JOIN onto a config table.
+function bigWinFilter(currency: Currency | null): SQL {
+  const profit = sql`${communityTickets.payoutMicro} - ${communityTickets.stakeMicro}`;
+  if (currency) {
+    return sql`${profit} >= ${BIG_WIN_PROFIT_MICRO[currency]}`;
+  }
+  // postgres-js binds bigint literals correctly via Drizzle's sql tag.
+  return sql`${profit} >= CASE
+    WHEN ${communityTickets.currency} = 'USDT' THEN ${BIG_WIN_PROFIT_MICRO.USDT}
+    WHEN ${communityTickets.currency} = 'OZ'   THEN ${BIG_WIN_PROFIT_MICRO.OZ}
+    ELSE ${BIG_WIN_PROFIT_MICRO.USDT}
+  END`;
 }
 
 // Coerce a raw postgres-js row (numerics as strings, bigints as
@@ -749,6 +903,7 @@ function normaliseFeedRow(r: Record<string, unknown>): FeedRow {
     totalOdds: r.totalOdds as string,
     numLegs: Number(r.numLegs),
     sportIds: Array.isArray(r.sportIds) ? (r.sportIds as number[]) : [],
+    inspirationCount: Number(r.inspirationCount ?? 0),
     at: r.at instanceof Date ? r.at : new Date(r.at as string),
   };
 }

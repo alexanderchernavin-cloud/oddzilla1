@@ -19,10 +19,32 @@ interface SportsResponse {
   sports: Array<{ id: number; slug: string; name: string }>;
 }
 
-type SortKind = "recent" | "best";
+// Three top-level tabs map to two API surfaces:
+//   recent  → tab=recent on the API
+//   best    → tab=best, no Big Wins floor
+//   bigWins → tab=best, bigWinsOnly=true
+// We surface them as three URL values because the user mental model
+// is "three tabs," and folding bigWinsOnly into the tab selector
+// keeps the Sort dropdown free for the four PRD sort modes.
+type TabKind = "recent" | "best" | "bigWins";
+type SortKind = "recent" | "copied" | "stakes" | "live";
+
+const SORT_LABELS: Record<SortKind, string> = {
+  recent: "Most recent",
+  copied: "Most copied",
+  stakes: "High stakes",
+  live: "Live matches",
+};
+
+function parseTab(raw: string | undefined): TabKind {
+  if (raw === "best") return "best";
+  if (raw === "bigWins") return "bigWins";
+  return "recent";
+}
 
 function parseSort(raw: string | undefined): SortKind {
-  return raw === "best" ? "best" : "recent";
+  if (raw === "copied" || raw === "stakes" || raw === "live") return raw;
+  return "recent";
 }
 
 export default async function CommunityFeedPage({
@@ -31,6 +53,7 @@ export default async function CommunityFeedPage({
   searchParams: Promise<{
     currency?: string;
     sport?: string;
+    tab?: string;
     sort?: string;
     page?: string;
   }>;
@@ -39,12 +62,20 @@ export default async function CommunityFeedPage({
   const currency: Currency | null =
     params.currency && isCurrency(params.currency) ? params.currency : null;
   const sportId = parseSportId(params.sport);
+  const tab = parseTab(params.tab);
   const sort = parseSort(params.sort);
   const page = parsePage(params.page);
 
   // Build feed query string from validated params; omit when null so
   // the API's defaults apply.
-  const queryParts: string[] = [`page=${page}`, `sort=${sort}`];
+  const apiTab = tab === "recent" ? "recent" : "best";
+  const apiSort = tab === "recent" ? "recent" : sort;
+  const queryParts: string[] = [
+    `page=${page}`,
+    `tab=${apiTab}`,
+    `sort=${apiSort}`,
+  ];
+  if (tab === "bigWins") queryParts.push(`bigWinsOnly=true`);
   if (currency) queryParts.push(`currency=${currency}`);
   if (sportId) queryParts.push(`sport=${sportId}`);
 
@@ -69,9 +100,7 @@ export default async function CommunityFeedPage({
       <header>
         <h1 className="text-2xl font-semibold tracking-tight">Community</h1>
         <p className="mt-2 text-sm text-[var(--color-fg-muted)]">
-          {sort === "best"
-            ? "Best wins of the last 7 days."
-            : "Live bets you can still copy — the matches are still on."}
+          {tabSubtitle(tab)}
         </p>
       </header>
 
@@ -79,19 +108,37 @@ export default async function CommunityFeedPage({
         <NicknameNudge />
       ) : null}
 
-      <SortTabs activeSort={sort} currency={currency} sportId={sportId} />
+      <SortTabs
+        activeTab={tab}
+        sort={sort}
+        currency={currency}
+        sportId={sportId}
+      />
+
+      {tab !== "recent" ? (
+        <SortDropdown activeSort={sort} tab={tab} currency={currency} sportId={sportId} />
+      ) : null}
 
       <FeedFilters sports={sports} activeSportId={sportId} activeCurrency={currency} />
 
       {tickets.length === 0 ? (
-        <EmptyState filtered={Boolean(currency || sportId)} sort={sort} />
+        <EmptyState
+          filtered={Boolean(currency || sportId)}
+          tab={tab}
+          sportName={sportId ? sportsById.get(sportId)?.name ?? null : null}
+        />
       ) : (
         <ul className="mt-6 space-y-3">
-          {tickets.map((t: CommunityTicketSummary) => (
+          {tickets.map((t: CommunityTicketSummary, idx) => (
             <CommunityTicketCard
               key={t.ticketId}
               ticket={t}
               sportsById={sportsById}
+              // Hero card only on Big Wins, only for the first row,
+              // only on page 1. Subsequent pages render every card
+              // at sibling size to avoid two heroes in the scroll
+              // history.
+              isHero={tab === "bigWins" && idx === 0 && page === 1}
             />
           ))}
         </ul>
@@ -102,35 +149,52 @@ export default async function CommunityFeedPage({
   );
 }
 
-// Tab bar for Recent / Best Wins. Matches the existing visual
-// language of the [Match | Top] toggle on the match list cards
-// (apps/web/src/components/match/match-list-tabs.tsx).
+function tabSubtitle(tab: TabKind): string {
+  if (tab === "bigWins") return "Wins above the Big Win threshold from the last 7 days.";
+  if (tab === "best") return "Best wins of the last 7 days.";
+  return "Live bets you can still copy — the matches are still on.";
+}
+
+// Tab bar for Recent / Best Wins / Big Wins. Matches the existing
+// visual language of the [Match | Top] toggle on the match list cards.
 function SortTabs({
-  activeSort,
+  activeTab,
+  sort,
   currency,
   sportId,
 }: {
-  activeSort: SortKind;
+  activeTab: TabKind;
+  sort: SortKind;
   currency: Currency | null;
   sportId: number | null;
 }) {
   const baseParams: string[] = [];
   if (currency) baseParams.push(`currency=${encodeURIComponent(currency)}`);
   if (sportId) baseParams.push(`sport=${encodeURIComponent(sportId)}`);
-  const link = (sort: SortKind) =>
-    `/community?${[...baseParams, `sort=${sort}`].join("&")}`;
+  // Carry the active sort across Best ↔ Big Wins tab switches so a
+  // user reading "Most copied" on Best Wins keeps that sort when they
+  // toggle into Big Wins. Recent has no sort dropdown so we drop it.
+  const sortParam = sort !== "recent" ? `sort=${encodeURIComponent(sort)}` : "";
+  const link = (next: TabKind) => {
+    const parts = [...baseParams, `tab=${next}`];
+    if (next !== "recent" && sortParam) parts.push(sortParam);
+    return `/community?${parts.join("&")}`;
+  };
 
   return (
     <div
       role="tablist"
-      aria-label="Sort"
+      aria-label="Section"
       className="mt-5 inline-flex rounded-[10px] border border-[var(--color-border-strong)] p-1"
     >
-      <Tab href={link("recent")} active={activeSort === "recent"}>
+      <Tab href={link("recent")} active={activeTab === "recent"}>
         Recent
       </Tab>
-      <Tab href={link("best")} active={activeSort === "best"}>
+      <Tab href={link("best")} active={activeTab === "best"}>
         Best wins
+      </Tab>
+      <Tab href={link("bigWins")} active={activeTab === "bigWins"}>
+        Big wins
       </Tab>
     </div>
   );
@@ -145,9 +209,6 @@ function Tab({
   active: boolean;
   children: React.ReactNode;
 }) {
-  // Imported lazily so the page stays a server component (no client
-  // navigation needed — sort change is a full reload, which keeps the
-  // server-rendered data fresh).
   const cls =
     "rounded-[8px] px-3 py-1.5 text-xs uppercase tracking-[0.15em] transition " +
     (active
@@ -160,11 +221,72 @@ function Tab({
   );
 }
 
+// Sort dropdown for the Best Wins / Big Wins tabs. Server-rendered
+// as four <Link> chips — a real <select> needs a client component
+// for onChange-to-navigate, and the chip layout matches the page's
+// other filters (currency / sport). Live mode is shown but flagged
+// as a Phase A placeholder per the API comment.
+function SortDropdown({
+  activeSort,
+  tab,
+  currency,
+  sportId,
+}: {
+  activeSort: SortKind;
+  tab: TabKind;
+  currency: Currency | null;
+  sportId: number | null;
+}) {
+  const baseParams: string[] = [`tab=${tab}`];
+  if (currency) baseParams.push(`currency=${encodeURIComponent(currency)}`);
+  if (sportId) baseParams.push(`sport=${encodeURIComponent(sportId)}`);
+  const link = (s: SortKind) =>
+    `/community?${[...baseParams, `sort=${s}`].join("&")}`;
+
+  const options: SortKind[] = ["recent", "copied", "stakes", "live"];
+
+  return (
+    <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">
+      <span className="uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
+        Sort
+      </span>
+      {options.map((s) => (
+        <SortChip key={s} href={link(s)} active={activeSort === s}>
+          {SORT_LABELS[s]}
+        </SortChip>
+      ))}
+    </div>
+  );
+}
+
+function SortChip({
+  href,
+  active,
+  children,
+}: {
+  href: string;
+  active: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <Link
+      href={href}
+      className={
+        "rounded-full border px-3 py-1 transition " +
+        (active
+          ? "border-[var(--color-accent)] bg-[var(--color-accent)]/15 text-[var(--color-accent)]"
+          : "border-[var(--color-border-strong)] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]")
+      }
+    >
+      {children}
+    </Link>
+  );
+}
+
 // Banner shown to signed-in users who haven't picked a nickname yet.
 // Without one, the feed visibility filter (`nickname IS NOT NULL`)
 // drops their settled tickets, so they'd see other people's wins but
 // never their own — a silent failure mode that confused early users.
-// Linking straight to the settings page makes the next action obvious.
 function NicknameNudge() {
   return (
     <div className="card mt-5 flex flex-wrap items-baseline gap-x-3 gap-y-1 border-[var(--color-accent)]/40 p-4 text-sm">
@@ -185,17 +307,28 @@ function NicknameNudge() {
 
 function EmptyState({
   filtered,
-  sort,
+  tab,
+  sportName,
 }: {
   filtered: boolean;
-  sort: SortKind;
+  tab: TabKind;
+  sportName: string | null;
 }) {
   let body: string;
-  if (filtered) {
-    body = "No tickets match these filters yet. Try a different sport or currency.";
-  } else if (sort === "best") {
-    body =
-      "No big wins in the last 7 days. Switch to Recent to see live bets.";
+  if (tab === "bigWins") {
+    if (filtered && sportName) {
+      body = `No big wins in ${sportName} yet. Try another sport, or check back after the next match.`;
+    } else if (filtered) {
+      body = "No big wins match these filters yet. Try clearing one.";
+    } else {
+      body = "Big wins land here. Wins above the Big Win threshold show up here. Place a bet to start the streak.";
+    }
+  } else if (tab === "best") {
+    body = filtered
+      ? "No wins match these filters yet. Try a different sport or currency."
+      : "No big wins in the last 7 days. Switch to Recent to see live bets.";
+  } else if (filtered) {
+    body = "No live bets match these filters. Try clearing one.";
   } else {
     body = "No live bets right now. Check back when matches kick off.";
   }
@@ -213,11 +346,13 @@ function Pagination({
 }: {
   page: number;
   hasMore: boolean;
-  params: { currency?: string; sport?: string };
+  params: { currency?: string; sport?: string; tab?: string; sort?: string };
 }) {
   const base: string[] = [];
   if (params.currency) base.push(`currency=${encodeURIComponent(params.currency)}`);
   if (params.sport) base.push(`sport=${encodeURIComponent(params.sport)}`);
+  if (params.tab) base.push(`tab=${encodeURIComponent(params.tab)}`);
+  if (params.sort) base.push(`sort=${encodeURIComponent(params.sort)}`);
   const prev = base.concat(`page=${page - 1}`).join("&");
   const next = base.concat(`page=${page + 1}`).join("&");
 
