@@ -610,6 +610,10 @@ export function BetSlipRail() {
             borderTop: "1px solid var(--hairline)",
             display: "flex",
             flexDirection: "column",
+            // Without this, the form competes with the prematch widget
+            // below for vertical space and the Place button can drop
+            // below the fold on shorter viewports.
+            flexShrink: 0,
             gap: 12,
           }}
         >
@@ -912,7 +916,15 @@ export function BetSlipRail() {
       )}
         </>
       )}
-      <RailPrematchPanel />
+      {/*
+        Match-insights widget — only relevant while building a slip
+        for the active match. Hidden on the History tab (the user is
+        reviewing past tickets, prematch stats are off-topic) and
+        right after placement (the success card / freshly-flipped
+        history view should breathe). This stops the widget's
+        minHeight from squeezing the rail's primary content.
+      */}
+      {activeTab === "slip" && !placedTicketId && <RailPrematchPanel />}
     </aside>
   );
 }

@@ -73,7 +73,13 @@ export function RailPrematchPanel() {
         theme="dark"
         title={`Prematch insights — ${active.homeTeam} vs ${active.awayTeam}`}
         onAvailabilityChange={setAvailability}
-        minHeight={420}
+        // 280 — enough to render the widget's header + first
+        // mini-card before scroll, low enough that the slip body
+        // and Place button stay above the fold on a 720px-tall
+        // viewport. Disir's RESIZE postMessage can still grow the
+        // iframe past this once content lands; the rail's own
+        // overflow scroll picks that up.
+        minHeight={280}
       />
     </section>
   );
