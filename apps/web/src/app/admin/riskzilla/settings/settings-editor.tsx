@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
-import { fromMicro, toMicro } from "@oddzilla/types";
+import { fromMicro, toMicro } from "@oddzilla/types/money";
 
 export interface SettingsEntry {
   tier: number;

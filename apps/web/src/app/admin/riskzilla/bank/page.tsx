@@ -1,5 +1,5 @@
 import { serverApi } from "@/lib/server-fetch";
-import { fromMicro } from "@oddzilla/types";
+import { fromMicro } from "@oddzilla/types/money";
 import { BankAdjuster, type BankStateDto } from "./bank-adjuster";
 
 export const dynamic = "force-dynamic";
