@@ -18,6 +18,7 @@ import {
   wallets,
   walletLedger,
   depositIntents,
+  userWalletAddresses,
   withdrawals as withdrawalsTable,
 } from "@oddzilla/db";
 import { CONFIRMATIONS_REQUIRED, SUPPORTED_CURRENCIES } from "@oddzilla/types";
@@ -48,6 +49,11 @@ const intentBody = z.object({
 const withdrawalBody = z.object({
   toAddress: z.string().min(16).max(64),
   amountMicro: z.string().regex(/^\d+$/, "amount must be a positive integer string"),
+});
+
+const linkedWalletBody = z.object({
+  address: z.string().regex(/^0x[0-9a-fA-F]{40}$/u, "address must be 0x + 40 hex chars"),
+  label: z.string().max(60).optional(),
 });
 
 export default async function walletRoutes(app: FastifyInstance) {
@@ -328,6 +334,98 @@ export default async function walletRoutes(app: FastifyInstance) {
         failureReason: r.failureReason,
       })),
     };
+  });
+
+  // ── Linked sending wallets (per-user from-address whitelist) ────────
+  // Deposits arriving from a registered address are auto-attributed
+  // to the user by the wallet-watcher. The tx-hash paste form remains
+  // a fallback for unregistered senders.
+  app.get("/wallet/addresses", async (request) => {
+    const u = request.requireAuth();
+    const rows = await app.db
+      .select({
+        id: userWalletAddresses.id,
+        network: userWalletAddresses.network,
+        address: userWalletAddresses.address,
+        label: userWalletAddresses.label,
+        createdAt: userWalletAddresses.createdAt,
+      })
+      .from(userWalletAddresses)
+      .where(eq(userWalletAddresses.userId, u.id))
+      .orderBy(desc(userWalletAddresses.createdAt));
+    return {
+      addresses: rows.map((r) => ({
+        id: r.id,
+        network: r.network as "ERC20",
+        address: r.address,
+        label: r.label,
+        createdAt: r.createdAt.toISOString(),
+      })),
+    };
+  });
+
+  app.post("/wallet/addresses", async (request) => {
+    const u = request.requireAuth();
+    const body = linkedWalletBody.parse(request.body);
+    const lower = body.address.toLowerCase();
+
+    // Reject the operator's own receive address — would create a
+    // cycle where users could "credit" themselves with house-side
+    // refunds.
+    if (receiveAddress && lower === receiveAddress.toLowerCase()) {
+      throw new BadRequestError("address_is_internal", "address_is_internal");
+    }
+
+    try {
+      const [inserted] = await app.db
+        .insert(userWalletAddresses)
+        .values({
+          userId: u.id,
+          network: "ERC20",
+          address: lower,
+          label: body.label ?? null,
+        })
+        .returning();
+      if (!inserted) throw new Error("address insert returned no row");
+      return {
+        id: inserted.id,
+        network: inserted.network as "ERC20",
+        address: inserted.address,
+        label: inserted.label,
+        createdAt: inserted.createdAt.toISOString(),
+      };
+    } catch (err) {
+      if (
+        err &&
+        typeof err === "object" &&
+        "code" in err &&
+        (err as { code?: string }).code === "23505"
+      ) {
+        throw new ConflictError(
+          "address_already_linked",
+          "address_already_linked",
+        );
+      }
+      throw err;
+    }
+  });
+
+  app.delete("/wallet/addresses/:id", async (request) => {
+    const u = request.requireAuth();
+    const params = z.object({ id: z.string().uuid() }).parse(request.params);
+    const result = await app.db
+      .delete(userWalletAddresses)
+      .where(
+        and(
+          eq(userWalletAddresses.id, params.id),
+          eq(userWalletAddresses.userId, u.id),
+        ),
+      )
+      .returning({ id: userWalletAddresses.id });
+    if (result.length === 0) {
+      throw new NotFoundError("address_not_found", "address_not_found");
+    }
+    return { ok: true };
   });
 
   app.post("/wallet/withdrawals/:id/cancel", async (request) => {

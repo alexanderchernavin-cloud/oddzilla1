@@ -72,9 +72,13 @@ func main() {
 		client := ethereum.NewClient(cfg.Ethereum.RPCURL)
 		verifier := ethereum.NewVerifier(
 			client,
+			st,
 			cfg.Ethereum.USDCContract,
 			cfg.Ethereum.ReceiveAddress,
 			cfg.Ethereum.Confirmations,
+			cfg.Ethereum.DiscoveryMaxBlockRange,
+			cfg.Ethereum.DiscoveryStartBlock,
+			cfg.Ethereum.DiscoveryStartLookback,
 			logger,
 		)
 		processor = deposits.New(st, verifier, logger)
@@ -83,8 +87,9 @@ func main() {
 			Str("contract", cfg.Ethereum.USDCContract).
 			Str("receive", cfg.Ethereum.ReceiveAddress).
 			Int("confirmations", cfg.Ethereum.Confirmations).
+			Int("discovery_max_blocks", cfg.Ethereum.DiscoveryMaxBlockRange).
 			Dur("poll", cfg.PollInterval).
-			Msg("ERC20 USDC verifier running")
+			Msg("ERC20 USDC verifier running (paste-hash + linked-wallet discovery)")
 	} else {
 		logger.Warn().
 			Bool("rpc_set", cfg.Ethereum.RPCURL != "").

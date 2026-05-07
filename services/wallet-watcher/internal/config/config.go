@@ -34,6 +34,18 @@ type EthereumConfig struct {
 	// address; anything else is rejected.
 	ReceiveAddress string
 	Confirmations  int
+	// Max block range fetched per discovery tick. Keeps the eth_getLogs
+	// payload bounded; Alchemy's free tier caps at 10k blocks per call.
+	DiscoveryMaxBlockRange int
+	// Block to start the discovery cursor from on first boot. 0 =
+	// bootstrap from `head - DiscoveryStartLookback` so we don't try
+	// to scan years of history.
+	DiscoveryStartBlock int64
+	// On bootstrap (cursor == 0 and DiscoveryStartBlock == 0), how many
+	// blocks back from head to begin scanning. ~6500 blocks ≈ 24h on
+	// Ethereum mainnet — picks up recent linked-wallet sends without
+	// re-scanning ancient history.
+	DiscoveryStartLookback int64
 }
 
 func Load() (Config, error) {
@@ -49,10 +61,13 @@ func Load() (Config, error) {
 	}
 
 	cfg.Ethereum = EthereumConfig{
-		RPCURL:         strings.TrimRight(os.Getenv("ETH_RPC_URL"), "/"),
-		USDCContract:   strings.ToLower(getEnvDefault("ETH_USDC_CONTRACT", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48")),
-		ReceiveAddress: strings.ToLower(strings.TrimSpace(os.Getenv("DEPOSIT_RECEIVE_ADDRESS"))),
-		Confirmations:  atoiDefault("ETH_CONFIRMATIONS", 12),
+		RPCURL:                 strings.TrimRight(os.Getenv("ETH_RPC_URL"), "/"),
+		USDCContract:           strings.ToLower(getEnvDefault("ETH_USDC_CONTRACT", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48")),
+		ReceiveAddress:         strings.ToLower(strings.TrimSpace(os.Getenv("DEPOSIT_RECEIVE_ADDRESS"))),
+		Confirmations:          atoiDefault("ETH_CONFIRMATIONS", 12),
+		DiscoveryMaxBlockRange: atoiDefault("ETH_DISCOVERY_MAX_BLOCK_RANGE", 1000),
+		DiscoveryStartBlock:    int64(atoiDefault("ETH_DISCOVERY_START_BLOCK", 0)),
+		DiscoveryStartLookback: int64(atoiDefault("ETH_DISCOVERY_START_LOOKBACK", 6500)),
 	}
 	cfg.Ethereum.Enabled = cfg.Ethereum.RPCURL != "" && cfg.Ethereum.ReceiveAddress != ""
 

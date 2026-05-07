@@ -121,3 +121,23 @@ export interface WithdrawalListResponse {
 export const CONFIRMATIONS_REQUIRED: Record<ChainNetwork, number> = {
   ERC20: 12,
 };
+
+// User-linked sending wallet (migration 0033). Deposits arriving from
+// a registered address are auto-credited by the wallet-watcher; the
+// tx-hash paste form remains a fallback for unregistered senders.
+export interface LinkedWalletAddress {
+  id: string;
+  network: ChainNetwork;
+  address: string;
+  label: string | null;
+  createdAt: string;
+}
+
+export interface LinkedWalletListResponse {
+  addresses: LinkedWalletAddress[];
+}
+
+export interface LinkedWalletRequest {
+  address: string;
+  label?: string;
+}

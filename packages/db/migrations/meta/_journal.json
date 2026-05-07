@@ -246,6 +246,13 @@
       "when": 1700000034000,
       "tag": "0034_combi_boost_config",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1700000035000,
+      "tag": "0035_user_wallet_addresses",
+      "breakpoints": true
     }
   ]
 }

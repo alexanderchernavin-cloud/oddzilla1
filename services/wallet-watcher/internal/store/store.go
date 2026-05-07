@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -29,6 +30,97 @@ type Store struct {
 func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
+
+// ─── Discovery cursor (chain_scanner_state) ────────────────────────────────
+
+// Chain mirrors the chain_network enum value. Only ERC20 in active use
+// post-0032; legacy TRC20 row is dropped by the migration.
+type Chain string
+
+const (
+	ChainERC20 Chain = "ERC20"
+)
+
+// LastBlock returns the last-scanned block for a chain, or 0 on first run.
+func (s *Store) LastBlock(ctx context.Context, chain Chain) (int64, error) {
+	var n int64
+	err := s.pool.QueryRow(ctx, `
+SELECT last_block_number
+  FROM chain_scanner_state
+ WHERE chain = $1::chain_network`, string(chain)).Scan(&n)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read cursor %s: %w", chain, err)
+	}
+	return n, nil
+}
+
+// BumpCursor advances the discovery cursor. Never regresses.
+func (s *Store) BumpCursor(ctx context.Context, chain Chain, block int64) error {
+	_, err := s.pool.Exec(ctx, `
+INSERT INTO chain_scanner_state (chain, last_block_number, updated_at)
+VALUES ($1::chain_network, $2, NOW())
+ON CONFLICT (chain) DO UPDATE
+   SET last_block_number = GREATEST(chain_scanner_state.last_block_number, EXCLUDED.last_block_number),
+       updated_at = NOW()`, string(chain), block)
+	if err != nil {
+		return fmt.Errorf("bump cursor %s: %w", chain, err)
+	}
+	return nil
+}
+
+// LookupUserByWalletAddress returns (userId, true) if the address
+// belongs to a registered linked wallet, else (_, false).
+func (s *Store) LookupUserByWalletAddress(ctx context.Context, chain Chain, address string) (string, bool, error) {
+	var userID string
+	err := s.pool.QueryRow(ctx, `
+SELECT user_id
+  FROM user_wallet_addresses
+ WHERE network = $1::chain_network AND address = $2`,
+		string(chain), strings.ToLower(address)).Scan(&userID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("lookup wallet address: %w", err)
+	}
+	return userID, true, nil
+}
+
+// DiscoveredIntent is a Transfer event observed by the discovery loop
+// whose `from` is registered to a user.
+type DiscoveredIntent struct {
+	UserID      string
+	Network     string // 'ERC20'
+	TxHash      string
+	From        string
+	To          string
+	AmountMicro int64
+	BlockNumber int64
+	BlockHash   string
+	LogIndex    int
+}
+
+// InsertDiscoveredIntent records a Transfer the discoverer attributed to
+// a linked wallet. Idempotent on (network, tx_hash) — if the user
+// already pasted this tx hash, we leave their pending row alone and
+// the processor's Inspect call will resolve it.
+func (s *Store) InsertDiscoveredIntent(ctx context.Context, d DiscoveredIntent) error {
+	_, err := s.pool.Exec(ctx, `
+INSERT INTO deposit_intents
+  (user_id, network, tx_hash, from_address, to_address, amount_micro,
+   block_number, block_hash, log_index, confirmations, status)
+VALUES ($1, $2::chain_network, $3, $4, $5, $6, $7, $8, $9, 0, 'confirming')
+ON CONFLICT (network, tx_hash) DO NOTHING`,
+		d.UserID, d.Network, d.TxHash, d.From, d.To, d.AmountMicro,
+		d.BlockNumber, d.BlockHash, d.LogIndex)
+	if err != nil {
+		return fmt.Errorf("insert discovered intent: %w", err)
+	}
+	return nil
+}
 
 // PendingIntent is a deposit_intents row in pending or confirming
 // state. The watcher polls these every tick.

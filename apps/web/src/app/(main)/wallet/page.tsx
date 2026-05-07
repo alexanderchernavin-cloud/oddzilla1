@@ -3,6 +3,7 @@ import type {
   Currency,
   DepositAddressResponse,
   DepositIntentListResponse,
+  LinkedWalletListResponse,
   WalletListResponse,
   WalletSnapshot,
   WithdrawalListResponse,
@@ -27,13 +28,14 @@ interface LedgerResponse {
 }
 
 export default async function WalletPage() {
-  const [walletRes, ledger, addressRes, deposits, withdrawals] =
+  const [walletRes, ledger, addressRes, deposits, withdrawals, linkedWallets] =
     await Promise.all([
       serverApi<WalletListResponse>("/wallet"),
       serverApi<LedgerResponse>("/wallet/ledger?limit=25"),
       serverApi<DepositAddressResponse>("/wallet/deposit-address"),
       serverApi<DepositIntentListResponse>("/wallet/deposits?limit=25"),
       serverApi<WithdrawalListResponse>("/wallet/withdrawals?limit=25"),
+      serverApi<LinkedWalletListResponse>("/wallet/addresses"),
     ]);
 
   const wallets = walletRes?.wallets ?? [];
@@ -59,6 +61,7 @@ export default async function WalletPage() {
         deposits={deposits?.deposits ?? []}
         withdrawals={withdrawals?.withdrawals ?? []}
         availableMicro={usdc?.availableMicro ?? "0"}
+        linkedWallets={linkedWallets?.addresses ?? []}
       />
 
       <section className="mt-12">
