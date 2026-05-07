@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useSearchParams } from "next/navigation";
-import { useEffect, useState, type ReactNode } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useState, useTransition, type ReactNode } from "react";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { I } from "@/components/ui/icons";
 import { LiveDot } from "@/components/ui/primitives";
@@ -202,6 +202,7 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
               label="Admin"
             />
           )}
+          <LogOutItem />
         </>
       ) : (
         <>
@@ -349,6 +350,55 @@ function TournamentItem({
         </span>
       )}
     </Link>
+  );
+}
+
+// Sidebar log-out — mirrors `Item`'s visual but is a button that
+// fires /auth/logout and bounces to /login. Cookies are httpOnly so
+// the redirect itself is enough to clear the session client-side.
+function LogOutItem() {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+
+  function onClick() {
+    startTransition(async () => {
+      try {
+        await clientApi("/auth/logout", { method: "POST" });
+      } catch {
+        // Server-side may be down; redirecting still drops the user
+        // out of authenticated state on the next request.
+      }
+      router.push("/login");
+      router.refresh();
+    });
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={pending}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        justifyContent: "flex-start",
+        width: "100%",
+        padding: "8px 10px",
+        background: "transparent",
+        color: "var(--fg-muted)",
+        borderRadius: 8,
+        border: 0,
+        cursor: pending ? "wait" : "pointer",
+        font: "inherit",
+        fontSize: 13,
+        textAlign: "left",
+        opacity: pending ? 0.6 : 1,
+      }}
+    >
+      <I.Arrow size={15} />
+      <span style={{ flex: 1 }}>{pending ? "Logging out…" : "Log out"}</span>
+    </button>
   );
 }
 
