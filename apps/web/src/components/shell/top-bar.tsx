@@ -87,7 +87,7 @@ export function TopBar({ signedIn, user, wallets }: TopBarProps) {
           flexShrink: 0,
         }}
       >
-        <Wordmark size={15} />
+        <Wordmark size={44} />
       </Link>
 
       {/* Search — hidden under ~900px via .oz-topbar-search CSS */}

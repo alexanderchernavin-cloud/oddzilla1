@@ -4,6 +4,7 @@ import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { I } from "@/components/ui/icons";
+import { Logo } from "@/components/ui/monogram";
 import { LogoutButton } from "@/components/logout-button";
 import { ThemeToggle } from "@/components/shell/theme-toggle";
 
@@ -201,20 +202,28 @@ export function AdminSidebar() {
 
 function BrandMark({ collapsed }: { collapsed: boolean }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.1 }}>
-      <span
-        className="mono"
-        style={{
-          fontSize: 10,
-          letterSpacing: "0.18em",
-          textTransform: "uppercase",
-          color: "var(--color-fg-subtle, var(--fg-dim))",
-        }}
-      >
-        Oddzilla
-      </span>
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        lineHeight: 1.1,
+        minWidth: 0,
+      }}
+    >
+      <Logo size={collapsed ? 32 : 38} priority />
       {!collapsed && (
-        <span style={{ fontSize: 14, fontWeight: 600 }}>Admin</span>
+        <span
+          className="mono"
+          style={{
+            fontSize: 11,
+            letterSpacing: "0.18em",
+            textTransform: "uppercase",
+            color: "var(--color-fg-subtle, var(--fg-dim))",
+          }}
+        >
+          Admin
+        </span>
       )}
     </div>
   );

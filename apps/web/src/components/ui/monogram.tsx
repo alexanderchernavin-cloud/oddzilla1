@@ -1,40 +1,42 @@
 import type { CSSProperties } from "react";
 
-export function Monogram({ size = 28, style }: { size?: number; style?: CSSProperties }) {
+const LOGO_SRC = "/brand/oddzilla-logo.png";
+const LOGO_ALT = "Oddzilla";
+
+export function Logo({
+  size = 40,
+  style,
+  priority = false,
+}: {
+  size?: number;
+  style?: CSSProperties;
+  priority?: boolean;
+}) {
   return (
-    <svg
-      viewBox="0 0 32 32"
+    <img
+      src={LOGO_SRC}
+      alt={LOGO_ALT}
       width={size}
       height={size}
-      style={style}
-      aria-label="Oddzilla"
-      role="img"
-    >
-      <circle cx="16" cy="16" r="15" fill="currentColor" />
-      <g fill="none" stroke="var(--bg)" strokeWidth="2.2" strokeLinecap="round">
-        <circle cx="12" cy="13" r="3.6" />
-        <path d="M 11 20 L 21 20 L 13 26 L 23 26" />
-      </g>
-    </svg>
+      decoding="async"
+      loading={priority ? "eager" : "lazy"}
+      fetchPriority={priority ? "high" : undefined}
+      style={{ display: "block", flexShrink: 0, ...style }}
+    />
   );
 }
 
-export function Wordmark({ size = 16 }: { size?: number }) {
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 10,
-        fontFamily: "var(--font-display)",
-        fontWeight: 500,
-        fontSize: size,
-        letterSpacing: "-0.015em",
-        color: "var(--fg)",
-      }}
-    >
-      <Monogram size={size + 8} />
-      <span>Oddzilla</span>
-    </span>
-  );
+// Back-compat: the old Monogram exposed a square icon. The new logo is
+// image-based and already contains the "Oddzilla" wordmark; we render
+// at the requested pixel size unchanged.
+export function Monogram({ size = 40, style }: { size?: number; style?: CSSProperties }) {
+  return <Logo size={size} style={style} priority />;
+}
+
+// Back-compat: the old Wordmark was [icon + separate text]. The new
+// logo image already contains the wordmark, so we just render the
+// image — no duplicate text label. The `size` prop here used to mean
+// font-size of the text; now it's interpreted as the logo height.
+export function Wordmark({ size = 40 }: { size?: number }) {
+  return <Logo size={size} priority />;
 }

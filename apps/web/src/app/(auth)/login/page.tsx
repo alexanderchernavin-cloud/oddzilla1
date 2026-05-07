@@ -19,7 +19,7 @@ export default async function LoginPage({
 
   return (
     <>
-      <Monogram size={36} />
+      <Monogram size={88} />
       <h1
         className="display"
         style={{
