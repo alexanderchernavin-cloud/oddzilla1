@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { fromMicro } from "@oddzilla/types/money";
 import type { WalletSnapshot } from "@oddzilla/types";
-import { Logo } from "@/components/ui/monogram";
+import { Wordmark } from "@/components/ui/monogram";
 import { I } from "@/components/ui/icons";
 import { Button, Divider } from "@/components/ui/primitives";
 import { useBetSlip } from "@/lib/bet-slip";
@@ -88,7 +88,7 @@ export function TopBar({ signedIn, user, wallets }: TopBarProps) {
           flexShrink: 0,
         }}
       >
-        <Logo size={36} priority />
+        <Wordmark size={36} priority />
       </Link>
 
       {/* Search — hidden under ~900px via .oz-topbar-search CSS */}
