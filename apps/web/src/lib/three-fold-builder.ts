@@ -1,9 +1,10 @@
-// Builds three "suggested 3-fold" parlays for the lobby promo cards by
+// Builds four "suggested 3-fold" parlays for the lobby promo cards by
 // scanning the live + upcoming match pool and picking three match-winner
 // legs whose combined decimal odds land in each tier band:
 //   safe        [2.00, 3.00)
 //   challenging [3.00, 5.00)
-//   ultimate    [5.00, ∞)
+//   risky       [5.00, 10.00)
+//   ultimate    [10.00, ∞)
 //
 // Pure & deterministic: same input → same output. Runs server-side from
 // the home page render; no API call.
@@ -31,14 +32,15 @@ export interface ThreeFoldSuggestion {
   combinedOdds: string;
 }
 
-export type TierKey = "safe" | "challenging" | "ultimate";
+export type TierKey = "safe" | "challenging" | "risky" | "ultimate";
 
 export type ThreeFoldSuggestions = Partial<Record<TierKey, ThreeFoldSuggestion>>;
 
 const TIER_BANDS: Record<TierKey, { lo: number; hi: number; target: number }> = {
   safe: { lo: 2.0, hi: 3.0, target: 2.5 },
   challenging: { lo: 3.0, hi: 5.0, target: 4.0 },
-  ultimate: { lo: 5.0, hi: Infinity, target: 7.5 },
+  risky: { lo: 5.0, hi: 10.0, target: 7.0 },
+  ultimate: { lo: 10.0, hi: Infinity, target: 15.0 },
 };
 
 // Cap pool to the matches with the lowest favorite-odds. C(30,3)=4060,
@@ -178,7 +180,7 @@ export function buildThreeFoldSuggestions(
   const used = new Set<string>();
   const out: ThreeFoldSuggestions = {};
 
-  for (const tier of ["safe", "challenging", "ultimate"] as const) {
+  for (const tier of ["safe", "challenging", "risky", "ultimate"] as const) {
     const picked = pickForTier(candidates, TIER_BANDS[tier], used);
     if (!picked) continue;
     out[tier] = {

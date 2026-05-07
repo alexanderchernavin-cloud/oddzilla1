@@ -1,7 +1,10 @@
 "use client";
 
-import type { CSSProperties, JSX } from "react";
+import type { CSSProperties, JSX, ReactNode } from "react";
+import { useMemo, useRef } from "react";
 import { useBetSlip } from "@/lib/bet-slip";
+import { useOddsFlash } from "@/lib/use-odds-flash";
+import { useLiveOddsForMatches, type LiveOddsTick } from "@/lib/use-live-odds";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import type {
   ThreeFoldLeg,
@@ -14,35 +17,41 @@ interface TierMeta {
   key: TierKey;
   label: string;
   tagline: string;
-  gradient: string;
   accent: string;
   Icon: (props: { size: number; color: string }) => JSX.Element;
 }
 
+// Accents kept muted — we only colour the icon, the tier word, and a
+// thin badge. The card body itself stays neutral so the lobby doesn't
+// turn into a traffic-light wall.
 const TIERS: TierMeta[] = [
   {
     key: "safe",
     label: "Safe",
     tagline: "Build with favorites",
-    gradient: "linear-gradient(135deg, #14532d 0%, #166534 60%, #15803d 100%)",
-    accent: "#86efac",
+    accent: "#15803d",
     Icon: ShieldIcon,
   },
   {
     key: "challenging",
     label: "Challenging",
     tagline: "Mid-risk multi",
-    gradient: "linear-gradient(135deg, #78350f 0%, #92400e 60%, #b45309 100%)",
-    accent: "#fcd34d",
+    accent: "#b45309",
     Icon: BoltIcon,
+  },
+  {
+    key: "risky",
+    label: "Risky",
+    tagline: "Push the price",
+    accent: "#c2410c",
+    Icon: FlameIcon,
   },
   {
     key: "ultimate",
     label: "Ultimate",
     tagline: "Long-shot 3-fold",
-    gradient: "linear-gradient(135deg, #7f1d1d 0%, #991b1b 60%, #b91c1c 100%)",
-    accent: "#fca5a5",
-    Icon: FlameIcon,
+    accent: "#b91c1c",
+    Icon: SkullIcon,
   },
 ];
 
@@ -52,69 +61,101 @@ export function ThreeFoldCards({
   suggestions: ThreeFoldSuggestions;
 }) {
   const slip = useBetSlip();
-
   const visibleTiers = TIERS.filter((t) => suggestions[t.key]);
+
+  const matchIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const t of visibleTiers) {
+      const s = suggestions[t.key];
+      if (!s) continue;
+      for (const leg of s.legs) ids.push(leg.matchId);
+    }
+    return ids;
+  }, [visibleTiers, suggestions]);
+
+  const ticks = useLiveOddsForMatches(matchIds);
+
   if (visibleTiers.length === 0) return null;
 
-  const handle = (s: ThreeFoldSuggestion) => {
+  const handle = (legs: ThreeFoldLeg[]) => {
     slip.clear();
     slip.setMode("combo");
-    for (const leg of s.legs) {
-      slip.add(stripPickedSide(leg));
+    for (const leg of legs) {
+      const tick = ticks[`${leg.marketId}:${leg.outcomeId}`];
+      const fresh: ThreeFoldLeg =
+        tick && tick.active
+          ? {
+              ...leg,
+              odds: tick.publishedOdds,
+              probability: tick.probability ?? leg.probability,
+            }
+          : leg;
+      slip.add(stripPickedSide(fresh));
     }
     slip.setOpen(true);
   };
 
   return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
-      {visibleTiers.map((t) => {
-        const s = suggestions[t.key]!;
-        return (
-          <Card
-            key={t.key}
-            label={t.label}
-            tagline={t.tagline}
-            gradient={t.gradient}
-            accent={t.accent}
-            Icon={t.Icon}
-            suggestion={s}
-            onActivate={() => handle(s)}
-          />
-        );
-      })}
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+        gap: 12,
+      }}
+    >
+      {visibleTiers.map((t) => (
+        <Card
+          key={t.key}
+          tier={t}
+          suggestion={suggestions[t.key]!}
+          ticks={ticks}
+          onActivate={handle}
+        />
+      ))}
     </div>
   );
 }
 
 function stripPickedSide(leg: ThreeFoldLeg) {
-  // pickedSide is UI-only — SlipSelection doesn't carry it, and the slip
-  // would happily accept the extra field but it'd then ride along into
-  // localStorage. Keep the slip object lean.
   const { pickedSide: _ignored, ...rest } = leg;
   void _ignored;
   return rest;
 }
 
 function Card({
-  label,
-  tagline,
-  gradient,
-  accent,
-  Icon,
+  tier,
   suggestion,
+  ticks,
   onActivate,
 }: {
-  label: string;
-  tagline: string;
-  gradient: string;
-  accent: string;
-  Icon: (props: { size: number; color: string }) => JSX.Element;
+  tier: TierMeta;
   suggestion: ThreeFoldSuggestion;
-  onActivate: () => void;
+  ticks: Record<string, LiveOddsTick>;
+  onActivate: (legs: ThreeFoldLeg[]) => void;
 }) {
+  // Overlay live ticks onto the snapshot legs. Inactive ticks (market
+  // suspended) are dropped — the snapshot odds remain visible until the
+  // outcome reactivates, mirroring how the bet-slip rail behaves.
+  const liveLegs: ThreeFoldLeg[] = suggestion.legs.map((leg) => {
+    const tick = ticks[`${leg.marketId}:${leg.outcomeId}`];
+    if (!tick || !tick.active) return leg;
+    return {
+      ...leg,
+      odds: tick.publishedOdds,
+      probability: tick.probability ?? leg.probability,
+    };
+  });
+
+  const product = liveLegs.reduce(
+    (p, l) => p * Number.parseFloat(l.odds),
+    1,
+  );
+  const combinedNum = Number.isFinite(product) ? product : NaN;
+  const combinedStr = Number.isFinite(combinedNum)
+    ? (Math.floor(combinedNum * 100) / 100).toFixed(2)
+    : suggestion.combinedOdds;
+
   const cardStyle: CSSProperties = {
-    flex: "1 1 280px",
-    minWidth: 0,
     background: "var(--surface)",
     border: "1px solid var(--border)",
     borderRadius: "var(--r-md)",
@@ -125,12 +166,13 @@ function Card({
     color: "var(--fg)",
     fontFamily: "inherit",
     transition: "border-color 140ms var(--ease)",
+    minWidth: 0,
   };
 
   return (
     <button
       type="button"
-      onClick={onActivate}
+      onClick={() => onActivate(liveLegs)}
       style={cardStyle}
       onMouseEnter={(e) => {
         (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--fg-muted)";
@@ -138,19 +180,19 @@ function Card({
       onMouseLeave={(e) => {
         (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--border)";
       }}
-      aria-label={`Load ${label} 3-fold suggestion at combined odds ${suggestion.combinedOdds}`}
+      aria-label={`Load ${tier.label} 3-fold suggestion at combined odds ${combinedStr}`}
     >
       <div
         style={{
-          background: gradient,
-          padding: "12px 14px",
           display: "flex",
           alignItems: "center",
           gap: 10,
-          color: "#fff",
+          padding: "10px 12px",
+          borderBottom: "1px solid var(--hairline)",
+          minWidth: 0,
         }}
       >
-        <Icon size={20} color={accent} />
+        <tier.Icon size={16} color={tier.accent} />
         <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.15, minWidth: 0 }}>
           <span
             className="mono"
@@ -158,87 +200,126 @@ function Card({
               fontSize: 10.5,
               letterSpacing: "0.14em",
               textTransform: "uppercase",
-              color: accent,
+              color: tier.accent,
             }}
           >
-            {label}
+            {tier.label}
           </span>
-          <span style={{ fontSize: 12, color: "rgba(255,255,255,0.85)" }}>{tagline}</span>
+          <span style={{ fontSize: 11.5, color: "var(--fg-muted)" }}>
+            {tier.tagline}
+          </span>
         </div>
         <div style={{ flex: 1 }} />
-        <span
-          className="mono tnum"
-          style={{
-            fontSize: 22,
-            fontWeight: 600,
-            color: "#fff",
-          }}
-        >
-          {suggestion.combinedOdds}
-        </span>
+        <OddsChip price={combinedNum} size="md">
+          {combinedStr}
+        </OddsChip>
       </div>
       <div
         style={{
-          padding: "10px 14px 12px",
+          padding: "8px 12px 10px",
           display: "flex",
           flexDirection: "column",
           gap: 6,
         }}
       >
-        {suggestion.legs.map((leg) => {
-          const opponent = leg.pickedSide === "home" ? leg.awayTeam : leg.homeTeam;
-          return (
-            <div
-              key={`${leg.matchId}-${leg.outcomeId}`}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                fontSize: 12.5,
-                minWidth: 0,
-              }}
-            >
-              <SportGlyph sport={leg.sportSlug} size={14} />
-              <span
-                style={{
-                  fontWeight: 600,
-                  color: "var(--fg)",
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  flexShrink: 1,
-                  minWidth: 0,
-                }}
-                title={leg.outcomeLabel}
-              >
-                {leg.outcomeLabel}
-              </span>
-              <span
-                style={{
-                  color: "var(--fg-dim)",
-                  fontSize: 11,
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  minWidth: 0,
-                  flexShrink: 1,
-                }}
-                title={`vs ${opponent}`}
-              >
-                vs {opponent}
-              </span>
-              <div style={{ flex: 1 }} />
-              <span
-                className="mono tnum"
-                style={{ fontSize: 11.5, color: "var(--fg-muted)", flexShrink: 0 }}
-              >
-                {leg.odds}
-              </span>
-            </div>
-          );
-        })}
+        {liveLegs.map((leg) => (
+          <LegRow key={`${leg.matchId}-${leg.outcomeId}`} leg={leg} />
+        ))}
       </div>
     </button>
+  );
+}
+
+function LegRow({ leg }: { leg: ThreeFoldLeg }) {
+  const opponent = leg.pickedSide === "home" ? leg.awayTeam : leg.homeTeam;
+  const oddsNum = Number.parseFloat(leg.odds);
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        fontSize: 12.5,
+        minWidth: 0,
+      }}
+    >
+      <SportGlyph sport={leg.sportSlug} size={14} />
+      <span
+        style={{
+          fontWeight: 600,
+          color: "var(--fg)",
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          flexShrink: 1,
+          minWidth: 0,
+        }}
+        title={leg.outcomeLabel}
+      >
+        {leg.outcomeLabel}
+      </span>
+      <span
+        style={{
+          color: "var(--fg-dim)",
+          fontSize: 11,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          minWidth: 0,
+          flexShrink: 1,
+        }}
+        title={`vs ${opponent}`}
+      >
+        vs {opponent}
+      </span>
+      <div style={{ flex: 1 }} />
+      <OddsChip price={Number.isFinite(oddsNum) ? oddsNum : null} size="sm">
+        {leg.odds}
+      </OddsChip>
+    </div>
+  );
+}
+
+// Visual twin of OddButton's price tile, rendered as a span so it stays
+// valid HTML inside the card's outer <button>. useOddsFlash flashes the
+// background green/red on every price tick — same behaviour as live
+// odds elsewhere on the site.
+function OddsChip({
+  price,
+  size,
+  children,
+}: {
+  price: number | null;
+  size: "sm" | "md";
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLSpanElement | null>(null);
+  useOddsFlash(price, ref);
+  const H = size === "md" ? 36 : 26;
+  const fontSize = size === "md" ? 14 : 12;
+  const padX = size === "md" ? 12 : 8;
+  return (
+    <span
+      ref={ref}
+      className="mono tnum"
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        height: H,
+        padding: `0 ${padX}px`,
+        background: "var(--surface-2)",
+        border: "1px solid var(--border)",
+        borderRadius: 8,
+        fontSize,
+        fontWeight: 600,
+        letterSpacing: "-0.01em",
+        color: "var(--fg)",
+        flexShrink: 0,
+      }}
+    >
+      {children}
+    </span>
   );
 }
 
@@ -271,7 +352,7 @@ function BoltIcon({ size, color }: { size: number; color: string }) {
         strokeWidth="1.6"
         strokeLinejoin="round"
         fill={color}
-        fillOpacity="0.25"
+        fillOpacity="0.15"
       />
     </svg>
   );
@@ -286,7 +367,7 @@ function FlameIcon({ size, color }: { size: number; color: string }) {
         strokeWidth="1.6"
         strokeLinejoin="round"
         fill={color}
-        fillOpacity="0.25"
+        fillOpacity="0.15"
       />
       <path
         d="M10 14c0 2 1 3.5 2 3.5s2-1.5 2-3.5c-.7.7-1.3.7-2 0-.7.7-1.3.7-2 0z"
@@ -294,6 +375,23 @@ function FlameIcon({ size, color }: { size: number; color: string }) {
         strokeWidth="1.6"
         strokeLinejoin="round"
       />
+    </svg>
+  );
+}
+
+function SkullIcon({ size, color }: { size: number; color: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M5 11c0-4 3-7 7-7s7 3 7 7v3c0 1-.6 1.8-1.5 2.2L17 17v3h-2v-2h-2v2h-2v-2H9v2H7v-3l-.5-.8C5.6 15.8 5 15 5 14z"
+        stroke={color}
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+        fill={color}
+        fillOpacity="0.12"
+      />
+      <circle cx="9.5" cy="12" r="1.4" fill={color} />
+      <circle cx="14.5" cy="12" r="1.4" fill={color} />
     </svg>
   );
 }
