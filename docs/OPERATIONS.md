@@ -21,10 +21,13 @@ running the production stack:
   feed-ingester, odds-publisher, settlement, bet-delay, wallet-watcher
 - Connected to Oddin integration broker (bookmaker 142) via AMQPS on
   port 5672
-- DNS: `FRONTEND_HOST=s.oddzilla.cc`, `ADMIN_HOST=sadmin.oddzilla.cc`
-  (subdomains on `oddzilla.cc`, registered at Porkbun). A records
-  point to `178.104.174.24`. Caddy auto-provisions Let's Encrypt
-  certs on first hit for both hosts.
+- DNS: `FRONTEND_HOST=oddzilla.cc` (apex), `ADMIN_HOST=sadmin.oddzilla.cc`
+  (registered at Porkbun). A records on both point to `178.104.174.24`.
+  The legacy `s.oddzilla.cc` A record stays in DNS so Caddy's hard-coded
+  301 block (`s.oddzilla.cc → oddzilla.cc`) keeps working — drop both
+  the DNS record and the Caddy block once the legacy subdomain stops
+  receiving traffic. Caddy auto-provisions Let's Encrypt certs on first
+  hit for every configured host.
 
 ## First-time server setup (reference, only if rebuilding)
 

@@ -7,8 +7,9 @@ LoL, Valorant pinned at the top — with the full Oddin market catalogue
 and ERC20) and OZ (demo currency, every signup gets a 1000 OZ bonus).
 Premium quiet-editorial design with light + dark themes.
 
-Live at **[s.oddzilla.cc](https://s.oddzilla.cc)** (storefront) and
-**[sadmin.oddzilla.cc](https://sadmin.oddzilla.cc)** (admin).
+Live at **[oddzilla.cc](https://oddzilla.cc)** (storefront) and
+**[sadmin.oddzilla.cc](https://sadmin.oddzilla.cc)** (admin). The previous
+`s.oddzilla.cc` host now 301s to the apex.
 
 ## Quick start
 

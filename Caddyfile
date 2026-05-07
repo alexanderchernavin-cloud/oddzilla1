@@ -2,8 +2,13 @@
 #
 # For local dev, set `FRONTEND_HOST=localhost` and `ADMIN_HOST=admin.localhost`.
 # For production on Hetzner, set both to real hostnames (e.g.
-# `s.oddzilla.cc` and `sadmin.oddzilla.cc`). Caddy will auto-request
+# `oddzilla.cc` and `sadmin.oddzilla.cc`). Caddy will auto-request
 # Let's Encrypt certificates on first boot.
+#
+# A hard-coded `s.oddzilla.cc` block 301s to the apex; the storefront moved
+# off the `s.` subdomain in 2026-05 and we keep the redirect so external
+# links, search results, and bookmarks survive the cutover. Drop the block
+# (and its DNS record) once traffic on the legacy subdomain dies down.
 
 {
 	admin off
@@ -86,6 +91,17 @@
 	handle {
 		reverse_proxy web:3000
 	}
+}
+
+# ── Legacy storefront redirect (s.oddzilla.cc → oddzilla.cc) ────────────────
+# Permanent redirect to preserve external links after the apex migration.
+# Caddy will provision a Let's Encrypt cert for s.oddzilla.cc on first boot
+# (DNS A record still points at the box). Remove this block — and ask
+# Sasha to drop the s.oddzilla.cc DNS record — once the legacy subdomain
+# stops receiving meaningful traffic.
+s.oddzilla.cc {
+	import security_headers
+	redir https://oddzilla.cc{uri} 301
 }
 
 # ── Admin backoffice ─────────────────────────────────────────────────────────

@@ -54,13 +54,17 @@ function buildCsp(nonce: string): string {
   //   - https://cdn.oddin.gg for the team-logo cross-origin <img> credit
   //     fallback (img-src already permits this; keeping it here is
   //     defensive in case fetch() ever loads from there directly)
-  //   - wss://*.oddzilla.cc for the production WS origin (s.oddzilla.cc
-  //     in the storefront, sadmin.oddzilla.cc in admin)
+  //   - wss://oddzilla.cc + wss://*.oddzilla.cc for the production WS
+  //     origin (apex storefront + sadmin.oddzilla.cc admin). The apex
+  //     is listed separately because CSP wildcards require at least one
+  //     subdomain label — `*.oddzilla.cc` does NOT match `oddzilla.cc`.
   // Locked tighter than `https: wss:` per Sec S5 — without an enumerated
   // list, an injected script (CSP-unblocked via nonce reuse) could
   // exfiltrate to any HTTPS origin.
-  const wsOrigins = "wss://*.oddzilla.cc wss://localhost:* ws://localhost:*";
-  const apiOrigins = "https://*.oddzilla.cc http://localhost:*";
+  const wsOrigins =
+    "wss://oddzilla.cc wss://*.oddzilla.cc wss://localhost:* ws://localhost:*";
+  const apiOrigins =
+    "https://oddzilla.cc https://*.oddzilla.cc http://localhost:*";
   return [
     "default-src 'self'",
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`,
@@ -153,7 +157,7 @@ export async function middleware(req: NextRequest) {
       // an Origin or Referer in CORS_ORIGINS for state-changing methods,
       // and a server-to-server fetch from middleware doesn't set one
       // automatically. We mirror the request's own origin so refresh
-      // works for both s.oddzilla.cc and sadmin.oddzilla.cc.
+      // works for both oddzilla.cc and sadmin.oddzilla.cc.
       const reqOrigin = `${req.nextUrl.protocol}//${req.nextUrl.host}`;
       const apiRes = await fetch(`${internalApiUrl()}/auth/refresh`, {
         method: "POST",
