@@ -398,11 +398,28 @@ export default async function adminAvatarRoutes(app: FastifyInstance) {
   );
 }
 
+// Postgres unique-violation = SQLSTATE 23505. The INSERT happens inside
+// a Drizzle transaction wrapper, which surfaces as a DrizzleQueryError
+// whose `cause` carries the original postgres-js error. Walk both
+// levels so a slug collision lands as a 409 instead of a 500.
 function isUniqueViolation(err: unknown): boolean {
+  if (hasCode(err, "23505")) return true;
+  if (
+    typeof err === "object" &&
+    err !== null &&
+    "cause" in err &&
+    hasCode((err as { cause: unknown }).cause, "23505")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function hasCode(err: unknown, code: string): boolean {
   return (
     typeof err === "object" &&
     err !== null &&
     "code" in err &&
-    (err as { code: unknown }).code === "23505"
+    (err as { code: unknown }).code === code
   );
 }
