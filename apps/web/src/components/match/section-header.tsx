@@ -26,7 +26,6 @@ export function SectionHeader({
         {kicker}
       </span>
       <h2
-        className="display"
         style={{ margin: 0, fontSize: 20, fontWeight: 500, letterSpacing: "-0.015em" }}
       >
         {title}
