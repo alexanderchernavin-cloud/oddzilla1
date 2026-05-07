@@ -52,13 +52,14 @@ export function TopBar({ signedIn, user, wallets }: TopBarProps) {
 
   return (
     <header
+      className="oz-topbar"
       style={{
         gridArea: "top",
         display: "flex",
         alignItems: "center",
         gap: 12,
         padding: "0 clamp(12px, 3vw, 24px)",
-        height: 80,
+        height: 280,
         borderBottom: "1px solid var(--hairline)",
         background: "color-mix(in oklab, var(--bg) 80%, transparent)",
         backdropFilter: "blur(12px)",
@@ -87,7 +88,7 @@ export function TopBar({ signedIn, user, wallets }: TopBarProps) {
           flexShrink: 0,
         }}
       >
-        <Wordmark size={64} />
+        <Wordmark size={256} className="oz-topbar-logo" />
       </Link>
 
       {/* Search — hidden under ~900px via .oz-topbar-search CSS */}

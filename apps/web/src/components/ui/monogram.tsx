@@ -13,10 +13,12 @@ const LOGO_ALT = "Oddzilla";
 export function Logo({
   size = 40,
   style,
+  className,
   priority = false,
 }: {
   size?: number;
   style?: CSSProperties;
+  className?: string;
   priority?: boolean;
 }) {
   const wrapperStyle: CSSProperties = {
@@ -35,7 +37,7 @@ export function Logo({
     display: "block",
   };
   return (
-    <span style={wrapperStyle} aria-label={LOGO_ALT} role="img">
+    <span style={wrapperStyle} className={className} aria-label={LOGO_ALT} role="img">
       <img
         src={LOGO_LIGHT_SRC}
         alt=""
@@ -65,14 +67,22 @@ export function Logo({
 // Back-compat: the old Monogram exposed a square icon. The new logo is
 // image-based and already contains the "Oddzilla" wordmark; we render
 // at the requested pixel size unchanged.
-export function Monogram({ size = 40, style }: { size?: number; style?: CSSProperties }) {
-  return <Logo size={size} style={style} priority />;
+export function Monogram({
+  size = 40,
+  style,
+  className,
+}: {
+  size?: number;
+  style?: CSSProperties;
+  className?: string;
+}) {
+  return <Logo size={size} style={style} className={className} priority />;
 }
 
 // Back-compat: the old Wordmark was [icon + separate text]. The new
 // logo image already contains the wordmark, so we just render the
 // image — no duplicate text label. The `size` prop here used to mean
 // font-size of the text; now it's interpreted as the logo height.
-export function Wordmark({ size = 40 }: { size?: number }) {
-  return <Logo size={size} priority />;
+export function Wordmark({ size = 40, className }: { size?: number; className?: string }) {
+  return <Logo size={size} className={className} priority />;
 }
