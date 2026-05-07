@@ -235,7 +235,13 @@ body {
   grid-template-columns: 240px 1fr 340px;
   grid-template-rows: 60px 1fr;
   grid-template-areas: "top top top" "side main rail";
-  max-width: 1780px;
+  /* 240 sidebar + 1000 main cap + 340 rail = 1580. The match page
+     and the catalog list pages both cap their inner content around
+     1000px; widening the shell beyond that just leaks an empty
+     band between the central content and the right rail on wide
+     monitors. The 1fr center cell still grows on smaller viewports
+     (everything below 1580 + body padding fills naturally). */
+  max-width: 1580px;
   margin-inline: auto;
 }
 
