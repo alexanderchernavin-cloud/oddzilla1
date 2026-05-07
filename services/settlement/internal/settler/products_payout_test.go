@@ -116,3 +116,105 @@ func TestTippotPayoutMissingMeta(t *testing.T) {
 		t.Error("expected error for missing bet_meta")
 	}
 }
+
+func TestBetBuilderPayout(t *testing.T) {
+	// Frozen at placement: stake 10 USDT, session_odds = 2.45.
+	// stake × odds = 24_500_000 micro-USDT.
+	meta := []byte(`{
+	  "product": "betbuilder",
+	  "sessionId": "obb-session-uuid",
+	  "sessionOddsMicro": "24500000",
+	  "oddsX10000": 24500,
+	  "eventUrn": "od:match:1234",
+	  "selectionIds": ["od:match:1234/1/1?way=two", "od:match:1234/6/1?map=1"]
+	}`)
+	stake := int64(10_000_000)
+	cases := []struct {
+		name    string
+		selects []store.SelectionResult
+		want    int64
+		ledger  string
+	}{
+		{
+			"all_won",
+			[]store.SelectionResult{sel("2.0", "won", ""), sel("3.0", "won", "")},
+			24_500_000, "bet_payout",
+		},
+		{
+			"half_won_counts_as_win",
+			[]store.SelectionResult{sel("2.0", "won", ""), sel("3.0", "half_won", "0.5")},
+			24_500_000, "bet_payout",
+		},
+		{
+			"any_loss_collapses_to_zero",
+			[]store.SelectionResult{sel("2.0", "won", ""), sel("3.0", "lost", "")},
+			0, "bet_payout",
+		},
+		{
+			"all_void_refunds",
+			[]store.SelectionResult{sel("2.0", "void", "1.0"), sel("3.0", "void", "1.0")},
+			stake, "bet_refund",
+		},
+		{
+			"void_plus_win_refunds_conservatively",
+			[]store.SelectionResult{sel("2.0", "void", "1.0"), sel("3.0", "won", "")},
+			stake, "bet_refund",
+		},
+		{
+			"void_plus_loss_collapses_to_zero",
+			[]store.SelectionResult{sel("2.0", "void", "1.0"), sel("3.0", "lost", "")},
+			0, "bet_payout",
+		},
+		{
+			"half_lost_treated_as_loss",
+			[]store.SelectionResult{sel("2.0", "won", ""), sel("3.0", "half_lost", "0.5")},
+			0, "bet_payout",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ledger, err := BetBuilderPayout(stake, meta, tc.selects)
+			if err != nil {
+				t.Fatalf("err: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("payout: got %d want %d", got, tc.want)
+			}
+			if ledger != tc.ledger {
+				t.Errorf("ledger: got %s want %s", ledger, tc.ledger)
+			}
+		})
+	}
+}
+
+func TestBetBuilderPayoutMissingMeta(t *testing.T) {
+	_, _, err := BetBuilderPayout(1000, nil, []store.SelectionResult{
+		sel("2.0", "won", ""), sel("3.0", "won", ""),
+	})
+	if err == nil {
+		t.Error("expected error for missing bet_meta")
+	}
+}
+
+func TestBetBuilderPayoutWrongProduct(t *testing.T) {
+	meta := []byte(`{"product":"tiple","oddsX10000":12345}`)
+	_, _, err := BetBuilderPayout(1000, meta, []store.SelectionResult{
+		sel("2.0", "won", ""), sel("3.0", "won", ""),
+	})
+	if err == nil {
+		t.Error("expected error for wrong product")
+	}
+}
+
+func TestBetBuilderPayoutUnresolvedLeg(t *testing.T) {
+	meta := []byte(`{
+	  "product":"betbuilder","sessionId":"x","sessionOddsMicro":"0",
+	  "oddsX10000":24500,"eventUrn":"od:match:1","selectionIds":["a","b"]
+	}`)
+	_, _, err := BetBuilderPayout(1000, meta, []store.SelectionResult{
+		sel("2.0", "won", ""), sel("3.0", "", ""),
+	})
+	if err == nil {
+		t.Error("expected error for unresolved selection")
+	}
+}

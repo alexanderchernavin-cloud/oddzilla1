@@ -44,6 +44,7 @@ import {
   parseProbability,
   priceTiple,
   priceTippot,
+  type BetBuilderMeta,
   type BetMeta,
   type BetType,
   type Currency,
@@ -57,8 +58,23 @@ import {
   ConflictError,
   ForbiddenError,
   NotFoundError,
+  ServiceUnavailableError,
   UnauthorizedError,
 } from "../../lib/errors.js";
+import {
+  createObbClient,
+  obbConfigFromEnv,
+  ObbError,
+  type ObbClient,
+} from "../../lib/obb-client.js";
+import { loadEnv } from "@oddzilla/config";
+
+// Module-scoped OBB client (singleton gRPC channel). Null when env is
+// missing — placement of betType="betbuilder" is then rejected upfront
+// rather than calling Oddin. Oddin's own SessionInfo RPC is the source
+// of truth for "are these selections + odds still valid?", so no extra
+// per-leg drift check is needed for BetBuilder placements.
+const obbBetsClient: ObbClient | null = createObbClient(obbConfigFromEnv(loadEnv()));
 
 const USER_CHANNEL_PREFIX = "user:";
 
@@ -88,26 +104,48 @@ export class BetsService {
     // Resolve effective bet type. Default behavior preserved: 1 leg → single,
     // ≥ 2 → combo. tiple/tippot must be explicit (the math + payout
     // contract is materially different and we don't want to silently
-    // upgrade users into a different product).
+    // upgrade users into a different product). Same goes for
+    // "betbuilder" — it requires the betBuilder block.
     const betType: BetType =
       req.betType ?? (req.selections.length > 1 ? "combo" : "single");
     const isMultiLeg = req.selections.length > 1;
     const isProductBet = betType === "tiple" || betType === "tippot";
+    const isBetBuilder = betType === "betbuilder";
     if (betType === "single" && req.selections.length !== 1) {
       throw new BadRequestError("single_requires_one_leg", "single_requires_one_leg");
     }
-    if ((betType === "combo" || isProductBet) && !isMultiLeg) {
+    if ((betType === "combo" || isProductBet || isBetBuilder) && !isMultiLeg) {
       throw new BadRequestError("multi_leg_required", "multi_leg_required");
     }
     if (betType === "system") {
       // Reserved enum value; not yet implemented in any layer.
       throw new BadRequestError("bet_type_unsupported", "bet_type_unsupported");
     }
+    if (isBetBuilder) {
+      if (!obbBetsClient) {
+        throw new ServiceUnavailableError("betbuilder_disabled", "betbuilder_disabled");
+      }
+      if (!req.betBuilder) {
+        throw new BadRequestError("betbuilder_block_required", "betbuilder_block_required");
+      }
+      // Selection count must match what was sent to OBB at quote time —
+      // otherwise the round-trip session is meaningless.
+      if (req.betBuilder.selectionIds.length !== req.selections.length) {
+        throw new BadRequestError(
+          "betbuilder_selection_mismatch",
+          "betbuilder_selection_mismatch",
+        );
+      }
+    }
     if (isMultiLeg) {
       // Same-match combos / tiples / tippots are a related-contingency
       // (the outcomes aren't independent) — standard bookmaker rule is to
       // block them. For probability-driven products this also breaks the
       // independence assumption baked into the math.
+      //
+      // BetBuilder is the inverse — Oddin's OBB engine specifically prices
+      // same-match combinations (one selection per market still applies,
+      // but the duplicate-market guard below catches that anyway).
       const seenMarkets = new Set<string>();
       for (const s of req.selections) {
         if (seenMarkets.has(s.marketId)) {
@@ -253,6 +291,7 @@ export class BetsService {
 
       let productOdds = 1;
       const seenMatchIds = new Set<string>();
+      let betBuilderMatchId: string | null = null;
       // Probabilities aligned 1:1 with req.selections — only used for
       // tiple/tippot pricing. Sourced from market_outcomes (server-trusted).
       // The persisted leg.probabilityAtPlacement comes from outcome.probability
@@ -269,12 +308,23 @@ export class BetsService {
         if (market.matchStatus !== "not_started" && market.matchStatus !== "live") {
           throw new BadRequestError("match_not_open", "match_not_open");
         }
-        if (isMultiLeg) {
+        if (isMultiLeg && !isBetBuilder) {
+          // Cross-match guard for traditional combos / tiples / tippots.
+          // BetBuilder inverts the rule: every leg must come from the
+          // same match (Oddin's OBB engine prices same-match-only).
           const matchKey = market.matchId.toString();
           if (seenMatchIds.has(matchKey)) {
             throw new BadRequestError("combo_same_match", "combo_same_match");
           }
           seenMatchIds.add(matchKey);
+        }
+        if (isBetBuilder) {
+          const matchKey = market.matchId.toString();
+          if (betBuilderMatchId === null) {
+            betBuilderMatchId = matchKey;
+          } else if (betBuilderMatchId !== matchKey) {
+            throw new BadRequestError("betbuilder_cross_match", "betbuilder_cross_match");
+          }
         }
         const outcome = outcomeByKey.get(`${sel.marketId}:${sel.outcomeId}`);
         if (!outcome) {
@@ -300,9 +350,16 @@ export class BetsService {
         if (currentOdds <= 0 || submittedOdds <= 0) {
           throw new BadRequestError("outcome_no_price", "outcome_no_price");
         }
-        const drift = Math.abs(currentOdds - submittedOdds) / submittedOdds;
-        if (drift > tolerance) {
-          throw new BadRequestError("odds_drift_exceeded", "odds_drift_exceeded");
+        if (!isBetBuilder) {
+          // BetBuilder skips per-leg drift: the agreed odds is the OBB
+          // session combined odds. Per-leg movements may not reflect a
+          // session-odds change because OBB's pricing model is
+          // non-multiplicative (Oddin docs §1.1). Server re-validates
+          // the whole session via SessionInfo below.
+          const drift = Math.abs(currentOdds - submittedOdds) / submittedOdds;
+          if (drift > tolerance) {
+            throw new BadRequestError("odds_drift_exceeded", "odds_drift_exceeded");
+          }
         }
         productOdds *= submittedOdds;
 
@@ -377,6 +434,86 @@ export class BetsService {
           n: quote.n,
           marginBp: quote.marginBp,
           tiers: quote.tiers,
+        };
+        betMeta = meta;
+      } else if (betType === "betbuilder") {
+        // BetBuilder. Validate the session is still valid via OBB
+        // SessionInfo before we commit. If Oddin invalidated it (a
+        // selection's price moved enough to recompute the session, the
+        // session expired, …) we 503 betbuilder_session_invalid so the
+        // client re-quotes.
+        if (!obbBetsClient || !req.betBuilder) {
+          // Already gated above — defence in depth.
+          throw new BadRequestError(
+            "betbuilder_block_required",
+            "betbuilder_block_required",
+          );
+        }
+        // Deep-fetch the match URN. We rely on the markets we just looked
+        // up; every leg is from the same match since betBuilderMatchId
+        // is enforced above.
+        const firstMarketKey = req.selections[0]!.marketId;
+        const firstMarket = marketByID.get(firstMarketKey)!;
+        // We didn't pull providerUrn into rows (it's join-irrelevant for
+        // the rest of the flow); fetch it once here.
+        const matchRow = await tx
+          .select({
+            providerUrn: matches.providerUrn,
+          })
+          .from(matches)
+          .where(eq(matches.id, firstMarket.matchId))
+          .limit(1);
+        const eventUrn = matchRow[0]?.providerUrn ?? "";
+        if (!eventUrn) {
+          throw new BadRequestError("match_not_open", "match_not_open");
+        }
+
+        let sessionInfo;
+        try {
+          sessionInfo = await obbBetsClient.sessionInfo({
+            sessionId: req.betBuilder.sessionId,
+            selectionIds: req.betBuilder.selectionIds,
+            oddsX10000: req.betBuilder.expectedOddsX10000,
+          });
+        } catch (err) {
+          // Network / TLS / Oddin downtime — surface as 503 so the slip
+          // can retry. The placement attempt is already inside a
+          // transaction; throwing rolls everything back.
+          if (err instanceof ObbError) {
+            throw new ServiceUnavailableError(
+              "betbuilder_unavailable",
+              err.message,
+            );
+          }
+          throw err;
+        }
+        if (sessionInfo.status !== "valid") {
+          throw new BadRequestError(
+            "betbuilder_session_invalid",
+            "betbuilder_session_invalid",
+          );
+        }
+
+        const oddsX10000 = req.betBuilder.expectedOddsX10000;
+        const decimalOdds = oddsX10000 / 10_000;
+        // Same drift-tolerance contract: if the user submits an odds
+        // value < 1.01 we refuse — Oddin shouldn't ever return one, but
+        // defence in depth keeps a malformed client from locking stake
+        // against a payout < stake.
+        if (!Number.isFinite(decimalOdds) || decimalOdds < 1.01) {
+          throw new BadRequestError(
+            "betbuilder_odds_too_low",
+            "betbuilder_odds_too_low",
+          );
+        }
+        potentialPayoutMicro = multiplyMicroByOdds(stake, decimalOdds);
+        const meta: BetBuilderMeta = {
+          product: "betbuilder",
+          sessionId: req.betBuilder.sessionId,
+          sessionOddsMicro: potentialPayoutMicro.toString(),
+          oddsX10000,
+          eventUrn,
+          selectionIds: req.betBuilder.selectionIds,
         };
         betMeta = meta;
       } else {

@@ -16,7 +16,8 @@ const placeBody = z.object({
   currency: z.enum(SUPPORTED_CURRENCIES).optional(),
   // Optional explicit product. Server still validates leg-count against
   // bet_product_config (tiple ≥ 2, tippot ≥ 3) — see service.place().
-  betType: z.enum(["single", "combo", "tiple", "tippot"]).optional(),
+  // betbuilder requires the betBuilder block to also be present.
+  betType: z.enum(["single", "combo", "tiple", "tippot", "betbuilder"]).optional(),
   selections: z
     .array(
       z.object({
@@ -27,6 +28,13 @@ const placeBody = z.object({
     )
     .min(1)
     .max(30), // tippot allows up to 30; cascade limit enforced server-side
+  betBuilder: z
+    .object({
+      sessionId: z.string().min(1).max(128),
+      expectedOddsX10000: z.number().int().positive(),
+      selectionIds: z.array(z.string().min(3).max(256)).min(1).max(20),
+    })
+    .optional(),
 });
 
 const listQuery = z.object({

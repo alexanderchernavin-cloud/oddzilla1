@@ -35,6 +35,7 @@ import adminCompetitorsRoutes from "./modules/admin/competitors.js";
 import communityRoutes from "./modules/community/routes.js";
 import adminCommunityRoutes from "./modules/admin/community.js";
 import widgetsRoutes from "./modules/widgets/routes.js";
+import betbuilderRoutes from "./modules/betbuilder/routes.js";
 import { ApiError } from "./lib/errors.js";
 
 const env = loadEnv();
@@ -177,6 +178,7 @@ await app.register(adminCompetitorsRoutes);
 await app.register(communityRoutes);
 await app.register(adminCommunityRoutes);
 await app.register(widgetsRoutes);
+await app.register(betbuilderRoutes);
 
 app.get("/", async () => ({ service: "oddzilla-api", status: "ok" }));
 

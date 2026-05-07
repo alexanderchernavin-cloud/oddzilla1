@@ -1,0 +1,27 @@
+-- 0031_betbuilder.sql
+--
+-- Oddin.gg BetBuilder (OBB) integration. BetBuilder lets a punter combine
+-- multiple selections from the SAME match into a single ticket whose odds
+-- are not the product of leg odds (per Oddin docs §1.1: "Unlike a standard
+-- combo bet, the odds for BetBuilder cannot be calculated simply by
+-- multiplying the selected market odds"). Oddin's gRPC API computes the
+-- combined session odds at quote time and again at placement.
+--
+-- We treat BetBuilder as a new value of the existing bet_type enum so
+-- the same `tickets` row carries it (no new columns) — the OBB session
+-- id + frozen session odds live in `tickets.bet_meta`, the same JSONB
+-- column tiple / tippot already use. Per-leg `ticket_selections` rows
+-- still carry their own oddsAtPlacement (informational; settlement does
+-- NOT multiply them for betbuilder — see services/settlement payout
+-- dispatch).
+--
+-- Apply-once invariants are unchanged: settlement keys on
+-- (event_urn, market_id, specifiers_hash, type, payload_hash) and
+-- wallet_ledger has a unique partial index on (type, ref_type, ref_id),
+-- both indifferent to bet_type.
+
+-- ─── Extend bet_type enum ──────────────────────────────────────────────
+-- Postgres allows ALTER TYPE ADD VALUE inside a transaction provided the
+-- new value isn't referenced in the same transaction. We don't write any
+-- betbuilder tickets here, so this is safe.
+ALTER TYPE bet_type ADD VALUE IF NOT EXISTS 'betbuilder';

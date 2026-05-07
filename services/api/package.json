@@ -16,6 +16,8 @@
     "@fastify/cors": "^10.0.1",
     "@fastify/helmet": "^13.0.1",
     "@fastify/rate-limit": "^10.2.1",
+    "@grpc/grpc-js": "^1.12.5",
+    "@grpc/proto-loader": "^0.7.13",
     "@oddzilla/auth": "workspace:*",
     "@oddzilla/config": "workspace:*",
     "@oddzilla/db": "workspace:*",

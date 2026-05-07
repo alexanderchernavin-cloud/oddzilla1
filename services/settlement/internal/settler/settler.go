@@ -782,6 +782,8 @@ func computePayout(t store.TicketForSettle, selections []store.SelectionResult) 
 		return TiplePayout(t.StakeMicro, t.PotentialPayoutMicro, selections)
 	case "tippot":
 		return TippotPayout(t.StakeMicro, t.BetMetaJSON, selections)
+	case "betbuilder":
+		return BetBuilderPayout(t.StakeMicro, t.BetMetaJSON, selections)
 	default:
 		return 0, "", fmt.Errorf("bet_type %q not supported yet", t.BetType)
 	}

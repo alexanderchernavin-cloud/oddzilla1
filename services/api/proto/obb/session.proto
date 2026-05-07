@@ -1,0 +1,189 @@
+syntax = "proto3";
+
+package obb;
+
+option go_package = "github.com/oddin-gg/obbschema/go/obb";
+option java_package = "com.oddin.obb";
+
+message SessionRejectReason {
+  enum Code {
+    // Not a valid value. Used for blocking 0 as invalid state.
+    CODE_UNSPECIFIED = 0;
+
+    // Session rejected due to internal server problems.
+    CODE_INTERNAL = 1;
+
+    // Session rejected due to incorrect or malformed arguments.
+    CODE_INVALID_ARGUMENT = 2;
+
+    // Session rejected due to invalid market combination.
+    CODE_INVALID_MARKET_COMBINATION = 3;
+
+    // Session rejected due to inactive market.
+    CODE_INACTIVE_MARKET = 4;
+  }
+
+  // Reason code.
+  Code code = 1;
+
+  // Message describing a reason.
+  string message = 2;
+}
+
+message InvalidSessionReason {
+  enum Code {
+    // Not a valid value. Used for blocking 0 as invalid state.
+    CODE_UNSPECIFIED = 0;
+
+    // Session invalid due to internal server problems.
+    CODE_INTERNAL = 1;
+
+    // Session invalid due to incorrect or malformed arguments.
+    CODE_INVALID_ARGUMENT = 2;
+
+    // Session is expired.
+    CODE_EXPIRED = 3;
+
+    // Session not found in our system.
+    CODE_NOT_FOUND = 4;
+  }
+
+  // Reason code.
+  Code code = 1;
+
+  // Message describing a reason.
+  string message = 2;
+}
+
+enum SessionStatus {
+  // Not a valid value. Used for blocking 0 as invalid state.
+  SESSION_STATUS_UNSPECIFIED = 0;
+
+  // The session is valid and can still be used.
+  SESSION_STATUS_VALID = 1;
+
+  // Session is no longer valid.
+  // Example: expired, not found or invalidated
+  SESSION_STATUS_INVALID = 2;
+}
+
+message SessionCreateRequest {
+  // List of desired selections to include in the new session.
+  // Format: "<event_id>/<market_id>/<outcome_id>?<market_specifier>"
+  // Example: “od:match:1234/1/1?map=1&way=two”
+  repeated string selection_ids = 2;
+}
+
+message SessionCreateResponse {
+  message SessionCreated {
+    // List of selections used in the current session.
+    repeated SessionSelection selections = 1;
+
+    // Final odds for the selected combination of picks.
+    // Odds multiplied by 10000 and rounded to uint value.
+    uint64 odds = 2;
+
+    // Available markets for the new session with the current session selections.
+    repeated SessionMarket available_markets = 3;
+
+    // Raw probability of the selected combination (value between 0.0 and 1.0).
+    // This is the combined probability of all selections in the session before margin is applied.
+    double raw_probability = 4;
+  }
+
+  message SessionRejected {
+    message SelectionRejectedReason {
+      enum Code {
+        // Not a valid value. Used for blocking 0 as invalid state.
+        CODE_UNSPECIFIED = 0;
+
+        // Selection is invalid because the market is not active.
+        CODE_INACTIVE_MARKET = 1;
+      }
+
+      Code code = 1;
+      string message = 2;
+    }
+
+    // Information about rejection reason.
+    SessionRejectReason reason = 1;
+
+    // Rejected selections.
+    // Key is SelectionID, Format: "<event_id>/<market_id>/<outcome_id>?<market_specifier>"
+    map<string, SelectionRejectedReason> selections_rejected = 2;
+  }
+
+  // Session ID created by operator.
+  string session_id = 1;
+
+  oneof status {
+    // Successfully created session information.
+    SessionCreated created = 2;
+
+    // Session creation was rejected.
+    SessionRejected rejected = 3;
+  }
+}
+
+message SessionSelection {
+  // Format: "<event_id>/<market_id>/<outcome_id>?<market_specifier>"
+  // Example: “od:match:1234/1/1?map=1&way=two”
+  string selection_id = 1;
+}
+
+message SessionMarket {
+  // The ID using the same values as our odds feed in XML.
+  uint32 market_id = 1;
+
+  // The specifier is using the same values as our odds feed in XML.
+  // Example: "variant=way:three|way=three|map=1"
+  string specifiers = 2;
+
+  // List of available outcomes for the market.
+  repeated SessionMarketOutcome outcomes = 3;
+}
+
+message SessionMarketOutcome {
+  // The ID using the same values as our odds feed in <outcome> XML tag.
+  // Example: "10" for classic market or "od:player:123" for dynamic markets.
+  string outcome_id = 1;
+
+  // Odds multiplied by 10000 and rounded to uint value.
+  uint64 odds = 2;
+
+  // Raw probability for this outcome (value between 0.0 and 1.0).
+  // This is the probability of this selection before margin is applied.
+  double raw_probability = 3;
+}
+
+message SessionInfoRequest {
+  // Session ID created by operator.
+  string session_id = 1;
+
+  // List of selections used for the OBB combination.
+  repeated SessionSelection selections = 2;
+
+  // Final odds for the selected combination of picks.
+  // Odds multiplied by 10000 and rounded to uint value.
+  uint64 odds = 3;
+}
+
+message SessionInfoResponse {
+  message ValidSession {}
+
+  message InvalidSession {
+    // It will provide more detailed information about why the session is no longer valid.
+    InvalidSessionReason reason = 1;
+  }
+
+  // Session ID created by operator.
+  string session_id = 1;
+
+  oneof status {
+    // The session is valid and can still be used.
+    ValidSession valid = 2;
+
+    // Session is not valid anymore.
+    InvalidSession invalid = 3;
+  }
+}

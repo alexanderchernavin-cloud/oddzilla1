@@ -217,6 +217,97 @@ type TippotMetaTier struct {
 	Multiplier string `json:"multiplier"`
 }
 
+// ─── BetBuilder ────────────────────────────────────────────────────────
+
+// BetBuilderMeta is the JSON shape we wrote into tickets.bet_meta at
+// placement. Mirrors packages/types/src/products.ts BetBuilderMeta.
+type BetBuilderMeta struct {
+	Product          string   `json:"product"`
+	SessionID        string   `json:"sessionId"`
+	SessionOddsMicro string   `json:"sessionOddsMicro"`
+	OddsX10000       int64    `json:"oddsX10000"`
+	EventURN         string   `json:"eventUrn"`
+	SelectionIDs     []string `json:"selectionIds"`
+}
+
+// BetBuilderPayout settles an Oddin BetBuilder (OBB) ticket.
+//
+// Per Oddin docs §1.1 the combined session odds are NOT the product of
+// per-leg odds — they're priced by Oddin's correlation model. So at
+// settlement we cannot reconstruct a "partial" session odds when one
+// leg voids. We adopt a deliberately conservative MVP rule:
+//
+//	all legs void          → refund stake, ledger=bet_refund
+//	any leg lost           → 0,            ledger=bet_payout (stake forfeit)
+//	any leg voided & rest  → refund stake, ledger=bet_refund
+//	  none lost              (Oddin would have to recompute the session
+//	                          odds without that leg; we don't ask, we
+//	                          refund.)
+//	all legs won/half_won  → stake × oddsX10000/10_000, ledger=bet_payout
+//
+// half_won is treated as full-won for the binary contract — same
+// permissive rule as Tiple/Tippot. half_lost counts as a loss because
+// Oddin's BetBuilder odds aren't designed to handle partial returns.
+func BetBuilderPayout(stakeMicro int64, betMetaJSON []byte, selections []store.SelectionResult) (int64, string, error) {
+	if len(betMetaJSON) == 0 {
+		return 0, "", fmt.Errorf("betbuilder ticket missing bet_meta")
+	}
+	var meta BetBuilderMeta
+	if err := json.Unmarshal(betMetaJSON, &meta); err != nil {
+		return 0, "", fmt.Errorf("betbuilder bet_meta unmarshal: %w", err)
+	}
+	if meta.Product != "betbuilder" {
+		return 0, "", fmt.Errorf("betbuilder bet_meta wrong product: %q", meta.Product)
+	}
+	if meta.OddsX10000 <= 0 {
+		return 0, "", fmt.Errorf("betbuilder bet_meta odds_x10000=%d", meta.OddsX10000)
+	}
+	if len(selections) < 2 {
+		return 0, "", fmt.Errorf("betbuilder needs ≥2 selections, got %d", len(selections))
+	}
+
+	wins := 0
+	losses := 0
+	voids := 0
+	for _, sel := range selections {
+		switch ResolvedResult(sel.Result) {
+		case ResultWon, ResultHalfWon:
+			wins++
+		case ResultVoid:
+			voids++
+		case ResultLost, ResultHalfLost:
+			losses++
+		default:
+			return 0, "", fmt.Errorf("betbuilder selection unresolved: %q", sel.Result)
+		}
+	}
+
+	if voids == len(selections) {
+		// Every leg voided — refund stake.
+		return stakeMicro, "bet_refund", nil
+	}
+	if losses > 0 {
+		// Any concrete loss collapses the ticket to 0.
+		return 0, "bet_payout", nil
+	}
+	if voids > 0 {
+		// At least one leg voided + the rest won. We can't recompute the
+		// session combined odds without Oddin (their spec explicitly
+		// says odds aren't a product) — refund stake conservatively.
+		return stakeMicro, "bet_refund", nil
+	}
+	// All legs won (or half_won) — pay out at the locked session odds.
+	mult := float64(meta.OddsX10000) / 10_000.0
+	if mult <= 0 {
+		return 0, "", fmt.Errorf("betbuilder multiplier non-positive: %f", mult)
+	}
+	f := float64(stakeMicro) * mult
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, "", fmt.Errorf("betbuilder payout not finite")
+	}
+	return int64(math.Floor(f + 1e-9)), "bet_payout", nil
+}
+
 // TippotPayout settles a Tippot ticket. The tier schedule frozen at
 // placement is in the JSON blob; we count winning legs across the
 // resolved selections (won + half_won), then look up the right tier.
