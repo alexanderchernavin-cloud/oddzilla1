@@ -24,6 +24,13 @@ export const sports = pgTable(
     name: text().notNull(),
     kind: sportKindEnum().notNull().default("esport"),
     active: boolean().notNull().default(true),
+    // Optional per-sport branding. logo_url is plain text so admins
+    // can paste any HTTPS URL or self-hosted relative path; brand_color
+    // is reserved for future tinted accents. Both nullable — when
+    // absent the storefront falls back to the bundled
+    // public/sports/<slug>.svg, then to the FallbackGlyph.
+    logoUrl: text("logo_url"),
+    brandColor: text("brand_color"),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [unique("sports_provider_urn").on(t.provider, t.providerUrn)],

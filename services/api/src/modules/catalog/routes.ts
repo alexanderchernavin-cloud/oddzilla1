@@ -452,6 +452,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
         name: sports.name,
         kind: sports.kind,
         active: sports.active,
+        logoUrl: sports.logoUrl,
+        brandColor: sports.brandColor,
       })
       .from(sports)
       .where(eq(sports.active, true))

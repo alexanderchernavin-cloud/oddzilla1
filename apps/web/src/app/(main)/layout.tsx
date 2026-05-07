@@ -7,6 +7,7 @@ import { MobileShellOverlay } from "@/components/shell/mobile-shell-overlay";
 import { ShellContainer } from "@/components/shell/shell-container";
 import { MatchPageProvider } from "@/lib/match-page-context";
 import { CombiBoostConfigProvider } from "@/lib/combi-boost-config";
+import { SportLogosProvider } from "@/lib/sport-logos";
 import { getSessionUser } from "@/lib/auth";
 import { serverApi } from "@/lib/server-fetch";
 import type { WalletListResponse } from "@oddzilla/types";
@@ -16,7 +17,15 @@ import {
 } from "@oddzilla/types/combi-boost";
 
 interface SportsResponse {
-  sports: Array<{ id: number; slug: string; name: string; kind: string; active: boolean }>;
+  sports: Array<{
+    id: number;
+    slug: string;
+    name: string;
+    kind: string;
+    active: boolean;
+    logoUrl?: string | null;
+    brandColor?: string | null;
+  }>;
 }
 
 export default async function MainLayout({ children }: { children: React.ReactNode }) {
@@ -38,6 +47,9 @@ export default async function MainLayout({ children }: { children: React.ReactNo
     <MobileDrawersProvider>
       <MatchPageProvider>
       <CombiBoostConfigProvider config={combiBoostConfig}>
+      <SportLogosProvider
+        entries={sports.map((s) => ({ slug: s.slug, logoUrl: s.logoUrl ?? null }))}
+      >
       <ShellContainer>
         <TopBar
           signedIn={Boolean(user)}
@@ -63,6 +75,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
         <MobileShellOverlay />
         <MobileBetSlipBar />
       </ShellContainer>
+      </SportLogosProvider>
       </CombiBoostConfigProvider>
       </MatchPageProvider>
     </MobileDrawersProvider>
