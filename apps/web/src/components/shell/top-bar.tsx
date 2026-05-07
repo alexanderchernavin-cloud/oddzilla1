@@ -9,6 +9,7 @@ import { ThemeToggle } from "./theme-toggle";
 import { useMobileDrawers } from "./mobile-drawer-context";
 import { TopBarSearch } from "./top-bar-search";
 import { WalletPill } from "./wallet-pill";
+import { UserMenu } from "./user-menu";
 
 interface TopBarProps {
   signedIn: boolean;
@@ -32,15 +33,6 @@ const iconBtn = {
 
 export function TopBar({ signedIn, user, wallets }: TopBarProps) {
   const { toggleSidebar } = useMobileDrawers();
-
-  const initials = user
-    ? (user.displayName || user.email)
-        .split(/\s+/)
-        .map((w) => w[0])
-        .slice(0, 2)
-        .join("")
-        .toUpperCase()
-    : "";
 
   return (
     <header
@@ -115,22 +107,9 @@ export function TopBar({ signedIn, user, wallets }: TopBarProps) {
 
           <WalletPill wallets={wallets} />
 
-          <Link
-            href="/account"
-            title={user.displayName ?? user.email}
-            style={{
-              textDecoration: "none",
-              ...iconBtn,
-              background: "var(--surface-2)",
-              border: "1px solid var(--border)",
-              fontSize: 12,
-              fontWeight: 600,
-              color: "var(--fg)",
-              flexShrink: 0,
-            }}
-          >
-            {initials}
-          </Link>
+          <UserMenu user={user} isAdmin={user.role === "admin"} />
+          {/* `initials` formerly rendered as a static <Link> — UserMenu
+              owns the popover with Log out + Settings now. */}
         </>
       ) : (
         <>
