@@ -1,6 +1,6 @@
 // Cookie helpers shared between /auth routes. SameSite=Lax keeps cookies
 // out of unsafe cross-site sub-requests while still flowing them on top-
-// level GET navigation (so a link to s.oddzilla.cc from email/Google does
+// level GET navigation (so a link to oddzilla.cc from email/Google does
 // not appear logged out). Both cookies use Path=/ because Caddy rewrites
 // the browser-visible path (/api/auth/...) before reaching the API; a
 // narrower Path=/auth scope would never match the browser request and

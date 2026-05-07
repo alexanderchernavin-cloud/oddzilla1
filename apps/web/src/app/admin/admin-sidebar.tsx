@@ -74,6 +74,12 @@ const SECTIONS: Section[] = [
         Icon: I.Gear,
         matchPrefix: "/admin/fe-settings",
       },
+      {
+        href: "/admin/combi-boost",
+        label: "Combi Boost",
+        Icon: I.Star,
+        matchPrefix: "/admin/combi-boost",
+      },
     ],
   },
 ];

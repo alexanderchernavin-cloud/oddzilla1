@@ -19,6 +19,7 @@ import { and, eq, sql, desc, asc } from "drizzle-orm";
 import {
   users,
   communityTickets,
+  tickets,
   ticketSelections,
   markets,
   marketOutcomes,
@@ -106,6 +107,13 @@ const feedQuery = z.object({
 // feed indefinitely. See docs/COMMUNITY_PLAN.md §scoring.
 const BEST_WINS_WINDOW = sql`now() - interval '7 days'`;
 
+// Recent tab freshness window. Per the Community Wall spec
+// (notion.so/oddin/Community-Wall) the Feed tab is "bets you can
+// place now" — accepted tickets on still-bettable matches. We cap
+// recency at 24h so the feed doesn't surface a ticket from days ago
+// just because the underlying match is still scheduled.
+const RECENT_WINDOW = sql`now() - interval '24 hours'`;
+
 const userTicketsQuery = z.object({
   currency: z.string().optional(),
   page: z.coerce.number().int().min(1).default(1),
@@ -121,68 +129,31 @@ const FEED_STATUSES = sql`('settled', 'cashed_out', 'voided')`;
 export default async function communityRoutes(app: FastifyInstance) {
   // ─── Feed ────────────────────────────────────────────────────────────────
   //
-  // Anonymous, recent-first. Joins `community_tickets` to `users` to
-  // surface the nickname / bio per card. Filters out users with
-  // `tickets_public = false` and users without a nickname (no public
-  // surface to link to).
+  // Two surfaces, one endpoint:
+  //
+  //   sort=recent (default) — "bets you can place now" per the
+  //     Community Wall spec. Reads from the live `tickets` table:
+  //     accepted tickets on matches that haven't gone terminal, from
+  //     public bettors. The community_tickets projection only carries
+  //     settled rows; using it here would surface unbettable tickets
+  //     (the original complaint).
+  //
+  //   sort=best — Best Wins. Reads the `community_tickets` projection:
+  //     settled tickets where payout > stake (won), within the 7-day
+  //     window so a one-time monster ROI from a year ago can't squat
+  //     the top forever.
+  //
+  // Both surfaces apply the same visibility filter: tickets_public=true
+  // AND nickname IS NOT NULL.
   app.get("/community/feed", { config: readRateLimit }, async (request): Promise<CommunityFeedResponse> => {
     const q = feedQuery.parse(request.query);
     const currency: Currency | null =
       q.currency && isCurrency(q.currency) ? q.currency : null;
 
-    const filters = [
-      eq(users.ticketsPublic, true),
-      sql`${users.nickname} IS NOT NULL`,
-      sql`${communityTickets.status}::text IN ('settled', 'cashed_out', 'voided')`,
-    ];
-    if (currency) filters.push(eq(communityTickets.currency, currency));
-    if (q.sport !== undefined) {
-      filters.push(sql`${communityTickets.sportIds} @> ARRAY[${q.sport}]::int[]`);
-    }
-    // Best Wins narrows to a recent window. The stored score is
-    // time-invariant by design (recency = applied here, not stored),
-    // so without this cutoff a one-time monster ROI from a year ago
-    // would squat #1 forever.
     if (q.sort === "best") {
-      filters.push(sql`${communityTickets.settledAt} >= ${BEST_WINS_WINDOW}`);
+      return loadBestWinsFeed(app, { currency, sport: q.sport, page: q.page, pageSize: q.pageSize });
     }
-
-    const orderBy =
-      q.sort === "best"
-        ? [desc(communityTickets.score), desc(communityTickets.settledAt)]
-        : [desc(communityTickets.settledAt)];
-
-    const rows = await app.db
-      .select({
-        ticketId: communityTickets.ticketId,
-        nickname: users.nickname,
-        bio: users.bio,
-        currency: communityTickets.currency,
-        status: communityTickets.status,
-        betType: communityTickets.betType,
-        stakeMicro: communityTickets.stakeMicro,
-        payoutMicro: communityTickets.payoutMicro,
-        totalOdds: communityTickets.totalOdds,
-        numLegs: communityTickets.numLegs,
-        sportIds: communityTickets.sportIds,
-        settledAt: communityTickets.settledAt,
-      })
-      .from(communityTickets)
-      .innerJoin(users, eq(users.id, communityTickets.userId))
-      .where(and(...filters))
-      .orderBy(...orderBy)
-      .limit(q.pageSize + 1)
-      .offset((q.page - 1) * q.pageSize);
-
-    const hasMore = rows.length > q.pageSize;
-    const page = rows.slice(0, q.pageSize).map(toFeedSummary);
-
-    return {
-      tickets: page,
-      page: q.page,
-      pageSize: q.pageSize,
-      hasMore,
-    };
+    return loadRecentFeed(app, { currency, sport: q.sport, page: q.page, pageSize: q.pageSize });
   });
 
   // ─── Public profile ──────────────────────────────────────────────────────
@@ -282,7 +253,9 @@ export default async function communityRoutes(app: FastifyInstance) {
           totalOdds: communityTickets.totalOdds,
           numLegs: communityTickets.numLegs,
           sportIds: communityTickets.sportIds,
-          settledAt: communityTickets.settledAt,
+          // Per-user history is settled rows only; `at` carries the
+          // settled-at value to match the type's contract.
+          at: communityTickets.settledAt,
         })
         .from(communityTickets)
         .innerJoin(users, eq(users.id, communityTickets.userId))
@@ -570,7 +543,7 @@ interface FeedRow {
   totalOdds: string;
   numLegs: number;
   sportIds: number[];
-  settledAt: Date;
+  at: Date;
 }
 
 function toFeedSummary(r: FeedRow): CommunityTicketSummary {
@@ -595,7 +568,188 @@ function toFeedSummary(r: FeedRow): CommunityTicketSummary {
     totalOdds: r.totalOdds,
     numLegs: r.numLegs,
     sportIds: r.sportIds,
-    settledAt: r.settledAt.toISOString(),
+    at: r.at.toISOString(),
+  };
+}
+
+// ─── Feed loaders ──────────────────────────────────────────────────────────
+
+interface FeedLoaderArgs {
+  currency: Currency | null;
+  sport: number | undefined;
+  page: number;
+  pageSize: number;
+}
+
+// Recent tab — accepted tickets on still-bettable matches. Reads the
+// live `tickets` table directly because the community_tickets
+// projection only carries settled rows. The query mirrors the
+// projection-write SQL (services/api/src/modules/community/
+// projection.ts) so cards on the Recent tab look identical to ones
+// the same user will land on after settle.
+async function loadRecentFeed(
+  app: FastifyInstance,
+  q: FeedLoaderArgs,
+): Promise<CommunityFeedResponse> {
+  // Query parameters are inlined via Drizzle's sql template — currency
+  // and sport are validated by the route's zod schema; the user-id /
+  // status / match-status sets are literals so injection isn't a
+  // concern even on the raw SQL path.
+  const currencyClause = q.currency
+    ? sql`AND t.currency = ${q.currency}`
+    : sql``;
+  const sportClause =
+    q.sport !== undefined
+      ? sql`AND ${q.sport}::int = ANY(legs.sport_ids)`
+      : sql``;
+
+  const rows = await app.db.execute<Record<string, unknown>>(sql`
+WITH legs AS (
+  SELECT
+    t.id           AS ticket_id,
+    t.user_id      AS user_id,
+    t.currency     AS currency,
+    t.status       AS status,
+    t.bet_type     AS bet_type,
+    t.stake_micro  AS stake_micro,
+    t.potential_payout_micro AS payout_micro,
+    t.placed_at    AS at,
+    COUNT(*)::int                                                AS num_legs,
+    COALESCE(
+      ARRAY_AGG(DISTINCT c.sport_id) FILTER (WHERE c.sport_id IS NOT NULL),
+      '{}'::int[]
+    )                                                            AS sport_ids,
+    EXP(SUM(LN(ts.odds_at_placement::float8)))::numeric(10, 4)   AS total_odds,
+    -- Defining "still bettable" as "at least one leg is on a market
+    -- that's currently active (status=1) on a match that hasn't gone
+    -- terminal". Mirrors the storefront's hasActiveMarket predicate
+    -- (see CLAUDE.md "Catalog API"). If every leg has settled / been
+    -- voided, the ticket isn't actionable anymore — drop it from the
+    -- Recent feed.
+    BOOL_OR(mk.status = 1 AND mt.status IN ('not_started', 'live')) AS bettable
+    FROM tickets t
+    JOIN ticket_selections ts ON ts.ticket_id = t.id
+    JOIN markets mk           ON mk.id = ts.market_id
+    JOIN matches mt           ON mt.id = mk.match_id
+    JOIN tournaments tn       ON tn.id = mt.tournament_id
+    JOIN categories c         ON c.id = tn.category_id
+   WHERE t.status = 'accepted'
+     AND t.placed_at >= ${RECENT_WINDOW}
+   GROUP BY t.id
+)
+SELECT
+  legs.ticket_id            AS "ticketId",
+  u.nickname                AS nickname,
+  u.bio                     AS bio,
+  legs.currency             AS currency,
+  legs.status::text         AS status,
+  legs.bet_type::text       AS "betType",
+  legs.stake_micro          AS "stakeMicro",
+  legs.payout_micro         AS "payoutMicro",
+  legs.total_odds           AS "totalOdds",
+  legs.num_legs             AS "numLegs",
+  legs.sport_ids            AS "sportIds",
+  legs.at                   AS at
+  FROM legs
+  JOIN users u ON u.id = legs.user_id
+ WHERE u.tickets_public = true
+   AND u.nickname IS NOT NULL
+   AND legs.bettable = true
+   ${currencyClause}
+   ${sportClause}
+ ORDER BY legs.at DESC
+ LIMIT ${q.pageSize + 1}
+ OFFSET ${(q.page - 1) * q.pageSize}
+`);
+
+  const all = rows.map((r) => normaliseFeedRow(r));
+  const hasMore = all.length > q.pageSize;
+  const page = all.slice(0, q.pageSize).map(toFeedSummary);
+  return {
+    tickets: page,
+    page: q.page,
+    pageSize: q.pageSize,
+    hasMore,
+  };
+}
+
+// Best Wins tab — settled, won tickets from the projection. "Won" =
+// payout_micro > stake_micro (excludes voided + cashed_out where the
+// payout was below stake). Cashed_out wins are surfaced because the
+// user did profit on them; cashed_out losses (offer < stake) are
+// dropped by the same predicate.
+async function loadBestWinsFeed(
+  app: FastifyInstance,
+  q: FeedLoaderArgs,
+): Promise<CommunityFeedResponse> {
+  const filters = [
+    eq(users.ticketsPublic, true),
+    sql`${users.nickname} IS NOT NULL`,
+    sql`${communityTickets.status}::text IN ('settled', 'cashed_out')`,
+    sql`${communityTickets.payoutMicro} > ${communityTickets.stakeMicro}`,
+    sql`${communityTickets.settledAt} >= ${BEST_WINS_WINDOW}`,
+  ];
+  if (q.currency) filters.push(eq(communityTickets.currency, q.currency));
+  if (q.sport !== undefined) {
+    filters.push(sql`${communityTickets.sportIds} @> ARRAY[${q.sport}]::int[]`);
+  }
+
+  const rows = await app.db
+    .select({
+      ticketId: communityTickets.ticketId,
+      nickname: users.nickname,
+      bio: users.bio,
+      currency: communityTickets.currency,
+      status: communityTickets.status,
+      betType: communityTickets.betType,
+      stakeMicro: communityTickets.stakeMicro,
+      payoutMicro: communityTickets.payoutMicro,
+      totalOdds: communityTickets.totalOdds,
+      numLegs: communityTickets.numLegs,
+      sportIds: communityTickets.sportIds,
+      at: communityTickets.settledAt,
+    })
+    .from(communityTickets)
+    .innerJoin(users, eq(users.id, communityTickets.userId))
+    .where(and(...filters))
+    .orderBy(desc(communityTickets.score), desc(communityTickets.settledAt))
+    .limit(q.pageSize + 1)
+    .offset((q.page - 1) * q.pageSize);
+
+  const hasMore = rows.length > q.pageSize;
+  const page = rows.slice(0, q.pageSize).map(toFeedSummary);
+  return {
+    tickets: page,
+    page: q.page,
+    pageSize: q.pageSize,
+    hasMore,
+  };
+}
+
+// Coerce a raw postgres-js row (numerics as strings, bigints as
+// strings, timestamps as Date) into the shape toFeedSummary consumes.
+// Used only by the Recent loader, which goes through `db.execute()`
+// and skips Drizzle's type narrowing.
+function normaliseFeedRow(r: Record<string, unknown>): FeedRow {
+  return {
+    ticketId: r.ticketId as string,
+    nickname: (r.nickname as string | null) ?? null,
+    bio: (r.bio as string | null) ?? null,
+    currency: r.currency as string,
+    status: r.status as string,
+    betType: r.betType as string,
+    stakeMicro:
+      typeof r.stakeMicro === "bigint"
+        ? r.stakeMicro
+        : BigInt(r.stakeMicro as string | number),
+    payoutMicro:
+      typeof r.payoutMicro === "bigint"
+        ? r.payoutMicro
+        : BigInt(r.payoutMicro as string | number),
+    totalOdds: r.totalOdds as string,
+    numLegs: Number(r.numLegs),
+    sportIds: Array.isArray(r.sportIds) ? (r.sportIds as number[]) : [],
+    at: r.at instanceof Date ? r.at : new Date(r.at as string),
   };
 }
 

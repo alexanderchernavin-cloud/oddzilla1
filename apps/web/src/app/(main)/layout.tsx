@@ -6,29 +6,38 @@ import { MobileDrawersProvider } from "@/components/shell/mobile-drawer-context"
 import { MobileShellOverlay } from "@/components/shell/mobile-shell-overlay";
 import { ShellContainer } from "@/components/shell/shell-container";
 import { MatchPageProvider } from "@/lib/match-page-context";
+import { CombiBoostConfigProvider } from "@/lib/combi-boost-config";
 import { getSessionUser } from "@/lib/auth";
 import { serverApi } from "@/lib/server-fetch";
 import type { WalletListResponse } from "@oddzilla/types";
+import {
+  COMBI_BOOST_DEFAULT_CONFIG,
+  type CombiBoostConfigLive,
+} from "@oddzilla/types/combi-boost";
 
 interface SportsResponse {
   sports: Array<{ id: number; slug: string; name: string; kind: string; active: boolean }>;
 }
 
 export default async function MainLayout({ children }: { children: React.ReactNode }) {
-  const [user, sportsRes, liveCountsRes, walletRes] = await Promise.all([
+  const [user, sportsRes, liveCountsRes, walletRes, boostRes] = await Promise.all([
     getSessionUser(),
     serverApi<SportsResponse>("/catalog/sports"),
     serverApi<Record<string, number>>("/catalog/live-counts"),
     serverApi<WalletListResponse>("/wallet"),
+    serverApi<CombiBoostConfigLive>("/catalog/combi-boost-config"),
   ]);
 
   const sports = sportsRes?.sports ?? [];
   const liveCounts = liveCountsRes ?? {};
   const wallets = walletRes?.wallets ?? [];
+  const combiBoostConfig: CombiBoostConfigLive =
+    boostRes ?? COMBI_BOOST_DEFAULT_CONFIG;
 
   return (
     <MobileDrawersProvider>
       <MatchPageProvider>
+      <CombiBoostConfigProvider config={combiBoostConfig}>
       <ShellContainer>
         <TopBar
           signedIn={Boolean(user)}
@@ -54,6 +63,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
         <MobileShellOverlay />
         <MobileBetSlipBar />
       </ShellContainer>
+      </CombiBoostConfigProvider>
       </MatchPageProvider>
     </MobileDrawersProvider>
   );

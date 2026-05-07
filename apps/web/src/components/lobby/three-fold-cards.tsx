@@ -7,6 +7,7 @@ import { useOddsFlash } from "@/lib/use-odds-flash";
 import { useLiveOddsForMatches, type LiveOddsTick } from "@/lib/use-live-odds";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { computeCombiBoost } from "@oddzilla/types/combi-boost";
+import { useCombiBoostConfig } from "@/lib/combi-boost-config";
 import type {
   ThreeFoldLeg,
   ThreeFoldSuggestion,
@@ -62,6 +63,7 @@ export function ThreeFoldCards({
   suggestions: ThreeFoldSuggestions;
 }) {
   const slip = useBetSlip();
+  const boostCfg = useCombiBoostConfig();
   const visibleTiers = TIERS.filter((t) => suggestions[t.key]);
 
   const matchIds = useMemo(() => {
@@ -111,6 +113,7 @@ export function ThreeFoldCards({
           suggestion={suggestions[t.key]!}
           ticks={ticks}
           onActivate={handle}
+          boostCfg={boostCfg}
         />
       ))}
     </div>
@@ -128,11 +131,13 @@ function Card({
   suggestion,
   ticks,
   onActivate,
+  boostCfg,
 }: {
   tier: TierMeta;
   suggestion: ThreeFoldSuggestion;
   ticks: Record<string, LiveOddsTick>;
   onActivate: (legs: ThreeFoldLeg[]) => void;
+  boostCfg: ReturnType<typeof useCombiBoostConfig>;
 }) {
   // Overlay live ticks onto the snapshot legs. Inactive ticks (market
   // suspended) are dropped — the snapshot odds remain visible until the
@@ -159,7 +164,7 @@ function Card({
   // Combi Boost preview. Mirrors what the slip + API will compute when
   // the user clicks the card — the click handler doesn't need to do
   // anything extra, the slip's `add` flow already triggers the boost.
-  const boost = computeCombiBoost(liveLegs.map((l) => l.odds));
+  const boost = computeCombiBoost(liveLegs.map((l) => l.odds), boostCfg);
   const boostActive = boost.multiplier > 1.0;
   const boostedNum = Number.isFinite(baseCombinedNum)
     ? baseCombinedNum * boost.multiplier

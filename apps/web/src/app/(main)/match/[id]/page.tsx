@@ -208,7 +208,7 @@ export default async function MatchPage({
 // Twitch's iframe player only loads when its `parent=` query param matches
 // the embedding hostname (any Host or X-Forwarded-Host header it sees from
 // the browser). Reading from the same place Next.js does keeps prod
-// (s.oddzilla.cc) and `pnpm dev` (localhost) working without env config.
+// (oddzilla.cc) and `pnpm dev` (localhost) working without env config.
 async function resolveEmbedHost(): Promise<string | null> {
   const h = await headers();
   const raw = h.get("x-forwarded-host") ?? h.get("host");

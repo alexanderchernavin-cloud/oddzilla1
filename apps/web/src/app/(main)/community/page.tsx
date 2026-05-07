@@ -71,7 +71,7 @@ export default async function CommunityFeedPage({
         <p className="mt-2 text-sm text-[var(--color-fg-muted)]">
           {sort === "best"
             ? "Best wins of the last 7 days."
-            : "What other bettors are winning right now."}
+            : "Live bets you can still copy — the matches are still on."}
         </p>
       </header>
 
@@ -195,9 +195,9 @@ function EmptyState({
     body = "No tickets match these filters yet. Try a different sport or currency.";
   } else if (sort === "best") {
     body =
-      "No big wins in the last 7 days. Switch to Recent to see fresh action.";
+      "No big wins in the last 7 days. Switch to Recent to see live bets.";
   } else {
-    body = "No settled tickets yet. Check back after a few matches close.";
+    body = "No live bets right now. Check back when matches kick off.";
   }
   return (
     <div className="card mt-6 p-10 text-center text-sm text-[var(--color-fg-muted)]">

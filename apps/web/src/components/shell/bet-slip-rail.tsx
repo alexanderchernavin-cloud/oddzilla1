@@ -13,9 +13,10 @@ import { parseProbability, priceTiple, priceTippot } from "@oddzilla/types/produ
 import type { TippotTier } from "@oddzilla/types/products";
 import {
   computeCombiBoost,
-  COMBI_BOOST_MIN_ODDS,
-  COMBI_BOOST_TIERS,
+  type CombiBoostTier,
+  type CombiBoostConfigLive,
 } from "@oddzilla/types/combi-boost";
+import { useCombiBoostConfig } from "@/lib/combi-boost-config";
 import type {
   BetBuilderQuoteAcceptedResponse,
   BetBuilderQuoteResponse,
@@ -211,10 +212,12 @@ export function BetSlipRail() {
 
   // Combi Boost preview. The server re-runs computeCombiBoost at
   // placement and freezes the multiplier into bet_meta — this is just a
-  // live preview for the user as they add legs.
+  // live preview for the user as they add legs. Config comes from
+  // /catalog/combi-boost-config (admin-tunable).
+  const boostCfg = useCombiBoostConfig();
   const combiBoost = useMemo(
-    () => computeCombiBoost(selections.map((s) => s.odds)),
-    [selections],
+    () => computeCombiBoost(selections.map((s) => s.odds), boostCfg),
+    [selections, boostCfg],
   );
 
   // Tiple/Tippot quotes — only computable when every selection carries a
@@ -717,13 +720,14 @@ export function BetSlipRail() {
             </div>
           )}
 
-          {isCombo && selections.length >= 2 && (
+          {isCombo && selections.length >= 2 && boostCfg.enabled && (
             <CombiBoostPanel
               eligibleLegCount={combiBoost.eligibleLegCount}
               currentTier={combiBoost.currentTier}
               nextTier={combiBoost.nextTier}
               legsToNext={combiBoost.legsToNextTier}
               ineligibleLegCount={selections.length - combiBoost.eligibleLegCount}
+              config={boostCfg}
             />
           )}
 
@@ -1715,10 +1719,8 @@ function HistoryTicketCard({
 // Renders only in combo mode with >= 2 selections. Shows the active tier
 // (or a prompt to start earning one), the next tier and how many more
 // legs unlock it, plus a segmented bar with markers at each tier
-// threshold (2, 4, 6, 8 legs). The segments fill green up to the user's
-// current eligible-leg count.
-
-type BoostTier = (typeof COMBI_BOOST_TIERS)[number];
+// threshold from the live admin config. The segments fill green up to
+// the user's current eligible-leg count.
 
 function CombiBoostPanel({
   eligibleLegCount,
@@ -1726,14 +1728,16 @@ function CombiBoostPanel({
   nextTier,
   legsToNext,
   ineligibleLegCount,
+  config,
 }: {
   eligibleLegCount: number;
-  currentTier: BoostTier | null;
-  nextTier: BoostTier | null;
+  currentTier: CombiBoostTier | null;
+  nextTier: CombiBoostTier | null;
   legsToNext: number;
   ineligibleLegCount: number;
+  config: CombiBoostConfigLive;
 }) {
-  const cells = COMBI_BOOST_TIERS[COMBI_BOOST_TIERS.length - 1]!.minLegs;
+  const cells = config.tiers[config.tiers.length - 1]?.minLegs ?? 8;
   const filled = Math.min(eligibleLegCount, cells);
 
   let statusText: string;
@@ -1743,7 +1747,7 @@ function CombiBoostPanel({
     statusText = `${currentTier.label} boost active — top tier reached`;
   } else if (nextTier) {
     const need = Math.max(0, nextTier.minLegs - eligibleLegCount);
-    statusText = `Add ${need} more leg${need === 1 ? "" : "s"} (odds ≥ ${COMBI_BOOST_MIN_ODDS.toFixed(2)}) to unlock ${nextTier.label} boost`;
+    statusText = `Add ${need} more leg${need === 1 ? "" : "s"} (odds ≥ ${config.minOdds.toFixed(2)}) to unlock ${nextTier.label} boost`;
   } else {
     statusText = "";
   }
@@ -1788,16 +1792,21 @@ function CombiBoostPanel({
             color: "var(--fg-muted)",
           }}
         >
-          MIN ODDS {COMBI_BOOST_MIN_ODDS.toFixed(2)}
+          MIN ODDS {config.minOdds.toFixed(2)}
         </span>
       </div>
       <div style={{ fontSize: 12, color: "var(--fg)", lineHeight: 1.35 }}>
         {statusText}
       </div>
-      <BoostProgressBar filled={filled} totalCells={cells} currentTier={currentTier} />
+      <BoostProgressBar
+        filled={filled}
+        totalCells={cells}
+        currentTier={currentTier}
+        config={config}
+      />
       {ineligibleLegCount > 0 && (
         <div style={{ fontSize: 10.5, color: "var(--fg-muted)", lineHeight: 1.3 }}>
-          {ineligibleLegCount} leg{ineligibleLegCount === 1 ? "" : "s"} below {COMBI_BOOST_MIN_ODDS.toFixed(2)} odds and won&apos;t count toward the boost.
+          {ineligibleLegCount} leg{ineligibleLegCount === 1 ? "" : "s"} below {config.minOdds.toFixed(2)} odds and won&apos;t count toward the boost.
         </div>
       )}
     </div>
@@ -1808,10 +1817,12 @@ function BoostProgressBar({
   filled,
   totalCells,
   currentTier,
+  config,
 }: {
   filled: number;
   totalCells: number;
-  currentTier: BoostTier | null;
+  currentTier: CombiBoostTier | null;
+  config: CombiBoostConfigLive;
 }) {
   // Tier thresholds expressed as cell indices — we mark each one with a
   // tick line above the bar so the user can see at a glance which step
@@ -1830,7 +1841,7 @@ function BoostProgressBar({
       >
         {Array.from({ length: totalCells }, (_, i) => {
           const cellLegs = i + 1;
-          const tier = COMBI_BOOST_TIERS.find((t) => t.minLegs === cellLegs);
+          const tier = config.tiers.find((t) => t.minLegs === cellLegs);
           const isActive = currentTier ? currentTier.minLegs === cellLegs : false;
           return (
             <div
@@ -1858,7 +1869,7 @@ function BoostProgressBar({
         {Array.from({ length: totalCells }, (_, i) => {
           const cellLegs = i + 1;
           const isFilled = cellLegs <= filled;
-          const isTierBoundary = COMBI_BOOST_TIERS.some(
+          const isTierBoundary = config.tiers.some(
             (t) => t.minLegs === cellLegs,
           );
           return (

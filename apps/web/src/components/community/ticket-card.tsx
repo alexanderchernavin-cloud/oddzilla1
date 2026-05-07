@@ -29,13 +29,17 @@ export function CommunityTicketCard({
   const isWin =
     (ticket.status === "settled" || ticket.status === "cashed_out") &&
     BigInt(ticket.payoutMicro) > BigInt(ticket.stakeMicro);
+  const isLive = ticket.status === "accepted";
 
-  const settled = new Date(ticket.settledAt).toLocaleString("en-US", {
+  const at = new Date(ticket.at).toLocaleString("en-US", {
     month: "short",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
   });
+  // Accepted tickets show the *potential* payout, settled show actual.
+  // The label change clarifies which the user is looking at.
+  const payoutLabel = isLive ? "to win" : "payout";
 
   return (
     <li className="card p-5">
@@ -49,7 +53,7 @@ export function CommunityTicketCard({
               {ticket.nickname}
             </Link>
             <span aria-hidden>·</span>
-            <span>{settled}</span>
+            <span>{at}</span>
             <span aria-hidden>·</span>
             <span>{ticket.currency}</span>
             {sport ? (
@@ -81,7 +85,7 @@ export function CommunityTicketCard({
             {payout} {ticket.currency}
           </p>
           <p className="font-mono text-xs text-[var(--color-fg-muted)]">
-            stake {stake} {ticket.currency}
+            {payoutLabel} · stake {stake} {ticket.currency}
           </p>
         </div>
       </div>
@@ -100,6 +104,15 @@ function StatusPill({
   status: CommunityTicketSummary["status"];
   isWin: boolean;
 }) {
+  if (status === "accepted") {
+    // Recent feed — bet is in-flight on a still-bettable match.
+    // The accent colour cues "happening now / actionable".
+    return (
+      <span className="inline-block rounded-full bg-[var(--color-accent)]/15 px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-[var(--color-accent)]">
+        Live
+      </span>
+    );
+  }
   if (status === "cashed_out") {
     return (
       <span className="inline-block rounded-full border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-[var(--color-fg-muted)]">

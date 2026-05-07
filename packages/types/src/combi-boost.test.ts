@@ -6,7 +6,37 @@ import {
   COMBI_BOOST_TIERS,
   combiBoostMultiplierFor,
   computeCombiBoost,
+  type CombiBoostConfigLive,
 } from "./combi-boost.js";
+
+test("custom config overrides defaults: 3-leg threshold + x1.10", () => {
+  const config: CombiBoostConfigLive = {
+    enabled: true,
+    minOdds: 1.5,
+    tiers: [
+      { minLegs: 3, multiplier: 1.1, label: "x1.10" },
+      { minLegs: 5, multiplier: 1.2, label: "x1.20" },
+    ],
+  };
+  const s = computeCombiBoost(["1.80", "1.80", "1.80"], config);
+  assert.equal(s.eligibleLegCount, 3);
+  assert.equal(s.multiplier, 1.1);
+  assert.equal(s.currentTier?.label, "x1.10");
+  assert.equal(s.nextTier?.minLegs, 5);
+  assert.equal(s.legsToNextTier, 2);
+});
+
+test("disabled config short-circuits to multiplier 1.0", () => {
+  const config: CombiBoostConfigLive = {
+    enabled: false,
+    minOdds: 1.5,
+    tiers: COMBI_BOOST_TIERS,
+  };
+  const s = computeCombiBoost(["2.00", "2.00", "2.00", "2.00"], config);
+  assert.equal(s.multiplier, 1.0);
+  assert.equal(s.currentTier, null);
+  assert.equal(s.nextTier, null);
+});
 
 test("single leg never reaches a tier", () => {
   const s = computeCombiBoost(["2.50"]);
