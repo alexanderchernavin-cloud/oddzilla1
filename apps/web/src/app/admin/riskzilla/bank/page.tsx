@@ -38,6 +38,8 @@ export default async function RiskzillaBankPage() {
 
   const limitDecimal = fromMicro(BigInt(state.bankLimitMicro));
   const balanceDecimal = fromMicro(BigInt(state.userBalancesMicro));
+  const lockedDecimal = fromMicro(BigInt(state.userLockedMicro));
+  const hasLocked = BigInt(state.userLockedMicro) > 0n;
   const openDecimal = fromMicro(BigInt(state.openLiabilityMicro));
   const free = BigInt(state.freeCapacityMicro);
   const freeDecimal = fromMicro(free);
@@ -61,7 +63,11 @@ export default async function RiskzillaBankPage() {
         <Kpi
           label="Bettor balances"
           value={`${balanceDecimal} USDC`}
-          sub="Withdrawable any time"
+          sub={
+            hasLocked
+              ? `Withdrawable now · ${lockedDecimal} more locked in open bets`
+              : "Withdrawable on demand"
+          }
         />
         <Kpi
           label="Open liability"

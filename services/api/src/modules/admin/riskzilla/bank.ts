@@ -32,11 +32,14 @@ const BANK_ADMIN_EMAIL = "q1qooo@gmail.com";
 interface BankStateDto {
   bankLimitMicro: string;
   openLiabilityMicro: string;
-  // Composite breakdown: bettor wallet balances are claims against the
-  // bank (withdrawable on demand), so the operator's free risk capital
-  // is `bank_limit − user_balances − open_liability`. Surfaced here so
-  // the bank page shows the full picture without a second round-trip.
+  // Composite breakdown: bettor wallet AVAILABLE balances (balance −
+  // locked) are claims against the bank withdrawable on demand. The
+  // locked portion is already committed to open bets and its potential
+  // payouts ride in open_liability — surfacing both keeps the bank
+  // page honest without a second round-trip. Free capacity =
+  // bank_limit − user_balances_available − open_liability.
   userBalancesMicro: string;
+  userLockedMicro: string;
   freeCapacityMicro: string;
   updatedAt: string;
   updatedBy: string | null;
@@ -94,26 +97,39 @@ async function loadOrSeed(app: FastifyInstance) {
 
 function rowToDto(
   row: typeof riskzillaBankState.$inferSelect,
-  userBalancesMicro: bigint = 0n,
+  userBalances: { available: bigint; locked: bigint } = { available: 0n, locked: 0n },
 ): BankStateDto {
-  const free = row.bankLimitMicro - userBalancesMicro - row.openLiabilityMicro;
+  const free =
+    row.bankLimitMicro - userBalances.available - row.openLiabilityMicro;
   return {
     bankLimitMicro: row.bankLimitMicro.toString(),
     openLiabilityMicro: row.openLiabilityMicro.toString(),
-    userBalancesMicro: userBalancesMicro.toString(),
+    userBalancesMicro: userBalances.available.toString(),
+    userLockedMicro: userBalances.locked.toString(),
     freeCapacityMicro: free.toString(),
     updatedAt: row.updatedAt.toISOString(),
     updatedBy: row.updatedBy,
   };
 }
 
-async function loadUserBalances(app: FastifyInstance): Promise<bigint> {
+async function loadUserBalances(app: FastifyInstance): Promise<{
+  available: bigint;
+  locked: bigint;
+}> {
+  // Available = balance − locked. Locked stakes are already committed
+  // to open bets so their potential payouts ride in open_liability;
+  // including them here would double-count the stake.
   const rows = (await app.db.execute(sql`
-    SELECT COALESCE(SUM(balance_micro), 0)::text AS total
+    SELECT
+      COALESCE(SUM(balance_micro - locked_micro), 0)::text AS available,
+      COALESCE(SUM(locked_micro), 0)::text                 AS locked
       FROM wallets
      WHERE currency = 'USDC'
-  `)) as unknown as Array<{ total: string }>;
-  return BigInt(rows[0]?.total ?? "0");
+  `)) as unknown as Array<{ available: string; locked: string }>;
+  return {
+    available: BigInt(rows[0]?.available ?? "0"),
+    locked: BigInt(rows[0]?.locked ?? "0"),
+  };
 }
 
 function ledgerRowToDto(

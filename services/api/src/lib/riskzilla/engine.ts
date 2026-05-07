@@ -265,17 +265,17 @@ export class RiskzillaEngine {
     const bankLimit = BigInt(bankRows[0]!.bank_limit_micro);
     const openLiability = BigInt(bankRows[0]!.open_liability_micro);
 
-    // Sum of every USDC wallet's balance_micro. Bettors can withdraw
-    // their balance on demand, so our risk capital is the bank limit
-    // MINUS what we already owe them. Computing this on the fly is
-    // cheap at MVP scale (~10K wallets); for higher scale we'd cache
-    // the sum on the bank_state row and bump it on every wallet
-    // mutation. Note balance_micro INCLUDES the locked portion of
-    // active bets — we don't double-count because open_liability uses
-    // potential_payout (which already accounts for the stake's
-    // contribution at settlement).
+    // Sum of every USDC wallet's AVAILABLE balance (balance − locked).
+    // Locked stakes are already committed to open bets and their
+    // potential payouts are counted in open_liability — including the
+    // locked portion in user_balances would double-charge the same
+    // dollars (once as "withdrawable" and again as "potential payout").
+    // Available is what bettors could ACTUALLY withdraw on demand.
+    // Computing this on the fly is cheap at MVP scale (~10K wallets);
+    // for higher scale we'd cache the sum on the bank_state row and
+    // bump it on every wallet mutation.
     const balanceRows = (await tx.execute(sql`
-      SELECT COALESCE(SUM(balance_micro), 0)::text AS total
+      SELECT COALESCE(SUM(balance_micro - locked_micro), 0)::text AS total
         FROM wallets
        WHERE currency = ${RISKZILLA_CURRENCY}
     `)) as unknown as Array<{ total: string }>;
