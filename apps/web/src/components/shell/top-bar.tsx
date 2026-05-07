@@ -1,15 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { fromMicro } from "@oddzilla/types/money";
 import type { WalletSnapshot } from "@oddzilla/types";
 import { Logo } from "@/components/ui/monogram";
 import { I } from "@/components/ui/icons";
-import { Button, Divider } from "@/components/ui/primitives";
-import { useBetSlip } from "@/lib/bet-slip";
+import { Button } from "@/components/ui/primitives";
 import { ThemeToggle } from "./theme-toggle";
 import { useMobileDrawers } from "./mobile-drawer-context";
 import { TopBarSearch } from "./top-bar-search";
+import { WalletPill } from "./wallet-pill";
 
 interface TopBarProps {
   signedIn: boolean;
@@ -33,13 +32,6 @@ const iconBtn = {
 
 export function TopBar({ signedIn, user, wallets }: TopBarProps) {
   const { toggleSidebar } = useMobileDrawers();
-  const slip = useBetSlip();
-  const activeCurrency = slip.currency;
-  const activeWallet = wallets?.find((w) => w.currency === activeCurrency);
-  const balanceText = activeWallet
-    ? fromMicro(BigInt(activeWallet.availableMicro))
-    : "0";
-  const isDemo = activeCurrency === "OZ";
 
   const initials = user
     ? (user.displayName || user.email)
@@ -121,71 +113,7 @@ export function TopBar({ signedIn, user, wallets }: TopBarProps) {
             />
           </button>
 
-          <Link
-            href="/wallet"
-            className="oz-topbar-wallet"
-            style={{
-              textDecoration: "none",
-              color: "var(--fg)",
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              height: 36,
-              padding: "0 14px",
-              background: "var(--surface-2)",
-              border: "1px solid var(--border)",
-              borderRadius: 999,
-              flexShrink: 0,
-            }}
-          >
-            <I.Wallet size={14} style={{ color: "var(--fg-muted)" }} />
-            <span className="mono tnum" style={{ fontSize: 13, fontWeight: 600 }}>
-              {balanceText}
-            </span>
-            <span
-              className="mono oz-topbar-wallet-unit"
-              style={{ fontSize: 11, color: "var(--fg-muted)" }}
-            >
-              {activeCurrency}
-            </span>
-            {isDemo ? (
-              <span
-                className="oz-topbar-wallet-deposit"
-                style={{
-                  padding: "2px 8px",
-                  fontSize: 10,
-                  fontWeight: 600,
-                  background: "var(--surface)",
-                  color: "var(--fg-muted)",
-                  border: "1px solid var(--border)",
-                  borderRadius: 999,
-                  letterSpacing: "0.06em",
-                  textTransform: "uppercase",
-                }}
-              >
-                Demo
-              </span>
-            ) : (
-              <span
-                className="oz-topbar-wallet-deposit"
-                style={{ display: "inline-flex", alignItems: "center", gap: 10 }}
-              >
-                <Divider v style={{ height: 18, margin: "0 2px" }} />
-                <span
-                  style={{
-                    padding: "2px 8px",
-                    fontSize: 11,
-                    fontWeight: 600,
-                    background: "var(--accent)",
-                    color: "var(--accent-fg)",
-                    borderRadius: 999,
-                  }}
-                >
-                  + Deposit
-                </span>
-              </span>
-            )}
-          </Link>
+          <WalletPill wallets={wallets} />
 
           <Link
             href="/account"

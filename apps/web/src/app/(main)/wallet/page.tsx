@@ -5,11 +5,11 @@ import type {
   DepositIntentListResponse,
   LinkedWalletListResponse,
   WalletListResponse,
-  WalletSnapshot,
   WithdrawalListResponse,
 } from "@oddzilla/types";
 import { serverApi } from "@/lib/server-fetch";
 import { WalletPanels } from "./wallet-panels";
+import { CurrencyCard } from "./currency-card";
 
 interface LedgerEntry {
   id: string;
@@ -115,41 +115,3 @@ export default async function WalletPage() {
   );
 }
 
-function CurrencyCard({
-  wallet,
-  currency,
-  tag,
-}: {
-  wallet: WalletSnapshot | undefined;
-  currency: Currency;
-  tag: string | null;
-}) {
-  const balance = wallet ? fromMicro(BigInt(wallet.balanceMicro)) : "—";
-  const locked = wallet ? fromMicro(BigInt(wallet.lockedMicro)) : "—";
-  const available = wallet ? fromMicro(BigInt(wallet.availableMicro)) : "—";
-
-  return (
-    <div className="card p-6">
-      <div className="flex items-center gap-2">
-        <p className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-          {currency}
-        </p>
-        {tag ? (
-          <span className="rounded-full border border-[var(--color-border-strong)] px-2 py-[1px] text-[10px] uppercase tracking-[0.12em] text-[var(--color-fg-muted)]">
-            {tag}
-          </span>
-        ) : null}
-      </div>
-      <p className="mt-3 font-mono text-3xl text-[var(--color-accent)]">
-        {available}
-        <span className="ml-2 text-sm text-[var(--color-fg-muted)]">{currency}</span>
-      </p>
-      <dl className="mt-4 grid grid-cols-2 gap-y-1 text-xs text-[var(--color-fg-muted)]">
-        <dt>Balance</dt>
-        <dd className="text-right font-mono text-[var(--color-fg)]">{balance}</dd>
-        <dt>Locked</dt>
-        <dd className="text-right font-mono text-[var(--color-fg)]">{locked}</dd>
-      </dl>
-    </div>
-  );
-}

@@ -23,6 +23,7 @@ import {
   wallets,
   walletLedger,
   adminAuditLog,
+  users,
 } from "@oddzilla/db";
 import {
   BadRequestError,
@@ -59,17 +60,28 @@ export default async function adminDepositsRoutes(app: FastifyInstance) {
     if (q.status) conditions.push(eq(depositIntents.status, q.status));
     if (q.userId) conditions.push(eq(depositIntents.userId, q.userId));
 
+    // Surface the bettor's email + display name on every row so the
+    // operator can pick the right intent without decoding 8 hex chars
+    // of UUID. Left-join not strictly needed (user_id is NOT NULL +
+    // FK) but cheap insurance against a stale row.
     const rows = await app.db
-      .select()
+      .select({
+        intent: depositIntents,
+        userEmail: users.email,
+        userDisplayName: users.displayName,
+      })
       .from(depositIntents)
+      .leftJoin(users, eq(users.id, depositIntents.userId))
       .where(conditions.length ? sql.join(conditions, sql` AND `) : sql`TRUE`)
       .orderBy(desc(depositIntents.submittedAt))
       .limit(q.limit);
 
     return {
-      deposits: rows.map((r) => ({
+      deposits: rows.map(({ intent: r, userEmail, userDisplayName }) => ({
         id: r.id,
         userId: r.userId,
+        userEmail,
+        userDisplayName,
         network: r.network,
         txHash: r.txHash,
         fromAddress: r.fromAddress,

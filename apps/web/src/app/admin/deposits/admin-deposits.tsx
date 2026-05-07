@@ -9,6 +9,8 @@ import { clientApi, ApiFetchError } from "@/lib/api-client";
 export interface AdminDepositEntry {
   id: string;
   userId: string;
+  userEmail: string | null;
+  userDisplayName: string | null;
   network: ChainNetwork;
   txHash: string;
   fromAddress: string | null;
@@ -98,10 +100,6 @@ function Row({ entry }: { entry: AdminDepositEntry }) {
             <time dateTime={entry.submittedAt}>
               {new Date(entry.submittedAt).toLocaleString()}
             </time>
-            <span>·</span>
-            <span className="font-mono normal-case">
-              user {entry.userId.slice(0, 8)}
-            </span>
             {entry.confirmations > 0 ? (
               <>
                 <span>·</span>
@@ -109,6 +107,17 @@ function Row({ entry }: { entry: AdminDepositEntry }) {
               </>
             ) : null}
           </div>
+          <p className="mt-1 text-sm normal-case tracking-normal text-[var(--color-fg)]">
+            {entry.userEmail ?? "(unknown user)"}
+            {entry.userDisplayName ? (
+              <span className="ml-2 text-[var(--color-fg-muted)]">
+                {entry.userDisplayName}
+              </span>
+            ) : null}
+            <span className="ml-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-fg-subtle)]">
+              {entry.userId.slice(0, 8)}
+            </span>
+          </p>
           <p className="mt-2 break-all font-mono text-xs text-[var(--color-fg-muted)]">
             tx {entry.txHash}
           </p>
