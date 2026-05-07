@@ -657,8 +657,49 @@ export class BetsService {
           };
         }),
       };
-      const riskResult = await this.riskzilla.evaluate(tx, riskIntent);
+      // Wrap the engine call so any unexpected throw becomes a typed
+      // error with structured logs instead of a 500 "Something went
+      // wrong". Engine bugs (a missing config row, a SQL hiccup, etc.)
+      // shouldn't cascade into an opaque generic error for the bettor.
+      // Fail-closed: if the engine can't evaluate, we refuse the bet
+      // rather than letting unchecked liability through.
+      let riskResult: Awaited<ReturnType<typeof this.riskzilla.evaluate>>;
+      try {
+        riskResult = await this.riskzilla.evaluate(tx, riskIntent);
+      } catch (engineErr) {
+        // Re-throw the rejection sentinel unchanged — that's not an
+        // engine error, that's a normal rejection thrown via `throw`.
+        if (engineErr instanceof RiskzillaRejectError) throw engineErr;
+        // Any other exception: log with full context, then surface as
+        // a typed 400 the slip can render meaningfully.
+        // eslint-disable-next-line no-console
+        console.error("riskzilla.engine_error", {
+          userId: ctx.userId,
+          currency,
+          stakeMicro: stake.toString(),
+          potentialPayoutMicro: potentialPayoutMicro.toString(),
+          legs: riskIntent.legs.length,
+          error:
+            engineErr instanceof Error
+              ? { name: engineErr.name, message: engineErr.message }
+              : String(engineErr),
+        });
+        throw new BadRequestError("riskzilla_engine_error", "riskzilla_engine_error");
+      }
       if (riskResult.decision !== "accepted") {
+        // Log every rejection at info level so ops can see what gates
+        // are firing without scraping the event_log table. The full
+        // bucket-level breakdown still lands in `decision_meta`.
+        // eslint-disable-next-line no-console
+        console.info("riskzilla.rejected", {
+          userId: ctx.userId,
+          decision: riskResult.decision,
+          reason: riskResult.reason,
+          stakeMicro: stake.toString(),
+          potentialPayoutMicro: potentialPayoutMicro.toString(),
+          matchId: matchContext.matchId?.toString() ?? null,
+          riskTier: matchContext.riskTier,
+        });
         // Throw out of the tx (rolls back). place() catches the
         // sentinel below, writes the rejection row outside the
         // rolled-back tx, and re-throws as a typed BadRequestError.
@@ -776,16 +817,22 @@ export class BetsService {
     } catch (err) {
       // RiskZilla rejection sentinel — record the decision row outside
       // the rolled-back tx so the betticker / bets pages see it, then
-      // surface a typed BadRequestError to the client. Swallow logging
-      // errors so the original rejection always reaches the client.
+      // surface a typed BadRequestError to the client. Log every
+      // logging failure so silent event_log drops don't go unnoticed
+      // (the betticker would otherwise show "no events" indefinitely).
       if (err instanceof RiskzillaRejectError) {
         try {
           await this.riskzilla.recordRejection(err.intent, err.result, err.matchContext);
-        } catch {
-          // Swallow — the placement transaction already rolled back,
-          // so the only loss is the audit row in the event_log. The
-          // /admin/riskzilla/bank/recompute endpoint can rebuild
-          // open_liability from open tickets if drift is suspected.
+        } catch (logErr) {
+          // eslint-disable-next-line no-console
+          console.error("riskzilla.record_rejection_failed", {
+            userId: err.intent.userId,
+            decision: err.result.decision,
+            error:
+              logErr instanceof Error
+                ? { name: logErr.name, message: logErr.message }
+                : String(logErr),
+          });
         }
         throw new BadRequestError(err.result.reason, err.result.decision);
       }

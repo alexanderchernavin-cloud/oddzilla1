@@ -1089,7 +1089,28 @@ function CurrencyTabs({
 }
 
 function mapError(err: ApiFetchError): string {
+  // RiskZilla rejection codes (the engine throws BadRequestError(reason,
+  // decision) so `error` carries the decision — `rejected_*` — and
+  // `message` carries the human reason). Surface a specific message per
+  // gate so the bettor knows whether it's a per-match, per-bettor, or
+  // bankroll-level limit that fired.
   switch (err.body.error) {
+    case "rejected_min_stake":
+      return "Stake is below the minimum bet for this match.";
+    case "rejected_max_payout":
+      return "Potential payout exceeds the maximum allowed for this match.";
+    case "rejected_match_liability":
+      return "Bet limit exceeded — match liability cap reached.";
+    case "rejected_bet_factor":
+      return "Bet limit exceeded — your slice of this match is full.";
+    case "rejected_bank_limit":
+      return "Bet limit exceeded — operator bankroll cap reached.";
+    case "rejected_user_blocked":
+      return "Your account can't place bets right now.";
+    case "rejected_market_factor":
+      return "This market is currently restricted from accepting bets.";
+    case "wallet_not_found":
+      return "No wallet for this currency yet — switch currency or contact support.";
     case "insufficient_balance":
       return "Not enough balance for this stake.";
     case "exceeds_global_limit":
@@ -1139,8 +1160,19 @@ function mapError(err: ApiFetchError): string {
       return "BetBuilder needs every leg from the same match.";
     case "betbuilder_odds_too_low":
       return "BetBuilder returned odds below 1.01 — try a different combination.";
+    case "internal_error":
+      // The api error handler returns this for unhandled exceptions
+      // (status 500). Show a stable message; details land in the api
+      // logs for ops to diagnose.
+      return "Bet placement service hit an unexpected error. Try again in a moment.";
+    case "riskzilla_engine_error":
+      return "Risk evaluation failed temporarily — try again in a moment.";
     default:
-      return err.body.message || "Placement failed.";
+      // Surface the typed code rather than a generic "Placement failed"
+      // — operators investigating support tickets need the code to
+      // grep the api logs. The human message (when present) is more
+      // useful than just the code; fall back to the code otherwise.
+      return err.body.message || err.body.error || "Placement failed.";
   }
 }
 
