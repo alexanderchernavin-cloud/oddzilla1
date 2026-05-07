@@ -19,7 +19,7 @@ Postgres 16 + Redis 7 + Caddy, all on one Hetzner box via Docker Compose.
 | Where does it run? | Hetzner CPX22 at `178.104.174.24` (see [`CONNECT.md`](./CONNECT.md)). Public URLs: **`s.oddzilla.cc`** (storefront) + **`sadmin.oddzilla.cc`** (admin; `/` redirects to `/admin`). Let's Encrypt via Caddy. |
 | How is money stored? | `BIGINT _micro` (6 decimals = 1,000,000 micro per unit) on every wallet/ledger/ticket row, with a sibling `currency CHAR(4)`. Two currencies: `USDT` (real, on-chain) and `OZ` (demo, every signup gets a 1000 OZ bonus for testing the bet flow). Withdrawals + deposits stay USDT-only. |
 | Auth? | Email + password (argon2id), JWT access (15 min) + refresh cookie (30 d). `Domain=.oddzilla.cc` so session works on both subdomains. |
-| UI aesthetic? | Premium / quiet editorial: Instrument Serif display + Geist UI + Geist Mono for odds. Dark theme default (`#0b0b0c`), light via `data-theme="light"`. Ported from the Claude Design handoff bundle. **No emojis.** |
+| UI aesthetic? | Premium / quiet editorial: Instrument Serif display + Geist UI + Geist Mono for odds. Light theme default (`#f4f2ec`), dark via `data-theme="dark"` (toggle in the top bar; choice persists in `localStorage["oz:theme"]`). Ported from the Claude Design handoff bundle. **No emojis.** |
 
 Current phase: **Phases 1–8 complete + security hardening + catalog cleanup
 + frontend redesign.** News scraper was cancelled during Phase 8 (migration

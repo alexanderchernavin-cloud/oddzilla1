@@ -3,7 +3,7 @@
 /* ─────────────────────────────────────────────────────────────────────────
    Oddzilla design tokens — premium / quiet editorial sportsbook.
    Ported verbatim from the design bundle (soddzilla/project/src/tokens.css).
-   Dark theme is the default; light is available via [data-theme="light"].
+   Light theme is the default; dark is available via [data-theme="dark"].
    ───────────────────────────────────────────────────────────────────────── */
 
 :root {
@@ -33,8 +33,7 @@
   --sport-sc: #2dd4bf;
 }
 
-/* ---------- DARK (default) ---------- */
-:root,
+/* ---------- DARK ---------- */
 [data-theme="dark"] {
   --bg: #0b0b0c;
   --bg-elevated: #131314;
@@ -62,7 +61,8 @@
   --shadow-lg: 0 30px 80px -20px rgba(0, 0, 0, 0.7), 0 2px 6px rgba(0, 0, 0, 0.4);
 }
 
-/* ---------- LIGHT ---------- */
+/* ---------- LIGHT (default) ---------- */
+:root,
 [data-theme="light"] {
   --bg: #f4f2ec;
   --bg-elevated: #ffffff;

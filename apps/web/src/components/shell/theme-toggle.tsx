@@ -8,7 +8,7 @@ import { I } from "@/components/ui/icons";
 const STORAGE_KEY = "oz:theme";
 
 export function ThemeToggle() {
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [theme, setTheme] = useState<"dark" | "light">("light");
 
   useEffect(() => {
     // The pre-hydration script in the root layout has already set
@@ -24,9 +24,9 @@ export function ThemeToggle() {
     const fromAttr = document.documentElement.getAttribute("data-theme");
     const initial = stored === "light" || stored === "dark"
       ? stored
-      : fromAttr === "light"
-        ? "light"
-        : "dark";
+      : fromAttr === "dark"
+        ? "dark"
+        : "light";
     setTheme(initial);
     if (fromAttr !== initial) {
       document.documentElement.setAttribute("data-theme", initial);
