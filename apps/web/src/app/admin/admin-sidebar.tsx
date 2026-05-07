@@ -4,7 +4,7 @@ import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { I } from "@/components/ui/icons";
-import { Logo } from "@/components/ui/monogram";
+import { Logo, Wordmark } from "@/components/ui/monogram";
 import { LogoutButton } from "@/components/logout-button";
 import { ThemeToggle } from "@/components/shell/theme-toggle";
 
@@ -45,6 +45,7 @@ const SECTIONS: Section[] = [
     label: "Catalog",
     items: [
       { href: "/admin/mapping", label: "Mapping", Icon: I.Grid, matchPrefix: "/admin/mapping" },
+      { href: "/admin/sports", label: "Sports", Icon: I.Live, matchPrefix: "/admin/sports" },
       { href: "/admin/competitors", label: "Teams", Icon: I.Trophy, matchPrefix: "/admin/competitors" },
     ],
   },
@@ -208,30 +209,49 @@ export function AdminSidebar() {
 }
 
 function BrandMark({ collapsed }: { collapsed: boolean }) {
+  // Collapsed: just the round mark (the sidebar is too narrow for the
+  // wordmark). Expanded: the landscape wordmark (which already carries
+  // the "Oddzilla" word in brand typography) plus a small ADMIN tag
+  // anchoring the backoffice context.
+  if (collapsed) {
+    return (
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: "100%",
+          minWidth: 0,
+        }}
+      >
+        <Logo size={32} priority />
+      </div>
+    );
+  }
   return (
     <div
       style={{
         display: "flex",
         alignItems: "center",
         gap: 10,
-        lineHeight: 1.1,
         minWidth: 0,
       }}
     >
-      <Logo size={collapsed ? 32 : 38} priority />
-      {!collapsed && (
-        <span
-          className="mono"
-          style={{
-            fontSize: 11,
-            letterSpacing: "0.18em",
-            textTransform: "uppercase",
-            color: "var(--color-fg-subtle, var(--fg-dim))",
-          }}
-        >
-          Admin
-        </span>
-      )}
+      <Wordmark size={28} priority />
+      <span
+        className="mono"
+        style={{
+          fontSize: 10.5,
+          letterSpacing: "0.18em",
+          textTransform: "uppercase",
+          color: "var(--color-fg-subtle, var(--fg-dim))",
+          padding: "2px 6px",
+          border: "1px solid var(--color-border, var(--border))",
+          borderRadius: 4,
+        }}
+      >
+        Admin
+      </span>
     </div>
   );
 }

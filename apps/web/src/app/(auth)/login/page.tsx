@@ -2,7 +2,6 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { getSessionUser, safeNextPath } from "@/lib/auth";
 import { isAdminHost } from "@/lib/host";
-import { Monogram } from "@/components/ui/monogram";
 import { LoginForm } from "./login-form";
 
 export default async function LoginPage({
@@ -19,11 +18,10 @@ export default async function LoginPage({
 
   return (
     <>
-      <Monogram size={120} />
       <h1
         className="display"
         style={{
-          margin: "20px 0 6px",
+          margin: "0 0 6px",
           fontSize: 28,
           fontWeight: 500,
           letterSpacing: "-0.02em",

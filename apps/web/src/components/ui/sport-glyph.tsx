@@ -1,4 +1,7 @@
+"use client";
+
 import type { SVGProps } from "react";
+import { useSportLogo } from "@/lib/sport-logos";
 
 export const SPORTS = [
   { id: "cs2", name: "Counter-Strike 2", short: "CS2" },
@@ -65,6 +68,23 @@ const SLUG_ALIAS: Record<string, string> = {
 
 export function SportGlyph({ sport, size = 20 }: { sport: string; size?: number }) {
   const slug = (SLUG_ALIAS[sport] ?? sport).toLowerCase();
+  // Resolution priority:
+  //   1. Admin-uploaded URL from /admin/sports (read via context).
+  //   2. Bundled brand SVG at /public/sports/<slug>.svg.
+  //   3. Inline FallbackGlyph for slugs we don't have art for.
+  const dbLogoUrl = useSportLogo(slug);
+  if (dbLogoUrl) {
+    return (
+      <img
+        src={dbLogoUrl}
+        width={size}
+        height={size}
+        alt=""
+        aria-hidden
+        style={{ display: "inline-block", flexShrink: 0, objectFit: "contain" }}
+      />
+    );
+  }
   if (BRAND_LOGOS.has(slug)) {
     return (
       <img
