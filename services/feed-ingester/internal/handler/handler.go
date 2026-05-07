@@ -161,6 +161,11 @@ func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 		if payload, perr := buildLiveScore(msg.SportEventStatus, msg.Timestamp); perr == nil && payload != nil {
 			if uerr := store.UpdateMatchLiveScore(ctx, d.Store.Pool(), matchID, payload); uerr != nil {
 				d.Log.Warn().Err(uerr).Int64("match_id", matchID).Msg("update live_score failed; continuing")
+			} else if perr2 := d.Bus.PublishLiveScore(ctx, matchID, payload); perr2 != nil {
+				// Pub/sub failures are non-fatal — the next page load still
+				// reads the freshly-persisted score from Postgres. We log so
+				// chronic delivery problems show up in monitoring.
+				d.Log.Warn().Err(perr2).Int64("match_id", matchID).Msg("publish live_score failed; continuing")
 			}
 		} else if perr != nil {
 			d.Log.Warn().Err(perr).Int64("match_id", matchID).Msg("build live_score payload failed; continuing")

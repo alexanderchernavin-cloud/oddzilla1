@@ -1,11 +1,15 @@
 "use client";
 
-// React hook for live odds. Wraps a single shared WebSocket connection
-// so multiple components on one page don't each open their own socket.
+// React hook for live odds + live scores. Wraps a single shared
+// WebSocket connection so multiple components on one page don't each
+// open their own socket.
 //
 // Usage:
-//   const odds = useLiveOdds(matchId);
+//   const odds   = useLiveOdds(matchId);
 //   odds[`${marketId}:${outcomeId}`]?.publishedOdds  // latest tick
+//
+//   const score  = useLiveScore(matchId);
+//   score?.home  // latest scoreboard from feed-ingester
 //
 // Reconnect logic: exponential backoff on close (1s → 16s cap). On each
 // successful reconnect the hook resubscribes automatically.
@@ -13,6 +17,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { openSocket } from "./ws-client";
+import type { LiveScore } from "./live-score";
 
 export interface LiveOddsTick {
   marketId: string;
@@ -47,6 +52,10 @@ interface SharedConnection {
   opening: boolean;
   subscriptionCounts: Map<string, number>;
   listeners: Map<string, { matchIds: Set<string>; onTick: (tick: LiveOddsTick) => void }>;
+  scoreListeners: Map<
+    string,
+    { matchIds: Set<string>; onScore: (matchId: string, score: LiveScore) => void }
+  >;
   ticketListeners: Set<TicketListener>;
   reconnectAttempts: number;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
@@ -61,6 +70,7 @@ export function getShared(): SharedConnection {
       opening: false,
       subscriptionCounts: new Map(),
       listeners: new Map(),
+      scoreListeners: new Map(),
       ticketListeners: new Set(),
       reconnectAttempts: 0,
       reconnectTimer: null,
@@ -108,6 +118,7 @@ function ensureConnected(conn: SharedConnection) {
         probability?: string;
         active?: boolean;
         ts?: string;
+        liveScore?: LiveScore;
         ticketId?: string;
         status?: TicketFrame["status"];
         rejectReason?: string | null;
@@ -126,6 +137,14 @@ function ensureConnected(conn: SharedConnection) {
         };
         for (const { matchIds, onTick } of conn.listeners.values()) {
           if (matchIds.has(matchId)) onTick(tick);
+        }
+        return;
+      }
+      if (payload.type === "score") {
+        const { matchId, liveScore } = payload;
+        if (!matchId || !liveScore) return;
+        for (const { matchIds, onScore } of conn.scoreListeners.values()) {
+          if (matchIds.has(matchId)) onScore(matchId, liveScore);
         }
         return;
       }
@@ -262,4 +281,68 @@ export function useLiveOddsForMatches(
   }, [key]);
 
   return ticks;
+}
+
+// Live scoreboard for a single match. Returns `null` until the first
+// `score` frame lands; consumers should fall back to the SSR-baked
+// liveScore in the meantime. Subscribes the same matchId on the
+// shared connection — so a component using both `useLiveOdds` and
+// `useLiveScore` for the same match is one physical subscription.
+export function useLiveScore(matchId: string | null): LiveScore | null {
+  const [score, setScore] = useState<LiveScore | null>(null);
+
+  useEffect(() => {
+    if (!matchId) return;
+    const conn = getShared();
+
+    const id = crypto.randomUUID();
+    conn.scoreListeners.set(id, {
+      matchIds: new Set([matchId]),
+      onScore: (_mid, fresh) => setScore(fresh),
+    });
+    bumpSubscription(conn, matchId, 1);
+    ensureConnected(conn);
+
+    return () => {
+      conn.scoreListeners.delete(id);
+      bumpSubscription(conn, matchId, -1);
+    };
+  }, [matchId]);
+
+  return score;
+}
+
+// Multi-match scoreboard subscription, keyed by matchId. Mirrors
+// useLiveOddsForMatches — used by the storefront list pages so every
+// visible row gets its scoreboard repriced live without each row
+// opening its own subscription.
+export function useLiveScoresForMatches(
+  matchIds: readonly string[],
+): Record<string, LiveScore> {
+  const [scores, setScores] = useState<Record<string, LiveScore>>({});
+
+  const key = [...matchIds].sort().join(",");
+
+  useEffect(() => {
+    if (key === "") return;
+    const conn = getShared();
+    const matchIdSet = new Set(key.split(","));
+
+    const id = crypto.randomUUID();
+    conn.scoreListeners.set(id, {
+      matchIds: matchIdSet,
+      onScore: (mid, fresh) => {
+        setScores((prev) => ({ ...prev, [mid]: fresh }));
+      },
+    });
+    for (const m of matchIdSet) bumpSubscription(conn, m, 1);
+    ensureConnected(conn);
+
+    return () => {
+      conn.scoreListeners.delete(id);
+      for (const m of matchIdSet) bumpSubscription(conn, m, -1);
+    };
+  }, [key]);
+
+  return scores;
 }
