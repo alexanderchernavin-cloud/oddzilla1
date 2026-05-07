@@ -7,11 +7,14 @@ import { sql } from "drizzle-orm";
 interface DashboardKpis {
   bankLimitMicro: string;
   openLiabilityMicro: string;
-  // Sum of every USDC wallet's balance (including locked stakes —
-  // bettors can withdraw their balance on demand once a bet settles or
-  // they cancel). Subtracted from bank_limit when computing free
-  // capacity so the operator's risk capital is never overstated.
+  // Available bettor balances (balance − locked across every USDC
+  // wallet). Locked stakes are already committed to open bets, and
+  // their potential payouts ride in open_liability — including them
+  // here would double-count the stake. We also surface the locked
+  // portion separately so the dashboard can show "X available + Y
+  // locked = Z total" without ambiguity.
   userBalancesMicro: string;
+  userLockedMicro: string;
   freeCapacityMicro: string;
   bankUtilization: number;
   openTicketsCount: number;
@@ -46,11 +49,14 @@ export default async function riskzillaDashboardRoutes(app: FastifyInstance) {
     const openLiability = BigInt(bankRows[0]?.open_liability_micro ?? "0");
 
     const userBalanceRows = (await app.db.execute(sql`
-      SELECT COALESCE(SUM(balance_micro), 0)::text AS total
+      SELECT
+        COALESCE(SUM(balance_micro - locked_micro), 0)::text AS available,
+        COALESCE(SUM(locked_micro), 0)::text                 AS locked
         FROM wallets
        WHERE currency = 'USDC'
-    `)) as unknown as Array<{ total: string }>;
-    const userBalances = BigInt(userBalanceRows[0]?.total ?? "0");
+    `)) as unknown as Array<{ available: string; locked: string }>;
+    const userBalances = BigInt(userBalanceRows[0]?.available ?? "0");
+    const userLocked = BigInt(userBalanceRows[0]?.locked ?? "0");
     const freeCapacity = bankLimit - userBalances - openLiability;
 
     const openTicketRows = (await app.db.execute(sql`
@@ -148,6 +154,7 @@ export default async function riskzillaDashboardRoutes(app: FastifyInstance) {
       bankLimitMicro: bankLimit.toString(),
       openLiabilityMicro: openLiability.toString(),
       userBalancesMicro: userBalances.toString(),
+      userLockedMicro: userLocked.toString(),
       freeCapacityMicro: freeCapacity.toString(),
       bankUtilization: utilization,
       openTicketsCount: Number(openTicketRows[0]?.n ?? 0),

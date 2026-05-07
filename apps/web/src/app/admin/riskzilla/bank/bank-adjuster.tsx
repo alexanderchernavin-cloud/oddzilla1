@@ -9,6 +9,7 @@ export interface BankStateDto {
   bankLimitMicro: string;
   openLiabilityMicro: string;
   userBalancesMicro: string;
+  userLockedMicro: string;
   freeCapacityMicro: string;
   updatedAt: string;
   updatedBy: string | null;

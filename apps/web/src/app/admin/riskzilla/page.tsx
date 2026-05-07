@@ -7,6 +7,7 @@ interface DashboardKpis {
   bankLimitMicro: string;
   openLiabilityMicro: string;
   userBalancesMicro: string;
+  userLockedMicro: string;
   freeCapacityMicro: string;
   bankUtilization: number;
   openTicketsCount: number;
@@ -58,7 +59,11 @@ export default async function RiskzillaDashboardPage() {
         <Kpi
           label="Bettor balances"
           value={`${fromMicro(BigInt(data.userBalancesMicro))} USDC`}
-          sub="Withdrawable on demand"
+          sub={
+            BigInt(data.userLockedMicro) > 0n
+              ? `Withdrawable now · ${fromMicro(BigInt(data.userLockedMicro))} more locked in open bets`
+              : "Withdrawable on demand"
+          }
         />
         <Kpi
           label="Open liability"
