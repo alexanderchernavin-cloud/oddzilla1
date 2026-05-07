@@ -16,8 +16,17 @@
 // per-match subscriptions are refcounted so we only SUBSCRIBE once
 // regardless of client count.
 //
-// Rate limit: 5 msg/s/client token bucket (refill 200 ms, cap 5). Drops
-// silently over budget — clients re-read from DB on reconnect.
+// Rate limit: 200-frame burst, 20 frames/s sustained per client. The
+// limit is here to protect the gateway from a runaway publisher, NOT to
+// pace normal traffic. A single Oddin odds_change for a live esports
+// match expands to ~30–60 frames (one per outcome × active market) all
+// pushed in the same millisecond — under the previous 5/s/cap=5 the
+// match-winner outcome was silently dropped at the tail of every burst,
+// and users saw "odds moved" errors at placement because the server had
+// updated but the WS frame never landed in the slip's auto-refresh path
+// (see bet-slip-rail.tsx). Bigger bucket lets a whole tick land in one
+// burst; refill is fast enough that subsequent ticks aren't starved.
+// Drops silently over budget — clients re-read from DB on reconnect.
 
 import { createServer, type IncomingMessage } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
@@ -35,8 +44,8 @@ const ACCESS_COOKIE = "oddzilla_access";
 const PUB_CHANNEL_PREFIX = "odds:match:";
 const USER_CHANNEL_PREFIX = "user:";
 const MAX_SUBSCRIPTIONS_PER_CLIENT = 100;
-const TOKEN_BUCKET_CAPACITY = 5;
-const TOKEN_BUCKET_REFILL_MS = 200; // 5/s
+const TOKEN_BUCKET_CAPACITY = 200;
+const TOKEN_BUCKET_REFILL_MS = 50; // 20/s sustained
 // Hard cap on concurrent connections. Without it, a reconnect storm
 // during a Caddy / network blip stacks every browser's reconnects on
 // this single process and OOM-kills the container (mem_limit: 256m).
