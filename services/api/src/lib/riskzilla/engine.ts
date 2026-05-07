@@ -212,6 +212,13 @@ export class RiskzillaEngine {
     for (const leg of intent.legs) {
       if (leg.riskTier != null) tiersInPlay.add(leg.riskTier);
     }
+    // Pass the int set as a Postgres array literal (`{0,10}`) cast to
+    // int[]. Drizzle's `${array}` interpolation expands to `$1, $2, …`
+    // — valid for `IN (...)` but NOT for `ANY(...)::int[]` (Postgres
+    // would read `($1, $2)` as a row and refuse to cast it to int[]).
+    // The literal-string approach sends the whole array as one param,
+    // and Postgres parses it as a real array.
+    const tiersLiteral = `{${[...tiersInPlay].join(",")}}`;
     const settingsRows = (await tx.execute(sql`
       SELECT tier,
              match_liability_micro::text,
@@ -219,7 +226,7 @@ export class RiskzillaEngine {
              max_payout_micro::text,
              bet_factor::text
         FROM riskzilla_settings
-       WHERE tier = ANY(${Array.from(tiersInPlay)}::int[])
+       WHERE tier = ANY(${tiersLiteral}::int[])
     `)) as unknown as SettingsRow[];
     const settingsByTier = new Map<number, SettingsRow>();
     for (const r of settingsRows) settingsByTier.set(Number(r.tier), r);
@@ -235,10 +242,11 @@ export class RiskzillaEngine {
     const providerMarketIds = Array.from(
       new Set(intent.legs.map((l) => l.providerMarketId)),
     );
+    const providerMarketIdsLiteral = `{${providerMarketIds.join(",")}}`;
     const factorRows = (await tx.execute(sql`
       SELECT provider_market_id, factor::text
         FROM riskzilla_market_factors
-       WHERE provider_market_id = ANY(${providerMarketIds}::int[])
+       WHERE provider_market_id = ANY(${providerMarketIdsLiteral}::int[])
     `)) as unknown as MarketFactorRow[];
     const factorByProvider = new Map<number, number>();
     for (const r of factorRows) {
@@ -325,6 +333,7 @@ export class RiskzillaEngine {
     // once per match (not per leg) to amortise the scan; combos
     // typically touch ≤ 10 matches.
     const matchIds = Array.from(new Set(intent.legs.map((l) => l.matchId.toString())));
+    const matchIdsLiteral = `{${matchIds.join(",")}}`;
     const bucketRows = (await tx.execute(sql`
       SELECT ts.market_id::text         AS market_id,
              ts.outcome_id              AS outcome_id,
@@ -333,7 +342,7 @@ export class RiskzillaEngine {
         FROM tickets t
         JOIN ticket_selections ts ON ts.ticket_id = t.id
         JOIN markets m            ON m.id = ts.market_id
-       WHERE m.match_id = ANY(${matchIds}::bigint[])
+       WHERE m.match_id = ANY(${matchIdsLiteral}::bigint[])
          AND t.status IN ('accepted', 'pending_delay')
          AND t.currency = ${RISKZILLA_CURRENCY}
        GROUP BY ts.market_id, ts.outcome_id
@@ -345,7 +354,7 @@ export class RiskzillaEngine {
         FROM tickets t
         JOIN ticket_selections ts ON ts.ticket_id = t.id
         JOIN markets m            ON m.id = ts.market_id
-       WHERE m.match_id = ANY(${matchIds}::bigint[])
+       WHERE m.match_id = ANY(${matchIdsLiteral}::bigint[])
          AND t.status IN ('accepted', 'pending_delay')
          AND t.currency = ${RISKZILLA_CURRENCY}
        GROUP BY ts.market_id
@@ -360,7 +369,7 @@ export class RiskzillaEngine {
         FROM tickets t
         JOIN ticket_selections ts ON ts.ticket_id = t.id
         JOIN markets m            ON m.id = ts.market_id
-       WHERE m.match_id = ANY(${matchIds}::bigint[])
+       WHERE m.match_id = ANY(${matchIdsLiteral}::bigint[])
          AND t.user_id = ${intent.userId}::uuid
          AND t.status IN ('accepted', 'pending_delay')
          AND t.currency = ${RISKZILLA_CURRENCY}
