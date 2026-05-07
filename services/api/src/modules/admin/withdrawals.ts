@@ -24,6 +24,7 @@ import {
   ForbiddenError,
   NotFoundError,
 } from "../../lib/errors.js";
+import { requireBalanceEditAdmin } from "../../lib/balance-edit-gate.js";
 
 const listQuery = z.object({
   status: z
@@ -249,8 +250,12 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
     return { ok: true, status: "submitted" };
   });
 
+  // mark-confirmed actually debits the balance; gate to the
+  // balance-edit operator allowlist (see lib/balance-edit-gate.ts).
+  // 4-eyes is preserved — the approver must still be a different
+  // admin from the one who is on the allowlist.
   app.post("/admin/withdrawals/:id/mark-confirmed", async (request) => {
-    const admin = request.requireRole("admin");
+    const admin = await requireBalanceEditAdmin(app, request);
     const params = z.object({ id: z.string().uuid() }).parse(request.params);
     const body = confirmedBody.parse(request.body);
 

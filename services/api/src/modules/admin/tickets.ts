@@ -19,6 +19,7 @@ import {
   ConflictError,
   NotFoundError,
 } from "../../lib/errors.js";
+import { requireBalanceEditAdmin } from "../../lib/balance-edit-gate.js";
 
 const voidBody = z.object({
   reason: z.string().min(3).max(500),
@@ -61,8 +62,10 @@ export default async function adminTicketsRoutes(app: FastifyInstance) {
     };
   });
 
+  // Manual void refunds the stake — gate to the balance-edit operator
+  // allowlist (see lib/balance-edit-gate.ts).
   app.post("/admin/tickets/:id/void", async (request) => {
-    const admin = request.requireRole("admin");
+    const admin = await requireBalanceEditAdmin(app, request);
     const params = z.object({ id: z.string().uuid() }).parse(request.params);
     const body = voidBody.parse(request.body);
 

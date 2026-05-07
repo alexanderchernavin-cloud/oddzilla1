@@ -28,6 +28,7 @@ import {
   BadRequestError,
   NotFoundError,
 } from "../../lib/errors.js";
+import { requireBalanceEditAdmin } from "../../lib/balance-edit-gate.js";
 
 const listQuery = z.object({
   status: z
@@ -90,8 +91,10 @@ export default async function adminDepositsRoutes(app: FastifyInstance) {
   // Manually credit a deposit_intent. Used when the watcher couldn't
   // auto-resolve it. The operator must enter the amount; everything
   // else (block number, from address) is optional metadata for audit.
+  // Restricted to the balance-edit operator allowlist — see
+  // lib/balance-edit-gate.ts.
   app.post("/admin/deposits/:id/credit-manual", async (request) => {
-    const admin = request.requireRole("admin");
+    const admin = await requireBalanceEditAdmin(app, request);
     const params = z.object({ id: z.string().uuid() }).parse(request.params);
     const body = creditBody.parse(request.body);
     const amount = BigInt(body.amountMicro);
