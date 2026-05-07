@@ -143,22 +143,6 @@ function ensureConnected(conn: SharedConnection) {
       if (payload.type === "score") {
         const { matchId, liveScore } = payload;
         if (!matchId || !liveScore) return;
-        // TEMP: debug log to confirm WS plumbing — remove after verifying.
-        // eslint-disable-next-line no-console
-        console.log(
-          "[ws score]",
-          matchId,
-          "listeners=",
-          conn.scoreListeners.size,
-          "matched=",
-          [...conn.scoreListeners.values()].filter((l) =>
-            l.matchIds.has(matchId),
-          ).length,
-          "score=",
-          (liveScore as LiveScore).home,
-          ":",
-          (liveScore as LiveScore).away,
-        );
         for (const { matchIds, onScore } of conn.scoreListeners.values()) {
           if (matchIds.has(matchId)) onScore(matchId, liveScore);
         }
