@@ -8,9 +8,10 @@ const LOGO_DARK_SRC = "/brand/oddzilla-dark.png";
 const WORDMARK_TRANSPARENT_SRC = "/brand/wordmark-transparent.png";
 const ALT = "Oddzilla";
 
-// 1263×334 transparent source ≈ 3.78:1. Used to derive the rendered
-// width from the requested height when callers pass `size`.
-const WORDMARK_ASPECT = 1263 / 334;
+// 1830×448 source ≈ 4.08:1 — the clean wordmark on a brand-dark
+// (#1F1F0C) background. Used to derive the rendered width from the
+// requested height when callers pass `size`.
+const WORDMARK_ASPECT = 1830 / 448;
 
 // The brand kit ships two finishes per asset: a transparent/white-bg PNG
 // sized for light surfaces, and a navy-tinted PNG that reads cleanly on
