@@ -57,9 +57,16 @@ export function useActiveMatchPage(): ActiveMatch | null {
 
 export function MatchPageRegistrar(props: ActiveMatch) {
   const ctx = useContext(MatchPageContext);
+  // Only depend on the stable setter — the whole ctx object would
+  // change identity every time `active` updates (provider memos
+  // value as `{ active, set }`), so the very setActive this effect
+  // dispatches would re-fire the effect, infinitely. That loop locks
+  // the render queue and the rest of the shell (sidebar links, top
+  // bar) stops processing clicks.
+  const set = ctx?.set;
   useEffect(() => {
-    if (!ctx) return;
-    ctx.set({
+    if (!set) return;
+    set({
       matchId: props.matchId,
       sportSlug: props.sportSlug,
       sportName: props.sportName,
@@ -67,10 +74,10 @@ export function MatchPageRegistrar(props: ActiveMatch) {
       awayTeam: props.awayTeam,
     });
     return () => {
-      ctx.set(null);
+      set(null);
     };
   }, [
-    ctx,
+    set,
     props.matchId,
     props.sportSlug,
     props.sportName,
