@@ -479,7 +479,8 @@ body {
     grid-template-areas: "top" "main";
   }
   .oz-topbar { height: 96px !important; }
-  .oz-topbar-logo { width: 80px !important; height: 80px !important; }
+  /* Landscape 2:1 wordmark — keep aspect when scaling down for narrow viewports. */
+  .oz-topbar-logo { width: 128px !important; height: 64px !important; }
   .oz-side {
     position: fixed !important;
     top: 96px !important;
