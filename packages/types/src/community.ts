@@ -65,19 +65,36 @@ export interface CommunityProfileRequest {
 // One card on the community feed. Money fields are decimal strings
 // (matching the rest of the codebase — bigint never serialised as
 // Number). Sport ids match catalog sports for the icon lookup.
+//
+// Two flavours coexist in the same type:
+//   • status='accepted' — Recent tab; the bet is in-flight on a still-
+//     bettable match. `payoutMicro` is the *potential* payout (stake ×
+//     totalOdds frozen at placement). `at` is the placed-at time.
+//   • status='settled' / 'cashed_out' / 'voided' — Best Wins tab and
+//     per-user history. `payoutMicro` is the actual payout.
+//     `at` is the settled-at time.
+// The frontend reads `status` to decide which presentation to use.
 export interface CommunityTicketSummary {
   ticketId: string;
   nickname: string;
   bio: string | null;
   currency: Currency;
-  status: Extract<TicketStatus, "settled" | "cashed_out" | "voided">;
+  status: Extract<
+    TicketStatus,
+    "accepted" | "settled" | "cashed_out" | "voided"
+  >;
   betType: BetType;
   stakeMicro: string;
   payoutMicro: string;
   totalOdds: string; // 4-decimal string
   numLegs: number;
   sportIds: number[];
-  settledAt: string; // ISO-8601
+  // ISO-8601. For accepted tickets this is the placed-at time; for
+  // settled/cashed_out/voided it's the settled-at time. The two are
+  // collapsed into one field because the storefront only ever needs
+  // "when did this card become its current state" for relative-time
+  // formatting.
+  at: string;
 }
 
 export interface CommunityFeedResponse {
