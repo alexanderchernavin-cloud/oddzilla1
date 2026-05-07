@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { fromMicro } from "@oddzilla/types";
+import { fromMicro } from "@oddzilla/types/money";
 
 export interface EventDto {
   id: string;

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
-import { fromMicro } from "@oddzilla/types";
+import { fromMicro } from "@oddzilla/types/money";
 
 export interface BettorDto {
   id: string;
