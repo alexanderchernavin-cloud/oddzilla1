@@ -47,7 +47,7 @@ export const communityTickets = pgTable(
     score: doublePrecision().notNull().default(0),
     // Number of times this ticket has been used as the source of a
     // /community/copy call. Drives the Most Copied sort on the Big
-    // Wins tab; see migration 0032_community_big_wins.sql for the
+    // Wins tab; see migration 0033_community_big_wins.sql for the
     // denormalised-counter rationale and inflation analysis. The
     // projection writers (TS + Go) leave this column alone — the
     // route handler is the only writer.

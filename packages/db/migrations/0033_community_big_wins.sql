@@ -1,4 +1,9 @@
--- 0032_community_big_wins.sql
+-- 0033_community_big_wins.sql
+--
+-- Renumbered from 0032 in a follow-up PR after #166 collided with
+-- #167's USDC migration on the same idx. The journal entry that
+-- ships with this rename is the canonical reference; the original
+-- 0032 number was reused by USDC and never applied with this body.
 --
 -- Big Wins tab (PRD: Big-wins-section).
 --

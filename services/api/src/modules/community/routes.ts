@@ -101,7 +101,7 @@ const profileBody = z
 // `sort` values when tab=best:
 //   recent  — settled_at DESC (default).
 //   copied  — inspiration_count DESC, settled_at DESC. Powered by
-//             community_tickets_inspirations_idx (migration 0032).
+//             community_tickets_inspirations_idx (migration 0033).
 //   stakes  — profit DESC, settled_at DESC. PRD calls it "High
 //             Stakes" but spec'd it as profit ranking; we honour
 //             the spec.
@@ -136,7 +136,7 @@ const BEST_WINS_WINDOW = sql`now() - interval '7 days'`;
 
 // Per-currency Big Win profit floor in micro units (1e6 per unit).
 // Profit = payout_micro − stake_micro; a row clears the floor when
-// profit ≥ this number. The PRD's flat €500 maps directly to USDT;
+// profit ≥ this number. The PRD's flat €500 maps directly to USDC;
 // OZ is a demo currency and the threshold is a placeholder until
 // product picks one. Kept here (not in DB / config) because:
 //   • the floor varies per currency, not per row;
@@ -146,7 +146,7 @@ const BEST_WINS_WINDOW = sql`now() - interval '7 days'`;
 // Both values are bigint literals — never coerce to Number, the
 // rest of the codebase treats _micro as bigint end-to-end.
 const BIG_WIN_PROFIT_MICRO: Record<Currency, bigint> = {
-  USDT: 500_000_000n, // 500 USDT ≈ €500 (PRD spec).
+  USDC: 500_000_000n, // 500 USDC ≈ €500 (PRD spec).
   OZ: 500_000_000n,   // 500 OZ — half the signup bonus. Tune later.
 };
 
@@ -638,13 +638,13 @@ function toFeedSummary(r: FeedRow): CommunityTicketSummary {
   // isBigWin trips only on real wins: a void or loss never qualifies
   // even if profitMicro is positive on a fluke (it can't be, but the
   // status guard makes the invariant explicit). Threshold lookup
-  // falls back to USDT for any unknown currency — safe default since
+  // falls back to USDC for any unknown currency — safe default since
   // the per-currency floor is product-tunable, not security-critical.
   const isWin = r.status === "settled" || r.status === "cashed_out";
   const floor =
     currency in BIG_WIN_PROFIT_MICRO
       ? BIG_WIN_PROFIT_MICRO[currency]
-      : BIG_WIN_PROFIT_MICRO.USDT;
+      : BIG_WIN_PROFIT_MICRO.USDC;
   const isBigWin =
     isWin && r.payoutMicro > r.stakeMicro && profitMicro >= floor;
   return {
@@ -874,9 +874,9 @@ function bigWinFilter(currency: Currency | null): SQL {
   }
   // postgres-js binds bigint literals correctly via Drizzle's sql tag.
   return sql`${profit} >= CASE
-    WHEN ${communityTickets.currency} = 'USDT' THEN ${BIG_WIN_PROFIT_MICRO.USDT}
+    WHEN ${communityTickets.currency} = 'USDC' THEN ${BIG_WIN_PROFIT_MICRO.USDC}
     WHEN ${communityTickets.currency} = 'OZ'   THEN ${BIG_WIN_PROFIT_MICRO.OZ}
-    ELSE ${BIG_WIN_PROFIT_MICRO.USDT}
+    ELSE ${BIG_WIN_PROFIT_MICRO.USDC}
   END`;
 }
 
