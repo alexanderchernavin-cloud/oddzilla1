@@ -23,6 +23,11 @@ export interface CommunityAchievement {
 export interface CommunityProfile {
   nickname: string;
   bio: string | null;
+  // Equipped avatar URL — server-resolved, already accounts for the
+  // /avatars/... static path vs /community/avatars/:slug/image
+  // upload path. NULL when the user hasn't picked one; UI falls back
+  // to a monogram of the nickname.
+  avatarUrl: string | null;
   joinedAt: string; // ISO-8601
   stats: {
     currency: Currency;
@@ -46,6 +51,11 @@ export interface CommunityMe {
   ticketsPublic: boolean;
   nickname: string | null;
   bio: string | null;
+  // Equipped avatar template id (raw FK) plus the resolved URL.
+  // The UI uses templateId to highlight the active row in the
+  // picker; avatarUrl renders the circle in the topbar.
+  avatarTemplateId: string | null;
+  avatarUrl: string | null;
 }
 
 // PATCH /community/me/visibility
@@ -100,8 +110,11 @@ export interface CommunityTicketSummary {
   // Number of times this ticket has been used as the source of a
   // /community/copy call. Drives the Most Copied sort. Always 0 on
   // accepted tickets (the counter only ever increments on the
-  // settled projection row). See migration 0032 for the rationale.
+  // settled projection row). See migration 0033 for the rationale.
   inspirationCount: number;
+  // Bettor's equipped avatar URL, server-resolved. NULL falls back
+  // to a monogram of the nickname in the card chrome.
+  avatarUrl: string | null;
   // True when the ticket's profit (payout − stake) clears the
   // per-currency Big Win threshold. Server-computed so the UI never
   // re-implements the threshold rule and operators can tune the

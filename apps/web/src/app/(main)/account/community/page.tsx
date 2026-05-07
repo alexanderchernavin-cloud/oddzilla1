@@ -1,6 +1,9 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import type { CommunityMe } from "@oddzilla/types";
+import type {
+  CommunityMe,
+  AvatarTemplateListResponse,
+} from "@oddzilla/types";
 import { getSessionUser } from "@/lib/auth";
 import { serverApi } from "@/lib/server-fetch";
 import { CommunitySettingsForms } from "./forms";
@@ -11,7 +14,10 @@ export default async function CommunitySettingsPage() {
   const user = await getSessionUser();
   if (!user) redirect("/login");
 
-  const me = await serverApi<CommunityMe>("/community/me");
+  const [me, avatars] = await Promise.all([
+    serverApi<CommunityMe>("/community/me"),
+    serverApi<AvatarTemplateListResponse>("/community/avatars"),
+  ]);
   // Logged-in user but the community endpoint failed. Render with safe
   // defaults so the page is still usable; the form will surface the
   // real error on save.
@@ -19,14 +25,17 @@ export default async function CommunitySettingsPage() {
     ticketsPublic: true,
     nickname: null,
     bio: null,
+    avatarTemplateId: null,
+    avatarUrl: null,
   };
+  const templates = avatars?.templates ?? [];
 
   return (
     <div>
       <h1 className="text-2xl font-semibold tracking-tight">Community</h1>
       <p className="mt-2 text-sm text-[var(--color-fg-muted)]">
-        Pick a public handle, write a short bio, and choose whether your
-        settled tickets show up in the community feed.
+        Pick a public handle, write a short bio, choose your avatar, and
+        decide whether your settled tickets show up in the community feed.
       </p>
 
       {initial.nickname ? (
@@ -43,7 +52,7 @@ export default async function CommunitySettingsPage() {
         </div>
       ) : null}
 
-      <CommunitySettingsForms initial={initial} />
+      <CommunitySettingsForms initial={initial} templates={templates} />
     </div>
   );
 }

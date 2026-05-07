@@ -81,6 +81,12 @@ const SECTIONS: Section[] = [
         Icon: I.Star,
         matchPrefix: "/admin/combi-boost",
       },
+      {
+        href: "/admin/avatars",
+        label: "Avatars",
+        Icon: I.User,
+        matchPrefix: "/admin/avatars",
+      },
     ],
   },
 ];

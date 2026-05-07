@@ -37,6 +37,12 @@ export const users = pgTable(
     nickname: citext().unique(),
     bio: text(),
     isAi: boolean().notNull().default(false),
+    // Equipped avatar template. NULL = no avatar (UI falls back to a
+    // monogram). The FK is declared in the migration (with ON DELETE
+    // SET NULL) rather than here to avoid a circular schema import
+    // through avatar_templates.created_by → users.id. Drizzle doesn't
+    // need the relation declared at the column level for query joins.
+    avatarTemplateId: uuid(),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     lastLoginAt: timestamp({ withTimezone: true }),

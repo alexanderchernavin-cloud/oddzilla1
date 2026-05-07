@@ -10,3 +10,4 @@ export * from "./products.js";
 export * from "./betbuilder.js";
 export * from "./community.js";
 export * from "./combi-boost.js";
+export * from "./avatars.js";

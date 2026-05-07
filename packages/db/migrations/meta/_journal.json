@@ -253,6 +253,13 @@
       "when": 1700000035000,
       "tag": "0035_user_wallet_addresses",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1700000036000,
+      "tag": "0036_avatar_templates",
+      "breakpoints": true
     }
   ]
 }
