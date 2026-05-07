@@ -7,6 +7,8 @@ import {
 } from "@/components/match/match-list-tabs";
 import { SectionHeader } from "@/components/match/section-header";
 import { SportGlyph } from "@/components/ui/sport-glyph";
+import { ThreeFoldCards } from "@/components/lobby/three-fold-cards";
+import { buildThreeFoldSuggestions } from "@/lib/three-fold-builder";
 
 interface SportsResponse {
   sports: Array<{ id: number; slug: string; name: string; kind: string; active: boolean }>;
@@ -45,6 +47,7 @@ export default async function HomePage() {
   const liveCounts = liveCountsRes ?? {};
   const live = orderMatchesBySport(liveRes?.matches ?? []);
   const upcoming = orderMatchesBySport(upcomingRes?.matches ?? []);
+  const threeFoldSuggestions = buildThreeFoldSuggestions([...live, ...upcoming]);
 
   const dayLabel = new Date().toLocaleDateString("en-US", {
     weekday: "long",
@@ -75,6 +78,8 @@ export default async function HomePage() {
           Today · {dayLabel}
         </div>
       </header>
+
+      <ThreeFoldCards suggestions={threeFoldSuggestions} />
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
         {orderSportsForChips(sports).slice(0, 10).map((s) => (
