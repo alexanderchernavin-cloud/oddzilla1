@@ -167,7 +167,15 @@ const userTicketsQuery = z.object({
 // stake-refund payout, which is still public proof of how a ticket
 // resolved; keeping it lets the feed show all settled outcomes rather
 // than only winners. Phase 10.3 may filter further on the client side.
-const FEED_STATUSES = sql`('settled', 'cashed_out', 'voided')`;
+//
+// Stored as the bare comma-separated list — the IN call site wraps in
+// its own parens. Wrapping here too produces `IN ((...))` which
+// Postgres parses as a record-vs-text comparison and 500s with
+// "operator does not exist: text = record". The original form (with
+// internal parens) shipped behind a path that didn't trigger it
+// because no settled tickets existed; loadProfileStats turned out to
+// be the path that broke once /u/:nickname loaded a user with stats.
+const FEED_STATUSES = sql`'settled', 'cashed_out', 'voided'`;
 
 export default async function communityRoutes(app: FastifyInstance) {
   // ─── Feed ────────────────────────────────────────────────────────────────
