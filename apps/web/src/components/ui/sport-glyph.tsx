@@ -67,7 +67,6 @@ export function SportGlyph({ sport, size = 20 }: { sport: string; size?: number 
   const slug = (SLUG_ALIAS[sport] ?? sport).toLowerCase();
   if (BRAND_LOGOS.has(slug)) {
     return (
-      // eslint-disable-next-line @next/next/no-img-element
       <img
         src={`/sports/${slug}.svg`}
         width={size}
