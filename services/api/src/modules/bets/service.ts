@@ -71,6 +71,28 @@ import {
   type ObbClient,
 } from "../../lib/obb-client.js";
 import { loadEnv } from "@oddzilla/config";
+import {
+  RiskzillaEngine,
+  type RiskzillaIntent,
+  type RiskzillaIntentLeg,
+  type RiskzillaRejected,
+  type MatchContext as RiskzillaMatchContext,
+} from "../../lib/riskzilla/engine.js";
+
+// Internal sentinel: thrown from inside the placement tx when
+// RiskZilla rejects the bet. The tx rolls back on throw; we catch in
+// place(), record the rejection event_log row outside the
+// rolled-back tx, and surface a typed BadRequestError to the client.
+class RiskzillaRejectError extends Error {
+  constructor(
+    readonly result: RiskzillaRejected,
+    readonly intent: RiskzillaIntent,
+    readonly matchContext: RiskzillaMatchContext | null,
+  ) {
+    super(result.reason);
+    this.name = "RiskzillaRejectError";
+  }
+}
 
 // Module-scoped OBB client (singleton gRPC channel). Null when env is
 // missing — placement of betType="betbuilder" is then rejected upfront
@@ -90,10 +112,14 @@ interface PlaceContext {
 }
 
 export class BetsService {
+  private readonly riskzilla: RiskzillaEngine;
+
   constructor(
     private readonly db: DbClient,
     private readonly redis: Redis,
-  ) {}
+  ) {
+    this.riskzilla = new RiskzillaEngine(db);
+  }
 
   /**
    * Place a bet. Returns the resulting ticket summary. Safe to call with
@@ -166,7 +192,9 @@ export class BetsService {
       : DEFAULT_CURRENCY;
     const tolerance = DEFAULT_ODDS_DRIFT_TOLERANCE;
 
-    const placed = await this.db.transaction(async (tx) => {
+    let placed: TicketSummary;
+    try {
+      placed = await this.db.transaction(async (tx) => {
       // ── Idempotency short-circuit ────────────────────────────────────
       const existing = await tx
         .select()
@@ -190,6 +218,7 @@ export class BetsService {
           status: users.status,
           globalLimitMicro: users.globalLimitMicro,
           betDelaySeconds: users.betDelaySeconds,
+          riskScore: users.riskScore,
         })
         .from(users)
         .where(eq(users.id, ctx.userId))
@@ -232,6 +261,12 @@ export class BetsService {
           awayTeam: matches.awayTeam,
           matchStatus: matches.status,
           sportSlug: sports.slug,
+          // RiskZilla needs sport_id, tournament_id, and the
+          // tournament's risk_tier to look up the right per-tier
+          // settings row + write the decision-event_log row.
+          sportId: sports.id,
+          tournamentId: tournaments.id,
+          tournamentRiskTier: tournaments.riskTier,
         })
         .from(markets)
         .innerJoin(matches, eq(matches.id, markets.matchId))
@@ -587,6 +622,49 @@ export class BetsService {
         );
       }
 
+      // ── RiskZilla: pre-bet risk evaluation ───────────────────────────
+      // Evaluates per-tier match liability, per-bettor slice, max
+      // payout, min stake, market factor and the global bank limit.
+      // OZ demo currency bypasses the engine inside evaluate().
+      // First-leg's match drives the matchContext for the event_log
+      // row — the betticker shows one row per attempt, and combos /
+      // BetBuilder are clearly identifiable from `selections.length`
+      // in `decision_meta.buckets`.
+      const firstLegRow = marketByID.get(req.selections[0]!.marketId)!;
+      const matchContext: RiskzillaMatchContext = {
+        matchId: firstLegRow.matchId,
+        sportId: firstLegRow.sportId,
+        tournamentId: firstLegRow.tournamentId,
+        riskTier: firstLegRow.tournamentRiskTier ?? null,
+      };
+      const riskIntent: RiskzillaIntent = {
+        userId: ctx.userId,
+        currency,
+        stakeMicro: stake,
+        potentialPayoutMicro,
+        userStatus: user.status,
+        userRiskScore: Number(user.riskScore),
+        legs: req.selections.map<RiskzillaIntentLeg>((s) => {
+          const m = marketByID.get(s.marketId)!;
+          return {
+            marketId: BigInt(s.marketId),
+            outcomeId: s.outcomeId,
+            matchId: m.matchId,
+            providerMarketId: m.providerMarketId,
+            sportId: m.sportId,
+            tournamentId: m.tournamentId,
+            riskTier: m.tournamentRiskTier ?? null,
+          };
+        }),
+      };
+      const riskResult = await this.riskzilla.evaluate(tx, riskIntent);
+      if (riskResult.decision !== "accepted") {
+        // Throw out of the tx (rolls back). place() catches the
+        // sentinel below, writes the rejection row outside the
+        // rolled-back tx, and re-throws as a typed BadRequestError.
+        throw new RiskzillaRejectError(riskResult, riskIntent, matchContext);
+      }
+
       // ── Insert ticket ────────────────────────────────────────────────
       const now = new Date();
       const delayed = user.betDelaySeconds > 0;
@@ -677,13 +755,42 @@ export class BetsService {
         memo: null,
       });
 
+      // ── RiskZilla: persist accepted-bet bookkeeping ──────────────────
+      // Bumps open_liability_micro on the bank state row + writes the
+      // event_log row with the freshly-minted ticket_id.
+      await this.riskzilla.commitAccepted(
+        tx,
+        inserted.id,
+        riskIntent,
+        riskResult,
+        matchContext,
+      );
+
       // ── pg_notify the bet-delay worker ───────────────────────────────
       if (delayed) {
         await tx.execute(sql`SELECT pg_notify('bet_delay', ${inserted.id})`);
       }
 
       return this.hydrateSummary(tx, inserted.id);
-    });
+      });
+    } catch (err) {
+      // RiskZilla rejection sentinel — record the decision row outside
+      // the rolled-back tx so the betticker / bets pages see it, then
+      // surface a typed BadRequestError to the client. Swallow logging
+      // errors so the original rejection always reaches the client.
+      if (err instanceof RiskzillaRejectError) {
+        try {
+          await this.riskzilla.recordRejection(err.intent, err.result, err.matchContext);
+        } catch {
+          // Swallow — the placement transaction already rolled back,
+          // so the only loss is the audit row in the event_log. The
+          // /admin/riskzilla/bank/recompute endpoint can rebuild
+          // open_liability from open tickets if drift is suspected.
+        }
+        throw new BadRequestError(err.result.reason, err.result.decision);
+      }
+      throw err;
+    }
 
     // Best-effort WS push to user channel so the slip UI updates without
     // polling. DB is source of truth — pub/sub drops are tolerable.

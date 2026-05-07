@@ -8,6 +8,7 @@ import {
   timestamp,
   char,
   boolean,
+  numeric,
   index,
   check,
   customType,
@@ -37,6 +38,12 @@ export const users = pgTable(
     nickname: citext().unique(),
     bio: text(),
     isAi: boolean().notNull().default(false),
+    // RiskZilla per-bettor risk score (migration 0037). Multiplier on
+    // the bettor's effective slice of match liability. 1 = neutral;
+    // 0.01 = pariah; 10 = sharp / VIP.
+    riskScore: numeric("risk_score", { precision: 4, scale: 3 })
+      .notNull()
+      .default("1.000"),
     // Equipped avatar template. NULL = no avatar (UI falls back to a
     // monogram). The FK is declared in the migration (with ON DELETE
     // SET NULL) rather than here to avoid a circular schema import
@@ -63,6 +70,10 @@ export const users = pgTable(
     check(
       "users_email_length_chk",
       sql`char_length(${t.email}) BETWEEN 3 AND 320`,
+    ),
+    check(
+      "users_risk_score_range",
+      sql`${t.riskScore} >= 0.01 AND ${t.riskScore} <= 10`,
     ),
   ],
 );
