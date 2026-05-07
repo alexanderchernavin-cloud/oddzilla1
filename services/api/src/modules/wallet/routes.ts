@@ -1,10 +1,18 @@
 // /wallet endpoints.
 //
-// Post-0032 the deposit flow is intent-based: every user is shown the
-// same shared ERC20 receive address (configured via env), and after
-// sending USDC they paste the tx hash here. The wallet-watcher Go
-// service polls deposit_intents, validates the on-chain Transfer,
-// counts confirmations, and credits the wallet atomically.
+// Deposit attribution model:
+//   • Every user is shown the SAME shared ERC20 receive address.
+//   • Users register their sending wallet(s) via /wallet/addresses.
+//   • The wallet-watcher polls Alchemy for `Transfer` logs to the
+//     receive address, looks up `from` in user_wallet_addresses, and
+//     auto-creates a `confirming` deposit_intent for the matched
+//     user. Confirmations + credit happen on the next ticks.
+//
+// There is intentionally NO user-facing "paste your tx hash" route.
+// On-chain Transfers are public — exposing a self-claim endpoint
+// would let any attacker on Etherscan grab another user's tx hash
+// and steal their deposit. Deposits from unlinked senders fall
+// through to admin review at /admin/deposits/:id/credit-manual.
 //
 // Withdrawals stay manual — the user opens a request and an admin
 // processes it from /admin/withdrawals using an external signer.
@@ -37,13 +45,6 @@ const ledgerQuery = z.object({
 
 const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
-});
-
-// ERC20 tx hash: 0x + 32 bytes of hex.
-const ETH_TX_HASH = /^0x[0-9a-fA-F]{64}$/u;
-
-const intentBody = z.object({
-  txHash: z.string().regex(ETH_TX_HASH, "tx_hash must be 0x + 64 hex chars"),
 });
 
 const withdrawalBody = z.object({
@@ -130,66 +131,6 @@ export default async function walletRoutes(app: FastifyInstance) {
         currency: "USDC" as const,
       },
     };
-  });
-
-  // ── Submit a tx-hash claim ───────────────────────────────────────────
-  app.post("/wallet/deposits/intent", async (request) => {
-    const u = request.requireAuth();
-    const body = intentBody.parse(request.body);
-
-    if (!receiveAddress) {
-      throw new BadRequestError(
-        "deposits_unavailable",
-        "deposits_unavailable",
-      );
-    }
-
-    const txHash = body.txHash.toLowerCase();
-
-    // Block non-active users from claiming deposits — same gate we
-    // apply to withdrawal requests.
-    const [account] = await app.db
-      .select({ status: users.status })
-      .from(users)
-      .where(eq(users.id, u.id))
-      .limit(1);
-    if (!account) throw new NotFoundError("user_not_found", "user_not_found");
-    if (account.status !== "active") {
-      throw new ForbiddenError("account_not_active", "account_not_active");
-    }
-
-    try {
-      const [inserted] = await app.db
-        .insert(depositIntents)
-        .values({
-          userId: u.id,
-          network: "ERC20",
-          txHash,
-          status: "pending",
-        })
-        .returning({
-          id: depositIntents.id,
-          status: depositIntents.status,
-        });
-      if (!inserted) throw new Error("intent insert returned no row");
-      return { id: inserted.id, status: inserted.status };
-    } catch (err) {
-      // Postgres error code for unique_violation is "23505". We surface
-      // a 409 so the UI can tell the user "that tx hash is already
-      // recorded" without leaking whose intent it is.
-      if (
-        err &&
-        typeof err === "object" &&
-        "code" in err &&
-        (err as { code?: string }).code === "23505"
-      ) {
-        throw new ConflictError(
-          "tx_hash_already_claimed",
-          "tx_hash_already_claimed",
-        );
-      }
-      throw err;
-    }
   });
 
   // ── Recent deposit intents ───────────────────────────────────────────
