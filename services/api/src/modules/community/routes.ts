@@ -398,7 +398,9 @@ export default async function communityRoutes(app: FastifyInstance) {
       }));
 
       return {
-        currency: ct.currency as Currency,
+        // CHAR(4) → trim padding at the API boundary, same convention
+        // as the feed / per-user-tickets paths above.
+        currency: ct.currency.trim() as Currency,
         betType: ct.betType,
         selections,
         anyAvailable: selections.some((s) => s.available),
@@ -583,7 +585,9 @@ function toFeedSummary(r: FeedRow): CommunityTicketSummary {
     ticketId: r.ticketId,
     nickname: r.nickname,
     bio: r.bio,
-    currency: r.currency as Currency,
+    // CHAR(4) columns come back space-padded from postgres ("OZ  ").
+    // Trim at the API boundary, matching the wallet + bets convention.
+    currency: r.currency.trim() as Currency,
     status: r.status as CommunityTicketSummary["status"],
     betType: r.betType as CommunityTicketSummary["betType"],
     stakeMicro: r.stakeMicro.toString(),

@@ -192,7 +192,9 @@ export function BetSlipRail() {
     };
     // builderLegSig captures everything material to the leg set; the
     // rest of the deps are stable references managed by the slip store.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // (The `react-hooks/exhaustive-deps` rule is not configured in this
+    // repo's ESLint, so a `// eslint-disable-next-line` for it would
+    // fail Next.js's lint pass with "Definition for rule … not found".)
   }, [isBetBuilder, builderMatchId, builderLegSig]);
 
   // Combined odds = product of all selection odds (combo accumulator).
