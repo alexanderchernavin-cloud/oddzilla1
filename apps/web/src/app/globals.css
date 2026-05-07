@@ -217,6 +217,13 @@ body {
 /* Utilities */
 .mono { font-family: var(--font-mono); font-feature-settings: "tnum", "ss01"; }
 .display { font-family: var(--font-display); letter-spacing: -0.01em; }
+
+/* Theme-aware brand logo. Both variants are mounted in the DOM by
+   <Logo> so the pre-hydration theme-boot script (in app/layout.tsx)
+   can pick the right one before paint without any JS round-trip. */
+.oz-logo-dark { display: none; }
+[data-theme="dark"] .oz-logo-light { display: none; }
+[data-theme="dark"] .oz-logo-dark { display: block; }
 .tnum { font-variant-numeric: tabular-nums; }
 .hairline { border-bottom: 1px solid var(--hairline); }
 .muted { color: var(--fg-muted); }
