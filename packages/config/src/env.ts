@@ -45,6 +45,34 @@ const EnvSchema = z.object({
     z.string().min(8).optional(),
   ),
   DISIR_ENV: z.enum(["integration", "main"]).default("integration"),
+
+  // Oddin BetBuilder (OBB) gRPC client (services/api). Same graceful-idle
+  // pattern as Disir: when host is empty, /betbuilder/* returns 503
+  // betbuilder_disabled and the storefront hides the toggle. Production:
+  //   ODDIN_OBB_HOST=api-obb.oddin.gg:443
+  //   ODDIN_OBB_TLS=true
+  // Integration:
+  //   ODDIN_OBB_HOST=api-obb.integration.oddin.gg:443
+  //   ODDIN_OBB_TLS=true
+  // Token is the same Oddin access token used elsewhere (the OBB API
+  // accepts it via per-RPC `token` metadata key). Defaults to the main
+  // ODDIN_TOKEN when ODDIN_OBB_TOKEN is unset, so a single secret covers
+  // both surfaces; override only if Oddin issues a separate OBB token.
+  ODDIN_OBB_HOST: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.string().min(3).optional(),
+  ),
+  ODDIN_OBB_TLS: z
+    .preprocess((v) => (typeof v === "string" ? v.toLowerCase() : v), z.enum(["true", "false"]))
+    .default("true"),
+  ODDIN_TOKEN: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.string().min(8).optional(),
+  ),
+  ODDIN_OBB_TOKEN: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.string().min(8).optional(),
+  ),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

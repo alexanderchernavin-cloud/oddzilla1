@@ -1,17 +1,20 @@
 "use client";
 
 // Bet slip store — React Context + localStorage persistence. Accumulates
-// selections across matches. Four placement modes:
-//   single: place N independent tickets (one per selection)
-//   combo:  place one multi-selection ticket (all legs must win)
-//   tiple:  place one ticket that wins if at least one leg wins
-//   tippot: place one ticket whose payout depends on the # of winning legs
+// selections across matches. Five placement modes:
+//   single:     place N independent tickets (one per selection)
+//   combo:      place one multi-selection ticket (all legs must win)
+//   tiple:      place one ticket that wins if at least one leg wins
+//   tippot:     place one ticket whose payout depends on the # of winning legs
+//   betbuilder: same-match parlay priced by Oddin OBB; payout = stake ×
+//               session_odds when every leg wins, refund on void, 0 on
+//               loss (see services/api /betbuilder/* + docs/ODDIN.md).
 //
-// Per-match rule: only one outcome per match at a time. Picking another
-// market or outcome from the same match replaces the previous selection
-// for that match. This keeps combos on DIFFERENT matches only — required
-// until BetBuilder-style same-match parlays are integrated. Clicking the
-// same outcome again removes it (handled by the caller via `has` + `remove`).
+// Default per-match rule: only one outcome per match at a time. Picking
+// another market or outcome from the same match replaces the previous
+// pick. BetBuilder mode inverts this rule for ONE match: while
+// `betbuilderMatchId` is set, same-match adds accumulate; switching
+// matches drops every betbuilder leg and reverts to single behavior.
 
 import {
   createContext,
@@ -23,22 +26,39 @@ import {
   type ReactNode,
 } from "react";
 import { isCurrency, type Currency } from "@oddzilla/types/currencies";
-import type { SlipSelection } from "@oddzilla/types";
+import type {
+  BetBuilderQuoteAcceptedResponse,
+  SlipSelection,
+} from "@oddzilla/types";
 
 const STORAGE_KEY = "oddzilla.betslip.v2";
 // New users land on the demo OZ wallet so the bet flow is testable
 // out-of-the-box without on-chain top-up.
 const DEFAULT_SLIP_CURRENCY: Currency = "OZ";
 
-export type SlipMode = "single" | "combo" | "tiple" | "tippot";
+export type SlipMode = "single" | "combo" | "tiple" | "tippot" | "betbuilder";
 
-const ALL_MODES: SlipMode[] = ["single", "combo", "tiple", "tippot"];
+const ALL_MODES: SlipMode[] = ["single", "combo", "tiple", "tippot", "betbuilder"];
 
 interface SlipState {
   selections: SlipSelection[];
   mode: SlipMode;
   open: boolean;
   currency: Currency;
+  /**
+   * The match id BetBuilder is currently building for. Non-null only
+   * while `mode === "betbuilder"`; cleared when the user switches mode
+   * or picks a leg from a different match. Persisted across reloads
+   * along with selections so a refresh on the match page keeps the
+   * builder state.
+   */
+  betbuilderMatchId: string | null;
+  /**
+   * Latest accepted OBB quote for the current builder session. Cleared
+   * whenever the leg set changes (the slip then re-quotes via the
+   * provider hook). Set on every successful POST /betbuilder/match/:id/quote.
+   */
+  betbuilderQuote: BetBuilderQuoteAcceptedResponse | null;
 }
 
 interface SlipContextValue extends SlipState {
@@ -58,29 +78,41 @@ interface SlipContextValue extends SlipState {
     odds: string,
     probability?: string,
   ): void;
+  // ── BetBuilder controls ────────────────────────────────────────────
+  /**
+   * Enter BetBuilder mode for a specific match. If `matchId` is null,
+   * the slip exits builder mode and reverts to whichever mode the user
+   * had previously (combo/single fallback). Switching builder to a
+   * different match clears any prior betbuilder legs.
+   */
+  setBetbuilderMatch(matchId: string | null): void;
+  /**
+   * Cache the latest OBB quote response. The match-page provider
+   * fetches /betbuilder/match/:id/quote whenever the leg set changes;
+   * the slip rail consumes the cached value to render combined odds +
+   * the place-bet payload.
+   */
+  setBetbuilderQuote(quote: BetBuilderQuoteAcceptedResponse | null): void;
 }
 
 const SlipContext = createContext<SlipContextValue | null>(null);
 
+function emptyState(): SlipState {
+  return {
+    selections: [],
+    mode: "combo",
+    open: false,
+    currency: DEFAULT_SLIP_CURRENCY,
+    betbuilderMatchId: null,
+    betbuilderQuote: null,
+  };
+}
+
 function loadFromStorage(): SlipState {
-  if (typeof window === "undefined") {
-    return {
-      selections: [],
-      mode: "combo",
-      open: false,
-      currency: DEFAULT_SLIP_CURRENCY,
-    };
-  }
+  if (typeof window === "undefined") return emptyState();
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      return {
-        selections: [],
-        mode: "combo",
-        open: false,
-        currency: DEFAULT_SLIP_CURRENCY,
-      };
-    }
+    if (!raw) return emptyState();
     const parsed = JSON.parse(raw) as Partial<SlipState>;
     const mode: SlipMode = ALL_MODES.includes(parsed.mode as SlipMode)
       ? (parsed.mode as SlipMode)
@@ -93,24 +125,21 @@ function loadFromStorage(): SlipState {
       mode,
       open: false, // never restore open state — surprising UX otherwise
       currency,
+      betbuilderMatchId:
+        typeof parsed.betbuilderMatchId === "string"
+          ? parsed.betbuilderMatchId
+          : null,
+      // Quote is short-lived (Oddin invalidates a session in 10 min – 2 h);
+      // we never restore it from storage. The match page re-quotes on mount.
+      betbuilderQuote: null,
     };
   } catch {
-    return {
-      selections: [],
-      mode: "combo",
-      open: false,
-      currency: DEFAULT_SLIP_CURRENCY,
-    };
+    return emptyState();
   }
 }
 
 export function BetSlipProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<SlipState>(() => ({
-    selections: [],
-    mode: "combo",
-    open: false,
-    currency: DEFAULT_SLIP_CURRENCY,
-  }));
+  const [state, setState] = useState<SlipState>(() => emptyState());
 
   useEffect(() => {
     setState(loadFromStorage());
@@ -124,19 +153,50 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
           selections: state.selections,
           mode: state.mode,
           currency: state.currency,
+          betbuilderMatchId: state.betbuilderMatchId,
         }),
       );
     } catch {
       // localStorage quota/disabled — slip just won't persist.
     }
-  }, [state.selections, state.mode, state.currency]);
+  }, [state.selections, state.mode, state.currency, state.betbuilderMatchId]);
 
   const add = useCallback((selection: SlipSelection) => {
     setState((prev) => {
-      // Drop any existing selection on the same MATCH. We don't allow two
-      // selections from the same match in the slip — clicking a different
-      // market or outcome in a match the user already has in the slip
-      // simply replaces the previous pick for that match.
+      // BetBuilder branch: same-match accumulates, but the user must
+      // also re-pick the same outcome — when the same (market, outcome)
+      // is already in the slip the caller handles the toggle via has()/
+      // remove(). Picking a leg from a different match drops the entire
+      // betbuilder set and reverts to single-replace mode for the new
+      // match.
+      if (prev.mode === "betbuilder" && prev.betbuilderMatchId) {
+        if (prev.betbuilderMatchId === selection.matchId) {
+          // Replace any prior pick on the SAME market (only one outcome
+          // per market is meaningful) but keep the rest of the legs.
+          const filtered = prev.selections.filter(
+            (s) => s.marketId !== selection.marketId,
+          );
+          return {
+            ...prev,
+            selections: [...filtered, selection],
+            // Mutated leg set — drop the cached quote so the rail
+            // re-fetches a fresh combined-odds quote.
+            betbuilderQuote: null,
+            open: true,
+          };
+        }
+        // Different match — exit builder, revert to single-replace.
+        return {
+          ...prev,
+          selections: [selection],
+          mode: "combo",
+          betbuilderMatchId: null,
+          betbuilderQuote: null,
+          open: true,
+        };
+      }
+      // Default behaviour: drop any existing selection on the same
+      // MATCH and append the new one.
       const withoutSameMatch = prev.selections.filter(
         (s) => s.matchId !== selection.matchId,
       );
@@ -149,16 +209,33 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const remove = useCallback((marketId: string, outcomeId: string) => {
-    setState((prev) => ({
-      ...prev,
-      selections: prev.selections.filter(
+    setState((prev) => {
+      const next = prev.selections.filter(
         (s) => !(s.marketId === marketId && s.outcomeId === outcomeId),
-      ),
-    }));
+      );
+      // BetBuilder leg set changed — invalidate the cached quote.
+      const quoteChanged = prev.mode === "betbuilder";
+      return {
+        ...prev,
+        selections: next,
+        betbuilderQuote: quoteChanged ? null : prev.betbuilderQuote,
+        // Auto-exit builder mode when no legs are left so the slip
+        // doesn't leave the user in a weird empty-builder state.
+        ...(prev.mode === "betbuilder" && next.length === 0
+          ? { mode: "combo" as const, betbuilderMatchId: null }
+          : null),
+      };
+    });
   }, []);
 
   const clear = useCallback(() => {
-    setState((prev) => ({ ...prev, selections: [] }));
+    setState((prev) => ({
+      ...prev,
+      selections: [],
+      ...(prev.mode === "betbuilder"
+        ? { mode: "combo" as const, betbuilderMatchId: null, betbuilderQuote: null }
+        : null),
+    }));
   }, []);
 
   const setOpen = useCallback((open: boolean) => {
@@ -166,8 +243,60 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const setMode = useCallback((mode: SlipMode) => {
-    setState((prev) => ({ ...prev, mode }));
+    setState((prev) => {
+      // Switching out of betbuilder clears builder-specific state. The
+      // slip selections themselves stay — the user may then place them
+      // as a normal combo if they're cross-match, or just keep the
+      // current match's first leg as a single.
+      if (prev.mode === "betbuilder" && mode !== "betbuilder") {
+        return {
+          ...prev,
+          mode,
+          betbuilderMatchId: null,
+          betbuilderQuote: null,
+        };
+      }
+      // Switching into betbuilder is normally driven by the match-page
+      // toggle (which calls setBetbuilderMatch). Keep this method
+      // permissive for completeness.
+      return { ...prev, mode };
+    });
   }, []);
+
+  const setBetbuilderMatch = useCallback((matchId: string | null) => {
+    setState((prev) => {
+      if (matchId === null) {
+        if (prev.mode !== "betbuilder") return prev;
+        return {
+          ...prev,
+          mode: "combo",
+          betbuilderMatchId: null,
+          betbuilderQuote: null,
+        };
+      }
+      // Entering builder for a specific match — drop any selections
+      // not from this match so the slip doesn't carry phantom combo
+      // legs into the builder context.
+      return {
+        ...prev,
+        mode: "betbuilder",
+        betbuilderMatchId: matchId,
+        selections: prev.selections.filter((s) => s.matchId === matchId),
+        betbuilderQuote: null,
+        open: true,
+      };
+    });
+  }, []);
+
+  const setBetbuilderQuote = useCallback(
+    (quote: BetBuilderQuoteAcceptedResponse | null) => {
+      setState((prev) => {
+        if (prev.mode !== "betbuilder") return prev;
+        return { ...prev, betbuilderQuote: quote };
+      });
+    },
+    [],
+  );
 
   const setCurrency = useCallback((currency: Currency) => {
     if (!isCurrency(currency)) return;
@@ -218,8 +347,22 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
       setCurrency,
       has,
       updateOdds,
+      setBetbuilderMatch,
+      setBetbuilderQuote,
     }),
-    [state, add, remove, clear, setOpen, setMode, setCurrency, has, updateOdds],
+    [
+      state,
+      add,
+      remove,
+      clear,
+      setOpen,
+      setMode,
+      setCurrency,
+      has,
+      updateOdds,
+      setBetbuilderMatch,
+      setBetbuilderQuote,
+    ],
   );
 
   return <SlipContext.Provider value={value}>{children}</SlipContext.Provider>;

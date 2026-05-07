@@ -405,3 +405,127 @@ all markets". Anchor: `markets.last_oddin_ts`.
   IDs are auto-created **and** queued in `mapping_review_queue` for admin
   review. Nothing goes live to users without an approved mapping row (Phase
   3 will enforce this gate).
+
+## BetBuilder (OBB)
+
+Oddin's BetBuilder is a **separate gRPC service** at `api-obb.oddin.gg:443`
+(prod) / `api-obb.integration.oddin.gg:443` (integration). It prices
+multi-leg combinations from the **same match** using a correlation model
+— per the doc, "the odds for BetBuilder cannot be calculated simply by
+multiplying the selected market odds." That's the whole reason it exists
+as a separate service: same-match legs aren't independent, so a regular
+combo's product-of-odds math would overpay.
+
+### Wire integration
+
+Vendored proto: `services/api/proto/obb/{service,session,markets,popular}.proto`
+(unchanged from `oddin-gg/obbschema` upstream). Loaded at runtime via
+`@grpc/proto-loader` — we don't commit generated code.
+
+Client: `services/api/src/lib/obb-client.ts`. Singleton gRPC channel,
+per-call credentials carry the `token` metadata key (the same mechanism
+Oddin documents for Go in §1.6 of the doc). Graceful-idle: the factory
+returns null when `ODDIN_OBB_HOST` is empty.
+
+Three endpoints in use:
+
+| RPC | When called | What it returns |
+| --- | --- | --- |
+| `AvailableMarkets(eventUrn)` | Toggle visibility probe on match page mount | Provider market ids + specifier strings (Oddin's `k=v\|k=v` format). Cache TTL 1 day on Oddin's side, so subsequent quotes for the same match are fast. |
+| `SessionCreate(selectionIds[])` | Every leg-set change in the bet slip | `sessionId`, `oddsX10000` (combined session odds × 10 000), still-available markets the user could add, plus per-outcome odds within those markets. We map provider market ids back to internal market ids by re-canonicalising the specifiers and looking up `(provider_market_id, specifiers_hash)`. |
+| `SessionInfo(sessionId, selectionIds, oddsX10000)` | Once at placement, before debiting stake | `valid` / `invalid`. We trust Oddin as the source of truth — if odds drifted enough that the agreed price is no longer offered, Oddin says invalid and we 400 `betbuilder_session_invalid`; the client refreshes via a fresh quote. |
+
+Selection ID format Oddin expects:
+
+```
+<event_urn>/<provider_market_id>/<outcome_id>?<sorted_specifiers_qs>
+e.g. od:match:1234/6/1?map=1&way=two
+```
+
+The qs uses lexicographically-sorted keys joined with `&`. Spec strings
+in Oddin's responses are pipe-separated (`k=v|k=v`) — `parseSpecifiers()`
+in `packages/types/src/specifiers.ts` already handles both directions.
+
+### Storage
+
+No new columns. The OBB session id + the locked combined odds ride in
+`tickets.bet_meta` jsonb (the same column tiple/tippot use):
+
+```json
+{
+  "product": "betbuilder",
+  "sessionId": "obb-session-uuid",
+  "sessionOddsMicro": "24500000",
+  "oddsX10000": 24500,
+  "eventUrn": "od:match:1234",
+  "selectionIds": ["od:match:1234/1/1?way=two", "od:match:1234/6/1?map=1"]
+}
+```
+
+Per-leg `ticket_selections` rows still get inserted with the user's
+clicked odds. Settlement reads `result` + `void_factor` per leg (same as
+combos) but does NOT multiply effective factors — payout dispatch
+branches on `bet_type='betbuilder'` and uses the locked session odds
+from `bet_meta`.
+
+### Settlement rules
+
+OBB combined odds aren't a product, so we can't recompute "session
+without leg X" if a leg voids. The conservative MVP rule is in
+[`services/settlement/internal/settler/payout.go`](../services/settlement/internal/settler/payout.go) `BetBuilderPayout`:
+
+| Leg outcomes | Payout | Ledger |
+| --- | --- | --- |
+| All won (or won + half_won) | `stake × oddsX10000/10_000` | `bet_payout` |
+| Any leg lost (or half_lost) | `0` | `bet_payout` |
+| Any leg voided + non-loss rest | `stake` | `bet_refund` |
+| All legs voided | `stake` | `bet_refund` |
+
+Half-won counts as a full win for the all-won test (matches the Tiple
+permissive rule); half-lost counts as a loss. The void-then-refund rule
+is intentionally cautious — if Oddin ever exposes a "recompute session
+without leg X" RPC we can drop the refund and recompute, but that's a
+post-MVP improvement.
+
+### bet-delay branch
+
+The bet-delay worker re-evaluates pending tickets when their delay
+expires. For a regular combo it rejects on per-leg odds drift > 5%; for
+BetBuilder we skip the per-leg drift check (per-leg drift is a
+meaningless proxy when the ticket-odds are non-multiplicative) but
+still enforce **market.status=1** and **outcome.active=true**. Drift on
+the OBB session odds is already covered by the SessionInfo call the API
+makes at submit time.
+
+### Frontend UX
+
+A manual toggle on the match page
+([`apps/web/src/components/match/betbuilder-toggle.tsx`](../apps/web/src/components/match/betbuilder-toggle.tsx)).
+When ON, the bet slip enters `mode: "betbuilder"` for that match —
+`add()` accepts multiple legs from the same match instead of replacing
+on same-match. Picking a leg from a different match drops every
+betbuilder leg and reverts the slip to `combo`.
+
+The slip rail re-quotes whenever the leg set changes, displays the
+combined session odds, and submits with `betType="betbuilder"` plus the
+`betBuilder` block (sessionId / expectedOddsX10000 / selectionIds). The
+toggle is sport-gated to OBB-supported sports per Appendix #1 of the
+doc (CS2 / CS2 Duels / Valorant / eFootball / eBasketball) and silently
+hidden when `/betbuilder/match/:id/markets` returns 503 (env unset) or
+404 (match not in our catalog).
+
+### Disabled by default
+
+`ODDIN_OBB_HOST` is empty in `.env.example` and on prod until Oddin
+whitelists the calling IPs. While empty:
+
+- `/betbuilder/*` returns 503 `betbuilder_disabled`
+- The match-page toggle silently hides
+- `POST /bets` with `betType="betbuilder"` is rejected upfront with
+  `betbuilder_disabled`
+
+This is the same graceful-idle pattern Disir, the Tron scanner, and
+the ETH scanner use. Once Oddin enables OBB for our IP range, set
+`ODDIN_OBB_HOST=api-obb.integration.oddin.gg:443` (integration) or
+`api-obb.oddin.gg:443` (prod), restart the api container, and the
+toggle starts surfacing.

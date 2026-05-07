@@ -82,7 +82,7 @@ func TestEvaluate(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			reject, reason := w.evaluate(tc.selections)
+			reject, reason := w.evaluate("combo", tc.selections)
 			if reject != tc.rejectWant {
 				t.Fatalf("reject: got %v want %v", reject, tc.rejectWant)
 			}
@@ -90,5 +90,41 @@ func TestEvaluate(t *testing.T) {
 				t.Fatalf("reason: got %q want %q", reason, tc.reasonWant)
 			}
 		})
+	}
+}
+
+// BetBuilder placements anchor on Oddin's OBB SessionInfo at submit time;
+// during the bet-delay window we only police market+outcome activity, not
+// per-leg odds drift (the OBB session combined odds are not a product of
+// per-leg odds, so per-leg drift is not a meaningful tripwire). A leg
+// whose published price moved 50% must still pass during the bet-delay
+// window for a betbuilder ticket — otherwise we'd reject a valid ticket
+// the API already validated against Oddin's authoritative session.
+func TestEvaluateBetBuilderSkipsPerLegDrift(t *testing.T) {
+	w := &Worker{driftTolerance: 0.05}
+	sels := []store.Selection{
+		// 50% drift — would reject a normal combo, must pass for betbuilder.
+		{MarketStatus: 1, OutcomeActive: true, CurrentPublished: strPtr("3.0"), OddsAtPlacement: "2.0"},
+		{MarketStatus: 1, OutcomeActive: true, CurrentPublished: strPtr("4.5"), OddsAtPlacement: "3.0"},
+	}
+	reject, reason := w.evaluate("betbuilder", sels)
+	if reject {
+		t.Fatalf("betbuilder must skip drift; got reject=true reason=%q", reason)
+	}
+}
+
+// Activity guards still apply to betbuilder — a market going inactive
+// during the delay window must still reject the ticket. Otherwise the
+// user would be debited stake on a leg that can't settle.
+func TestEvaluateBetBuilderStillEnforcesActivity(t *testing.T) {
+	w := &Worker{driftTolerance: 0.05}
+	sels := []store.Selection{
+		{MarketStatus: 1, OutcomeActive: true, CurrentPublished: strPtr("2.0"), OddsAtPlacement: "2.0"},
+		// Outcome flipped inactive after submit.
+		{MarketStatus: 1, OutcomeActive: false, CurrentPublished: strPtr("3.0"), OddsAtPlacement: "3.0"},
+	}
+	reject, reason := w.evaluate("betbuilder", sels)
+	if !reject || reason != "outcome_inactive" {
+		t.Fatalf("expected outcome_inactive reject, got reject=%v reason=%q", reject, reason)
 	}
 }

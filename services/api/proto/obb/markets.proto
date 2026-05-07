@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package obb;
+
+option go_package = "github.com/oddin-gg/obbschema/go/obb";
+option java_package = "com.oddin.obb";
+
+// AvailableMarketsRequest is used as request for Markets RPC call
+message AvailableMarketsRequest {
+  // Event ID URN - e.g "od:match:xx"
+  string event_urn = 1;
+}
+
+// AvailableMarketsResponse is used as response for AvailableMarketsRequest RPC call
+message AvailableMarketsResponse {
+  // List of available markets
+  repeated AvailableMarket markets = 1;
+}
+
+message AvailableMarket {
+  // The ID using the same values as our odds feed in XML.
+  uint32 market_id = 1;
+
+  // The specifier is using the same values as our odds feed in XML.
+  // Example: "variant=way:three|way=three|map=1"
+  string specifiers = 2;
+}

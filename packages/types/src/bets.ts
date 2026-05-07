@@ -7,7 +7,17 @@
 import type { Currency } from "./currencies.js";
 import type { BetMeta } from "./products.js";
 
-export type BetType = "single" | "combo" | "system" | "tiple" | "tippot";
+export type BetType =
+  | "single"
+  | "combo"
+  | "system"
+  | "tiple"
+  | "tippot"
+  // BetBuilder: multiple selections from the SAME match, priced via
+  // Oddin's OBB gRPC service. session_id + final session odds frozen in
+  // tickets.bet_meta at placement; settlement does NOT multiply per-leg
+  // odds.
+  | "betbuilder";
 
 export type TicketStatus =
   | "pending_delay"
@@ -46,6 +56,11 @@ export interface PlaceBetRequest {
    * ≥ 2 → "combo". For tiple/tippot the client must send it explicitly;
    * the server reads each leg's probability from market_outcomes (never
    * trusts client-supplied values) and prices fresh.
+   *
+   * For "betbuilder" the client must include the `betBuilder` block
+   * (sessionId + expectedOddsX10000 from /betbuilder/match/:id/quote).
+   * Per-leg `odds` here are still informational; the ticket pays out at
+   * the OBB session odds.
    */
   betType?: BetType;
   selections: Array<{
@@ -53,6 +68,19 @@ export interface PlaceBetRequest {
     outcomeId: string;
     odds: string;            // decimal odds as displayed at click time
   }>;
+  /**
+   * BetBuilder placement payload. Required when betType="betbuilder".
+   * The server re-validates the session via OBB SessionInfo before
+   * debiting stake — if Oddin says "invalid" the placement is rejected
+   * with `betbuilder_session_invalid` and the client must re-quote.
+   */
+  betBuilder?: {
+    sessionId: string;
+    /** Combined session odds × 10_000 — what Oddin returned at quote. */
+    expectedOddsX10000: number;
+    /** Selection IDs as Oddin returned them (round-trip key). */
+    selectionIds: string[];
+  };
 }
 
 export interface PlaceBetResponse {

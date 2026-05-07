@@ -11,6 +11,10 @@ import { SUPPORTED_CURRENCIES, type Currency } from "@oddzilla/types/currencies"
 // Type-only `BetMeta` etc go through the bare path since they're erased.
 import { parseProbability, priceTiple, priceTippot } from "@oddzilla/types/products";
 import type { TippotTier } from "@oddzilla/types/products";
+import type {
+  BetBuilderQuoteAcceptedResponse,
+  BetBuilderQuoteResponse,
+} from "@oddzilla/types";
 import { useBetSlip, type SlipMode } from "@/lib/bet-slip";
 import { useLiveOddsForMatches } from "@/lib/use-live-odds";
 import { useTicketStream } from "@/lib/use-ticket-stream";
@@ -109,11 +113,87 @@ export function BetSlipRail() {
 
   // Effective product mode. Single is forced when there's only one
   // selection regardless of last-stored mode. tiple/tippot need ≥2.
+  // BetBuilder is special — it can show with a single leg (the toggle
+  // is on the match page; the rail renders the in-progress quote
+  // until the user adds the second leg).
   const effectiveMode: SlipMode = useMemo(() => {
+    if (slip.mode === "betbuilder" && slip.betbuilderMatchId) {
+      return "betbuilder";
+    }
     if (selections.length <= 1) return "single";
     if (slip.mode === "single") return "combo";
     return slip.mode;
-  }, [selections.length, slip.mode]);
+  }, [selections.length, slip.mode, slip.betbuilderMatchId]);
+
+  // ── BetBuilder quote refresh ─────────────────────────────────────
+  // Whenever the leg set changes while we're in builder mode, request
+  // a fresh combined-odds quote from /betbuilder/match/:id/quote. The
+  // server in turn calls Oddin's OBB SessionCreate. The cached quote
+  // (slip.betbuilderQuote) is what the rail shows + what gets submitted.
+  const isBetBuilder = effectiveMode === "betbuilder";
+  const builderMatchId = slip.betbuilderMatchId;
+  // Stable signature of the leg set so the effect only fires on change.
+  const builderLegSig = useMemo(() => {
+    if (!isBetBuilder || !builderMatchId) return "";
+    const sameMatch = selections.filter((s) => s.matchId === builderMatchId);
+    return sameMatch
+      .map((s) => `${s.marketId}:${s.outcomeId}`)
+      .sort()
+      .join("|");
+  }, [isBetBuilder, builderMatchId, selections]);
+  const [builderError, setBuilderError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isBetBuilder || !builderMatchId || builderLegSig === "") {
+      // Either not in builder mode or empty leg list — clear quote.
+      slip.setBetbuilderQuote(null);
+      return;
+    }
+    const sameMatch = selections.filter((s) => s.matchId === builderMatchId);
+    let cancelled = false;
+    setBuilderError(null);
+    (async () => {
+      try {
+        const resp = await clientApi<BetBuilderQuoteResponse>(
+          `/betbuilder/match/${builderMatchId}/quote`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              selections: sameMatch.map((s) => ({
+                marketId: s.marketId,
+                outcomeId: s.outcomeId,
+              })),
+            }),
+          },
+        );
+        if (cancelled) return;
+        if (resp.status === "rejected") {
+          setBuilderError(
+            resp.message ||
+              "BetBuilder couldn't combine these selections. Remove one and try again.",
+          );
+          slip.setBetbuilderQuote(null);
+        } else {
+          slip.setBetbuilderQuote(resp);
+        }
+      } catch (err) {
+        if (cancelled) return;
+        if (err instanceof ApiFetchError && err.body.error === "betbuilder_disabled") {
+          setBuilderError("BetBuilder is unavailable.");
+        } else if (err instanceof ApiFetchError) {
+          setBuilderError(err.body.message || "Couldn't quote BetBuilder. Try again.");
+        } else {
+          setBuilderError("Couldn't quote BetBuilder. Try again.");
+        }
+        slip.setBetbuilderQuote(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // builderLegSig captures everything material to the leg set; the
+    // rest of the deps are stable references managed by the slip store.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isBetBuilder, builderMatchId, builderLegSig]);
 
   // Combined odds = product of all selection odds (combo accumulator).
   // Used for single + combo display.
@@ -169,9 +249,18 @@ export function BetSlipRail() {
     }
   }, [effectiveMode, probabilityArr]);
 
+  const builderQuote: BetBuilderQuoteAcceptedResponse | null =
+    slip.betbuilderQuote;
+
   const potentialReturn = useMemo(() => {
     const stake = Number(stakeInput);
     if (!Number.isFinite(stake) || stake <= 0) return 0;
+    if (effectiveMode === "betbuilder") {
+      if (!builderQuote) return 0;
+      const o = Number(builderQuote.combinedOdds);
+      if (!Number.isFinite(o) || o <= 0) return 0;
+      return stake * o;
+    }
     if (effectiveMode === "tiple" && tipleQuote) {
       return stake * Number(tipleQuote.offeredOdds);
     }
@@ -181,7 +270,7 @@ export function BetSlipRail() {
     }
     if (combinedOdds <= 0) return 0;
     return stake * combinedOdds;
-  }, [stakeInput, combinedOdds, effectiveMode, tipleQuote, tippotQuote]);
+  }, [stakeInput, combinedOdds, effectiveMode, tipleQuote, tippotQuote, builderQuote]);
 
   // Show a whole-number amount without trailing ".00"; keep up to
   // 2 decimals otherwise, trimming trailing zeros (e.g. "14.5" not "14.50").
@@ -193,8 +282,14 @@ export function BetSlipRail() {
   const isCombo = effectiveMode === "combo";
   const isTiple = effectiveMode === "tiple";
   const isTippot = effectiveMode === "tippot";
+  const isBetBuilderMode = effectiveMode === "betbuilder";
   const isMulti = selections.length >= 2;
   const productPriceMissing = (isTiple || isTippot) && probabilityArr === null;
+  // BetBuilder needs at least 2 legs and an accepted quote. Show a
+  // calmer "build your selections" line when there's only one leg.
+  const builderNeedsLegs = isBetBuilderMode && selections.length < 2;
+  const builderQuoteMissing =
+    isBetBuilderMode && selections.length >= 2 && !builderQuote && !builderError;
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -218,6 +313,19 @@ export function BetSlipRail() {
     setSubmitting(true);
     try {
       const idempotencyKey = crypto.randomUUID();
+      // BetBuilder needs the OBB session round-tripped from the latest
+      // quote. Block placement when no quote has landed yet (the rail
+      // disables the button below, but defence in depth).
+      if (effectiveMode === "betbuilder") {
+        if (!builderQuote) {
+          setError("Wait for the BetBuilder quote to load.");
+          return;
+        }
+        if (selections.length < 2) {
+          setError("BetBuilder needs at least 2 selections.");
+          return;
+        }
+      }
       const res = await clientApi<{ ticket: { id: string; status: string } }>(
         "/bets",
         {
@@ -227,13 +335,23 @@ export function BetSlipRail() {
             idempotencyKey,
             currency,
             // Send explicit betType so the server knows to apply tiple/
-            // tippot pricing — without this, ≥2 legs default to "combo".
+            // tippot/betbuilder pricing — without this, ≥2 legs default
+            // to "combo".
             betType: effectiveMode,
             selections: selections.map((s) => ({
               marketId: s.marketId,
               outcomeId: s.outcomeId,
               odds: s.odds,
             })),
+            ...(effectiveMode === "betbuilder" && builderQuote
+              ? {
+                  betBuilder: {
+                    sessionId: builderQuote.sessionId,
+                    expectedOddsX10000: builderQuote.oddsX10000,
+                    selectionIds: builderQuote.selectionIds,
+                  },
+                }
+              : null),
           }),
         },
       );
@@ -475,12 +593,87 @@ export function BetSlipRail() {
             gap: 12,
           }}
         >
-          {isMulti && (
+          {isMulti && !isBetBuilderMode && (
             <ModeSelector
               mode={effectiveMode}
               n={selections.length}
               onChange={(m) => slip.setMode(m)}
             />
+          )}
+
+          {isBetBuilderMode && (
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                padding: "8px 10px",
+                background: "var(--surface-2)",
+                border: "1px solid var(--border)",
+                borderRadius: 10,
+                fontSize: 12,
+                color: "var(--fg-muted)",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span
+                  className="mono"
+                  style={{
+                    fontSize: 10,
+                    letterSpacing: "0.08em",
+                    textTransform: "uppercase",
+                    fontWeight: 700,
+                    color: "var(--fg)",
+                  }}
+                >
+                  BetBuilder
+                </span>
+                <span style={{ flex: 1 }} />
+                <button
+                  type="button"
+                  onClick={() => slip.setBetbuilderMatch(null)}
+                  style={{
+                    background: 0,
+                    border: 0,
+                    color: "var(--fg-muted)",
+                    cursor: "pointer",
+                    fontSize: 11,
+                    fontFamily: "inherit",
+                    textDecoration: "underline",
+                  }}
+                >
+                  Turn off
+                </button>
+              </div>
+              {builderNeedsLegs ? (
+                <span style={{ lineHeight: 1.4 }}>
+                  Add a second selection from this match to get a combined
+                  BetBuilder price.
+                </span>
+              ) : builderQuoteMissing ? (
+                <span style={{ lineHeight: 1.4 }}>Loading combined odds…</span>
+              ) : builderError ? (
+                <span style={{ color: "var(--negative)", lineHeight: 1.4 }}>
+                  {builderError}
+                </span>
+              ) : builderQuote ? (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "baseline",
+                    justifyContent: "space-between",
+                  }}
+                >
+                  <span>Combined · {selections.length} legs · same match</span>
+                  <span
+                    className="mono tnum"
+                    style={{ fontSize: 14, fontWeight: 600, color: "var(--fg)" }}
+                  >
+                    {builderQuote.combinedOdds}
+                  </span>
+                </div>
+              ) : null}
+            </div>
           )}
 
           {isCombo && (
@@ -661,18 +854,25 @@ export function BetSlipRail() {
             variant="primary"
             size="lg"
             type="submit"
-            disabled={submitting}
+            disabled={
+              submitting ||
+              builderNeedsLegs ||
+              builderQuoteMissing ||
+              (isBetBuilderMode && !!builderError)
+            }
             style={{ width: "100%" }}
           >
             {submitting
               ? "Placing…"
-              : isTiple
-                ? "Place Tiple"
-                : isTippot
-                  ? "Place Tippot"
-                  : isCombo
-                    ? "Place combo"
-                    : "Place bet"}
+              : isBetBuilderMode
+                ? "Place BetBuilder"
+                : isTiple
+                  ? "Place Tiple"
+                  : isTippot
+                    ? "Place Tippot"
+                    : isCombo
+                      ? "Place combo"
+                      : "Place bet"}
           </Button>
 
           <div style={{ fontSize: 11, color: "var(--fg-dim)", textAlign: "center" }}>
@@ -880,6 +1080,19 @@ function mapError(err: ApiFetchError): string {
       return "This product needs at least 2 selections.";
     case "single_requires_one_leg":
       return "Single accepts only one selection — switch mode for combos.";
+    case "betbuilder_disabled":
+      return "BetBuilder is currently unavailable.";
+    case "betbuilder_session_invalid":
+      return "BetBuilder odds moved — your slip will refresh shortly.";
+    case "betbuilder_unavailable":
+      return "BetBuilder is temporarily unavailable. Try again in a moment.";
+    case "betbuilder_block_required":
+    case "betbuilder_selection_mismatch":
+      return "Couldn't confirm the BetBuilder session. Please re-select your legs.";
+    case "betbuilder_cross_match":
+      return "BetBuilder needs every leg from the same match.";
+    case "betbuilder_odds_too_low":
+      return "BetBuilder returned odds below 1.01 — try a different combination.";
     default:
       return err.body.message || "Placement failed.";
   }

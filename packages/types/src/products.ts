@@ -217,4 +217,36 @@ export interface TippotMeta {
   tiers: TippotTier[];
 }
 
-export type BetMeta = TipleMeta | TippotMeta;
+/**
+ * What gets serialized into tickets.bet_meta for Oddin BetBuilder (OBB)
+ * tickets. Frozen at placement after the final SessionInfo validation:
+ *
+ *   - sessionId           Oddin OBB session UUID/string. Settlement does
+ *                         not re-query Oddin (the doc says session
+ *                         expires in 10 min – 2 h), but it's preserved
+ *                         for audit / disputes.
+ *   - sessionOddsMicro    Combined session odds × 1_000_000, stored as a
+ *                         decimal string for bigint safety in JSON. The
+ *                         payout the bettor agreed to: payout = stake ×
+ *                         (sessionOddsMicro / 1_000_000) when every leg
+ *                         wins.
+ *   - oddsX10000          The integer Oddin returned (odds × 10_000),
+ *                         kept verbatim for round-tripping with their
+ *                         SessionInfo validation call at placement.
+ *   - eventUrn            "od:match:NN" — the single match all legs
+ *                         must come from (BetBuilder is same-match-only).
+ *   - selectionIds        The Oddin selection_id strings sent to OBB,
+ *                         in the order Oddin returned them
+ *                         ("<event>/<market>/<outcome>?<spec>"). Used
+ *                         when re-validating via SessionInfo.
+ */
+export interface BetBuilderMeta {
+  product: "betbuilder";
+  sessionId: string;
+  sessionOddsMicro: string;
+  oddsX10000: number;
+  eventUrn: string;
+  selectionIds: string[];
+}
+
+export type BetMeta = TipleMeta | TippotMeta | BetBuilderMeta;

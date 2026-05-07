@@ -3,6 +3,7 @@ import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { serverApi } from "@/lib/server-fetch";
 import { LiveMarkets, type MarketGroup, type MarketSnapshot } from "./live-markets";
+import { BetBuilderToggle } from "@/components/match/betbuilder-toggle";
 import { Pill, LiveDot, TeamMark } from "@/components/ui/primitives";
 import { TierMark } from "@/components/ui/tier-mark";
 import { I } from "@/components/ui/icons";
@@ -181,6 +182,11 @@ export default async function MatchPage({
         sportName={match.sport.name}
         homeTeam={match.homeTeam}
         awayTeam={match.awayTeam}
+      />
+
+      <BetBuilderToggle
+        matchId={String(match.id)}
+        sportSlug={match.sport.slug}
       />
 
       {/* Always mount LiveMarkets — even when the SSR snapshot has zero

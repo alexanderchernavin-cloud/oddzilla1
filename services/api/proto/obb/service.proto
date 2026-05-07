@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package obb;
+
+import "obb/markets.proto";
+import "obb/popular.proto";
+import "obb/session.proto";
+
+option go_package = "github.com/oddin-gg/obbschema/go/obb";
+option java_package = "com.oddin.obb";
+
+service obb {
+  // Used to retrieve a list of available markets for a given event.
+  rpc AvailableMarkets(AvailableMarketsRequest) returns (AvailableMarketsResponse);
+
+  // Used for session creation.
+  rpc SessionCreate(SessionCreateRequest) returns (SessionCreateResponse);
+
+  // Used for extraction info about desired session based on session id.
+  rpc SessionInfo(SessionInfoRequest) returns (SessionInfoResponse);
+
+  // Used to get popular combinations of selections.
+  rpc PopularCombination(PopularCombinationRequest) returns (PopularCombinationResponse);
+}

@@ -48,7 +48,19 @@ export const ticketStatusEnum = pgEnum("ticket_status", [
   "voided",
   "cashed_out",
 ]);
-export const betTypeEnum = pgEnum("bet_type", ["single", "combo", "system", "tiple", "tippot"]);
+export const betTypeEnum = pgEnum("bet_type", [
+  "single",
+  "combo",
+  "system",
+  "tiple",
+  "tippot",
+  // 0031_betbuilder.sql — Oddin BetBuilder same-match combo. Carries
+  // session_id + frozen session odds in tickets.bet_meta, like tiple /
+  // tippot. Settlement does NOT multiply per-leg odds; payout is
+  // stake × session_odds when all legs win, refund on any void leg, 0 on
+  // any loss.
+  "betbuilder",
+]);
 export const settlementTypeEnum = pgEnum("settlement_type", [
   "settle",
   "cancel",

@@ -184,11 +184,11 @@ func (w *Worker) sweepLoop(ctx context.Context) {
 // it must still re-read stake + currency + not_before_ts.
 func (w *Worker) processOne(ctx context.Context, ticketID string) error {
 	const q = `
-SELECT id, user_id, currency, stake_micro, not_before_ts
+SELECT id, user_id, currency, bet_type::text, stake_micro, not_before_ts
   FROM tickets
  WHERE id = $1 AND status = 'pending_delay'`
 	var p store.PendingTicket
-	err := w.pool.QueryRow(ctx, q, ticketID).Scan(&p.ID, &p.UserID, &p.Currency, &p.StakeMicro, &p.NotBeforeTs)
+	err := w.pool.QueryRow(ctx, q, ticketID).Scan(&p.ID, &p.UserID, &p.Currency, &p.BetType, &p.StakeMicro, &p.NotBeforeTs)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil // already processed
@@ -226,7 +226,7 @@ func (w *Worker) processTicket(ctx context.Context, p store.PendingTicket) error
 		return err
 	}
 
-	reject, reason := w.evaluate(selections)
+	reject, reason := w.evaluate(p.BetType, selections)
 	if reject {
 		if err := store.RejectAndRefund(ctx, tx, p.ID, p.UserID, p.Currency, reason, p.StakeMicro); err != nil {
 			return err
@@ -252,11 +252,20 @@ func (w *Worker) processTicket(ctx context.Context, p store.PendingTicket) error
 	return nil
 }
 
-// evaluate returns (rejectNeeded, reason).
-func (w *Worker) evaluate(selections []store.Selection) (bool, string) {
+// evaluate returns (rejectNeeded, reason). betType selects how strictly
+// per-leg odds drift is enforced: traditional combos / singles fail on
+// any leg whose published price moved beyond tolerance, while
+// "betbuilder" tickets only re-check market + outcome activity (Oddin's
+// OBB engine prices the session combined odds non-multiplicatively, so
+// per-leg drift is not a meaningful proxy for "ticket-odds drift" — see
+// docs/ODDIN.md). betbuilder placements are anchored on the OBB
+// SessionInfo result the API ran at submit time; the bet-delay window
+// just guards against a market going inactive after that.
+func (w *Worker) evaluate(betType string, selections []store.Selection) (bool, string) {
 	if len(selections) == 0 {
 		return true, "no_selections"
 	}
+	skipDrift := betType == "betbuilder"
 	for _, s := range selections {
 		if s.MarketStatus != 1 {
 			return true, "market_suspended"
@@ -271,6 +280,9 @@ func (w *Worker) evaluate(selections []store.Selection) (bool, string) {
 		current, err2 := strconv.ParseFloat(*s.CurrentPublished, 64)
 		if err1 != nil || err2 != nil || placed <= 0 {
 			return true, "odds_parse"
+		}
+		if skipDrift {
+			continue
 		}
 		drift := math.Abs(current-placed) / placed
 		if drift > w.driftTolerance {

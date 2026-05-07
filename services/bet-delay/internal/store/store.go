@@ -26,6 +26,7 @@ type PendingTicket struct {
 	ID          string
 	UserID      string
 	Currency    string
+	BetType     string
 	StakeMicro  int64
 	NotBeforeTs time.Time
 }
@@ -35,7 +36,7 @@ type PendingTicket struct {
 // on them — prevents two workers from grabbing the same row.
 func (s *Store) ListReady(ctx context.Context, limit int) ([]PendingTicket, error) {
 	const q = `
-SELECT id, user_id, currency, stake_micro, not_before_ts
+SELECT id, user_id, currency, bet_type::text, stake_micro, not_before_ts
   FROM tickets
  WHERE status = 'pending_delay'
    AND not_before_ts <= NOW()
@@ -50,7 +51,7 @@ SELECT id, user_id, currency, stake_micro, not_before_ts
 	out := make([]PendingTicket, 0, limit)
 	for rows.Next() {
 		var t PendingTicket
-		if err := rows.Scan(&t.ID, &t.UserID, &t.Currency, &t.StakeMicro, &t.NotBeforeTs); err != nil {
+		if err := rows.Scan(&t.ID, &t.UserID, &t.Currency, &t.BetType, &t.StakeMicro, &t.NotBeforeTs); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
