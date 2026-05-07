@@ -12,6 +12,15 @@ import type {
 } from "@oddzilla/types";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 
+// NOTE: there is intentionally no "paste your tx hash" form. With one
+// shared receive address, on-chain Transfers are public — anyone
+// watching Etherscan could see another user's tx and try to claim it
+// for themselves. The only safe attribution channel is the linked-
+// wallet whitelist (POST /wallet/addresses): the watcher matches
+// incoming Transfers' from-address against per-user whitelists and
+// auto-credits. Deposits from unlinked senders fall through to admin
+// review at /admin/deposits.
+
 const STATUS_COLOR: Record<string, string> = {
   pending: "text-[var(--color-warning)]",
   confirming: "text-[var(--color-accent)]",
@@ -75,37 +84,6 @@ function DepositCard({
   available: boolean;
   hasLinkedWallets: boolean;
 }) {
-  const router = useRouter();
-  const [pending, startTransition] = useTransition();
-  const [txHash, setTxHash] = useState("");
-  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
-
-  function onSubmit(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setMsg(null);
-    const trimmed = txHash.trim();
-    if (!/^0x[0-9a-fA-F]{64}$/.test(trimmed)) {
-      setMsg({ kind: "err", text: "Tx hash must be 0x followed by 64 hex characters." });
-      return;
-    }
-    startTransition(async () => {
-      try {
-        await clientApi("/wallet/deposits/intent", {
-          method: "POST",
-          body: JSON.stringify({ txHash: trimmed.toLowerCase() }),
-        });
-        setMsg({
-          kind: "ok",
-          text: "Tx hash submitted. Your balance will update after the required confirmations.",
-        });
-        setTxHash("");
-        router.refresh();
-      } catch (err) {
-        setMsg({ kind: "err", text: mapDepositError(err) });
-      }
-    });
-  }
-
   return (
     <div className="card p-6">
       <h2 className="text-sm uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
@@ -117,93 +95,39 @@ function DepositCard({
           Deposits are temporarily unavailable. Please check back shortly.
         </p>
       ) : (
-        <>
-          <div className="mt-5 flex items-start gap-5">
-            <div className="rounded-[12px] bg-white p-3">
-              <QRCodeSVG value={address.address} size={140} level="M" />
+        <div className="mt-5 flex items-start gap-5">
+          <div className="rounded-[12px] bg-white p-3">
+            <QRCodeSVG value={address.address} size={140} level="M" />
+          </div>
+          <div className="min-w-0 flex-1 space-y-3">
+            <div>
+              <p className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
+                Send {address.currency} on {address.network}
+              </p>
+              <p className="mt-1 break-all font-mono text-sm">
+                {address.address}
+              </p>
             </div>
-            <div className="min-w-0 flex-1 space-y-3">
-              <div>
-                <p className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-                  Send {address.currency} on {address.network}
-                </p>
-                <p className="mt-1 break-all font-mono text-sm">
-                  {address.address}
-                </p>
-              </div>
-              <CopyButton text={address.address} />
+            <CopyButton text={address.address} />
+            {hasLinkedWallets ? (
               <p className="text-xs text-[var(--color-fg-muted)]">
                 Send only USDC on Ethereum (ERC20). Tokens on the wrong
-                network or contract will be lost.
-                {hasLinkedWallets ? (
-                  <>
-                    {" "}Deposits from your linked wallets are credited
-                    automatically — no further action needed.
-                  </>
-                ) : (
-                  <>
-                    {" "}Link your sending wallet below to skip the
-                    paste-hash step on future deposits, or paste the
-                    transaction hash here after sending.
-                  </>
-                )}
+                network or contract will be lost. Deposits from your
+                linked wallets are credited automatically after the
+                required confirmations.
               </p>
-            </div>
+            ) : (
+              <p className="text-xs text-[var(--color-warning)]">
+                Link your sending wallet below before depositing.
+                Deposits from unlinked addresses require manual review
+                and may be delayed.
+              </p>
+            )}
           </div>
-
-          <form onSubmit={onSubmit} className="mt-5 space-y-3">
-            <label className="block">
-              <span className="text-xs text-[var(--color-fg-subtle)]">
-                Transaction hash
-              </span>
-              <input
-                type="text"
-                required
-                spellCheck={false}
-                autoComplete="off"
-                value={txHash}
-                onChange={(e) => setTxHash(e.target.value)}
-                placeholder="0x…"
-                className="mt-1 w-full break-all rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-3 py-2 font-mono text-sm outline-none focus:border-[var(--color-accent)]"
-              />
-            </label>
-            {msg ? (
-              <p
-                role={msg.kind === "err" ? "alert" : "status"}
-                className={
-                  "text-sm " +
-                  (msg.kind === "ok"
-                    ? "text-[var(--color-positive)]"
-                    : "text-[var(--color-negative)]")
-                }
-              >
-                {msg.text}
-              </p>
-            ) : null}
-            <button type="submit" disabled={pending} className="btn btn-primary w-full">
-              {pending ? "Submitting…" : "Confirm deposit"}
-            </button>
-          </form>
-        </>
+        </div>
       )}
     </div>
   );
-}
-
-function mapDepositError(err: unknown): string {
-  if (err instanceof ApiFetchError) {
-    switch (err.body.error) {
-      case "tx_hash_already_claimed":
-        return "That transaction hash has already been submitted.";
-      case "deposits_unavailable":
-        return "Deposits are currently disabled.";
-      case "account_not_active":
-        return "Your account is not active. Contact support.";
-      default:
-        return err.body.message;
-    }
-  }
-  return "Could not submit transaction hash.";
 }
 
 // ─── Linked wallets ────────────────────────────────────────────────────────
