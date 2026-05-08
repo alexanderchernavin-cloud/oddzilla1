@@ -245,12 +245,21 @@ export function CompetitionCreateForm() {
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
+                    {/* Wrapping label associates the checkbox with its
+                        rule name so screen readers + Playwright's
+                        getByRole('checkbox', { name }) lookup find each
+                        toggle by accessible name. */}
+                    <label
+                      htmlFor={`rule-${def.id}`}
+                      className="flex items-center gap-2 cursor-pointer"
+                    >
                       <input
+                        id={`rule-${def.id}`}
                         type="checkbox"
                         disabled={def.locked}
                         checked={enabled}
                         onChange={() => toggleRule(def.id)}
+                        aria-label={def.label}
                       />
                       <span className="text-sm font-medium text-[var(--color-fg)]">
                         {def.label}
@@ -263,7 +272,7 @@ export function CompetitionCreateForm() {
                       <span className="text-[10px] uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
                         {def.category}
                       </span>
-                    </div>
+                    </label>
                     <p className="ml-6 mt-1 text-xs text-[var(--color-fg-muted)]">
                       {def.description}
                     </p>

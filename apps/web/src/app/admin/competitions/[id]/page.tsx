@@ -1,8 +1,12 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import type { CompetitionDetail } from "@oddzilla/types";
+import type {
+  CompetitionDetail,
+  CompetitionMatchesResponse,
+} from "@oddzilla/types";
 import { serverApi } from "@/lib/server-fetch";
 import { PublishButton } from "./publish-button";
+import { ScoreEntryForm } from "./score-entry-form";
 
 export const dynamic = "force-dynamic";
 
@@ -12,8 +16,12 @@ export default async function AdminCompetitionDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const detail = await serverApi<CompetitionDetail>(`/admin/competitions/${id}`);
+  const [detail, matchesRes] = await Promise.all([
+    serverApi<CompetitionDetail>(`/admin/competitions/${id}`),
+    serverApi<CompetitionMatchesResponse>(`/community/competitions/${id}/matches`),
+  ]);
   if (!detail) notFound();
+  const matches = matchesRes?.matches ?? [];
 
   return (
     <div>
@@ -79,6 +87,65 @@ export default async function AdminCompetitionDetailPage({
                 {r}
               </li>
             ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="mt-6">
+        <h2 className="text-xs font-semibold uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
+          Matches
+        </h2>
+        {matches.length === 0 ? (
+          <p className="mt-2 text-xs text-[var(--color-fg-muted)]">
+            No matches yet.
+          </p>
+        ) : (
+          <ul className="mt-2 space-y-2">
+            {matches.map((m) => {
+              const settled = m.status === "done";
+              return (
+                <li
+                  key={m.id}
+                  className="rounded-[8px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] p-3"
+                >
+                  <div className="flex items-baseline justify-between gap-3">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
+                        {m.league || "—"} · {new Date(m.kickoffAt).toLocaleString()}
+                      </div>
+                      <div className="mt-1 text-sm font-medium">
+                        {m.teamA}{" "}
+                        <span className="text-[var(--color-fg-subtle)]">vs</span>{" "}
+                        {m.teamB}
+                      </div>
+                    </div>
+                    <span
+                      className={
+                        "shrink-0 rounded-full border px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.15em] " +
+                        (settled
+                          ? "border-[var(--color-accent)] text-[var(--color-accent)]"
+                          : "border-[var(--color-border-strong)] text-[var(--color-fg-muted)]")
+                      }
+                    >
+                      {settled
+                        ? `Final ${m.scoreA ?? "-"}–${m.scoreB ?? "-"}`
+                        : m.status}
+                    </span>
+                  </div>
+                  <div className="mt-3">
+                    <ScoreEntryForm
+                      competitionId={detail.id}
+                      matchId={m.id}
+                      teamA={m.teamA}
+                      teamB={m.teamB}
+                      initialScoreA={m.scoreA}
+                      initialScoreB={m.scoreB}
+                      alreadyScored={settled}
+                    />
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>
