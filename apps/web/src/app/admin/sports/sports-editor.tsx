@@ -1,8 +1,26 @@
 "use client";
 
-import { useMemo, useState, useTransition, type FormEvent } from "react";
+import {
+  useRef,
+  useState,
+  useTransition,
+  type ChangeEvent,
+  type FormEvent,
+} from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
+
+// Mirrors the API allowlist (services/api/src/modules/admin/sports.ts).
+// Kept in sync by hand: a mismatch only changes the failure mode (415
+// vs client-side rejection), not correctness.
+const ACCEPTED_MIME = [
+  "image/svg+xml",
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+] as const;
+const ACCEPTED_EXTENSIONS = [".svg", ".png", ".jpg", ".jpeg", ".webp"] as const;
+const MAX_UPLOAD_BYTES = 1 * 1024 * 1024;
 
 export interface SportRow {
   id: number;
@@ -151,7 +169,7 @@ function SportTable({ list }: { list: ListShape }) {
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "60px 1fr 1.4fr 1fr 110px",
+          gridTemplateColumns: "60px 1fr 1.4fr 1fr 130px",
           gap: 12,
           padding: "10px 14px",
           background: "var(--color-bg-subtle, var(--surface-2))",
@@ -165,7 +183,7 @@ function SportTable({ list }: { list: ListShape }) {
       >
         <span>Logo</span>
         <span>Sport</span>
-        <span>Logo URL</span>
+        <span>Logo URL / upload</span>
         <span>Brand colour</span>
         <span style={{ textAlign: "right" }}>Save</span>
       </div>
@@ -198,6 +216,14 @@ function SportRowEditor({ sport }: { sport: SportRow }) {
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
+  // Upload state is local to this row. The hidden file input is kept in
+  // a ref so the visible "Upload" button can trigger it without rendering
+  // the browser's default chrome — same pattern other admin uploads use.
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [removing, setRemoving] = useState(false);
+
   const dirty =
     (sport.logoUrl ?? "") !== logoUrl || (sport.brandColor ?? "") !== brandColor;
 
@@ -227,11 +253,83 @@ function SportRowEditor({ sport }: { sport: SportRow }) {
   // the bundled brand SVG without redeploying.
   const fallbackHint = `/sports/${sport.slug}.svg`;
 
+  // Whether the row has anything to remove — either an admin-pasted URL
+  // or an uploaded byte payload (which the API surfaces via logo_url
+  // being a /api/sports/<slug>/logo path).
+  const hasLogo = (sport.logoUrl ?? "").length > 0;
+
+  async function onFilePicked(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    // Reset the input value so picking the same filename twice still
+    // fires onChange (browsers dedupe by value otherwise).
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    if (!file) return;
+    setUploadError(null);
+    if (
+      !ACCEPTED_MIME.includes(file.type as (typeof ACCEPTED_MIME)[number]) &&
+      // Fallback by extension — some browsers report empty MIME on .svg
+      // files dragged from disk; we mirror the API allowlist.
+      !ACCEPTED_EXTENSIONS.some((ext) => file.name.toLowerCase().endsWith(ext))
+    ) {
+      setUploadError("Use SVG, PNG, JPEG, or WebP.");
+      return;
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setUploadError("Max 1 MB.");
+      return;
+    }
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      // Raw fetch — clientApi auto-sets content-type: application/json
+      // which would corrupt the multipart boundary. Same-origin request
+      // means credentials: 'include' picks up the admin session cookie.
+      const res = await fetch(`/api/admin/sports/${sport.id}/logo`, {
+        method: "POST",
+        body: fd,
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as
+          | { message?: string }
+          | null;
+        throw new Error(body?.message ?? `Upload failed (${res.status})`);
+      }
+      const data = (await res.json()) as { logoUrl?: string };
+      // Reflect the new logo_url so the URL field + preview update in
+      // place. Persist via router.refresh() so the SSR page picks up
+      // the freshly written row.
+      if (typeof data.logoUrl === "string") setLogoUrl(data.logoUrl);
+      router.refresh();
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function onRemove() {
+    if (!hasLogo) return;
+    setUploadError(null);
+    setRemoving(true);
+    try {
+      await clientApi(`/admin/sports/${sport.id}/logo`, { method: "DELETE" });
+      setLogoUrl("");
+      router.refresh();
+    } catch (e) {
+      if (e instanceof ApiFetchError) setUploadError(e.message);
+      else setUploadError("Remove failed. Please try again.");
+    } finally {
+      setRemoving(false);
+    }
+  }
+
   return (
     <li
       style={{
         display: "grid",
-        gridTemplateColumns: "60px 1fr 1.4fr 1fr 110px",
+        gridTemplateColumns: "60px 1fr 1.4fr 1fr 130px",
         gap: 12,
         alignItems: "center",
         padding: "10px 14px",
@@ -248,23 +346,93 @@ function SportRowEditor({ sport }: { sport: SportRow }) {
           {sport.slug}
         </span>
       </div>
-      <input
-        type="text"
-        value={logoUrl}
-        onChange={(e) => setLogoUrl(e.target.value)}
-        placeholder={fallbackHint}
-        style={{
-          height: 32,
-          padding: "0 10px",
-          background: "var(--color-bg, var(--bg))",
-          border: "1px solid var(--color-border, var(--border))",
-          borderRadius: 6,
-          fontFamily: "var(--font-mono, monospace)",
-          fontSize: 12,
-          color: "var(--color-fg, var(--fg))",
-          minWidth: 0,
-        }}
-      />
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+        <input
+          type="text"
+          value={logoUrl}
+          onChange={(e) => setLogoUrl(e.target.value)}
+          placeholder={fallbackHint}
+          style={{
+            height: 32,
+            padding: "0 10px",
+            background: "var(--color-bg, var(--bg))",
+            border: "1px solid var(--color-border, var(--border))",
+            borderRadius: 6,
+            fontFamily: "var(--font-mono, monospace)",
+            fontSize: 12,
+            color: "var(--color-fg, var(--fg))",
+            minWidth: 0,
+          }}
+        />
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={ACCEPTED_MIME.join(",")}
+            onChange={onFilePicked}
+            style={{ display: "none" }}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading || removing}
+            style={{
+              height: 26,
+              padding: "0 10px",
+              background: "var(--color-bg-subtle, var(--surface-2))",
+              color: "var(--color-fg, var(--fg))",
+              border: "1px solid var(--color-border, var(--border))",
+              borderRadius: 6,
+              fontSize: 11,
+              fontWeight: 600,
+              cursor: uploading || removing ? "default" : "pointer",
+              opacity: uploading || removing ? 0.6 : 1,
+            }}
+          >
+            {uploading ? "Uploading…" : "Upload file"}
+          </button>
+          {hasLogo && (
+            <button
+              type="button"
+              onClick={onRemove}
+              disabled={uploading || removing}
+              style={{
+                height: 26,
+                padding: "0 10px",
+                background: "transparent",
+                color: "var(--negative, #b4332a)",
+                border: "1px solid var(--color-border, var(--border))",
+                borderRadius: 6,
+                fontSize: 11,
+                fontWeight: 600,
+                cursor: uploading || removing ? "default" : "pointer",
+                opacity: uploading || removing ? 0.6 : 1,
+              }}
+            >
+              {removing ? "Removing…" : "Remove logo"}
+            </button>
+          )}
+          <span
+            style={{
+              fontSize: 10.5,
+              color: "var(--color-fg-muted, var(--fg-muted))",
+            }}
+          >
+            SVG, PNG, JPEG, WebP · ≤1 MB
+          </span>
+        </div>
+        {uploadError && (
+          <span
+            style={{
+              fontSize: 10.5,
+              color: "var(--negative, #b4332a)",
+              lineHeight: 1.3,
+            }}
+          >
+            {uploadError}
+          </span>
+        )}
+      </div>
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
         <input
           type="text"
@@ -325,7 +493,7 @@ function SportRowEditor({ sport }: { sport: SportRow }) {
             style={{
               fontSize: 10.5,
               color: "var(--negative, #b4332a)",
-              maxWidth: 110,
+              maxWidth: 130,
               textAlign: "right",
               lineHeight: 1.3,
             }}

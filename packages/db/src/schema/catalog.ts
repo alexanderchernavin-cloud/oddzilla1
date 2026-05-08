@@ -11,7 +11,18 @@ import {
   jsonb,
   unique,
   index,
+  customType,
 } from "drizzle-orm/pg-core";
+
+// Postgres BYTEA mapped to Buffer in/out. Drizzle's pg-core only ships
+// text-shaped types; this matches the avatar_templates.image_data
+// pattern so the same Buffer round-trip works on both tables without
+// a bespoke serializer.
+const bytea = customType<{ data: Buffer; default: false }>({
+  dataType() {
+    return "bytea";
+  },
+});
 import { sportKindEnum, matchStatusEnum } from "../enums.js";
 
 export const sports = pgTable(
@@ -31,6 +42,13 @@ export const sports = pgTable(
     // public/sports/<slug>.svg, then to the FallbackGlyph.
     logoUrl: text("logo_url"),
     brandColor: text("brand_color"),
+    // Admin-uploaded icon bytes. Mirrors avatar_templates.image_data:
+    // the BYTEA + MIME pair is served by GET /sports/:slug/logo. When
+    // a row carries bytes, the upload endpoint also writes a self-
+    // referential logo_url so the storefront's existing <img src> path
+    // works without code changes; clearing bytes also clears the URL.
+    logoData: bytea("logo_data"),
+    logoMime: text("logo_mime"),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [unique("sports_provider_urn").on(t.provider, t.providerUrn)],
@@ -71,6 +89,14 @@ export const tournaments = pgTable(
     // Oddin risk_tier: sidebar lists tournaments higher-tier first.
     // Nullable until the backfill runs or auto-mapping populates it.
     riskTier: smallint(),
+    // Optional per-tournament branding. Mirrors sports + competitors:
+    // logo_url either external paste or auto-stamped /api/tournaments/
+    // <id>/logo, brand_color "#RRGGBB" hex. Both nullable — when absent
+    // the sidebar falls back to the sport's logo.
+    logoUrl: text("logo_url"),
+    brandColor: text("brand_color"),
+    logoData: bytea("logo_data"),
+    logoMime: text("logo_mime"),
     active: boolean().notNull().default(true),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },
@@ -98,6 +124,12 @@ export const competitors = pgTable(
     // nullable — when absent the storefront falls back to initials.
     logoUrl: text(),
     brandColor: text(),
+    // Admin-uploaded icon bytes. Paired with logo_mime via a CHECK; the
+    // upload endpoint also stamps logo_url to a /api/competitors/<id>/logo
+    // URL so the existing logoUrl-based render path works without code
+    // changes. Mirrors sports.logo_data / sports.logo_mime exactly.
+    logoData: bytea("logo_data"),
+    logoMime: text("logo_mime"),
     active: boolean().notNull().default(true),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },
