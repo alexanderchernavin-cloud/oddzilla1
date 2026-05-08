@@ -3,6 +3,8 @@ import type {
   AnalysisFeedResponse,
   CommunityFeedResponse,
   CommunityMe,
+  CompetitionListResponse,
+  CompetitionSummary,
   Currency,
   CommunityTicketSummary,
 } from "@oddzilla/types";
@@ -14,6 +16,7 @@ import { serverApi } from "@/lib/server-fetch";
 import { FeedFilters } from "@/components/community/feed-filters";
 import { CommunityTicketCard } from "@/components/community/ticket-card";
 import { AnalysisCard } from "@/components/community/analysis-card";
+import { CompetitionCard } from "@/components/community/competition-card";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +28,7 @@ interface SportsResponse {
 // third reads /community/analyses. They share the URL ?tab= space
 // so a deep-linked filter (sport, currency) carries across tab
 // switches where it makes sense.
-type TabKind = "recent" | "bigWins" | "analyses";
+type TabKind = "recent" | "bigWins" | "analyses" | "competitions";
 // Sort space is per-tab. Tickets feed has 4 modes; analyses feed
 // has its own 4 (recommended / recent / most_inspired / top_authors).
 // Keeping them separate avoids enum gymnastics on the API.
@@ -49,6 +52,7 @@ const ANALYSIS_SORT_LABELS: Record<AnalysisSortKind, string> = {
 function parseTab(raw: string | undefined): TabKind {
   if (raw === "bigWins") return "bigWins";
   if (raw === "analyses") return "analyses";
+  if (raw === "competitions") return "competitions";
   return "recent";
 }
 
@@ -99,9 +103,21 @@ export default async function CommunityFeedPage({
   // call would mean a discriminated union all the way through.
   let tickets: CommunityTicketSummary[] = [];
   let analyses: AnalysisFeedResponse["analyses"] = [];
+  let competitions: CompetitionSummary[] = [];
   let hasMore = false;
 
-  if (tab === "analyses") {
+  if (tab === "competitions") {
+    // Competitions tab reads /community/competitions. Status filter
+    // lives in the URL via ?sort= reusing the existing key (we don't
+    // need a third per-tab URL slot for V1).
+    const queryParts: string[] = [`page=${page}`, `pageSize=20`];
+    if (sportId) queryParts.push(`sport=${sportId}`);
+    const feed = await serverApi<CompetitionListResponse>(
+      `/community/competitions?${queryParts.join("&")}`,
+    );
+    competitions = feed?.competitions ?? [];
+    hasMore = feed?.hasMore ?? false;
+  } else if (tab === "analyses") {
     const queryParts: string[] = [
       `page=${page}`,
       `sort=${analysisSort}`,
@@ -174,7 +190,21 @@ export default async function CommunityFeedPage({
 
       <FeedFilters sports={sports} activeSportId={sportId} activeCurrency={currency} />
 
-      {tab === "analyses" ? (
+      {tab === "competitions" ? (
+        competitions.length === 0 ? (
+          <EmptyState
+            filtered={Boolean(sportId)}
+            tab={tab}
+            sportName={sportId ? sportsById.get(sportId)?.name ?? null : null}
+          />
+        ) : (
+          <ul className="mt-6 space-y-3">
+            {competitions.map((c) => (
+              <CompetitionCard key={c.id} competition={c} />
+            ))}
+          </ul>
+        )
+      ) : tab === "analyses" ? (
         analyses.length === 0 ? (
           <EmptyState
             filtered={Boolean(sportId)}
@@ -219,6 +249,7 @@ export default async function CommunityFeedPage({
 function tabSubtitle(tab: TabKind): string {
   if (tab === "bigWins") return "Wins above the Big Win threshold from the last 7 days.";
   if (tab === "analyses") return "Pre-match takes from the community. Skin in the game required.";
+  if (tab === "competitions") return "Free prediction games. Pick scores, climb the leaderboard.";
   return "Live bets you can still copy — the matches are still on.";
 }
 
@@ -270,6 +301,9 @@ function SortTabs({
       </Tab>
       <Tab href={link("analyses")} active={activeTab === "analyses"}>
         Analyses
+      </Tab>
+      <Tab href={link("competitions")} active={activeTab === "competitions"}>
+        Competitions
       </Tab>
     </div>
   );
