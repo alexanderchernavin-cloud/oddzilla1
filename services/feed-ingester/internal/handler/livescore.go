@@ -168,14 +168,23 @@ func buildLiveScore(s *oddinxml.SportEventStatus, oddinTsMs int64) ([]byte, erro
 //
 //  1. The highest period flagged with the UOF "in progress" code 6.
 //     Honored where Oddin uses it (some traditional sports do).
-//  2. Count of periods that have a determined score, plus 1, capped at
-//     the total period count. A period is "started/completed" when it
-//     has any non-zero metric (score, rounds, kills, goals, etc.).
+//  2. Sport-aware fallback. Whether a period with score is "the live one"
+//     or "the just-finished one" depends on how the broker emits
+//     <period_scores>:
+//       - Map-based sports (type="map" — CS2 / Dota / LoL / Valorant)
+//         only ship a <period_score> row once the map's score is final,
+//         so count(periods-with-score) + 1 = next map being played.
+//       - Time-based sports (type="quarter" / "regular_period" /
+//         "first_half" / etc — basketball, football, hockey) pre-list
+//         every period at match start with 0:0, so the period
+//         accumulates score WHILE in progress. The highest-numbered
+//         period that has any activity IS the current period; treating
+//         "has score" as "completed" would advance to N+1 the moment
+//         the first basket of Q1 lands.
 //
 // We deliberately do NOT use top-level series home_score + away_score,
-// since for non-map sports (basketball quarters, football halves) those
-// fields hold cumulative game points, not maps-won — adding them
-// produces nonsense like "currentMap = 74".
+// since for non-map sports those fields hold cumulative game points, not
+// maps-won — adding them produces nonsense like "currentMap = 74".
 //
 // Returns nil when the series has ended (status >= 3).
 func deriveCurrentMap(s *oddinxml.SportEventStatus) *int {
@@ -206,20 +215,62 @@ func deriveCurrentMap(s *oddinxml.SportEventStatus) *int {
 		return &n
 	}
 
-	completed := 0
-	maxNumber := 0
+	// Sport-aware fallback. Detect map-based shape from period.type;
+	// any single "map" entry flips the whole match into the map-based
+	// branch (broker conventions are uniform across a match's periods).
+	isMapBased := false
 	for _, p := range s.PeriodScores.Periods {
-		if p.Number != nil && *p.Number > maxNumber {
-			maxNumber = *p.Number
-		}
-		if periodHasScore(p) {
-			completed++
+		if p.Type == "map" {
+			isMapBased = true
+			break
 		}
 	}
-	n := completed + 1
-	if maxNumber > 0 && n > maxNumber {
-		n = maxNumber
+
+	if isMapBased {
+		completed := 0
+		maxNumber := 0
+		for _, p := range s.PeriodScores.Periods {
+			if p.Number != nil && *p.Number > maxNumber {
+				maxNumber = *p.Number
+			}
+			if periodHasScore(p) {
+				completed++
+			}
+		}
+		n := completed + 1
+		if maxNumber > 0 && n > maxNumber {
+			n = maxNumber
+		}
+		return &n
 	}
+
+	// Time-based fallback: highest-numbered period with any activity is
+	// the current one. Pre-listed unstarted periods (0:0) are skipped;
+	// in the brief transition between two periods (e.g. Q3 just ended,
+	// Q4 not yet scoring) we'll briefly hold on N until the first point
+	// of N+1 lands. That's a 1-2 second misread vs the previous code's
+	// 12-minute misread (showing Q2 live throughout Q1).
+	var maxStarted int
+	maxStartedSet := false
+	for _, p := range s.PeriodScores.Periods {
+		if p.Number == nil {
+			continue
+		}
+		if !periodHasScore(p) {
+			continue
+		}
+		if !maxStartedSet || *p.Number > maxStarted {
+			maxStarted = *p.Number
+			maxStartedSet = true
+		}
+	}
+	if maxStartedSet {
+		n := maxStarted
+		return &n
+	}
+	// Pre-match for this period set: nothing has scored yet. Default
+	// to the first period (next to play).
+	n := 1
 	return &n
 }
 

@@ -131,24 +131,77 @@ func TestBuildLiveScore_CurrentMap_NilWithoutPeriods(t *testing.T) {
 }
 
 func TestBuildLiveScore_CurrentMap_BasketballQuarters(t *testing.T) {
-	// Real production basketball shape: home_score=20, away_score=53 are
-	// game points (not maps won). Must NOT compute currentMap = 74.
+	// Late-game basketball: Q1-Q3 are final, Q4 is live and accumulating
+	// score. Top-level home_score / away_score are cumulative game points
+	// (not maps won), so the heuristic must NOT sum them — that would
+	// compute currentMap = 28+59+1 = 88. With the time-based fallback
+	// the highest period number with score = 4 = the live quarter.
 	s := &oddinxml.SportEventStatus{
 		Status:    ptr(1),
-		HomeScore: ptr(20),
-		AwayScore: ptr(53),
+		HomeScore: ptr(28),
+		AwayScore: ptr(59),
 		PeriodScores: &oddinxml.PeriodScores{
 			Periods: []oddinxml.PeriodScore{
 				{Number: ptr(1), Type: "quarter", HomeScore: ptr(6), AwayScore: ptr(18)},
 				{Number: ptr(2), Type: "quarter", HomeScore: ptr(6), AwayScore: ptr(18)},
 				{Number: ptr(3), Type: "quarter", HomeScore: ptr(8), AwayScore: ptr(17)},
-				{Number: ptr(4), Type: "quarter", HomeScore: ptr(0), AwayScore: ptr(0)},
+				{Number: ptr(4), Type: "quarter", HomeScore: ptr(8), AwayScore: ptr(6)},
 			},
 		},
 	}
 	cm := deriveCurrentMap(s)
 	if cm == nil || *cm != 4 {
-		t.Fatalf("expected currentMap=4 (basketball Q4), got %v", cm)
+		t.Fatalf("expected currentMap=4 (basketball Q4 live), got %v", cm)
+	}
+}
+
+// Regression test for production match 635055 (Dallas vs Denver eBasketball,
+// 2026-05-08): Q1 was in progress with score 2:2 and the broker pre-listed
+// Q2-Q4 with 0:0. The previous "completed+1" fallback counted Q1's score
+// as "completed" and returned currentMap=2, so the storefront highlighted
+// Q2 as live for the entire 12-minute duration of Q1. The time-based
+// fallback now returns 1 — the highest period with any activity.
+func TestBuildLiveScore_CurrentMap_BasketballQ1InProgress(t *testing.T) {
+	s := &oddinxml.SportEventStatus{
+		Status:    ptr(1),
+		HomeScore: ptr(2),
+		AwayScore: ptr(2),
+		PeriodScores: &oddinxml.PeriodScores{
+			Periods: []oddinxml.PeriodScore{
+				{Number: ptr(1), Type: "quarter", HomeScore: ptr(2), AwayScore: ptr(2)},
+				{Number: ptr(2), Type: "quarter", HomeScore: ptr(0), AwayScore: ptr(0)},
+				{Number: ptr(3), Type: "quarter", HomeScore: ptr(0), AwayScore: ptr(0)},
+				{Number: ptr(4), Type: "quarter", HomeScore: ptr(0), AwayScore: ptr(0)},
+			},
+		},
+	}
+	cm := deriveCurrentMap(s)
+	if cm == nil || *cm != 1 {
+		t.Fatalf("expected currentMap=1 (basketball Q1 live), got %v", cm)
+	}
+}
+
+// Pre-match basketball: every quarter pre-listed at 0:0, top-level still
+// at 0:0. No period has any activity yet. The time-based fallback should
+// default to currentMap=1 (the first period next up) rather than nil so
+// the scoreboard still highlights the upcoming Q1 column.
+func TestBuildLiveScore_CurrentMap_BasketballPreMatch(t *testing.T) {
+	s := &oddinxml.SportEventStatus{
+		Status:    ptr(1),
+		HomeScore: ptr(0),
+		AwayScore: ptr(0),
+		PeriodScores: &oddinxml.PeriodScores{
+			Periods: []oddinxml.PeriodScore{
+				{Number: ptr(1), Type: "quarter", HomeScore: ptr(0), AwayScore: ptr(0)},
+				{Number: ptr(2), Type: "quarter", HomeScore: ptr(0), AwayScore: ptr(0)},
+				{Number: ptr(3), Type: "quarter", HomeScore: ptr(0), AwayScore: ptr(0)},
+				{Number: ptr(4), Type: "quarter", HomeScore: ptr(0), AwayScore: ptr(0)},
+			},
+		},
+	}
+	cm := deriveCurrentMap(s)
+	if cm == nil || *cm != 1 {
+		t.Fatalf("expected currentMap=1 (basketball pre-Q1), got %v", cm)
 	}
 }
 
