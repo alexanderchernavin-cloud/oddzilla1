@@ -82,6 +82,12 @@ export function MatchRow({ match, sportSlug, sportShort, tab = "match" }: Props)
       marketLabel: "Match winner",
       outcomeLabel: side === "home" ? match.homeTeam : match.awayTeam,
       sportSlug,
+      // Stamped active=true here because the click-handler bails on null
+      // price above; mergeMatchWithLive in MatchListTabs already nulls
+      // the price when an in-flight WS tick reports active=false, so
+      // reaching this code path means the outcome was bettable when the
+      // user clicked. The slip rail re-derives active from later ticks.
+      active: true,
     };
     if (slip.has(selection.marketId, selection.outcomeId)) {
       slip.remove(selection.marketId, selection.outcomeId);
@@ -107,6 +113,12 @@ export function MatchRow({ match, sportSlug, sportShort, tab = "match" }: Props)
       marketLabel: `Market #${top.providerMarketId}`,
       outcomeLabel: outcomeLabelForCard(o, match.homeTeam, match.awayTeam),
       sportSlug,
+      // Stamped active=true here because the click-handler bails on null
+      // price above; mergeMatchWithLive in MatchListTabs already nulls
+      // the price when an in-flight WS tick reports active=false, so
+      // reaching this code path means the outcome was bettable when the
+      // user clicked. The slip rail re-derives active from later ticks.
+      active: true,
     };
     if (slip.has(selection.marketId, selection.outcomeId)) {
       slip.remove(selection.marketId, selection.outcomeId);

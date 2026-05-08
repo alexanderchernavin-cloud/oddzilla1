@@ -40,6 +40,13 @@ export interface SlipSelection {
   // side to preview tiple/tippot pricing — the server reads its own
   // copy from market_outcomes at placement, so this is informational.
   probability?: string;
+  // Whether the outcome is currently bettable. Refreshed by the slip
+  // rail's WS auto-refresh so the user can't hit "Place bet" on an
+  // outcome that flipped suspended after they clicked. The server
+  // re-validates this at placement (outcome.active + market.status),
+  // so the client-side flag is purely a UX gate. Defaults to true for
+  // back-compat with selections persisted before this field existed.
+  active?: boolean;
   homeTeam: string;
   awayTeam: string;
   marketLabel: string;       // human display: "Match Winner", "Map Winner — Map 1"

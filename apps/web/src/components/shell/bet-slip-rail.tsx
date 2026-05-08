@@ -55,6 +55,7 @@ function effectiveMarginBp(baseBp: number, perLegBp: number, n: number): number 
 }
 
 const DRIFT_ERROR_MESSAGE = "The odds moved since you clicked. Try again.";
+const SUSPENDED_ERROR_MESSAGE = "This market is suspended. Try again in a moment.";
 
 type RailTab = "slip" | "history";
 
@@ -106,16 +107,43 @@ export function BetSlipRail() {
     for (const s of selections) {
       const tick = liveTicks[`${s.marketId}:${s.outcomeId}`];
       if (!tick) continue;
-      if (tick.publishedOdds === s.odds && (tick.probability ?? s.probability) === s.probability) {
+      const prevActive = s.active ?? true;
+      const nextProb = tick.probability ?? s.probability;
+      // Skip the update only when EVERY tracked field matches. Under the
+      // old condition (odds + probability) an outcome could flip
+      // active=false at the same odds and the slip would never notice,
+      // so the user clicked Place bet against a dead market and ate
+      // the server's market_not_active rejection.
+      if (
+        tick.publishedOdds === s.odds &&
+        nextProb === s.probability &&
+        tick.active === prevActive
+      ) {
         continue;
       }
-      slip.updateOdds(s.marketId, s.outcomeId, tick.publishedOdds, tick.probability);
+      slip.updateOdds(
+        s.marketId,
+        s.outcomeId,
+        tick.publishedOdds,
+        tick.probability,
+        tick.active,
+      );
       appliedAny = true;
     }
     if (appliedAny) {
-      setError((prev) => (prev === DRIFT_ERROR_MESSAGE ? null : prev));
+      setError((prev) =>
+        prev === DRIFT_ERROR_MESSAGE || prev === SUSPENDED_ERROR_MESSAGE
+          ? null
+          : prev,
+      );
     }
   }, [liveTicks, selections, slip]);
+
+  // Once any selection is flagged inactive (either by the WS tick path
+  // above or stamped at click time by the caller), surface the
+  // suspended state in the rail and gate Place bet so the user doesn't
+  // hit the server's market_not_active / outcome_not_active guard.
+  const hasSuspendedSelection = selections.some((s) => s.active === false);
 
   // Effective product mode. Single is forced when there's only one
   // selection regardless of last-stored mode. tiple/tippot need ≥2.
@@ -888,6 +916,18 @@ export function BetSlipRail() {
             </div>
           )}
 
+          {/* Pre-empt the server's suspended-market 400 — the WS tick
+              path already flipped one of our selections to active=false,
+              so submitting would just dead-end against the validator. */}
+          {!error && hasSuspendedSelection && (
+            <div
+              role="status"
+              style={{ fontSize: 12, color: "var(--negative)", lineHeight: 1.45 }}
+            >
+              {SUSPENDED_ERROR_MESSAGE}
+            </div>
+          )}
+
           <Button
             variant="primary"
             size="lg"
@@ -896,7 +936,8 @@ export function BetSlipRail() {
               submitting ||
               builderNeedsLegs ||
               builderQuoteMissing ||
-              (isBetBuilderMode && !!builderError)
+              (isBetBuilderMode && !!builderError) ||
+              hasSuspendedSelection
             }
             style={{ width: "100%" }}
           >
@@ -940,12 +981,18 @@ function SelectionCard({
   selection: SlipSelection;
   onRemove: () => void;
 }) {
+  // Selections persisted from older slip versions don't carry an active
+  // flag — treat the absence as bettable so the card doesn't suddenly
+  // grey out for everyone after a deploy.
+  const suspended = selection.active === false;
   return (
     <div
       style={{
         padding: "12px 14px",
         background: "var(--surface)",
-        border: "1px solid var(--border)",
+        border: suspended
+          ? "1px solid color-mix(in oklab, var(--negative) 35%, var(--border))"
+          : "1px solid var(--border)",
         borderRadius: 10,
         display: "flex",
         flexDirection: "column",
@@ -968,6 +1015,24 @@ function SelectionCard({
         >
           {selection.marketLabel}
         </span>
+        {suspended && (
+          <span
+            className="mono"
+            style={{
+              fontSize: 9.5,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              fontWeight: 600,
+              padding: "1px 6px",
+              borderRadius: 999,
+              color: "var(--negative)",
+              border: "1px solid color-mix(in oklab, var(--negative) 40%, transparent)",
+              background: "color-mix(in oklab, var(--negative) 8%, transparent)",
+            }}
+          >
+            Suspended
+          </span>
+        )}
         <div style={{ flex: 1 }} />
         <button
           type="button"
@@ -999,11 +1064,21 @@ function SelectionCard({
             letterSpacing: "-0.005em",
             minWidth: 0,
             flex: 1,
+            color: suspended ? "var(--fg-muted)" : undefined,
+            textDecoration: suspended ? "line-through" : undefined,
           }}
         >
           {selection.outcomeLabel}
         </div>
-        <div className="mono tnum" style={{ fontSize: 14, fontWeight: 600, flexShrink: 0 }}>
+        <div
+          className="mono tnum"
+          style={{
+            fontSize: 14,
+            fontWeight: 600,
+            flexShrink: 0,
+            color: suspended ? "var(--fg-muted)" : undefined,
+          }}
+        >
           {Number(selection.odds).toFixed(2)}
         </div>
       </div>
@@ -1120,7 +1195,7 @@ function mapError(err: ApiFetchError): string {
     case "market_not_active":
     case "outcome_not_active":
     case "outcome_no_price":
-      return "This market is suspended. Try again in a moment.";
+      return SUSPENDED_ERROR_MESSAGE;
     case "match_not_open":
       return "This match is no longer open for betting.";
     case "account_not_active":

@@ -56,6 +56,10 @@ export function CopyButton({ ticketId }: CopyButtonProps) {
           marketId: sel.marketId,
           outcomeId: sel.outcomeId,
           odds: sel.odds,
+          // The /community/copy endpoint already filters to legs whose
+          // markets are still active — assume bettable; the slip rail
+          // will re-derive from WS ticks once the legs subscribe.
+          active: true,
           homeTeam: sel.homeTeam,
           awayTeam: sel.awayTeam,
           marketLabel: sel.marketLabel,

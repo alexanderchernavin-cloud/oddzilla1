@@ -682,6 +682,10 @@ function toggle(
       outcomeId: o.outcomeId,
       odds: o.publishedOdds,
       probability: o.probability ?? undefined,
+      // Click only reaches here when suspended/!o.active gates above
+      // pass — record the stamp so the slip rail starts in the
+      // bettable state and re-derives from later WS ticks.
+      active: true,
       homeTeam: match.homeTeam,
       awayTeam: match.awayTeam,
       marketLabel: m.name,
