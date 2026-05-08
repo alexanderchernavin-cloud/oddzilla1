@@ -54,6 +54,7 @@ import {
   NotFoundError,
 } from "../../lib/errors.js";
 import { resolveOptionalAvatarUrl } from "./avatar-url.js";
+import { emitNotification } from "./notifications.js";
 
 // Same shape AuthService uses for `users` writes — limit per-IP-per-user
 // abuse on the nickname squat path.
@@ -385,6 +386,8 @@ export default async function communityRoutes(app: FastifyInstance) {
           ticketId: communityTickets.ticketId,
           currency: communityTickets.currency,
           betType: communityTickets.betType,
+          ownerId: communityTickets.userId,
+          ownerNickname: users.nickname,
         })
         .from(communityTickets)
         .innerJoin(users, eq(users.id, communityTickets.userId))
@@ -467,6 +470,42 @@ export default async function communityRoutes(app: FastifyInstance) {
         .catch((err: unknown) => {
           app.log.warn({ err, ticketId: id }, "inspiration_count bump failed");
         });
+
+      // Emit `pick_copied` to the ticket owner. Same fire-and-forget
+      // contract as the counter bump above — a failed emit must not
+      // break the prefill. The actor is whoever is signed in
+      // (request.user is populated when a JWT cookie verifies, even
+      // on this auth-optional route); we silently skip when anonymous
+      // because the panel needs an actor name to render "X copied
+      // your bet". The emit helper itself drops self-emits.
+      const actor = request.user;
+      if (actor) {
+        (async () => {
+          const [actorRow] = await app.db
+            .select({ nickname: users.nickname })
+            .from(users)
+            .where(eq(users.id, actor.id))
+            .limit(1);
+          if (!actorRow?.nickname) return;
+          await emitNotification(app, {
+            userId: ct.ownerId,
+            type: "pick_copied",
+            actorId: actor.id,
+            payload: {
+              actorNickname: actorRow.nickname,
+              sourceCommunityTicketId: id,
+            },
+            // Group on the source ticket so "3 people copied your
+            // bet" collapses correctly within the dedup window.
+            groupKey: `pick_copied:${id}`,
+            // Deep-link to the copier's profile. The owner can see
+            // who's copying them.
+            deepLink: actorRow.nickname ? `/u/${actorRow.nickname}` : null,
+          });
+        })().catch((err: unknown) => {
+          app.log.warn({ err, ticketId: id }, "pick_copied emit failed");
+        });
+      }
 
       return {
         // CHAR(4) → trim padding at the API boundary, same convention

@@ -8,6 +8,7 @@ import { ShellContainer } from "@/components/shell/shell-container";
 import { MatchPageProvider } from "@/lib/match-page-context";
 import { CombiBoostConfigProvider } from "@/lib/combi-boost-config";
 import { SportLogosProvider } from "@/lib/sport-logos";
+import { NotificationProvider } from "@/lib/notifications";
 import { getSessionUser } from "@/lib/auth";
 import { serverApi } from "@/lib/server-fetch";
 import type { WalletListResponse } from "@oddzilla/types";
@@ -50,6 +51,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
       <SportLogosProvider
         entries={sports.map((s) => ({ slug: s.slug, logoUrl: s.logoUrl ?? null }))}
       >
+      <NotificationProvider enabled={Boolean(user)}>
       <ShellContainer>
         <TopBar
           signedIn={Boolean(user)}
@@ -75,6 +77,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
         <MobileShellOverlay />
         <MobileBetSlipBar />
       </ShellContainer>
+      </NotificationProvider>
       </SportLogosProvider>
       </CombiBoostConfigProvider>
       </MatchPageProvider>

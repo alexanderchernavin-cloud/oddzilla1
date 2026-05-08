@@ -61,6 +61,10 @@ import {
   NotFoundError,
 } from "../../lib/errors.js";
 import { resolveOptionalAvatarUrl } from "./avatar-url.js";
+import {
+  emitNotification,
+  ensureCompetitionUpdatesEnabled,
+} from "./notifications.js";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -418,7 +422,12 @@ SELECT
       if (!UUID_RE.test(id)) throw new NotFoundError();
 
       const [comp] = await app.db
-        .select({ id: competitions.id, status: competitions.status })
+        .select({
+          id: competitions.id,
+          status: competitions.status,
+          title: competitions.title,
+          betCloseAt: competitions.betCloseAt,
+        })
         .from(competitions)
         .where(eq(competitions.id, id))
         .limit(1);
@@ -478,6 +487,54 @@ SELECT
         }
         return { joinedAt: inserted[0]!.joinedAt, isNew: true };
       });
+
+      // PRD acceptance criteria NOTIF_25/NOTIF_26: a fresh join
+      // auto-enables Competition Updates unless the user has
+      // manually toggled the pref OFF beforehand. Idempotent + race-
+      // safe (single UPSERT) — see ensureCompetitionUpdatesEnabled.
+      // Skip on alreadyJoined; the user has presumably been getting
+      // updates already.
+      if (result.isNew) {
+        ensureCompetitionUpdatesEnabled(app, u.id).catch((err: unknown) => {
+          app.log.warn(
+            { err, userId: u.id, competitionId: id },
+            "competition_updates auto-enable failed",
+          );
+        });
+
+        // If the bet-close window is within 24h, fire a one-shot
+        // `competition_deadline` so the joiner sees something useful
+        // in their panel without waiting for a cron worker. The
+        // future cron (PRD: future Iframe-era reminders) will fan
+        // out reminders to joined users at T-2h; that's a
+        // settlement/cron concern outside this PR.
+        const hoursToClose =
+          (comp.betCloseAt.getTime() - Date.now()) / (60 * 60 * 1000);
+        if (hoursToClose > 0 && hoursToClose <= 24) {
+          emitNotification(app, {
+            userId: u.id,
+            type: "competition_deadline",
+            // System emit — no actor. The PRD's competition_deadline
+            // copy ("'Weekend Warriors' closes in 2 hours") leads
+            // with the comp name, not a name.
+            actorId: null,
+            payload: {
+              competitionId: id,
+              competitionTitle: comp.title,
+              hoursRemaining: Math.max(1, Math.round(hoursToClose)),
+            },
+            // No group_key: each unique deadline reminder should
+            // surface separately (a future cron may emit T-24h, T-2h
+            // — collapsing them would lose the urgency progression).
+            deepLink: `/community/competitions/${id}`,
+          }).catch((err: unknown) => {
+            app.log.warn(
+              { err, userId: u.id, competitionId: id },
+              "competition_deadline emit failed",
+            );
+          });
+        }
+      }
 
       return {
         competitionId: id,

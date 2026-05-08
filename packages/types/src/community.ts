@@ -729,4 +729,201 @@ export type CommunityErrorCode =
   | "prediction_match_not_found" // 404 — competition_match_id not in this comp
   | "tip_required" // 400 — tipping comp without tip
   | "tip_not_allowed" // 400 — prediction-only comp with tip
-  | "rules_locked"; // 400 — admin tried to edit rules after a participant joined
+  | "rules_locked" // 400 — admin tried to edit rules after a participant joined
+  // Notifications (Phase 12)
+  | "preference_invalid"; // 400 — empty patch or unknown key on /community/me/preferences
+
+// ─── Notifications & preferences (Phase 12) ────────────────────────────────
+
+// Mirrors the `notification_type` Postgres enum in
+// 0044_community_notifications.sql. The web renderer keys icons,
+// colors, and copy strings off this discriminator.
+export type NotificationType =
+  | "pick_copied"
+  | "bet_inspired"
+  | "new_follower"
+  | "analysis_shared"
+  | "leaderboard_move"
+  | "competition_deadline"
+  | "community_digest"
+  | "challenge_completed"
+  | "achievement_unlocked"
+  | "level_up"
+  | "loot_acquired";
+
+// Per-type payload schemas. Stored in user_notifications.payload as
+// JSONB; the FE renderer reads them by type. Keep these tight — they
+// are denormalised snapshots, so additive changes are fine but renames
+// would require a payload migration. NULL fields below mean "absent
+// for that emit-site"; the renderer falls back gracefully.
+export interface PickCopiedPayload {
+  // Always present so the panel can render bold-actor + "copied your
+  // bet" without a join. Snapshot-time nickname (a later rename
+  // doesn't rewrite history).
+  actorNickname: string;
+  // Optional context line — match name + market. The renderer
+  // displays it on the secondary line and falls back to a generic
+  // "your bet" when absent.
+  context?: string;
+  // Source community ticket the actor copied. The deep-link points
+  // here.
+  sourceCommunityTicketId?: string;
+}
+
+export interface BetInspiredPayload {
+  actorNickname: string;
+  context?: string;
+  sourceCommunityTicketId?: string;
+}
+
+export interface NewFollowerPayload {
+  actorNickname: string;
+}
+
+export interface AnalysisSharedPayload {
+  actorNickname: string;
+  // The analysis the actor copied/applied from. Always present;
+  // the renderer deep-links to /analyses/:id (via deep_link col).
+  analysisId: string;
+  // Match the analysis is on, for the secondary context line. Same
+  // shape as PickCopiedPayload.context.
+  context?: string;
+}
+
+export interface LeaderboardMovePayload {
+  competitionId: string;
+  competitionTitle: string;
+  newRank: number;
+  // Direction relative to last seen rank — drives "moved up to #N"
+  // vs "dropped to #N" copy.
+  direction: "up" | "down";
+}
+
+export interface CompetitionDeadlinePayload {
+  competitionId: string;
+  competitionTitle: string;
+  // Hours until the bet-close deadline at the time of emission.
+  // Renderer formats as "closes in 2 hours" / "closes in 30 minutes".
+  hoursRemaining: number;
+}
+
+export interface CommunityDigestPayload {
+  // Free-text headline ("Top wins this week"). Future digest
+  // variants will add structured fields for trending picks.
+  headline: string;
+}
+
+// Gamification rewards. XP/coins are integers (no fractional rewards
+// in V1). cosmeticId is the avatars/cosmetic identifier when relevant.
+export interface ChallengeCompletedPayload {
+  challengeId: string;
+  challengeTitle: string;
+  xp?: number;
+  coins?: number;
+}
+
+export interface AchievementUnlockedPayload {
+  // achievement_definitions.id (the well-known catalog string).
+  achievementId: string;
+  achievementTitle: string;
+  xp?: number;
+}
+
+export interface LevelUpPayload {
+  newLevel: number;
+  // Optional tier label ("Silver", "Gold"). Drives the celebratory
+  // toast tier badge in V2.
+  tierName?: string;
+}
+
+export interface LootAcquiredPayload {
+  cosmeticId: string;
+  cosmeticName: string;
+  // 'common' | 'rare' | 'epic' | 'legendary' — opaque to the BE,
+  // typed by the cosmetics catalog elsewhere.
+  rarity: string;
+}
+
+export type NotificationPayload =
+  | PickCopiedPayload
+  | BetInspiredPayload
+  | NewFollowerPayload
+  | AnalysisSharedPayload
+  | LeaderboardMovePayload
+  | CompetitionDeadlinePayload
+  | CommunityDigestPayload
+  | ChallengeCompletedPayload
+  | AchievementUnlockedPayload
+  | LevelUpPayload
+  | LootAcquiredPayload;
+
+// One row in the GET /community/notifications response. The
+// discriminated payload field is typed loosely (Record) at the
+// transport layer — the renderer narrows by type. Strict per-type
+// typing happens at the call site, not the wire.
+export interface NotificationItem {
+  id: string;
+  type: NotificationType;
+  // Snapshot-time actor nickname (denormalised in the payload). NULL
+  // for system-emitted types (digest, level_up, loot_acquired).
+  actorNickname: string | null;
+  payload: Record<string, unknown>;
+  // Optional path the panel routes to on click. NULL = no
+  // navigation, just mark-read.
+  deepLink: string | null;
+  // Snapshot count for grouped items ("3 people copied your bet").
+  // 1 for ungrouped rows.
+  groupCount: number;
+  read: boolean;
+  createdAt: string; // ISO-8601
+}
+
+export interface NotificationListResponse {
+  items: NotificationItem[];
+  unreadCount: number;
+  // Cursor-style pagination would slot in here if we ever need it.
+  // V1 returns the most-recent N (50) and lets the panel decide.
+}
+
+// User-facing preferences shape. Returned by GET /community/me/preferences
+// and accepted (partial) by PATCH /community/me/preferences. Mirrors
+// the user_preferences table 1:1 with `sharePublicly` aliased onto
+// users.tickets_public so the FE has one endpoint for both.
+export interface NotificationPreferences {
+  picksCopied: boolean;
+  newFollowers: boolean;
+  competitionUpdates: boolean;
+  // Companion flag: TRUE when the user has explicitly toggled the
+  // competition-updates switch. The FE uses it to disable the auto-
+  // enable-on-join behavior that respects the user's prior choice.
+  competitionUpdatesManuallySet: boolean;
+  communityHighlights: boolean;
+  achievementsRewards: boolean;
+}
+
+export interface PrivacyPreferences {
+  // Aliased onto users.tickets_public; flipping this here is the
+  // same write as PATCH /community/me/visibility. PRD: BetslipContext
+  // sync.
+  sharePublicly: boolean;
+  showWinLossRecord: boolean;
+  allowProfileDiscovery: boolean;
+}
+
+export interface PreferencesResponse {
+  notifications: NotificationPreferences;
+  privacy: PrivacyPreferences;
+}
+
+// Partial-update shape. Every key is optional; the API rejects an
+// empty body with `preference_invalid`.
+export interface PreferencesUpdateRequest {
+  notifications?: Partial<NotificationPreferences>;
+  privacy?: Partial<PrivacyPreferences>;
+}
+
+export interface MarkReadResponse {
+  // Server-truth unread count after the mutation. Lets the bell
+  // badge stay in sync without a follow-up GET.
+  unreadCount: number;
+}

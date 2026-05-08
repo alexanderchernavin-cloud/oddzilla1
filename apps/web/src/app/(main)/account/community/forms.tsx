@@ -22,13 +22,15 @@ export function CommunitySettingsForms({
   return (
     <div className="mt-8 space-y-6">
       <AvatarPicker initial={initial} templates={templates} />
-      <div className="grid gap-6 md:grid-cols-2">
-        <ProfileForm
-          initialNickname={initial.nickname ?? ""}
-          initialBio={initial.bio ?? ""}
-        />
-        <VisibilityForm initial={initial.ticketsPublic} />
-      </div>
+      <ProfileForm
+        initialNickname={initial.nickname ?? ""}
+        initialBio={initial.bio ?? ""}
+      />
+      {/* Visibility lives inside PreferencesForms now (Share to
+          Community is the same toggle backed by users.tickets_public).
+          The dedicated VisibilityForm has been retired so the three
+          privacy toggles are colocated per the Notifications & Privacy
+          PRD. */}
     </div>
   );
 }
@@ -264,71 +266,6 @@ function ProfileForm({
   );
 }
 
-function VisibilityForm({ initial }: { initial: boolean }) {
-  const router = useRouter();
-  const [ticketsPublic, setTicketsPublic] = useState(initial);
-  const [submitting, setSubmitting] = useState(false);
-  const [message, setMessage] = useState<
-    { kind: "ok" | "err"; text: string } | null
-  >(null);
-
-  async function onSubmit(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setSubmitting(true);
-    setMessage(null);
-    try {
-      await clientApi("/community/me/visibility", {
-        method: "PATCH",
-        body: JSON.stringify({ ticketsPublic }),
-      });
-      setMessage({ kind: "ok", text: "Saved." });
-      router.refresh();
-    } catch (err) {
-      setMessage({ kind: "err", text: explainError(err) });
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <form onSubmit={onSubmit} className="card space-y-4 p-6">
-      <h2 className="text-sm uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-        Visibility
-      </h2>
-
-      <label className="flex items-start gap-3">
-        <input
-          type="checkbox"
-          checked={ticketsPublic}
-          onChange={(e) => setTicketsPublic(e.target.checked)}
-          className="mt-0.5 h-4 w-4"
-        />
-        <span className="text-sm">
-          Show my settled tickets in the community feed and on my public
-          profile.
-        </span>
-      </label>
-
-      {message ? (
-        <p
-          role="status"
-          className={
-            "text-sm " +
-            (message.kind === "ok"
-              ? "text-[var(--color-positive)]"
-              : "text-[var(--color-negative)]")
-          }
-        >
-          {message.text}
-        </p>
-      ) : null}
-
-      <button type="submit" disabled={submitting} className="btn btn-ghost">
-        {submitting ? "Saving…" : "Save visibility"}
-      </button>
-    </form>
-  );
-}
 
 function explainError(err: unknown): string {
   if (err instanceof ApiFetchError) {
