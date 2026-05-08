@@ -77,8 +77,15 @@ const EnvSchema = z.object({
   // Single shared ERC20 receive address for USDC deposits. Empty =
   // /wallet/deposit-address returns { available: false } and the
   // storefront tells the user deposits aren't currently enabled.
+  // Empty string folds to undefined so `.optional()` accepts the
+  // unset case — matches the ODDIN_* preprocessors above and lets
+  // .env.example ship the field blank without breaking boot.
   DEPOSIT_RECEIVE_ADDRESS: z.preprocess(
-    (v) => (typeof v === "string" ? v.trim() : v),
+    (v) => {
+      if (typeof v !== "string") return v;
+      const trimmed = v.trim();
+      return trimmed === "" ? undefined : trimmed;
+    },
     z
       .string()
       .regex(/^0x[0-9a-fA-F]{40}$/u, "DEPOSIT_RECEIVE_ADDRESS must be a 0x-prefixed 40-hex address")
