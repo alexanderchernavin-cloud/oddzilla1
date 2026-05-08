@@ -32,23 +32,30 @@ export async function MatchAnalysesSection({ matchId, matchTitle, matchStatus }:
   );
   const analyses = feed?.analyses ?? [];
 
-  const showWriteButton = Boolean(sessionUser) && matchStatus === "not_started";
+  const isPreMatch = matchStatus === "not_started";
+  const showWriteButton = Boolean(sessionUser) && isPreMatch;
 
-  if (analyses.length === 0 && !showWriteButton) {
-    // No-op: pre-match without auth + no analyses → nothing to render.
-    // Returning null keeps the page from a vacant header band.
+  // Render whenever the analysis window is meaningful: pre-match
+  // (so logged-in users can publish, anonymous users see the
+  // affordance) OR there's existing content (so live/closed
+  // matches show the analyses people published before kickoff).
+  // Cancelled / suspended matches with no analyses fall through
+  // to null — they're operational dead-ends, no editorial signal.
+  if (analyses.length === 0 && !isPreMatch) {
     return null;
   }
 
   return (
     <section className="mt-8">
-      <header className="flex items-baseline justify-between">
+      <header className="flex items-baseline justify-between gap-4">
         <div>
           <h2 className="text-sm uppercase tracking-[0.18em] text-[var(--color-fg-subtle)]">
             Pre-match analyses
           </h2>
           <p className="mt-1 text-xs text-[var(--color-fg-muted)]">
-            Skin-in-the-game takes from the community. 100–5000 chars; min odds 1.30.
+            {isPreMatch
+              ? "Skin-in-the-game takes from the community. 100–5000 chars; min odds 1.30."
+              : "Pre-match window closed — these were published before kickoff."}
           </p>
         </div>
         {showWriteButton ? (
@@ -57,10 +64,7 @@ export async function MatchAnalysesSection({ matchId, matchTitle, matchStatus }:
       </header>
 
       {analyses.length === 0 ? (
-        <p className="mt-4 rounded-[12px] border border-dashed border-[var(--color-border-strong)] p-6 text-center text-sm text-[var(--color-fg-muted)]">
-          No analyses on this match yet.
-          {showWriteButton ? " Be the first." : " Place a bet first to publish one."}
-        </p>
+        <EmptyHint loggedIn={Boolean(sessionUser)} isPreMatch={isPreMatch} />
       ) : (
         <ul className="mt-4 space-y-3">
           {analyses.map((a) => (
@@ -69,5 +73,34 @@ export async function MatchAnalysesSection({ matchId, matchTitle, matchStatus }:
         </ul>
       )}
     </section>
+  );
+}
+
+// Keeps the empty-state copy honest about *why* the user isn't
+// seeing a CTA. Three real cases (everything else falls through
+// to a returns-null upstream):
+//   pre-match + logged in   → "Be the first" (CTA right above)
+//   pre-match + anonymous   → "Log in to publish"
+//   live/closed             → window closed (no analyses landed
+//                             before kickoff)
+function EmptyHint({
+  loggedIn,
+  isPreMatch,
+}: {
+  loggedIn: boolean;
+  isPreMatch: boolean;
+}) {
+  let body: string;
+  if (isPreMatch && loggedIn) {
+    body = "No analyses on this match yet. Be the first.";
+  } else if (isPreMatch) {
+    body = "No analyses on this match yet. Log in and place a bet to publish one.";
+  } else {
+    body = "No analyses landed before kickoff.";
+  }
+  return (
+    <p className="mt-4 rounded-[12px] border border-dashed border-[var(--color-border-strong)] p-6 text-center text-sm text-[var(--color-fg-muted)]">
+      {body}
+    </p>
   );
 }
