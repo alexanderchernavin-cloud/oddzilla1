@@ -8,7 +8,7 @@ import { Pill, LiveDot, TeamMark } from "@/components/ui/primitives";
 import { TierMark, isFeaturedTier } from "@/components/ui/tier-mark";
 import { useBetSlip } from "@/lib/bet-slip";
 import { mapCellValue, type LiveScore } from "@/lib/live-score";
-import { useOddsFlash } from "@/lib/use-odds-flash";
+import { useOddsFlash, useValueFlash } from "@/lib/use-odds-flash";
 import type { SlipSelection } from "@oddzilla/types";
 
 export interface ListMatch {
@@ -562,42 +562,67 @@ function TeamScoreRow({
           {truncate(name, 24)}
         </span>
       </div>
-      {showSeries && (
-        <div
-          className="mono tnum"
-          style={{
-            textAlign: "center",
-            fontSize: 12.5,
-            fontWeight: 600,
-            color: "var(--fg)",
-            padding: "2px 0",
-            border: "1px solid var(--border)",
-            borderRadius: "var(--r-sm, 6px)",
-          }}
-        >
-          {series}
-        </div>
-      )}
-      {cols.map((n) => {
-        const v = getValue(n);
-        const live = isLiveCol(n);
-        return (
-          <div
-            key={n}
-            className="mono tnum"
-            style={{
-              textAlign: "center",
-              fontSize: 12.5,
-              fontWeight: 500,
-              color: v == null ? "var(--fg-dim)" : live ? "var(--fg)" : "var(--fg-muted)",
-            }}
-          >
-            {v == null ? "—" : v}
-          </div>
-        );
-      })}
+      {showSeries && <SeriesCell series={series} />}
+      {cols.map((n) => (
+        <MapCell key={n} value={getValue(n)} live={isLiveCol(n)} />
+      ))}
       {hasTrailing && <div>{trailing}</div>}
     </>
+  );
+}
+
+// Series score cell on a list card. Tints green/red on change so the
+// eye lands on the row that just moved when scrolling a long list.
+// Border + radius come from inline style; the flash animation only
+// touches background-color, so the box shape is unaffected.
+function SeriesCell({ series }: { series: number }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useValueFlash(series, ref);
+  return (
+    <div
+      ref={ref}
+      className="mono tnum"
+      style={{
+        textAlign: "center",
+        fontSize: 12.5,
+        fontWeight: 600,
+        color: "var(--fg)",
+        padding: "2px 0",
+        border: "1px solid var(--border)",
+        borderRadius: "var(--r-sm, 6px)",
+        backgroundColor: "transparent",
+      }}
+    >
+      {series}
+    </div>
+  );
+}
+
+// Per-map cell on a list card. Same flash semantics as the detail page,
+// just smaller. Pre-match cells render "—" with no flash because
+// useValueFlash skips null transitions.
+function MapCell({ value, live }: { value: number | null; live: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useValueFlash(value, ref);
+  return (
+    <div
+      ref={ref}
+      className="mono tnum"
+      style={{
+        textAlign: "center",
+        fontSize: 12.5,
+        fontWeight: 500,
+        color:
+          value == null
+            ? "var(--fg-dim)"
+            : live
+              ? "var(--fg)"
+              : "var(--fg-muted)",
+        borderRadius: 4,
+      }}
+    >
+      {value == null ? "—" : value}
+    </div>
   );
 }
 
