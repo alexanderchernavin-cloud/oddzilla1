@@ -33,15 +33,18 @@ export async function MatchAnalysesSection({ matchId, matchTitle, matchStatus }:
   const analyses = feed?.analyses ?? [];
 
   const isPreMatch = matchStatus === "not_started";
+  const isLiveOrClosed = matchStatus === "live" || matchStatus === "closed";
   const showWriteButton = Boolean(sessionUser) && isPreMatch;
 
-  // Render whenever the analysis window is meaningful: pre-match
-  // (so logged-in users can publish, anonymous users see the
-  // affordance) OR there's existing content (so live/closed
-  // matches show the analyses people published before kickoff).
-  // Cancelled / suspended matches with no analyses fall through
-  // to null — they're operational dead-ends, no editorial signal.
-  if (analyses.length === 0 && !isPreMatch) {
+  // Render whenever the analysis window is meaningful or recently
+  // closed: pre-match (so logged-in users can publish, anonymous
+  // users see the affordance) OR live/closed (so any analyses are
+  // visible and a viewer who arrives expecting the Write CTA gets
+  // an honest "window closed" answer instead of a silent no-op).
+  // Cancelled / suspended fixtures fall through to null — they
+  // never had a meaningful pre-match window, so editorial framing
+  // would be misleading.
+  if (!isPreMatch && !isLiveOrClosed) {
     return null;
   }
 
