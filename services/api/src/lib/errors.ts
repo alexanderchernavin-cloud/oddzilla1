@@ -42,6 +42,12 @@ export class ConflictError extends ApiError {
   }
 }
 
+export class TooManyRequestsError extends ApiError {
+  constructor(message = "Too many requests", code = "too_many_requests") {
+    super(429, code, message);
+  }
+}
+
 export class InternalError extends ApiError {
   constructor(message = "Internal error") {
     super(500, "internal_error", message);
