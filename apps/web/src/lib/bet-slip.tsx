@@ -78,13 +78,17 @@ interface SlipContextValue extends SlipState {
   setMode(mode: SlipMode): void;
   setCurrency(currency: Currency): void;
   has(marketId: string, outcomeId: string): boolean;
-  // Refresh a stored selection from a live odds tick. No-op if the slip
-  // doesn't hold this (marketId, outcomeId) or if every tracked field
-  // is unchanged (avoids re-render churn on every WS frame). `active`
-  // mirrors the WS tick so the rail can disable Place Bet when an
-  // outcome flips inactive after the user clicked — otherwise the
-  // server's market_not_active / outcome_not_active guard surfaces as
-  // a confusing red toast on submit.
+  // Forward a live odds tick into the slip. The store decides what to
+  // mutate:
+  //   - `active` is applied immediately (suspension is a hard gate, no
+  //     user opt-in).
+  //   - When the tick's odds match the user-accepted `odds`, any prior
+  //     `pendingOdds` is cleared (drift snapped back).
+  //   - When the tick's odds differ, they're stashed as `pendingOdds`
+  //     so the rail can show "old → new" and require an explicit
+  //     "Accept odds change" before Place bet.
+  // No-op when nothing tracked changes (avoids re-render churn on every
+  // WS frame).
   updateOdds(
     marketId: string,
     outcomeId: string,
@@ -92,6 +96,11 @@ interface SlipContextValue extends SlipState {
     probability?: string,
     active?: boolean,
   ): void;
+  // Promote every selection's pendingOdds/pendingProbability into the
+  // accepted `odds`/`probability` fields and clear the pending state.
+  // Called when the user clicks "Accept odds change" in the rail.
+  // No-op if no selection has a pending update.
+  acceptPendingOdds(): void;
   // ── BetBuilder controls ────────────────────────────────────────────
   /**
    * Enter BetBuilder mode for a specific match. If `matchId` is null,
@@ -187,6 +196,14 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
   }, [state.selections, state.mode, state.currency, state.betbuilderMatchId]);
 
   const add = useCallback((selection: SlipSelection) => {
+    // Strip any pending-odds carryover the caller might have copied
+    // through — the click happens at the freshly-rendered price, so
+    // by definition there's no drift to surface yet.
+    const fresh: SlipSelection = {
+      ...selection,
+      pendingOdds: null,
+      pendingProbability: null,
+    };
     setState((prev) => {
       // BetBuilder branch: same-match accumulates, but the user must
       // also re-pick the same outcome — when the same (market, outcome)
@@ -195,15 +212,15 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
       // betbuilder set and reverts to single-replace mode for the new
       // match.
       if (prev.mode === "betbuilder" && prev.betbuilderMatchId) {
-        if (prev.betbuilderMatchId === selection.matchId) {
+        if (prev.betbuilderMatchId === fresh.matchId) {
           // Replace any prior pick on the SAME market (only one outcome
           // per market is meaningful) but keep the rest of the legs.
           const filtered = prev.selections.filter(
-            (s) => s.marketId !== selection.marketId,
+            (s) => s.marketId !== fresh.marketId,
           );
           return {
             ...prev,
-            selections: [...filtered, selection],
+            selections: [...filtered, fresh],
             // Mutated leg set — drop the cached quote so the rail
             // re-fetches a fresh combined-odds quote.
             betbuilderQuote: null,
@@ -213,7 +230,7 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
         // Different match — exit builder, revert to single-replace.
         return {
           ...prev,
-          selections: [selection],
+          selections: [fresh],
           mode: "combo",
           betbuilderMatchId: null,
           betbuilderQuote: null,
@@ -224,11 +241,11 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
       // Default behaviour: drop any existing selection on the same
       // MATCH and append the new one.
       const withoutSameMatch = prev.selections.filter(
-        (s) => s.matchId !== selection.matchId,
+        (s) => s.matchId !== fresh.matchId,
       );
       return {
         ...prev,
-        selections: [...withoutSameMatch, selection],
+        selections: [...withoutSameMatch, fresh],
         open: true,
       };
     });
@@ -388,21 +405,39 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
         let changed = false;
         const next = prev.selections.map((s) => {
           if (s.marketId !== marketId || s.outcomeId !== outcomeId) return s;
-          const nextProb =
-            probability !== undefined && probability !== "" ? probability : s.probability;
           // Selections persisted before this field existed default to
           // active=true; an explicit boolean from the WS tick wins.
           const prevActive = s.active ?? true;
           const nextActive = active ?? prevActive;
+          // Compute the next pending values relative to the user's
+          // *accepted* odds. When the tick matches the accepted price,
+          // pending is cleared (the broker just snapped back). When
+          // it differs, stash the new odds + probability as pending —
+          // the rail will surface them and require an explicit accept
+          // before Place bet.
+          const incomingProb =
+            probability !== undefined && probability !== "" ? probability : null;
+          const tickEqualsAccepted =
+            odds === s.odds &&
+            ((incomingProb ?? s.probability ?? null) === (s.probability ?? null));
+          const prevPendingOdds = s.pendingOdds ?? null;
+          const prevPendingProb = s.pendingProbability ?? null;
+          const nextPendingOdds = tickEqualsAccepted ? null : odds;
+          const nextPendingProb = tickEqualsAccepted ? null : incomingProb;
           if (
-            s.odds === odds &&
-            s.probability === nextProb &&
-            prevActive === nextActive
+            prevActive === nextActive &&
+            prevPendingOdds === nextPendingOdds &&
+            prevPendingProb === nextPendingProb
           ) {
             return s;
           }
           changed = true;
-          return { ...s, odds, probability: nextProb, active: nextActive };
+          return {
+            ...s,
+            active: nextActive,
+            pendingOdds: nextPendingOdds,
+            pendingProbability: nextPendingProb,
+          };
         });
         if (!changed) return prev;
         return { ...prev, selections: next };
@@ -410,6 +445,36 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
     },
     [],
   );
+
+  const acceptPendingOdds = useCallback(() => {
+    setState((prev) => {
+      let changed = false;
+      const next = prev.selections.map((s) => {
+        if (s.pendingOdds == null) return s;
+        changed = true;
+        return {
+          ...s,
+          odds: s.pendingOdds,
+          // Pending probability may be null (the WS frame omitted it);
+          // fall back to the previous value rather than wiping a known-
+          // good probability that the tippot/tiple preview depends on.
+          probability: s.pendingProbability ?? s.probability,
+          pendingOdds: null,
+          pendingProbability: null,
+        };
+      });
+      if (!changed) return prev;
+      // BetBuilder leg odds also changed under the user — invalidate
+      // the cached session quote so the rail re-fetches /betbuilder/
+      // .../quote against the freshly-accepted leg set.
+      const isBuilder = prev.mode === "betbuilder";
+      return {
+        ...prev,
+        selections: next,
+        betbuilderQuote: isBuilder ? null : prev.betbuilderQuote,
+      };
+    });
+  }, []);
 
   const value = useMemo<SlipContextValue>(
     () => ({
@@ -422,6 +487,7 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
       setCurrency,
       has,
       updateOdds,
+      acceptPendingOdds,
       setBetbuilderMatch,
       setBetbuilderQuote,
       setBetbuilderEligibleMarkets,
@@ -436,6 +502,7 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
       setCurrency,
       has,
       updateOdds,
+      acceptPendingOdds,
       setBetbuilderMatch,
       setBetbuilderQuote,
       setBetbuilderEligibleMarkets,

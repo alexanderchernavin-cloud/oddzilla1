@@ -144,6 +144,11 @@ export function BetSlipRail() {
   // suspended state in the rail and gate Place bet so the user doesn't
   // hit the server's market_not_active / outcome_not_active guard.
   const hasSuspendedSelection = selections.some((s) => s.active === false);
+  // Whenever any selection has a `pendingOdds` set (the WS tick differs
+  // from the user-accepted price), the Place-bet button is replaced by
+  // an explicit "Accept odds change" step. Clicking it copies pending
+  // → odds and the button reverts to Place bet.
+  const hasPendingOdds = selections.some((s) => s.pendingOdds != null);
 
   // Effective product mode. Single is forced when there's only one
   // selection regardless of last-stored mode. tiple/tippot need ≥2.
@@ -928,10 +933,21 @@ export function BetSlipRail() {
             </div>
           )}
 
+          {/* When odds drift differs from the user-accepted price, the
+              primary action becomes "Accept odds change" — type=button
+              so the form doesn't submit, and onClick promotes pending →
+              odds. After that the button reverts to its Place-bet form
+              (or right back to Accept if a fresh tick has already
+              landed, which is the right thing — drift is real). */}
           <Button
             variant="primary"
             size="lg"
-            type="submit"
+            type={hasPendingOdds ? "button" : "submit"}
+            onClick={
+              hasPendingOdds
+                ? () => slip.acceptPendingOdds()
+                : undefined
+            }
             disabled={
               submitting ||
               builderNeedsLegs ||
@@ -943,15 +959,17 @@ export function BetSlipRail() {
           >
             {submitting
               ? "Placing…"
-              : isBetBuilderMode
-                ? "Place BetBuilder"
-                : isTiple
-                  ? "Place Tiple"
-                  : isTippot
-                    ? "Place Tippot"
-                    : isCombo
-                      ? "Place combo"
-                      : "Place bet"}
+              : hasPendingOdds
+                ? "Accept odds change"
+                : isBetBuilderMode
+                  ? "Place BetBuilder"
+                  : isTiple
+                    ? "Place Tiple"
+                    : isTippot
+                      ? "Place Tippot"
+                      : isCombo
+                        ? "Place combo"
+                        : "Place bet"}
           </Button>
 
           <div style={{ fontSize: 11, color: "var(--fg-dim)", textAlign: "center" }}>
@@ -985,14 +1003,37 @@ function SelectionCard({
   // flag — treat the absence as bettable so the card doesn't suddenly
   // grey out for everyone after a deploy.
   const suspended = selection.active === false;
+  // Resolve the pending-odds delta. Compare the parsed numeric values
+  // so trailing-zero noise ("1.85" vs "1.850") doesn't tag a phantom
+  // change. Direction colours: green for an increase (better for the
+  // bettor — higher payout), red for a decrease.
+  const acceptedNum = Number(selection.odds);
+  const pendingNum =
+    selection.pendingOdds != null ? Number(selection.pendingOdds) : null;
+  const pendingChanged =
+    pendingNum != null &&
+    Number.isFinite(pendingNum) &&
+    Number.isFinite(acceptedNum) &&
+    pendingNum.toFixed(2) !== acceptedNum.toFixed(2);
+  const pendingDir: "up" | "down" | null = pendingChanged
+    ? pendingNum! > acceptedNum
+      ? "up"
+      : "down"
+    : null;
+  // Outline accent on the card edge when there's a pending change so
+  // the eye picks the row out of a long combo. Suspension still wins —
+  // it's the more urgent state.
+  const cardBorder = suspended
+    ? "1px solid color-mix(in oklab, var(--negative) 35%, var(--border))"
+    : pendingChanged
+      ? "1px solid color-mix(in oklab, var(--accent) 45%, var(--border))"
+      : "1px solid var(--border)";
   return (
     <div
       style={{
         padding: "12px 14px",
         background: "var(--surface)",
-        border: suspended
-          ? "1px solid color-mix(in oklab, var(--negative) 35%, var(--border))"
-          : "1px solid var(--border)",
+        border: cardBorder,
         borderRadius: 10,
         display: "flex",
         flexDirection: "column",
@@ -1073,13 +1114,47 @@ function SelectionCard({
         <div
           className="mono tnum"
           style={{
+            display: "inline-flex",
+            alignItems: "baseline",
+            gap: 6,
             fontSize: 14,
             fontWeight: 600,
             flexShrink: 0,
             color: suspended ? "var(--fg-muted)" : undefined,
           }}
         >
-          {Number(selection.odds).toFixed(2)}
+          {/* Accepted price first. Strike-through when a pending update
+              is hovering — the value about to be replaced by the
+              "Accept odds change" click. */}
+          <span
+            style={{
+              textDecoration: pendingChanged ? "line-through" : undefined,
+              color: pendingChanged ? "var(--fg-muted)" : undefined,
+            }}
+          >
+            {acceptedNum.toFixed(2)}
+          </span>
+          {pendingChanged && pendingNum != null ? (
+            <>
+              <span
+                style={{
+                  fontSize: 11,
+                  color: pendingDir === "up" ? "var(--positive)" : "var(--negative)",
+                  fontWeight: 700,
+                }}
+                aria-hidden="true"
+              >
+                {pendingDir === "up" ? "↑" : "↓"}
+              </span>
+              <span
+                style={{
+                  color: pendingDir === "up" ? "var(--positive)" : "var(--negative)",
+                }}
+              >
+                {pendingNum.toFixed(2)}
+              </span>
+            </>
+          ) : null}
         </div>
       </div>
       <div
