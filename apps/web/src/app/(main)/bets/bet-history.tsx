@@ -160,20 +160,27 @@ function TicketRow({
           </div>
 
           {/* Per-leg list. Singles render as one row; combos / tiples /
-              tippots / betbuilder render every leg with its odds and
-              per-leg result colour. Each row deep-links to the match. */}
+              tippots / betbuilder render every leg with its odds, per-
+              leg result colour, a result tag (WON / LOST / VOID), and
+              the effective factor for void legs (×1.00). Strikethrough
+              the placement odds when they didn't carry through to the
+              payout (lost = ×0; void = ×1) so the combo math reads
+              correctly. */}
           {ticket.selections.length > 0 ? (
             <ul className="mt-2 flex flex-col gap-1.5">
               {ticket.selections.map((s, i) => {
                 const m = s.market;
-                const legResultClass =
-                  s.result === "won" || s.result === "half_won"
-                    ? "text-[var(--color-positive)]"
-                    : s.result === "lost" || s.result === "half_lost"
-                      ? "text-[var(--color-negative)]"
-                      : s.result === "void"
-                        ? "text-[var(--color-fg-muted)]"
-                        : "text-[var(--color-fg)]";
+                const isWon = s.result === "won" || s.result === "half_won";
+                const isLost =
+                  s.result === "lost" || s.result === "half_lost";
+                const isVoid = s.result === "void";
+                const legResultClass = isWon
+                  ? "text-[var(--color-positive)]"
+                  : isLost
+                    ? "text-[var(--color-negative)]"
+                    : isVoid
+                      ? "text-[var(--color-fg-muted)]"
+                      : "text-[var(--color-fg)]";
                 const legOdds = Number(s.oddsAtPlacement);
                 const oddsLabel = Number.isFinite(legOdds)
                   ? legOdds.toFixed(2)
@@ -181,6 +188,19 @@ function TicketRow({
                 const matchLabel = m
                   ? `${m.homeTeam} vs ${m.awayTeam}`
                   : "Match unavailable";
+                const tagLabel = isWon
+                  ? "WON"
+                  : isLost
+                    ? "LOST"
+                    : isVoid
+                      ? "VOID"
+                      : null;
+                const effectiveFactor = isVoid
+                  ? "×1.00"
+                  : isLost
+                    ? "×0.00"
+                    : null;
+                const strikeOdds = isVoid || isLost;
                 const inner = (
                   <div className="flex items-center justify-between gap-3 text-sm">
                     <span
@@ -193,9 +213,33 @@ function TicketRow({
                         outcome {s.outcomeId}
                       </span>
                     </span>
-                    <span className="font-mono text-xs text-[var(--color-fg-muted)]">
+                    {tagLabel ? (
+                      <span
+                        className={
+                          "font-mono text-[10px] tracking-[0.06em] font-semibold " +
+                          legResultClass
+                        }
+                      >
+                        {tagLabel}
+                      </span>
+                    ) : null}
+                    <span
+                      className={
+                        "font-mono text-xs text-[var(--color-fg-muted)] " +
+                        (strikeOdds ? "line-through" : "")
+                      }
+                    >
                       {oddsLabel}
                     </span>
+                    {effectiveFactor ? (
+                      <span
+                        className={
+                          "font-mono text-xs " + legResultClass
+                        }
+                      >
+                        {effectiveFactor}
+                      </span>
+                    ) : null}
                   </div>
                 );
                 return (

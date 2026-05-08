@@ -1846,9 +1846,12 @@ function HistoryTicketCard({
       </div>
       {legCount > 1 ? (
         // Combo / tiple / tippot / betbuilder — list every leg with
-        // its odds + per-leg result colour. Each row links to its
-        // match so the user can drill back in. No more "+1" hidden
-        // legs.
+        // its odds + per-leg result colour + a result tag (WON / LOST
+        // / VOID). Void legs strikethrough the placement odds and
+        // show their effective factor (×1.00 for full void) so the
+        // payout math reads correctly: a 1.01 × 1.03 combo where the
+        // 1.01 leg voids becomes a 1.00 × 1.03 = 1.03 payout, and the
+        // strikethrough makes that visible.
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           {ticket.selections.map((s, i) => {
             const m = s.market;
@@ -1857,14 +1860,35 @@ function HistoryTicketCard({
             const oddsLabel = Number.isFinite(legOdds)
               ? legOdds.toFixed(2)
               : s.oddsAtPlacement;
-            const resultColor =
-              s.result === "won" || s.result === "half_won"
-                ? "var(--positive)"
-                : s.result === "lost" || s.result === "half_lost"
-                  ? "var(--negative)"
-                  : s.result === "void"
-                    ? "var(--fg-muted)"
-                    : "var(--fg)";
+            const isWon = s.result === "won" || s.result === "half_won";
+            const isLost = s.result === "lost" || s.result === "half_lost";
+            const isVoid = s.result === "void";
+            const resultColor = isWon
+              ? "var(--positive)"
+              : isLost
+                ? "var(--negative)"
+                : isVoid
+                  ? "var(--fg-muted)"
+                  : "var(--fg)";
+            // Effective factor on payout. Lost = 0; full void = 1;
+            // half_won/half_lost would scale by void_factor — for now
+            // we only annotate the simple cases (won/lost/void).
+            const effectiveFactor = isVoid
+              ? "×1.00"
+              : isLost
+                ? "×0.00"
+                : null;
+            // Strike through the placement odds when they're not what
+            // actually contributed to the payout (lost: didn't pay;
+            // void: paid 1.00 instead of the displayed odds).
+            const strikeOdds = isVoid || isLost;
+            const tagLabel = isWon
+              ? "WON"
+              : isLost
+                ? "LOST"
+                : isVoid
+                  ? "VOID"
+                  : null;
             const content = (
               <div
                 style={{
@@ -1896,12 +1920,37 @@ function HistoryTicketCard({
                     "Match unavailable"
                   )}
                 </span>
+                {tagLabel ? (
+                  <span
+                    className="mono"
+                    style={{
+                      fontSize: 9.5,
+                      letterSpacing: "0.06em",
+                      color: resultColor,
+                      fontWeight: 600,
+                    }}
+                  >
+                    {tagLabel}
+                  </span>
+                ) : null}
                 <span
                   className="mono tnum"
-                  style={{ fontSize: 11, color: "var(--fg-muted)" }}
+                  style={{
+                    fontSize: 11,
+                    color: "var(--fg-muted)",
+                    textDecoration: strikeOdds ? "line-through" : undefined,
+                  }}
                 >
                   {oddsLabel}
                 </span>
+                {effectiveFactor ? (
+                  <span
+                    className="mono tnum"
+                    style={{ fontSize: 11, color: resultColor }}
+                  >
+                    {effectiveFactor}
+                  </span>
+                ) : null}
               </div>
             );
             return legHref ? (
