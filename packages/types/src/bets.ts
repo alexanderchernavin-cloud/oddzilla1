@@ -33,12 +33,15 @@ export interface SlipSelection {
   matchId: string;           // BIGINT as string
   marketId: string;          // BIGINT as string
   outcomeId: string;
-  // Snapshot data the user sees at the moment of selection. The server
-  // re-validates all of these against current state at placement time.
+  // The price the user has accepted. Frozen at click time and held
+  // stable across WS odds drift until the user explicitly accepts an
+  // update via slip.acceptPendingOdds(). Submitted to POST /bets so
+  // the server's drift check compares against what the user actually
+  // chose, not against the latest broker tick.
   odds: string;              // decimal as string, e.g. "1.85"
-  // Implied probability when the catalog ships it. Used purely client-
-  // side to preview tiple/tippot pricing — the server reads its own
-  // copy from market_outcomes at placement, so this is informational.
+  // Implied probability matching `odds` (purely informational — the
+  // server reads its own copy from market_outcomes at placement and
+  // never trusts client-supplied probabilities).
   probability?: string;
   // Whether the outcome is currently bettable. Refreshed by the slip
   // rail's WS auto-refresh so the user can't hit "Place bet" on an
@@ -47,6 +50,15 @@ export interface SlipSelection {
   // so the client-side flag is purely a UX gate. Defaults to true for
   // back-compat with selections persisted before this field existed.
   active?: boolean;
+  // Latest broker odds when they differ from the user-accepted `odds`
+  // above. Set by the rail's WS auto-refresh; cleared whenever the
+  // tick matches `odds` again or the user clicks "Accept odds change"
+  // (which copies pending → odds). When `pendingOdds != null` the rail
+  // renders an "X → Y" delta on the selection card and replaces the
+  // Place-bet button with an explicit accept step so the user opts in
+  // to the new price before submitting.
+  pendingOdds?: string | null;
+  pendingProbability?: string | null;
   homeTeam: string;
   awayTeam: string;
   marketLabel: string;       // human display: "Match Winner", "Map Winner — Map 1"
