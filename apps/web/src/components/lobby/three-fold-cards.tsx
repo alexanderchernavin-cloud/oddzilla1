@@ -101,13 +101,7 @@ export function ThreeFoldCards({
   };
 
   return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-        gap: 12,
-      }}
-    >
+    <div className="oz-3fold-grid">
       {visibleTiers.map((t) => (
         <Card
           key={t.key}

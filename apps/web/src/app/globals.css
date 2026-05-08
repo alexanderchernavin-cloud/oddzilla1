@@ -368,6 +368,17 @@ body {
    when the rail is acting as a dismissible sheet. */
 .oz-rail-close { display: none !important; }
 
+/* Lobby 3-fold suggestion cards. Two columns on desktop / tablet,
+   stack to one column on mobile so the inner leg rows aren't squeezed
+   to a few characters wide. The previous fixed two-column grid pushed
+   long leg names ("Riyadh Masters 2026 …") off the right edge of the
+   right card on viewports under ~600px. */
+.oz-3fold-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
 @media (max-width: 1099px) {
   .oz-shell {
     grid-template-columns: 240px 1fr;
@@ -417,7 +428,13 @@ body {
   /* Rail becomes a bottom sheet on anything below desktop: slides up
      from the bottom, stops short of the top bar, rounded top corners.
      This is far more thumb-friendly than a right-edge drawer. The
-     sheet insets from the persistent sidebar at tablet widths. */
+     sheet insets from the persistent sidebar at tablet widths.
+
+     `height: calc(100dvh - 60px)` (vs `auto`) keeps the drawer at
+     full available height whenever it's open — that gives the
+     selections list room to actually claim leftover vertical space
+     via flex:1, instead of being pinned to its natural content
+     height which leaves the form to dominate. */
   .oz-rail {
     position: fixed !important;
     left: 240px;
@@ -425,7 +442,7 @@ body {
     bottom: 0;
     top: auto !important;
     width: auto !important;
-    height: auto !important;
+    height: calc(100dvh - 60px) !important;
     max-height: calc(100dvh - 60px) !important;
     z-index: 60;
     background: var(--bg);
@@ -492,7 +509,10 @@ body {
     box-shadow: 8px 0 32px rgba(0, 0, 0, 0.35);
   }
   .oz-shell[data-sidebar-open="true"] .oz-side { transform: translateX(0); }
-  .oz-rail { max-height: calc(100dvh - 96px) !important; }
+  .oz-rail {
+    height: calc(100dvh - 96px) !important;
+    max-height: calc(100dvh - 96px) !important;
+  }
   .oz-topbar-toggle { display: inline-flex !important; }
   .oz-topbar-search { display: none !important; }
   .oz-topbar-bell { display: none !important; }
@@ -515,6 +535,12 @@ body {
      left so the buttons match the rest of the design system. */
   .oz-odd-label { display: none; }
   .oz-row-odd { justify-content: center !important; }
+
+  /* Lobby 3-fold cards stack vertically on mobile — two 168px-wide
+     cards leave too little room for leg names. */
+  .oz-3fold-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
 }
 
 @media (max-width: 479px) {
