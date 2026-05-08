@@ -144,3 +144,24 @@ export const competitionMatchStatusEnum = pgEnum("competition_match_status", [
   "live",
   "done",
 ]);
+
+// 0044_community_notifications.sql — panel-displayable notification
+// types across three categories (social / competition / gamification).
+// Bet settlement is intentionally absent: the sportsbook owns that
+// channel, not Community (PRD: Background → Scope note).
+// Listed up-front for every PRD type so the FE renderer never sees an
+// unknown value; types with no current trigger source (`new_follower`,
+// `community_digest`) light up when their source feature ships.
+export const notificationTypeEnum = pgEnum("notification_type", [
+  "pick_copied",
+  "bet_inspired",
+  "new_follower",
+  "analysis_shared",
+  "leaderboard_move",
+  "competition_deadline",
+  "community_digest",
+  "challenge_completed",
+  "achievement_unlocked",
+  "level_up",
+  "loot_acquired",
+]);

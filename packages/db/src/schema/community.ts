@@ -15,6 +15,7 @@ import {
   uniqueIndex,
   check,
   boolean,
+  jsonb,
 } from "drizzle-orm/pg-core";
 import {
   ticketStatusEnum,
@@ -24,6 +25,7 @@ import {
   competitionStatusEnum,
   competitionTypeEnum,
   competitionMatchStatusEnum,
+  notificationTypeEnum,
 } from "../enums.js";
 import { users } from "./users.js";
 import { tickets } from "./tickets.js";
@@ -476,3 +478,68 @@ export type CompetitionParticipant = typeof competitionParticipants.$inferSelect
 export type NewCompetitionParticipant = typeof competitionParticipants.$inferInsert;
 export type CompetitionPrediction = typeof competitionPredictions.$inferSelect;
 export type NewCompetitionPrediction = typeof competitionPredictions.$inferInsert;
+
+// ─── Notifications & preferences (Phase 12) ─────────────────────────────────
+//
+// See migration 0044_community_notifications.sql for the schema-level
+// rationale (why a separate prefs table, why read_at over a boolean,
+// why group_key is a column not derived).
+
+export const userPreferences = pgTable("user_preferences", {
+  userId: uuid()
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  prefPicksCopied: boolean().notNull().default(true),
+  prefNewFollowers: boolean().notNull().default(true),
+  prefCompetitionUpdates: boolean().notNull().default(false),
+  // Companion to prefCompetitionUpdates: did the user toggle it
+  // explicitly? The competition-join handler only auto-enables when
+  // this is FALSE — same shape as the V1 PRD's
+  // `competitionUpdates_manuallySet`.
+  prefCompetitionUpdatesSet: boolean().notNull().default(false),
+  prefCommunityHighlights: boolean().notNull().default(false),
+  prefAchievementsRewards: boolean().notNull().default(true),
+  // V1 save-only — public profile + search will start consulting
+  // these in V2 (PRD: V2 enforcement).
+  privacyShowWinLossRecord: boolean().notNull().default(true),
+  privacyAllowProfileDiscovery: boolean().notNull().default(true),
+  updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+});
+
+export const userNotifications = pgTable(
+  "user_notifications",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    type: notificationTypeEnum().notNull(),
+    // Nullable: system-emitted types (community_digest, level_up,
+    // loot_acquired) have no actor.
+    actorId: uuid().references(() => users.id, { onDelete: "set null" }),
+    payload: jsonb().notNull().default(sql`'{}'::jsonb`),
+    deepLink: text(),
+    groupKey: text(),
+    groupCount: integer().notNull().default(1),
+    readAt: timestamp({ withTimezone: true }),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("user_notifications_user_created_idx").on(
+      t.userId,
+      sql`${t.createdAt} DESC`,
+    ),
+    index("user_notifications_user_unread_idx")
+      .on(t.userId)
+      .where(sql`${t.readAt} IS NULL`),
+    index("user_notifications_group_idx")
+      .on(t.userId, t.type, t.groupKey, sql`${t.createdAt} DESC`)
+      .where(sql`${t.groupKey} IS NOT NULL`),
+    check("user_notifications_group_count_pos", sql`${t.groupCount} >= 1`),
+  ],
+);
+
+export type UserPreferences = typeof userPreferences.$inferSelect;
+export type NewUserPreferences = typeof userPreferences.$inferInsert;
+export type UserNotification = typeof userNotifications.$inferSelect;
+export type NewUserNotification = typeof userNotifications.$inferInsert;

@@ -3,20 +3,42 @@ import { redirect } from "next/navigation";
 import type {
   CommunityMe,
   AvatarTemplateListResponse,
+  PreferencesResponse,
 } from "@oddzilla/types";
 import { getSessionUser } from "@/lib/auth";
 import { serverApi } from "@/lib/server-fetch";
 import { CommunitySettingsForms } from "./forms";
+import { PreferencesForms } from "./preferences-forms";
 
 export const dynamic = "force-dynamic";
+
+// Defaults shown when the API returns null (auth blip, fresh user
+// with no row yet). They mirror the BE column defaults exactly — see
+// notifications.ts DEFAULT_PREFS.
+const DEFAULT_PREFS: PreferencesResponse = {
+  notifications: {
+    picksCopied: true,
+    newFollowers: true,
+    competitionUpdates: false,
+    competitionUpdatesManuallySet: false,
+    communityHighlights: false,
+    achievementsRewards: true,
+  },
+  privacy: {
+    sharePublicly: true,
+    showWinLossRecord: true,
+    allowProfileDiscovery: true,
+  },
+};
 
 export default async function CommunitySettingsPage() {
   const user = await getSessionUser();
   if (!user) redirect("/login");
 
-  const [me, avatars] = await Promise.all([
+  const [me, avatars, prefs] = await Promise.all([
     serverApi<CommunityMe>("/community/me"),
     serverApi<AvatarTemplateListResponse>("/community/avatars"),
+    serverApi<PreferencesResponse>("/community/me/preferences"),
   ]);
   // Logged-in user but the community endpoint failed. Render with safe
   // defaults so the page is still usable; the form will surface the
@@ -29,6 +51,7 @@ export default async function CommunitySettingsPage() {
     avatarUrl: null,
   };
   const templates = avatars?.templates ?? [];
+  const initialPrefs: PreferencesResponse = prefs ?? DEFAULT_PREFS;
 
   return (
     <div>
@@ -53,6 +76,9 @@ export default async function CommunitySettingsPage() {
       ) : null}
 
       <CommunitySettingsForms initial={initial} templates={templates} />
+      <div className="mt-8">
+        <PreferencesForms initial={initialPrefs} />
+      </div>
     </div>
   );
 }

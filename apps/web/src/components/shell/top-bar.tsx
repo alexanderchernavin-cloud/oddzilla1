@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import type { WalletSnapshot } from "@oddzilla/types";
 import { Wordmark } from "@/components/ui/monogram";
@@ -10,6 +11,8 @@ import { useMobileDrawers } from "./mobile-drawer-context";
 import { TopBarSearch } from "./top-bar-search";
 import { WalletPill } from "./wallet-pill";
 import { UserMenu } from "./user-menu";
+import { NotificationPanel } from "./notification-panel";
+import { useNotifications } from "@/lib/notifications";
 
 interface TopBarProps {
   signedIn: boolean;
@@ -84,26 +87,7 @@ export function TopBar({ signedIn, user, wallets }: TopBarProps) {
 
       {signedIn && user ? (
         <>
-          <button
-            type="button"
-            style={iconBtn}
-            title="Alerts"
-            aria-label="Notifications"
-            className="oz-topbar-bell"
-          >
-            <I.Bell size={16} />
-            <span
-              style={{
-                position: "absolute",
-                top: 8,
-                right: 8,
-                width: 6,
-                height: 6,
-                borderRadius: 999,
-                background: "var(--live)",
-              }}
-            />
-          </button>
+          <NotificationBell />
 
           <WalletPill wallets={wallets} />
 
@@ -122,5 +106,54 @@ export function TopBar({ signedIn, user, wallets }: TopBarProps) {
         </>
       )}
     </header>
+  );
+}
+
+// Bell + popover. Self-contained so the parent doesn't have to manage
+// open-state. Lives next to top-bar layout because anchor positioning
+// requires a positioned wrapper around both the button and the panel.
+function NotificationBell() {
+  const [open, setOpen] = useState(false);
+  const { unreadCount } = useNotifications();
+  return (
+    <div style={{ position: "relative" }}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-label="Notifications"
+        aria-expanded={open}
+        title={unreadCount > 0 ? `${unreadCount} unread` : "Notifications"}
+        className="oz-topbar-bell"
+        style={iconBtn}
+      >
+        <I.Bell size={16} />
+        {unreadCount > 0 ? (
+          <span
+            style={{
+              // Pill that sits on the bell. Width grows with the
+              // count; >99 collapses to "99+" via the label below.
+              position: "absolute",
+              top: 4,
+              right: 2,
+              minWidth: 16,
+              height: 16,
+              padding: "0 4px",
+              borderRadius: 999,
+              background: "var(--negative, #EF4444)",
+              color: "#fff",
+              fontSize: 10,
+              fontWeight: 700,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              lineHeight: 1,
+            }}
+          >
+            {unreadCount > 99 ? "99+" : unreadCount}
+          </span>
+        ) : null}
+      </button>
+      <NotificationPanel open={open} onClose={() => setOpen(false)} />
+    </div>
   );
 }

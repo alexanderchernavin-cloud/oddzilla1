@@ -53,6 +53,7 @@ import {
   TooManyRequestsError,
 } from "../../lib/errors.js";
 import { resolveOptionalAvatarUrl } from "./avatar-url.js";
+import { emitNotification } from "./notifications.js";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -384,7 +385,11 @@ SELECT
       // skip this and rely on the FK to reject — but a 404 is more
       // informative than a constraint error.
       const [a] = await app.db
-        .select({ status: analyses.status })
+        .select({
+          status: analyses.status,
+          authorId: analyses.authorId,
+          matchId: analyses.matchId,
+        })
         .from(analyses)
         .where(eq(analyses.id, id))
         .limit(1);
@@ -397,6 +402,9 @@ SELECT
       // counter recomputes from the reactions table on the next read
       // path because we tally via SUM(thumbs_up_count) — actually no,
       // the counter is denormalised. Keep the +/- in lockstep.
+      // `wasAdded` lights up the post-tx notification path; we don't
+      // want to emit on un-thumbs-up.
+      let wasAdded = false;
       await app.db.transaction(async (tx) => {
         const deleted = await tx
           .delete(analysisReactions)
@@ -421,8 +429,41 @@ SELECT
             .update(analyses)
             .set({ thumbsUpCount: sql`${analyses.thumbsUpCount} + 1` })
             .where(eq(analyses.id, id));
+          wasAdded = true;
         }
       });
+
+      // Emit `analysis_shared` to the author on a new thumbs-up.
+      // (PRD reuses the type for "engagement on your analysis"; on
+      // oddzilla there's no separate Share button so 👍 is the only
+      // engagement signal that warrants notifying the author. Removing
+      // a thumbs-up doesn't emit — un-engagement isn't notification-
+      // worthy.) Fire-and-forget; the helper drops self-emits.
+      if (wasAdded && a.authorId !== u.id) {
+        (async () => {
+          const [actor] = await app.db
+            .select({ nickname: users.nickname })
+            .from(users)
+            .where(eq(users.id, u.id))
+            .limit(1);
+          if (!actor?.nickname) return;
+          await emitNotification(app, {
+            userId: a.authorId,
+            type: "analysis_shared",
+            actorId: u.id,
+            payload: {
+              actorNickname: actor.nickname,
+              analysisId: id,
+            },
+            // Group on the analysis so a flurry of thumbs-up
+            // collapses to "N people liked your analysis".
+            groupKey: `analysis_shared:${id}`,
+            deepLink: `/community/analyses/${id}`,
+          });
+        })().catch((err: unknown) => {
+          app.log.warn({ err, analysisId: id }, "analysis_shared emit failed");
+        });
+      }
 
       return loadAnalysis(app, id, u.id);
     },
