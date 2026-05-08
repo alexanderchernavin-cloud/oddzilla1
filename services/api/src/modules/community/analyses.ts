@@ -534,6 +534,7 @@ SELECT
   INNER JOIN sports s       ON s.id = c.sport_id
   INNER JOIN tickets t      ON t.id = a.ticket_id
  WHERE a.id = ${id}
+   AND a.status = 'published'
  LIMIT 1
 `);
   const first = rows[0];
@@ -563,10 +564,7 @@ function normaliseAnalysisRow(r: Record<string, unknown>): AnalysisSummary {
     sportId: Number(r.sportId),
     sportName: String(r.sportName),
     sportSlug: String(r.sportSlug),
-    scheduledAt:
-      r.scheduledAt instanceof Date
-        ? r.scheduledAt.toISOString()
-        : String(r.scheduledAt),
+    scheduledAt: toIso(r.scheduledAt),
     ticketId: String(r.ticketId),
     ticketTotalOdds: r.ticketTotalOdds ? String(r.ticketTotalOdds) : "1.0000",
     ticketLegCount: Number(r.ticketLegCount ?? 0),
@@ -581,17 +579,19 @@ function normaliseAnalysisRow(r: Record<string, unknown>): AnalysisSummary {
         ? null
         : Boolean(r.viewerReacted),
     outcome: r.outcome ? (String(r.outcome) as AnalysisOutcome) : null,
-    publishedAt:
-      r.publishedAt instanceof Date
-        ? r.publishedAt.toISOString()
-        : String(r.publishedAt),
+    publishedAt: toIso(r.publishedAt),
     settledAt:
-      r.settledAt === null || r.settledAt === undefined
-        ? null
-        : r.settledAt instanceof Date
-          ? r.settledAt.toISOString()
-          : String(r.settledAt),
+      r.settledAt === null || r.settledAt === undefined ? null : toIso(r.settledAt),
   };
+}
+
+// postgres-js returns timestamps as raw "2026-05-08 18:00:05.363709+00"
+// strings on the .execute() path; the type-narrowed select chain
+// returns Date objects. Coerce both into ISO-8601 so the wire format
+// stays uniform.
+function toIso(v: unknown): string {
+  if (v instanceof Date) return v.toISOString();
+  return new Date(String(v)).toISOString();
 }
 
 // V1 ranker. Four factors out of the Reward formula's nine — the
@@ -638,11 +638,22 @@ function orderByForSort(sort: AnalysisSort): ReturnType<typeof sql> {
   }
 }
 
+// Drizzle's postgres-js driver wraps the underlying PostgresError in a
+// DrizzleQueryError. The 23505 unique-violation code lives on the
+// .cause chain, not the outer error. Walk one level so the unique-
+// violation handler in the existing community routes (where the
+// `code` happens to land on the outer object via a different
+// driver shape) doesn't have to be the only path that works.
 function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    "code" in err &&
-    (err as { code: unknown }).code === "23505"
-  );
+  const code = pgCode(err);
+  return code === "23505";
+}
+
+function pgCode(err: unknown): string | null {
+  if (err === null || typeof err !== "object") return null;
+  const direct = (err as { code?: unknown }).code;
+  if (typeof direct === "string") return direct;
+  const cause = (err as { cause?: unknown }).cause;
+  if (cause) return pgCode(cause);
+  return null;
 }
