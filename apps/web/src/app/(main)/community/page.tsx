@@ -19,14 +19,17 @@ interface SportsResponse {
   sports: Array<{ id: number; slug: string; name: string }>;
 }
 
-// Three top-level tabs map to two API surfaces:
-//   recent  → tab=recent on the API
-//   best    → tab=best, no Big Wins floor
-//   bigWins → tab=best, bigWinsOnly=true
-// We surface them as three URL values because the user mental model
-// is "three tabs," and folding bigWinsOnly into the tab selector
-// keeps the Sort dropdown free for the four PRD sort modes.
-type TabKind = "recent" | "best" | "bigWins";
+// Two top-level tabs:
+//   recent  → tab=recent on the API (live in-flight bets)
+//   bigWins → tab=best&bigWinsOnly=true on the API (settled wins
+//             clearing the per-currency Big Win floor)
+// The non-floored "Best Wins" surface was retired with the Apply
+// Same Play rollout — Big Wins is the curated showcase and Recent
+// is the live-action feed; everything in between added noise. The
+// API still accepts tab=best without the floor (Notion PRD Open
+// Question #1, recommendation C — keep the field, don't migrate
+// every consumer), but the UI no longer links into it.
+type TabKind = "recent" | "bigWins";
 type SortKind = "recent" | "copied" | "stakes" | "live";
 
 const SORT_LABELS: Record<SortKind, string> = {
@@ -37,7 +40,6 @@ const SORT_LABELS: Record<SortKind, string> = {
 };
 
 function parseTab(raw: string | undefined): TabKind {
-  if (raw === "best") return "best";
   if (raw === "bigWins") return "bigWins";
   return "recent";
 }
@@ -151,7 +153,6 @@ export default async function CommunityFeedPage({
 
 function tabSubtitle(tab: TabKind): string {
   if (tab === "bigWins") return "Wins above the Big Win threshold from the last 7 days.";
-  if (tab === "best") return "Best wins of the last 7 days.";
   return "Live bets you can still copy — the matches are still on.";
 }
 
@@ -189,9 +190,6 @@ function SortTabs({
     >
       <Tab href={link("recent")} active={activeTab === "recent"}>
         Recent
-      </Tab>
-      <Tab href={link("best")} active={activeTab === "best"}>
-        Best wins
       </Tab>
       <Tab href={link("bigWins")} active={activeTab === "bigWins"}>
         Big wins
@@ -323,10 +321,6 @@ function EmptyState({
     } else {
       body = "Big wins land here. Wins above the Big Win threshold show up here. Place a bet to start the streak.";
     }
-  } else if (tab === "best") {
-    body = filtered
-      ? "No wins match these filters yet. Try a different sport or currency."
-      : "No big wins in the last 7 days. Switch to Recent to see live bets.";
   } else if (filtered) {
     body = "No live bets match these filters. Try clearing one.";
   } else {

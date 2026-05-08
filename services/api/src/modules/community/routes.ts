@@ -42,6 +42,10 @@ import type {
   CommunityCopyResponse,
   CommunityAchievement,
   Currency,
+  ApplySamePlayResponse,
+  SamePlayCandidate,
+  SamePlayOriginator,
+  SamePlayRole,
 } from "@oddzilla/types";
 import { isCurrency, DEFAULT_CURRENCY } from "@oddzilla/types";
 import {
@@ -472,6 +476,218 @@ export default async function communityRoutes(app: FastifyInstance) {
         selections,
         anyAvailable: selections.some((s) => s.available),
       };
+    },
+  );
+
+  // ─── Apply Same Play (Phase 10.4) ────────────────────────────────────────
+  //
+  // Companion to /community/copy. Takes a single-leg winning ticket
+  // and proposes upcoming matches the user could run the same play
+  // on. The scoring + ranking lives client-side
+  // (apps/web/src/lib/same-play-scorer.ts) so the algorithm is
+  // visible in code review and the chips/popover read from one
+  // source of truth. The backend's job is two-fold:
+  //
+  //   1. Hydrate the originator's structured `play` (provider
+  //      market id + outcome id), `teams` (with picked-side / role),
+  //      league tier, and stake/odds for the stake-conversion math.
+  //   2. Return a pool of upcoming candidate matches in the same
+  //      sport with the same provider_market_id + outcome_id
+  //      currently quoted on at least one open market. Capped at
+  //      30 — the FE shows the top 10 by score, but more raw
+  //      candidates make the ranking less brittle when a few rows
+  //      get knocked out by suspended-market state.
+  //
+  // V1 limits (documented in @oddzilla/types):
+  //   • Combo originators return 400 combo_unsupported.
+  //   • Non-winning originators return 400 not_a_win — Apply Same
+  //     Play only makes sense as a "do this again" affordance on a
+  //     bet that paid out.
+  app.get<{ Params: { communityTicketId: string } }>(
+    "/community/apply-same-play/:communityTicketId/candidates",
+    { config: readRateLimit },
+    async (request): Promise<ApplySamePlayResponse> => {
+      const id = request.params.communityTicketId;
+      if (!UUID_RE.test(id)) throw new NotFoundError();
+
+      // Originator pull. Same visibility filter as /community/copy
+      // — non-public bettors are invisible to the lookup. Single
+      // SELECT joins all the way through to tournaments so the
+      // role inference can read the originator's odds + competitor
+      // ids without a second roundtrip.
+      const [orig] = await app.db
+        .select({
+          ticketId: tickets.id,
+          numLegs: sql<number>`(
+            SELECT COUNT(*)::int FROM ticket_selections WHERE ticket_id = ${tickets.id}
+          )`,
+          status: tickets.status,
+          currency: tickets.currency,
+          stakeMicro: tickets.stakeMicro,
+          actualPayoutMicro: tickets.actualPayoutMicro,
+          marketId: ticketSelections.marketId,
+          outcomeId: ticketSelections.outcomeId,
+          oddsAtPlacement: ticketSelections.oddsAtPlacement,
+          providerMarketId: markets.providerMarketId,
+          matchId: matches.id,
+          homeTeam: matches.homeTeam,
+          awayTeam: matches.awayTeam,
+          homeCompetitorId: matches.homeCompetitorId,
+          awayCompetitorId: matches.awayCompetitorId,
+          tournamentId: tournaments.id,
+          riskTier: tournaments.riskTier,
+          sportId: sports.id,
+          sportName: sports.name,
+          outcomeName: marketOutcomes.name,
+        })
+        .from(tickets)
+        .innerJoin(users, eq(users.id, tickets.userId))
+        .innerJoin(ticketSelections, eq(ticketSelections.ticketId, tickets.id))
+        .innerJoin(markets, eq(markets.id, ticketSelections.marketId))
+        .innerJoin(matches, eq(matches.id, markets.matchId))
+        .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
+        .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+        .innerJoin(sports, eq(sports.id, categories.sportId))
+        .leftJoin(
+          marketOutcomes,
+          and(
+            eq(marketOutcomes.marketId, ticketSelections.marketId),
+            eq(marketOutcomes.outcomeId, ticketSelections.outcomeId),
+          ),
+        )
+        .where(
+          and(
+            eq(tickets.id, id),
+            eq(users.ticketsPublic, true),
+            sql`${users.nickname} IS NOT NULL`,
+          ),
+        )
+        .limit(2);
+
+      if (!orig) throw new NotFoundError();
+      if (orig.numLegs > 1) {
+        throw new BadRequestError("combo_unsupported", "combo_unsupported");
+      }
+      // "Won" predicate matches the feed: settled or cashed_out
+      // with payout > stake. Voided / lost / accepted all reject
+      // — Apply Same Play is a "do this winning play again"
+      // affordance, not a generic copy.
+      const status = orig.status;
+      const payout = orig.actualPayoutMicro ?? 0n;
+      const isWin =
+        (status === "settled" || status === "cashed_out") &&
+        BigInt(payout) > BigInt(orig.stakeMicro);
+      if (!isWin) {
+        throw new BadRequestError("not_a_win", "not_a_win");
+      }
+
+      const currency = orig.currency.trim() as Currency;
+      const origOdds = parseFloat(orig.oddsAtPlacement);
+      const pickedRole = inferRole(origOdds);
+      const pickedSide = inferPickedSide(
+        orig.outcomeName,
+        orig.homeTeam,
+        orig.awayTeam,
+      );
+
+      const originator: SamePlayOriginator = {
+        ticketId: orig.ticketId,
+        currency,
+        stakeMicro: orig.stakeMicro.toString(),
+        originalOdds: orig.oddsAtPlacement,
+        play: {
+          providerMarketId: orig.providerMarketId,
+          outcomeId: orig.outcomeId,
+          outcomeLabel: orig.outcomeName ?? orig.outcomeId,
+          marketLabel: `Market #${orig.providerMarketId}`,
+        },
+        teams: {
+          home: orig.homeTeam,
+          away: orig.awayTeam,
+          homeCompetitorId: orig.homeCompetitorId,
+          awayCompetitorId: orig.awayCompetitorId,
+          pickedSide,
+          pickedRole,
+        },
+        sportId: orig.sportId,
+        sportName: orig.sportName,
+        leagueTier: orig.riskTier,
+      };
+
+      // Candidate pull. Same sport, future kickoff, has the same
+      // provider_market_id market with the same outcome_id quoted
+      // at fetch time. Excludes the originator's own match (it's
+      // already settled). Caps at 30 so the FE always has enough
+      // raw candidates to absorb suspensions without dropping the
+      // whole list.
+      //
+      // Ordering: closest kickoff first. The scorer reorders by
+      // score on the FE; this is just a cheap default that gives
+      // sensible behaviour if scoring fails open.
+      const candidateRows = await app.db.execute<Record<string, unknown>>(sql`
+SELECT
+  m.id                                                               AS "matchId",
+  mk.id                                                              AS "marketId",
+  m.home_team                                                        AS "homeTeam",
+  m.away_team                                                        AS "awayTeam",
+  m.home_competitor_id                                               AS "homeCompetitorId",
+  m.away_competitor_id                                               AS "awayCompetitorId",
+  m.scheduled_at                                                     AS "scheduledAt",
+  EXTRACT(EPOCH FROM (m.scheduled_at - now())) / 3600.0               AS "hoursToKickoff",
+  (mk.status <> 1)                                                   AS suspended,
+  mo.published_odds                                                  AS "currentOdds",
+  tn.risk_tier                                                       AS "leagueTier",
+  tn.name                                                            AS "tournamentName",
+  s.slug                                                             AS "sportSlug"
+  FROM matches m
+  JOIN tournaments tn ON tn.id = m.tournament_id
+  JOIN categories c   ON c.id = tn.category_id
+  JOIN sports s       ON s.id = c.sport_id
+  JOIN markets mk     ON mk.match_id = m.id
+                     AND mk.provider_market_id = ${orig.providerMarketId}
+  JOIN market_outcomes mo
+                      ON mo.market_id = mk.id
+                     AND mo.outcome_id = ${orig.outcomeId}
+                     AND mo.active = true
+                     AND mo.published_odds IS NOT NULL
+ WHERE s.id = ${orig.sportId}
+   AND m.id <> ${orig.matchId}
+   AND m.status = 'not_started'
+   AND m.scheduled_at > now()
+ ORDER BY m.scheduled_at ASC
+ LIMIT 30
+`);
+
+      const candidates: SamePlayCandidate[] = candidateRows.map((r) => ({
+        matchId: String(r.matchId),
+        marketId: String(r.marketId),
+        homeTeam: String(r.homeTeam),
+        awayTeam: String(r.awayTeam),
+        homeCompetitorId:
+          r.homeCompetitorId === null || r.homeCompetitorId === undefined
+            ? null
+            : Number(r.homeCompetitorId),
+        awayCompetitorId:
+          r.awayCompetitorId === null || r.awayCompetitorId === undefined
+            ? null
+            : Number(r.awayCompetitorId),
+        scheduledAt:
+          r.scheduledAt instanceof Date
+            ? r.scheduledAt.toISOString()
+            : new Date(r.scheduledAt as string).toISOString(),
+        hoursToKickoff: Number(r.hoursToKickoff ?? 0),
+        suspended: Boolean(r.suspended),
+        currentOdds: String(r.currentOdds),
+        role: inferRole(parseFloat(String(r.currentOdds))),
+        leagueTier:
+          r.leagueTier === null || r.leagueTier === undefined
+            ? null
+            : Number(r.leagueTier),
+        tournamentName: String(r.tournamentName),
+        sportSlug: String(r.sportSlug),
+      }));
+
+      return { originator, candidates };
     },
   );
 
@@ -1019,6 +1235,36 @@ async function loadCommunityMe(
         : null,
     ),
   };
+}
+
+// Coarse role inference from a moneyline-style price. Mirrors the
+// scorer's `inferRole` so the originator's role and each candidate's
+// role come out of the same heuristic. < 1.8 → favorite; > 2.4 →
+// underdog; in between → even. NaN / non-finite falls back to "even"
+// so a missing price never kicks the whole candidate out of the list.
+function inferRole(odds: number): SamePlayRole {
+  if (!Number.isFinite(odds)) return "even";
+  if (odds < 1.8) return "favorite";
+  if (odds > 2.4) return "underdog";
+  return "even";
+}
+
+// Best-effort match between an outcome name and the home/away team.
+// Oddin sometimes labels moneyline outcomes "1"/"2"/"X" (no team
+// name in the outcome at all), so a null result is the common case
+// and not a bug. The scorer reads pickedSide=null as "no role
+// inference possible from the side", and the role-match reason
+// keeps firing off the price-derived role only.
+function inferPickedSide(
+  outcomeName: string | null,
+  homeTeam: string,
+  awayTeam: string,
+): "home" | "away" | null {
+  if (!outcomeName) return null;
+  const lower = outcomeName.toLowerCase();
+  if (lower.includes(homeTeam.toLowerCase())) return "home";
+  if (lower.includes(awayTeam.toLowerCase())) return "away";
+  return null;
 }
 
 function isUniqueViolation(err: unknown): boolean {

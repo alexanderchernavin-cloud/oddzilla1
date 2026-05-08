@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { CommunityTicketSummary } from "@oddzilla/types";
 import { fromMicro } from "@oddzilla/types/money";
 import { CopyButton } from "./copy-button";
+import { ApplySamePlayButton } from "./apply-same-play-button";
 import { Avatar } from "./avatar";
 
 // One card on the community feed and the per-user tickets list.
@@ -144,7 +145,17 @@ export function CommunityTicketCard({
       </div>
 
       <div className="mt-3 flex justify-end border-t border-[var(--color-border-strong)] pt-3">
-        <CopyButton ticketId={ticket.ticketId} />
+        {/* Big-Win settled cards use Apply Same Play — the
+            originating match is over, so the user needs the
+            modal's "find me an upcoming analog" flow instead of
+            the literal copy. Every other card (Recent in-flight,
+            non-Big-Win settled) keeps the direct Copy CTA where
+            "place the same legs" is still a meaningful action. */}
+        {ticket.isBigWin && !isLive ? (
+          <ApplySamePlayButton ticketId={ticket.ticketId} />
+        ) : (
+          <CopyButton ticketId={ticket.ticketId} />
+        )}
       </div>
     </li>
   );
