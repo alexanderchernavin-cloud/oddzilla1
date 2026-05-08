@@ -1596,11 +1596,16 @@ function resolveHistoryBadge(t: TicketSummary): {
   color: string;
 } {
   if (t.status === "settled") {
-    const won =
-      t.actualPayoutMicro != null && BigInt(t.actualPayoutMicro) > 0n;
-    return won
-      ? { label: "Won", color: "var(--positive)" }
-      : { label: "Lost", color: "var(--negative)" };
+    // Compare against stake, not 0. A fully voided ticket has
+    // actual_payout == stake (refund), not 0 — labeling it "Won"
+    // would mis-frame a refund as a winning ticket. A half-lost or
+    // partially-voided ticket has 0 < payout < stake and is correctly
+    // a Lost (the bettor still came out behind).
+    const payout = t.actualPayoutMicro ? BigInt(t.actualPayoutMicro) : 0n;
+    const stake = BigInt(t.stakeMicro);
+    if (payout > stake) return { label: "Won", color: "var(--positive)" };
+    if (payout === stake) return { label: "Voided", color: "var(--fg-muted)" };
+    return { label: "Lost", color: "var(--negative)" };
   }
   if (t.status === "rejected") return { label: "Rejected", color: "var(--negative)" };
   if (t.status === "pending_delay") return { label: "Pending", color: "var(--warning, var(--fg-muted))" };
