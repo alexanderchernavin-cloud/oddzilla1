@@ -34,11 +34,22 @@ function resolveStatusBadge(ticket: TicketSummary): {
   color: string;
 } {
   if (ticket.status === "settled") {
-    const won =
-      ticket.actualPayoutMicro != null && BigInt(ticket.actualPayoutMicro) > 0n;
-    return won
-      ? { label: "Won", color: "text-[var(--color-positive)]" }
-      : { label: "Lost", color: "text-[var(--color-negative)]" };
+    // Compare against stake, not 0. A fully voided ticket has
+    // actual_payout == stake (refund), not 0 — labeling it "Won"
+    // would mis-frame a refund as a winning ticket. A half-lost or
+    // partially-voided ticket has 0 < payout < stake and is correctly
+    // a Lost (the bettor still came out behind).
+    const payout = ticket.actualPayoutMicro
+      ? BigInt(ticket.actualPayoutMicro)
+      : 0n;
+    const stake = BigInt(ticket.stakeMicro);
+    if (payout > stake) {
+      return { label: "Won", color: "text-[var(--color-positive)]" };
+    }
+    if (payout === stake) {
+      return { label: "Voided", color: "text-[var(--color-fg-muted)]" };
+    }
+    return { label: "Lost", color: "text-[var(--color-negative)]" };
   }
   return {
     label: STATUS_LABEL[ticket.status],
