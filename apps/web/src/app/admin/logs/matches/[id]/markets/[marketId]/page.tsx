@@ -256,6 +256,18 @@ export default async function MarketHistoryPage({
                         );
                       }
                       const odds = p.publishedOdds ?? p.rawOdds;
+                      const oddsNum = odds ? Number(odds) : null;
+                      const feedProb = p.probability ? Number(p.probability) : null;
+                      // Mirror the cashout engine fallback: when the feed
+                      // omitted `probabilities` on this outcome we infer it
+                      // from 1/odds. Tilde marks the inferred value so the
+                      // operator can still tell it apart from a feed-shipped
+                      // probability.
+                      const inferredProb =
+                        feedProb == null && oddsNum && oddsNum > 0
+                          ? 1 / oddsNum
+                          : null;
+                      const probValue = feedProb ?? inferredProb;
                       return (
                         <td
                           key={o.outcomeId}
@@ -274,9 +286,10 @@ export default async function MarketHistoryPage({
                               (raw {Number(p.rawOdds).toFixed(2)})
                             </span>
                           ) : null}
-                          {p.probability ? (
+                          {probValue != null ? (
                             <span className="ml-1 text-[10px] text-[var(--color-fg-subtle)]">
-                              p={Number(p.probability).toFixed(3)}
+                              {inferredProb != null ? "~" : ""}p=
+                              {probValue.toFixed(3)}
                             </span>
                           ) : null}
                         </td>
