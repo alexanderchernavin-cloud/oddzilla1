@@ -267,6 +267,13 @@
       "when": 1700000037000,
       "tag": "0037_riskzilla",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1700000038000,
+      "tag": "0038_riskzilla_tiers_7_10",
+      "breakpoints": true
     }
   ]
 }
