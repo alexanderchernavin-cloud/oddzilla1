@@ -2,13 +2,20 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+// Runtime imports must use the subpath — Next.js webpack can't resolve
+// the .js re-exports in the package root. Type imports from the root
+// are fine because tsc erases them. See packages/types/package.json
+// `exports` and the precedent in /community/page.tsx with `isCurrency`
+// from @oddzilla/types/currencies.
 import {
   COMPETITION_RULE_CATALOG,
   defaultRuleSet,
-  type AdminMatchInput,
-  type CompetitionDetail,
-  type CompetitionRuleAssignment,
-  type CompetitionType,
+} from "@oddzilla/types/competitions-catalog";
+import type {
+  AdminMatchInput,
+  CompetitionDetail,
+  CompetitionRuleAssignment,
+  CompetitionType,
 } from "@oddzilla/types";
 
 // Single-screen create form. Replaces the 4-step wizard from the
