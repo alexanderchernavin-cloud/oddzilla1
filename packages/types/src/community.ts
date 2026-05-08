@@ -191,6 +191,103 @@ export interface CommunityCopyResponse {
   anyAvailable: boolean;
 }
 
+// ─── Apply Same Play (Phase 10.4) ───────────────────────────────────────────
+//
+// Companion to copy-to-bet. Where /community/copy returns the literal
+// legs of a settled ticket so the user can place them again, Apply
+// Same Play takes a winning *single*-leg ticket and proposes upcoming
+// matches the user could run the same play on. The frontend scores
+// and ranks the candidates with same-play-scorer.ts; the backend's
+// job is to return the originator's structured `play` and a pool of
+// upcoming matches with the same provider_market_id + outcome_id
+// available to bet.
+//
+// V1 scope (per Notion PRD "Big wins section", Open Question #3):
+//   • Single-leg originators only. Combos return `combo_unsupported`.
+//   • Same-sport candidates. Cross-sport is filtered server-side.
+//   • Same provider_market_id + outcome_id on the candidate match.
+//     This collapses the PRD's "Different market" branch to zero
+//     candidates, which is acceptable for V1.
+//   • Up to 30 candidates returned; the FE scores, ranks, and shows
+//     the top 10.
+
+// Coarse role inference from a moneyline-style price. Drives the
+// "Both favorites" / "Different role" reason chips. The thresholds
+// are heuristic — tuned against typical 2-way priced markets.
+export type SamePlayRole = "favorite" | "underdog" | "even";
+
+// Originator side fields the scorer needs that aren't on
+// CommunityTicketSummary (which is a presentation shape, not an
+// algorithm shape). Always keyed off a single-leg settled ticket.
+export interface SamePlayOriginator {
+  ticketId: string;
+  currency: Currency;
+  // Stake at placement, decimal string. Drives the Stake-mode
+  // conversions client-side (Same / Target profit / Suggested).
+  stakeMicro: string;
+  // Odds at placement on the originator's selection — the reference
+  // for the "Odds within N%" reason and Target-profit math.
+  originalOdds: string;
+  // Structured play. Composite key (providerMarketId, outcomeId) is
+  // the "same market + selection" identity used by the candidate
+  // query. specifiersJson is opaque metadata for the popover.
+  play: {
+    providerMarketId: number;
+    outcomeId: string;
+    outcomeLabel: string;
+    marketLabel: string;
+  };
+  teams: {
+    home: string;
+    away: string;
+    homeCompetitorId: number | null;
+    awayCompetitorId: number | null;
+    pickedSide: "home" | "away" | null;
+    pickedRole: SamePlayRole;
+  };
+  sportId: number;
+  sportName: string;
+  // Tournament risk tier — Oddin's 1 = top, 3 = lower. Drives the
+  // "Same tier" / "Lower tier league" reasons. Null when the tier
+  // hasn't been backfilled yet; the scorer treats null as
+  // tier-unknown and skips both reasons.
+  leagueTier: number | null;
+}
+
+// One upcoming-match candidate. The FE scores it; the BE only
+// guarantees a same-sport, same-(provider_market_id, outcome_id)
+// match scheduled in the future.
+export interface SamePlayCandidate {
+  matchId: string; // BIGINT as string
+  marketId: string; // BIGINT as string
+  homeTeam: string;
+  awayTeam: string;
+  homeCompetitorId: number | null;
+  awayCompetitorId: number | null;
+  scheduledAt: string; // ISO-8601
+  // Hours from "now" to kickoff at fetch time. Computed server-side
+  // so the FE doesn't drift on clock skew. Negative values are
+  // filtered out by the candidate query.
+  hoursToKickoff: number;
+  // True when the candidate market's status != 1 at fetch time.
+  // FE renders the suspended row state and disables Copy.
+  suspended: boolean;
+  // Live price on the candidate's matching outcome.
+  currentOdds: string;
+  // Inferred role from currentOdds — same heuristic as the
+  // originator's pickedRole. Drives the "Both favorites/underdogs"
+  // reason chip.
+  role: SamePlayRole;
+  leagueTier: number | null;
+  tournamentName: string;
+  sportSlug: string;
+}
+
+export interface ApplySamePlayResponse {
+  originator: SamePlayOriginator;
+  candidates: SamePlayCandidate[];
+}
+
 // ─── Errors (community-specific codes) ──────────────────────────────────────
 
 // Returned as ApiErrorBody.error from the community endpoints.
@@ -198,4 +295,6 @@ export type CommunityErrorCode =
   | "nickname_taken" // 409
   | "nickname_invalid" // 400 — malformed or wrong length
   | "profile_not_public" // 404 — user exists but tickets_public = false
-  | "no_changes"; // 400 — patch with no fields set
+  | "no_changes" // 400 — patch with no fields set
+  | "combo_unsupported" // 400 — Apply Same Play on a multi-leg ticket
+  | "not_a_win"; // 400 — Apply Same Play on a non-winning ticket
