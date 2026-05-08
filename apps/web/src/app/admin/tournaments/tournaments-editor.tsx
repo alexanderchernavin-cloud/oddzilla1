@@ -10,9 +10,7 @@ import {
 import { useRouter } from "next/navigation";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 
-// Mirrors the API allowlist (services/api/src/modules/admin/competitors.ts).
-// Kept in sync by hand: a mismatch only changes the failure mode (415
-// vs client-side rejection), not correctness.
+// Mirrors the API allowlist (services/api/src/modules/admin/tournaments.ts).
 const ACCEPTED_MIME = [
   "image/svg+xml",
   "image/png",
@@ -22,33 +20,35 @@ const ACCEPTED_MIME = [
 const ACCEPTED_EXTENSIONS = [".svg", ".png", ".jpg", ".jpeg", ".webp"] as const;
 const MAX_UPLOAD_BYTES = 1 * 1024 * 1024;
 
-export interface CompetitorRow {
+export interface TournamentRow {
   id: number;
   sportId: number;
   sportSlug: string;
   sportName: string;
+  categoryId: number;
+  categoryName: string;
   slug: string;
   name: string;
-  abbreviation: string | null;
+  riskTier: number | null;
+  active: boolean;
   logoUrl: string | null;
   brandColor: string | null;
-  active: boolean;
-  providerUrn: string | null;
 }
 
 export interface SportOption {
   id: number;
   slug: string;
   name: string;
-  teamCount: number;
+  tournamentCount: number;
   missingLogoCount: number;
 }
 
 interface ListShape {
   total: number;
+  missingLogoCount: number;
   limit: number;
   offset: number;
-  competitors: CompetitorRow[];
+  tournaments: TournamentRow[];
 }
 
 interface Filters {
@@ -59,7 +59,7 @@ interface Filters {
   limit: number;
 }
 
-export function CompetitorsEditor({
+export function TournamentsEditor({
   initialList,
   sports,
   currentFilters,
@@ -70,8 +70,13 @@ export function CompetitorsEditor({
 }) {
   return (
     <div className="space-y-6">
-      <FilterBar sports={sports} current={currentFilters} total={initialList.total} />
-      <CompetitorTable list={initialList} />
+      <FilterBar
+        sports={sports}
+        current={currentFilters}
+        total={initialList.total}
+        missingLogoCount={initialList.missingLogoCount}
+      />
+      <TournamentTable list={initialList} />
       <Pager list={initialList} current={currentFilters} />
     </div>
   );
@@ -81,10 +86,12 @@ function FilterBar({
   sports,
   current,
   total,
+  missingLogoCount,
 }: {
   sports: SportOption[];
   current: Filters;
   total: number;
+  missingLogoCount: number;
 }) {
   const router = useRouter();
   const [q, setQ] = useState(current.q);
@@ -97,19 +104,17 @@ function FilterBar({
     if (sportId) params.set("sportId", sportId);
     if (q.trim()) params.set("q", q.trim());
     if (missingOnly) params.set("missingLogo", "1");
-    // reset offset on filter change
-    router.push(`/admin/competitors${params.toString() ? `?${params.toString()}` : ""}`);
+    router.push(`/admin/tournaments${params.toString() ? `?${params.toString()}` : ""}`);
   }
 
   function clearFilters() {
     setQ("");
     setSportId("");
     setMissingOnly(false);
-    router.push("/admin/competitors");
+    router.push("/admin/tournaments");
   }
 
-  const totalMissing = sports.reduce((acc, s) => acc + s.missingLogoCount, 0);
-  const totalTeams = sports.reduce((acc, s) => acc + s.teamCount, 0);
+  const totalTournaments = sports.reduce((acc, s) => acc + s.tournamentCount, 0);
 
   return (
     <form
@@ -121,12 +126,12 @@ function FilterBar({
         <select
           value={sportId}
           onChange={(e) => setSportId(e.target.value)}
-          className="mt-1 min-w-[180px] rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-3 py-2 outline-none focus:border-[var(--color-accent)]"
+          className="mt-1 min-w-[200px] rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-3 py-2 outline-none focus:border-[var(--color-accent)]"
         >
-          <option value="">All sports ({totalTeams} teams)</option>
+          <option value="">All sports ({totalTournaments} tournaments)</option>
           {sports.map((s) => (
             <option key={s.id} value={String(s.id)}>
-              {s.name} — {s.teamCount} teams · {s.missingLogoCount} missing
+              {s.name} — {s.tournamentCount} · {s.missingLogoCount} missing
             </option>
           ))}
         </select>
@@ -138,7 +143,7 @@ function FilterBar({
           type="search"
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="Team name, slug, or abbreviation"
+          placeholder="Tournament name or slug"
           className="mt-1 w-full rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-3 py-2 outline-none focus:border-[var(--color-accent)]"
         />
       </label>
@@ -149,7 +154,7 @@ function FilterBar({
           checked={missingOnly}
           onChange={(e) => setMissingOnly(e.target.checked)}
         />
-        Missing logo only ({totalMissing})
+        Missing logo only ({missingLogoCount})
       </label>
 
       <button type="submit" className="btn btn-primary">
@@ -172,11 +177,11 @@ function FilterBar({
   );
 }
 
-function CompetitorTable({ list }: { list: ListShape }) {
-  if (list.competitors.length === 0) {
+function TournamentTable({ list }: { list: ListShape }) {
+  if (list.tournaments.length === 0) {
     return (
       <p className="text-sm text-[var(--color-fg-muted)]">
-        No teams match the current filters.
+        No tournaments match the current filters.
       </p>
     );
   }
@@ -186,17 +191,16 @@ function CompetitorTable({ list }: { list: ListShape }) {
         <thead className="border-b border-[var(--color-border)] text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
           <tr>
             <th className="px-4 py-3 text-left">Logo</th>
-            <th className="px-4 py-3 text-left">Team</th>
+            <th className="px-4 py-3 text-left">Tournament</th>
             <th className="px-4 py-3 text-left">Sport</th>
             <th className="px-4 py-3 text-left">Logo URL</th>
             <th className="px-4 py-3 text-left">Color</th>
-            <th className="px-4 py-3 text-left">Abbr.</th>
             <th className="px-4 py-3" />
           </tr>
         </thead>
         <tbody className="divide-y divide-[var(--color-border)]">
-          {list.competitors.map((row) => (
-            <CompetitorEditableRow key={row.id} row={row} />
+          {list.tournaments.map((row) => (
+            <TournamentEditableRow key={row.id} row={row} />
           ))}
         </tbody>
       </table>
@@ -204,18 +208,14 @@ function CompetitorTable({ list }: { list: ListShape }) {
   );
 }
 
-function CompetitorEditableRow({ row }: { row: CompetitorRow }) {
+function TournamentEditableRow({ row }: { row: TournamentRow }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [editing, setEditing] = useState(false);
   const [logoUrl, setLogoUrl] = useState(row.logoUrl ?? "");
   const [brandColor, setBrandColor] = useState(row.brandColor ?? "");
-  const [abbreviation, setAbbreviation] = useState(row.abbreviation ?? "");
   const [error, setError] = useState<string | null>(null);
 
-  // File-upload state lives on the row so multiple rows can be in flight
-  // independently. The hidden file input is keyed off a ref so the
-  // visible Upload button triggers it without rendering native chrome.
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [uploading, setUploading] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -223,7 +223,6 @@ function CompetitorEditableRow({ row }: { row: CompetitorRow }) {
   function startEdit() {
     setLogoUrl(row.logoUrl ?? "");
     setBrandColor(row.brandColor ?? "");
-    setAbbreviation(row.abbreviation ?? "");
     setError(null);
     setEditing(true);
   }
@@ -240,12 +239,11 @@ function CompetitorEditableRow({ row }: { row: CompetitorRow }) {
     }
     startTransition(async () => {
       try {
-        await clientApi(`/admin/competitors/${row.id}`, {
+        await clientApi(`/admin/tournaments/${row.id}`, {
           method: "PATCH",
           body: JSON.stringify({
             logoUrl: logoUrl.trim(),
             brandColor: brandColor.trim(),
-            abbreviation: abbreviation.trim(),
           }),
         });
         setEditing(false);
@@ -256,16 +254,13 @@ function CompetitorEditableRow({ row }: { row: CompetitorRow }) {
     });
   }
 
-  // Remove logo entirely — clears bytes + URL in one tx via the dedicated
-  // DELETE endpoint. Runs even outside edit mode so admins can sweep
-  // mis-rendered logos without reaching for the Edit affordance.
   function removeLogo() {
     if (!row.logoUrl && !logoUrl) return;
     setError(null);
     setRemoving(true);
     startTransition(async () => {
       try {
-        await clientApi(`/admin/competitors/${row.id}/logo`, { method: "DELETE" });
+        await clientApi(`/admin/tournaments/${row.id}/logo`, { method: "DELETE" });
         setLogoUrl("");
         router.refresh();
       } catch (e) {
@@ -278,7 +273,6 @@ function CompetitorEditableRow({ row }: { row: CompetitorRow }) {
 
   async function onFilePicked(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
-    // Reset so picking the same filename twice still fires onChange.
     if (fileInputRef.current) fileInputRef.current.value = "";
     if (!file) return;
     setError(null);
@@ -297,10 +291,7 @@ function CompetitorEditableRow({ row }: { row: CompetitorRow }) {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      // Raw fetch — clientApi force-sets content-type: application/json
-      // which would corrupt the multipart boundary. Same-origin so the
-      // admin session cookie rides along.
-      const res = await fetch(`/api/admin/competitors/${row.id}/logo`, {
+      const res = await fetch(`/api/admin/tournaments/${row.id}/logo`, {
         method: "POST",
         body: fd,
         credentials: "include",
@@ -332,7 +323,10 @@ function CompetitorEditableRow({ row }: { row: CompetitorRow }) {
       </td>
       <td className="px-4 py-3">
         <div className="font-medium">{row.name}</div>
-        <div className="font-mono text-[10px] text-[var(--color-fg-subtle)]">{row.slug}</div>
+        <div className="font-mono text-[10px] text-[var(--color-fg-subtle)]">
+          {row.slug}
+          {row.riskTier !== null ? ` · tier ${row.riskTier}` : ""}
+        </div>
       </td>
       <td className="px-4 py-3 text-[var(--color-fg-muted)]">{row.sportSlug}</td>
       <td className="px-4 py-3 align-top">
@@ -382,22 +376,6 @@ function CompetitorEditableRow({ row }: { row: CompetitorRow }) {
             />
             {row.brandColor}
           </span>
-        ) : (
-          <span className="text-xs text-[var(--color-fg-subtle)]">—</span>
-        )}
-      </td>
-      <td className="px-4 py-3 align-top">
-        {editing ? (
-          <input
-            type="text"
-            value={abbreviation}
-            onChange={(e) => setAbbreviation(e.target.value)}
-            maxLength={16}
-            disabled={pending}
-            className="w-[88px] rounded-[8px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-2 py-1 font-mono text-xs outline-none focus:border-[var(--color-accent)]"
-          />
-        ) : row.abbreviation ? (
-          <span className="font-mono text-xs">{row.abbreviation}</span>
         ) : (
           <span className="text-xs text-[var(--color-fg-subtle)]">—</span>
         )}
@@ -508,7 +486,7 @@ function LogoPreview({
         width: 36,
         height: 36,
         borderRadius: 8,
-        background: showImg ? "var(--color-bg-elevated)" : "var(--color-bg-elevated)",
+        background: "var(--color-bg-elevated)",
         border: "1px solid var(--color-border)",
         fontFamily: "var(--font-geist-mono, monospace)",
         fontSize: 11,
@@ -539,12 +517,7 @@ function LogoPreview({
           onError={() => setFailed(true)}
           loading="lazy"
           decoding="async"
-          style={{
-            width: "100%",
-            height: "100%",
-            objectFit: "contain",
-            padding: 3,
-          }}
+          style={{ width: "100%", height: "100%", objectFit: "contain", padding: 3 }}
         />
       ) : (
         initials
@@ -566,7 +539,7 @@ function Pager({ list, current }: { list: ListShape; current: Filters }) {
     if (current.missingLogo) params.set("missingLogo", "1");
     if (offset > 0) params.set("offset", String(offset));
     router.push(
-      `/admin/competitors${params.toString() ? `?${params.toString()}` : ""}`,
+      `/admin/tournaments${params.toString() ? `?${params.toString()}` : ""}`,
     );
   }
 

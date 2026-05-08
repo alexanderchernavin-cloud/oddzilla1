@@ -442,7 +442,96 @@ interface InlineTopMarket {
   }>;
 }
 
+// Sport slug shape is the same lowercase-and-hyphens convention used by
+// every other slug in the catalog. The byte-serve regex stays anchored
+// so a malformed segment (e.g. "..", "%2F") can't sneak through into the
+// SQL lookup.
+const SPORT_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
+
 export default async function catalogRoutes(app: FastifyInstance) {
+  // ── Sport logo byte-serve (admin-uploaded) ──────────────────────────
+  //
+  // Returns the bytes stored on sports.logo_data with the recorded
+  // logo_mime. Mirrors /community/avatars/:slug/image — anonymous,
+  // long immutable cache because the storefront includes a ?v=<unix-ms>
+  // query parameter on every upload that busts the browser cache for
+  // the next render. Routes that don't carry uploaded bytes 404 here;
+  // the storefront falls back to the bundled SVG for those.
+  app.get<{ Params: { slug: string } }>(
+    "/sports/:slug/logo",
+    async (request, reply) => {
+      const { slug } = request.params;
+      if (!SPORT_SLUG_RE.test(slug)) throw new NotFoundError();
+      const [row] = await app.db
+        .select({
+          logoData: sports.logoData,
+          logoMime: sports.logoMime,
+        })
+        .from(sports)
+        .where(eq(sports.slug, slug))
+        .limit(1);
+      if (!row || !row.logoData || !row.logoMime) throw new NotFoundError();
+      reply
+        .header("content-type", row.logoMime)
+        .header("cache-control", "public, max-age=31536000, immutable")
+        .send(Buffer.from(row.logoData));
+    },
+  );
+
+  // ── Competitor logo byte-serve (admin-uploaded) ─────────────────────
+  //
+  // Numeric primary key keyed: competitors live behind a (sportId, slug)
+  // composite unique, so a clean public URL needs the sport slug too.
+  // Keeping the handler keyed by id avoids that branching — the upload
+  // endpoint emits the byte-serve URL, so anything pointing at this
+  // route is one we wrote ourselves.
+  app.get<{ Params: { id: string } }>(
+    "/competitors/:id/logo",
+    async (request, reply) => {
+      const idNum = Number(request.params.id);
+      if (!Number.isInteger(idNum) || idNum <= 0) throw new NotFoundError();
+      const [row] = await app.db
+        .select({
+          logoData: competitors.logoData,
+          logoMime: competitors.logoMime,
+        })
+        .from(competitors)
+        .where(eq(competitors.id, idNum))
+        .limit(1);
+      if (!row || !row.logoData || !row.logoMime) throw new NotFoundError();
+      reply
+        .header("content-type", row.logoMime)
+        .header("cache-control", "public, max-age=31536000, immutable")
+        .send(Buffer.from(row.logoData));
+    },
+  );
+
+  // ── Tournament logo byte-serve (admin-uploaded) ─────────────────────
+  //
+  // Same shape as competitor: keyed by id because tournament slugs
+  // aren't globally unique (they're scoped to category). The upload
+  // endpoint stamps the byte-serve URL onto tournaments.logo_url.
+  app.get<{ Params: { id: string } }>(
+    "/tournaments/:id/logo",
+    async (request, reply) => {
+      const idNum = Number(request.params.id);
+      if (!Number.isInteger(idNum) || idNum <= 0) throw new NotFoundError();
+      const [row] = await app.db
+        .select({
+          logoData: tournaments.logoData,
+          logoMime: tournaments.logoMime,
+        })
+        .from(tournaments)
+        .where(eq(tournaments.id, idNum))
+        .limit(1);
+      if (!row || !row.logoData || !row.logoMime) throw new NotFoundError();
+      reply
+        .header("content-type", row.logoMime)
+        .header("cache-control", "public, max-age=31536000, immutable")
+        .send(Buffer.from(row.logoData));
+    },
+  );
+
   // ── Sports tree ─────────────────────────────────────────────────────
   app.get("/catalog/sports", async () => {
     const rows = await app.db
@@ -1293,6 +1382,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
         id: tournaments.id,
         name: tournaments.name,
         riskTier: tournaments.riskTier,
+        logoUrl: tournaments.logoUrl,
+        brandColor: tournaments.brandColor,
         matchCount: matchCountExpr,
         liveCount: liveCountExpr,
       })
@@ -1306,7 +1397,13 @@ export default async function catalogRoutes(app: FastifyInstance) {
           notHiddenTournament,
         ),
       )
-      .groupBy(tournaments.id, tournaments.name, tournaments.riskTier)
+      .groupBy(
+        tournaments.id,
+        tournaments.name,
+        tournaments.riskTier,
+        tournaments.logoUrl,
+        tournaments.brandColor,
+      )
       .having(sql`${matchCountExpr}::int > 0`);
 
     const tournamentsOut = rows
@@ -1314,6 +1411,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
         id: r.id,
         name: r.name,
         riskTier: r.riskTier,
+        logoUrl: r.logoUrl,
+        brandColor: r.brandColor,
         matchCount: Number(r.matchCount),
         liveCount: Number(r.liveCount),
       }))

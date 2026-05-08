@@ -9,6 +9,16 @@
 //                                              audit-logged.
 //   POST   /admin/competitors/bulk-logos       set logo_url for many slugs at
 //                                              once (used by the seed script).
+//   POST   /admin/competitors/:id/logo         multipart upload — accepts
+//                                              SVG / PNG / JPEG / WebP up to
+//                                              1 MB. Bytes land on
+//                                              competitors.logo_data + auto-
+//                                              stamps logo_url to a /api/
+//                                              competitors/<id>/logo URL so
+//                                              the storefront renders it
+//                                              without code changes.
+//   DELETE /admin/competitors/:id/logo         clear logo_data + logo_mime +
+//                                              logo_url in one transaction.
 //
 // Why the bulk endpoint? The user asked for logos for all teams scoped per
 // discipline. Pasting URLs row-by-row through the UI is fine for tweaks but
@@ -19,7 +29,26 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { and, asc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { competitors, sports, adminAuditLog } from "@oddzilla/db";
-import { NotFoundError } from "../../lib/errors.js";
+import { BadRequestError, NotFoundError } from "../../lib/errors.js";
+import multipart from "@fastify/multipart";
+
+// Mirrors admin/sports.ts. Kept as separate constants per file so a
+// future change to one allowlist doesn't silently widen the other.
+const MAX_UPLOAD_BYTES = 1 * 1024 * 1024;
+const ALLOWED_MIME = new Set([
+  "image/svg+xml",
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+]);
+
+function buildCompetitorLogoUrl(id: number, version: number): string {
+  return `/api/competitors/${id}/logo?v=${version}`;
+}
+
+const writeRateLimit = {
+  rateLimit: { max: 30, timeWindow: "1 minute" },
+};
 
 // HEX colour validator: #RRGGBB with case-insensitive hex digits. Empty
 // string is converted to null so the admin UI can clear the field by
@@ -117,6 +146,17 @@ interface CompetitorRow {
 }
 
 export default async function adminCompetitorsRoutes(app: FastifyInstance) {
+  // Multipart support is local to this scope so JSON-body routes keep
+  // their default parsing. Mirrors admin/sports.ts and admin/avatars.ts.
+  await app.register(multipart, {
+    limits: {
+      fileSize: MAX_UPLOAD_BYTES,
+      files: 1,
+      fields: 5,
+      fieldSize: 1024,
+    },
+  });
+
   // ── List ──────────────────────────────────────────────────────────
   app.get("/admin/competitors", async (request) => {
     request.requireRole("admin");
@@ -248,6 +288,7 @@ export default async function adminCompetitorsRoutes(app: FastifyInstance) {
         abbreviation: competitors.abbreviation,
         logoUrl: competitors.logoUrl,
         brandColor: competitors.brandColor,
+        logoMime: competitors.logoMime,
       })
       .from(competitors)
       .where(eq(competitors.id, params.id))
@@ -258,8 +299,21 @@ export default async function adminCompetitorsRoutes(app: FastifyInstance) {
       logoUrl: string | null;
       brandColor: string | null;
       abbreviation: string | null;
+      logoData: Buffer | null;
+      logoMime: string | null;
     }> = {};
-    if (body.logoUrl !== undefined) patch.logoUrl = body.logoUrl;
+    if (body.logoUrl !== undefined) {
+      patch.logoUrl = body.logoUrl;
+      // Same orphan-bytes guard as admin/sports.ts: when logo_url is
+      // pasted as something other than the byte-serve URL (or cleared),
+      // wipe logo_data/logo_mime so the columns don't drift apart.
+      const isByteServeUrl =
+        body.logoUrl != null && body.logoUrl.startsWith(`/api/competitors/${before.id}/logo`);
+      if (!isByteServeUrl && before.logoMime !== null) {
+        patch.logoData = null;
+        patch.logoMime = null;
+      }
+    }
     if (body.brandColor !== undefined) patch.brandColor = body.brandColor;
     if (body.abbreviation !== undefined) patch.abbreviation = body.abbreviation;
 
@@ -394,4 +448,132 @@ export default async function adminCompetitorsRoutes(app: FastifyInstance) {
 
     return { updatedCount: updated.length, missingCount: missing.length, updated, missing };
   });
+
+  // ── Logo upload ───────────────────────────────────────────────────
+  app.post<{ Params: { id: string } }>(
+    "/admin/competitors/:id/logo",
+    { config: writeRateLimit },
+    async (request, reply) => {
+      const admin = request.requireRole("admin");
+      const params = z
+        .object({ id: z.coerce.number().int().positive() })
+        .parse(request.params);
+
+      const file = await request.file();
+      if (!file) throw new BadRequestError("file_required", "file_required");
+      if (!ALLOWED_MIME.has(file.mimetype)) {
+        throw new BadRequestError(
+          "unsupported_mime",
+          "Upload must be SVG, PNG, JPEG, or WebP",
+        );
+      }
+
+      const buffer = await file.toBuffer();
+      if (file.file.truncated) {
+        throw new BadRequestError("file_too_large", "file_too_large");
+      }
+      if (buffer.length === 0) {
+        throw new BadRequestError("file_empty", "file_empty");
+      }
+
+      const [before] = await app.db
+        .select({
+          id: competitors.id,
+          slug: competitors.slug,
+          name: competitors.name,
+          logoUrl: competitors.logoUrl,
+          logoMime: competitors.logoMime,
+        })
+        .from(competitors)
+        .where(eq(competitors.id, params.id))
+        .limit(1);
+      if (!before) throw new NotFoundError("competitor_not_found", "competitor_not_found");
+
+      const version = Date.now();
+      const newLogoUrl = buildCompetitorLogoUrl(before.id, version);
+
+      await app.db.transaction(async (tx) => {
+        await tx
+          .update(competitors)
+          .set({
+            logoData: buffer,
+            logoMime: file.mimetype,
+            logoUrl: newLogoUrl,
+          })
+          .where(eq(competitors.id, params.id));
+        await tx.insert(adminAuditLog).values({
+          actorUserId: admin.id,
+          action: "competitor.logo_upload",
+          targetType: "competitor",
+          targetId: params.id.toString(),
+          beforeJson: {
+            logoUrl: before.logoUrl,
+            logoMime: before.logoMime,
+          },
+          afterJson: {
+            slug: before.slug,
+            name: before.name,
+            logoUrl: newLogoUrl,
+            mime: file.mimetype,
+            bytes: buffer.length,
+          },
+          ipInet: request.ip ?? null,
+        });
+      });
+
+      reply.code(200);
+      return { ok: true, id: params.id, logoUrl: newLogoUrl };
+    },
+  );
+
+  // ── Logo remove ───────────────────────────────────────────────────
+  app.delete<{ Params: { id: string } }>(
+    "/admin/competitors/:id/logo",
+    { config: writeRateLimit },
+    async (request) => {
+      const admin = request.requireRole("admin");
+      const params = z
+        .object({ id: z.coerce.number().int().positive() })
+        .parse(request.params);
+
+      const [before] = await app.db
+        .select({
+          id: competitors.id,
+          slug: competitors.slug,
+          name: competitors.name,
+          logoUrl: competitors.logoUrl,
+          logoMime: competitors.logoMime,
+        })
+        .from(competitors)
+        .where(eq(competitors.id, params.id))
+        .limit(1);
+      if (!before) throw new NotFoundError("competitor_not_found", "competitor_not_found");
+
+      await app.db.transaction(async (tx) => {
+        await tx
+          .update(competitors)
+          .set({ logoData: null, logoMime: null, logoUrl: null })
+          .where(eq(competitors.id, params.id));
+        await tx.insert(adminAuditLog).values({
+          actorUserId: admin.id,
+          action: "competitor.logo_remove",
+          targetType: "competitor",
+          targetId: params.id.toString(),
+          beforeJson: {
+            logoUrl: before.logoUrl,
+            logoMime: before.logoMime,
+          },
+          afterJson: {
+            slug: before.slug,
+            name: before.name,
+            logoUrl: null,
+            logoMime: null,
+          },
+          ipInet: request.ip ?? null,
+        });
+      });
+
+      return { ok: true, id: params.id };
+    },
+  );
 }

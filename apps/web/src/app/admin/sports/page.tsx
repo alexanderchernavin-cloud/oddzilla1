@@ -32,10 +32,12 @@ export default async function AdminSportsPage({
     <div>
       <h1 className="text-2xl font-semibold tracking-tight">Sports</h1>
       <p className="mt-2 text-sm text-[var(--color-fg-muted)]">
-        Logo and brand colour for each sport. Paste an HTTPS URL or a
-        self-hosted absolute path (e.g. <code>/sports/cs2.svg</code>). Edits
-        propagate to the storefront on the next page load — there&apos;s no
-        cache layer in front of <code>/catalog/sports</code>.
+        Logo and brand colour for each sport. Either paste an HTTPS URL or
+        a self-hosted absolute path (e.g. <code>/sports/cs2.svg</code>),
+        or upload a file (SVG, PNG, JPEG, WebP — max 1 MB). Use{" "}
+        <strong>Remove logo</strong> to clear an upload or pasted URL.
+        Edits propagate to the storefront on the next page load — there&apos;s
+        no cache layer in front of <code>/catalog/sports</code>.
       </p>
       {data ? (
         <SportsEditor

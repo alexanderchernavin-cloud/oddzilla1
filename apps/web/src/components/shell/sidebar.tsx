@@ -20,6 +20,10 @@ interface Tournament {
   id: number;
   name: string;
   riskTier?: number | null;
+  // Admin-uploaded or admin-pasted logo URL. Null falls back to the
+  // sport's logo (gold-tier rendering keeps using TierMark either way).
+  logoUrl?: string | null;
+  brandColor?: string | null;
   matchCount: number;
   liveCount: number;
 }
@@ -310,6 +314,7 @@ function TournamentItem({
       }}
     >
       <TierMark tier={tier} size={11} />
+      <TournamentLogoMark logoUrl={tournament.logoUrl ?? null} name={tournament.name} />
       <span
         style={{
           flex: 1,
@@ -350,6 +355,38 @@ function TournamentItem({
         </span>
       )}
     </Link>
+  );
+}
+
+// 16-px square renderer for an admin-uploaded tournament logo. Falls
+// back to nothing (TierMark + name still carry the row) when logoUrl
+// is null OR when the <img> errors out, so a stale/blocked URL never
+// breaks the sidebar layout.
+function TournamentLogoMark({
+  logoUrl,
+  name,
+}: {
+  logoUrl: string | null;
+  name: string;
+}) {
+  const [errored, setErrored] = useState(false);
+  if (!logoUrl || errored) return null;
+  return (
+    <img
+      src={logoUrl}
+      alt=""
+      aria-hidden
+      width={14}
+      height={14}
+      title={name}
+      onError={() => setErrored(true)}
+      style={{
+        width: 14,
+        height: 14,
+        objectFit: "contain",
+        flexShrink: 0,
+      }}
+    />
   );
 }
 
