@@ -12,6 +12,7 @@ import { MatchLiveMedia } from "@/components/widgets/match-live-media";
 import { MatchPrematchMobile } from "@/components/widgets/match-prematch-mobile";
 import { MatchPageRegistrar } from "@/lib/match-page-context";
 import { type LiveScore } from "@/lib/live-score";
+import { MatchAnalysesSection } from "@/components/community/match-analyses-section";
 
 interface MatchResponse {
   match: {
@@ -185,6 +186,12 @@ export default async function MatchPage({
           sportSlug: match.sport.slug,
         }}
         initialGroups={marketGroups}
+      />
+
+      <MatchAnalysesSection
+        matchId={match.id}
+        matchTitle={`${match.homeTeam} vs ${match.awayTeam}`}
+        matchStatus={match.status}
       />
     </div>
   );

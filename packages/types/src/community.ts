@@ -383,6 +383,22 @@ export interface CreateAnalysisRequest {
   body: string;
 }
 
+// One row in the editor's ticket-selector. Server-pre-filtered to
+// tickets that pass every gate POST /community/analyses enforces, so
+// the editor never lights up Submit against a ticket that would 400.
+export interface EligibleTicketSummary {
+  ticketId: string;
+  currency: Currency;
+  stakeMicro: string;
+  betType: BetType;
+  legCount: number;
+  totalOdds: string; // 4-decimal string
+}
+
+export interface EligibleTicketsResponse {
+  tickets: EligibleTicketSummary[];
+}
+
 export interface AnalysisAuthorStats {
   nickname: string;
   authorId: string;

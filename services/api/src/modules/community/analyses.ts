@@ -35,12 +35,15 @@ import {
   matches,
 } from "@oddzilla/db";
 import type {
+  AnalysisAuthorStats,
   AnalysisFeedResponse,
   AnalysisOutcome,
   AnalysisSort,
   AnalysisStatus,
   AnalysisSummary,
   CreateAnalysisRequest,
+  EligibleTicketsResponse,
+  EligibleTicketSummary,
 } from "@oddzilla/types";
 import {
   BadRequestError,
@@ -422,6 +425,140 @@ SELECT
       });
 
       return loadAnalysis(app, id, u.id);
+    },
+  );
+
+  // ─── GET /community/users/:nickname/analysis-stats ────────────────────────
+  //
+  // Powers the outcome-tracker block on /u/[nickname]. Aggregates the
+  // author's published analyses, settled and unsettled, and returns
+  // win/loss counts plus inspired turnover (sum of stake_micro across
+  // every community_tickets row attributed to this author via
+  // copied_from_publisher_id). Cross-currency at this level — the
+  // tracker reads the author's total impact, not a per-currency
+  // breakdown. ROI fields stay null on day 1 (require historical
+  // settled-analysis data; ranker covers them when they exist).
+  app.get<{ Params: { nickname: string } }>(
+    "/community/users/:nickname/analysis-stats",
+    { config: readRateLimit },
+    async (request): Promise<AnalysisAuthorStats> => {
+      const { nickname } = request.params;
+      const [u] = await app.db
+        .select({ id: users.id, nickname: users.nickname, ticketsPublic: users.ticketsPublic })
+        .from(users)
+        .where(eq(users.nickname, nickname))
+        .limit(1);
+      if (!u || !u.nickname || !u.ticketsPublic) throw new NotFoundError();
+
+      const rows = await app.db.execute<Record<string, unknown>>(sql`
+        SELECT
+          COUNT(*)::int                                        AS total,
+          COUNT(*) FILTER (WHERE outcome IS NOT NULL)::int     AS settled,
+          COUNT(*) FILTER (WHERE outcome = 'won')::int         AS wins,
+          COUNT(*) FILTER (WHERE outcome = 'lost')::int        AS losses,
+          COUNT(*) FILTER (WHERE outcome IN ('void','cashed_out_void'))::int AS voids
+          FROM analyses
+         WHERE author_id = ${u.id}
+           AND status = 'published'
+      `);
+      const r = rows[0] ?? {};
+      const settled = Number(r.settled ?? 0);
+      const wins = Number(r.wins ?? 0);
+      const losses = Number(r.losses ?? 0);
+      // Win rate denominators exclude voids — a void is neither a win
+      // nor a loss; treating it as a loss would punish the author for
+      // a fixture that didn't even take place.
+      const denom = wins + losses;
+      const winRatePct = settled >= 3 && denom > 0 ? Math.round((wins / denom) * 100) : null;
+
+      const turnoverRows = await app.db.execute<{ total: string | null }>(sql`
+        SELECT COALESCE(SUM(stake_micro), 0)::bigint::text AS total
+          FROM community_tickets
+         WHERE copied_from_publisher_id = ${u.id}
+      `);
+      const inspiredTurnoverMicro = String(turnoverRows[0]?.total ?? "0");
+
+      return {
+        nickname: u.nickname,
+        authorId: u.id,
+        totalAnalyses: Number(r.total ?? 0),
+        settled,
+        wins,
+        losses,
+        voids: Number(r.voids ?? 0),
+        winRatePct,
+        inspiredTurnoverMicro,
+        // ROI windows require enough settled history to reason about
+        // — return null until we either backfill or land at least
+        // 3 settled analyses per window.
+        roi30dPct: null,
+        roi90dPct: null,
+        roi365dPct: null,
+      };
+    },
+  );
+
+  // ─── GET /community/me/analysis-eligible-tickets ──────────────────────────
+  //
+  // Powers the editor's ticket selector. The author needs to attach
+  // a ticket that satisfies every gate POST /community/analyses
+  // enforces; surfacing only eligible tickets up front means the
+  // editor's submit button never lights up against a ticket that
+  // would 400 server-side. Pre-filters: caller's tickets, status =
+  // accepted, every leg on the requested match, every leg odds ≥ 1.30.
+  app.get<{ Querystring: { match?: string } }>(
+    "/community/me/analysis-eligible-tickets",
+    { config: readRateLimit },
+    async (request): Promise<EligibleTicketsResponse> => {
+      const u = request.requireAuth();
+      const matchIdRaw = request.query.match;
+      if (!matchIdRaw || !/^\d+$/.test(matchIdRaw)) {
+        throw new BadRequestError("match_invalid", "match_invalid");
+      }
+      const matchId = BigInt(matchIdRaw);
+
+      // Read every accepted ticket the caller owns, then aggregate
+      // legs by ticket and reject any whose legs span multiple
+      // matches or fall under the min-odds floor. Doing this in one
+      // round-trip keeps the editor's pre-fetch cheap.
+      const rows = await app.db.execute<Record<string, unknown>>(sql`
+        SELECT
+          t.id                                                 AS "ticketId",
+          t.currency                                           AS "currency",
+          t.stake_micro                                        AS "stakeMicro",
+          t.bet_type::text                                     AS "betType",
+          COUNT(ts.*)::int                                     AS "legCount",
+          EXP(SUM(LN(ts.odds_at_placement::float8)))::numeric(10,4) AS "totalOdds",
+          MIN(ts.odds_at_placement::float8)                    AS "minOdds",
+          BOOL_AND(mk.match_id = ${matchId}::bigint)           AS "allOnMatch",
+          -- Author already published an analysis on this ticket?
+          EXISTS (
+            SELECT 1 FROM analyses a
+             WHERE a.ticket_id = t.id AND a.status = 'published'
+          )                                                    AS "alreadyAttached"
+          FROM tickets t
+          INNER JOIN ticket_selections ts ON ts.ticket_id = t.id
+          INNER JOIN markets mk           ON mk.id = ts.market_id
+         WHERE t.user_id = ${u.id}
+           AND t.status = 'accepted'
+         GROUP BY t.id
+        HAVING BOOL_AND(mk.match_id = ${matchId}::bigint) = true
+           AND MIN(ts.odds_at_placement::float8) >= ${parseFloat(MIN_ODDS)}
+         ORDER BY t.placed_at DESC
+      `);
+
+      const tickets: EligibleTicketSummary[] = rows
+        .filter((r) => !r.alreadyAttached)
+        .map((r) => ({
+          ticketId: String(r.ticketId),
+          currency: String(r.currency).trim() as EligibleTicketSummary["currency"],
+          stakeMicro: String(r.stakeMicro),
+          betType: String(r.betType) as EligibleTicketSummary["betType"],
+          legCount: Number(r.legCount ?? 0),
+          totalOdds: String(r.totalOdds),
+        }));
+
+      return { tickets };
     },
   );
 
