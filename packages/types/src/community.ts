@@ -288,6 +288,124 @@ export interface ApplySamePlayResponse {
   candidates: SamePlayCandidate[];
 }
 
+// ─── Analyses (Phase 10.5) ──────────────────────────────────────────────────
+//
+// Pre-match editorial posts. Author attaches one of their own tickets
+// as "skin in the game"; readers 👍 and copy. When the attached
+// ticket settles, the analysis inherits the outcome.
+//
+// V1 quality gates (PRD: Quality rules + Reward formula):
+//   • Body 100–5000 chars; perex ≤ 100
+//   • Author must own the attached ticket
+//   • Every leg of the attached ticket must reference the analysis's
+//     match (single-match analyses only in V1)
+//   • Match must be `not_started` at publish time (pre-match)
+//   • Min odds 1.30 prematch on every leg (`recommendedMinRate`)
+//   • One published analysis per (author, match) — UNIQUE partial idx
+//   • 100/month/author rate limit (defined by client; flexes for
+//     major events; expert tier grants +20)
+//
+// V1 reward stance: engagement-based ladder (cosmetic + status).
+// Schema captures the data primitives (inspirations, copy
+// attribution, settled outcome) so a future cash-share mechanic
+// (Liga Stavok pattern) can layer on without migration.
+
+export type AnalysisStatus = "draft" | "published" | "banned" | "voided";
+export type AnalysisOutcome = "won" | "lost" | "void" | "cashed_out_void";
+
+// Sort options for the cross-match feed. "Recommended" runs the
+// 9-factor ranking from the Reward formula doc; the others are
+// direct column orders.
+export type AnalysisSort =
+  | "recommended"
+  | "recent"
+  | "most_inspired"
+  | "top_authors";
+
+// One card on the analyses feed. Money fields stay as decimal strings
+// to preserve bigint precision; counters are JS numbers (INT in
+// Postgres).
+export interface AnalysisSummary {
+  id: string;
+  authorId: string;
+  authorNickname: string;
+  authorAvatarUrl: string | null;
+  authorWinRate: number | null; // 0–100, null until ≥3 settled analyses
+  matchId: string; // BIGINT as string
+  matchTitle: string; // "Team A vs Team B"
+  sportId: number;
+  sportName: string;
+  sportSlug: string;
+  // Match scheduling — match-page UI hides the "kickoff in N h" hint
+  // once the match goes live; the feed uses it to render time-to-event
+  // and the ranking algorithm reads it as a freshness signal.
+  scheduledAt: string; // ISO-8601
+  // Attached ticket summary. legCount is the number of selections;
+  // totalOdds is the product (4 decimals). The ticket's own status
+  // is exposed for the outcome-tracker badge — won / lost / void /
+  // pending all render distinct chrome.
+  ticketId: string;
+  ticketTotalOdds: string;
+  ticketLegCount: number;
+  ticketStatus: Extract<TicketStatus, "accepted" | "settled" | "cashed_out" | "voided">;
+  // Editorial fields.
+  perex: string;
+  body: string;
+  status: AnalysisStatus;
+  // Engagement.
+  thumbsUpCount: number;
+  inspirationCount: number;
+  // True when the current viewer has 👍'd this analysis. NULL in
+  // anonymous reads (the toggle is gated on auth on the frontend).
+  viewerReacted: boolean | null;
+  // Outcome inherited from the attached ticket. NULL until settled.
+  outcome: AnalysisOutcome | null;
+  publishedAt: string; // ISO-8601
+  settledAt: string | null;
+}
+
+export interface AnalysisFeedResponse {
+  analyses: AnalysisSummary[];
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
+}
+
+// POST /community/analyses — author publishes. ticketId must be one
+// of the author's own accepted tickets on the named match. The
+// server re-validates every gate; the client doesn't need to know
+// the regex/length rules upfront, but we mirror them so the editor
+// can show inline errors before the round-trip.
+export interface CreateAnalysisRequest {
+  matchId: string;
+  ticketId: string;
+  perex: string;
+  body: string;
+}
+
+export interface AnalysisAuthorStats {
+  nickname: string;
+  authorId: string;
+  // Full per-author win-loss record across settled analyses. Drives
+  // the outcome-tracker badge on the profile page.
+  totalAnalyses: number; // includes pending + settled
+  settled: number;
+  wins: number;
+  losses: number;
+  voids: number;
+  // 0–100, integer. Null when settled < 3 (sample too small).
+  winRatePct: number | null;
+  // Sum of stake_micro from copies attributed to this author. Drives
+  // "inspired turnover" in the ranking algorithm.
+  inspiredTurnoverMicro: string;
+  // 30/90/365-day ROI windows. The Reward formula keys expert status
+  // off these; we surface them on the profile too. Null windows mean
+  // no settled analyses in that horizon yet.
+  roi30dPct: number | null;
+  roi90dPct: number | null;
+  roi365dPct: number | null;
+}
+
 // ─── Errors (community-specific codes) ──────────────────────────────────────
 
 // Returned as ApiErrorBody.error from the community endpoints.
@@ -297,4 +415,14 @@ export type CommunityErrorCode =
   | "profile_not_public" // 404 — user exists but tickets_public = false
   | "no_changes" // 400 — patch with no fields set
   | "combo_unsupported" // 400 — Apply Same Play on a multi-leg ticket
-  | "not_a_win"; // 400 — Apply Same Play on a non-winning ticket
+  | "not_a_win" // 400 — Apply Same Play on a non-winning ticket
+  // Analyses (Phase 10.5)
+  | "match_not_eligible" // 400 — match is not pre-match (kickoff passed or status not 'not_started')
+  | "ticket_not_owned" // 400 — ticketId doesn't belong to the caller
+  | "ticket_match_mismatch" // 400 — ticket has legs on a different match
+  | "ticket_not_eligible" // 400 — ticket isn't `accepted` or has odds < 1.30
+  | "analysis_exists" // 409 — author already has a published analysis on this match
+  | "analysis_immutable" // 400 — DELETE attempted post-kickoff
+  | "perex_invalid" // 400 — wrong length
+  | "body_invalid" // 400 — wrong length
+  | "rate_limit_monthly"; // 429 — author hit 100 analyses/month cap

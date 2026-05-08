@@ -90,3 +90,25 @@ export const cashoutStatusEnum = pgEnum("cashout_status", [
   "errored",
   "unavailable",
 ]);
+
+// 0042_community_analyses.sql — pre-match editorial posts.
+// 'draft' is reserved for a future autosave flow; the API only writes
+// 'published'. 'banned' = moderation outcome, 'voided' = match never
+// started so the analysis lost its context.
+export const analysisStatusEnum = pgEnum("analysis_status", [
+  "draft",
+  "published",
+  "banned",
+  "voided",
+]);
+
+// Outcome of an analysis = outcome of its attached ticket. Mirrors
+// ticket settlement granularity rather than collapsing cashed_out
+// into 'won' so reward logic can apply the cashout-voids-reward rule
+// (Tipsport convention; see Notion: Publisher rewards philosophy).
+export const analysisOutcomeEnum = pgEnum("analysis_outcome", [
+  "won",
+  "lost",
+  "void",
+  "cashed_out_void",
+]);
