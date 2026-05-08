@@ -112,3 +112,35 @@ export const analysisOutcomeEnum = pgEnum("analysis_outcome", [
   "void",
   "cashed_out_void",
 ]);
+
+// 0043_community_competitions.sql — operator-curated prediction games.
+// 'draft' = save-as-draft, invisible to bettors. 'scheduled' = waiting
+// on launch_at. 'upcoming' = visible, accepting joins/predictions.
+// 'live' = first match kicked off. 'ended' = stop_show_at has passed.
+export const competitionStatusEnum = pgEnum("competition_status", [
+  "draft",
+  "scheduled",
+  "upcoming",
+  "live",
+  "ended",
+]);
+
+// Drives the prediction UI shape: prediction = score predictor;
+// tipping = 1X2 tip (with optional score tiebreaker); challenge =
+// generic (rules-driven).
+export const competitionTypeEnum = pgEnum("competition_type", [
+  "prediction",
+  "tipping",
+  "challenge",
+]);
+
+// Per-match status inside a competition. Decoupled from the global
+// `match_status` enum because some competitions are curated manually
+// (no FK to `matches`); the operator drives this status directly.
+// 'suspended' / 'cancelled' from the prototype are display-only flags
+// surfaced via boolean columns instead of enum values.
+export const competitionMatchStatusEnum = pgEnum("competition_match_status", [
+  "upcoming",
+  "live",
+  "done",
+]);

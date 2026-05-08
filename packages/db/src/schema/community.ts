@@ -12,17 +12,22 @@ import {
   doublePrecision,
   primaryKey,
   index,
+  uniqueIndex,
   check,
+  boolean,
 } from "drizzle-orm/pg-core";
 import {
   ticketStatusEnum,
   betTypeEnum,
   analysisStatusEnum,
   analysisOutcomeEnum,
+  competitionStatusEnum,
+  competitionTypeEnum,
+  competitionMatchStatusEnum,
 } from "../enums.js";
 import { users } from "./users.js";
 import { tickets } from "./tickets.js";
-import { matches } from "./catalog.js";
+import { matches, sports } from "./catalog.js";
 
 // Read-projection of settled tickets that drives the Community feed.
 // Authoritative writer is services/settlement (Go) inside the
@@ -215,3 +220,259 @@ export const analysisReactions = pgTable(
 export type Analysis = typeof analyses.$inferSelect;
 export type NewAnalysis = typeof analyses.$inferInsert;
 export type AnalysisReaction = typeof analysisReactions.$inferSelect;
+
+// ─── Competitions (Phase 11) ────────────────────────────────────────────────
+//
+// Operator-curated prediction games over a set of matches. Bettors join,
+// predict scores (or tip 1X2 for tipping-type comps), earn points per
+// the scoring rules. Free entry only in V1 (the entry-free rule is
+// locked in the catalog rather than a paid_disabled flag, so V2 paid
+// comps don't need a migration). See migration
+// 0043_community_competitions.sql for the full rationale.
+
+export const competitions = pgTable(
+  "competitions",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    title: text().notNull(),
+    description: text().notNull().default(""),
+    type: competitionTypeEnum().notNull(),
+    status: competitionStatusEnum().notNull().default("draft"),
+    // NULL = multi-sport; PRD says single-sport in V1 but the
+    // "Start from Scratch" template lets the operator skip pre-publish.
+    sportId: integer().references(() => sports.id),
+    // Free text — some operator leagues (manual cups, cross-tournament
+    // weeklies) won't exist in the catalog. Tightening to a tournaments
+    // FK is a V2 concern.
+    league: text(),
+    launchAt: timestamp({ withTimezone: true }).notNull(),
+    betCloseAt: timestamp({ withTimezone: true }).notNull(),
+    matchStartAt: timestamp({ withTimezone: true }).notNull(),
+    stopShowAt: timestamp({ withTimezone: true }).notNull(),
+    bannerUrl: text(),
+    thumbnailUrl: text(),
+    featured: boolean().notNull().default(false),
+    // Display chips on the detail page, e.g. ['1X2', 'correct-score'].
+    markets: text().array().notNull().default(sql`'{}'::text[]`),
+    // Denormalised counters bumped at API write time. See
+    // community_tickets.inspirationCount for the precision-vs-
+    // simplicity trade-off.
+    participantCount: integer().notNull().default(0),
+    matchCount: integer().notNull().default(0),
+    createdBy: uuid().references(() => users.id),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Bettor list filtered by status + ordered by launch_at. Covers
+    // every status-tab read on the home (All / Live / Upcoming /
+    // Draft / Ended).
+    index("competitions_status_launch_idx").on(
+      t.status,
+      sql`${t.launchAt} DESC`,
+    ),
+    // Featured rotator. Partial because most comps aren't featured;
+    // bettors only ever see featured + currently-running ones.
+    index("competitions_featured_idx")
+      .on(sql`${t.launchAt} DESC`)
+      .where(sql`${t.featured} = TRUE AND ${t.status} IN ('upcoming', 'live')`),
+    // Operator's own admin list.
+    index("competitions_created_by_idx")
+      .on(t.createdBy, sql`${t.createdAt} DESC`)
+      .where(sql`${t.createdBy} IS NOT NULL`),
+    check("competitions_title_len", sql`char_length(${t.title}) BETWEEN 1 AND 200`),
+    check("competitions_desc_len", sql`char_length(${t.description}) <= 2000`),
+    check("competitions_participant_count_nonneg", sql`${t.participantCount} >= 0`),
+    check("competitions_match_count_nonneg", sql`${t.matchCount} >= 0`),
+    check("competitions_bet_close_before_match_start", sql`${t.betCloseAt} <= ${t.matchStartAt}`),
+    check("competitions_match_start_before_stop", sql`${t.matchStartAt} <= ${t.stopShowAt}`),
+  ],
+);
+
+// Rules catalog assignments. rule_id is the well-known catalog
+// identifier from packages/types/src/community.ts (e.g.
+// 'scoring-correct-result', 'entry-free'); value carries the
+// configurable payload as text. The catalog itself lives in TS land
+// because it's product-tuned copy, not data; the BE only needs the
+// FK identifier + value.
+export const competitionRules = pgTable(
+  "competition_rules",
+  {
+    competitionId: uuid()
+      .notNull()
+      .references(() => competitions.id, { onDelete: "cascade" }),
+    ruleId: text().notNull(),
+    value: text(),
+    sortOrder: integer().notNull().default(0),
+  },
+  (t) => [
+    primaryKey({ columns: [t.competitionId, t.ruleId] }),
+    index("competition_rules_competition_idx").on(t.competitionId, t.ruleId),
+  ],
+);
+
+export const competitionMatches = pgTable(
+  "competition_matches",
+  {
+    id: bigserial({ mode: "bigint" }).primaryKey(),
+    competitionId: uuid()
+      .notNull()
+      .references(() => competitions.id, { onDelete: "cascade" }),
+    // Optional FK to the catalog. NULL = manual match (admin typed
+    // team names directly, no live odds wiring). When non-NULL,
+    // settlement reads the final score from matches.score_*; when
+    // NULL the operator enters scores in the admin UI.
+    matchId: bigint({ mode: "bigint" }).references(() => matches.id, {
+      onDelete: "set null",
+    }),
+    teamA: text().notNull(),
+    teamB: text().notNull(),
+    league: text().notNull().default(""),
+    kickoffAt: timestamp({ withTimezone: true }).notNull(),
+    status: competitionMatchStatusEnum().notNull().default("upcoming"),
+    scoreA: integer(),
+    scoreB: integer(),
+    // Display-only flags from competition-v2 prototype. The operator
+    // dashboard doesn't expose these in V1 — carrying them keeps the
+    // UI faithful and lets a future admin field flip them without a
+    // migration.
+    suspended: boolean().notNull().default(false),
+    cancelled: boolean().notNull().default(false),
+    sortOrder: integer().notNull().default(0),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Same catalog match cannot appear twice in one competition.
+    // Manual rows (NULL match_id) are exempt via the partial WHERE.
+    uniqueIndex("competition_matches_unique_idx")
+      .on(t.competitionId, t.matchId)
+      .where(sql`${t.matchId} IS NOT NULL`),
+    index("competition_matches_kickoff_idx").on(t.competitionId, t.kickoffAt),
+    index("competition_matches_match_id_idx")
+      .on(t.matchId)
+      .where(sql`${t.matchId} IS NOT NULL`),
+    check("competition_matches_score_a_nonneg", sql`${t.scoreA} IS NULL OR ${t.scoreA} >= 0`),
+    check("competition_matches_score_b_nonneg", sql`${t.scoreB} IS NULL OR ${t.scoreB} >= 0`),
+    check(
+      "competition_matches_scores_paired",
+      sql`(${t.scoreA} IS NULL) = (${t.scoreB} IS NULL)`,
+    ),
+  ],
+);
+
+export const competitionParticipants = pgTable(
+  "competition_participants",
+  {
+    competitionId: uuid()
+      .notNull()
+      .references(() => competitions.id, { onDelete: "cascade" }),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    joinedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    // Aggregate stats. Authoritative writer is services/settlement
+    // (Go); the API only ever sets these to 0 on join.
+    points: integer().notNull().default(0),
+    correctCount: integer().notNull().default(0),
+    totalSettled: integer().notNull().default(0),
+    streak: integer().notNull().default(0),
+    longestStreak: integer().notNull().default(0),
+    lastSettledAt: timestamp({ withTimezone: true }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.competitionId, t.userId] }),
+    // Leaderboard read. Compound index ordered by points DESC, with
+    // longest_streak DESC as the deterministic tiebreaker.
+    index("competition_participants_leaderboard_idx").on(
+      t.competitionId,
+      sql`${t.points} DESC`,
+      sql`${t.longestStreak} DESC`,
+    ),
+    index("competition_participants_user_idx").on(
+      t.userId,
+      sql`${t.joinedAt} DESC`,
+    ),
+    check("competition_participants_points_nonneg", sql`${t.points} >= 0`),
+    check("competition_participants_correct_nonneg", sql`${t.correctCount} >= 0`),
+    check("competition_participants_total_nonneg", sql`${t.totalSettled} >= 0`),
+    check("competition_participants_streak_nonneg", sql`${t.streak} >= 0`),
+    check("competition_participants_longest_nonneg", sql`${t.longestStreak} >= 0`),
+    check(
+      "competition_participants_correct_le_total",
+      sql`${t.correctCount} <= ${t.totalSettled}`,
+    ),
+  ],
+);
+
+export const competitionPredictions = pgTable(
+  "competition_predictions",
+  {
+    id: bigserial({ mode: "bigint" }).primaryKey(),
+    competitionId: uuid()
+      .notNull()
+      .references(() => competitions.id, { onDelete: "cascade" }),
+    competitionMatchId: bigint({ mode: "bigint" })
+      .notNull()
+      .references(() => competitionMatches.id, { onDelete: "cascade" }),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    predictedScoreA: integer().notNull(),
+    predictedScoreB: integer().notNull(),
+    // '1' | 'X' | '2' for tipping comps; NULL for prediction-only
+    // comps. The CHECK pins the shape; the API enforces per-type
+    // that the right shape is sent.
+    tip: char({ length: 1 }),
+    placedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    // Settlement output. NULL until the underlying competition_match
+    // settles. participant.points = SUM(points_awarded WHERE
+    // settled).
+    pointsAwarded: integer(),
+    // 'correct' / 'partial' / 'wrong' / 'void' — derived from
+    // per-rule scoring. TEXT not enum because the rule catalog can
+    // introduce new outcome labels without a migration.
+    outcome: text(),
+    settledAt: timestamp({ withTimezone: true }),
+  },
+  (t) => [
+    // One prediction per (match, user). UNIQUE not PK because the
+    // BIGSERIAL id is the natural row identifier for inserts.
+    uniqueIndex("competition_predictions_unique_idx").on(
+      t.competitionMatchId,
+      t.userId,
+    ),
+    index("competition_predictions_user_idx").on(t.competitionId, t.userId),
+    // Settlement read: when a competition_match settles, find every
+    // unsettled prediction on it.
+    index("competition_predictions_settle_idx")
+      .on(t.competitionMatchId)
+      .where(sql`${t.settledAt} IS NULL`),
+    check(
+      "competition_predictions_score_a_nonneg",
+      sql`${t.predictedScoreA} >= 0`,
+    ),
+    check(
+      "competition_predictions_score_b_nonneg",
+      sql`${t.predictedScoreB} >= 0`,
+    ),
+    check(
+      "competition_predictions_tip_valid",
+      sql`${t.tip} IS NULL OR ${t.tip} IN ('1', 'X', '2')`,
+    ),
+    check(
+      "competition_predictions_points_nonneg",
+      sql`${t.pointsAwarded} IS NULL OR ${t.pointsAwarded} >= 0`,
+    ),
+  ],
+);
+
+export type Competition = typeof competitions.$inferSelect;
+export type NewCompetition = typeof competitions.$inferInsert;
+export type CompetitionRule = typeof competitionRules.$inferSelect;
+export type NewCompetitionRule = typeof competitionRules.$inferInsert;
+export type CompetitionMatch = typeof competitionMatches.$inferSelect;
+export type NewCompetitionMatch = typeof competitionMatches.$inferInsert;
+export type CompetitionParticipant = typeof competitionParticipants.$inferSelect;
+export type NewCompetitionParticipant = typeof competitionParticipants.$inferInsert;
+export type CompetitionPrediction = typeof competitionPredictions.$inferSelect;
+export type NewCompetitionPrediction = typeof competitionPredictions.$inferInsert;

@@ -92,6 +92,17 @@ const SECTIONS: Section[] = [
       },
     ],
   },
+  {
+    label: "Community",
+    items: [
+      {
+        href: "/admin/competitions",
+        label: "Competitions",
+        Icon: I.Trophy,
+        matchPrefix: "/admin/competitions",
+      },
+    ],
+  },
 ];
 
 function readCollapsed(): boolean {

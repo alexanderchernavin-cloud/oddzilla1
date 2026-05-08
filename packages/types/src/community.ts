@@ -422,6 +422,285 @@ export interface AnalysisAuthorStats {
   roi365dPct: number | null;
 }
 
+// ─── Competitions (Phase 11) ────────────────────────────────────────────────
+//
+// Operator-curated prediction games over a set of matches. Bettors join,
+// predict scores (or tip 1X2 for tipping-type comps), earn points per
+// the scoring rules. Free entry only in V1 — the entry-free rule is
+// enforced via the catalog (locked=true) rather than a top-level
+// paid_disabled flag, leaving room for V2 paid comps without migration.
+//
+// References:
+//   • PRD: Notion "Operator Dashboard - Competitions V1"
+//   • Bettor UI: github.com/corwyn-com/competition-v2 + kollector PR #234
+//   • Schema: migration 0043_community_competitions.sql
+
+export type CompetitionStatus = "draft" | "scheduled" | "upcoming" | "live" | "ended";
+export type CompetitionType = "prediction" | "tipping" | "challenge";
+export type CompetitionMatchStatus = "upcoming" | "live" | "done";
+
+// Sort options for the bettor home (CompetitionsHome). "featured"
+// pulls the rotator pool; the others are direct column orders.
+export type CompetitionSort =
+  | "featured"
+  | "starting_soon"
+  | "most_joined"
+  | "newest";
+
+// Rule catalog. The 23-condition list from the PRD's rule catalog
+// (scoring / entry / tiebreaker / timing / eligibility / prize). The
+// catalog itself is product copy (TS land) — only the IDs cross the
+// wire to the BE, which stores them as text in competition_rules.
+export type CompetitionRuleCategory =
+  | "scoring"
+  | "entry"
+  | "tiebreaker"
+  | "timing"
+  | "eligibility"
+  | "prize";
+
+// One assigned rule on a competition. value is opaque text — the
+// catalog tells consumers how to parse it (point integers, ISO
+// durations, integer caps). Server-rendered display strings live on
+// CompetitionDetail.rules so the bettor surface doesn't need to ship
+// the catalog itself.
+export interface CompetitionRuleAssignment {
+  ruleId: string;
+  value?: string;
+}
+
+// One competition card on the bettor home (CompetitionListRow). Heavy
+// detail fields (rules, full match list, leaderboard) load on the
+// detail page; this shape covers list + featured + my-strip reads.
+export interface CompetitionSummary {
+  id: string;
+  title: string;
+  type: CompetitionType;
+  status: CompetitionStatus;
+  // Sport id + slug + name surfaced for the icon lookup. NULL for
+  // multi-sport comps.
+  sportId: number | null;
+  sportSlug: string | null;
+  sportName: string | null;
+  league: string | null;
+  // Schedule timestamps. The bettor surface uses launchAt for
+  // "starts in N days" and matchStartAt for the kickoff countdown.
+  launchAt: string; // ISO-8601
+  betCloseAt: string;
+  matchStartAt: string;
+  stopShowAt: string;
+  bannerUrl: string | null;
+  thumbnailUrl: string | null;
+  featured: boolean;
+  // Display chips.
+  markets: string[];
+  // Denormalised counters surfaced for the list UI.
+  participantCount: number;
+  matchCount: number;
+  // True when the viewer has joined this comp. NULL on anonymous
+  // reads (the JoinPanel CTA renders only when authed).
+  viewerJoined: boolean | null;
+  // Viewer's current rank in this comp. NULL when not joined or
+  // before any prediction has settled.
+  viewerRank: number | null;
+}
+
+export interface CompetitionListResponse {
+  competitions: CompetitionSummary[];
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
+}
+
+// Detail-page payload. Includes the rendered rule strings (the BE
+// renders catalog id+value into bettor-facing text) plus the heavy
+// fields (description, full timestamps).
+export interface CompetitionDetail extends CompetitionSummary {
+  description: string;
+  // Server-rendered rule display lines, e.g.
+  // "Correct result: 3 points". The web client receives them ready
+  // to render; the catalog itself stays in TS land.
+  rules: string[];
+  // The raw rule assignments — the admin surface uses these to seed
+  // the wizard's Step 3 toggles when editing.
+  ruleAssignments: CompetitionRuleAssignment[];
+  // Audit metadata for the operator's own admin list. NULL on
+  // bettor-facing responses (server strips it for non-owners).
+  createdByNickname: string | null;
+}
+
+// One match row on the detail page's Matches tab. Mirrors
+// competition-v2's CompetitionMatch verbatim with two adjustments:
+//   • id is a string (BIGINT serialised) for parity with the rest of
+//     the API
+//   • viewer's prediction is inlined when present, so the matches
+//     list and "your picks" rail render from one fetch
+export interface CompetitionMatchRow {
+  id: string;
+  competitionId: string;
+  // Optional FK to the catalog match; NULL on manually curated rows.
+  matchId: string | null;
+  teamA: string;
+  teamB: string;
+  league: string;
+  kickoffAt: string; // ISO-8601
+  status: CompetitionMatchStatus;
+  scoreA: number | null;
+  scoreB: number | null;
+  suspended: boolean;
+  cancelled: boolean;
+  // Viewer's prediction on this match, if any. NULL when no
+  // prediction or anonymous read.
+  viewerPrediction: ViewerPrediction | null;
+}
+
+export interface ViewerPrediction {
+  id: string;
+  predictedScoreA: number;
+  predictedScoreB: number;
+  tip: "1" | "X" | "2" | null;
+  placedAt: string;
+  pointsAwarded: number | null;
+  outcome: "correct" | "partial" | "wrong" | "void" | null;
+  settledAt: string | null;
+}
+
+export interface CompetitionMatchesResponse {
+  matches: CompetitionMatchRow[];
+}
+
+// One row on the leaderboard. Mirrors competition-v2's
+// LeaderboardEntry with the additions oddzilla needs (avatarUrl,
+// userId for profile links).
+export interface CompetitionLeaderboardEntry {
+  rank: number;
+  userId: string;
+  nickname: string;
+  avatarUrl: string | null;
+  points: number;
+  correctCount: number;
+  totalSettled: number;
+  // 0–100, integer. NULL when totalSettled < 1.
+  winRatePct: number | null;
+  streak: number;
+  longestStreak: number;
+  // Last 5 settled outcomes (most-recent first), e.g.
+  // ['correct', 'wrong', 'correct', 'void', 'correct']. Drives the
+  // YourPositionPanel results pips.
+  recentResults: ("correct" | "partial" | "wrong" | "void")[];
+  // True for the requesting viewer's own row. The leaderboard view
+  // pins the viewer above-the-fold even when their points rank far
+  // down the list.
+  isYou: boolean;
+  // Movement since the prior settlement run. Positive = climbed,
+  // negative = dropped, 0 = unchanged. Integer.
+  rankDelta: number;
+}
+
+export interface CompetitionLeaderboardResponse {
+  entries: CompetitionLeaderboardEntry[];
+  // Total participant count — the leaderboard returns the top N + the
+  // viewer's row, so the UI needs the full count for the "rank N of M"
+  // label.
+  totalParticipants: number;
+  // The viewer's row when they're outside the returned page; NULL
+  // when the viewer hasn't joined or is already in `entries`.
+  viewerEntry: CompetitionLeaderboardEntry | null;
+}
+
+// POST /community/competitions/:id/join — idempotent. Returns the
+// participant row the API just upserted.
+export interface JoinCompetitionResponse {
+  competitionId: string;
+  joinedAt: string;
+  alreadyJoined: boolean;
+}
+
+// POST /community/competitions/:id/predictions — submit / update one
+// prediction. The API enforces the timing-lock-kickoff rule (no
+// updates after the match's kickoff); double-POST returns the
+// existing prediction (idempotent on (match, user)).
+export interface CreatePredictionRequest {
+  competitionMatchId: string;
+  predictedScoreA: number;
+  predictedScoreB: number;
+  // Required for tipping-type comps; rejected for prediction-only
+  // comps with `tip_not_allowed`.
+  tip?: "1" | "X" | "2";
+}
+
+export interface CreatePredictionResponse {
+  prediction: ViewerPrediction;
+}
+
+// Admin endpoints (operator surface on oddzilla itself; the
+// community-dashboard repo carries the same shapes). All admin
+// endpoints require the `admin` role on the caller.
+
+export interface CreateCompetitionRequest {
+  title: string;
+  description?: string;
+  type: CompetitionType;
+  sportId?: number;
+  league?: string;
+  launchAt: string;
+  betCloseAt: string;
+  matchStartAt: string;
+  stopShowAt: string;
+  bannerUrl?: string;
+  thumbnailUrl?: string;
+  featured?: boolean;
+  markets?: string[];
+  rules: CompetitionRuleAssignment[];
+  // Initial matches; the operator can add more later via
+  // POST /admin/competitions/:id/matches.
+  matches: AdminMatchInput[];
+}
+
+export interface AdminMatchInput {
+  // Optional FK to a catalog match. When present, teamA/teamB/league/
+  // kickoffAt are pulled from the catalog and the request fields are
+  // ignored (the BE source-of-truths the catalog).
+  matchId?: string;
+  teamA: string;
+  teamB: string;
+  league?: string;
+  kickoffAt: string;
+  sortOrder?: number;
+}
+
+export interface UpdateCompetitionRequest {
+  title?: string;
+  description?: string;
+  status?: CompetitionStatus;
+  sportId?: number | null;
+  league?: string | null;
+  launchAt?: string;
+  betCloseAt?: string;
+  matchStartAt?: string;
+  stopShowAt?: string;
+  bannerUrl?: string | null;
+  thumbnailUrl?: string | null;
+  featured?: boolean;
+  markets?: string[];
+  // When set, replaces the rule set wholesale (not a patch). The
+  // admin wizard always sends the full set.
+  rules?: CompetitionRuleAssignment[];
+}
+
+export interface AdminCompetitionListResponse {
+  competitions: CompetitionSummary[];
+  // Counts per status for the admin tab strip.
+  counts: {
+    all: number;
+    draft: number;
+    scheduled: number;
+    upcoming: number;
+    live: number;
+    ended: number;
+  };
+}
+
 // ─── Errors (community-specific codes) ──────────────────────────────────────
 
 // Returned as ApiErrorBody.error from the community endpoints.
@@ -441,4 +720,13 @@ export type CommunityErrorCode =
   | "analysis_immutable" // 400 — DELETE attempted post-kickoff
   | "perex_invalid" // 400 — wrong length
   | "body_invalid" // 400 — wrong length
-  | "rate_limit_monthly"; // 429 — author hit 100 analyses/month cap
+  | "rate_limit_monthly" // 429 — author hit 100 analyses/month cap
+  // Competitions (Phase 11)
+  | "competition_not_found" // 404
+  | "competition_not_open" // 400 — comp status not 'upcoming' (joins/predictions blocked)
+  | "competition_full" // 409 — eligibility-max-participants rule reached
+  | "prediction_locked" // 400 — kickoff has passed (timing-lock-kickoff)
+  | "prediction_match_not_found" // 404 — competition_match_id not in this comp
+  | "tip_required" // 400 — tipping comp without tip
+  | "tip_not_allowed" // 400 — prediction-only comp with tip
+  | "rules_locked"; // 400 — admin tried to edit rules after a participant joined
