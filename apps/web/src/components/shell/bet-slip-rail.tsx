@@ -442,6 +442,17 @@ export function BetSlipRail() {
         // selections list inside still has its own overflow so a mid-slip
         // scroll doesn't push the form out of view.
         overflowY: "auto",
+        // Hard-clip horizontal overflow at the rail's edge. Without this
+        // the COMBI BOOST 8-cell progress bar (and other inner grids
+        // sized off natural content width) can leak past the drawer's
+        // right edge on narrower phones. Drawer-as-modal must never
+        // bleed past the viewport — set the boundary here so it's
+        // enforced regardless of which child overflows.
+        overflowX: "hidden",
+        // Belt + suspenders: pin width so a child can't push the rail
+        // itself wider than its grid track / fixed-position rect.
+        maxWidth: "100%",
+        minWidth: 0,
       }}
     >
       {/* Drag handle — only visible when the rail is rendered as a
