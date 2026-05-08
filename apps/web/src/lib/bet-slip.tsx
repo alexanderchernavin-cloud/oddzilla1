@@ -79,13 +79,18 @@ interface SlipContextValue extends SlipState {
   setCurrency(currency: Currency): void;
   has(marketId: string, outcomeId: string): boolean;
   // Refresh a stored selection from a live odds tick. No-op if the slip
-  // doesn't hold this (marketId, outcomeId) or if the values are
-  // unchanged (avoids re-render churn on every WS frame).
+  // doesn't hold this (marketId, outcomeId) or if every tracked field
+  // is unchanged (avoids re-render churn on every WS frame). `active`
+  // mirrors the WS tick so the rail can disable Place Bet when an
+  // outcome flips inactive after the user clicked — otherwise the
+  // server's market_not_active / outcome_not_active guard surfaces as
+  // a confusing red toast on submit.
   updateOdds(
     marketId: string,
     outcomeId: string,
     odds: string,
     probability?: string,
+    active?: boolean,
   ): void;
   // ── BetBuilder controls ────────────────────────────────────────────
   /**
@@ -377,6 +382,7 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
       outcomeId: string,
       odds: string,
       probability?: string,
+      active?: boolean,
     ) => {
       setState((prev) => {
         let changed = false;
@@ -384,9 +390,19 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
           if (s.marketId !== marketId || s.outcomeId !== outcomeId) return s;
           const nextProb =
             probability !== undefined && probability !== "" ? probability : s.probability;
-          if (s.odds === odds && s.probability === nextProb) return s;
+          // Selections persisted before this field existed default to
+          // active=true; an explicit boolean from the WS tick wins.
+          const prevActive = s.active ?? true;
+          const nextActive = active ?? prevActive;
+          if (
+            s.odds === odds &&
+            s.probability === nextProb &&
+            prevActive === nextActive
+          ) {
+            return s;
+          }
           changed = true;
-          return { ...s, odds, probability: nextProb };
+          return { ...s, odds, probability: nextProb, active: nextActive };
         });
         if (!changed) return prev;
         return { ...prev, selections: next };

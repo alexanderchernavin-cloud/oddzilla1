@@ -93,7 +93,9 @@ export function ThreeFoldCards({
               probability: tick.probability ?? leg.probability,
             }
           : leg;
-      slip.add(stripPickedSide(fresh));
+      // Default to active=true; the slip rail picks up the real WS
+      // active flag on the next tick after subscribing.
+      slip.add({ ...stripPickedSide(fresh), active: tick?.active ?? true });
     }
     slip.setOpen(true);
   };
