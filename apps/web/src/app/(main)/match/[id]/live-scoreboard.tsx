@@ -7,9 +7,10 @@
 // per-map cells / current-map highlight only refreshed on a hard
 // reload.
 
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import { LiveDot, TeamMark } from "@/components/ui/primitives";
 import { useLiveScore } from "@/lib/use-live-odds";
+import { useValueFlash } from "@/lib/use-odds-flash";
 import {
   mapCellValue,
   type LiveScore,
@@ -190,6 +191,7 @@ function Scoreboard({
             currentMap={currentMap}
             homeValue={row.homeValue}
             awayValue={row.awayValue}
+            format={row.format}
             firstExtra={i === 0}
           />
         ))}
@@ -269,37 +271,65 @@ function TeamRow({
         </span>
       </div>
 
-      <div
-        className="mono tnum oz-sb-score"
-        style={{
-          textAlign: "center",
-          fontSize: "var(--sb-score-font)",
-          fontWeight: 500,
-          color: "var(--fg)",
-        }}
-      >
-        {series}
-      </div>
+      <SeriesCell series={series} />
 
-      {cols.map((n) => {
-        const v = getValue(n);
-        const live = isLiveCol(n);
-        return (
-          <div
-            key={n}
-            className="mono tnum"
-            style={{
-              textAlign: "center",
-              fontSize: "var(--sb-map-font)",
-              fontWeight: 500,
-              color: v == null ? "var(--fg-dim)" : live ? "var(--fg)" : "var(--fg-muted)",
-            }}
-          >
-            {v == null ? "—" : v}
-          </div>
-        );
-      })}
+      {cols.map((n) => (
+        <MapCell key={n} value={getValue(n)} live={isLiveCol(n)} />
+      ))}
     </>
+  );
+}
+
+// Series-score cell with a flash-on-change tint. The score box already
+// has a hard-coded border + radius via the .oz-sb-score class in
+// globals.css; we add a transparent backgroundColor as the animation
+// target so the tint paints inside the box, not over the border.
+function SeriesCell({ series }: { series: number }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useValueFlash(series, ref);
+  return (
+    <div
+      ref={ref}
+      className="mono tnum oz-sb-score"
+      style={{
+        textAlign: "center",
+        fontSize: "var(--sb-score-font)",
+        fontWeight: 500,
+        color: "var(--fg)",
+        backgroundColor: "transparent",
+      }}
+    >
+      {series}
+    </div>
+  );
+}
+
+// Per-map cell with a flash-on-change tint. Kills (Dota / LoL), rounds
+// (CS2 / Valorant), goals — whatever mapCellValue resolves for the row.
+// borderRadius keeps the green/red wash from looking like a hard
+// rectangle behind a single digit.
+function MapCell({ value, live }: { value: number | null; live: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useValueFlash(value, ref);
+  return (
+    <div
+      ref={ref}
+      className="mono tnum"
+      style={{
+        textAlign: "center",
+        fontSize: "var(--sb-map-font)",
+        fontWeight: 500,
+        color:
+          value == null
+            ? "var(--fg-dim)"
+            : live
+              ? "var(--fg)"
+              : "var(--fg-muted)",
+        borderRadius: 4,
+      }}
+    >
+      {value == null ? "—" : value}
+    </div>
   );
 }
 
@@ -309,13 +339,15 @@ function ExtraRow({
   currentMap,
   homeValue,
   awayValue,
+  format,
   firstExtra,
 }: {
   label: string;
   cols: number[];
   currentMap: number | null;
-  homeValue: string;
-  awayValue: string;
+  homeValue: number;
+  awayValue: number;
+  format: (n: number) => string;
   firstExtra: boolean;
 }) {
   const topPad = firstExtra ? 6 : 0;
@@ -337,32 +369,86 @@ function ExtraRow({
       <div style={{ paddingTop: topPad }} />
       {cols.map((n) => {
         const live = currentMap === n;
+        if (!live) {
+          return <div key={n} style={{ paddingTop: topPad }} />;
+        }
         return (
-          <div
+          <ExtraCell
             key={n}
-            className="mono tnum"
-            style={{
-              textAlign: "center",
-              fontSize: 11,
-              fontWeight: 400,
-              color: "var(--fg-dim)",
-              paddingTop: topPad,
-            }}
-          >
-            {live ? `${homeValue}:${awayValue}` : ""}
-          </div>
+            homeValue={homeValue}
+            awayValue={awayValue}
+            format={format}
+            paddingTop={topPad}
+          />
         );
       })}
     </>
   );
 }
 
+// ExtraCell renders the home:away pair for a secondary stat (Towers /
+// Turrets / Gold) inside the live map column. Each side gets its own
+// span + ref + flash hook, so a Dota tower destruction tints just the
+// digits that changed (e.g. only the away side flashes when the away
+// team destroys a tower) instead of bathing the whole "0:4" pair.
+function ExtraCell({
+  homeValue,
+  awayValue,
+  format,
+  paddingTop,
+}: {
+  homeValue: number;
+  awayValue: number;
+  format: (n: number) => string;
+  paddingTop: number;
+}) {
+  const homeRef = useRef<HTMLSpanElement>(null);
+  const awayRef = useRef<HTMLSpanElement>(null);
+  useValueFlash(homeValue, homeRef);
+  useValueFlash(awayValue, awayRef);
+  const sideStyle = {
+    display: "inline-block",
+    padding: "0 2px",
+    borderRadius: 3,
+  } as const;
+  return (
+    <div
+      className="mono tnum"
+      style={{
+        textAlign: "center",
+        fontSize: 11,
+        fontWeight: 400,
+        color: "var(--fg-dim)",
+        paddingTop,
+      }}
+    >
+      <span ref={homeRef} style={sideStyle}>
+        {format(homeValue)}
+      </span>
+      :
+      <span ref={awayRef} style={sideStyle}>
+        {format(awayValue)}
+      </span>
+    </div>
+  );
+}
+
 function extraScoreRows(
   sb: LiveScoreScoreboard,
   sportSlug: string,
-): { label: string; homeValue: string; awayValue: string }[] {
+): {
+  label: string;
+  homeValue: number;
+  awayValue: number;
+  format: (n: number) => string;
+}[] {
   const slug = sportSlug.toLowerCase();
-  const out: { label: string; homeValue: string; awayValue: string }[] = [];
+  const out: {
+    label: string;
+    homeValue: number;
+    awayValue: number;
+    format: (n: number) => string;
+  }[] = [];
 
   const isDotaLikeSlug =
     slug === "dota2" ||
@@ -376,22 +462,25 @@ function extraScoreRows(
   if (sb.homeDestroyedTowers != null && sb.awayDestroyedTowers != null) {
     out.push({
       label: "Towers",
-      homeValue: String(sb.homeDestroyedTowers),
-      awayValue: String(sb.awayDestroyedTowers),
+      homeValue: sb.homeDestroyedTowers,
+      awayValue: sb.awayDestroyedTowers,
+      format: (n) => String(n),
     });
   }
   if (sb.homeDestroyedTurrets != null && sb.awayDestroyedTurrets != null) {
     out.push({
       label: "Turrets",
-      homeValue: String(sb.homeDestroyedTurrets),
-      awayValue: String(sb.awayDestroyedTurrets),
+      homeValue: sb.homeDestroyedTurrets,
+      awayValue: sb.awayDestroyedTurrets,
+      format: (n) => String(n),
     });
   }
   if (sb.homeGold != null && sb.awayGold != null) {
     out.push({
       label: "Gold",
-      homeValue: formatGold(sb.homeGold),
-      awayValue: formatGold(sb.awayGold),
+      homeValue: sb.homeGold,
+      awayValue: sb.awayGold,
+      format: formatGold,
     });
   }
 
