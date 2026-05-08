@@ -449,14 +449,14 @@ export function BetSlipRail() {
       <span className="oz-rail-handle" aria-hidden="true" />
       <div
         style={{
-          padding: "14px 20px 12px",
+          padding: "10px 16px 8px",
           display: "flex",
           flexDirection: "column",
-          gap: 10,
+          gap: 6,
           borderBottom: "1px solid var(--hairline)",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <RailTabs
             active={activeTab}
             onChange={setActiveTab}
@@ -535,12 +535,17 @@ export function BetSlipRail() {
       <div
         style={{
           minHeight: 0,
-          flexShrink: 1,
+          // flex: 1 lets the selections list claim leftover vertical
+          // space when the drawer is fixed-height (mobile sheet) — the
+          // form stays at its natural height and the list fills the
+          // gap, instead of the form dominating with empty space below
+          // a short list.
+          flex: 1,
           overflow: "auto",
-          padding: "12px 16px 8px",
+          padding: "8px 14px 6px",
           display: "flex",
           flexDirection: "column",
-          gap: 8,
+          gap: 6,
         }}
       >
         {placedTicketId ? (
@@ -642,7 +647,7 @@ export function BetSlipRail() {
         <form
           onSubmit={onSubmit}
           style={{
-            padding: "14px 20px 18px",
+            padding: "10px 16px 14px",
             borderTop: "1px solid var(--hairline)",
             display: "flex",
             flexDirection: "column",
@@ -650,7 +655,7 @@ export function BetSlipRail() {
             // below for vertical space and the Place button can drop
             // below the fold on shorter viewports.
             flexShrink: 0,
-            gap: 12,
+            gap: 8,
           }}
         >
           {isMulti && !isBetBuilderMode && (
@@ -813,8 +818,8 @@ export function BetSlipRail() {
               display: "flex",
               alignItems: "center",
               gap: 10,
-              padding: "0 14px",
-              height: 44,
+              padding: "0 12px",
+              height: 38,
               background: "var(--surface-2)",
               border: "1px solid var(--border)",
               borderRadius: 10,
@@ -837,7 +842,7 @@ export function BetSlipRail() {
                 background: "transparent",
                 outline: "none",
                 fontFamily: "var(--font-mono)",
-                fontSize: 15,
+                fontSize: 14,
                 fontWeight: 600,
                 color: "var(--fg)",
                 textAlign: "right",
@@ -859,7 +864,7 @@ export function BetSlipRail() {
                 onClick={() => setStakeInput(String(v))}
                 style={{
                   flex: 1,
-                  height: 28,
+                  height: 26,
                   fontSize: 12,
                   background: "transparent",
                   border: "1px solid var(--border)",
@@ -880,7 +885,7 @@ export function BetSlipRail() {
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
-              padding: "10px 0",
+              padding: "6px 0",
               borderTop: "1px dashed var(--border)",
               borderBottom: "1px dashed var(--border)",
               gap: 10,
@@ -899,7 +904,7 @@ export function BetSlipRail() {
             >
               <span
                 className="display tnum"
-                style={{ fontSize: 22, fontWeight: 500, letterSpacing: "-0.02em" }}
+                style={{ fontSize: 18, fontWeight: 500, letterSpacing: "-0.02em" }}
               >
                 {formatAmount(potentialReturn)}
               </span>
@@ -972,7 +977,7 @@ export function BetSlipRail() {
                         : "Place bet"}
           </Button>
 
-          <div style={{ fontSize: 11, color: "var(--fg-dim)", textAlign: "center" }}>
+          <div style={{ fontSize: 10, color: "var(--fg-dim)", textAlign: "center" }}>
             Odds may update before acceptance.
           </div>
         </form>
@@ -1031,13 +1036,13 @@ function SelectionCard({
   return (
     <div
       style={{
-        padding: "12px 14px",
+        padding: "9px 12px",
         background: "var(--surface)",
         border: cardBorder,
         borderRadius: 10,
         display: "flex",
         flexDirection: "column",
-        gap: 6,
+        gap: 4,
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -2018,8 +2023,8 @@ function CombiBoostPanel({
       style={{
         display: "flex",
         flexDirection: "column",
-        gap: 8,
-        padding: "10px 12px",
+        gap: 6,
+        padding: "8px 10px",
         background: "var(--surface-2)",
         border: "1px solid var(--border)",
         borderRadius: 8,
