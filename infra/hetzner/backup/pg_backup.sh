@@ -20,7 +20,7 @@
 set -euo pipefail
 
 BACKUP_DIR="/var/backups/oddzilla"
-RETENTION_DAYS=14
+RETENTION_DAYS=5
 CONTAINER="oddzilla-postgres-1"
 ENV_FILE="/home/team/oddzilla/.env"
 TS=$(date -u +%Y%m%dT%H%M%SZ)

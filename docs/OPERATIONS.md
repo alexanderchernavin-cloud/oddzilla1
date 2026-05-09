@@ -217,9 +217,11 @@ The daily dump is wired up via root cron at 03:00 UTC, running
 [`infra/hetzner/backup/pg_backup.sh`](../infra/hetzner/backup/pg_backup.sh).
 The script `docker exec`s into the postgres container and writes
 `/var/backups/oddzilla/oddzilla-<TS>.sql.gz` (root:team mode 640), with
-14-day retention. Set `BACKUP_GPG_RECIPIENT` in `.env` to GPG-encrypt
-the dump in addition to gzipping; the file extension becomes
-`.sql.gz.gpg`.
+5-day retention (was 14; trimmed 2026-05-09 after dumps reached
+~2.3 GB/day and 14 × that overlapped the docker-prune cron failure to
+fill the 75 GB disk). Set `BACKUP_GPG_RECIPIENT` in `.env` to
+GPG-encrypt the dump in addition to gzipping; the file extension
+becomes `.sql.gz.gpg`.
 
 Hardening applied in PR #130: the script no longer sources the entire
 `.env` into the cron shell environment (every secret was being exported
