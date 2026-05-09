@@ -67,6 +67,7 @@ const SECTIONS: Section[] = [
       { href: "/admin/audit", label: "Audit", Icon: I.Clock, matchPrefix: "/admin/audit" },
       { href: "/admin/feed", label: "Feed", Icon: I.Live, matchPrefix: "/admin/feed" },
       { href: "/admin/logs", label: "Logs", Icon: I.Bell, matchPrefix: "/admin/logs" },
+      { href: "/admin/monitoring", label: "Performance", Icon: I.Activity, matchPrefix: "/admin/monitoring" },
     ],
   },
   {
