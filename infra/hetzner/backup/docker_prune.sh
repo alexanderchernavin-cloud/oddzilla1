@@ -3,8 +3,9 @@
 #
 # What it cleans (safe — never touches running containers, named volumes,
 # or images currently in use by a container):
-#   1. Build cache when total > BUILD_CACHE_THRESHOLD_GB. Build cache
-#      regenerates on the next `docker compose build` so this is free.
+#   1. Build cache above MAX_USED_SPACE (default 10 GB). Docker's
+#      `buildx prune --max-used-space` handles the threshold internally,
+#      so the script does not need to parse `docker system df` output.
 #   2. Dangling images (untagged orphans) older than 24h.
 #   3. Stopped containers older than 7 days (defensive — prod containers
 #      are restart=always so this should rarely match).
@@ -15,37 +16,49 @@
 #   - Images currently referenced by any container (running or stopped)
 #   - Build cache below the threshold (so iterative rebuilds stay fast)
 #
-# History — added 2026-04-28 after disk filled to 100% with 43 GB of
-# accumulated build cache, taking postgres down for 6 days. The threshold
-# is intentionally low (10 GB) because every `docker compose build` on
-# this CPX22 (75 GB disk) adds ~1-2 GB of layers.
+# History
+#   2026-04-28 — added after disk filled to 100% with 43 GB of
+#   accumulated build cache, taking postgres down for 6 days.
+#
+#   2026-05-09 — rewritten after the original Python-based threshold
+#   parser silently crashed on every run for ~9 days (Size field is a
+#   human-readable string in Docker 29's `system df --format` output,
+#   not int bytes), letting cache build back up to 7.9 GB and refilling
+#   the disk to 100%. Postgres restart-looped for ~minutes until the
+#   build cache was hand-pruned. Two changes in this version:
+#     - Drop the broken Python parser; let Docker's --max-used-space
+#       handle the threshold (no string-vs-int ambiguity to mishandle).
+#     - Trap nonzero exits and write a "failed" JSON event so a future
+#       silent failure shows up in /var/log/oddzilla-docker-prune.log
+#       even when cron's mail delivery is not configured.
 
 set -euo pipefail
 
-BUILD_CACHE_THRESHOLD_GB="${BUILD_CACHE_THRESHOLD_GB:-10}"
+MAX_USED_SPACE_GB="${MAX_USED_SPACE_GB:-10}"
+max_used_space_bytes=$((MAX_USED_SPACE_GB * 1024 * 1024 * 1024))
 
-# Total build cache size in bytes. `docker system df --format` returns
-# human-readable strings ("43.75GB"); easier to parse the raw API.
-build_cache_bytes=$(docker system df --verbose --format '{{json .}}' \
-  | python3 -c '
-import json, sys
-data = json.load(sys.stdin)
-total = 0
-for entry in data.get("BuildCache", []):
-    total += entry.get("Size", 0)
-print(total)
-')
+emit() {
+  local event="$1"
+  shift
+  local extras=""
+  for kv in "$@"; do
+    extras="${extras},${kv}"
+  done
+  printf '{"service":"docker-prune","event":"%s"%s}\n' "${event}" "${extras}"
+}
 
-threshold_bytes=$((BUILD_CACHE_THRESHOLD_GB * 1024 * 1024 * 1024))
+on_exit() {
+  local rc=$?
+  if [ "${rc}" -ne 0 ]; then
+    emit "failed" "\"exit_code\":${rc}"
+  fi
+}
+trap on_exit EXIT
 
-if [ "${build_cache_bytes}" -gt "${threshold_bytes}" ]; then
-  reclaimed=$(docker builder prune -af 2>&1 | tail -1 | awk '{print $NF}')
-  printf '{"service":"docker-prune","event":"build_cache_pruned","before_bytes":%d,"threshold_bytes":%d,"reclaimed":"%s"}\n' \
-    "${build_cache_bytes}" "${threshold_bytes}" "${reclaimed}"
-else
-  printf '{"service":"docker-prune","event":"build_cache_under_threshold","bytes":%d,"threshold_bytes":%d}\n' \
-    "${build_cache_bytes}" "${threshold_bytes}"
-fi
+emit "start" "\"max_used_space_bytes\":${max_used_space_bytes}"
+
+# Build cache above threshold. Docker decides what to evict.
+docker buildx prune -af --max-used-space "${max_used_space_bytes}" >/dev/null
 
 # Dangling (untagged orphan) images, older than 24h.
 docker image prune -f --filter 'until=24h' >/dev/null
@@ -53,6 +66,5 @@ docker image prune -f --filter 'until=24h' >/dev/null
 # Long-stopped containers (defensive — prod uses restart=always).
 docker container prune -f --filter 'until=168h' >/dev/null
 
-# Disk-after snapshot for the journal.
 disk=$(df -B1 / | awk 'NR==2 {printf "{\"size\":%d,\"used\":%d,\"avail\":%d}", $2, $3, $4}')
-printf '{"service":"docker-prune","event":"disk_after","disk":%s}\n' "${disk}"
+emit "complete" "\"disk\":${disk}"
