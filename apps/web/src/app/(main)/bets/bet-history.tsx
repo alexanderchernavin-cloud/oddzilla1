@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { fromMicro } from "@oddzilla/types/money";
+import { fromMicro, multiplyMicroByOdds } from "@oddzilla/types/money";
 import type {
   TicketStatus,
   TicketSummary,
@@ -55,6 +55,13 @@ function resolveStatusBadge(ticket: TicketSummary): {
     label: STATUS_LABEL[ticket.status],
     color: STATUS_COLOR[ticket.status],
   };
+}
+
+function fmtOdds(raw: string | null | undefined): string | null {
+  if (raw == null) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n.toFixed(2);
 }
 
 export function BetHistory({
@@ -132,12 +139,69 @@ function TicketRow({
     cashedOutAt: string,
   ) => void;
 }) {
-  const stake = fromMicro(BigInt(ticket.stakeMicro));
+  const stakeMicro = BigInt(ticket.stakeMicro);
+  const stake = fromMicro(stakeMicro);
   const potential = fromMicro(BigInt(ticket.potentialPayoutMicro));
   const actual = ticket.actualPayoutMicro
     ? fromMicro(BigInt(ticket.actualPayoutMicro))
     : null;
   const legCount = ticket.selections.length;
+
+  // Current-odds comparison only makes sense while the ticket is open
+  // (pending_delay / accepted) — once it's settled / cashed out / voided
+  // the placement price is the only thing that mattered.
+  const isOpen =
+    ticket.status === "pending_delay" || ticket.status === "accepted";
+
+  // Per-leg drift indicator is gated to legs whose match hasn't started
+  // yet — live legs rely on the cashout panel for the moving picture, and
+  // showing a raw current-odds delta there would be misleading because
+  // the price keeps moving with every game tick.
+  const showLegDrift = isOpen;
+
+  // Combined "current total odds" only when every leg is prematch + still
+  // bettable + has a current price. Tippot / tiple / betbuilder use a
+  // non-multiplicative pricing model (tier table / Oddin OBB session), so
+  // a stake × Π(currentOdds) recompute would be wrong for those — gate to
+  // single + combo only.
+  const canRecomputeTotal =
+    isOpen && (ticket.betType === "single" || ticket.betType === "combo");
+
+  let currentTotalOdds: number | null = null;
+  let currentPotentialWin: string | null = null;
+  if (canRecomputeTotal) {
+    let product = 1;
+    let allPrematchAndAvailable = true;
+    for (const s of ticket.selections) {
+      const m = s.market;
+      const price = fmtOdds(m?.currentOdds ?? null);
+      if (
+        !m ||
+        m.matchStatus !== "not_started" ||
+        !m.currentlyActive ||
+        !price
+      ) {
+        allPrematchAndAvailable = false;
+        break;
+      }
+      product *= Number(price);
+    }
+    if (allPrematchAndAvailable && Number.isFinite(product) && product > 0) {
+      currentTotalOdds = product;
+      // Reuse the same floor-rounding helper settlement uses so the
+      // displayed "now X" lines up with what the user would actually
+      // get if they re-placed the slip right now.
+      const winMicro = multiplyMicroByOdds(stakeMicro, product);
+      currentPotentialWin = fromMicro(winMicro);
+      // Sanity: if recomputed equals placement-frozen potential, drop
+      // the duplicate so the footer doesn't show two identical numbers.
+      if (winMicro === BigInt(ticket.potentialPayoutMicro)) {
+        currentPotentialWin = null;
+      }
+    }
+  }
+
+  const badge = resolveStatusBadge(ticket);
 
   return (
     <li className="card p-5">
@@ -181,10 +245,9 @@ function TicketRow({
                     : isVoid
                       ? "text-[var(--color-fg-muted)]"
                       : "text-[var(--color-fg)]";
-                const legOdds = Number(s.oddsAtPlacement);
-                const oddsLabel = Number.isFinite(legOdds)
-                  ? legOdds.toFixed(2)
-                  : s.oddsAtPlacement;
+                const placementOdds = fmtOdds(s.oddsAtPlacement) ??
+                  s.oddsAtPlacement;
+                const currentOdds = m ? fmtOdds(m.currentOdds) : null;
                 const matchLabel = m
                   ? `${m.homeTeam} vs ${m.awayTeam}`
                   : "Match unavailable";
@@ -201,44 +264,108 @@ function TicketRow({
                     ? "×0.00"
                     : null;
                 const strikeOdds = isVoid || isLost;
+
+                // Drift line: only for prematch legs of an open ticket
+                // whose outcome is still currently quotable. Live legs
+                // and finalised legs intentionally don't render this.
+                const showLegCurrent =
+                  showLegDrift &&
+                  m &&
+                  m.matchStatus === "not_started" &&
+                  m.currentlyActive &&
+                  currentOdds !== null;
+                const placementNum = Number(s.oddsAtPlacement);
+                const driftPct = showLegCurrent &&
+                  Number.isFinite(placementNum) &&
+                  placementNum > 0
+                  ? ((Number(currentOdds) - placementNum) / placementNum) * 100
+                  : null;
+                const driftDir = driftPct === null
+                  ? null
+                  : driftPct > 0.5
+                    ? "up"
+                    : driftPct < -0.5
+                      ? "down"
+                      : "flat";
+                const driftClass = driftDir === "up"
+                  ? "text-[var(--color-positive)]"
+                  : driftDir === "down"
+                    ? "text-[var(--color-negative)]"
+                    : "text-[var(--color-fg-muted)]";
+                const driftArrow = driftDir === "up"
+                  ? "▲"
+                  : driftDir === "down"
+                    ? "▼"
+                    : "·";
+
+                // Suspended / closed underlying — show a subtle hint so
+                // the user understands why no current price is rendered.
+                const showLegInactiveHint =
+                  showLegDrift &&
+                  m &&
+                  m.matchStatus === "not_started" &&
+                  !m.currentlyActive;
+
                 const inner = (
-                  <div className="flex items-center justify-between gap-3 text-sm">
-                    <span
-                      className={
-                        "min-w-0 flex-1 truncate " + legResultClass
-                      }
-                    >
-                      {matchLabel}
-                      <span className="ml-2 text-xs text-[var(--color-fg-subtle)]">
-                        outcome {s.outcomeId}
-                      </span>
-                    </span>
-                    {tagLabel ? (
+                  <div className="flex flex-col gap-0.5">
+                    <div className="flex items-center justify-between gap-3 text-sm">
                       <span
                         className={
-                          "font-mono text-[10px] tracking-[0.06em] font-semibold " +
-                          legResultClass
+                          "min-w-0 flex-1 truncate " + legResultClass
                         }
                       >
-                        {tagLabel}
+                        {matchLabel}
+                        <span className="ml-2 text-xs text-[var(--color-fg-subtle)]">
+                          outcome {s.outcomeId}
+                        </span>
                       </span>
-                    ) : null}
-                    <span
-                      className={
-                        "font-mono text-xs text-[var(--color-fg-muted)] " +
-                        (strikeOdds ? "line-through" : "")
-                      }
-                    >
-                      {oddsLabel}
-                    </span>
-                    {effectiveFactor ? (
+                      {tagLabel ? (
+                        <span
+                          className={
+                            "font-mono text-[10px] tracking-[0.06em] font-semibold " +
+                            legResultClass
+                          }
+                        >
+                          {tagLabel}
+                        </span>
+                      ) : null}
                       <span
                         className={
-                          "font-mono text-xs " + legResultClass
+                          "font-mono text-xs text-[var(--color-fg-muted)] " +
+                          (strikeOdds ? "line-through" : "")
                         }
                       >
-                        {effectiveFactor}
+                        {placementOdds}
                       </span>
+                      {effectiveFactor ? (
+                        <span
+                          className={
+                            "font-mono text-xs " + legResultClass
+                          }
+                        >
+                          {effectiveFactor}
+                        </span>
+                      ) : null}
+                    </div>
+                    {showLegCurrent ? (
+                      <div className="flex items-center justify-end gap-2 text-[11px]">
+                        <span className="text-[var(--color-fg-subtle)]">
+                          current
+                        </span>
+                        <span className="font-mono text-[var(--color-fg-muted)]">
+                          {currentOdds}
+                        </span>
+                        <span className={"font-mono " + driftClass}>
+                          {driftArrow}{" "}
+                          {driftPct !== null && driftDir !== "flat"
+                            ? `${driftPct > 0 ? "+" : ""}${driftPct.toFixed(1)}%`
+                            : "flat"}
+                        </span>
+                      </div>
+                    ) : showLegInactiveHint ? (
+                      <div className="flex items-center justify-end gap-2 text-[11px] text-[var(--color-fg-subtle)]">
+                        outcome currently suspended
+                      </div>
                     ) : null}
                   </div>
                 );
@@ -274,27 +401,49 @@ function TicketRow({
           ) : null}
         </div>
 
-        <div className="text-right">
-          {(() => {
-            const badge = resolveStatusBadge(ticket);
-            return (
-              <span
-                className={
-                  "text-xs uppercase tracking-[0.15em] " + badge.color
-                }
-              >
-                {badge.label}
-              </span>
-            );
-          })()}
-          <p className="mt-2 font-mono text-sm">
+        <span
+          className={
+            "shrink-0 text-xs uppercase tracking-[0.15em] " + badge.color
+          }
+        >
+          {badge.label}
+        </span>
+      </div>
+
+      {/* Money footer: stake on the left, settled / potential payout on
+          the right. Made deliberately prominent (larger numerals, a
+          divider above) because "how much did I bet" / "how much can I
+          win" are the two questions every bettor wants the answer to in
+          one glance. */}
+      <div className="mt-4 flex items-end justify-between gap-4 border-t border-[var(--color-border)] pt-3">
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
+            Stake
+          </div>
+          <div className="font-mono text-lg">
             {stake} {ticket.currency}
-          </p>
-          <p className="font-mono text-xs text-[var(--color-fg-muted)]">
-            → {actual ?? potential} {ticket.currency}
-          </p>
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="text-[10px] uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
+            {actual !== null ? "Payout" : "Potential win"}
+          </div>
+          <div className="font-mono text-lg">
+            {actual ?? potential} {ticket.currency}
+          </div>
+          {actual === null && currentPotentialWin !== null ? (
+            <div className="mt-0.5 font-mono text-[11px] text-[var(--color-fg-muted)]">
+              now {currentPotentialWin} {ticket.currency}
+              {currentTotalOdds !== null ? (
+                <span className="ml-1 text-[var(--color-fg-subtle)]">
+                  @ {currentTotalOdds.toFixed(2)}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </div>
+
       <CashoutPanel ticket={ticket} onCashedOut={onCashedOut} />
     </li>
   );
