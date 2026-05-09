@@ -356,9 +356,14 @@ services:
       # Host /proc → /host/proc:ro for cpu/mem/load/uptime reads.
       - /proc:/host/proc:ro
       # Host root → /host-root:ro for statvfs() on the disk that matters
-      # (the Hetzner box's /dev/sda1). rprivate keeps mount events
-      # contained.
-      - /:/host-root:ro,rprivate
+      # (the Hetzner box's /dev/sda1). `rslave` is required by dockerd
+      # whenever the bind source overlaps the daemon root
+      # (`/var/lib/docker`); rprivate is rejected. Slave propagation
+      # means host mount events propagate INTO the container (so a
+      # newly mounted disk shows up live) but no events propagate
+      # back OUT — which is what we want for a read-only monitoring
+      # mount.
+      - /:/host-root:ro,rslave
       # Docker engine API for the container list. :ro so a future
       # exploit cannot `docker run --privileged` from this container.
       - /var/run/docker.sock:/var/run/docker.sock:ro
