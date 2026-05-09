@@ -117,6 +117,29 @@ function partitionIntoFamilies(markets: MarketSnapshot[]): RenderEntry[] {
   );
 }
 
+// status=0 = deactivated (Oddin closed the market, e.g. Map 1 markets
+// after Map 1 ends). Per spec these don't recover without a fresh
+// market_status_change, which our WS doesn't carry — and the user
+// asked to remove deactivated markets from the offer entirely.
+// status=-1 = suspended (mid-round freeze, pre-map idle) and stays in
+// the UI as a greyed title so the user knows it's coming back.
+function isMarketDeactivated(m: MarketSnapshot): boolean {
+  return m.status === 0;
+}
+
+// Whether a render entry has any content worth keeping in the UI.
+// A single-market entry vanishes when its market is deactivated; a
+// line family vanishes only when EVERY line in the family is
+// deactivated — partial families render their non-deactivated rows
+// (and may collapse to a title-only suspended pill if none of those
+// rows currently has bettable outcomes).
+function entryShouldRender(entry: RenderEntry): boolean {
+  if (entry.kind === "single") {
+    return !isMarketDeactivated(entry.market);
+  }
+  return entry.markets.some((m) => !isMarketDeactivated(m));
+}
+
 // BetBuilder reachability gate. Computed once per render in LiveMarkets
 // and threaded down to each outcome button. Returns true when an
 // outcome should be locked because the slip is in BetBuilder mode for
@@ -239,16 +262,29 @@ export function LiveMarkets({
   // because builderLocked returns false for them.
   const isBuilderForThisMatch =
     slip.mode === "betbuilder" && slip.betbuilderMatchId === matchId;
-  const filteredGroups = useMemo<MarketGroup[]>(() => {
-    if (!isBuilderForThisMatch) return mergedGroups;
+
+  // Compute the renderable entries per scope group: partition into
+  // singles + line families, then drop entries that are fully
+  // deactivated (status=0 with no live siblings). When BetBuilder is
+  // on for this match, layer the OBB-eligibility filter on top —
+  // markets with zero pickable outcomes also drop out. Groups whose
+  // entry list ends up empty are excluded so the scope tab + section
+  // header don't render an empty body.
+  const renderableGroups = useMemo<
+    Array<{ id: string; label: string; order: number; entries: RenderEntry[] }>
+  >(() => {
     return mergedGroups
-      .map((g) => ({
-        ...g,
-        markets: g.markets.filter((m) =>
-          m.outcomes.some((o) => !builderLocked(m.id, o.outcomeId)),
-        ),
-      }))
-      .filter((g) => g.markets.length > 0);
+      .map((g) => {
+        let markets = g.markets;
+        if (isBuilderForThisMatch) {
+          markets = markets.filter((m) =>
+            m.outcomes.some((o) => !builderLocked(m.id, o.outcomeId)),
+          );
+        }
+        const entries = partitionIntoFamilies(markets).filter(entryShouldRender);
+        return { id: g.id, label: g.label, order: g.order, entries };
+      })
+      .filter((g) => g.entries.length > 0);
   }, [mergedGroups, isBuilderForThisMatch, builderLocked]);
 
   // If the active scope just got filtered out (e.g. user was on "Map 3"
@@ -256,15 +292,15 @@ export function LiveMarkets({
   // fall back to "all". Otherwise the list goes blank.
   useEffect(() => {
     if (scope === "all") return;
-    if (filteredGroups.some((g) => g.id === scope)) return;
+    if (renderableGroups.some((g) => g.id === scope)) return;
     setScope("all");
-  }, [filteredGroups, scope]);
+  }, [renderableGroups, scope]);
 
   const visible =
     scope === "all"
-      ? filteredGroups
-      : filteredGroups.filter((g) => g.id === scope);
-  const showScopeRow = filteredGroups.length > 1 || builder.available;
+      ? renderableGroups
+      : renderableGroups.filter((g) => g.id === scope);
+  const showScopeRow = renderableGroups.length > 1 || builder.available;
 
   if (!hasAnyMarket) {
     // Subscription is still mounted via useLiveOdds above — when ticks
@@ -296,12 +332,12 @@ export function LiveMarkets({
             alignItems: "center",
           }}
         >
-          {filteredGroups.length > 1 && (
+          {renderableGroups.length > 1 && (
             <>
               <ScopeTab active={scope === "all"} onClick={() => setScope("all")}>
                 All
               </ScopeTab>
-              {filteredGroups.map((g) => (
+              {renderableGroups.map((g) => (
                 <ScopeTab
                   key={g.id}
                   active={scope === g.id}
@@ -323,49 +359,46 @@ export function LiveMarkets({
         </div>
       )}
 
-      {visible.map((g) => {
-        const entries = partitionIntoFamilies(g.markets);
-        return (
-          <section
-            key={g.id}
-            style={{ display: "flex", flexDirection: "column", gap: 10 }}
+      {visible.map((g) => (
+        <section
+          key={g.id}
+          style={{ display: "flex", flexDirection: "column", gap: 10 }}
+        >
+          <h2
+            className="display"
+            style={{
+              margin: 0,
+              fontSize: 15,
+              fontWeight: 500,
+              letterSpacing: "-0.01em",
+              color: "var(--fg-muted)",
+            }}
           >
-            <h2
-              className="display"
-              style={{
-                margin: 0,
-                fontSize: 15,
-                fontWeight: 500,
-                letterSpacing: "-0.01em",
-                color: "var(--fg-muted)",
-              }}
-            >
-              {g.label}
-            </h2>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {entries.map((entry) =>
-                entry.kind === "single" ? (
-                  <SingleMarketCard
-                    key={entry.key}
-                    market={entry.market}
-                    match={match}
-                    slip={slip}
-                    builderLocked={builderLocked}
-                  />
-                ) : (
-                  <LineFamilyCard
-                    key={entry.key}
-                    family={entry}
-                    match={match}
-                    slip={slip}
-                    builderLocked={builderLocked}
-                  />
-                ),
-              )}
-            </div>
-          </section>
-        );
-      })}
+            {g.label}
+          </h2>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {g.entries.map((entry) =>
+              entry.kind === "single" ? (
+                <SingleMarketCard
+                  key={entry.key}
+                  market={entry.market}
+                  match={match}
+                  slip={slip}
+                  builderLocked={builderLocked}
+                />
+              ) : (
+                <LineFamilyCard
+                  key={entry.key}
+                  family={entry}
+                  match={match}
+                  slip={slip}
+                  builderLocked={builderLocked}
+                />
+              ),
+            )}
+          </div>
+        </section>
+      ))}
     </div>
   );
 }
@@ -426,7 +459,14 @@ function SingleMarketCard({
   const suspended = !isMarketBettable(m);
   const cols = m.outcomes.length <= 2 ? 2 : m.outcomes.length <= 3 ? 3 : 4;
   return (
-    <div className="card" style={{ padding: 16, borderRadius: "var(--r-md)" }}>
+    <div
+      className="card"
+      style={{
+        padding: 16,
+        borderRadius: "var(--r-md)",
+        opacity: suspended ? 0.6 : undefined,
+      }}
+    >
       <div
         style={{
           display: "flex",
@@ -490,6 +530,21 @@ function LineFamilyCard({
   slip: ReturnType<typeof useBetSlip>;
   builderLocked: BuilderLockFn;
 }) {
+  // Drop deactivated lines (status=0; Oddin closed them and they're
+  // not coming back this session) and lines whose outcomes have no
+  // live prices. Each line value is its own Oddin market, so partial
+  // suspension of the deep handicaps is normal — the family stays
+  // populated with whatever rows are still bettable. Empty rows
+  // contribute no bettable info, so removing them keeps the ladder
+  // scannable instead of letting it dominate the page with em-dashes.
+  const visibleMarkets = useMemo(
+    () =>
+      family.markets.filter(
+        (m) => !isMarketDeactivated(m) && isMarketBettable(m),
+      ),
+    [family.markets],
+  );
+
   // Identify the stable set of outcome "slots" across the family so each
   // row lines up vertically. Use the rendered outcome name (already
   // resolved: home team / away team / Over / Under / …) from the first
@@ -497,7 +552,7 @@ function LineFamilyCard({
   // don't all share the same slots (rare).
   const slotNames = useMemo(() => {
     const seen: string[] = [];
-    for (const m of family.markets) {
+    for (const m of visibleMarkets) {
       for (const o of m.outcomes) {
         const label = o.name || o.rawName || o.outcomeId;
         if (!seen.includes(label)) seen.push(label);
@@ -506,7 +561,46 @@ function LineFamilyCard({
     // Canonical ordering for common pairs so the layout matches user
     // intuition (Under before Over, Home before Away).
     return orderSlots(seen);
-  }, [family.markets]);
+  }, [visibleMarkets]);
+
+  // Family fully empty: no row in the ladder is currently bettable.
+  // Collapse to a greyed title-only card with a Suspended pill so the
+  // user knows the market exists and may come back, without staring
+  // at a wall of em-dashes. The parent's entryShouldRender filter
+  // already drops families that are entirely status=0, so reaching
+  // this branch means at least one line is still in suspended/active
+  // state — the ladder will repopulate when prices return.
+  if (visibleMarkets.length === 0) {
+    return (
+      <div
+        className="card"
+        style={{
+          padding: 16,
+          borderRadius: "var(--r-md)",
+          opacity: 0.6,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+          <div style={{ fontSize: 14, fontWeight: 500, letterSpacing: "-0.005em" }}>
+            {family.baseName}
+          </div>
+          <span
+            className="mono"
+            style={{
+              fontSize: 10.5,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: "var(--fg-dim)",
+            }}
+          >
+            {family.lineSpec === "handicap" ? "Handicap" : "Total"}
+          </span>
+          <div style={{ flex: 1 }} />
+          <SuspendedPill />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="card" style={{ padding: 16, borderRadius: "var(--r-md)" }}>
@@ -559,20 +653,17 @@ function LineFamilyCard({
             {name}
           </div>
         ))}
-        {family.markets.map((m) => {
-          const suspended = !isMarketBettable(m);
-          return (
-            <LineRow
-              key={m.id}
-              market={m}
-              match={match}
-              slip={slip}
-              slotNames={slotNames}
-              suspended={suspended}
-              builderLocked={builderLocked}
-            />
-          );
-        })}
+        {visibleMarkets.map((m) => (
+          <LineRow
+            key={m.id}
+            market={m}
+            match={match}
+            slip={slip}
+            slotNames={slotNames}
+            suspended={!isMarketBettable(m)}
+            builderLocked={builderLocked}
+          />
+        ))}
       </div>
     </div>
   );
