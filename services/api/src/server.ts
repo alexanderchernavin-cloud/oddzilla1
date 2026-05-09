@@ -36,6 +36,7 @@ import adminLogsRoutes from "./modules/admin/logs.js";
 import adminFeSettingsRoutes from "./modules/admin/fe-settings.js";
 import adminCompetitorsRoutes from "./modules/admin/competitors.js";
 import adminTournamentsRoutes from "./modules/admin/tournaments.js";
+import adminMonitoringRoutes, { startMonitoringSampler } from "./modules/admin/monitoring.js";
 import communityRoutes from "./modules/community/routes.js";
 import communityAvatarRoutes from "./modules/community/avatars.js";
 import communityAnalysesRoutes from "./modules/community/analyses.js";
@@ -190,6 +191,7 @@ await app.register(adminLogsRoutes);
 await app.register(adminFeSettingsRoutes);
 await app.register(adminCompetitorsRoutes);
 await app.register(adminTournamentsRoutes);
+await app.register(adminMonitoringRoutes);
 await app.register(communityRoutes);
 await app.register(communityAvatarRoutes);
 await app.register(communityAnalysesRoutes);
@@ -214,8 +216,15 @@ app
     process.exit(1);
   });
 
+// Background monitoring sampler — fires every 60s, lock-guarded so a
+// future multi-instance api deploy still produces one sample per
+// minute. Returns a stop fn that the SIGTERM handler calls so the
+// timer doesn't keep the event loop alive past app.close().
+const stopMonitoringSampler = startMonitoringSampler(app);
+
 async function shutdown() {
   app.log.info("shutting down");
+  stopMonitoringSampler();
   await app.close();
   process.exit(0);
 }

@@ -79,6 +79,11 @@ export const I = {
       <circle cx="12" cy="12" r="10.5" opacity="0.4" />
     </Icon>
   ),
+  Activity: (p: IconProps) => (
+    <Icon {...p}>
+      <path d="M3 12h4l2-7 4 14 2-7h6" />
+    </Icon>
+  ),
   Star: (p: IconProps) => (
     <Icon {...p}>
       <path d="m12 3 2.6 5.8 6.4.6-4.8 4.3 1.4 6.3L12 17l-5.6 3 1.4-6.3L3 9.4l6.4-.6z" />
