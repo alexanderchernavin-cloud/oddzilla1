@@ -544,14 +544,9 @@ export function BetSlipRail() {
       ) : (
         <>
       <div
+        className="oz-rail-slip-list"
         style={{
           minHeight: 0,
-          // flex: 1 lets the selections list claim leftover vertical
-          // space when the drawer is fixed-height (mobile sheet) — the
-          // form stays at its natural height and the list fills the
-          // gap, instead of the form dominating with empty space below
-          // a short list.
-          flex: 1,
           overflow: "auto",
           padding: "8px 14px 6px",
           display: "flex",
