@@ -4,10 +4,14 @@ Browser WebSocket fanout. TS / `ws` + `ioredis` on Node 22.
 
 **Phase 1:** accepts WS on `/ws` and emits a hello message.
 **Phase 4 (current):** JWT verified during HTTP upgrade (`oddzilla_access`
-cookie); per-client subscription table; Redis pub/sub refcounted fanout;
-5 msg/s/client token bucket (capacity 5, refill 200 ms); subscription
-cap 100 matches per client; healthz reports connected clients +
-subscription count.
+cookie) — authenticated clients additionally subscribe to a private
+`user:{userId}` Redis channel for ticket frames. Anonymous clients
+(missing or invalid cookie) are accepted and receive only the public
+`odds:match:{id}` fan-out, which is the same data SSR already serves
+to logged-out visitors. Per-client subscription table; Redis pub/sub
+refcounted fanout; 5 msg/s/client token bucket (capacity 5, refill
+200 ms); subscription cap 100 matches per client; healthz reports
+connected clients + subscription count.
 
 ## Run
 
@@ -41,7 +45,9 @@ not replay from WS.
 
 ## Invariants
 
-- Auth is the **first** thing on connect; never accept messages from an
-  unauthenticated socket.
+- Auth is best-effort on upgrade. Anonymous clients are allowed for the
+  public odds fan-out only; the `user:{id}` Redis subscription is gated
+  on a valid JWT, so a logged-out browser can never receive another
+  user's ticket frames.
 - Rate cap (5 msg/s/client) protects the box from runaway fanout.
 - Never trust message payloads from clients — JSON-schema validate.
