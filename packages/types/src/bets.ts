@@ -137,6 +137,15 @@ export interface TicketSummary {
       homeTeam: string;
       awayTeam: string;
       sportSlug: string;
+      // Live state of the underlying match + outcome, refreshed every
+      // time /bets is read. The bet-history UI uses these to render a
+      // "current odds" comparison beside the placement odds for legs
+      // whose match hasn't started yet (prematch drift indicator). Null
+      // when the upstream row was hard-deleted (rare, e.g. after a
+      // recovery flush of an orphan market).
+      matchStatus: "not_started" | "live" | "closed" | "cancelled" | "suspended";
+      currentOdds: string | null;
+      currentlyActive: boolean;
     };
   }>;
 }
