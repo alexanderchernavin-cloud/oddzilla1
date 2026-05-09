@@ -340,6 +340,19 @@ services:
       context: ./services/metrics-collector
       dockerfile: Dockerfile
     user: "65534:65534"
+    # The docker.sock is owned by root:docker mode 660 on the host;
+    # UID 65534 (nobody) needs to be in the `docker` group to read it.
+    # Hetzner CPX22 dockerd assigns GID 988 (`getent group docker`);
+    # adjust if redeploying elsewhere. Note: docker.sock access is
+    # functionally equivalent to root on the host (the bind-mount `:ro`
+    # only protects the socket *file*, not the engine API), so this
+    # container's hardening (cap_drop ALL + no_new_privileges +
+    # read_only rootfs + UID nobody) is the only thing standing between
+    # an RCE here and a privileged container escape. Future
+    # tightening: front docker.sock with tecnativa/docker-socket-proxy
+    # so this container only sees a filtered subset (GET /containers).
+    group_add:
+      - "988"
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 64m
