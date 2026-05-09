@@ -368,16 +368,14 @@ body {
    when the rail is acting as a dismissible sheet. */
 .oz-rail-close { display: none !important; }
 
-/* Selections list inside the rail. On desktop the list is content-
-   height (no growing, no shrinking): the form (currency / stake /
-   Place bet) hugs the last selection card, the prematch widget hugs
-   the form, and adding a selection grows the slip downward — no
-   large empty band above the widget when the slip only has one or
-   two legs. flex-shrink:0 keeps the iframe from being squeezed when
-   the combined slip+form+widget exceeds the rail; the rail's own
-   overflow-y handles scrolling instead. The mobile override below
-   restores flex:1 so the form pins to the bottom of the fixed-height
-   bottom-sheet. */
+/* Selections list inside the rail. The list is content-height
+   everywhere (no growing, no shrinking): the form (currency / stake /
+   Place bet) hugs the last selection card, and adding a selection
+   grows the slip downward and shifts the form with it. flex-shrink:0
+   keeps the form / iframe from being squeezed when the combined
+   slip+form exceeds the rail; the rail's own overflow-y handles
+   scrolling instead. Applies the same on desktop and on the mobile
+   bottom-sheet — no large empty band above the form on a short slip. */
 .oz-rail-slip-list { flex: 0 0 auto; }
 
 /* Lobby 3-fold suggestion cards. Two columns on desktop / tablet,
@@ -401,12 +399,6 @@ body {
      on these breakpoints, not stacked under the slip. */
   .oz-rail-prematch { display: none !important; }
   .oz-match-prematch-mobile { display: flex !important; }
-
-  /* Bottom-sheet rail has a fixed height, so the slip list claims the
-     leftover vertical space and pins the form to the bottom of the
-     sheet. Otherwise the form would float at the top with empty space
-     below it on a single-selection slip. */
-  .oz-rail-slip-list { flex: 1 1 0; }
 
   /* Mobile live-media: show the pill switcher and only render the
      active pane via [data-active="true"]. Desktop keeps both stacked. */
