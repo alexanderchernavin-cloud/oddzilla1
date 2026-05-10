@@ -1,33 +1,49 @@
 # oddzilla-android
 
-Native Android client for Oddzilla. Storefront only (FE betting side
-— no admin surface). Distributed as a self-hosted APK with built-in
-update prompts; never published to the Play Store.
+Android client for Oddzilla. Storefront only (FE betting side — no
+admin surface). Distributed as a self-hosted APK with built-in update
+prompts; never published to the Play Store.
+
+Since **v0.5.0** the app is a thin Chromium shell over
+`https://oddzilla.cc`. The web app is already responsive (mobile
+drawers, sticky bet-slip bar, mobile-first breakpoints in
+[`apps/web/src/app/globals.css`](../web/src/app/globals.css)) and
+covers every flow the previous native rewrite was reproducing —
+keeping a separate Compose UI in step with the web design was costing
+more than it returned. Native chrome that stays native:
+
+- The system splash screen
+- The update modal (`UpdateGate.kt`) that polls
+  `https://oddzilla.cc/app/version.json` on cold start, downloads the
+  APK with SHA-256 verify, and hands off to the system installer
+- Push-notification scaffolding under `fcm/` (still SDK-less; see
+  [`fcm/README.md`](app/src/main/java/cc/oddzilla/app/fcm/README.md))
 
 ## Stack
 
-- **Kotlin 2.0.21** + **Jetpack Compose** + **Material 3**
-- **Navigation Compose** for routing
-- **Retrofit 2** + **OkHttp 4** + **kotlinx.serialization** for the REST client
-- **DataStore Preferences** for the persistent cookie jar
-- **Coil** for image loading
+- **Kotlin 2.0.21** + **Jetpack Compose** + **Material 3** for the
+  thin native frame around the WebView and the update modal
+- **WebKit `WebView`** (system Chromium) hosting the storefront
+- **OkHttp 4** + **Retrofit 2** + **kotlinx.serialization** retained
+  only for the FCM device-register endpoint and the update manifest
+  fetch
+- **DataStore Preferences** for the persistent cookie jar (mirrored
+  with the WebView's `CookieManager` so authenticated REST calls from
+  the FCM service share the WebView session)
 - **AGP 8.7.3**, compileSdk **35**, minSdk **26** (Android 8.0+)
 
 ## Project layout
 
 ```
 apps/mobile-android/
-├── settings.gradle.kts          // root project
+├── settings.gradle.kts
 ├── build.gradle.kts
 ├── gradle.properties
 ├── gradle/libs.versions.toml    // version catalog
 ├── version.properties           // single source of truth for app version
-├── keystore.properties.example  // copy + fill for release builds
+├── keystore.properties.example
 ├── local.properties.example
-├── scripts/
-│   ├── release.ps1              // build + scp + update version.json
-│   ├── release.sh
-│   └── bump-version.ps1         // bump versionCode + versionName
+├── scripts/                     // release.ps1, release.sh, bump-version.ps1
 └── app/
     ├── build.gradle.kts
     ├── proguard-rules.pro
@@ -35,28 +51,20 @@ apps/mobile-android/
         ├── AndroidManifest.xml
         ├── res/                 // theme, strings, adaptive icon, FileProvider paths
         └── java/cc/oddzilla/app/
-            ├── OddzillaApp.kt          // Application + manual DI graph
+            ├── OddzillaApp.kt          // Application + small DI graph
             ├── MainActivity.kt         // single-Activity entry point
             ├── common/
-            │   └── Deps.kt             // service-locator CompositionLocal
+            │   └── Deps.kt             // cookieJar + updateController + devicesRepo
+            ├── web/
+            │   └── WebViewHost.kt      // single Chromium WebView pointing at oddzilla.cc
             ├── data/
-            │   ├── api/                // Retrofit DTOs, OkHttp builder, cookie jar
-            │   └── repo/               // AuthRepository, CatalogRepository, AuthSession
-            ├── nav/
-            │   ├── Routes.kt
-            │   └── OddzillaNav.kt      // top-level NavHost (login ↔ main)
-            ├── ui/
-            │   ├── theme/              // Compose theme + design tokens
-            │   ├── components/         // OzButton, OzPill, OzCard, LiveDot, …
-            │   └── screens/
-            │       ├── auth/           // login + signup
-            │       ├── main/           // bottom-tab scaffold
-            │       ├── sports/         // sports list (real API)
-            │       ├── bets/           // STUB
-            │       ├── wallet/         // STUB
-            │       └── account/        // logout + version
-            └── update/                  // VersionManifest, UpdateController,
-                                         // ApkInstaller, UpdateGate (modal)
+            │   ├── api/                // OkHttp builder, cookie jar, devices DTOs/Retrofit
+            │   └── repo/
+            │       └── DevicesRepository.kt   // POST /devices/register|unregister
+            ├── ui/theme/               // Compose theme tokens used by the update modal
+            ├── update/                 // VersionManifest, UpdateController,
+            │                           // ApkInstaller, UpdateGate (modal)
+            └── fcm/                    // FCM scaffolding (SDK-less; see fcm/README.md)
 ```
 
 ## First-time setup

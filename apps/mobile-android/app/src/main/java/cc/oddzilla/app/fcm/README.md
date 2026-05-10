@@ -65,29 +65,52 @@ Add the service declaration to `app/src/main/AndroidManifest.xml` inside `<appli
 
 ## 4. Wire token registration on app launch
 
-In `MainActivity.kt`, after `deps.authRepository.bootstrap()` resolves to `LoggedIn`:
+Since the v0.5.0 WebView pivot the auth state lives inside the WebView,
+not native code. The cleanest hook is `WebViewHost`'s
+`onPageFinished` — the same place we already mirror cookies into the
+OkHttp jar. After mirroring, check whether the jar holds a
+`refreshToken` (means: a logged-in session); if so, fetch the FCM
+token and call `devicesRepository.register`.
+
+In `WebViewHost.kt`, extend the page-finished hook (currently calls
+`mirrorCookiesToOkHttp`) to also fire registration. Pass a small
+callback through from `MainActivity` so the registration code stays
+in `OddzillaApp` / a small `PushBootstrap.kt` and `WebViewHost` stays
+UI-only:
 
 ```kotlin
 import com.google.firebase.messaging.FirebaseMessaging
+import kotlinx.coroutines.tasks.await
 
-LaunchedEffect(authState) {
-    if (authState is AuthSessionState.LoggedIn) {
-        runCatching {
-            val token = FirebaseMessaging.getInstance().token.await()
-            deps.devicesRepository.register(token)
-        }
+suspend fun registerPushIfLoggedIn(
+    cookieJar: PersistentCookieJar,
+    devicesRepo: DevicesRepository,
+) {
+    if (!cookieJar.hasRefreshCookie()) return
+    runCatching {
+        val token = FirebaseMessaging.getInstance().token.await()
+        devicesRepo.register(token)
     }
 }
 ```
 
 (`kotlinx.coroutines.tasks.await` lives in `kotlinx-coroutines-play-services` — add `implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")` if you don't already have it.)
 
-In `AccountScreen.kt`'s logout flow, before calling `authRepository.logout()`:
+For unregister-on-logout: after the WebView's logout call lands (the
+storefront calls `POST /auth/logout` and the API emits Set-Cookie
+clears for `accessToken` + `refreshToken`), the next `onPageFinished`
+sees an empty jar — detect the transition and fire `unregister`. A
+simple `was-logged-in` boolean flag in `WebViewHost` is enough:
 
 ```kotlin
-runCatching {
-    val token = FirebaseMessaging.getInstance().token.await()
-    deps.devicesRepository.unregister(token)
+val wasLoggedIn = cookieJar.hasRefreshCookie()
+mirrorCookiesToOkHttp(cookieJar)
+val isLoggedIn = cookieJar.hasRefreshCookie()
+if (wasLoggedIn && !isLoggedIn) {
+    runCatching {
+        val token = FirebaseMessaging.getInstance().token.await()
+        devicesRepo.unregister(token)
+    }
 }
 ```
 
