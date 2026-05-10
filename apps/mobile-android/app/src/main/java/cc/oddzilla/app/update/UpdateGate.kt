@@ -5,9 +5,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -17,8 +19,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import cc.oddzilla.app.R
-import cc.oddzilla.app.ui.components.OzGhostButton
-import cc.oddzilla.app.ui.components.OzPrimaryButton
 import cc.oddzilla.app.ui.theme.OzTheme
 
 // Update modal driven by UpdateController.state. Mounted at the root
@@ -101,10 +101,10 @@ private fun AvailableDialog(
             }
         },
         confirmButton = {
-            OzPrimaryButton(text = stringResource(R.string.update_now), onClick = onUpdate)
+            Button(onClick = onUpdate) { Text(stringResource(R.string.update_now)) }
         },
         dismissButton = if (mandatory) null else {
-            { OzGhostButton(text = stringResource(R.string.update_later), onClick = onDismiss) }
+            { TextButton(onClick = onDismiss) { Text(stringResource(R.string.update_later)) } }
         },
     )
 }
@@ -147,10 +147,10 @@ private fun ReadyDialog(
         title = { Text(stringResource(R.string.update_title)) },
         text = { Text(stringResource(R.string.update_install_prompt)) },
         confirmButton = {
-            OzPrimaryButton(text = stringResource(R.string.update_now), onClick = onInstall)
+            Button(onClick = onInstall) { Text(stringResource(R.string.update_now)) }
         },
         dismissButton = if (mandatory) null else {
-            { OzGhostButton(text = stringResource(R.string.update_later), onClick = onDismiss) }
+            { TextButton(onClick = onDismiss) { Text(stringResource(R.string.update_later)) } }
         },
     )
 }
@@ -170,10 +170,10 @@ private fun FailedDialog(
         title = { Text(stringResource(R.string.update_title)) },
         text = { Text(stringResource(R.string.update_failed)) },
         confirmButton = {
-            OzPrimaryButton(text = stringResource(R.string.update_now), onClick = onRetry)
+            Button(onClick = onRetry) { Text(stringResource(R.string.update_now)) }
         },
         dismissButton = if (mandatory) null else {
-            { OzGhostButton(text = stringResource(R.string.update_later), onClick = onDismiss) }
+            { TextButton(onClick = onDismiss) { Text(stringResource(R.string.update_later)) } }
         },
     )
 }
