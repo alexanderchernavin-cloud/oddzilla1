@@ -311,6 +311,10 @@ body {
 /* Mobile-only toggle buttons in the top bar; hidden on desktop. */
 .oz-topbar-toggle { display: none !important; }
 
+/* Sidebar theme toggle is mobile-only — duplicates the top-bar toggle
+   on desktop otherwise. Re-shown under the mobile breakpoint below. */
+.oz-sidebar-theme { display: none !important; }
+
 /* Inline widget toggle + container on the match page is mobile-only;
    on desktop the same widget renders in the right rail. */
 .oz-match-prematch-mobile { display: none !important; }
@@ -581,6 +585,14 @@ body {
   .oz-topbar-toggle { display: inline-flex !important; }
   .oz-topbar-search { display: none !important; }
   .oz-topbar-bell { display: none !important; }
+  /* Theme toggle moves into the sidebar drawer on mobile so the top
+     bar has room for the wallet pill + avatar on a 360-414px phone.
+     Without this rule a logged-in user's wordmark gets clipped on the
+     left and the avatar on the right because the row's min-content
+     (hamburger + wordmark + theme + wallet + avatar + gaps) exceeds
+     every common phone viewport. */
+  .oz-topbar-theme { display: none !important; }
+  .oz-sidebar-theme { display: flex !important; }
   /* Sidebar is fully drawer-mode now, so sheet + bar span the full
      viewport width. */
   .oz-rail { left: 0 !important; }
