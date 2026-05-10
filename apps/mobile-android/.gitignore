@@ -1,0 +1,31 @@
+# Gradle
+.gradle/
+build/
+**/build/
+local.properties
+.kotlin/
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+*.ipr
+*.iws
+captures/
+
+# NOTE: gradle/wrapper/gradle-wrapper.jar IS committed (intentionally).
+# Without it `./gradlew` can't bootstrap on a fresh checkout — the jar
+# is what reads gradle-wrapper.properties and downloads Gradle. Standard
+# practice is to commit it.
+
+# Signing config — keystore + passwords live outside the repo
+keystore.properties
+*.jks
+*.keystore
+
+# Firebase config — drop in per-environment google-services.json once
+# the Firebase project is created (see app/src/main/java/cc/oddzilla/app/fcm/README.md)
+app/google-services.json
+
+# OS noise
+.DS_Store
+Thumbs.db

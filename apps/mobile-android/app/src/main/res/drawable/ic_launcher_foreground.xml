@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Adaptive icon foreground: 72×72 visible safe zone in the
+         center of a 108×108 canvas. The "O" monogram sits in the
+         safe zone so launcher masks (round, squircle, …) never clip
+         the lockup. -->
+    <path
+        android:fillColor="#0D0D0C"
+        android:pathData="M54,28 C36,28 26,42 26,54 C26,66 36,80 54,80 C72,80 82,66 82,54 C82,42 72,28 54,28 Z M54,38 C65,38 73,46 73,54 C73,62 65,70 54,70 C43,70 35,62 35,54 C35,46 43,38 54,38 Z" />
+</vector>

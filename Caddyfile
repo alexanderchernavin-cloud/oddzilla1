@@ -88,6 +88,27 @@
 		reverse_proxy ws-gateway:3002
 	}
 
+	# Android APK distribution. The mobile app polls /app/version.json
+	# on launch, compares versionCode against BuildConfig.VERSION_CODE,
+	# and downloads /app/oddzilla-<version>.apk via DownloadManager when
+	# a newer build is available. Files are served from a host-mounted
+	# directory (see docker-compose.yml caddy.volumes) so a release is
+	# `scp` + edit-version.json with no Caddy/api restart.
+	#
+	# version.json: short cache so update prompts propagate within
+	#   minutes; APKs: long immutable cache because each release ships
+	#   under a versioned filename and never changes content.
+	handle_path /app/* {
+		root * /srv/oddzilla-apk
+		file_server
+		@apk path *.apk
+		header @apk Cache-Control "public, max-age=86400, immutable"
+		header @apk Content-Type "application/vnd.android.package-archive"
+		@json path *.json
+		header @json Cache-Control "no-store"
+		header @json Content-Type "application/json; charset=utf-8"
+	}
+
 	handle {
 		reverse_proxy web:3000
 	}

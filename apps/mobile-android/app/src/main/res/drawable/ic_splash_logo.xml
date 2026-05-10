@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Splash monogram. A bold serif "O" lockup that lines up with the
+     web wordmark style. Placeholder vector — swap for real artwork
+     once design ships an SVG. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="288dp"
+    android:height="288dp"
+    android:viewportWidth="100"
+    android:viewportHeight="100">
+    <path
+        android:fillColor="#0D0D0C"
+        android:pathData="M50,18 C30,18 18,32 18,50 C18,68 30,82 50,82 C70,82 82,68 82,50 C82,32 70,18 50,18 Z M50,28 C63,28 72,38 72,50 C72,62 63,72 50,72 C37,72 28,62 28,50 C28,38 37,28 50,28 Z" />
+</vector>

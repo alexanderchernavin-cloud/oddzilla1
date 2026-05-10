@@ -1,0 +1,204 @@
+name: android
+
+# Two paths:
+#
+#   • Push to main → builds the debug APK and uploads it as a workflow
+#     artifact. Useful for quick smoke-installs on a test phone.
+#
+#   • Manual workflow_dispatch with `release: true` → builds + signs the
+#     release APK with the keystore stored in GH secrets, then scps it
+#     to /srv/oddzilla-apk on the production server and updates
+#     version.json (mirrors what apps/mobile-android/scripts/release.ps1
+#     does locally). Mandatory + minSupportedVersionCode are inputs.
+#
+# Required secrets (set in repo Settings → Secrets and variables):
+#   ANDROID_KEYSTORE_BASE64   base64 of keystore.jks
+#   ANDROID_KEYSTORE_PASSWORD storePassword
+#   ANDROID_KEY_ALIAS         keyAlias
+#   ANDROID_KEY_PASSWORD      keyPassword
+#   DEPLOY_SSH_KEY            private SSH key authorised on team@178.104.174.24
+#   DEPLOY_SSH_KNOWN_HOSTS    output of `ssh-keyscan 178.104.174.24`
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/mobile-android/**'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Sign + ship a release APK to the server'
+        type: boolean
+        default: false
+      release_notes:
+        description: 'Release notes (shown in the update modal)'
+        type: string
+        default: ''
+      mandatory:
+        description: 'Force-update flag'
+        type: boolean
+        default: false
+      min_supported_version_code:
+        description: 'Retire builds below this versionCode'
+        type: number
+        default: 0
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: apps/mobile-android
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+
+      - name: Cache Gradle caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('apps/mobile-android/**/*.gradle*', 'apps/mobile-android/**/*.versions.toml') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Generate Gradle wrapper
+        # The wrapper jar is gitignored — it gets regenerated here from
+        # the Gradle distribution that's installed by the cache step
+        # above (or freshly downloaded on a cold cache).
+        run: |
+          set -euo pipefail
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            curl -fsSL -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-8.10.2-bin.zip
+            unzip -q /tmp/gradle.zip -d /tmp
+            /tmp/gradle-8.10.2/bin/gradle wrapper --gradle-version 8.10.2 --distribution-type bin
+            rm -rf /tmp/gradle-8.10.2 /tmp/gradle.zip
+          fi
+          chmod +x gradlew
+
+      - name: Read version
+        id: ver
+        run: |
+          set -euo pipefail
+          VERSION_NAME=$(awk -F'=' '/^versionName=/{print $2}' version.properties | tr -d '[:space:]')
+          VERSION_CODE=$(awk -F'=' '/^versionCode=/{print $2}' version.properties | tr -d '[:space:]')
+          echo "name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+
+      - name: Restore release keystore
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release }}
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          echo "$KEYSTORE_B64" | base64 -d > $RUNNER_TEMP/oddzilla.jks
+          cat > keystore.properties <<EOF
+          storeFile=$RUNNER_TEMP/oddzilla.jks
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+
+      - name: Build debug APK
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.release) }}
+        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Upload debug APK
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.release) }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: oddzilla-${{ steps.ver.outputs.name }}-debug
+          path: apps/mobile-android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
+
+      - name: Build release APK
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release }}
+        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Hash release APK
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release }}
+        id: sha
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release.apk
+          test -f "$APK"
+          DIGEST=$(sha256sum "$APK" | awk '{print $1}')
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "apk=$APK" >> "$GITHUB_OUTPUT"
+
+      - name: Set up SSH for deploy
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release }}
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          echo "$KNOWN" > ~/.ssh/known_hosts
+
+      - name: Ship to /srv/oddzilla-apk
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release }}
+        env:
+          SERVER: team@178.104.174.24
+          DIGEST: ${{ steps.sha.outputs.digest }}
+          NAME: ${{ steps.ver.outputs.name }}
+          CODE: ${{ steps.ver.outputs.code }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+          MANDATORY: ${{ inputs.mandatory }}
+          MIN_SUPPORTED: ${{ inputs.min_supported_version_code }}
+          APK_PATH: ${{ steps.sha.outputs.apk }}
+        run: |
+          set -euo pipefail
+          REMOTE_NAME="oddzilla-${NAME}.apk"
+          APK_URL="https://oddzilla.cc/app/${REMOTE_NAME}"
+          # Build the manifest JSON in python so any quoting in
+          # releaseNotes is handled safely. python3 is preinstalled on
+          # ubuntu-latest runners.
+          python3 - <<'PY' > /tmp/version.json
+          import json, os
+          payload = {
+              "versionCode": int(os.environ["CODE"]),
+              "versionName": os.environ["NAME"],
+              "apkUrl": f"https://oddzilla.cc/app/oddzilla-{os.environ['NAME']}.apk",
+              "sha256": os.environ["DIGEST"],
+              "releaseNotes": os.environ.get("RELEASE_NOTES", ""),
+              "mandatory": os.environ.get("MANDATORY", "false").lower() == "true",
+              "minSupportedVersionCode": int(os.environ.get("MIN_SUPPORTED", "0")),
+          }
+          print(json.dumps(payload, indent=2))
+          PY
+          scp "$APK_PATH" "$SERVER:/tmp/$REMOTE_NAME"
+          scp /tmp/version.json "$SERVER:/tmp/version.json"
+          ssh "$SERVER" "set -e; \
+            sudo install -o root -g root -m 644 /tmp/$REMOTE_NAME /srv/oddzilla-apk/$REMOTE_NAME; \
+            sudo install -o root -g root -m 644 /tmp/version.json /srv/oddzilla-apk/version.json; \
+            rm -f /tmp/$REMOTE_NAME /tmp/version.json"
+
+      - name: Upload release APK artifact
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: oddzilla-${{ steps.ver.outputs.name }}-release
+          path: apps/mobile-android/app/build/outputs/apk/release/app-release.apk
+          retention-days: 30

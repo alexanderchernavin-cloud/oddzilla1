@@ -1,5 +1,6 @@
 export * from "./users.js";
 export * from "./sessions.js";
+export * from "./devices.js";
 export * from "./wallet.js";
 export * from "./deposits.js";
 export * from "./catalog.js";
