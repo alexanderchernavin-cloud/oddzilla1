@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useLiveOdds } from "@/lib/use-live-odds";
 import { useBetSlip } from "@/lib/bet-slip";
 import { OddButton } from "@/components/ui/primitives";
+import { I } from "@/components/ui/icons";
 import {
   BetBuilderTogglePill,
   useBetBuilderProbe,
@@ -359,7 +360,9 @@ export function LiveMarkets({
         </div>
       )}
 
-      {visible.map((g) => (
+      {visible.map((g) => {
+        const isTop = g.id === "top";
+        return (
         <section
           key={g.id}
           style={{ display: "flex", flexDirection: "column", gap: 10 }}
@@ -368,12 +371,16 @@ export function LiveMarkets({
             className="display"
             style={{
               margin: 0,
-              fontSize: 15,
-              fontWeight: 500,
+              fontSize: isTop ? 16 : 15,
+              fontWeight: isTop ? 600 : 500,
               letterSpacing: "-0.01em",
-              color: "var(--fg-muted)",
+              color: isTop ? "var(--tier-gold)" : "var(--fg-muted)",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
             }}
           >
+            {isTop && <I.Fire size={16} />}
             {g.label}
           </h2>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -398,7 +405,8 @@ export function LiveMarkets({
             )}
           </div>
         </section>
-      ))}
+        );
+      })}
     </div>
   );
 }
