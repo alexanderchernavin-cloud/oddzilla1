@@ -111,7 +111,18 @@ jobs:
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          echo "$KEYSTORE_B64" | base64 -d > $RUNNER_TEMP/oddzilla.jks
+          # Strip every whitespace byte (incl. CRLF that PowerShell on
+          # Windows adds when piping into `gh secret set`) before
+          # decoding — GNU `base64 -d` aborts with "invalid input" on a
+          # stray \r. printf instead of echo avoids inserting another
+          # trailing newline of our own.
+          printf '%s' "$KEYSTORE_B64" | tr -d '[:space:]' | base64 -d > "$RUNNER_TEMP/oddzilla.jks"
+          size=$(stat -c%s "$RUNNER_TEMP/oddzilla.jks")
+          echo "Decoded keystore: $size bytes"
+          if [ "$size" -lt 1000 ]; then
+            echo "::error::Keystore decoded to <1000 bytes; ANDROID_KEYSTORE_BASE64 secret is likely empty or corrupt"
+            exit 1
+          fi
           cat > keystore.properties <<EOF
           storeFile=$RUNNER_TEMP/oddzilla.jks
           storePassword=$KEYSTORE_PASSWORD
