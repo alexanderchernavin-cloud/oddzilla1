@@ -237,20 +237,31 @@ function classifyStreamUrl(
 // goal in football) while secondary markets stay open, and we still
 // want the row visible.
 //
-// Defense in depth on the storefront side: also gate on
-// matches.status. After the bet_settlement / odds_change / bet_stop
-// fixes that flip matches.status forward to closed/cancelled, this
-// belt-and-braces check guarantees a closed match drops out of every
-// list even if a stray market row is still sitting at status=1
-// (settlement only flips markets it touches; an untouched market on a
-// closed event would otherwise keep the card visible). The
-// phantom-drain stays as the upstream safety net for matches Oddin
-// never sends a terminal signal for at all.
+// Defense in depth on the storefront side. Two clauses:
+//
+//   1. matches.status IN ('not_started','live') — closed/cancelled
+//      matches drop out even if a stray market row stayed at status=1
+//      (settlement only flips markets it touches; an untouched market
+//      on a closed event would otherwise keep the card visible).
+//
+//   2. A 6 h time gate on `not_started`: if Oddin never delivered the
+//      lifecycle transition (e.g. our service was down for hours and
+//      the message fell outside the recovery window), the row stays
+//      stuck at `not_started` past its scheduled start. A match
+//      scheduled > 6 h ago that hasn't moved to `live` is broken data —
+//      live esports rounds don't run that long. Hides it from listings
+//      until the suspend-before-recover flush or the admin
+//      "Refresh from REST" tool repairs the row. Live matches don't
+//      need the gate (by definition the lifecycle DID advance).
 const hasActiveMarket = sql`EXISTS (
   SELECT 1 FROM markets mk
    WHERE mk.match_id = ${matches.id}
      AND mk.status = 1
-) AND ${matches.status} IN ('not_started','live')`;
+) AND (
+  ${matches.status} = 'live'
+  OR (${matches.status} = 'not_started'
+      AND ${matches.scheduledAt} > NOW() - INTERVAL '6 hours')
+)`;
 
 // Tournaments whose name matches one of these strings are hidden from
 // every list/count endpoint. Oddin's integration broker exposes test
@@ -1513,10 +1524,16 @@ export default async function catalogRoutes(app: FastifyInstance) {
             notHiddenTournament,
             // Empty tournaments (every match closed/phantom-stale) are
             // hidden so search results never lead to a zero-match page.
+            // Same 6 h time gate as `hasActiveMarket` so a tournament
+            // surviving only on wedged not_started matches drops out.
             sql`EXISTS (
               SELECT 1 FROM ${matches} mm
                WHERE mm.tournament_id = ${tournaments.id}
-                 AND mm.status IN ('not_started','live')
+                 AND (
+                   mm.status = 'live'
+                   OR (mm.status = 'not_started'
+                       AND mm.scheduled_at > NOW() - INTERVAL '6 hours')
+                 )
                  AND EXISTS (
                    SELECT 1 FROM markets mk
                     WHERE mk.match_id = mm.id
