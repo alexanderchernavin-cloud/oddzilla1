@@ -68,11 +68,13 @@ export function TopBar({ signedIn, user, wallets }: TopBarProps) {
 
       <Link
         href="/"
+        className="oz-topbar-wordmark"
         style={{
           textDecoration: "none",
           display: "inline-flex",
           color: "var(--fg)",
           flexShrink: 0,
+          minWidth: 0,
         }}
       >
         <Wordmark size={36} priority />

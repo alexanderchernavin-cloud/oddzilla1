@@ -256,6 +256,26 @@ body {
      (everything below 1580 + body padding fills naturally). */
   max-width: 1580px;
   margin-inline: auto;
+  /* Pin the shell to the viewport width on every breakpoint so a
+     stubborn flex/grid child can't make the page wider than the
+     screen, and clip any horizontal overflow that does still occur
+     (Android WebView + narrow phone browsers initially rendered the
+     top bar's non-shrinking wordmark + wallet pill ~470px wide on a
+     360px viewport, which dragged every descendant of .oz-main-inner
+     — match cards, 3-fold cards, top-bar wordmark — partially off
+     screen). Vertical scrolling is unaffected; position: sticky on
+     .oz-topbar continues to work because the document remains the
+     scroll context (no overflow on html/body). */
+  width: 100%;
+  min-width: 0;
+  /* `overflow-x: clip` is the right tool here — it clips without
+     creating a scroll container or a new block formatting context, so
+     position: sticky on the top bar keeps tracking the document scroll.
+     The plain `hidden` fallback would create a scroll container,
+     swallowing vertical document scroll into the shell instead; on
+     browsers without `clip` support (Safari < 16) we accept the small
+     risk of horizontal overflow rather than break sticky for everyone. */
+  overflow-x: clip;
 }
 
 .oz-main {
@@ -499,13 +519,48 @@ body {
   .oz-topbar-wallet-deposit { display: none; }
 }
 
+/* Top-bar shrinks the brand wordmark below tablet — at 36px height the
+   landscape art renders ~147px wide, which together with the wallet
+   pill + theme toggle + avatar overflows a 360-414px phone viewport
+   and shoves the whole grid off-screen. Source aspect is 1830 / 448 ≈
+   4.08, so the explicit width/height pairs below preserve it without
+   relying on aspect-ratio (which interacts awkwardly with the inline
+   width/height on the wrapper span). The image fills 100% of the span
+   via its own inline style, so resizing the span resizes the raster. */
+@media (max-width: 719px) {
+  .oz-topbar-wordmark > span {
+    width: 114px !important;
+    height: 28px !important;
+  }
+}
+@media (max-width: 399px) {
+  .oz-topbar-wordmark > span {
+    width: 98px !important;
+    height: 24px !important;
+  }
+}
+
 @media (max-width: 719px) {
   .oz-shell {
     grid-template-columns: 1fr;
     grid-template-rows: 60px 1fr;
     grid-template-areas: "top" "main";
   }
-  .oz-topbar { height: 60px !important; }
+  .oz-topbar {
+    height: 60px !important;
+    /* The top bar is grid-area: top — without a relaxed min-width its
+       min-content (Wordmark + Wallet pill + icon buttons + gaps) would
+       force the 1fr column wider than the viewport, pulling every
+       descendant of .oz-main-inner off-screen. min-width: 0 lets the
+       grid stay pinned to the viewport; the flex spacer inside the
+       top bar absorbs whatever room is left, and tighter gap below
+       buys back the few pixels needed for the wallet pill to land
+       fully on-screen. */
+    min-width: 0;
+    gap: 8px !important;
+    padding-left: 8px !important;
+    padding-right: 8px !important;
+  }
   .oz-side {
     position: fixed !important;
     top: 60px !important;
@@ -554,7 +609,11 @@ body {
 }
 
 @media (max-width: 479px) {
-  .oz-topbar-wallet {
+  /* `.oz-topbar-wallet` is the wrapper `<div>` — the pill itself is the
+     inner `<button>` carrying the inline pillStyle. Tighten padding +
+     gap there so the pill (still flex-shrink: 0) eats less horizontal
+     room on the narrowest phones. */
+  .oz-topbar-wallet > button {
     padding: 0 10px !important;
     gap: 6px !important;
   }
