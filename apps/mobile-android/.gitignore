@@ -12,8 +12,10 @@ local.properties
 *.iws
 captures/
 
-# Generated wrapper jar — recreated on first sync (`gradle wrapper`)
-gradle/wrapper/gradle-wrapper.jar
+# NOTE: gradle/wrapper/gradle-wrapper.jar IS committed (intentionally).
+# Without it `./gradlew` can't bootstrap on a fresh checkout — the jar
+# is what reads gradle-wrapper.properties and downloads Gradle. Standard
+# practice is to commit it.
 
 # Signing config — keystore + passwords live outside the repo
 keystore.properties
