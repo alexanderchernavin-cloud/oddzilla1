@@ -27,20 +27,19 @@ export function Avatar({
   priority = false,
 }: AvatarProps) {
   const initial = (name ?? "?").trim().charAt(0).toUpperCase() || "?";
-  const sharedStyle = {
-    width: size,
-    height: size,
-  };
   const wrapperCls =
-    "inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] " +
+    "inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full border border-[var(--color-border-strong)] " +
     className;
 
   if (!imageUrl) {
     return (
       <span
         aria-hidden
-        className={wrapperCls + " font-mono text-[var(--color-fg-muted)]"}
-        style={{ ...sharedStyle, fontSize: Math.max(10, Math.floor(size / 2.4)) }}
+        className={
+          wrapperCls +
+          " bg-[var(--color-bg-elevated)] font-mono text-[var(--color-fg-muted)]"
+        }
+        style={{ width: size, height: size, fontSize: Math.max(10, Math.floor(size / 2.4)) }}
       >
         {initial}
       </span>
@@ -50,10 +49,14 @@ export function Avatar({
   // Next.js's image optimizer can't introspect dynamic API responses.
   // Static /avatars/*.png keeps full optimization.
   const unoptimized = imageUrl.startsWith("/api/");
+  // Avatar artwork (kaiju-*.png and uploaded images) sits on
+  // transparent backgrounds with mid-tone colors that disappear
+  // against the light-theme page bg. Use a fixed dark slate so the
+  // artwork pops in both themes (same approach Twitter / GitHub take).
   return (
     <span
       className={wrapperCls}
-      style={sharedStyle}
+      style={{ width: size, height: size, background: "#1a1a1c" }}
       role="img"
       aria-label={name ? `${name}'s avatar` : "User avatar"}
     >

@@ -8,6 +8,7 @@ import { I } from "@/components/ui/icons";
 import { LiveDot } from "@/components/ui/primitives";
 import { TierMark, isFeaturedTier } from "@/components/ui/tier-mark";
 import { clientApi } from "@/lib/api-client";
+import { orderSportsForChips } from "@/lib/sport-order";
 import { ThemeToggle } from "./theme-toggle";
 
 interface SportItem {
@@ -183,15 +184,17 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
             label="Wallet"
           />
           {/*
-            "/account/community" is the settings page (nickname / bio /
-            visibility), not the feed. Renamed from "Community" so it
-            doesn't collide with the new top-level Community entry above.
+            "/account/community" is the public-handle settings page
+            (nickname / bio / avatar / visibility), not the feed.
+            Labelled "Public profile" so it's clear this is where the
+            user controls how they appear to others, distinct from
+            "Settings" below (private account: email, password).
           */}
           <Item
             href="/account/community"
             icon={<I.User size={15} />}
             active={isActive("/account/community")}
-            label="Profile"
+            label="Public profile"
           />
           <Item
             href="/account"
@@ -267,24 +270,11 @@ function extractSportSlug(pathname: string): string | null {
   return m && m[1] ? m[1] : null;
 }
 
-// Explicit sport ordering: flagship esports pinned on top, everything
-// else alphabetical below. Bot leagues are excluded from the product
-// entirely (backend blocklist + DB inactive); the sidebar also filters
-// them defensively so a stray active row can't leak in.
-const TOP = ["cs2", "dota2", "lol", "valorant"] as const;
-const HIDDEN = new Set<string>(["efootballbots", "ebasketballbots"]);
-
+// Sidebar sport ordering: flagship esports pinned on top, everything
+// else alphabetical below. The shared helper from lib/sport-order
+// also filters out the bot leagues defensively.
 function orderSports(sports: SportItem[]): SportItem[] {
-  const visible = sports.filter((s) => !HIDDEN.has(s.slug));
-  const bySlug = new Map(visible.map((s) => [s.slug, s]));
-  const top = TOP.map((s) => bySlug.get(s)).filter(
-    (s): s is SportItem => Boolean(s),
-  );
-  const pinned = new Set<string>(TOP);
-  const middle = visible
-    .filter((s) => !pinned.has(s.slug))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  return [...top, ...middle];
+  return orderSportsForChips(sports);
 }
 
 function SectionLabel({ children }: { children: ReactNode }) {

@@ -14,7 +14,7 @@
 // Reconnect logic: exponential backoff on close (1s → 16s cap). On each
 // successful reconnect the hook resubscribes automatically.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { openSocket } from "./ws-client";
 import type { LiveScore } from "./live-score";
@@ -207,14 +207,12 @@ function bumpSubscription(conn: SharedConnection, matchId: string, delta: number
 
 export function useLiveOdds(matchId: string | null): Record<string, LiveOddsTick> {
   const [ticks, setTicks] = useState<Record<string, LiveOddsTick>>({});
-  const listenerIdRef = useRef<string>("");
 
   useEffect(() => {
     if (!matchId) return;
     const conn = getShared();
 
     const id = crypto.randomUUID();
-    listenerIdRef.current = id;
     conn.listeners.set(id, {
       matchIds: new Set([matchId]),
       onTick: (tick) => {

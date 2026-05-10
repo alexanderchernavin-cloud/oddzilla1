@@ -52,6 +52,7 @@ import {
   NotFoundError,
   TooManyRequestsError,
 } from "../../lib/errors.js";
+import { isUniqueViolation } from "../../lib/pg-errors.js";
 import { resolveOptionalAvatarUrl } from "./avatar-url.js";
 import { emitNotification } from "./notifications.js";
 
@@ -817,21 +818,3 @@ function orderByForSort(sort: AnalysisSort): ReturnType<typeof sql> {
 }
 
 // Drizzle's postgres-js driver wraps the underlying PostgresError in a
-// DrizzleQueryError. The 23505 unique-violation code lives on the
-// .cause chain, not the outer error. Walk one level so the unique-
-// violation handler in the existing community routes (where the
-// `code` happens to land on the outer object via a different
-// driver shape) doesn't have to be the only path that works.
-function isUniqueViolation(err: unknown): boolean {
-  const code = pgCode(err);
-  return code === "23505";
-}
-
-function pgCode(err: unknown): string | null {
-  if (err === null || typeof err !== "object") return null;
-  const direct = (err as { code?: unknown }).code;
-  if (typeof direct === "string") return direct;
-  const cause = (err as { cause?: unknown }).cause;
-  if (cause) return pgCode(cause);
-  return null;
-}

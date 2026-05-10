@@ -53,6 +53,7 @@ import {
   ConflictError,
   NotFoundError,
 } from "../../lib/errors.js";
+import { isUniqueViolation } from "../../lib/pg-errors.js";
 import { resolveOptionalAvatarUrl } from "./avatar-url.js";
 import { emitNotification } from "./notifications.js";
 
@@ -460,16 +461,35 @@ export default async function communityRoutes(app: FastifyInstance) {
       // since the user-visible Copy flow is what matters and the
       // counter is a coarse sort signal (PRD: "Most Copied" is a
       // sort key, not a number we ask the user to trust).
-      // Inflation is bounded by the route's existing 30/min/IP
-      // rate limit; tighter dedup (per-viewer cookie) is tracked
-      // for the audit-table follow-up.
-      app.db
-        .update(communityTickets)
-        .set({ inspirationCount: sql`${communityTickets.inspirationCount} + 1` })
-        .where(eq(communityTickets.ticketId, id))
-        .catch((err: unknown) => {
-          app.log.warn({ err, ticketId: id }, "inspiration_count bump failed");
-        });
+      //
+      // Per-viewer dedup: Redis SETNX with a 24h TTL keyed on the
+      // signed-in user id when available, falling back to the
+      // request IP for anonymous visitors. Prevents both spam
+      // (same actor hammering POST) and Big-Wins leaderboard
+      // inflation. The dedup is best-effort too — if Redis is
+      // unreachable we still bump (matching the prior behaviour
+      // rather than silently dropping legitimate copies).
+      const viewerKey = request.user
+        ? `user:${request.user.id}`
+        : `ip:${request.ip}`;
+      const dedupKey = `community:copy:dedup:${viewerKey}:${id}`;
+      (async () => {
+        // SET NX returns "OK" on first write and null on duplicate.
+        // If Redis is unreachable, fail open (allow the bump) rather
+        // than silently dropping a real copy event.
+        try {
+          const set = await app.redis.set(dedupKey, "1", "EX", 86400, "NX");
+          if (set !== "OK") return; // duplicate within 24h
+        } catch (err) {
+          app.log.warn({ err, ticketId: id }, "inspiration_count dedup check failed (allowing bump)");
+        }
+        await app.db
+          .update(communityTickets)
+          .set({ inspirationCount: sql`${communityTickets.inspirationCount} + 1` })
+          .where(eq(communityTickets.ticketId, id));
+      })().catch((err: unknown) => {
+        app.log.warn({ err, ticketId: id }, "inspiration_count bump failed");
+      });
 
       // Emit `pick_copied` to the ticket owner. Same fire-and-forget
       // contract as the counter bump above — a failed emit must not
@@ -1306,11 +1326,3 @@ function inferPickedSide(
   return null;
 }
 
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    "code" in err &&
-    (err as { code: unknown }).code === "23505"
-  );
-}

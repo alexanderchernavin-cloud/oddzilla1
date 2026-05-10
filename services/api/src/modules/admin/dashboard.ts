@@ -71,35 +71,43 @@ export default async function adminDashboardRoutes(app: FastifyInstance) {
     // Same is_ai exclusion as /admin/stats/pnl-by-day (Phase 10.4 /
     // Decision D2): seed bettors place real tickets through the real
     // ledger, but their volume isn't real revenue or real engagement.
-    const ledgerRows = (await app.db.execute(sql`
-      SELECT
-        COALESCE(SUM(CASE WHEN wl.type = 'bet_stake'  THEN -wl.delta_micro ELSE 0 END), 0)::text AS stake_micro,
-        COALESCE(SUM(CASE WHEN wl.type = 'bet_payout' THEN  wl.delta_micro ELSE 0 END), 0)::text AS payout_micro,
-        COALESCE(SUM(CASE WHEN wl.type = 'bet_refund' THEN  wl.delta_micro ELSE 0 END), 0)::text AS refund_micro
-      FROM wallet_ledger wl
-      JOIN users u ON u.id = wl.user_id
-      WHERE wl.created_at >= date_trunc('day', now() AT TIME ZONE 'UTC')
-        AND wl.currency = 'USDC'
-        AND u.is_ai = false
-    `)) as unknown as Array<{ stake_micro: string; payout_micro: string; refund_micro: string }>;
+    //
+    // Three disjoint aggregates — fire in parallel so the KPI page
+    // p99 isn't a sum-of-each (~1-2s serial → ~400ms wall-clock).
+    const [ledgerRows, openTicketRows, activeUserRows] = (await Promise.all([
+      app.db.execute(sql`
+        SELECT
+          COALESCE(SUM(CASE WHEN wl.type = 'bet_stake'  THEN -wl.delta_micro ELSE 0 END), 0)::text AS stake_micro,
+          COALESCE(SUM(CASE WHEN wl.type = 'bet_payout' THEN  wl.delta_micro ELSE 0 END), 0)::text AS payout_micro,
+          COALESCE(SUM(CASE WHEN wl.type = 'bet_refund' THEN  wl.delta_micro ELSE 0 END), 0)::text AS refund_micro
+        FROM wallet_ledger wl
+        JOIN users u ON u.id = wl.user_id
+        WHERE wl.created_at >= date_trunc('day', now() AT TIME ZONE 'UTC')
+          AND wl.currency = 'USDC'
+          AND u.is_ai = false
+      `),
+      app.db.execute(sql`
+        SELECT COUNT(*)::int AS n
+          FROM tickets t
+          JOIN users u ON u.id = t.user_id
+         WHERE t.status IN ('accepted', 'pending_delay')
+           AND t.currency = 'USDC'
+           AND u.is_ai = false
+      `),
+      app.db.execute(sql`
+        SELECT COUNT(DISTINCT t.user_id)::int AS n
+          FROM tickets t
+          JOIN users u ON u.id = t.user_id
+         WHERE t.placed_at >= now() - INTERVAL '7 days'
+           AND t.currency = 'USDC'
+           AND u.is_ai = false
+      `),
+    ])) as unknown as [
+      Array<{ stake_micro: string; payout_micro: string; refund_micro: string }>,
+      Array<{ n: number }>,
+      Array<{ n: number }>,
+    ];
     const l = ledgerRows[0];
-
-    const openTicketRows = (await app.db.execute(sql`
-      SELECT COUNT(*)::int AS n
-        FROM tickets t
-        JOIN users u ON u.id = t.user_id
-       WHERE t.status IN ('accepted', 'pending_delay')
-         AND t.currency = 'USDC'
-         AND u.is_ai = false
-    `)) as unknown as Array<{ n: number }>;
-    const activeUserRows = (await app.db.execute(sql`
-      SELECT COUNT(DISTINCT t.user_id)::int AS n
-        FROM tickets t
-        JOIN users u ON u.id = t.user_id
-       WHERE t.placed_at >= now() - INTERVAL '7 days'
-         AND t.currency = 'USDC'
-         AND u.is_ai = false
-    `)) as unknown as Array<{ n: number }>;
 
     const payload: KpiRow = {
       stakeMicro: l?.stake_micro ?? "0",
@@ -218,31 +226,50 @@ export default async function adminDashboardRoutes(app: FastifyInstance) {
     request.requireRole("admin");
     const q = bigWinsQuery.parse(request.query);
 
+    // Combos join through ticket_selections (one row per leg) which
+    // would otherwise multiply the ticket count by leg count. The
+    // outer SELECT DISTINCT ON keeps one row per ticket, choosing
+    // whichever leg happened to sort first by (sport_slug, match_id) —
+    // for the operator-facing "what just paid out" panel a single
+    // representative sport+match per ticket is the right granularity.
     const result = (await app.db.execute(sql`
       SELECT
-        t.id::text AS ticket_id,
-        t.user_id::text AS user_id,
-        u.email AS user_email,
-        t.stake_micro::text AS stake_micro,
-        t.actual_payout_micro::text AS payout_micro,
-        t.settled_at AS settled_at,
-        s.slug AS sport_slug,
-        ma.home_team || ' vs ' || ma.away_team AS match_label
-      FROM tickets t
-      JOIN users u              ON u.id = t.user_id
-      JOIN ticket_selections ts ON ts.ticket_id = t.id
-      JOIN markets m            ON m.id = ts.market_id
-      JOIN matches ma           ON ma.id = m.match_id
-      JOIN tournaments tu       ON tu.id = ma.tournament_id
-      JOIN categories c         ON c.id = tu.category_id
-      JOIN sports s             ON s.id = c.sport_id
-      WHERE t.status = 'settled'
-        AND t.currency = 'USDC'
-        AND t.actual_payout_micro IS NOT NULL
-        AND t.actual_payout_micro > t.stake_micro
-        AND t.settled_at >= now() - (${q.days}::int || ' days')::interval
-        AND u.is_ai = false
-      ORDER BY t.actual_payout_micro DESC
+        ticket_id,
+        user_id,
+        user_email,
+        stake_micro,
+        payout_micro,
+        settled_at,
+        sport_slug,
+        match_label
+      FROM (
+        SELECT DISTINCT ON (t.id)
+          t.id::text AS ticket_id,
+          t.user_id::text AS user_id,
+          u.email AS user_email,
+          t.stake_micro::text AS stake_micro,
+          t.actual_payout_micro::text AS payout_micro,
+          t.settled_at AS settled_at,
+          t.actual_payout_micro AS payout_sort,
+          s.slug AS sport_slug,
+          ma.home_team || ' vs ' || ma.away_team AS match_label
+        FROM tickets t
+        JOIN users u              ON u.id = t.user_id
+        JOIN ticket_selections ts ON ts.ticket_id = t.id
+        JOIN markets m            ON m.id = ts.market_id
+        JOIN matches ma           ON ma.id = m.match_id
+        JOIN tournaments tu       ON tu.id = ma.tournament_id
+        JOIN categories c         ON c.id = tu.category_id
+        JOIN sports s             ON s.id = c.sport_id
+        WHERE t.status = 'settled'
+          AND t.currency = 'USDC'
+          AND t.actual_payout_micro IS NOT NULL
+          AND t.actual_payout_micro > t.stake_micro
+          AND t.settled_at >= now() - (${q.days}::int || ' days')::interval
+          AND u.is_ai = false
+        ORDER BY t.id, s.slug, ma.id
+      ) per_ticket
+      ORDER BY payout_sort DESC
       LIMIT ${q.limit}
     `)) as unknown as Array<{
       ticket_id: string;

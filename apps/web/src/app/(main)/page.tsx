@@ -8,7 +8,13 @@ import {
 import { SectionHeader } from "@/components/match/section-header";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { ThreeFoldCards } from "@/components/lobby/three-fold-cards";
+import { TodayLabel } from "@/components/lobby/today-label";
 import { buildThreeFoldSuggestions } from "@/lib/three-fold-builder";
+import {
+  orderMatchesBySport,
+  orderSportsForChips,
+  shortName,
+} from "@/lib/sport-order";
 
 interface SportsResponse {
   sports: Array<{ id: number; slug: string; name: string; kind: string; active: boolean }>;
@@ -49,12 +55,6 @@ export default async function HomePage() {
   const upcoming = orderMatchesBySport(upcomingRes?.matches ?? []);
   const threeFoldSuggestions = buildThreeFoldSuggestions([...live, ...upcoming]);
 
-  const dayLabel = new Date().toLocaleDateString("en-US", {
-    weekday: "long",
-    month: "short",
-    day: "numeric",
-  });
-
   return (
     <div
       style={{
@@ -66,17 +66,7 @@ export default async function HomePage() {
       }}
     >
       <header>
-        <div
-          className="mono"
-          style={{
-            fontSize: 11,
-            letterSpacing: "0.14em",
-            textTransform: "uppercase",
-            color: "var(--fg-dim)",
-          }}
-        >
-          Today · {dayLabel}
-        </div>
+        <TodayLabel />
       </header>
 
       <ThreeFoldCards suggestions={threeFoldSuggestions} />
@@ -176,49 +166,3 @@ export default async function HomePage() {
   );
 }
 
-function shortName(name: string): string {
-  if (name === "Counter-Strike 2") return "CS2";
-  if (name === "League of Legends") return "LoL";
-  if (name === "Dota 2") return "Dota 2";
-  if (name === "Rocket League") return "RL";
-  return name;
-}
-
-// Mirror the sidebar ordering: flagship esports pinned first, remainder
-// alphabetical by display name, bot leagues hidden defensively.
-const TOP_SPORT_SLUGS = ["cs2", "dota2", "lol", "valorant"] as const;
-const HIDDEN_SPORT_SLUGS = new Set<string>(["efootballbots", "ebasketballbots"]);
-
-function sportRank(slug: string): number {
-  const i = (TOP_SPORT_SLUGS as readonly string[]).indexOf(slug);
-  return i === -1 ? TOP_SPORT_SLUGS.length : i;
-}
-
-function orderSportsForChips<T extends { slug: string; name: string }>(
-  items: T[],
-): T[] {
-  const visible = items.filter((s) => !HIDDEN_SPORT_SLUGS.has(s.slug));
-  return [...visible].sort((a, b) => {
-    const ra = sportRank(a.slug);
-    const rb = sportRank(b.slug);
-    if (ra !== rb) return ra - rb;
-    if (ra === TOP_SPORT_SLUGS.length) return a.name.localeCompare(b.name);
-    return 0;
-  });
-}
-
-function orderMatchesBySport(
-  items: ListMatchWithSport[],
-): ListMatchWithSport[] {
-  const visible = items.filter((m) => !HIDDEN_SPORT_SLUGS.has(m.sport.slug));
-  return [...visible].sort((a, b) => {
-    const ra = sportRank(a.sport.slug);
-    const rb = sportRank(b.sport.slug);
-    if (ra !== rb) return ra - rb;
-    if (ra === TOP_SPORT_SLUGS.length) {
-      const byName = a.sport.name.localeCompare(b.sport.name);
-      if (byName !== 0) return byName;
-    }
-    return 0;
-  });
-}

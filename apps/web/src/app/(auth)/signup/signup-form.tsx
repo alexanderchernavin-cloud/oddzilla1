@@ -40,7 +40,9 @@ export function SignupForm() {
           displayName: displayName.trim() || undefined,
         }),
       });
-      router.push("/account");
+      // Land on the lobby, not /account/settings — new users want to
+      // see the sportsbook first, not the password-change form.
+      router.push("/");
       router.refresh();
     } catch (err) {
       if (err instanceof ApiFetchError) {

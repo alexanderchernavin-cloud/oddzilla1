@@ -260,9 +260,11 @@ RETURNING id`
 //   - odds_change with terminal <sport_event_status status="3|4|5|9"/>
 //
 // Returns nil even when the guard skips the update — callers don't
-// need to distinguish "already terminal" from "applied". The phantom-
-// drain remains the safety net for matches Oddin never sends a
-// terminal signal for at all.
+// need to distinguish "already terminal" from "applied". When Oddin
+// never sends a terminal signal at all (the integration broker
+// sometimes drops the final `<sport_event_status>` once the last
+// market settles), settlement.MarkMatchClosedIfAllMarketsTerminal
+// flips the match closed once every market reaches a terminal state.
 func UpdateMatchStatus(ctx context.Context, db pgxRunner, matchID int64, status string) error {
 	_, err := db.Exec(ctx, `
 UPDATE matches

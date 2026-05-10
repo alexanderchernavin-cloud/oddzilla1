@@ -26,7 +26,6 @@ import {
   markets,
   marketOutcomes,
   matches,
-  sports,
   categories,
   tournaments,
   cashoutConfig,
@@ -446,8 +445,9 @@ export class CashoutService {
       .innerJoin(markets, eq(markets.id, ticketSelections.marketId))
       .innerJoin(matches, eq(matches.id, markets.matchId))
       .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
+      // categories.sportId is what the cascade lookup needs; the
+      // sports table itself is not read, so we skip that join.
       .innerJoin(categories, eq(categories.id, tournaments.categoryId))
-      .innerJoin(sports, eq(sports.id, categories.sportId))
       .leftJoin(
         marketOutcomes,
         and(

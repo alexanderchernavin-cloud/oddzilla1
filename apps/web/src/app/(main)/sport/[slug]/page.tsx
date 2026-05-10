@@ -8,6 +8,7 @@ import {
 } from "@/components/match/match-list-tabs";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { I } from "@/components/ui/icons";
+import { shortName } from "@/lib/sport-order";
 
 interface SportResponse {
   sport: { id: number; slug: string; name: string };
@@ -211,14 +212,6 @@ export default async function SportPage({
       ) : null}
     </div>
   );
-}
-
-function shortName(name: string): string {
-  if (name === "Counter-Strike 2") return "CS2";
-  if (name === "League of Legends") return "LoL";
-  if (name === "Dota 2") return "Dota 2";
-  if (name === "Rocket League") return "RL";
-  return name;
 }
 
 function FilterChip({

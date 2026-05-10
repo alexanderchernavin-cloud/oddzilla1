@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -51,14 +52,16 @@ type OutboundPayload struct {
 }
 
 type Publisher struct {
-	store      *store.Store
-	rdb        *redis.Client
-	cacheTTL   time.Duration
-	log        zerolog.Logger
+	store    *store.Store
+	rdb      *redis.Client
+	cacheTTL time.Duration
+	log      zerolog.Logger
 
-	// Counters for healthz/metrics. Not atomic — read is best-effort.
-	processed int64
-	errors    int64
+	// Counters for healthz/metrics. Atomic so the /healthz handler
+	// can read them from a different goroutine than processOne
+	// without `go test -race` firing.
+	processed atomic.Int64
+	errors    atomic.Int64
 }
 
 func New(st *store.Store, rdb *redis.Client, cacheTTL time.Duration, log zerolog.Logger) *Publisher {
@@ -81,12 +84,13 @@ func (p *Publisher) Handle(ctx context.Context, events []bus.Event) error {
 	for _, ev := range events {
 		if err := p.processOne(ctx, ev); err != nil {
 			p.log.Warn().Err(err).Int64("market", ev.MarketID).Str("outcome", ev.OutcomeID).Msg("process failed")
-			p.errors++
+			p.errors.Add(1)
 			// Don't short-circuit — other events in the batch should
-			// still process. Errors keep the entry pending for retry
-			// via claim.
+			// still process. The bus consumer XACKs the whole batch
+			// regardless, so a per-event failure means we drop one
+			// odds tick; downstream catches up on the next tick.
 		} else {
-			p.processed++
+			p.processed.Add(1)
 		}
 	}
 	return nil
@@ -189,5 +193,5 @@ func applyMargin(rawOdds string, marginBp int) (string, error) {
 
 // Stats returns a lightweight snapshot used by /healthz.
 func (p *Publisher) Stats() (processed, errorsN int64) {
-	return p.processed, p.errors
+	return p.processed.Load(), p.errors.Load()
 }

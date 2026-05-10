@@ -137,6 +137,11 @@ export interface TicketSummary {
       homeTeam: string;
       awayTeam: string;
       sportSlug: string;
+      // Human-readable outcome name from `market_outcomes.name`
+      // (Oddin's resolved label after specifier substitution, e.g.
+      // "LargadosyPelados", "Over 1.5", "Map 1"). Empty string when
+      // the upstream outcome row was removed.
+      outcomeName: string;
       // Live state of the underlying match + outcome, refreshed every
       // time /bets is read. The bet-history UI uses these to render a
       // "current odds" comparison beside the placement odds for legs

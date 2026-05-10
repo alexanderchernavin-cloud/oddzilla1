@@ -479,6 +479,14 @@ function EmptyState({
     } else {
       body = "Big wins land here. Wins above the Big Win threshold show up here. Place a bet to start the streak.";
     }
+  } else if (tab === "competitions") {
+    if (filtered && sportName) {
+      body = `No active competitions for ${sportName} yet. Try another sport, or check back when the next event opens.`;
+    } else if (filtered) {
+      body = "No competitions match these filters. Try clearing one.";
+    } else {
+      body = "No active competitions yet. The next prediction game will appear here as soon as it opens.";
+    }
   } else if (filtered) {
     body = "No live bets match these filters. Try clearing one.";
   } else {

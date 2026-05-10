@@ -9,7 +9,7 @@ services.
 | --- | --- |
 | `money.ts` | `MicroUsdt` branded bigint + `toMicro` / `fromMicro` helpers |
 | `specifiers.ts` | Oddin market specifier canonicalization + sha256 hash |
-| `api.ts` | REST contract types (AuthMe, WalletSummary, HealthResponse, …) |
+| `api.ts` | REST contract types (HealthResponse, …) |
 | `ws.ts` | WebSocket frame unions for both odds and ticket-state pushes |
 | `bets.ts` | Bet slip + placement + ticket contracts (`SlipSelection`, `PlaceBetRequest`, `TicketSummary`, `WsTicketFrame`, `DEFAULT_ODDS_DRIFT_TOLERANCE`) |
 | `wallet.ts` | Wallet contracts (`DepositAddress`, `DepositSummary`, `WithdrawalSummary`, `CONFIRMATIONS_REQUIRED`) |

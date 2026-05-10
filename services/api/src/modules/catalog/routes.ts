@@ -286,6 +286,78 @@ const notHiddenTournament = notInArray(tournaments.name, HIDDEN_TOURNAMENT_NAMES
 // user clicks through to see the full 1X2 on the match page.
 const isTwoWayMatchWinner = sql`(${markets.specifiersJson}->>'variant') = 'way:two'`;
 
+// loadMatchWinnerOdds fetches the two-way match-winner outcomes for a
+// batch of matches and pairs them by Oddin's canonical outcome_id
+// ("1" = home, "2" = away). Used by both the per-sport and cross-sport
+// list endpoints to render inline odds on list cards without an extra
+// round trip per row. Skips matches missing either side — the
+// storefront falls back to no inline price.
+interface MatchWinnerPair {
+  homeMarketId: string;
+  homeOutcomeId: string;
+  homePrice: string | null;
+  homeProbability: string | null;
+  awayMarketId: string;
+  awayOutcomeId: string;
+  awayPrice: string | null;
+  awayProbability: string | null;
+}
+
+async function loadMatchWinnerOdds(
+  db: FastifyInstance["db"],
+  matchIds: bigint[],
+): Promise<Map<string, MatchWinnerPair>> {
+  const out = new Map<string, MatchWinnerPair>();
+  if (matchIds.length === 0) return out;
+
+  const rows = await db
+    .select({
+      matchId: markets.matchId,
+      marketId: markets.id,
+      outcomeId: marketOutcomes.outcomeId,
+      publishedOdds: marketOutcomes.publishedOdds,
+      probability: marketOutcomes.probability,
+      active: marketOutcomes.active,
+    })
+    .from(markets)
+    .innerJoin(marketOutcomes, eq(marketOutcomes.marketId, markets.id))
+    .where(
+      and(
+        inArray(markets.matchId, matchIds),
+        eq(markets.providerMarketId, 1),
+        eq(markets.status, 1),
+        isTwoWayMatchWinner,
+      ),
+    );
+
+  const byMatch = new Map<string, typeof rows>();
+  for (const r of rows) {
+    const key = r.matchId.toString();
+    const arr = byMatch.get(key) ?? [];
+    arr.push(r);
+    byMatch.set(key, arr);
+  }
+  for (const [key, outs] of byMatch) {
+    const home = outs.find((o) => o.outcomeId === "1");
+    const away = outs.find((o) => o.outcomeId === "2");
+    if (!home || !away) continue;
+    out.set(key, {
+      homeMarketId: home.marketId.toString(),
+      homeOutcomeId: home.outcomeId,
+      homePrice: home.active ? home.publishedOdds : null,
+      // Probability is metadata — keep it independent of `active`.
+      // The bet slip uses it for tiple/tippot preview; a suspended
+      // price shouldn't blank the pricing context.
+      homeProbability: home.probability ?? null,
+      awayMarketId: away.marketId.toString(),
+      awayOutcomeId: away.outcomeId,
+      awayPrice: away.active ? away.publishedOdds : null,
+      awayProbability: away.probability ?? null,
+    });
+  }
+  return out;
+}
+
 // loadTopMarketIdsBySport fetches the ordered Top market ids for one or
 // more sports. Returns a map keyed by sportId — empty array when the
 // admin hasn't curated any Top markets for that sport. Used by the list
@@ -676,79 +748,12 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .orderBy(desc(matches.status), matches.scheduledAt)
       .limit(q.limit);
 
-    // Enrich each row with match-winner odds (provider_market_id=1) so the
-    // list cards can render prices without an extra round trip per match.
-    const matchIds = rows.map((r) => r.matchId);
-    const oddsByMatch = new Map<
-      string,
-      {
-        homeMarketId: string;
-        homeOutcomeId: string;
-        homePrice: string | null;
-        homeProbability: string | null;
-        awayMarketId: string;
-        awayOutcomeId: string;
-        awayPrice: string | null;
-        awayProbability: string | null;
-      }
-    >();
-    if (matchIds.length > 0) {
-      const oddsRows = await app.db
-        .select({
-          matchId: markets.matchId,
-          marketId: markets.id,
-          outcomeId: marketOutcomes.outcomeId,
-          outcomeName: marketOutcomes.name,
-          publishedOdds: marketOutcomes.publishedOdds,
-          probability: marketOutcomes.probability,
-          active: marketOutcomes.active,
-        })
-        .from(markets)
-        .innerJoin(marketOutcomes, eq(marketOutcomes.marketId, markets.id))
-        .where(
-          and(
-            inArray(markets.matchId, matchIds),
-            eq(markets.providerMarketId, 1),
-            eq(markets.status, 1),
-            isTwoWayMatchWinner,
-          ),
-        );
-
-      // Pair each match's outcomes by Oddin's canonical outcome_id ("1"
-      // = home, "2" = away). The market_outcomes.name column is empty
-      // for sport=esports (Oddin sends names only for player-resolved
-      // outcomes), so falling back to array index is non-deterministic
-      // — PG returns rows in undefined order without ORDER BY.
-      const byMatch = new Map<string, typeof oddsRows>();
-      for (const r of oddsRows) {
-        const key = r.matchId.toString();
-        const arr = byMatch.get(key) ?? [];
-        arr.push(r);
-        byMatch.set(key, arr);
-      }
-
-      for (const row of rows) {
-        const key = row.matchId.toString();
-        const outs = byMatch.get(key);
-        if (!outs || outs.length === 0) continue;
-        const home = outs.find((o) => o.outcomeId === "1");
-        const away = outs.find((o) => o.outcomeId === "2");
-        if (!home || !away) continue;
-        oddsByMatch.set(key, {
-          homeMarketId: home.marketId.toString(),
-          homeOutcomeId: home.outcomeId,
-          homePrice: home.active ? home.publishedOdds : null,
-          // Probability is metadata — keep it independent of `active`. The
-          // bet slip uses it for tiple/tippot preview; a suspended price
-          // shouldn't blank the pricing context.
-          homeProbability: home.probability ?? null,
-          awayMarketId: away.marketId.toString(),
-          awayOutcomeId: away.outcomeId,
-          awayPrice: away.active ? away.publishedOdds : null,
-          awayProbability: away.probability ?? null,
-        });
-      }
-    }
+    // Enrich each row with match-winner odds (provider_market_id=1) so
+    // list cards render prices without an extra round trip per match.
+    const oddsByMatch = await loadMatchWinnerOdds(
+      app.db,
+      rows.map((r) => r.matchId),
+    );
 
     // Inline Top market per card (when admin configured the Top scope
      // for this sport). Returned alongside matchWinner so the storefront
@@ -923,45 +928,48 @@ export default async function catalogRoutes(app: FastifyInstance) {
       if (id.startsWith("od:competitor:")) competitorUrns.add(id);
       else if (id.startsWith("od:player:")) playerUrns.add(id);
     }
-    const competitorNameMap = new Map<string, string>();
-    const playerNameMap = new Map<string, string>();
-    if (competitorUrns.size > 0) {
-      const cps = await app.db
-        .select({ urn: competitorProfiles.urn, name: competitorProfiles.name })
-        .from(competitorProfiles)
-        .where(inArray(competitorProfiles.urn, Array.from(competitorUrns)));
-      for (const c of cps) competitorNameMap.set(c.urn, c.name);
-    }
-    if (playerUrns.size > 0) {
-      const pps = await app.db
-        .select({ urn: playerProfiles.urn, name: playerProfiles.name })
-        .from(playerProfiles)
-        .where(inArray(playerProfiles.urn, Array.from(playerUrns)));
-      for (const p of pps) playerNameMap.set(p.urn, p.name);
-    }
-
+    // All four lookups are independent — fire in parallel so the
+    // match-detail page p99 isn't a sum of four round-trips.
     const distinctMarketIds = Array.from(new Set(rows.map((r) => r.providerMarketId)));
-    const marketDescs = distinctMarketIds.length
-      ? await app.db
-          .select({
-            providerMarketId: marketDescriptions.providerMarketId,
-            variant: marketDescriptions.variant,
-            nameTemplate: marketDescriptions.nameTemplate,
-          })
-          .from(marketDescriptions)
-          .where(inArray(marketDescriptions.providerMarketId, distinctMarketIds))
-      : [];
-    const outcomeDescs = distinctMarketIds.length
-      ? await app.db
-          .select({
-            providerMarketId: outcomeDescriptions.providerMarketId,
-            variant: outcomeDescriptions.variant,
-            outcomeId: outcomeDescriptions.outcomeId,
-            nameTemplate: outcomeDescriptions.nameTemplate,
-          })
-          .from(outcomeDescriptions)
-          .where(inArray(outcomeDescriptions.providerMarketId, distinctMarketIds))
-      : [];
+    const [cps, pps, marketDescs, outcomeDescs] = await Promise.all([
+      competitorUrns.size > 0
+        ? app.db
+            .select({ urn: competitorProfiles.urn, name: competitorProfiles.name })
+            .from(competitorProfiles)
+            .where(inArray(competitorProfiles.urn, Array.from(competitorUrns)))
+        : Promise.resolve([]),
+      playerUrns.size > 0
+        ? app.db
+            .select({ urn: playerProfiles.urn, name: playerProfiles.name })
+            .from(playerProfiles)
+            .where(inArray(playerProfiles.urn, Array.from(playerUrns)))
+        : Promise.resolve([]),
+      distinctMarketIds.length > 0
+        ? app.db
+            .select({
+              providerMarketId: marketDescriptions.providerMarketId,
+              variant: marketDescriptions.variant,
+              nameTemplate: marketDescriptions.nameTemplate,
+            })
+            .from(marketDescriptions)
+            .where(inArray(marketDescriptions.providerMarketId, distinctMarketIds))
+        : Promise.resolve([]),
+      distinctMarketIds.length > 0
+        ? app.db
+            .select({
+              providerMarketId: outcomeDescriptions.providerMarketId,
+              variant: outcomeDescriptions.variant,
+              outcomeId: outcomeDescriptions.outcomeId,
+              nameTemplate: outcomeDescriptions.nameTemplate,
+            })
+            .from(outcomeDescriptions)
+            .where(inArray(outcomeDescriptions.providerMarketId, distinctMarketIds))
+        : Promise.resolve([]),
+    ]);
+    const competitorNameMap = new Map<string, string>();
+    for (const c of cps) competitorNameMap.set(c.urn, c.name);
+    const playerNameMap = new Map<string, string>();
+    for (const p of pps) playerNameMap.set(p.urn, p.name);
 
     const descKey = (mid: number, variant: string) => `${mid}:${variant ?? ""}`;
     const marketDescMap = new Map<string, string>();
@@ -1264,68 +1272,10 @@ export default async function catalogRoutes(app: FastifyInstance) {
       )
       .limit(q.limit);
 
-    // Reuse the match-winner odds enrichment from /catalog/sports/:slug.
-    const matchIds = rows.map((r) => r.matchId);
-    const oddsByMatch = new Map<
-      string,
-      {
-        homeMarketId: string;
-        homeOutcomeId: string;
-        homePrice: string | null;
-        homeProbability: string | null;
-        awayMarketId: string;
-        awayOutcomeId: string;
-        awayPrice: string | null;
-        awayProbability: string | null;
-      }
-    >();
-    if (matchIds.length > 0) {
-      const oddsRows = await app.db
-        .select({
-          matchId: markets.matchId,
-          marketId: markets.id,
-          outcomeId: marketOutcomes.outcomeId,
-          outcomeName: marketOutcomes.name,
-          publishedOdds: marketOutcomes.publishedOdds,
-          probability: marketOutcomes.probability,
-          active: marketOutcomes.active,
-        })
-        .from(markets)
-        .innerJoin(marketOutcomes, eq(marketOutcomes.marketId, markets.id))
-        .where(
-          and(
-            inArray(markets.matchId, matchIds),
-            eq(markets.providerMarketId, 1),
-            eq(markets.status, 1),
-            isTwoWayMatchWinner,
-          ),
-        );
-      const byMatch = new Map<string, typeof oddsRows>();
-      for (const r of oddsRows) {
-        const key = r.matchId.toString();
-        const arr = byMatch.get(key) ?? [];
-        arr.push(r);
-        byMatch.set(key, arr);
-      }
-      for (const row of rows) {
-        const key = row.matchId.toString();
-        const outs = byMatch.get(key);
-        if (!outs || outs.length === 0) continue;
-        const home = outs.find((o) => o.outcomeId === "1");
-        const away = outs.find((o) => o.outcomeId === "2");
-        if (!home || !away) continue;
-        oddsByMatch.set(key, {
-          homeMarketId: home.marketId.toString(),
-          homeOutcomeId: home.outcomeId,
-          homePrice: home.active ? home.publishedOdds : null,
-          homeProbability: home.probability ?? null,
-          awayMarketId: away.marketId.toString(),
-          awayOutcomeId: away.outcomeId,
-          awayPrice: away.active ? away.publishedOdds : null,
-          awayProbability: away.probability ?? null,
-        });
-      }
-    }
+    const oddsByMatch = await loadMatchWinnerOdds(
+      app.db,
+      rows.map((r) => r.matchId),
+    );
 
     // Inline Top markets per card. We fetch the curated id list per
     // sport once (typically a handful of distinct sports in any list
@@ -1392,10 +1342,11 @@ export default async function catalogRoutes(app: FastifyInstance) {
   // ── Tournaments under a sport (for sidebar expansion) ──────────────
   // Returns active tournaments under the sport with at least one
   // live/upcoming match that still has active markets — empty
-  // tournaments (every match closed/cancelled or phantom-stale) are
-  // filtered out so the sidebar never lists a tournament that produces
-  // an empty page when clicked. `matchCount` and `liveCount` use the
-  // same phantom filter as /catalog/sports/:slug. Sort: risk_tier asc
+  // tournaments (every match closed/cancelled or stale per the
+  // `hasActiveMarket` predicate above) are filtered out so the
+  // sidebar never lists a tournament that produces an empty page
+  // when clicked. `matchCount` and `liveCount` use the same shared
+  // predicate. Sort: risk_tier asc
   // so Oddin tier 1/2 (the featured ones with the gold star) float to
   // the top, NULLs last so unbackfilled rows don't crowd out the ones
   // we know about, then live-first, then more-matches-first, then

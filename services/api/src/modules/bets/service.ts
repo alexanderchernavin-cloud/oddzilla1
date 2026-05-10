@@ -65,12 +65,9 @@ import {
   UnauthorizedError,
 } from "../../lib/errors.js";
 import {
-  createObbClient,
-  obbConfigFromEnv,
+  getSharedObbClient,
   ObbError,
-  type ObbClient,
 } from "../../lib/obb-client.js";
-import { loadEnv } from "@oddzilla/config";
 import {
   RiskzillaEngine,
   type RiskzillaIntent,
@@ -94,16 +91,56 @@ class RiskzillaRejectError extends Error {
   }
 }
 
-// Module-scoped OBB client (singleton gRPC channel). Null when env is
-// missing — placement of betType="betbuilder" is then rejected upfront
-// rather than calling Oddin. Oddin's own SessionInfo RPC is the source
-// of truth for "are these selections + odds still valid?", so no extra
-// per-leg drift check is needed for BetBuilder placements.
-const obbBetsClient: ObbClient | null = createObbClient(obbConfigFromEnv(loadEnv()));
+// Shared singleton with the betbuilder routes (one gRPC channel
+// across the api process). Null when env is missing — placement of
+// betType="betbuilder" is then rejected upfront rather than calling
+// Oddin. Oddin's own SessionInfo RPC is the source of truth for
+// "are these selections + odds still valid?", so no extra per-leg
+// drift check is needed for BetBuilder placements.
+const obbBetsClient = getSharedObbClient();
 
 const USER_CHANNEL_PREFIX = "user:";
 
 type TxHandle = Parameters<Parameters<DbClient["transaction"]>[0]>[0];
+
+// Shared selection-row query used by both the list (many tickets) and
+// detail (single ticket) paths. The leftJoins keep rows when an
+// upstream market/match was hard-deleted; summaryFromRows treats the
+// nulls as "metadata unavailable".
+function selectSelectionRows(
+  db: DbClient | TxHandle,
+  where: ReturnType<typeof inArray> | ReturnType<typeof eq>,
+) {
+  return db
+    .select({
+      sel: ticketSelections,
+      providerMarketId: markets.providerMarketId,
+      specifiersJson: markets.specifiersJson,
+      marketStatus: markets.status,
+      matchId: matches.id,
+      homeTeam: matches.homeTeam,
+      awayTeam: matches.awayTeam,
+      matchStatus: matches.status,
+      sportSlug: sports.slug,
+      currentOdds: marketOutcomes.publishedOdds,
+      outcomeActive: marketOutcomes.active,
+      outcomeName: marketOutcomes.name,
+    })
+    .from(ticketSelections)
+    .leftJoin(markets, eq(markets.id, ticketSelections.marketId))
+    .leftJoin(matches, eq(matches.id, markets.matchId))
+    .leftJoin(tournaments, eq(tournaments.id, matches.tournamentId))
+    .leftJoin(categories, eq(categories.id, tournaments.categoryId))
+    .leftJoin(sports, eq(sports.id, categories.sportId))
+    .leftJoin(
+      marketOutcomes,
+      and(
+        eq(marketOutcomes.marketId, ticketSelections.marketId),
+        eq(marketOutcomes.outcomeId, ticketSelections.outcomeId),
+      ),
+    )
+    .where(where);
+}
 
 interface PlaceContext {
   userId: string;
@@ -870,34 +907,10 @@ export class BetsService {
     if (ticketRows.length === 0) return [];
 
     const ids = ticketRows.map((t) => t.id);
-    const selRows = await this.db
-      .select({
-        sel: ticketSelections,
-        providerMarketId: markets.providerMarketId,
-        specifiersJson: markets.specifiersJson,
-        marketStatus: markets.status,
-        matchId: matches.id,
-        homeTeam: matches.homeTeam,
-        awayTeam: matches.awayTeam,
-        matchStatus: matches.status,
-        sportSlug: sports.slug,
-        currentOdds: marketOutcomes.publishedOdds,
-        outcomeActive: marketOutcomes.active,
-      })
-      .from(ticketSelections)
-      .leftJoin(markets, eq(markets.id, ticketSelections.marketId))
-      .leftJoin(matches, eq(matches.id, markets.matchId))
-      .leftJoin(tournaments, eq(tournaments.id, matches.tournamentId))
-      .leftJoin(categories, eq(categories.id, tournaments.categoryId))
-      .leftJoin(sports, eq(sports.id, categories.sportId))
-      .leftJoin(
-        marketOutcomes,
-        and(
-          eq(marketOutcomes.marketId, ticketSelections.marketId),
-          eq(marketOutcomes.outcomeId, ticketSelections.outcomeId),
-        ),
-      )
-      .where(inArray(ticketSelections.ticketId, ids));
+    const selRows = await selectSelectionRows(
+      this.db,
+      inArray(ticketSelections.ticketId, ids),
+    );
 
     const byTicket = new Map<string, Array<(typeof selRows)[number]>>();
     for (const r of selRows) {
@@ -930,34 +943,10 @@ export class BetsService {
     const [t] = await db.select().from(tickets).where(eq(tickets.id, ticketId)).limit(1);
     if (!t) throw new Error("ticket not found after insert");
 
-    const selRows = await db
-      .select({
-        sel: ticketSelections,
-        providerMarketId: markets.providerMarketId,
-        specifiersJson: markets.specifiersJson,
-        marketStatus: markets.status,
-        matchId: matches.id,
-        homeTeam: matches.homeTeam,
-        awayTeam: matches.awayTeam,
-        matchStatus: matches.status,
-        sportSlug: sports.slug,
-        currentOdds: marketOutcomes.publishedOdds,
-        outcomeActive: marketOutcomes.active,
-      })
-      .from(ticketSelections)
-      .leftJoin(markets, eq(markets.id, ticketSelections.marketId))
-      .leftJoin(matches, eq(matches.id, markets.matchId))
-      .leftJoin(tournaments, eq(tournaments.id, matches.tournamentId))
-      .leftJoin(categories, eq(categories.id, tournaments.categoryId))
-      .leftJoin(sports, eq(sports.id, categories.sportId))
-      .leftJoin(
-        marketOutcomes,
-        and(
-          eq(marketOutcomes.marketId, ticketSelections.marketId),
-          eq(marketOutcomes.outcomeId, ticketSelections.outcomeId),
-        ),
-      )
-      .where(eq(ticketSelections.ticketId, t.id));
+    const selRows = await selectSelectionRows(
+      db,
+      eq(ticketSelections.ticketId, t.id),
+    );
 
     return this.summaryFromRows(t, selRows);
   }
@@ -982,6 +971,7 @@ export class BetsService {
       sportSlug: string | null;
       currentOdds: string | null;
       outcomeActive: boolean | null;
+      outcomeName: string | null;
     }>,
   ): TicketSummary {
     const ticketCurrency = (t.currency.trim() as Currency) ?? DEFAULT_CURRENCY;
@@ -1016,6 +1006,7 @@ export class BetsService {
                 homeTeam: r.homeTeam ?? "",
                 awayTeam: r.awayTeam ?? "",
                 sportSlug: r.sportSlug ?? "",
+                outcomeName: r.outcomeName ?? "",
                 matchStatus: r.matchStatus ?? "not_started",
                 currentOdds: r.currentOdds,
                 // markets.status=1 + market_outcomes.active=true is the

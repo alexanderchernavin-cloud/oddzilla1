@@ -11,7 +11,6 @@
 import type { FastifyInstance } from "fastify";
 import { eq, and, inArray } from "drizzle-orm";
 import { z } from "zod";
-import { loadEnv } from "@oddzilla/config";
 import {
   matches,
   markets,
@@ -26,17 +25,18 @@ import type {
   BetBuilderQuoteResponse,
   BetBuilderAvailableMarketsResponse,
 } from "@oddzilla/types";
-import { createObbClient, obbConfigFromEnv, ObbError } from "../../lib/obb-client.js";
+import { getSharedObbClient, ObbError } from "../../lib/obb-client.js";
 import {
   BadRequestError,
   NotFoundError,
   ServiceUnavailableError,
 } from "../../lib/errors.js";
 
-// One module-scoped client. gRPC channels are connection-pooling and
-// thread-safe; we don't want to bring up a fresh channel per request.
-const env = loadEnv();
-const obb = createObbClient(obbConfigFromEnv(env));
+// Shared singleton across betbuilder routes + bets service so both
+// paths reuse the same gRPC channel (keepalive + connection pool).
+// Null when ODDIN_OBB_HOST is empty — the routes 503
+// `betbuilder_disabled` and the frontend silently hides the toggle.
+const obb = getSharedObbClient();
 
 const sessionsRateLimit = {
   rateLimit: {

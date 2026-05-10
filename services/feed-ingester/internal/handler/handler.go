@@ -347,10 +347,11 @@ func handleFixtureChange(ctx context.Context, d Deps, body []byte) error {
 // ─── match_status_change ──────────────────────────────────────────────────
 
 // handleMatchStatusChange flips matches.status when Oddin announces a
-// lifecycle transition (live → ended, etc.). The integration broker emits
-// these only sparsely — many matches end without one — so this handler is
-// a fast path; the periodic phantom-drain ticker catches the leftovers via
-// REST.
+// lifecycle transition (live → ended, etc.). For bookmaker 142 the
+// integration broker never emits this message — `<sport_event_status>`
+// carried inside every odds_change is the authoritative lifecycle
+// signal — but the handler stays wired as a graceful no-op for
+// bookmakers that do emit it.
 //
 // Behaviour:
 //   - Unknown match URN → log and ack. The next odds_change/fixture_change
@@ -416,10 +417,10 @@ func handleMatchStatusChange(ctx context.Context, d Deps, body []byte) error {
 //
 // The common case Oddin emits at end-of-match is
 // `<bet_stop groups="all" market_status="-1"/>`, which is exactly the
-// signal we need to shut the storefront down for that fixture. Without
-// this handler, markets sat at status=1 indefinitely until either
-// bet_settlement landed (per-market) or the phantom-drain rebuilt them
-// from REST.
+// signal we need to shut the storefront down for that fixture. The
+// integration broker for bookmaker 142 doesn't emit bet_stop either
+// — this handler stays wired as a graceful no-op for bookmakers that
+// do.
 func handleBetStop(ctx context.Context, d Deps, body []byte) error {
 	var msg oddinxml.BetStop
 	if err := xml.Unmarshal(body, &msg); err != nil {

@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -764,7 +763,26 @@ ON CONFLICT (user_id, achievement_id) DO NOTHING
 // nextPayoutRefID returns the ref_id to use for a new ledger row of
 // `ledgerType`. The first generation is the bare ticket UUID; subsequent
 // generations append ":N" so a re-settle after rollback gets its own row.
+//
+// Concurrency: two transactions that both settle the same ticket (e.g.
+// a re-settle racing a rollback's adjustment write) would otherwise
+// both read count=N and try to insert <ticketID>:N+1 — the unique
+// index rejects one, but the surrounding INSERT...ON CONFLICT DO
+// NOTHING silently drops the duplicate ledger row even though its
+// wallet UPDATE already ran. Take a per-ticket transaction-scoped
+// advisory lock so the COUNT + INSERT happen atomically with respect
+// to other transactions touching the same ticket.
 func nextPayoutRefID(ctx context.Context, tx pgx.Tx, ticketID, ledgerType string) (string, error) {
+	// hashtext(ticketID) projects the UUID into a 32-bit integer; we
+	// use the single-arg pg_advisory_xact_lock variant which takes a
+	// bigint. Same approach the catalog auto-mapper uses for its
+	// per-URN serialisation. Lock auto-releases on tx end.
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`,
+		ticketID,
+	); err != nil {
+		return "", fmt.Errorf("next payout ref id (lock): %w", err)
+	}
 	var count int
 	err := tx.QueryRow(ctx, `
 SELECT COUNT(*) FROM wallet_ledger
@@ -907,5 +925,3 @@ VALUES (NULL, $1, $2, $3, NULLIF($4, '')::jsonb, NULLIF($5, '')::jsonb)`,
 	return nil
 }
 
-// Compile-time assertion: time.Time is the only time type we care about here.
-var _ = time.Time{}
