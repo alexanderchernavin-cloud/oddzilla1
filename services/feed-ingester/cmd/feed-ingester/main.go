@@ -468,6 +468,34 @@ func runHandoverSweeper(ctx context.Context, st *store.Store, log zerolog.Logger
 	}
 }
 
+// flushBeforeRecover unconditionally suspends the active catalog before
+// every recovery trigger. Rationale (per operator decision 2026-05-11):
+// any feed gap — even a few seconds — can leave a market quoting odds
+// that no longer reflect Oddin's truth, and a single placement at stale
+// odds can cost real money. Better to lose a few seconds of bet uptime
+// per reconnect than risk paying out on a price the bookmaker already
+// moved off of.
+//
+// Behaviour: deletes orphan markets/matches with no money attached,
+// suspends and null-prices the rest, lets the subsequent
+// `InitiateRecovery` replay re-activate only what Oddin re-confirms.
+// Anything Oddin omits stays suspended → drops from the storefront via
+// the catalog filter. Best-effort: a flush failure logs and falls
+// through to plain recovery (stale data beats no data).
+func flushBeforeRecover(ctx context.Context, deps handler.Deps, log zerolog.Logger) {
+	summary, err := store.FlushAndSuspendActiveCatalog(ctx, deps.Store.Pool())
+	if err != nil {
+		log.Error().Err(err).Msg("flush-before-recover failed; proceeding with plain recovery")
+		return
+	}
+	log.Warn().
+		Int64("deleted_markets", summary.DeletedMarkets).
+		Int64("deleted_matches", summary.DeletedMatches).
+		Int64("suspended_markets", summary.SuspendedMarkets).
+		Int64("suspended_outcomes", summary.SuspendedOutcomes).
+		Msg("flush-before-recover complete; awaiting replay to re-activate")
+}
+
 func runAMQP(ctx context.Context, cfg config.Config, deps handler.Deps, log zerolog.Logger) {
 	cons := amqpkit.New(
 		amqpkit.Config{
@@ -486,14 +514,27 @@ func runAMQP(ctx context.Context, cfg config.Config, deps handler.Deps, log zero
 			return handler.Handle(ctx, deps, rk, body)
 		},
 		func(ctx context.Context) error {
-			// On (re)connect: ask Oddin to replay any messages we missed
-			// since our last cursor. Per the docs we issue one request
-			// per producer ("pre" + "live"). The replay arrives via AMQP
-			// and ends with a snapshot_complete message we already handle.
+			// On (re)connect: suspend the active catalog FIRST, then ask
+			// Oddin to replay messages since our last cursor. Per the
+			// docs we issue one request per producer ("pre" + "live"); the
+			// replay arrives via AMQP and ends with a snapshot_complete
+			// message we already handle.
+			//
+			// Suspend-before-recover is unconditional: even a few seconds
+			// of feed gap can leave a market quoting odds Oddin already
+			// moved off of, and a single placement at stale odds is a
+			// real-money loss. The 2026-05-09 disk-full incident wedged
+			// 33 matches this way — Oddin's replay didn't carry their
+			// terminal status because they were no longer in Oddin's
+			// active state by the time we reconnected. Flushing first
+			// guarantees anything Oddin omits drops out of the catalog
+			// (status=-1 fails the storefront filter) instead of silently
+			// keeping its pre-outage snapshot.
 			if deps.Rest == nil {
 				log.Info().Msg("amqp (re)connected; recovery skipped (no rest client)")
 				return nil
 			}
+			flushBeforeRecover(ctx, deps, log)
 			handler.TriggerRecovery(ctx, deps, log)
 			return nil
 		},

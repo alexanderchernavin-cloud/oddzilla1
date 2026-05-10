@@ -301,18 +301,74 @@ hook. Triggers:
 - `alive subscribed=0` (per-producer).
 - `alive` consecutive-timestamp drift > 5s (per-producer).
 
-Each trigger does:
+### Suspend-before-recover (2026-05-11)
+
+Every AMQP (re)connect runs `store.FlushAndSuspendActiveCatalog` BEFORE
+calling `InitiateRecovery`. This is unconditional — no staleness
+threshold. Rationale: even a few seconds of feed gap can leave a market
+quoting odds Oddin already moved off of, and a single placement at
+stale odds is a real-money loss. Three steps inside one transaction:
+
+1. DELETE markets on `not_started`/`live` matches with no
+   `ticket_selections` row and no `settlements` row (cascades to
+   `market_outcomes`). Money-attached markets are physically protected
+   by the RESTRICT FKs and fall through.
+2. DELETE matches left with no markets (cascades to `feed_messages`,
+   refilled by the subsequent replay).
+3. SUSPEND surviving (money-attached) markets to `status=-1`, null
+   `published_odds` / `raw_odds` / `probability` and set
+   `market_outcomes.active=false`. Storefront and bet placement both
+   reject `status != 1`, so nothing is bettable until the replay
+   re-activates.
+
+After the flush, recovery runs as usual. Anything Oddin doesn't replay
+stays suspended and drops out of the catalog automatically (`hasActiveMarket`
+in `services/api/src/modules/catalog/routes.ts` requires
+`status=1` markets).
+
+The 2026-05-09 disk-full incident wedged 33 matches because the AMQP
+recovery replay didn't carry their terminal `sport_event_status` —
+they'd already finished by the time we reconnected, so Oddin no longer
+treated them as active and they fell out of the snapshot. With
+suspend-before-recover those markets would have stayed suspended and
+dropped from listings instead of fossilising as "upcoming."
+
+### Cursor clamp
+
+`triggerRecoveryForProduct` clamps the cursor to `now - 24 h` (per
+`handler.recoveryWindowCap`). Rationale: Oddin's hard limit is 3 days,
+but the rate-limit tier flips to "strict" past 24 h (2/30min, 4/2hr,
+per § 3.18). Clamping keeps us in the lenient tier (20/10min, 60/hr)
+during reconnect storms and bounds replay latency. Cursors older than
+24 h fall through as "stayed suspended" — the markets they cover are
+no longer in the catalog anyway.
+
+### Sequence per trigger
 
 1. `ReadAfterTs(producer:N)` — read the cursor from `amqp_state`.
-2. `POST /v1/{product}/recovery/initiate_request?after={ms}&request_id={rand}&node_id={ODDIN_NODE_ID}`
+2. Clamp the cursor to `max(after_ts, now - 24h)`.
+3. `POST /v1/{product}/recovery/initiate_request?after={ms}&request_id={rand}&node_id={ODDIN_NODE_ID}`
    — Oddin replays since the cursor over AMQP.
-3. Replays arrive over AMQP and end with `snapshot_complete`, which our
+4. Replays arrive over AMQP and end with `snapshot_complete`, which our
    existing handler bumps the cursor on.
 
-Rate limits per Oddin docs § 3.18: recoveries < 30 min are lenient
-(20/10min, 60/hr); > 1 day are strict (2/30min, 4/2hr). Our recovery
-fires at most once per (re)connect or alive-anomaly, so we comfortably
-stay under both tiers.
+Our recovery fires at most once per (re)connect or alive-anomaly, so we
+comfortably stay under Oddin's rate limit tiers.
+
+### Manual + visibility tools
+
+- `POST /admin/feed/recovery` runs the same flush mechanism plus a
+  forced cursor rewind (default 48 h) when an operator notices stale
+  state and wants a wider rebuild.
+- `/admin/wedged-matches` (`services/api/src/modules/admin/wedged-matches.ts`,
+  `apps/web/src/app/admin/wedged-matches/`) lists matches that stayed
+  at `not_started` more than 1 h past `scheduled_at` with active
+  markets. Per-row "Refresh from REST" fires `pg_notify('fixture_refresh',
+  urn)`; feed-ingester applies Oddin's authoritative status from the
+  fixture body. Belt-and-braces for the rare row that survives the
+  suspend-before-recover flush (e.g. a match scheduled to start during
+  a brief reconnect window where the replay carries no message for it
+  before snapshot_complete).
 
 ## Auto-mapping
 
