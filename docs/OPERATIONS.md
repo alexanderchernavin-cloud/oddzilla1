@@ -100,9 +100,14 @@ ssh team@178.104.174.24 "cd /home/team/oddzilla && \
   pnpm --filter @oddzilla/db db:migrate"
 ```
 
-For tighter loops, GitHub Actions can ssh + pull + compose on merge to
-`main` (workflow at [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml)
-— not yet added; add when there's a second collaborator).
+For a one-click deploy from anywhere (laptop, phone, an environment
+without SSH egress to the box), the
+[`Deploy` workflow](../.github/workflows/deploy.yml) wraps the same
+sequence: GitHub → Actions → Deploy → **Run workflow**, fill in the
+services to rebuild (default `ws-gateway`), tick `run_migrations` only
+when the PR shipped a Drizzle migration. The workflow needs a one-time
+`DEPLOY_SSH_KEY` repo secret — setup steps in the workflow file's
+header comment.
 
 ## Environment variables
 
@@ -217,9 +222,11 @@ The daily dump is wired up via root cron at 03:00 UTC, running
 [`infra/hetzner/backup/pg_backup.sh`](../infra/hetzner/backup/pg_backup.sh).
 The script `docker exec`s into the postgres container and writes
 `/var/backups/oddzilla/oddzilla-<TS>.sql.gz` (root:team mode 640), with
-14-day retention. Set `BACKUP_GPG_RECIPIENT` in `.env` to GPG-encrypt
-the dump in addition to gzipping; the file extension becomes
-`.sql.gz.gpg`.
+5-day retention (was 14; trimmed 2026-05-09 after dumps reached
+~2.3 GB/day and 14 × that overlapped the docker-prune cron failure to
+fill the 75 GB disk). Set `BACKUP_GPG_RECIPIENT` in `.env` to
+GPG-encrypt the dump in addition to gzipping; the file extension
+becomes `.sql.gz.gpg`.
 
 Hardening applied in PR #130: the script no longer sources the entire
 `.env` into the cron shell environment (every secret was being exported

@@ -875,10 +875,14 @@ export class BetsService {
         sel: ticketSelections,
         providerMarketId: markets.providerMarketId,
         specifiersJson: markets.specifiersJson,
+        marketStatus: markets.status,
         matchId: matches.id,
         homeTeam: matches.homeTeam,
         awayTeam: matches.awayTeam,
+        matchStatus: matches.status,
         sportSlug: sports.slug,
+        currentOdds: marketOutcomes.publishedOdds,
+        outcomeActive: marketOutcomes.active,
       })
       .from(ticketSelections)
       .leftJoin(markets, eq(markets.id, ticketSelections.marketId))
@@ -886,6 +890,13 @@ export class BetsService {
       .leftJoin(tournaments, eq(tournaments.id, matches.tournamentId))
       .leftJoin(categories, eq(categories.id, tournaments.categoryId))
       .leftJoin(sports, eq(sports.id, categories.sportId))
+      .leftJoin(
+        marketOutcomes,
+        and(
+          eq(marketOutcomes.marketId, ticketSelections.marketId),
+          eq(marketOutcomes.outcomeId, ticketSelections.outcomeId),
+        ),
+      )
       .where(inArray(ticketSelections.ticketId, ids));
 
     const byTicket = new Map<string, Array<(typeof selRows)[number]>>();
@@ -924,10 +935,14 @@ export class BetsService {
         sel: ticketSelections,
         providerMarketId: markets.providerMarketId,
         specifiersJson: markets.specifiersJson,
+        marketStatus: markets.status,
         matchId: matches.id,
         homeTeam: matches.homeTeam,
         awayTeam: matches.awayTeam,
+        matchStatus: matches.status,
         sportSlug: sports.slug,
+        currentOdds: marketOutcomes.publishedOdds,
+        outcomeActive: marketOutcomes.active,
       })
       .from(ticketSelections)
       .leftJoin(markets, eq(markets.id, ticketSelections.marketId))
@@ -935,6 +950,13 @@ export class BetsService {
       .leftJoin(tournaments, eq(tournaments.id, matches.tournamentId))
       .leftJoin(categories, eq(categories.id, tournaments.categoryId))
       .leftJoin(sports, eq(sports.id, categories.sportId))
+      .leftJoin(
+        marketOutcomes,
+        and(
+          eq(marketOutcomes.marketId, ticketSelections.marketId),
+          eq(marketOutcomes.outcomeId, ticketSelections.outcomeId),
+        ),
+      )
       .where(eq(ticketSelections.ticketId, t.id));
 
     return this.summaryFromRows(t, selRows);
@@ -946,10 +968,20 @@ export class BetsService {
       sel: typeof ticketSelections.$inferSelect;
       providerMarketId: number | null;
       specifiersJson: unknown;
+      marketStatus: number | null;
       matchId: bigint | null;
       homeTeam: string | null;
       awayTeam: string | null;
+      matchStatus:
+        | "not_started"
+        | "live"
+        | "closed"
+        | "cancelled"
+        | "suspended"
+        | null;
       sportSlug: string | null;
+      currentOdds: string | null;
+      outcomeActive: boolean | null;
     }>,
   ): TicketSummary {
     const ticketCurrency = (t.currency.trim() as Currency) ?? DEFAULT_CURRENCY;
@@ -984,6 +1016,14 @@ export class BetsService {
                 homeTeam: r.homeTeam ?? "",
                 awayTeam: r.awayTeam ?? "",
                 sportSlug: r.sportSlug ?? "",
+                matchStatus: r.matchStatus ?? "not_started",
+                currentOdds: r.currentOdds,
+                // markets.status=1 + market_outcomes.active=true is the
+                // exact gate POST /bets re-validates against; mirror it
+                // here so the UI can show "currently bettable" with the
+                // same definition.
+                currentlyActive:
+                  r.marketStatus === 1 && r.outcomeActive === true,
               }
             : undefined,
       })),

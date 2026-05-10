@@ -334,6 +334,65 @@ services:
       <<: *hc
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${WALLET_WATCHER_HEALTH_PORT:-8085}/healthz"]
 
+  metrics-collector:
+    # Read-only host-metrics service. Holds the three sensitive bind
+    # mounts (host /proc, host /, docker.sock) so the api container
+    # doesn't have to. cap_drop ALL + no_new_privileges + read_only
+    # rootfs + nobody-UID isolation: an RCE here yields a process that
+    # cannot escalate, persist anywhere, or call the docker engine for
+    # writes (the .sock mount is :ro). Listens on the docker default
+    # network only — Caddy never fronts it; only the api container has
+    # a reason to reach :9090.
+    build:
+      context: ./services/metrics-collector
+      dockerfile: Dockerfile
+    user: "65534:65534"
+    # The docker.sock is owned by root:docker mode 660 on the host;
+    # UID 65534 (nobody) needs to be in the `docker` group to read it.
+    # Hetzner CPX22 dockerd assigns GID 988 (`getent group docker`);
+    # adjust if redeploying elsewhere. Note: docker.sock access is
+    # functionally equivalent to root on the host (the bind-mount `:ro`
+    # only protects the socket *file*, not the engine API), so this
+    # container's hardening (cap_drop ALL + no_new_privileges +
+    # read_only rootfs + UID nobody) is the only thing standing between
+    # an RCE here and a privileged container escape. Future
+    # tightening: front docker.sock with tecnativa/docker-socket-proxy
+    # so this container only sees a filtered subset (GET /containers).
+    group_add:
+      - "988"
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 64m
+    cpus: 0.25
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    read_only: true
+    environment:
+      SERVICE_NAME: metrics-collector
+      PORT: ${METRICS_COLLECTOR_PORT:-9090}
+    volumes:
+      # Host /proc → /host/proc:ro for cpu/mem/load/uptime reads.
+      - /proc:/host/proc:ro
+      # Host root → /host-root:ro for statvfs() on the disk that matters
+      # (the Hetzner box's /dev/sda1). `rslave` is required by dockerd
+      # whenever the bind source overlaps the daemon root
+      # (`/var/lib/docker`); rprivate is rejected. Slave propagation
+      # means host mount events propagate INTO the container (so a
+      # newly mounted disk shows up live) but no events propagate
+      # back OUT — which is what we want for a read-only monitoring
+      # mount.
+      - /:/host-root:ro,rslave
+      # Docker engine API for the container list. :ro so a future
+      # exploit cannot `docker run --privileged` from this container.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    healthcheck:
+      <<: *hc
+      # Distroless static has no wget/curl. The binary supports a
+      # -healthcheck self-probe that dials its own /healthz and exits 0/1.
+      test: ["CMD", "/metrics-collector", "-healthcheck"]
+
 volumes:
   postgres-data:
   redis-data:

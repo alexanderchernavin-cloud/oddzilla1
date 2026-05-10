@@ -141,9 +141,37 @@ export function BetSlipRail() {
 
   // Once any selection is flagged inactive (either by the WS tick path
   // above or stamped at click time by the caller), surface the
-  // suspended state in the rail and gate Place bet so the user doesn't
-  // hit the server's market_not_active / outcome_not_active guard.
-  const hasSuspendedSelection = selections.some((s) => s.active === false);
+  // suspended state in the rail. Single (1 leg) tickets can't proceed
+  // when their only leg is dead — but ≥2-leg products (combo / tiple /
+  // tippot / betbuilder) are still placeable as long as at least one
+  // active leg remains; the submit handler intercepts and asks the
+  // user whether to drop the suspended legs first.
+  const suspendedCount = selections.reduce(
+    (n, s) => (s.active === false ? n + 1 : n),
+    0,
+  );
+  const activeCount = selections.length - suspendedCount;
+  const hasSuspendedSelection = suspendedCount > 0;
+  const allSuspended = selections.length > 0 && activeCount === 0;
+  // True when the place-bet click should pop the "remove suspended
+  // legs?" prompt instead of submitting. Intentionally only ≥2 legs:
+  // single-mode (1 leg, suspended) just stays disabled.
+  const needsSuspendedConfirm =
+    hasSuspendedSelection && activeCount >= 1 && selections.length >= 2;
+  // Inline confirm panel state. Cleared automatically when the user
+  // resolves the suspension (manually removes a leg, or odds come back).
+  const [pendingSuspendedConfirm, setPendingSuspendedConfirm] =
+    useState(false);
+  useEffect(() => {
+    if (!hasSuspendedSelection && pendingSuspendedConfirm) {
+      setPendingSuspendedConfirm(false);
+    }
+  }, [hasSuspendedSelection, pendingSuspendedConfirm]);
+  const removeSuspendedSelections = useCallback(() => {
+    for (const s of selections) {
+      if (s.active === false) slip.remove(s.marketId, s.outcomeId);
+    }
+  }, [selections, slip]);
   // Whenever any selection has a `pendingOdds` set (the WS tick differs
   // from the user-accepted price), the Place-bet button is replaced by
   // an explicit "Accept odds change" step. Clicking it copies pending
@@ -350,6 +378,17 @@ export function BetSlipRail() {
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (selections.length === 0) return;
+    // Intercept: if any leg is unavailable but at least one active leg
+    // is still present, ask the user before submitting whether to drop
+    // the suspended ones — submitting them would just dead-end against
+    // market_not_active / outcome_not_active. Single-leg suspensions
+    // (activeCount === 0) hit the disabled-button gate above, so we
+    // never reach this branch with nothing to bet on.
+    if (needsSuspendedConfirm) {
+      setError(null);
+      setPendingSuspendedConfirm(true);
+      return;
+    }
     setError(null);
     setPlacedTicketId(null);
 
@@ -544,14 +583,9 @@ export function BetSlipRail() {
       ) : (
         <>
       <div
+        className="oz-rail-slip-list"
         style={{
           minHeight: 0,
-          // flex: 1 lets the selections list claim leftover vertical
-          // space when the drawer is fixed-height (mobile sheet) — the
-          // form stays at its natural height and the list fills the
-          // gap, instead of the form dominating with empty space below
-          // a short list.
-          flex: 1,
           overflow: "auto",
           padding: "8px 14px 6px",
           display: "flex",
@@ -937,56 +971,151 @@ export function BetSlipRail() {
             </div>
           )}
 
-          {/* Pre-empt the server's suspended-market 400 — the WS tick
-              path already flipped one of our selections to active=false,
-              so submitting would just dead-end against the validator. */}
-          {!error && hasSuspendedSelection && (
+          {/* Suspended-leg banner. Two flavours:
+                - Every leg is dead (or the only leg of a single is
+                  dead): hard block; the place button is also disabled.
+                  Surface a Remove-suspended action so the user can
+                  clear and start fresh.
+                - Some active legs remain: softer "N selection(s)
+                  unavailable" with an inline Remove action. The submit
+                  handler intercepts and asks for confirmation before
+                  placing. */}
+          {!error && hasSuspendedSelection && !pendingSuspendedConfirm && (
             <div
               role="status"
-              style={{ fontSize: 12, color: "var(--negative)", lineHeight: 1.45 }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 12,
+                color: "var(--negative)",
+                lineHeight: 1.45,
+              }}
             >
-              {SUSPENDED_ERROR_MESSAGE}
+              <span style={{ flex: 1 }}>
+                {allSuspended
+                  ? selections.length === 1
+                    ? SUSPENDED_ERROR_MESSAGE
+                    : "All selections are unavailable."
+                  : `${suspendedCount} ${suspendedCount === 1 ? "selection is" : "selections are"} unavailable.`}
+              </span>
+              <button
+                type="button"
+                onClick={removeSuspendedSelections}
+                style={{
+                  background: 0,
+                  border: "1px solid color-mix(in oklab, var(--negative) 35%, var(--border))",
+                  color: "var(--negative)",
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 11,
+                  letterSpacing: "0.04em",
+                  padding: "3px 9px",
+                  borderRadius: 999,
+                  cursor: "pointer",
+                  flexShrink: 0,
+                }}
+              >
+                {suspendedCount === 1 ? "Remove" : `Remove ${suspendedCount}`}
+              </button>
             </div>
           )}
 
-          {/* When odds drift differs from the user-accepted price, the
-              primary action becomes "Accept odds change" — type=button
-              so the form doesn't submit, and onClick promotes pending →
-              odds. After that the button reverts to its Place-bet form
-              (or right back to Accept if a fresh tick has already
-              landed, which is the right thing — drift is real). */}
-          <Button
-            variant="primary"
-            size="lg"
-            type={hasPendingOdds ? "button" : "submit"}
-            onClick={
-              hasPendingOdds
-                ? () => slip.acceptPendingOdds()
-                : undefined
-            }
-            disabled={
-              submitting ||
-              builderNeedsLegs ||
-              builderQuoteMissing ||
-              (isBetBuilderMode && !!builderError) ||
-              hasSuspendedSelection
-            }
-            style={{ width: "100%" }}
-          >
-            {submitting
-              ? "Placing…"
-              : hasPendingOdds
-                ? "Accept odds change"
-                : isBetBuilderMode
-                  ? "Place BetBuilder"
-                  : isTiple
-                    ? "Place Tiple"
-                    : isTippot
-                      ? "Place Tippot"
-                      : isCombo
-                        ? "Place combo"
-                        : "Place bet"}
-          </Button>
+          {/* Confirm panel: shown after the user clicked Place bet on a
+              slip that still has suspended legs. Replaces the place
+              button until they decide. Confirm drops every suspended
+              leg from the slip — the rail then re-renders with only
+              active legs, the user clicks Place bet again and submits
+              normally. (We deliberately do NOT auto-place after remove
+              so the user gets one last look at the cleaned slip + the
+              recomputed potential winning before committing.) */}
+          {pendingSuspendedConfirm ? (
+            <div
+              role="alertdialog"
+              aria-label="Confirm removing unavailable selections"
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+                padding: "10px 12px",
+                background: "var(--surface-2)",
+                border: "1px solid color-mix(in oklab, var(--negative) 30%, var(--border))",
+                borderRadius: 10,
+              }}
+            >
+              <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "var(--fg)" }}>
+                {suspendedCount === 1
+                  ? "1 selection is unavailable."
+                  : `${suspendedCount} selections are unavailable.`}{" "}
+                Remove{" "}
+                {suspendedCount === 1 ? "it" : "them"} and continue with the{" "}
+                remaining {activeCount}?
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  type="button"
+                  onClick={() => setPendingSuspendedConfirm(false)}
+                  style={{ flex: 1 }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  type="button"
+                  onClick={() => {
+                    removeSuspendedSelections();
+                    setPendingSuspendedConfirm(false);
+                  }}
+                  style={{ flex: 1 }}
+                >
+                  Remove {suspendedCount === 1 ? "it" : `${suspendedCount}`}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* When odds drift differs from the user-accepted price, the
+                  primary action becomes "Accept odds change" — type=button
+                  so the form doesn't submit, and onClick promotes pending →
+                  odds. After that the button reverts to its Place-bet form
+                  (or right back to Accept if a fresh tick has already
+                  landed, which is the right thing — drift is real). */}
+              <Button
+                variant="primary"
+                size="lg"
+                type={hasPendingOdds ? "button" : "submit"}
+                onClick={
+                  hasPendingOdds
+                    ? () => slip.acceptPendingOdds()
+                    : undefined
+                }
+                disabled={
+                  submitting ||
+                  builderNeedsLegs ||
+                  builderQuoteMissing ||
+                  (isBetBuilderMode && !!builderError) ||
+                  allSuspended
+                }
+                style={{ width: "100%" }}
+              >
+                {submitting
+                  ? "Placing…"
+                  : hasPendingOdds
+                    ? "Accept odds change"
+                    : isBetBuilderMode
+                      ? "Place BetBuilder"
+                      : isTiple
+                        ? "Place Tiple"
+                        : isTippot
+                          ? "Place Tippot"
+                          : isCombo
+                            ? "Place combo"
+                            : "Place bet"}
+              </Button>
+            </>
+          )}
 
           <div style={{ fontSize: 10, color: "var(--fg-dim)", textAlign: "center" }}>
             Odds may update before acceptance.

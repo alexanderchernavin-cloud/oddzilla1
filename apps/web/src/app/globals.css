@@ -368,6 +368,16 @@ body {
    when the rail is acting as a dismissible sheet. */
 .oz-rail-close { display: none !important; }
 
+/* Selections list inside the rail. The list is content-height
+   everywhere (no growing, no shrinking): the form (currency / stake /
+   Place bet) hugs the last selection card, and adding a selection
+   grows the slip downward and shifts the form with it. flex-shrink:0
+   keeps the form / iframe from being squeezed when the combined
+   slip+form exceeds the rail; the rail's own overflow-y handles
+   scrolling instead. Applies the same on desktop and on the mobile
+   bottom-sheet — no large empty band above the form on a short slip. */
+.oz-rail-slip-list { flex: 0 0 auto; }
+
 /* Lobby 3-fold suggestion cards. Two columns on desktop / tablet,
    stack to one column on mobile so the inner leg rows aren't squeezed
    to a few characters wide. The previous fixed two-column grid pushed

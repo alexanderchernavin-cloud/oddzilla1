@@ -91,6 +91,13 @@ const EnvSchema = z.object({
       .regex(/^0x[0-9a-fA-F]{40}$/u, "DEPOSIT_RECEIVE_ADDRESS must be a 0x-prefixed 40-hex address")
       .optional(),
   ),
+
+  // Metrics-collector base URL (services/metrics-collector). Default
+  // resolves the compose service name on the docker default network.
+  // When unreachable the /admin/monitoring page surfaces "metrics
+  // unavailable" rather than crashing — same graceful-idle pattern
+  // Disir / OBB use.
+  METRICS_COLLECTOR_URL: z.string().url().default("http://metrics-collector:9090"),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

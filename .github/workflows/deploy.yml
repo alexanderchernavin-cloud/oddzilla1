@@ -1,0 +1,109 @@
+name: Deploy
+
+# Manual deploy from GitHub Actions to the Hetzner box, mirroring the
+# `Daily deploy` runbook in docs/OPERATIONS.md.
+#
+# One-time setup (do once per deploy account):
+#   1. On a trusted machine, generate a passphrase-less ed25519 key:
+#        ssh-keygen -t ed25519 -N '' -C github-deploy -f ./deploy_key
+#   2. Append the public side to the box's authorized_keys:
+#        ssh team@178.104.174.24 'cat >> ~/.ssh/authorized_keys' < ./deploy_key.pub
+#   3. Add the private side as repo secret DEPLOY_SSH_KEY (Settings →
+#      Secrets and variables → Actions → New repository secret), with
+#      the full file content including the BEGIN/END lines.
+#   4. Delete ./deploy_key + ./deploy_key.pub from the trusted machine.
+#
+# To deploy: GitHub → Actions → Deploy → "Run workflow", pick the
+# services to rebuild (default `ws-gateway`), tick `run_migrations` only
+# when the PR shipped a Drizzle migration. The job builds each service
+# serially, recreates them with `--no-deps --force-recreate`, and prints
+# `docker compose ps` at the end.
+
+on:
+  workflow_dispatch:
+    inputs:
+      services:
+        description: "Compose services to rebuild (space-separated, e.g. 'ws-gateway' or 'api web feed-ingester')"
+        required: true
+        default: "ws-gateway"
+      run_migrations:
+        description: "Run Drizzle migrations before rebuilding (tick only when the PR shipped a migration)"
+        type: boolean
+        default: false
+
+concurrency:
+  # Prevent two deploys from racing each other across the same compose
+  # project. Queued, not cancelled — a deploy that's already running
+  # should finish cleanly before the next one starts.
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DEPLOY_HOST: 178.104.174.24
+      DEPLOY_USER: team
+      SERVICES: ${{ inputs.services }}
+    steps:
+      - name: Validate inputs
+        run: |
+          # Defence in depth: SERVICES ends up inside an SSH-quoted shell
+          # command, so reject anything that isn't space-separated names
+          # matching the conservative compose-service charset.
+          if ! [[ "$SERVICES" =~ ^[A-Za-z0-9_\ -]+$ ]]; then
+            echo "::error::services input must be space-separated names matching [A-Za-z0-9_-]+"
+            exit 1
+          fi
+          if [[ -z "$(echo "$SERVICES" | tr -d ' ')" ]]; then
+            echo "::error::services input must list at least one service"
+            exit 1
+          fi
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          if [[ -z "$DEPLOY_SSH_KEY" ]]; then
+            echo "::error::DEPLOY_SSH_KEY repo secret is not set — see .github/workflows/deploy.yml header for the setup steps"
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          umask 077
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          ssh-keyscan -t ed25519,rsa "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Fast-forward worktree to origin/main
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            'cd /home/team/oddzilla && git fetch origin main && git reset --hard origin/main && git rev-parse --short HEAD'
+
+      - name: Run Drizzle migrations
+        if: ${{ inputs.run_migrations }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            'set -a; . /home/team/oddzilla/.env; set +a; export DATABASE_URL=$(echo "$DATABASE_URL" | sed "s|@postgres:|@127.0.0.1:|"); cd /home/team/oddzilla && pnpm --filter @oddzilla/db db:migrate'
+
+      - name: Build services (one at a time)
+        run: |
+          # Serial loop is load-bearing — `docker compose build` (no
+          # service arg) parallel-builds every service and OOMs the 4 GB
+          # CPX22. See docs/OPERATIONS.md "Daily deploy".
+          for svc in $SERVICES; do
+            echo "::group::build $svc"
+            ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+              "cd /home/team/oddzilla && sudo -n docker compose -f docker-compose.yml build $svc"
+            echo "::endgroup::"
+          done
+
+      - name: Recreate services
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            "cd /home/team/oddzilla && sudo -n docker compose -f docker-compose.yml up -d --no-deps --force-recreate $SERVICES"
+
+      - name: Show post-deploy status
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            "cd /home/team/oddzilla && sudo -n docker compose -f docker-compose.yml ps $SERVICES"

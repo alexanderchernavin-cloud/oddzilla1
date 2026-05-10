@@ -1,4 +1,4 @@
-// ws-gateway: authenticated WebSocket fanout for live odds.
+// ws-gateway: WebSocket fanout for live odds + ticket frames.
 //
 // Protocol (see packages/types/src/ws.ts):
 //   Client → server:  { type: "subscribe",   matchIds: [...] }
@@ -9,8 +9,12 @@
 //                     { type: "pong" }
 //                     { type: "error", message }
 //
-// Auth: `oddzilla_access` cookie read during HTTP upgrade. Invalid → 401,
-// no graceful fallback.
+// Auth: `oddzilla_access` cookie read during HTTP upgrade. Authenticated
+// clients also subscribe to a private `user:{userId}` channel for ticket
+// frames. Anonymous clients are accepted — they only receive public
+// `odds:match:{id}` fan-out, which is the same data SSR already serves to
+// logged-out visitors. This keeps live odds flowing on the storefront for
+// browsing visitors who haven't signed up yet.
 //
 // Fanout: Redis pub/sub `odds:match:{id}`. One subscriber per process;
 // per-match subscriptions are refcounted so we only SUBSCRIBE once
@@ -59,8 +63,8 @@ const STALE_SWEEP_INTERVAL_MS = 60_000;
 
 interface HelloMessage {
   type: "hello";
-  userId: string;
-  role: "user" | "admin" | "support";
+  userId: string | null;
+  role: "user" | "admin" | "support" | null;
 }
 interface PongMessage {
   type: "pong";
@@ -117,8 +121,10 @@ sub.on("error", (err: Error) => {
 
 interface ClientState {
   socket: WebSocket;
-  userId: string;
-  role: AccessTokenClaims["role"];
+  // Anonymous clients have no userId and never get a `user:{id}` Redis
+  // subscription — they're public-odds-only.
+  userId: string | null;
+  role: AccessTokenClaims["role"] | null;
   matchIds: Set<string>;
 }
 
@@ -183,12 +189,11 @@ http.on("upgrade", (req, socket, head) => {
     return;
   }
   void (async () => {
+    // Authentication is best-effort: a missing or invalid cookie just
+    // means this is an anonymous browsing session. The connection is
+    // accepted either way; the user-channel subscription only happens
+    // for authenticated clients.
     const claims = await authenticate(req);
-    if (!claims) {
-      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-      socket.destroy();
-      return;
-    }
     if (clients.size >= MAX_CLIENTS) {
       // Reject new upgrades over the cap. Browser-side reconnect logic
       // (use-live-odds.ts) backs off with jitter, so this isn't a busy
@@ -206,16 +211,20 @@ http.on("upgrade", (req, socket, head) => {
   })();
 });
 
-wss.on("connection", (ws: WebSocket, _req: IncomingMessage, claims: AccessTokenClaims) => {
+wss.on("connection", (ws: WebSocket, _req: IncomingMessage, claims: AccessTokenClaims | null) => {
   const state: ClientState = {
     socket: ws,
-    userId: claims.sub,
-    role: claims.role,
+    userId: claims?.sub ?? null,
+    role: claims?.role ?? null,
     matchIds: new Set(),
   };
   clients.add(state);
-  incrementUserRef(claims.sub);
-  send(ws, { type: "hello", userId: claims.sub, role: claims.role });
+  if (claims) incrementUserRef(claims.sub);
+  send(ws, {
+    type: "hello",
+    userId: claims?.sub ?? null,
+    role: claims?.role ?? null,
+  });
 
   ws.on("message", (raw) => {
     let msg: InboundFrame;
@@ -246,7 +255,7 @@ wss.on("connection", (ws: WebSocket, _req: IncomingMessage, claims: AccessTokenC
       decrementMatchRef(matchId);
     }
     state.matchIds.clear();
-    decrementUserRef(claims.sub);
+    if (claims) decrementUserRef(claims.sub);
     clients.delete(state);
   });
 
@@ -381,7 +390,7 @@ const staleSweep = setInterval(() => {
     ) {
       for (const matchId of client.matchIds) decrementMatchRef(matchId);
       client.matchIds.clear();
-      decrementUserRef(client.userId);
+      if (client.userId) decrementUserRef(client.userId);
       clients.delete(client);
       dropped += 1;
     }
