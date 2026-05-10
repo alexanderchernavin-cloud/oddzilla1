@@ -3,16 +3,6 @@
 import type { SVGProps } from "react";
 import { useSportLogo } from "@/lib/sport-logos";
 
-export const SPORTS = [
-  { id: "cs2", name: "Counter-Strike 2", short: "CS2" },
-  { id: "lol", name: "League of Legends", short: "LoL" },
-  { id: "dota2", name: "Dota 2", short: "Dota 2" },
-  { id: "valorant", name: "Valorant", short: "Valorant" },
-  { id: "rl", name: "Rocket League", short: "RL" },
-  { id: "ow", name: "Overwatch", short: "OW" },
-  { id: "sc", name: "StarCraft", short: "SC" },
-] as const;
-
 // Slugs with a brand SVG in /public/sports/<slug>.svg.
 // Keep in sync with the files actually copied into apps/web/public/sports/.
 const BRAND_LOGOS = new Set<string>([

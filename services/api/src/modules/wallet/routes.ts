@@ -37,6 +37,23 @@ import {
   ForbiddenError,
   NotFoundError,
 } from "../../lib/errors.js";
+import { isUniqueViolation } from "../../lib/pg-errors.js";
+
+// Parse the cashout memo emitted by cashout/service.ts. Format is
+//   `cashout offer ${offerMicro} for stake ${stakeMicro}`
+// Returns null when the shape doesn't match (older rows or unrelated
+// memos) so the FE falls back to the bare delta display.
+function parseCashoutMemo(
+  memo: string | null,
+): { kind: "cashout"; stakeMicro: string; offerMicro: string } | null {
+  if (!memo) return null;
+  const m = memo.match(/^cashout offer (\d+) for stake (\d+)$/);
+  if (!m) return null;
+  const offer = m[1];
+  const stake = m[2];
+  if (!offer || !stake) return null;
+  return { kind: "cashout", stakeMicro: stake, offerMicro: offer };
+}
 
 const ledgerQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
@@ -108,6 +125,17 @@ export default async function walletRoutes(app: FastifyInstance) {
         refId: r.refId,
         txHash: r.txHash,
         memo: r.memo,
+        // Cashout rows store `offer - stake` as their delta (e.g. -1.55
+        // OZ) which is the *net change to the user's wallet wealth* but
+        // reads as a loss in the ledger when the actual user action was
+        // a refund of 23.45 OZ. We surface the constituent stake +
+        // offer values so the FE can render "Stake 25 OZ → Refund 23.45
+        // OZ" alongside the row. Parsing the existing memo avoids any
+        // wallet_ledger schema change.
+        detail:
+          r.type === "cashout"
+            ? parseCashoutMemo(r.memo)
+            : null,
         createdAt: r.createdAt.toISOString(),
       })),
     };
@@ -336,12 +364,10 @@ export default async function walletRoutes(app: FastifyInstance) {
         createdAt: inserted.createdAt.toISOString(),
       };
     } catch (err) {
-      if (
-        err &&
-        typeof err === "object" &&
-        "code" in err &&
-        (err as { code?: string }).code === "23505"
-      ) {
+      // Walks `.cause` so DrizzleQueryError unwrapping still
+      // catches the SQLSTATE — the prior inline check only saw
+      // direct `.code` and missed the wrapped form.
+      if (isUniqueViolation(err)) {
         throw new ConflictError(
           "address_already_linked",
           "address_already_linked",

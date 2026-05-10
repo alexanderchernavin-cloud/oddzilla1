@@ -6,7 +6,7 @@ import {
   timestamp,
   index,
   check,
-  uniqueIndex,
+  unique,
 } from "drizzle-orm/pg-core";
 import { users } from "./users.js";
 
@@ -30,7 +30,12 @@ export const userDevices = pgTable(
     revokedAt: timestamp({ withTimezone: true }),
   },
   (t) => [
-    uniqueIndex("user_devices_user_token_unique").on(t.userId, t.token),
+    // Match migration 0045: `CONSTRAINT user_devices_user_token_unique
+    // UNIQUE (user_id, token)`. drizzle-kit emits this as `unique()`
+    // — using `uniqueIndex()` here would prompt a spurious ALTER on
+    // the next codegen pass (Postgres treats them as equivalent, but
+    // the schema introspection shape differs).
+    unique("user_devices_user_token_unique").on(t.userId, t.token),
     index("user_devices_user_active_idx").on(t.userId).where(sql`${t.revokedAt} IS NULL`),
     index("user_devices_token_idx").on(t.token),
     check("user_devices_platform_allowlist", sql`${t.platform} IN ('android', 'ios', 'web')`),

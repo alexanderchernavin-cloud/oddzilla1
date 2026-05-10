@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { credentials, Metadata, type ServiceError, status as grpcStatus } from "@grpc/grpc-js";
 import { loadSync } from "@grpc/proto-loader";
 import * as grpc from "@grpc/grpc-js";
+import { loadEnv } from "@oddzilla/config";
 
 // ─── Proto loading (one-time, module-scoped) ──────────────────────────
 
@@ -271,4 +272,17 @@ export function obbConfigFromEnv(env: {
     tls: env.ODDIN_OBB_TLS === "true",
     token,
   };
+}
+
+// Process-wide singleton so betbuilder/routes and bets/service share
+// one gRPC channel (keepalive + connection pool) instead of opening
+// two against the same host. Resolved on first access; subsequent
+// calls return the cached instance (or the cached null when env is
+// missing — same graceful-idle contract as createObbClient).
+let sharedObbClient: ObbClient | null | undefined;
+
+export function getSharedObbClient(): ObbClient | null {
+  if (sharedObbClient !== undefined) return sharedObbClient;
+  sharedObbClient = createObbClient(obbConfigFromEnv(loadEnv()));
+  return sharedObbClient;
 }

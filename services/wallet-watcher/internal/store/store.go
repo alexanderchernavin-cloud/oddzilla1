@@ -139,15 +139,28 @@ type PendingIntent struct {
 	Status        string // 'pending' | 'confirming'
 }
 
-// ListPendingIntents returns intents the watcher needs to evaluate
-// this tick.
-func (s *Store) ListPendingIntents(ctx context.Context, limit int) ([]PendingIntent, error) {
-	const q = `
-SELECT id, user_id, network::text, tx_hash,
+// intentColumns and scanIntent are shared by ListPendingIntents and
+// IntentByID — both surface the same `deposit_intents` projection
+// with the same COALESCE shape, just different WHERE clauses.
+const intentColumns = `id, user_id, network::text, tx_hash,
        COALESCE(block_number, 0), COALESCE(block_hash, ''),
        COALESCE(log_index, 0), COALESCE(from_address, ''),
        COALESCE(to_address, ''), COALESCE(amount_micro, 0),
-       confirmations, status::text
+       confirmations, status::text`
+
+func scanIntent(row pgx.Row, p *PendingIntent) error {
+	return row.Scan(
+		&p.ID, &p.UserID, &p.Network, &p.TxHash,
+		&p.BlockNumber, &p.BlockHash, &p.LogIndex,
+		&p.FromAddress, &p.ToAddress, &p.AmountMicro,
+		&p.Confirmations, &p.Status,
+	)
+}
+
+// ListPendingIntents returns intents the watcher needs to evaluate
+// this tick.
+func (s *Store) ListPendingIntents(ctx context.Context, limit int) ([]PendingIntent, error) {
+	q := `SELECT ` + intentColumns + `
   FROM deposit_intents
  WHERE status IN ('pending', 'confirming')
  ORDER BY submitted_at
@@ -161,12 +174,7 @@ SELECT id, user_id, network::text, tx_hash,
 	out := make([]PendingIntent, 0, limit)
 	for rows.Next() {
 		var p PendingIntent
-		if err := rows.Scan(
-			&p.ID, &p.UserID, &p.Network, &p.TxHash,
-			&p.BlockNumber, &p.BlockHash, &p.LogIndex,
-			&p.FromAddress, &p.ToAddress, &p.AmountMicro,
-			&p.Confirmations, &p.Status,
-		); err != nil {
+		if err := scanIntent(rows, &p); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -302,22 +310,9 @@ ON CONFLICT (type, ref_type, ref_id) WHERE ref_id IS NOT NULL DO NOTHING`,
 // IntentByID returns the PendingIntent shape regardless of current
 // status. Used by the API admin override path.
 func (s *Store) IntentByID(ctx context.Context, id string) (PendingIntent, error) {
-	const q = `
-SELECT id, user_id, network::text, tx_hash,
-       COALESCE(block_number, 0), COALESCE(block_hash, ''),
-       COALESCE(log_index, 0), COALESCE(from_address, ''),
-       COALESCE(to_address, ''), COALESCE(amount_micro, 0),
-       confirmations, status::text
-  FROM deposit_intents
- WHERE id = $1`
+	q := `SELECT ` + intentColumns + ` FROM deposit_intents WHERE id = $1`
 	var p PendingIntent
-	err := s.pool.QueryRow(ctx, q, id).Scan(
-		&p.ID, &p.UserID, &p.Network, &p.TxHash,
-		&p.BlockNumber, &p.BlockHash, &p.LogIndex,
-		&p.FromAddress, &p.ToAddress, &p.AmountMicro,
-		&p.Confirmations, &p.Status,
-	)
-	if err != nil {
+	if err := scanIntent(s.pool.QueryRow(ctx, q, id), &p); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return p, fmt.Errorf("intent_not_found")
 		}

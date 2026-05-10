@@ -208,9 +208,11 @@ func (c *Client) MarketDescriptions(ctx context.Context, lang string) ([]byte, e
 
 // IsNotFound returns true when the error is an HTTPError with status 404,
 // which is what Oddin returns for unknown sport events / tournaments.
+// Uses errors.As so the helper still works through wrapped errors
+// (callers that add context via fmt.Errorf("...: %w", err)).
 func IsNotFound(err error) bool {
-	he, ok := err.(*HTTPError)
-	return ok && he.Status == http.StatusNotFound
+	var he *HTTPError
+	return errors.As(err, &he) && he.Status == http.StatusNotFound
 }
 
 // post is a minimal POST helper used by InitiateRecovery. The recovery

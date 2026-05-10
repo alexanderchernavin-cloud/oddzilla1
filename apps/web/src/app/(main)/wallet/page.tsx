@@ -20,6 +20,12 @@ interface LedgerEntry {
   refId: string | null;
   txHash: string | null;
   memo: string | null;
+  // Per-type structured breakdown for rows whose raw delta hides
+  // the user's mental model (currently: cashout rows where
+  // deltaMicro = offer − stake is often negative).
+  detail:
+    | { kind: "cashout"; stakeMicro: string; offerMicro: string }
+    | null;
   createdAt: string;
 }
 
@@ -77,6 +83,18 @@ export default async function WalletPage() {
             {ledger.entries.map((e) => {
               const delta = BigInt(e.deltaMicro);
               const positive = delta >= 0n;
+              // Cashout rows are special-cased: the raw delta is
+              // `offer - stake` (often negative) which reads as a
+              // loss, when the user's mental model is "I cashed
+              // out and got X back". Show the refund as the main
+              // number with the stake breakdown underneath.
+              const cashout =
+                e.type === "cashout" && e.detail?.kind === "cashout"
+                  ? {
+                      refund: BigInt(e.detail.offerMicro),
+                      stake: BigInt(e.detail.stakeMicro),
+                    }
+                  : null;
               return (
                 <li
                   key={e.id}
@@ -93,18 +111,31 @@ export default async function WalletPage() {
                       {new Date(e.createdAt).toLocaleString()}
                       {e.txHash ? ` · ${e.txHash.slice(0, 12)}…` : ""}
                     </p>
+                    {cashout ? (
+                      <p className="mt-0.5 font-mono text-[11px] text-[var(--color-fg-subtle)]">
+                        Stake {fromMicro(cashout.stake)} {e.currency}
+                        {" → "}
+                        Refund {fromMicro(cashout.refund)} {e.currency}
+                      </p>
+                    ) : null}
                   </div>
-                  <p
-                    className={
-                      "font-mono text-sm " +
-                      (positive
-                        ? "text-[var(--color-positive)]"
-                        : "text-[var(--color-negative)]")
-                    }
-                  >
-                    {positive ? "+" : ""}
-                    {fromMicro(delta)} {e.currency}
-                  </p>
+                  {cashout ? (
+                    <p className="font-mono text-sm text-[var(--color-positive)]">
+                      +{fromMicro(cashout.refund)} {e.currency}
+                    </p>
+                  ) : (
+                    <p
+                      className={
+                        "font-mono text-sm " +
+                        (positive
+                          ? "text-[var(--color-positive)]"
+                          : "text-[var(--color-negative)]")
+                      }
+                    >
+                      {positive ? "+" : ""}
+                      {fromMicro(delta)} {e.currency}
+                    </p>
+                  )}
                 </li>
               );
             })}

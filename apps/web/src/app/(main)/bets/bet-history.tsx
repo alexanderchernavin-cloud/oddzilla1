@@ -251,6 +251,8 @@ function TicketRow({
                 const matchLabel = m
                   ? `${m.homeTeam} vs ${m.awayTeam}`
                   : "Match unavailable";
+                const outcomeLabel =
+                  m?.outcomeName?.trim() || `outcome ${s.outcomeId}`;
                 const tagLabel = isWon
                   ? "WON"
                   : isLost
@@ -316,7 +318,7 @@ function TicketRow({
                       >
                         {matchLabel}
                         <span className="ml-2 text-xs text-[var(--color-fg-subtle)]">
-                          outcome {s.outcomeId}
+                          {outcomeLabel}
                         </span>
                       </span>
                       {tagLabel ? (

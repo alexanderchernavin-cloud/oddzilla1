@@ -52,6 +52,7 @@ import {
   ConflictError,
   NotFoundError,
 } from "../../lib/errors.js";
+import { isUniqueViolation } from "../../lib/pg-errors.js";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -956,16 +957,4 @@ function tipMatchesResult(tip: string, side: "1" | "X" | "2"): boolean {
   return tip === side;
 }
 
-function isUniqueViolation(err: unknown): boolean {
-  return pgCode(err) === "23505";
-}
-
-function pgCode(err: unknown): string | null {
-  if (err === null || typeof err !== "object") return null;
-  const direct = (err as { code?: unknown }).code;
-  if (typeof direct === "string") return direct;
-  const cause = (err as { cause?: unknown }).cause;
-  if (cause) return pgCode(cause);
-  return null;
-}
 

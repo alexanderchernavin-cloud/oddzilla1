@@ -15,8 +15,23 @@ import type { Currency, WalletSnapshot } from "@oddzilla/types";
 import { I } from "@/components/ui/icons";
 import { Divider } from "@/components/ui/primitives";
 import { useBetSlip } from "@/lib/bet-slip";
+import { clientApi } from "@/lib/api-client";
 
 const PILL_HEIGHT = 36;
+
+// Custom event other code dispatches via dispatchWalletChanged() when
+// wallet balances may have shifted from in-page actions (cashout
+// accept, bet placement, refund). The top-bar pill listens for it
+// and refetches /wallet so the user sees the new balance immediately
+// instead of having to navigate first. The event name is private —
+// only this module subscribes; external code goes through the
+// exported helper below.
+const WALLET_CHANGED_EVENT = "oz:wallet-changed";
+
+export function dispatchWalletChanged() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event(WALLET_CHANGED_EVENT));
+}
 
 const pillStyle: CSSProperties = {
   display: "flex",
@@ -36,7 +51,30 @@ const pillStyle: CSSProperties = {
 export function WalletPill({ wallets }: { wallets?: WalletSnapshot[] }) {
   const slip = useBetSlip();
   const activeCurrency = slip.currency;
-  const activeWallet = wallets?.find((w) => w.currency === activeCurrency);
+  // Locally-mirrored wallet list. Seeded from the SSR prop and kept
+  // fresh by listening for WALLET_CHANGED_EVENT (dispatched by the
+  // cashout flow + bet placement flow) — without this the top-bar
+  // balance stays stale until the next full navigation.
+  const [liveWallets, setLiveWallets] = useState<WalletSnapshot[] | undefined>(
+    wallets,
+  );
+  useEffect(() => {
+    setLiveWallets(wallets);
+  }, [wallets]);
+  useEffect(() => {
+    function refresh() {
+      clientApi<{ wallets: WalletSnapshot[] }>("/wallet")
+        .then((res) => setLiveWallets(res.wallets))
+        .catch(() => {
+          // Soft-fail: stale display is preferable to throwing
+          // inside a top-level shell component.
+        });
+    }
+    window.addEventListener(WALLET_CHANGED_EVENT, refresh);
+    return () => window.removeEventListener(WALLET_CHANGED_EVENT, refresh);
+  }, []);
+
+  const activeWallet = liveWallets?.find((w) => w.currency === activeCurrency);
   const balanceText = activeWallet
     ? fromMicro(BigInt(activeWallet.availableMicro))
     : "0";
@@ -113,7 +151,7 @@ export function WalletPill({ wallets }: { wallets?: WalletSnapshot[] }) {
 
       {open ? (
         <CurrencyPopover
-          wallets={wallets ?? []}
+          wallets={liveWallets ?? []}
           activeCurrency={activeCurrency}
           onPick={(c) => {
             slip.setCurrency(c);

@@ -6,6 +6,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -112,7 +113,7 @@ func Lock(ctx context.Context, tx pgx.Tx, ticketID string) (status string, ok bo
 SELECT status FROM tickets
  WHERE id = $1
    FOR UPDATE SKIP LOCKED`, ticketID).Scan(&status)
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}
 	if err != nil {

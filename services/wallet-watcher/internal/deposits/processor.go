@@ -118,13 +118,19 @@ func (p *Processor) handleOne(ctx context.Context, it store.PendingIntent, head 
 	}
 
 	if res.Reverted {
-		_ = p.st.RejectIntent(ctx, it.ID, "tx_reverted")
+		if err := p.st.RejectIntent(ctx, it.ID, "tx_reverted"); err != nil {
+			p.log.Warn().Err(err).Str("intent", it.ID).Msg("reject (tx_reverted) failed; will retry next tick")
+			return
+		}
 		p.log.Info().Str("intent", it.ID).Str("tx", it.TxHash).Msg("intent rejected: tx_reverted")
 		return
 	}
 
 	if !res.Match {
-		_ = p.st.RejectIntent(ctx, it.ID, "no_usdc_transfer_to_receive_address")
+		if err := p.st.RejectIntent(ctx, it.ID, "no_usdc_transfer_to_receive_address"); err != nil {
+			p.log.Warn().Err(err).Str("intent", it.ID).Msg("reject (no_match) failed; will retry next tick")
+			return
+		}
 		p.log.Info().
 			Str("intent", it.ID).
 			Str("tx", it.TxHash).
@@ -162,7 +168,9 @@ func (p *Processor) handleOne(ctx context.Context, it store.PendingIntent, head 
 
 	if confirmations < threshold {
 		if confirmations != it.Confirmations {
-			_ = p.st.UpdateIntentConfirmations(ctx, it.ID, confirmations)
+			if err := p.st.UpdateIntentConfirmations(ctx, it.ID, confirmations); err != nil {
+				p.log.Warn().Err(err).Str("intent", it.ID).Msg("update confirmations failed; will retry next tick")
+			}
 		}
 		return
 	}

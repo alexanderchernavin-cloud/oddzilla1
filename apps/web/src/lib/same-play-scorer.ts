@@ -353,15 +353,3 @@ function candidateSharesTeam(
   return names.size < 4;
 }
 
-// Coarse role inference from a moneyline-style price. Used by the
-// BE to label the originator and each candidate; reused here so
-// tests can drive the same heuristic without round-tripping the
-// API. Thresholds follow common sportsbook intuition: < 1.8 is the
-// favourite, > 2.4 is the underdog, in between is "even".
-export function inferRole(odds: string | number): SamePlayRole {
-  const n = typeof odds === "string" ? parseFloat(odds) : odds;
-  if (!Number.isFinite(n)) return "even";
-  if (n < 1.8) return "favorite";
-  if (n > 2.4) return "underdog";
-  return "even";
-}

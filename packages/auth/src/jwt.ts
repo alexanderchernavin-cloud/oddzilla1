@@ -33,12 +33,10 @@ export async function verifyAccessToken(
   token: string,
   secret: Uint8Array,
 ): Promise<AccessTokenClaims> {
-  // Pin the algorithm explicitly. With a symmetric secret jose would reject
-  // asymmetric algs at runtime, but naming HS256 forecloses future confusion.
-  // Audience is verified non-strictly during the rollout — once every
-  // existing access token has refreshed (≤ 15 minutes after deploy) the
-  // verifier accepts only tokens that carry our aud. New tokens always
-  // include it, so steady-state behaviour is strict.
+  // Pin the algorithm explicitly. With a symmetric secret jose would
+  // reject asymmetric algs at runtime, but naming HS256 forecloses
+  // future confusion. Audience is verified strictly — every token
+  // issued by signAccessToken above carries `aud=oddzilla-api`.
   const { payload } = await jwtVerify(token, secret, {
     issuer: ISSUER,
     algorithms: ["HS256"],

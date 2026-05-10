@@ -136,7 +136,7 @@ func (s *Settler) applyMarketSettle(ctx context.Context, eventURN string, ts int
 	specs := oddinxml.Parse(market.Specifiers)
 	specsHash := oddinxml.Hash(specs)
 
-	payloadHash := hashMarketPayload("settle", eventURN, market, rawBody)
+	payloadHash := hashMarketPayload("settle", eventURN, market)
 	payloadJSON, _ := json.Marshal(marketAuditPayload(eventURN, ts, market))
 
 	tx, err := s.store.BeginTx(ctx)
@@ -336,7 +336,7 @@ func (s *Settler) applyMarketCancel(ctx context.Context, eventURN string, ts int
 	specs := oddinxml.Parse(market.Specifiers)
 	specsHash := oddinxml.Hash(specs)
 
-	payloadHash := hashMarketPayload("cancel", eventURN, market, rawBody)
+	payloadHash := hashMarketPayload("cancel", eventURN, market)
 	payloadJSON, _ := json.Marshal(marketAuditPayload(eventURN, ts, market))
 
 	tx, err := s.store.BeginTx(ctx)
@@ -508,7 +508,7 @@ func (s *Settler) handleRollbackSettlement(ctx context.Context, body []byte) err
 func (s *Settler) applyMarketRollbackSettle(ctx context.Context, eventURN string, ts int64, rawBody []byte, market oddinxml.Market) error {
 	specs := oddinxml.Parse(market.Specifiers)
 	specsHash := oddinxml.Hash(specs)
-	payloadHash := hashMarketPayload("rollback_settle", eventURN, market, rawBody)
+	payloadHash := hashMarketPayload("rollback_settle", eventURN, market)
 	payloadJSON, _ := json.Marshal(marketAuditPayload(eventURN, ts, market))
 
 	tickets, err := s.applyRollback(ctx, eventURN, ts, market, specsHash, "rollback_settle", payloadHash, payloadJSON)
@@ -547,7 +547,7 @@ func (s *Settler) handleRollbackCancel(ctx context.Context, body []byte) error {
 func (s *Settler) applyMarketRollbackCancel(ctx context.Context, eventURN string, ts int64, rawBody []byte, market oddinxml.Market) error {
 	specs := oddinxml.Parse(market.Specifiers)
 	specsHash := oddinxml.Hash(specs)
-	payloadHash := hashMarketPayload("rollback_cancel", eventURN, market, rawBody)
+	payloadHash := hashMarketPayload("rollback_cancel", eventURN, market)
 	payloadJSON, _ := json.Marshal(marketAuditPayload(eventURN, ts, market))
 
 	tickets, err := s.applyRollback(ctx, eventURN, ts, market, specsHash, "rollback_cancel", payloadHash, payloadJSON)
@@ -715,7 +715,7 @@ func (s *Settler) publishTicketEvent(ctx context.Context, ticketID, status, reas
 	}
 }
 
-func hashMarketPayload(settlementType, eventURN string, market oddinxml.Market, _ []byte) []byte {
+func hashMarketPayload(settlementType, eventURN string, market oddinxml.Market) []byte {
 	// Hash a canonical representation so retries of the same data (but
 	// re-serialized XML) map to the same key. We deliberately exclude
 	// the raw AMQP body — including it meant two semantically-identical

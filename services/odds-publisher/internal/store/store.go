@@ -89,6 +89,14 @@ SELECT scope::text, scope_ref_id, payback_margin_bp
 		marketType: map[int]int{},
 		fetchedAt:  time.Now(),
 	}
+	// Resolve each per-scope row into the matching map. The scope_ref_id
+	// column is stored as text but always holds a serialised int for
+	// these three scopes.
+	scopeMap := map[string]map[int]int{
+		"sport":       mc.sport,
+		"tournament":  mc.tournament,
+		"market_type": mc.marketType,
+	}
 	for rows.Next() {
 		var scope string
 		var refID sql.NullString
@@ -96,30 +104,17 @@ SELECT scope::text, scope_ref_id, payback_margin_bp
 		if err := rows.Scan(&scope, &refID, &bp); err != nil {
 			return nil, err
 		}
-		switch scope {
-		case "global":
+		if scope == "global" {
 			mc.global = bp
-		case "sport":
-			if refID.Valid {
-				var sid int
-				if _, err := fmt.Sscanf(refID.String, "%d", &sid); err == nil {
-					mc.sport[sid] = bp
-				}
-			}
-		case "tournament":
-			if refID.Valid {
-				var tid int
-				if _, err := fmt.Sscanf(refID.String, "%d", &tid); err == nil {
-					mc.tournament[tid] = bp
-				}
-			}
-		case "market_type":
-			if refID.Valid {
-				var mt int
-				if _, err := fmt.Sscanf(refID.String, "%d", &mt); err == nil {
-					mc.marketType[mt] = bp
-				}
-			}
+			continue
+		}
+		dest, ok := scopeMap[scope]
+		if !ok || !refID.Valid {
+			continue
+		}
+		var id int
+		if _, err := fmt.Sscanf(refID.String, "%d", &id); err == nil {
+			dest[id] = bp
 		}
 	}
 	return mc, rows.Err()
@@ -199,5 +194,3 @@ VALUES ($1, $2, $3::numeric, $4::numeric, $5::numeric, $6)`
 	return nil
 }
 
-// Pool exposes the underlying pool for future callers.
-func (s *Store) Pool() *pgxpool.Pool { return s.pool }

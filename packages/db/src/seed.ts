@@ -2,10 +2,12 @@
 //
 // Inserts:
 //   - 4 Oddin esports (CS2, DOTA2, LOL, Valorant)
-//   - A dummy category per sport (is_dummy=true, slug=same as sport)
+//   - A dummy category per sport (is_dummy=true, slug matches sport)
 //   - Admin user + test user (argon2id hashed passwords)
-//   - Zero-balance wallets for both users
-//   - Global odds_config row at 500 bp (5%) payback margin
+//   - Zero-balance USDC + OZ wallets for both users (signup bonus is
+//     intentionally NOT applied in dev — only real signups get OZ)
+//   - Global odds_config row at 0 bp (Oddin ships margined odds — see
+//     CLAUDE.md "Published odds margin" entry)
 
 import argon2 from "@node-rs/argon2";
 import { eq, sql } from "drizzle-orm";

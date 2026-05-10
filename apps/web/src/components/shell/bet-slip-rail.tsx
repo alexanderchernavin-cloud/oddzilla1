@@ -29,6 +29,7 @@ import { I } from "@/components/ui/icons";
 import { Button } from "@/components/ui/primitives";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { useMobileDrawers } from "./mobile-drawer-context";
+import { dispatchWalletChanged } from "./wallet-pill";
 import { RailPrematchPanel } from "@/components/widgets/rail-prematch-panel";
 import type {
   SlipSelection,
@@ -209,12 +210,20 @@ export function BetSlipRail() {
       .join("|");
   }, [isBetBuilder, builderMatchId, selections]);
   const [builderError, setBuilderError] = useState<string | null>(null);
+  // `slip.betbuilderQuote` is consumed inside the effect so that a
+  // freshly-nulled quote (e.g. after acceptPendingOdds promotes drift
+  // in builder mode without changing the leg set) re-triggers the
+  // fetch. Without this dep the effect would skip the re-quote
+  // because `builderLegSig` is unchanged.
+  const currentQuote = slip.betbuilderQuote;
   useEffect(() => {
     if (!isBetBuilder || !builderMatchId || builderLegSig === "") {
       // Either not in builder mode or empty leg list — clear quote.
       slip.setBetbuilderQuote(null);
       return;
     }
+    // Already have a fresh quote for this leg set — nothing to do.
+    if (currentQuote) return;
     const sameMatch = selections.filter((s) => s.matchId === builderMatchId);
     let cancelled = false;
     setBuilderError(null);
@@ -257,12 +266,15 @@ export function BetSlipRail() {
     return () => {
       cancelled = true;
     };
-    // builderLegSig captures everything material to the leg set; the
-    // rest of the deps are stable references managed by the slip store.
-    // (The `react-hooks/exhaustive-deps` rule is not configured in this
-    // repo's ESLint, so a `// eslint-disable-next-line` for it would
-    // fail Next.js's lint pass with "Definition for rule … not found".)
-  }, [isBetBuilder, builderMatchId, builderLegSig]);
+    // builderLegSig captures everything material to the leg set;
+    // currentQuote covers the accept-odds-in-builder-mode case where
+    // the quote gets nulled without the leg list changing. The rest
+    // of the deps are stable references managed by the slip store.
+    // (The `react-hooks/exhaustive-deps` rule is not configured in
+    // this repo's ESLint, so a `// eslint-disable-next-line` for it
+    // would fail Next.js's lint pass with "Definition for rule …
+    // not found".)
+  }, [isBetBuilder, builderMatchId, builderLegSig, currentQuote]);
 
   // Combined odds = product of all selection odds (combo accumulator).
   // Used for single + combo display.
@@ -453,6 +465,12 @@ export function BetSlipRail() {
       setPlacedTicketId(res.ticket.id);
       slip.clear();
       router.refresh();
+      // Stake debit landed — refresh the top-bar wallet pill so the
+      // balance reflects the placement without waiting for the next
+      // full navigation. (router.refresh() rebuilds the page but the
+      // top-bar prop comes from the layout's SSR fetch, which the
+      // pill mirrors locally — the event nudges it to re-pull.)
+      dispatchWalletChanged();
       // Surface the new ticket in-rail by flipping to History — the slip
       // body now also shows a placement-success card, but the user usually
       // wants to watch their fresh ticket pick up status.

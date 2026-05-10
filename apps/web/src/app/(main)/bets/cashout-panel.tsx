@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { fromMicro } from "@oddzilla/types/money";
 import type { CashoutQuote, TicketSummary } from "@oddzilla/types";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
+import { dispatchWalletChanged } from "@/components/shell/wallet-pill";
 
 // 5s cadence balances offer freshness against backend load. With 1000+
 // concurrent open tickets that's 200 quotes/s — comfortable for one
@@ -132,6 +133,10 @@ export function CashoutPanel({ ticket, onCashedOut }: Props) {
         }),
       });
       onCashedOut(res.ticketId, res.payoutMicro, res.cashedOutAt);
+      // Refund credited to the wallet — nudge the top-bar pill to
+      // refetch so the user sees the new balance without having to
+      // navigate first.
+      dispatchWalletChanged();
     } catch (e) {
       if (e instanceof ApiFetchError) {
         if (

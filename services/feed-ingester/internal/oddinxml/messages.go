@@ -185,11 +185,11 @@ type FixtureChange struct {
 // MatchStatusChange announces a transition in the match's lifecycle status
 // (not_started → live → ended → closed → cancelled). Oddin's protocol
 // follows the Sportradar UOF convention; the `status` attribute is a
-// numeric code documented at GET /v1/descriptions/en/match_status. We've
-// observed that the integration broker emits these only sparsely (many
-// matches end without one ever arriving — see the phantom-drain
-// background worker), so this handler is a best-effort fast path; the
-// REST-driven drain is the authoritative cleanup.
+// numeric code documented at GET /v1/descriptions/en/match_status. The
+// integration broker for bookmaker 142 doesn't actually emit this
+// message — `<sport_event_status>` rides inside every odds_change and
+// is the authoritative lifecycle signal — but the struct stays defined
+// for bookmakers that do.
 type MatchStatusChange struct {
 	XMLName   xml.Name `xml:"match_status_change"`
 	EventID   string   `xml:"event_id,attr"`

@@ -250,19 +250,23 @@ wss.on("connection", (ws: WebSocket, _req: IncomingMessage, claims: AccessTokenC
     send(ws, { type: "error", message: "unknown_message_type" });
   });
 
-  ws.on("close", () => {
-    for (const matchId of state.matchIds) {
-      decrementMatchRef(matchId);
-    }
-    state.matchIds.clear();
-    if (claims) decrementUserRef(claims.sub);
-    clients.delete(state);
-  });
+  ws.on("close", () => cleanupClient(state));
 
   ws.on("error", (err) => {
     log.debug({ err: err.message }, "client error");
   });
 });
+
+// Release every Redis-side refcount the client held and remove it
+// from the active set. Called from both the WebSocket close event
+// and the periodic stale sweep; the two paths previously inlined
+// identical cleanup logic.
+function cleanupClient(client: ClientState) {
+  for (const matchId of client.matchIds) decrementMatchRef(matchId);
+  client.matchIds.clear();
+  if (client.userId) decrementUserRef(client.userId);
+  clients.delete(client);
+}
 
 function subscribe(state: ClientState, matchIds: string[]) {
   for (const m of matchIds) {
@@ -388,10 +392,7 @@ const staleSweep = setInterval(() => {
       client.socket.readyState === WebSocket.CLOSED ||
       client.socket.readyState === WebSocket.CLOSING
     ) {
-      for (const matchId of client.matchIds) decrementMatchRef(matchId);
-      client.matchIds.clear();
-      if (client.userId) decrementUserRef(client.userId);
-      clients.delete(client);
+      cleanupClient(client);
       dropped += 1;
     }
   }
