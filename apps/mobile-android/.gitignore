@@ -1,0 +1,29 @@
+# Gradle
+.gradle/
+build/
+**/build/
+local.properties
+.kotlin/
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+*.ipr
+*.iws
+captures/
+
+# Generated wrapper jar — recreated on first sync (`gradle wrapper`)
+gradle/wrapper/gradle-wrapper.jar
+
+# Signing config — keystore + passwords live outside the repo
+keystore.properties
+*.jks
+*.keystore
+
+# Firebase config — drop in per-environment google-services.json once
+# the Firebase project is created (see app/src/main/java/cc/oddzilla/app/fcm/README.md)
+app/google-services.json
+
+# OS noise
+.DS_Store
+Thumbs.db

@@ -1,0 +1,3 @@
+# Copy to local.properties (gitignored) and edit. Android Studio writes
+# this on first project open if you don't pre-create it.
+sdk.dir=C\:\\Users\\<you>\\AppData\\Local\\Android\\Sdk

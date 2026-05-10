@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Static colors only — Compose Theme.kt is the source of truth for
+     runtime UI colors. These are referenced by AndroidManifest /
+     adaptive icons / splash screen which need XML-resolvable values. -->
+<resources>
+    <color name="brand_cream">#F4F2EC</color>
+    <color name="brand_ink">#0D0D0C</color>
+    <color name="brand_ink_invert">#F5F3EC</color>
+    <color name="brand_dark_bg">#0B0B0C</color>
+</resources>

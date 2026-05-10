@@ -145,6 +145,13 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
+      # Static APK distribution for the Android app. /srv/oddzilla-apk
+      # on the host holds version.json + oddzilla-<version>.apk files;
+      # a release is `scp` + edit-version.json (no Caddy restart). The
+      # mount is read-only so a Caddy RCE can't tamper with installer
+      # bytes en route to user devices. Bootstrap the directory once
+      # via infra/hetzner/oddzilla-apk-init.sh.
+      - /srv/oddzilla-apk:/srv/oddzilla-apk:ro
     environment:
       FRONTEND_HOST: ${FRONTEND_HOST:-localhost}
       ADMIN_HOST: ${ADMIN_HOST:-admin.localhost}

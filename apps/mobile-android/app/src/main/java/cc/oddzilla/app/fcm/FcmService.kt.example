@@ -1,0 +1,70 @@
+// FcmService.kt — MOVE TO src/main/java/cc/oddzilla/app/fcm/FcmService.kt
+// (drop the .example suffix) once a Firebase project is wired up.
+// See app/src/main/java/cc/oddzilla/app/fcm/README.md for the full
+// 5-step setup; the file lives as .example until then so the build
+// doesn't depend on Firebase deps that aren't yet on the classpath.
+
+/*
+package cc.oddzilla.app.fcm
+
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
+import android.os.Build
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import cc.oddzilla.app.OddzillaApp
+import cc.oddzilla.app.R
+import com.google.firebase.messaging.FirebaseMessagingService
+import com.google.firebase.messaging.RemoteMessage
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+
+class FcmService : FirebaseMessagingService() {
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val channelId = "oddzilla-default"
+
+    override fun onNewToken(token: String) {
+        // Register the new token with the API. The endpoint is
+        // idempotent and revokes the same token on any other user
+        // (defends against hand-me-down phones). Failures retry on
+        // next app foreground via DevicesRepository.register().
+        val deps = (application as OddzillaApp).deps
+        scope.launch {
+            runCatching { deps.devicesRepository.register(token) }
+        }
+    }
+
+    override fun onMessageReceived(message: RemoteMessage) {
+        val title = message.notification?.title ?: message.data["title"] ?: "Oddzilla"
+        val body = message.notification?.body ?: message.data["body"] ?: return
+        val deepLink = message.data["deepLink"]   // e.g. "match/12345" or "bets"
+        ensureChannel()
+        val notification = NotificationCompat.Builder(this, channelId)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setAutoCancel(true)
+            .build()
+        val nm = ContextCompat.getSystemService(this, NotificationManager::class.java)
+        nm?.notify(deepLink?.hashCode() ?: 0, notification)
+    }
+
+    private fun ensureChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val nm = ContextCompat.getSystemService(this, NotificationManager::class.java) ?: return
+        if (nm.getNotificationChannel(channelId) != null) return
+        val channel = NotificationChannel(
+            channelId,
+            "Bet updates",
+            NotificationManager.IMPORTANCE_DEFAULT,
+        ).apply {
+            description = "Bet acceptance, settlement, cashout offers, copy-bet inspirations."
+        }
+        nm.createNotificationChannel(channel)
+    }
+}
+*/

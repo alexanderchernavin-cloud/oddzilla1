@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Pure framework theme — no AppCompat or Material 2/3 XML
+         dependency. Compose's `OddzillaTheme` provides the actual
+         color scheme + typography at runtime. The Activity theme just
+         needs to:
+           · Be edge-to-edge friendly (no action bar)
+           · Match the brand background under the splash so there's
+             no flash before the Compose UI mounts. -->
+    <style name="Theme.Oddzilla" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="m">true</item>
+        <item name="android:enforceStatusBarContrast" tools:targetApi="29">false</item>
+        <item name="android:enforceNavigationBarContrast" tools:targetApi="29">false</item>
+    </style>
+
+    <!-- Splash theme uses the system splash screen API: a brand
+         monogram on the cream background. After Activity#onCreate()
+         we install the regular Theme.Oddzilla via setTheme(). -->
+    <style name="Theme.Oddzilla.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/brand_cream</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_splash_logo</item>
+        <item name="postSplashScreenTheme">@style/Theme.Oddzilla</item>
+    </style>
+</resources>
