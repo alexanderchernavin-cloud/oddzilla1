@@ -4,7 +4,7 @@
 //
 // Routes:
 //   GET  /catalog/sports                          active sports
-//   GET  /catalog/sports/:slug                    sport + matches (?tournament=N filter)
+//   GET  /catalog/sports/:slug                    sport + matches (?tournament=N | ?team=N filter)
 //   GET  /catalog/sports/:slug/tournaments        tournaments under a sport + live counts
 //   GET  /catalog/matches                         cross-sport list (live | upcoming)
 //   GET  /catalog/matches/:id                     match + tournament/sport + markets
@@ -92,6 +92,7 @@ const matchListQuery = z.object({
   live: z.coerce.boolean().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   tournament: z.coerce.number().int().positive().optional(),
+  team: z.coerce.number().int().positive().optional(),
 });
 
 // Postgres returns NUMERIC(10,4) as "3.1400" or "3.1429" (pre-2026-04-18
@@ -597,6 +598,27 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .limit(1);
     if (!sport) throw new NotFoundError("sport_not_found", "sport_not_found");
 
+    // Resolve the team filter (if any) before the matches query so we can
+    // surface the team's name back to the storefront for the chip. Scoped
+    // to this sport: a team id from a different sport (or unknown id)
+    // yields filteredTeam=null AND a list-narrowing predicate that
+    // returns no rows — never silently falls back to "all matches".
+    let filteredTeam: { id: number; name: string } | null = null;
+    if (q.team) {
+      const [t] = await app.db
+        .select({ id: competitors.id, name: competitors.name })
+        .from(competitors)
+        .where(
+          and(
+            eq(competitors.id, q.team),
+            eq(competitors.sportId, sport.id),
+            eq(competitors.active, true),
+          ),
+        )
+        .limit(1);
+      if (t) filteredTeam = t;
+    }
+
     const matchStatusCondition = q.live
       ? eq(matches.status, "live")
       : inArray(matches.status, ["not_started", "live"]);
@@ -632,6 +654,12 @@ export default async function catalogRoutes(app: FastifyInstance) {
           hasActiveMarket,
           notHiddenTournament,
           q.tournament ? eq(tournaments.id, q.tournament) : undefined,
+          q.team
+            ? or(
+                eq(matches.homeCompetitorId, q.team),
+                eq(matches.awayCompetitorId, q.team),
+              )
+            : undefined,
         ),
       )
       .orderBy(desc(matches.status), matches.scheduledAt)
@@ -728,6 +756,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         name: sport.name,
       },
       topConfigured: (topIdsBySport.get(sport.id) ?? []).length > 0,
+      filteredTeam,
       matches: rows.map((r) => {
         const o = oddsByMatch.get(r.matchId.toString());
         const top = topMarkets.get(r.matchId.toString()) ?? null;
