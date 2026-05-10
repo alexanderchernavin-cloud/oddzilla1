@@ -100,9 +100,14 @@ ssh team@178.104.174.24 "cd /home/team/oddzilla && \
   pnpm --filter @oddzilla/db db:migrate"
 ```
 
-For tighter loops, GitHub Actions can ssh + pull + compose on merge to
-`main` (workflow at [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml)
-— not yet added; add when there's a second collaborator).
+For a one-click deploy from anywhere (laptop, phone, an environment
+without SSH egress to the box), the
+[`Deploy` workflow](../.github/workflows/deploy.yml) wraps the same
+sequence: GitHub → Actions → Deploy → **Run workflow**, fill in the
+services to rebuild (default `ws-gateway`), tick `run_migrations` only
+when the PR shipped a Drizzle migration. The workflow needs a one-time
+`DEPLOY_SSH_KEY` repo secret — setup steps in the workflow file's
+header comment.
 
 ## Environment variables
 
