@@ -349,7 +349,7 @@ function buildNavItems(r: SearchResponse | null): NavItem[] {
   for (const team of r.teams) {
     out.push({
       kind: "team",
-      href: `/sport/${team.sport.slug}`,
+      href: `/sport/${team.sport.slug}?team=${team.id}`,
       team,
     });
   }
@@ -431,7 +431,7 @@ function ResultGroups({
         <Row
           key={`c-${team.id}`}
           active={i === activeIndex}
-          href={`/sport/${team.sport.slug}`}
+          href={`/sport/${team.sport.slug}?team=${team.id}`}
           onHover={() => onHoverIndex(i)}
           onPick={onPick}
           left={<TeamMark tag={tag} size={22} logoUrl={team.logoUrl} name={team.name} />}

@@ -12,6 +12,7 @@ import { I } from "@/components/ui/icons";
 interface SportResponse {
   sport: { id: number; slug: string; name: string };
   topConfigured: boolean;
+  filteredTeam: { id: number; name: string } | null;
   matches: ListMatch[];
 }
 
@@ -34,13 +35,15 @@ export default async function SportPage({
   searchParams,
 }: {
   params: Promise<{ slug: string }>;
-  searchParams: Promise<{ tournament?: string }>;
+  searchParams: Promise<{ tournament?: string; team?: string }>;
 }) {
   const { slug } = await params;
   const sp = await searchParams;
   const tournamentId = sp.tournament && /^\d+$/.test(sp.tournament) ? sp.tournament : null;
+  const teamId = sp.team && /^\d+$/.test(sp.team) ? sp.team : null;
   const qs = new URLSearchParams({ limit: "100" });
   if (tournamentId) qs.set("tournament", tournamentId);
+  if (teamId) qs.set("team", teamId);
   const data = await serverApi<SportResponse>(
     `/catalog/sports/${slug}?${qs.toString()}`,
   );
@@ -49,6 +52,13 @@ export default async function SportPage({
   const filteredTournamentName = tournamentId
     ? data.matches.find((m) => String(m.tournament.id) === tournamentId)?.tournament.name ?? null
     : null;
+  const filteredTeamName = data.filteredTeam?.name ?? null;
+  const clearTeamHref = tournamentId
+    ? `/sport/${slug}?tournament=${tournamentId}`
+    : `/sport/${slug}`;
+  const clearTournamentHref = teamId
+    ? `/sport/${slug}?team=${teamId}`
+    : `/sport/${slug}`;
 
   const sportShort = shortName(data.sport.name);
   const enriched = data.matches.map((m) =>
@@ -120,49 +130,32 @@ export default async function SportPage({
         </div>
       </header>
 
-      {tournamentId && (
+      {(tournamentId || teamId) && (
         <div
           style={{
-            display: "inline-flex",
+            display: "flex",
             alignItems: "center",
             alignSelf: "flex-start",
+            flexWrap: "wrap",
             gap: 8,
-            padding: "6px 6px 6px 12px",
-            background: "var(--surface-2)",
-            border: "1px solid var(--border)",
-            borderRadius: 999,
-            fontSize: 12.5,
-            color: "var(--fg)",
           }}
         >
-          <span
-            className="mono"
-            style={{
-              fontSize: 10.5,
-              letterSpacing: "0.12em",
-              textTransform: "uppercase",
-              color: "var(--fg-dim)",
-            }}
-          >
-            Tournament
-          </span>
-          <span>{filteredTournamentName ?? "Filtered"}</span>
-          <Link
-            href={`/sport/${slug}`}
-            aria-label="Clear tournament filter"
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: 22,
-              height: 22,
-              borderRadius: 999,
-              color: "var(--fg-muted)",
-              textDecoration: "none",
-            }}
-          >
-            <I.Close size={13} />
-          </Link>
+          {tournamentId && (
+            <FilterChip
+              label="Tournament"
+              value={filteredTournamentName ?? "Filtered"}
+              clearHref={clearTournamentHref}
+              clearAriaLabel="Clear tournament filter"
+            />
+          )}
+          {teamId && (
+            <FilterChip
+              label="Team"
+              value={filteredTeamName ?? "Filtered"}
+              clearHref={clearTeamHref}
+              clearAriaLabel="Clear team filter"
+            />
+          )}
         </div>
       )}
 
@@ -226,4 +219,61 @@ function shortName(name: string): string {
   if (name === "Dota 2") return "Dota 2";
   if (name === "Rocket League") return "RL";
   return name;
+}
+
+function FilterChip({
+  label,
+  value,
+  clearHref,
+  clearAriaLabel,
+}: {
+  label: string;
+  value: string;
+  clearHref: string;
+  clearAriaLabel: string;
+}) {
+  return (
+    <div
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "6px 6px 6px 12px",
+        background: "var(--surface-2)",
+        border: "1px solid var(--border)",
+        borderRadius: 999,
+        fontSize: 12.5,
+        color: "var(--fg)",
+      }}
+    >
+      <span
+        className="mono"
+        style={{
+          fontSize: 10.5,
+          letterSpacing: "0.12em",
+          textTransform: "uppercase",
+          color: "var(--fg-dim)",
+        }}
+      >
+        {label}
+      </span>
+      <span>{value}</span>
+      <Link
+        href={clearHref}
+        aria-label={clearAriaLabel}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 22,
+          height: 22,
+          borderRadius: 999,
+          color: "var(--fg-muted)",
+          textDecoration: "none",
+        }}
+      >
+        <I.Close size={13} />
+      </Link>
+    </div>
+  );
 }
