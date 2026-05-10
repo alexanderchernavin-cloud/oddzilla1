@@ -489,8 +489,6 @@ func flushBeforeRecover(ctx context.Context, deps handler.Deps, log zerolog.Logg
 		return
 	}
 	log.Warn().
-		Int64("deleted_markets", summary.DeletedMarkets).
-		Int64("deleted_matches", summary.DeletedMatches).
 		Int64("suspended_markets", summary.SuspendedMarkets).
 		Int64("suspended_outcomes", summary.SuspendedOutcomes).
 		Msg("flush-before-recover complete; awaiting replay to re-activate")

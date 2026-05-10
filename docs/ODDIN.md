@@ -307,24 +307,32 @@ Every AMQP (re)connect runs `store.FlushAndSuspendActiveCatalog` BEFORE
 calling `InitiateRecovery`. This is unconditional — no staleness
 threshold. Rationale: even a few seconds of feed gap can leave a market
 quoting odds Oddin already moved off of, and a single placement at
-stale odds is a real-money loss. Three steps inside one transaction:
+stale odds is a real-money loss. Two steps inside one transaction:
 
-1. DELETE markets on `not_started`/`live` matches with no
-   `ticket_selections` row and no `settlements` row (cascades to
-   `market_outcomes`). Money-attached markets are physically protected
-   by the RESTRICT FKs and fall through.
-2. DELETE matches left with no markets (cascades to `feed_messages`,
-   refilled by the subsequent replay).
-3. SUSPEND surviving (money-attached) markets to `status=-1`, null
-   `published_odds` / `raw_odds` / `probability` and set
-   `market_outcomes.active=false`. Storefront and bet placement both
-   reject `status != 1`, so nothing is bettable until the replay
-   re-activates.
+1. UPDATE markets → `status = -1` for every market currently at
+   `status = 1` on a `not_started` / `live` match.
+2. UPDATE market_outcomes → `published_odds = NULL`, `raw_odds = NULL`,
+   `probability = NULL`, `active = FALSE` for every outcome on a
+   `not_started` / `live` match. Storefront and bet placement both
+   reject `status != 1` and the bet-slip's drift-accept logic refuses to
+   price anything with `published_odds = NULL`, so nothing is bettable
+   until the replay refills prices.
 
 After the flush, recovery runs as usual. Anything Oddin doesn't replay
-stays suspended and drops out of the catalog automatically (`hasActiveMarket`
-in `services/api/src/modules/catalog/routes.ts` requires
-`status=1` markets).
+stays suspended and drops out of the catalog automatically
+(`hasActiveMarket` in `services/api/src/modules/catalog/routes.ts`
+requires `status=1` markets).
+
+The auto-path is SUSPEND only — no DELETE — because the bulk DELETE
+races with concurrent settlement INSERTs on `settlements.market_id`
+(no `ON DELETE` action) and trips an FK violation that aborts the
+whole tx. SUSPEND is race-safe because UPDATE on the parent doesn't
+trigger child FK checks; and the catalog filter gates on
+`markets.status=1` so a suspended row is invisible whether or not its
+parent match still exists. The admin manual route
+(`POST /admin/feed/recovery` with `flushOdds=true`) keeps its DELETE
+step for operator-initiated full-catalog rebuilds where the race isn't
+a concern.
 
 The 2026-05-09 disk-full incident wedged 33 matches because the AMQP
 recovery replay didn't carry their terminal `sport_event_status` —
