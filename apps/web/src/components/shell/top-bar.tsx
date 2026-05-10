@@ -85,7 +85,15 @@ export function TopBar({ signedIn, user, wallets }: TopBarProps) {
 
       <div style={{ flex: 1 }} />
 
-      <ThemeToggle />
+      {/* Theme toggle hides under 720px (.oz-topbar-theme rule in
+          globals.css) — at that breakpoint a logged-in user already has
+          the hamburger + wordmark + wallet pill + avatar competing for
+          the row, and the toggle is duplicated as a row in the sidebar
+          drawer below. Logged-out users get a smaller log-in pill so the
+          desktop version stays visible to them at every size. */}
+      <span className="oz-topbar-theme">
+        <ThemeToggle />
+      </span>
 
       {signedIn && user ? (
         <>

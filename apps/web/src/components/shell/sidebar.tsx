@@ -8,6 +8,7 @@ import { I } from "@/components/ui/icons";
 import { LiveDot } from "@/components/ui/primitives";
 import { TierMark, isFeaturedTier } from "@/components/ui/tier-mark";
 import { clientApi } from "@/lib/api-client";
+import { ThemeToggle } from "./theme-toggle";
 
 interface SportItem {
   slug: string;
@@ -221,10 +222,30 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
       )}
 
       <div style={{ flex: 1 }} />
+      {/* Theme toggle on mobile only — the top-bar one is hidden under
+          720px (.oz-topbar-theme in globals.css) to make room for the
+          wallet pill + avatar, so users still need a way to flip themes
+          from inside the sidebar drawer. Desktop keeps using the top-bar
+          toggle to avoid a duplicate control on the same screen. */}
+      <div
+        className="oz-sidebar-theme"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "4px 8px",
+          marginTop: 8,
+          fontSize: 13,
+          color: "var(--fg-muted)",
+        }}
+      >
+        <ThemeToggle />
+        <span>Toggle theme</span>
+      </div>
       <div
         style={{
           padding: 12,
-          marginTop: 12,
+          marginTop: 4,
           fontSize: 11,
           color: "var(--fg-dim)",
           lineHeight: 1.5,
