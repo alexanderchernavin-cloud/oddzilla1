@@ -111,12 +111,15 @@ export default async function zillatipsRoutes(app: FastifyInstance) {
       .object({ matchId: z.coerce.bigint() })
       .parse(request.params);
 
-    // v4: per-outcome aggregation now combines both teams' trails
-    // for symmetric markets (Totals, Parity, BTTS, …) into a single
-    // tip with up to 10 legs across two rows. Response shape changed
-    // from flat `legs` to per-team `rows[]`. Bump the key so cached
-    // v3 single-team shapes don't trickle through the 5-min TTL.
-    const cacheKey = `zillatips:v4:${matchId.toString()}`;
+    // v5: "{side}"-specifier markets (Team home/away total goals,
+    // home/away wins at least one map, …) are now correctly handled.
+    // They only generate one tip — for the team the side specifier
+    // identifies — and the historical lookup joins the past market
+    // by matching "side" to the team's role in that match, so a
+    // role-flipped past match (different specifiers_hash) still
+    // contributes. Bump key so cached v4 (wrong-team / missing-past
+    // -match) shapes drain.
+    const cacheKey = `zillatips:v5:${matchId.toString()}`;
     const payload = await cached<ZillaTipsResponse>(
       app.redis,
       cacheKey,
@@ -187,6 +190,14 @@ async function loadTips(
         mk.id AS market_id,
         mk.provider_market_id,
         mk.specifiers_hash,
+        -- specifiers_json carries through so downstream CTEs can
+        -- detect "{side}"-specifier markets (Team home/away total
+        -- goals, "home wins at least one map", etc.). These are
+        -- team-specific to whichever side the "side" specifier
+        -- identifies — NOT symmetric — and a role-flipped past
+        -- match lives under the MIRRORED "side" value (different
+        -- specifiers_hash).
+        mk.specifiers_json,
         cm.home_competitor_id,
         cm.away_competitor_id
       FROM markets mk
@@ -200,6 +211,7 @@ async function loadTips(
         cms.market_id,
         cms.provider_market_id,
         cms.specifiers_hash,
+        cms.specifiers_json,
         mo.outcome_id,
         team.competitor_id AS team_id,
         team.role
@@ -213,27 +225,35 @@ async function loadTips(
           (cms.away_competitor_id, 'away'::text)
       ) AS team(competitor_id, role)
       WHERE
-        -- Team-positional outcomes (Oddin convention): outcome "1"
-        -- means home wins/covers/triggers, "2" means away. Pair
-        -- outcome "1" with the home team ONLY and "2" with the
-        -- away team ONLY. Applies to match/map/round winners,
-        -- first-to-X, first-blood, first half winner, second half
-        -- winner — every market where the outcome is the team's
-        -- home/away index. NOT keyed off provider_market_id so new
-        -- positional-outcome markets get tips for free.
+        -- "{side}"-specifier markets: the "side" value pins the
+        -- market to ONE team (the side team). Outcomes here are
+        -- usually over/under or yes/no — symmetric for that team
+        -- in isolation. Pair only with the team whose role matches
+        -- the side specifier; ignore outcome-id positionality.
         (
-          mo.outcome_id IN ('1', '2')
+          cms.specifiers_json ? 'side'
+          AND team.role = cms.specifiers_json->>'side'
+        )
+        -- Non-side markets with team-positional outcomes "1"/"2":
+        -- outcome "1" → home only, "2" → away only. Covers
+        -- match/map/round winners, first-to-X, half winners,
+        -- match-winner-DnB (pmi 87), first-blood, etc.
+        OR (
+          NOT (cms.specifiers_json ? 'side')
+          AND mo.outcome_id IN ('1', '2')
           AND (
             (mo.outcome_id = '1' AND team.role = 'home')
             OR (mo.outcome_id = '2' AND team.role = 'away')
           )
         )
-        -- Symmetric outcomes allowlist: Oddin outcome IDs whose
-        -- semantics don't depend on which team is home/away
-        -- (over/under = 4/5, yes/no = 6/7, odd/even = 60/61).
-        -- Both teams pair with the outcome here; equiv_outcome_id
-        -- stays the same because there's nothing to flip.
-        OR mo.outcome_id IN ('4', '5', '6', '7', '60', '61')
+        -- Non-side markets with symmetric outcomes (over/under,
+        -- yes/no, odd/even). Both teams pair with the outcome;
+        -- the per-team trail aggregates into one combined tip
+        -- via the (market, outcome) grouping below.
+        OR (
+          NOT (cms.specifiers_json ? 'side')
+          AND mo.outcome_id IN ('4', '5', '6', '7', '60', '61')
+        )
     ),
     historical_per_pair AS (
       SELECT
@@ -252,18 +272,23 @@ async function loadTips(
         h.hist_market_id,
         h.team_role_hist,
         -- equiv_outcome_id: when the team's role in the past match
-        -- doesn't match its role in the current match AND the
-        -- outcome is team-positional (i.e. "1"/"2"), flip the
-        -- outcome to find the team's perspective in the past row.
-        -- Example: Astralis is AWAY now (outcome "2"), but in their
-        -- last match they were HOME. The "did Astralis win" answer
-        -- lives under outcome "1" in that past row.
-        -- Symmetric outcomes ("4","5","6","7","60","61") and the
-        -- draw-style "3" don't flip — they carry the same meaning
-        -- in either match.
+        -- differs from its role on the current match AND the outcome
+        -- is team-positional ("1"/"2") on a NON-side market, flip
+        -- the outcome to find the team's perspective in the past row.
+        --
+        -- For "{side}"-specifier markets the outcome is symmetric
+        -- for the side team (over/under, yes/no), so no flip is
+        -- needed — the cross-market join below handles the "different
+        -- specifier hash" half by matching the past market's side
+        -- value to the past team's role.
+        --
+        -- Example (non-side): Astralis is AWAY now (outcome "2"), but
+        -- in their last match they were HOME. The "did Astralis win"
+        -- answer lives under outcome "1" in that past row.
         CASE
           WHEN otp.outcome_id IN ('1', '2')
            AND h.team_role_hist <> otp.role
+           AND NOT (otp.specifiers_json ? 'side')
           THEN CASE otp.outcome_id
                  WHEN '1' THEN '2'
                  WHEN '2' THEN '1'
@@ -289,7 +314,30 @@ async function loadTips(
         JOIN markets hmk
           ON hmk.match_id = hm.id
          AND hmk.provider_market_id = otp.provider_market_id
-         AND hmk.specifiers_hash = otp.specifiers_hash
+         -- Cross-market lookup for "{side}"-specifier markets.
+         --
+         --   * Non-side market => fast path: match by the precomputed
+         --     specifiers_hash. Same as before.
+         --   * Side market => match the non-"side" part of specifiers
+         --     for equality AND match the past market's "side" value
+         --     to the team role in the past match. So "M80 wins at
+         --     least one map" looks up the side=away past market when
+         --     M80 was away, and the side=home past market when M80
+         --     was home -- covering BOTH past markets that represent
+         --     the same team question.
+         AND (
+           (NOT (otp.specifiers_json ? 'side')
+            AND hmk.specifiers_hash = otp.specifiers_hash)
+           OR
+           (otp.specifiers_json ? 'side'
+            AND hmk.specifiers_json - 'side' = otp.specifiers_json - 'side'
+            AND hmk.specifiers_json->>'side' = (
+              CASE
+                WHEN hm.home_competitor_id = otp.team_id THEN 'home'
+                ELSE 'away'
+              END
+            ))
+         )
         WHERE hm.status = 'closed'
           AND hm.live_started_at IS NOT NULL
           AND hm.live_started_at > NOW() - (${LOOKBACK_DAYS}::int * INTERVAL '1 day')
