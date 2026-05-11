@@ -96,7 +96,10 @@ function mergeMatchWithLive(
     const mw = m.matchWinner;
     const homeTick = ticks[`${mw.marketId}:${mw.home.outcomeId}`];
     const awayTick = ticks[`${mw.marketId}:${mw.away.outcomeId}`];
-    if (homeTick || awayTick) {
+    const drawTick = mw.draw
+      ? ticks[`${mw.marketId}:${mw.draw.outcomeId}`]
+      : undefined;
+    if (homeTick || awayTick || drawTick) {
       next = {
         ...next,
         matchWinner: {
@@ -115,6 +118,15 @@ function mergeMatchWithLive(
                 probability: awayTick.probability ?? mw.away.probability ?? null,
               }
             : mw.away,
+          draw:
+            mw.draw && drawTick
+              ? {
+                  outcomeId: mw.draw.outcomeId,
+                  price: drawTick.active ? drawTick.publishedOdds : null,
+                  probability:
+                    drawTick.probability ?? mw.draw.probability ?? null,
+                }
+              : mw.draw ?? null,
         },
       };
     }
