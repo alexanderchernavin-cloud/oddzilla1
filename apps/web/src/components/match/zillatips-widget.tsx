@@ -169,6 +169,24 @@ function fmtRoi(roi: number): string {
   return pct > 0 ? `+${pct}%` : `${pct}%`;
 }
 
+// Oddin's market templates substitute "{side}" with the literal word
+// "home" or "away" — so a market like "Team {side} wins at least one
+// map" with side=away renders as "Team away wins at least one map".
+// Inside the ZillaTips popover we know the focused team, so swap the
+// literal word for the actual team name ("Team M80 wins at least one
+// map"). Word boundary regex prevents accidental matches inside team
+// names that happen to contain the substring; the case-insensitive
+// flag covers Oddin's ALL-CAPS section labels (TEAM LIQUID, AWAY).
+function resolveTeamNames(
+  text: string,
+  homeTeam: string,
+  awayTeam: string,
+): string {
+  return text
+    .replace(/\bhome\b/gi, homeTeam)
+    .replace(/\baway\b/gi, awayTeam);
+}
+
 // 2-3 letter abbreviation derived from a team's display name, used as
 // the `tag` fallback in TeamMark when the competitor has no admin-
 // curated abbreviation. Prefers word initials ("Team Vitality" → "TV"),
@@ -345,13 +363,26 @@ function TipSection({
   context: TipContext | undefined;
 }) {
   const tier = zillaTipTier(tip.roi);
-  const outcomeLabel = context?.outcomeLabel ?? tip.outcomeId;
+  const rawOutcomeLabel = context?.outcomeLabel ?? tip.outcomeId;
+  // Substitute the literal "home"/"away" words Oddin's {side}
+  // templates produce with the current match's team names — so the
+  // popover reads "M80 wins at least one map" instead of "away wins
+  // at least one map".
+  const outcomeLabel = resolveTeamNames(
+    rawOutcomeLabel,
+    currentHome,
+    currentAway,
+  );
   // Header structure: "<contextLabel> · <outcomeLabel>" — drops the
   // team name segment that the previous (single-team-per-tip) shape
   // used, because a symmetric tip combines both teams and the team
   // labels live on each row below.
   const headerParts: string[] = [];
-  if (context?.contextLabel) headerParts.push(context.contextLabel);
+  if (context?.contextLabel) {
+    headerParts.push(
+      resolveTeamNames(context.contextLabel, currentHome, currentAway),
+    );
+  }
   if (outcomeLabel) headerParts.push(outcomeLabel);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -653,7 +684,10 @@ export function ZillaTipsBadge({
           >
             {palette.icon}
             <span style={{ fontSize: 13, fontWeight: 600 }}>
-              ZillaTips{label ? ` · ${label}` : ""}
+              ZillaTips
+              {label
+                ? ` · ${resolveTeamNames(label, currentHome, currentAway)}`
+                : ""}
             </span>
             <span
               className="mono"
