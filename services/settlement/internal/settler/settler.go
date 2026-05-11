@@ -18,11 +18,13 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/oddzilla/settlement/internal/oddinxml"
 	"github.com/oddzilla/settlement/internal/store"
@@ -35,20 +37,40 @@ type Settler struct {
 	rdb               *redis.Client
 	log               zerolog.Logger
 	rollbackBatchSize int
+	// parallelism is the worker-pool size for phase-2 chunk settle in
+	// applyMarketSettle. Clamped to [1, settleMaxParallelism] at the
+	// New() boundary. parallelism=1 takes a fast path that avoids the
+	// goroutine + channel + mutex overhead — useful for tiny markets
+	// where fan-out is just dead weight.
+	parallelism int
 
-	settled   int64
-	cancelled int64
+	settled    int64
+	cancelled  int64
 	rolledBack int64
-	skipped   int64
-	errors    int64
+	skipped    int64
+	errors     int64
 }
 
-func New(st *store.Store, rdb *redis.Client, rollbackBatch int, log zerolog.Logger) *Settler {
+// settleMaxParallelism caps the per-market settle worker pool. The
+// singleton riskzilla_bank_state row is the natural ceiling — workers
+// serialise on its row lock during UpdateRiskzillaBankOnSettle, so the
+// marginal benefit beyond 4-6 workers tapers off quickly. 8 is a hard
+// ceiling for runaway-config safety; the env clamp respects it.
+const settleMaxParallelism = 8
+
+func New(st *store.Store, rdb *redis.Client, rollbackBatch, parallelism int, log zerolog.Logger) *Settler {
+	if parallelism < 1 {
+		parallelism = 1
+	}
+	if parallelism > settleMaxParallelism {
+		parallelism = settleMaxParallelism
+	}
 	return &Settler{
 		store:             st,
 		rdb:               rdb,
 		log:               log.With().Str("component", "settler").Logger(),
 		rollbackBatchSize: rollbackBatch,
+		parallelism:       parallelism,
 	}
 }
 
@@ -260,18 +282,18 @@ func (s *Settler) applyMarketSettle(ctx context.Context, eventURN string, ts int
 	// list still reflects all selections on this market; the per-ticket
 	// settle below sees the already-applied selection results from a
 	// prior successful run.
-	settledTickets := make([]string, 0, len(tickets))
-	for i := 0; i < len(tickets); i += settleTicketChunkSize {
-		end := i + settleTicketChunkSize
-		if end > len(tickets) {
-			end = len(tickets)
-		}
-		chunk := tickets[i:end]
-		chunkSettled, err := s.settleTicketChunk(ctx, chunk)
-		if err != nil {
-			return fmt.Errorf("settle chunk %d-%d/%d: %w", i, end, len(tickets), err)
-		}
-		settledTickets = append(settledTickets, chunkSettled...)
+	//
+	// Worker-pool fan-out (audit H6 follow-up): up to s.parallelism
+	// goroutines drain a chunk queue, each running settleTicketChunk
+	// inside its own transaction. SKIP LOCKED + status='accepted' on
+	// the per-ticket load make cross-worker races no-ops; lock order
+	// is identical across workers (ticket → wallet → bank_state) so
+	// no deadlock potential. Workers contend on the singleton
+	// riskzilla_bank_state row — that's the throughput ceiling for
+	// this design, expected and acceptable.
+	settledTickets, err := s.settleTicketsInParallel(ctx, tickets)
+	if err != nil {
+		return fmt.Errorf("phase 2 parallel settle: %w", err)
 	}
 
 	if !inserted && len(settledTickets) == 0 {
@@ -285,6 +307,100 @@ func (s *Settler) applyMarketSettle(ctx context.Context, eventURN string, ts int
 		s.publishTicketEvent(ctx, tid, "settled", "")
 	}
 	return nil
+}
+
+// settleTicketsInParallel fans the ticket list out across s.parallelism
+// goroutines, each draining 200-ticket chunks via settleTicketChunk in
+// its own transaction. Returns the union of tickets that transitioned
+// to settled this call (caller publishes ticket events from this set).
+//
+// Concurrency model:
+//   - Workers all act on tickets from the SAME marketID (caller scope),
+//     so cross-market races are out of the picture. The advisory lock
+//     in phase 1 already ruled out two concurrent AMQP-driven settles
+//     for the same market.
+//   - Per-ticket idempotency comes from maybeSettleTicket's SKIP LOCKED
+//     + status='accepted' filter, unchanged.
+//   - All workers acquire row locks in the same order (ticket → wallet
+//     → bank_state) so no deadlock can form. Workers contend on the
+//     singleton riskzilla_bank_state row — Postgres row locks serialise
+//     them cleanly; this is the throughput ceiling for the design.
+//   - errgroup with a derived context means: first worker error
+//     cancels the rest, succeeded chunks stay committed, AMQP redeliver
+//     picks up gaps via the SKIP LOCKED path.
+//
+// Fast path: parallelism=1 OR a single chunk skips the goroutine +
+// channel + mutex overhead, runs the chunk loop inline. Real-world
+// most market settles touch under 200 tickets and take this path.
+func (s *Settler) settleTicketsInParallel(ctx context.Context, tickets []string) ([]string, error) {
+	if len(tickets) == 0 {
+		return nil, nil
+	}
+
+	// Pre-slice the ticket list so workers can pull from a closed channel.
+	chunks := make([][]string, 0, (len(tickets)+settleTicketChunkSize-1)/settleTicketChunkSize)
+	for i := 0; i < len(tickets); i += settleTicketChunkSize {
+		end := i + settleTicketChunkSize
+		if end > len(tickets) {
+			end = len(tickets)
+		}
+		chunks = append(chunks, tickets[i:end])
+	}
+
+	parallelism := s.parallelism
+	if parallelism < 1 {
+		parallelism = 1
+	}
+	// No benefit to spinning more workers than there are chunks.
+	if parallelism > len(chunks) {
+		parallelism = len(chunks)
+	}
+
+	// Fast path: single worker (or single chunk) — avoid goroutine
+	// overhead. The behaviour exactly matches the pre-parallel form.
+	if parallelism <= 1 {
+		settled := make([]string, 0, len(tickets))
+		for i, chunk := range chunks {
+			chunkSettled, err := s.settleTicketChunk(ctx, chunk)
+			if err != nil {
+				return nil, fmt.Errorf("settle chunk %d/%d: %w", i+1, len(chunks), err)
+			}
+			settled = append(settled, chunkSettled...)
+		}
+		return settled, nil
+	}
+
+	chunkCh := make(chan []string, len(chunks))
+	for _, c := range chunks {
+		chunkCh <- c
+	}
+	close(chunkCh)
+
+	var (
+		mu       sync.Mutex
+		settled  = make([]string, 0, len(tickets))
+	)
+	eg, gctx := errgroup.WithContext(ctx)
+	for w := 0; w < parallelism; w++ {
+		eg.Go(func() error {
+			for chunk := range chunkCh {
+				chunkSettled, err := s.settleTicketChunk(gctx, chunk)
+				if err != nil {
+					return err
+				}
+				if len(chunkSettled) > 0 {
+					mu.Lock()
+					settled = append(settled, chunkSettled...)
+					mu.Unlock()
+				}
+			}
+			return nil
+		})
+	}
+	if err := eg.Wait(); err != nil {
+		return nil, err
+	}
+	return settled, nil
 }
 
 // settleTicketChunk runs maybeSettleTicket for every id in `chunk` inside

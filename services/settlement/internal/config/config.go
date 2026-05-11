@@ -22,6 +22,9 @@ type Config struct {
 	Oddin OddinConfig
 
 	RollbackBatchSize int
+	// WorkerCount controls fan-out for the per-market settle phase 2
+	// (see settler.New). Read from SETTLEMENT_WORKER_COUNT, default 4.
+	WorkerCount int
 }
 
 type OddinConfig struct {
@@ -45,6 +48,11 @@ func Load() (Config, error) {
 		LogLevel:          getEnvDefault("LOG_LEVEL", "info"),
 		HealthPort:        getEnvDefault("HEALTH_PORT", "8083"),
 		RollbackBatchSize: atoiDefault("SETTLEMENT_ROLLBACK_BATCH", 100),
+		// Worker-pool size for the per-market settle phase 2. Default 4
+		// matches the audit H6 design's lower bound — settler.New clamps
+		// the upper bound to 8 since the singleton riskzilla_bank_state
+		// row becomes the contention ceiling past that.
+		WorkerCount: atoiDefault("SETTLEMENT_WORKER_COUNT", 4),
 	}
 	cfg.DatabaseURL = os.Getenv("DATABASE_URL")
 	if cfg.DatabaseURL == "" {

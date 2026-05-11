@@ -68,7 +68,7 @@ func main() {
 	logger.Info().Msg("connected to redis")
 
 	st := store.New(pool)
-	stt := settler.New(st, rdb, cfg.RollbackBatchSize, logger)
+	stt := settler.New(st, rdb, cfg.RollbackBatchSize, cfg.WorkerCount, logger)
 
 	healthSrv := startHealth(cfg.HealthPort, pool, rdb, stt, logger)
 	defer func() {
