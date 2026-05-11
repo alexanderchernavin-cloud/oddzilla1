@@ -1,7 +1,8 @@
 // /auth/* endpoints. Rate-limit is declared per-route via route `config`
 // (fastify-rate-limit reads `config.rateLimit`).
 
-import type { FastifyInstance } from "fastify";
+import { createHash } from "node:crypto";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { AuthService } from "./service.js";
 import {
@@ -17,6 +18,37 @@ const writeRateLimit = {
 };
 const loginRateLimit = {
   rateLimit: { max: 5, timeWindow: "1 minute" },
+};
+
+// Refresh runs server-to-server from the Next.js middleware on every page
+// load that lacks a valid access cookie. The middleware bypasses Caddy and
+// hits api:3001 directly, so request.ip resolves to the web container's
+// docker IP for every user — a shared bucket. Without a custom key, the
+// global write limit (10/min/IP) becomes a global cap of 10 refreshes per
+// minute across the entire site, which is what was forcing users to log
+// back in repeatedly. Possession of a valid refresh cookie is the real
+// gate; key the bucket by a hash of the cookie so each user has their
+// own quota. Hashed (not raw) so the rate-limit store doesn't pin
+// long-lived tokens in memory.
+//
+// 60/min is well above legitimate burst load — a normal user refreshes
+// at most once per 15 min, and even ~20 concurrent browser tabs on a
+// cold-start are an order of magnitude under the cap. We keep IP as
+// the fallback so an unauthenticated flood (no cookie) still gets
+// throttled.
+const refreshRateLimit = {
+  rateLimit: {
+    max: 60,
+    timeWindow: "1 minute",
+    keyGenerator: (request: FastifyRequest): string => {
+      const cookies = request.cookies as Record<string, string | undefined>;
+      const raw = cookies?.[REFRESH_COOKIE];
+      if (raw && raw.length > 0) {
+        return `refresh:${createHash("sha256").update(raw).digest("hex")}`;
+      }
+      return request.ip;
+    },
+  },
 };
 
 const signupBody = z.object({
@@ -92,7 +124,7 @@ export default async function authRoutes(app: FastifyInstance) {
     };
   });
 
-  app.post("/auth/refresh", { config: writeRateLimit }, async (request, reply): Promise<PublicAuthResponse> => {
+  app.post("/auth/refresh", { config: refreshRateLimit }, async (request, reply): Promise<PublicAuthResponse> => {
     const cookies = request.cookies as Record<string, string | undefined>;
     const raw = cookies?.[REFRESH_COOKIE];
     if (!raw) throw new UnauthorizedError("no_refresh_cookie", "no_refresh_cookie");
