@@ -37,6 +37,7 @@ import {
   type ZillaTip,
   type ZillaTipLeg,
   type ZillaTipResult,
+  type ZillaTipRow,
 } from "@oddzilla/types/zillatips";
 import { I } from "@/components/ui/icons";
 import { TeamMark } from "@/components/ui/primitives";
@@ -286,7 +287,49 @@ function tipContextKey(c: TipContext): string {
   return `${c.marketId}:${c.outcomeId}`;
 }
 
-// One section of the popover: focused team + ROI + 5 legs in a row.
+// One row of chips inside a tip section — represents a single team's
+// historical trail. Used twice for symmetric tips (home + away), once
+// for positional tips. Aligned with a small team-name label so the
+// user can tell whose chip row they're looking at.
+function TipRow({
+  row,
+  teamLabel,
+}: {
+  row: ZillaTipRow;
+  teamLabel: string;
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <span
+        className="mono"
+        style={{
+          fontSize: 10,
+          color: "var(--fg-dim)",
+          textTransform: "uppercase",
+          letterSpacing: "0.06em",
+        }}
+      >
+        {teamLabel} · last {row.legs.length}
+      </span>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: `repeat(${row.legs.length}, minmax(0, 1fr))`,
+          gap: 6,
+        }}
+      >
+        {row.legs.map((leg) => (
+          <LegChip key={leg.histMatchId} leg={leg} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// One section of the popover: outcome label + combined ROI + per-team
+// rows of chips. For symmetric outcomes (Totals etc.) the section
+// renders two rows of chips stacked vertically; for positional
+// outcomes (Match Winner etc.) it renders one row.
 function TipSection({
   tip,
   currentHome,
@@ -298,18 +341,17 @@ function TipSection({
   currentAway: string;
   context: TipContext | undefined;
 }) {
-  const focused = tip.role === "home" ? currentHome : currentAway;
   const tier = zillaTipTier(tip.roi);
   const outcomeLabel = context?.outcomeLabel ?? tip.outcomeId;
-  // Header structure: "<contextLabel> · <outcomeLabel> · <focused team>"
-  // with each segment skipped when absent. The team name is always last
-  // since it's the most concrete "whose history is this?" anchor.
+  // Header structure: "<contextLabel> · <outcomeLabel>" — drops the
+  // team name segment that the previous (single-team-per-tip) shape
+  // used, because a symmetric tip combines both teams and the team
+  // labels live on each row below.
   const headerParts: string[] = [];
   if (context?.contextLabel) headerParts.push(context.contextLabel);
   if (outcomeLabel) headerParts.push(outcomeLabel);
-  headerParts.push(focused);
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div
         style={{
           display: "flex",
@@ -319,9 +361,11 @@ function TipSection({
         }}
       >
         <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-          <span style={{ fontSize: 13, fontWeight: 600 }}>
-            {headerParts.join(" · ")}
-          </span>
+          {headerParts.length > 0 && (
+            <span style={{ fontSize: 13, fontWeight: 600 }}>
+              {headerParts.join(" · ")}
+            </span>
+          )}
           <span
             className="mono"
             style={{
@@ -350,15 +394,13 @@ function TipSection({
           {fmtRoi(tip.roi)}
         </span>
       </div>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: `repeat(${tip.legs.length}, minmax(0, 1fr))`,
-          gap: 6,
-        }}
-      >
-        {tip.legs.map((leg) => (
-          <LegChip key={leg.histMatchId} leg={leg} />
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {tip.rows.map((row) => (
+          <TipRow
+            key={`${row.teamId}:${row.role}`}
+            row={row}
+            teamLabel={row.role === "home" ? currentHome : currentAway}
+          />
         ))}
       </div>
     </div>
@@ -571,7 +613,7 @@ export function ZillaTipsBadge({
           </div>
           {sortedTips.map((tip) => (
             <TipSection
-              key={`${tip.marketId}:${tip.outcomeId}:${tip.role}`}
+              key={`${tip.marketId}:${tip.outcomeId}`}
               tip={tip}
               currentHome={currentHome}
               currentAway={currentAway}

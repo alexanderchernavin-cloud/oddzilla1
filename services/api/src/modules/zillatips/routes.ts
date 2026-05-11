@@ -51,23 +51,33 @@ import {
   type ZillaTipLeg,
   type ZillaTipResult,
   type ZillaTipRole,
+  type ZillaTipRow,
   type ZillaTipsResponse,
 } from "@oddzilla/types";
 import { cached } from "../../lib/cache.js";
 
 // Shape of one row out of the raw aggregation CTE. Quoted aliases so
-// Postgres preserves camelCase; legsJson stays JSON until we deserialise
-// in TS so we don't pay double-encoding inside Postgres. Extends the
-// drizzle execute return shape so the row is typed at the call site.
+// Postgres preserves camelCase; rowsJson stays JSON until we
+// deserialise in TS so we don't pay double-encoding inside Postgres.
+// Extends the drizzle execute return shape so the row is typed at the
+// call site.
 interface AggregateRow extends Record<string, unknown> {
   marketId: string;
   outcomeId: string;
-  teamId: number;
-  role: ZillaTipRole;
   roi: number;
   ratedCount: number;
   sampleSize: number;
-  legsJson: unknown;
+  rowsJson: unknown;
+}
+
+// One team's trail as it lives inside rowsJson. teamId/role pin the
+// row to a specific side of the current match; legs are the team's
+// last N closed-match results (already swapped to that team's
+// perspective via equiv_outcome_id in the SQL).
+interface RawRow {
+  teamId: number;
+  role: ZillaTipRole;
+  legs: RawLeg[];
 }
 
 // Shape of one historical leg as we materialise it in the SQL — kept
@@ -101,13 +111,12 @@ export default async function zillatipsRoutes(app: FastifyInstance) {
       .object({ matchId: z.coerce.bigint() })
       .parse(request.params);
 
-    // v3: corrected the team-equivalent outcome mapping so it applies
-    // to ANY market with positional outcome IDs (not just pmi 1/4),
-    // and excluded handicap / correct-score markets whose specifiers
-    // carry team-relative values that don't survive a role flip.
-    // Bump the key so cached v2 (sometimes-backwards) tips clear out
-    // of the post-deploy 5-min window.
-    const cacheKey = `zillatips:v3:${matchId.toString()}`;
+    // v4: per-outcome aggregation now combines both teams' trails
+    // for symmetric markets (Totals, Parity, BTTS, …) into a single
+    // tip with up to 10 legs across two rows. Response shape changed
+    // from flat `legs` to per-team `rows[]`. Bump the key so cached
+    // v3 single-team shapes don't trickle through the 5-min TTL.
+    const cacheKey = `zillatips:v4:${matchId.toString()}`;
     const payload = await cached<ZillaTipsResponse>(
       app.redis,
       cacheKey,
@@ -312,19 +321,20 @@ async function loadTips(
         ON hmo.market_id = hpp.hist_market_id
        AND hmo.outcome_id = hpp.equiv_outcome_id
     ),
-    roi_aggregates AS (
+    -- First aggregation: roll up per (market, outcome, team, role).
+    -- Each row here is one "team trail" — the focused team's last N
+    -- closed-match results on this market signature. For positional
+    -- outcomes ("1"/"2") only one team is paired with the outcome, so
+    -- there's exactly one team-trail row per (market, outcome). For
+    -- symmetric outcomes (Totals, Parity, etc.) BOTH teams are
+    -- paired, producing two team-trail rows that the outer aggregate
+    -- combines into a single tip.
+    team_legs AS (
       SELECT
         current_market_id,
         current_outcome_id,
         team_id,
         role,
-        -- Per-leg flat-stake return. Won/half_won need a prematch_odds
-        -- value; lost/half_lost are a flat -1/-0.5 regardless. Void or
-        -- null result yields NULL — SUM ignores it, so the leg is
-        -- shown grey in the popover but doesn't move the total.
-        -- profit_sum is surfaced directly as the user-facing ROI: e.g.
-        -- +90% + (-100%) + +150% = +140%. NOT normalised by sample
-        -- size, so a single +800% win = +800%.
         SUM(CASE
           WHEN result_text = 'won' AND prematch_odds IS NOT NULL
             THEN prematch_odds::numeric - 1
@@ -335,12 +345,12 @@ async function loadTips(
           WHEN result_text = 'half_lost'
             THEN -0.5::numeric
           ELSE NULL
-        END) AS profit_sum,
+        END) AS team_profit,
         COUNT(*) FILTER (
           WHERE (result_text IN ('lost', 'half_lost'))
              OR (result_text IN ('won', 'half_won') AND prematch_odds IS NOT NULL)
-        ) AS rated_count,
-        COUNT(*) AS sample_size,
+        ) AS team_rated,
+        COUNT(*) AS team_sample,
         jsonb_agg(
           jsonb_build_object(
             'histMatchId', hist_match_id::text,
@@ -356,39 +366,68 @@ async function loadTips(
             'scheduledAt', scheduled_at
           )
           ORDER BY live_started_at DESC
-        ) AS legs_json
+        ) AS team_legs_json
       FROM legs_raw
       GROUP BY current_market_id, current_outcome_id, team_id, role
+    ),
+    -- Second aggregation: combine team trails into one tip per
+    -- (market, outcome). For symmetric markets this gives up to 10
+    -- legs (5 per team) and a single combined ROI; for positional
+    -- markets it's a passthrough of the single team trail. The 20%
+    -- gate applies to the COMBINED profit so a symmetric tip can
+    -- surface based on the joint sample even if neither team alone
+    -- clears the threshold.
+    roi_aggregates AS (
+      SELECT
+        current_market_id,
+        current_outcome_id,
+        SUM(team_profit) AS profit_sum,
+        SUM(team_rated) AS rated_count,
+        SUM(team_sample) AS sample_size,
+        jsonb_agg(
+          jsonb_build_object(
+            'teamId', team_id,
+            'role', role,
+            'legs', team_legs_json
+          )
+          -- Stable visual order: home row above away row in the
+          -- popover regardless of insert order from the prior CTE.
+          ORDER BY (role = 'away'), role
+        ) AS rows_json
+      FROM team_legs
+      GROUP BY current_market_id, current_outcome_id
     )
     SELECT
       current_market_id::text                 AS "marketId",
       current_outcome_id                      AS "outcomeId",
-      team_id                                 AS "teamId",
-      role::text                              AS "role",
       profit_sum::float8                      AS "roi",
       rated_count::int                        AS "ratedCount",
       sample_size::int                        AS "sampleSize",
-      legs_json                               AS "legsJson"
+      rows_json                               AS "rowsJson"
     FROM roi_aggregates
     WHERE rated_count > 0
       AND profit_sum >= ${ZILLATIP_MIN_ROI}::numeric
     ORDER BY roi DESC
   `);
 
-  // First pass: collect every opponent id we need to hydrate with
-  // logo / brand-colour. We keep the raw rows around so the second
-  // pass can build each ZillaTip in one shot once branding lands.
+  // First pass: walk every leg across every row of every tip and
+  // collect the unique opponent competitor ids we need to hydrate
+  // with logo / brand colour. We stash the parsed raw rows alongside
+  // the aggregate so the second pass can build each ZillaTip in one
+  // shot once branding lands.
   const opponentIds = new Set<number>();
-  const rawByRow: Array<{ row: AggregateRow; legs: RawLeg[] }> = [];
+  const rawByTip: Array<{ agg: AggregateRow; rows: RawRow[] }> = [];
 
   for (const r of rows) {
-    const legs = (Array.isArray(r.legsJson) ? (r.legsJson as RawLeg[]) : []);
-    for (const leg of legs) {
-      const oppId =
-        leg.teamRoleHist === "home" ? leg.histAwayId : leg.histHomeId;
-      if (oppId != null) opponentIds.add(oppId);
+    const rawRows = (Array.isArray(r.rowsJson) ? (r.rowsJson as RawRow[]) : []);
+    for (const row of rawRows) {
+      for (const leg of row.legs ?? []) {
+        const oppId =
+          leg.teamRoleHist === "home" ? leg.histAwayId : leg.histHomeId;
+        if (oppId != null) opponentIds.add(oppId);
+      }
     }
-    rawByRow.push({ row: r, legs });
+    rawByTip.push({ agg: r, rows: rawRows });
   }
 
   // One round-trip for every opponent's branding. competitor.id is the
@@ -422,32 +461,44 @@ async function loadTips(
     }
   }
 
-  const tips: ZillaTip[] = rawByRow.map(({ row, legs }) => ({
-    marketId: row.marketId,
-    outcomeId: row.outcomeId,
-    teamId: Number(row.teamId),
-    role: row.role,
-    roi: Number(row.roi),
-    ratedCount: row.ratedCount,
-    sampleSize: row.sampleSize,
-    legs: legs.map((leg): ZillaTipLeg => {
-      const oppId =
-        leg.teamRoleHist === "home" ? leg.histAwayId : leg.histHomeId;
-      const brand = oppId != null ? brandById.get(oppId) : undefined;
-      return {
-        histMatchId: leg.histMatchId,
-        teamRoleHist: leg.teamRoleHist,
-        opponentLabel:
-          leg.teamRoleHist === "home" ? leg.histAwayLabel : leg.histHomeLabel,
-        opponentLogoUrl: brand?.logoUrl ?? null,
-        opponentBrandColor: brand?.brandColor ?? null,
-        prematchOdds: leg.prematchOdds,
-        result: leg.result,
-        equivOutcomeId: leg.equivOutcomeId,
-        liveStartedAt: leg.liveStartedAt,
-        scheduledAt: leg.scheduledAt,
-      };
-    }),
+  // Build a ZillaTipLeg from a raw leg + opponent brand lookup.
+  // Extracted because we now hydrate legs nested inside rows.
+  const hydrateLeg = (leg: RawLeg): ZillaTipLeg => {
+    const oppId =
+      leg.teamRoleHist === "home" ? leg.histAwayId : leg.histHomeId;
+    const brand = oppId != null ? brandById.get(oppId) : undefined;
+    return {
+      histMatchId: leg.histMatchId,
+      teamRoleHist: leg.teamRoleHist,
+      opponentLabel:
+        leg.teamRoleHist === "home" ? leg.histAwayLabel : leg.histHomeLabel,
+      opponentLogoUrl: brand?.logoUrl ?? null,
+      opponentBrandColor: brand?.brandColor ?? null,
+      prematchOdds: leg.prematchOdds,
+      result: leg.result,
+      equivOutcomeId: leg.equivOutcomeId,
+      liveStartedAt: leg.liveStartedAt,
+      scheduledAt: leg.scheduledAt,
+    };
+  };
+
+  const tips: ZillaTip[] = rawByTip.map(({ agg, rows: rawRows }) => ({
+    marketId: agg.marketId,
+    outcomeId: agg.outcomeId,
+    roi: Number(agg.roi),
+    ratedCount: agg.ratedCount,
+    sampleSize: agg.sampleSize,
+    // rows: 1 entry for positional-outcome tips, 1-2 entries for
+    // symmetric-outcome tips. Empty-legs rows (a team with zero past
+    // matches matching the signature) are dropped — they'd just
+    // render as an empty section in the popover.
+    rows: rawRows
+      .filter((row) => Array.isArray(row.legs) && row.legs.length > 0)
+      .map((row): ZillaTipRow => ({
+        teamId: Number(row.teamId),
+        role: row.role,
+        legs: row.legs.map(hydrateLeg),
+      })),
   }));
 
   return { matchId: matchId.toString(), tips };
