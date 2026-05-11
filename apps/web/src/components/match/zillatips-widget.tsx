@@ -23,10 +23,13 @@ import {
   useContext,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
+  type CSSProperties,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 // Subpath import — @oddzilla/types' root entry chains `export *` through
 // other modules with `.js` extensions that Next.js webpack can't resolve
 // when a RUNTIME value (zillaTipTier here) forces the package to be
@@ -456,6 +459,8 @@ export function ZillaTipsBadge({
 }) {
   const compact = size === "sm";
   const wrapRef = useRef<HTMLDivElement | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
   const popoverId = useId();
   const myId = useId();
   const { openId, open, close } = useContext(ZillaTipsContext);
@@ -480,6 +485,59 @@ export function ZillaTipsBadge({
   // try to fire close() into stale state.
   useEffect(() => () => cancelClose(), [cancelClose]);
 
+  // Portal-mount guard. createPortal needs document.body to exist,
+  // which it doesn't during SSR — flip to true on first client render.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
+  // Computed inline style for the portaled popover. `null` until first
+  // measurement after open. The popover renders at document.body level
+  // with `position: absolute` in document coordinates so it scrolls
+  // with the page; horizontal bounds clamp to the viewport so a
+  // small-viewport user (mobile) sees the full popover regardless of
+  // where the badge sits.
+  const [popoverPos, setPopoverPos] = useState<CSSProperties | null>(null);
+
+  useLayoutEffect(() => {
+    if (!isOpen) {
+      setPopoverPos(null);
+      return;
+    }
+    const update = () => {
+      if (!buttonRef.current) return;
+      const rect = buttonRef.current.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const gutter = 8;
+      // Cap the popover at 92vw on narrow screens so it always fits.
+      const popoverWidth = Math.min(440, vw - 2 * gutter);
+      // Preferred left edge: right-anchored badges align the popover's
+      // right edge to the badge's right edge (extends leftward);
+      // left-anchored badges align left edges (extends rightward).
+      let viewportLeft =
+        popoverAlign === "right"
+          ? rect.right - popoverWidth
+          : rect.left;
+      // Clamp horizontally to viewport with the gutter — the popover
+      // never goes off either edge regardless of where the badge is.
+      if (viewportLeft < gutter) viewportLeft = gutter;
+      if (viewportLeft + popoverWidth > vw - gutter) {
+        viewportLeft = vw - gutter - popoverWidth;
+      }
+      setPopoverPos({
+        position: "absolute",
+        // window.scrollY/X converts viewport coords to document coords
+        // so the popover scrolls with the page (better UX than fixed,
+        // which would visually separate the popover from its badge).
+        top: rect.bottom + window.scrollY + 6,
+        left: viewportLeft + window.scrollX,
+        width: popoverWidth,
+      });
+    };
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, [isOpen, popoverAlign]);
+
   // Aggregate "best tip" for tier — same source the badge uses.
   let bestRoi = 0;
   for (const t of tips) {
@@ -491,8 +549,12 @@ export function ZillaTipsBadge({
   useEffect(() => {
     if (!isOpen) return;
     const onDoc = (e: MouseEvent) => {
-      if (!wrapRef.current) return;
-      if (!wrapRef.current.contains(e.target as Node)) close(myId);
+      const target = e.target as Node;
+      // Both the badge wrap AND the portaled popover are "inside" —
+      // a click in either should keep the popover open.
+      if (wrapRef.current?.contains(target)) return;
+      if (popoverRef.current?.contains(target)) return;
+      close(myId);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") close(myId);
@@ -515,6 +577,7 @@ export function ZillaTipsBadge({
   return (
     <div ref={wrapRef} style={{ position: "relative", display: "inline-flex" }}>
       <button
+        ref={buttonRef}
         type="button"
         aria-expanded={isOpen}
         aria-controls={popoverId}
@@ -548,44 +611,37 @@ export function ZillaTipsBadge({
         {palette.icon}
         <span className="mono tnum">{fmtRoi(bestRoi)}</span>
       </button>
-      {isOpen && (
-        <div
-          id={popoverId}
-          role="dialog"
-          aria-label="ZillaTips historical ROI"
-          onMouseEnter={cancelClose}
-          onMouseLeave={scheduleClose}
-          style={{
-            position: "absolute",
-            top: "calc(100% + 6px)",
-            // Anchor edge depends on where the badge sits in its grid.
-            // Right-edge cells use "right: 0" so the popover stays on
-            // screen; left-edge cells use "left: 0" for the same
-            // reason. Center cells default to right anchoring.
-            ...(popoverAlign === "left" ? { left: 0 } : { right: 0 }),
-            // High z-index so the popover always wins over neighbouring
-            // market cards and the bet-slip rail. The match page's
-            // header / live-scoreboard scope IDs sit around 20–40, so
-            // 200 leaves headroom for future modals without competing
-            // with the global mobile drawer overlay.
-            zIndex: 200,
-            width: "min(440px, 92vw)",
-            // Use --bg-elevated (defined in globals.css for both
-            // themes: #ffffff light / #131314 dark) — previously this
-            // referenced --surface-1, which doesn't exist in the
-            // token system, so the background fell back to invalid and
-            // rendered transparent over the market cards.
-            background: "var(--bg-elevated)",
-            border: "1px solid var(--border)",
-            borderRadius: "var(--r-md)",
-            padding: 14,
-            boxShadow:
-              "0 12px 32px rgba(0, 0, 0, 0.28), 0 2px 6px rgba(0, 0, 0, 0.12)",
-            display: "flex",
-            flexDirection: "column",
-            gap: 14,
-          }}
-        >
+      {mounted && isOpen && popoverPos &&
+        createPortal(
+          <div
+            ref={popoverRef}
+            id={popoverId}
+            role="dialog"
+            aria-label="ZillaTips historical ROI"
+            onMouseEnter={cancelClose}
+            onMouseLeave={scheduleClose}
+            style={{
+              ...popoverPos,
+              // Portal mount escapes every ancestor stacking context,
+              // so this z-index is global. 200 sits above the bet-slip
+              // rail / nav (max ~100 elsewhere) and below any future
+              // full-screen modal.
+              zIndex: 200,
+              // --bg-elevated (defined in globals.css for both themes:
+              // #ffffff light / #131314 dark). Surface-1 doesn't exist
+              // in the token system — used to fall back to invalid and
+              // render transparent.
+              background: "var(--bg-elevated)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--r-md)",
+              padding: 14,
+              boxShadow:
+                "0 12px 32px rgba(0, 0, 0, 0.28), 0 2px 6px rgba(0, 0, 0, 0.12)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 14,
+            }}
+          >
           <div
             style={{
               display: "flex",
@@ -663,8 +719,9 @@ export function ZillaTipsBadge({
             + +150% = +140%). Voided legs are shown grey and excluded
             from the sum.
           </div>
-        </div>
-      )}
+        </div>,
+          document.body,
+        )}
     </div>
   );
 }
