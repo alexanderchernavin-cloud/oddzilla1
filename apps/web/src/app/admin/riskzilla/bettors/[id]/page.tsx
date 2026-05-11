@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { serverApi } from "@/lib/server-fetch";
 import { fromMicro } from "@oddzilla/types/money";
 import { RsEditor } from "./rs-editor";
-import { readRzCurrencyFromSearchParams } from "../../currency-switch";
+import { readRzCurrencyFromSearchParams } from "../../currency";
 
 export const dynamic = "force-dynamic";
 
