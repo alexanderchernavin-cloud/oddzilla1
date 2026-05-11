@@ -65,15 +65,25 @@ x-ts-service: &ts-service
 # (lb_policy least_conn). SSR is single-threaded per Node process; one
 # replica saturates one vCPU under load. Three replicas use ~3 of the
 # 4 vCPU on CPX31, leaving one core for api / postgres / ws-gateway.
-# Per-replica mem_limit is sized so 3× sums under 1.5 GiB, well within
-# the 8 GiB box budget. The image, env, and healthcheck are all
-# identical — only the REPLICA_NAME differs so a log line identifies
-# which container produced it.
+#
+# Per-replica mem_limit was set to 400M in the original split, which
+# the 2026-05-11 5000-VU load test proved too tight — each replica's
+# working set climbs to ~370-400 MiB under heavy concurrent SSR
+# (Node heap + per-request buffers + connection state) and Docker
+# OOM-killed web2 + web3 multiple times during the run. 700M each =
+# 2.1 GiB total for web, still comfortably under the 8 GiB box budget
+# (postgres 1G + api 512M + ws-gateway 256M + 5 Go workers @ 320M +
+# redis 320M + caddy 256M + metrics 64M + signer 64M = ~5.6 GiB
+# committed including web).
+#
+# The image, env, and healthcheck are all identical — only the
+# REPLICA_NAME differs so a log line identifies which container
+# produced it.
 x-web: &web-base
   <<: *sandbox
   restart: unless-stopped
   logging: *default-logging
-  mem_limit: 400m
+  mem_limit: 700m
   cpus: 0.75
   build:
     context: .
@@ -156,7 +166,12 @@ services:
     image: caddy:2-alpine@sha256:834468128c7696cec0ceea6172f7d692daf645ae51983ca76e39da54a97c570d
     restart: unless-stopped
     logging: *default-logging
-    mem_limit: 96m
+    # 96M was pinned at the ceiling under load (the 2026-05-11 5000-VU
+    # run kept it at 95-96 MiB the entire time, occasionally throwing
+    # 503s when buffers couldn't allocate). 256M gives breathing room
+    # for TLS session caching + per-upstream connection pool at the
+    # fan-out tier (3 web replicas × N upstreams + api + ws-gateway).
+    mem_limit: 256m
     cpus: 0.5
     # Caddy needs to bind privileged ports 80 and 443. cap_drop ALL strips
     # every capability and we only re-add NET_BIND_SERVICE so a Caddy RCE
