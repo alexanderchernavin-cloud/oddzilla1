@@ -132,6 +132,16 @@ func (s *Settler) handleBetSettlement(ctx context.Context, body []byte) error {
 	return nil
 }
 
+// settleTicketChunkSize bounds the number of per-ticket settles inside
+// one Postgres transaction. The single-tx form (audit H6 TODO predecessor)
+// exhausted shared memory at ~100K tickets on a single market settle, so
+// we split into chunks that each fit comfortably under the default lock
+// table + buffer headroom. Each chunk does roughly chunkSize × 5–7 SQL
+// operations (ticket UPDATE + wallet UPDATE + ledger INSERT + bank UPDATE
+// + projection UPSERT + achievement INSERT) — at 200 tickets/chunk that's
+// ~1.5K ops per tx, well within default pg shared mem.
+const settleTicketChunkSize = 200
+
 func (s *Settler) applyMarketSettle(ctx context.Context, eventURN string, ts int64, rawBody []byte, market oddinxml.Market) error {
 	specs := oddinxml.Parse(market.Specifiers)
 	specsHash := oddinxml.Hash(specs)
@@ -139,17 +149,95 @@ func (s *Settler) applyMarketSettle(ctx context.Context, eventURN string, ts int
 	payloadHash := hashMarketPayload("settle", eventURN, market)
 	payloadJSON, _ := json.Marshal(marketAuditPayload(eventURN, ts, market))
 
-	tx, err := s.store.BeginTx(ctx)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	// ── PHASE 1: market metadata + outcome cascade in a single tx ──────
+	//
+	// Keeps the small-write-set apply-once contract intact:
+	//   • InsertIfNew on settlements is the per-market idempotency gate.
+	//   • SetMarketStatus + UpdateOutcomeResult + ApplyOutcomeToSelections
+	//     are all idempotent (UPDATE…WHERE result IS NULL etc.), safe on
+	//     replay.
+	//   • An advisory lock on the marketID serialises against any
+	//     concurrent settle/cancel for the same market — replaces the
+	//     implicit serialisation the old single-tx provided for free.
+	//
+	// AffectedTicketsForMarket runs inside this tx so the ticket list is
+	// captured from the post-cascade snapshot (committed in the same tx).
+	var (
+		marketID       int64
+		inserted       bool
+		tickets        []string
+		marketNotFound bool
+	)
+	err := func() error {
+		tx, err := s.store.BeginTx(ctx)
+		if err != nil {
+			return fmt.Errorf("begin tx phase1: %w", err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
 
-	marketID, ok, err := store.FindMarket(ctx, tx, eventURN, market.ID, specsHash)
+		mID, ok, err := store.FindMarket(ctx, tx, eventURN, market.ID, specsHash)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			marketNotFound = true
+			return tx.Commit(ctx)
+		}
+		marketID = mID
+
+		// Per-market advisory lock. Held until tx commits, preventing two
+		// AMQP-driven settles/cancels for the same market from racing the
+		// outcome cascade. The old single-tx form got this for free via
+		// the long-lived tx + row locks; we restore it explicitly now
+		// that phase 2 commits per-chunk.
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", marketID); err != nil {
+			return fmt.Errorf("advisory lock: %w", err)
+		}
+
+		_, ins, err := store.InsertIfNew(ctx, tx, store.SettlementInsert{
+			EventURN:       eventURN,
+			MarketID:       marketID,
+			SpecifiersHash: specsHash,
+			Type:           "settle",
+			PayloadHash:    payloadHash,
+			PayloadJSON:    payloadJSON,
+		})
+		if err != nil {
+			return err
+		}
+		inserted = ins
+
+		// Fresh settle: apply the outcome cascade. On replay (inserted=
+		// false) we skip it — the cascade is idempotent but skipping
+		// avoids redundant index probes on the partial WHERE result IS
+		// NULL filter. We still fetch the ticket list below so phase 2
+		// can catch tickets stranded by a previous crash.
+		if inserted {
+			if err := store.SetMarketStatus(ctx, tx, marketID, -3, ts); err != nil {
+				return err
+			}
+			for _, o := range market.Outcomes {
+				result := mapOutcomeResult(o.Result, o.VoidFactor)
+				if err := store.UpdateOutcomeResult(ctx, tx, marketID, o.ID, result, o.VoidFactor, ts); err != nil {
+					return err
+				}
+				if err := store.ApplyOutcomeToSelections(ctx, tx, marketID, o.ID, result, o.VoidFactor); err != nil {
+					return err
+				}
+			}
+		}
+
+		ts2, err := store.AffectedTicketsForMarket(ctx, tx, marketID)
+		if err != nil {
+			return err
+		}
+		tickets = ts2
+		return tx.Commit(ctx)
+	}()
 	if err != nil {
 		return err
 	}
-	if !ok {
+	if marketNotFound {
 		// Oddin settled a market we don't have yet — happens when a
 		// settlement beats the ingester on a fresh fixture. Drop
 		// silently; the market will resolve when it arrives.
@@ -158,75 +246,38 @@ func (s *Settler) applyMarketSettle(ctx context.Context, eventURN string, ts int
 		return nil
 	}
 
-	_, inserted, err := store.InsertIfNew(ctx, tx, store.SettlementInsert{
-		EventURN:       eventURN,
-		MarketID:       marketID,
-		SpecifiersHash: specsHash,
-		Type:           "settle",
-		PayloadHash:    payloadHash,
-		PayloadJSON:    payloadJSON,
-	})
-	if err != nil {
-		return err
-	}
-	if !inserted {
-		atomic.AddInt64(&s.skipped, 1)
-		return tx.Commit(ctx) // replay — nothing to do
-	}
-
-	// Flip market status to settled (-3) so no further bets are accepted.
-	if err := store.SetMarketStatus(ctx, tx, marketID, -3, ts); err != nil {
-		return err
-	}
-
-	// Apply outcome results + cascade into ticket_selections.
-	for _, o := range market.Outcomes {
-		result := mapOutcomeResult(o.Result, o.VoidFactor)
-		if err := store.UpdateOutcomeResult(ctx, tx, marketID, o.ID, result, o.VoidFactor, ts); err != nil {
-			return err
-		}
-		if err := store.ApplyOutcomeToSelections(ctx, tx, marketID, o.ID, result, o.VoidFactor); err != nil {
-			return err
-		}
-	}
-
-	// Any affected ticket whose selections are all resolved gets settled.
-	tickets, err := store.AffectedTicketsForMarket(ctx, tx, marketID)
-	if err != nil {
-		return err
-	}
-
-	// TODO(audit H6 follow-up): pipeline the per-ticket UPDATE chain
-	// (SettleTicket → UpdateRiskzillaBankOnSettle → WriteCommunityProjection
-	// → EvaluateAchievements) with pgx.Batch in groups of ~100, and replace
-	// this outer for-loop with a worker pool of 4-8 goroutines (each with
-	// its own tx) using `FOR UPDATE SKIP LOCKED` as the work-stealing
-	// primitive. Two prerequisites this PR did NOT land:
-	//   1. nextPayoutRefID is a per-ticket SELECT inside the tx that gates
-	//      the wallet_ledger INSERT — to batch SettleTicket we need to
-	//      either (a) precompute every ref_id with a single
-	//      SELECT…WHERE ticket_id = ANY($1) before the batch, or (b) move
-	//      the generation count into a deterministic suffix on the ticket
-	//      row itself. (a) is simpler; do that.
-	//   2. The per-market settle tx today doubles as the per-market
-	//      serialisation lock (no two passes for the same market). Moving
-	//      to a worker pool needs an explicit advisory lock keyed on
-	//      marketID so we don't lose that invariant.
-	// The read collapse landed in this PR removes the dominant 3N
-	// round-trip cost; the batching above buys the remaining N×4 writes.
+	// ── PHASE 2: settle each ticket in chunked transactions ────────────
+	//
+	// Each chunk is its own tx so the per-tx write set stays bounded. If
+	// a chunk fails partway, prior chunks remain committed and a replay
+	// (same AMQP message redelivered) picks up exactly the un-settled
+	// tickets — maybeSettleTicket's LoadTicketWithSelections uses
+	// FOR UPDATE SKIP LOCKED + status='accepted', so already-settled
+	// tickets are no-ops on re-entry.
+	//
+	// Note: phase 1 may have committed with inserted=false on a replay,
+	// meaning the outcome cascade was skipped this round. The ticket
+	// list still reflects all selections on this market; the per-ticket
+	// settle below sees the already-applied selection results from a
+	// prior successful run.
 	settledTickets := make([]string, 0, len(tickets))
-	for _, tid := range tickets {
-		didSettle, err := s.maybeSettleTicket(ctx, tx, tid, "bet_settlement")
+	for i := 0; i < len(tickets); i += settleTicketChunkSize {
+		end := i + settleTicketChunkSize
+		if end > len(tickets) {
+			end = len(tickets)
+		}
+		chunk := tickets[i:end]
+		chunkSettled, err := s.settleTicketChunk(ctx, chunk)
 		if err != nil {
-			return err
+			return fmt.Errorf("settle chunk %d-%d/%d: %w", i, end, len(tickets), err)
 		}
-		if didSettle {
-			settledTickets = append(settledTickets, tid)
-		}
+		settledTickets = append(settledTickets, chunkSettled...)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit settle: %w", err)
+	if !inserted && len(settledTickets) == 0 {
+		// Pure replay with nothing left to do — preserve the legacy
+		// "skipped" metric so dashboards keep reading the same shape.
+		atomic.AddInt64(&s.skipped, 1)
 	}
 
 	atomic.AddInt64(&s.settled, int64(len(settledTickets)))
@@ -234,6 +285,34 @@ func (s *Settler) applyMarketSettle(ctx context.Context, eventURN string, ts int
 		s.publishTicketEvent(ctx, tid, "settled", "")
 	}
 	return nil
+}
+
+// settleTicketChunk runs maybeSettleTicket for every id in `chunk` inside
+// a single transaction. Returns the subset that actually transitioned to
+// settled this call (the publishTicketEvent fan-out runs against this
+// subset). Rolls back on the first per-ticket error so a chunk-level
+// retry sees an unchanged state.
+func (s *Settler) settleTicketChunk(ctx context.Context, chunk []string) ([]string, error) {
+	tx, err := s.store.BeginTx(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx chunk: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	settled := make([]string, 0, len(chunk))
+	for _, tid := range chunk {
+		didSettle, err := s.maybeSettleTicket(ctx, tx, tid, "bet_settlement")
+		if err != nil {
+			return nil, err
+		}
+		if didSettle {
+			settled = append(settled, tid)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit chunk: %w", err)
+	}
+	return settled, nil
 }
 
 // maybeSettleTicket returns (true, nil) if the ticket transitioned to

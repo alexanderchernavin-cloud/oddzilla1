@@ -16,6 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -28,8 +29,11 @@ import (
 
 	amqpkit "github.com/oddzilla/settlement/internal/amqp"
 	"github.com/oddzilla/settlement/internal/config"
+	"github.com/oddzilla/settlement/internal/oddinrest"
 	"github.com/oddzilla/settlement/internal/settler"
 	"github.com/oddzilla/settlement/internal/store"
+
+	"math/rand"
 )
 
 func main() {
@@ -87,6 +91,30 @@ func main() {
 }
 
 func runAMQP(ctx context.Context, cfg config.Config, stt *settler.Settler, log zerolog.Logger) {
+	// Stable named queue per (customer, deployment). The settlement
+	// stream needs at-least-once delivery across worker restarts; a
+	// server-named auto-delete queue silently drops unacked messages
+	// when the consumer disconnects (queue is garbage-collected with
+	// the connection). Pinning to a stable name with durable+true
+	// keeps unacked deliveries pending until a fresh consumer attaches.
+	//
+	// Naming pattern: `oddzilla-settlement-<customerID>` — customerID
+	// scopes per Oddin product, and the static prefix lets ops grep
+	// for our queues against the Oddin broker.
+	queueName := fmt.Sprintf("oddzilla-settlement-%s", cfg.Oddin.CustomerID)
+
+	// Recovery client. Triggered from onConnect to ask Oddin to replay
+	// any messages we may have missed during the disconnect window.
+	// Defense-in-depth: the durable queue alone covers worker-restart
+	// gaps, but recovery additionally covers:
+	//   • fresh deployments (first time the queue exists, nothing to
+	//     resume)
+	//   • broker outages that lose persistent storage
+	//   • settlement messages stuck in a long-running tx that
+	//     ultimately rolled back AFTER feed-ingester's own recovery
+	//     ran on its earlier reconnect
+	restClient := oddinrest.New(cfg.Oddin.RESTBaseURL, cfg.Oddin.Token)
+
 	cons := amqpkit.New(
 		amqpkit.Config{
 			Host:       cfg.Oddin.AMQPHost,
@@ -95,16 +123,37 @@ func runAMQP(ctx context.Context, cfg config.Config, stt *settler.Settler, log z
 			Token:      cfg.Oddin.Token,
 			CustomerID: cfg.Oddin.CustomerID,
 			RoutingKey: cfg.Oddin.AMQPRouting,
+			QueueName:  queueName,
 			Heartbeat:  cfg.Oddin.Heartbeat,
 		},
 		func(ctx context.Context, rk string, body []byte) error {
 			return stt.Handle(ctx, rk, body)
 		},
 		func(ctx context.Context) error {
-			// Nothing to do on reconnect for settlement — we don't
-			// need snapshot recovery because settlement messages are
-			// naturally retried by Oddin until acked.
-			log.Info().Msg("amqp (re)connected")
+			// Trigger recovery on every (re)connect. Window = 1 h
+			// back from now — long enough to cover a reasonable
+			// restart gap, short enough to stay in Oddin's lenient
+			// rate-limit tier (60/h, 20/10min). Even though our
+			// durable queue persists unacked messages, the recovery
+			// call is the safety net for the cases the queue alone
+			// doesn't cover (see comment above the restClient).
+			//
+			// Errors are logged but never bubble up — the live feed
+			// already covers the steady state; recovery is a one-shot
+			// best-effort top-up.
+			log.Info().Str("queue", queueName).Msg("amqp (re)connected")
+			afterMs := time.Now().Add(-1 * time.Hour).UnixMilli()
+			for _, product := range []string{"pre", "live"} {
+				reqID := int(rand.Int31n(1_000_000_000)) //nolint:gosec // not security-sensitive
+				if err := restClient.InitiateRecovery(ctx, product, afterMs, reqID); err != nil {
+					log.Warn().Err(err).Str("product", product).
+						Int64("after_ms", afterMs).Int("request_id", reqID).
+						Msg("recovery: initiate_request failed")
+					continue
+				}
+				log.Info().Str("product", product).Int64("after_ms", afterMs).
+					Int("request_id", reqID).Msg("recovery: initiate_request sent")
+			}
 			return nil
 		},
 		log,
