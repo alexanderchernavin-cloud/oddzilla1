@@ -55,6 +55,7 @@ import {
 import { isUniqueViolation } from "../../lib/pg-errors.js";
 import { resolveOptionalAvatarUrl } from "./avatar-url.js";
 import { emitNotification } from "./notifications.js";
+import { isPubliclyVisibleAuthor } from "./visibility.js";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -365,6 +366,7 @@ SELECT
   INNER JOIN sports s       ON s.id = c.sport_id
   INNER JOIN tickets t      ON t.id = a.ticket_id
  WHERE a.status = 'published'
+   AND u.is_ai = false
    ${matchClause}
    ${authorClause}
    ${sportClause}
@@ -516,11 +518,16 @@ SELECT
     async (request): Promise<AnalysisAuthorStats> => {
       const { nickname } = request.params;
       const [u] = await app.db
-        .select({ id: users.id, nickname: users.nickname, ticketsPublic: users.ticketsPublic })
+        .select({
+          id: users.id,
+          nickname: users.nickname,
+          ticketsPublic: users.ticketsPublic,
+          isAi: users.isAi,
+        })
         .from(users)
         .where(eq(users.nickname, nickname))
         .limit(1);
-      if (!u || !u.nickname || !u.ticketsPublic) throw new NotFoundError();
+      if (!u || !isPubliclyVisibleAuthor(u)) throw new NotFoundError();
 
       const rows = await app.db.execute<Record<string, unknown>>(sql`
         SELECT
@@ -744,6 +751,7 @@ SELECT
   INNER JOIN tickets t      ON t.id = a.ticket_id
  WHERE a.id = ${id}
    AND a.status = 'published'
+   AND u.is_ai = false
  LIMIT 1
 `);
   const first = rows[0];

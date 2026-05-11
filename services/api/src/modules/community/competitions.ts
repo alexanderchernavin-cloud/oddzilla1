@@ -307,6 +307,13 @@ WITH ranked AS (
       ORDER BY cp.points DESC, cp.longest_streak DESC, cp.user_id ASC
     ) AS rank
     FROM competition_participants cp
+    -- Exclude AI seed bettors from the ranking entirely so ranks are
+    -- contiguous against human participants only. Mirrors the audit
+    -- finding (SEC-C1): admin surfaces honoured is_ai = true, the
+    -- bettor surface did not -- leaderboards listed seed accounts as
+    -- first-class entrants. The JOIN runs once per participant row,
+    -- bounded by participant_count, so the cost is negligible.
+    INNER JOIN users u ON u.id = cp.user_id AND u.is_ai = false
    WHERE cp.competition_id = ${id}::uuid
 )
 SELECT
@@ -343,17 +350,21 @@ SELECT
   -- every row. Anonymous viewers always see false.
   (r.user_id = ${viewerId}::uuid) AS "isYou"
   FROM ranked r
-  INNER JOIN users u ON u.id = r.user_id
+  INNER JOIN users u ON u.id = r.user_id AND u.is_ai = false
   LEFT JOIN avatar_templates av ON av.id = u.avatar_template_id
  WHERE r.rank <= ${LEADERBOARD_TOP_N}
  ORDER BY r.rank ASC
 `);
 
-      // Total count in one cheap aggregate.
+      // Total count in one cheap aggregate. Matches the ranked CTE
+      // above by excluding AI seed bettors — the count drives the
+      // "X participants" chip on the leaderboard header, which must
+      // stay in lockstep with the visible rows.
       const totalRows = await app.db.execute<{ total: number }>(sql`
         SELECT COUNT(*)::int AS total
-          FROM competition_participants
-         WHERE competition_id = ${id}::uuid
+          FROM competition_participants cp
+          INNER JOIN users u ON u.id = cp.user_id AND u.is_ai = false
+         WHERE cp.competition_id = ${id}::uuid
       `);
       const totalParticipants = Number(totalRows[0]?.total ?? 0);
 
@@ -376,6 +387,10 @@ WITH ranked AS (
       ORDER BY cp.points DESC, cp.longest_streak DESC, cp.user_id ASC
     ) AS rank
     FROM competition_participants cp
+    -- Same AI exclusion as the top-N CTE above so the viewer's rank
+    -- is computed against the same population displayed on the
+    -- leaderboard. An AI viewer simply finds no matching row.
+    INNER JOIN users u ON u.id = cp.user_id AND u.is_ai = false
    WHERE cp.competition_id = ${id}::uuid
 )
 SELECT
@@ -395,7 +410,7 @@ SELECT
   '{}'::text[]                    AS "recentResults",
   TRUE                            AS "isYou"
   FROM ranked r
-  INNER JOIN users u ON u.id = r.user_id
+  INNER JOIN users u ON u.id = r.user_id AND u.is_ai = false
   LEFT JOIN avatar_templates av ON av.id = u.avatar_template_id
  WHERE r.user_id = ${viewerId}::uuid
  LIMIT 1
@@ -790,11 +805,14 @@ SELECT
   -- Viewer rank. Cheaper than the full leaderboard query because the
   -- planner can use the (points DESC, longest_streak DESC) index for
   -- the COUNT, and the "+1" gives the dense rank of the viewer's row.
+  -- Excludes AI seed bettors from the comparison set so the rank
+  -- matches the leaderboard view (which also excludes them).
   CASE WHEN ${viewerId}::uuid IS NULL THEN NULL ELSE (
     SELECT (COUNT(*)::int + 1)
       FROM competition_participants p
      INNER JOIN competition_participants me ON me.competition_id = p.competition_id
                                            AND me.user_id = ${viewerId}::uuid
+     INNER JOIN users pu ON pu.id = p.user_id AND pu.is_ai = false
      WHERE p.competition_id = c.id
        AND (
          p.points > me.points
