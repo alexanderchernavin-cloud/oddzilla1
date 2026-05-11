@@ -112,7 +112,10 @@ function rowToDto(
   };
 }
 
-async function loadUserBalances(app: FastifyInstance): Promise<{
+async function loadUserBalances(
+  app: FastifyInstance,
+  currency: string,
+): Promise<{
   available: bigint;
   locked: bigint;
 }> {
@@ -124,7 +127,7 @@ async function loadUserBalances(app: FastifyInstance): Promise<{
       COALESCE(SUM(balance_micro - locked_micro), 0)::text AS available,
       COALESCE(SUM(locked_micro), 0)::text                 AS locked
       FROM wallets
-     WHERE currency = 'USDC'
+     WHERE currency = ${currency}
   `)) as unknown as Array<{ available: string; locked: string }>;
   return {
     available: BigInt(rows[0]?.available ?? "0"),
@@ -167,7 +170,7 @@ export default async function riskzillaBankRoutes(app: FastifyInstance) {
     request.requireRole("admin");
     const [row, userBalances] = await Promise.all([
       loadOrSeed(app),
-      loadUserBalances(app),
+      loadUserBalances(app, "USDC"),
     ]);
     return rowToDto(row, userBalances);
   });
@@ -212,7 +215,7 @@ export default async function riskzillaBankRoutes(app: FastifyInstance) {
 
     const [before, userBalances] = await Promise.all([
       loadOrSeed(app),
-      loadUserBalances(app),
+      loadUserBalances(app, "USDC"),
     ]);
     let nextLimit: bigint;
     let delta: bigint;
@@ -280,7 +283,7 @@ export default async function riskzillaBankRoutes(app: FastifyInstance) {
 
     const [before, userBalances] = await Promise.all([
       loadOrSeed(app),
-      loadUserBalances(app),
+      loadUserBalances(app, "USDC"),
     ]);
 
     const rows = (await app.db.execute(sql`

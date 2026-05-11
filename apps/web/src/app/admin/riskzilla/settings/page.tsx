@@ -18,9 +18,10 @@ export default async function RiskzillaSettingsPage() {
     <>
       <p style={{ fontSize: 13, color: "var(--color-fg-muted)", marginBottom: 16 }}>
         Per-tier defaults. Tier 0 is the global fallback used when a match
-        has no <code>risk_tier</code>. Tiers 1–6 mirror Oddin&apos;s
-        risk_tier on tournaments. Min bet defaults to <code>0.1 USDC</code>;
-        bet factor defaults to <code>0.1</code> (10% of match liability).
+        has no <code>risk_tier</code>. Tiers 1–10 mirror Oddin&apos;s
+        risk_tier on tournaments (10 is the lowest-trust event). Min bet
+        defaults to <code>0.1 USDC</code>; bet factor defaults to{" "}
+        <code>0.1</code> (10% of match liability).
       </p>
       <SettingsEditor entries={data.entries} />
     </>

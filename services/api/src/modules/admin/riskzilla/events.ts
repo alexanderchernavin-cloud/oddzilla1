@@ -40,11 +40,22 @@ const listQuery = z.object({
   sportId: z.coerce.number().int().optional(),
   matchId: z.coerce.bigint().optional(),
   riskTier: z.coerce.number().int().min(0).max(32).optional(),
-  // Currency filter — strict. RiskZilla is USDC-only by design but the
-  // event_log column is char(4) so we expose the column.
-  currency: z.string().length(3).max(4).optional(),
+  // Currency filter — case-insensitive 3- or 4-char code. USDC + OZ
+  // are the two values event_log carries today; preflighting at the
+  // schema layer keeps a typo from running a silent full-table scan.
+  currency: z
+    .string()
+    .min(3)
+    .max(4)
+    .transform((s) => s.toUpperCase())
+    .optional(),
   fromTs: z.coerce.date().optional(),
   toTs: z.coerce.date().optional(),
+  // Stake range — both fields are bigint-shaped strings of micros so
+  // we don't lose precision on large payouts. Either bound is
+  // independently optional; passing only one acts as a half-open range.
+  minStakeMicro: z.string().regex(/^\d+$/).optional(),
+  maxStakeMicro: z.string().regex(/^\d+$/).optional(),
 });
 
 interface EventRowDto {
@@ -87,9 +98,11 @@ export default async function riskzillaEventsRoutes(app: FastifyInstance) {
     if (q.sportId !== undefined) conditions.push(sql`el.sport_id = ${q.sportId}`);
     if (q.matchId !== undefined) conditions.push(sql`el.match_id = ${q.matchId.toString()}::bigint`);
     if (q.riskTier !== undefined) conditions.push(sql`el.risk_tier = ${q.riskTier}`);
-    if (q.currency) conditions.push(sql`el.currency = ${q.currency.toUpperCase()}`);
+    if (q.currency) conditions.push(sql`el.currency = ${q.currency}`);
     if (q.fromTs) conditions.push(sql`el.created_at >= ${q.fromTs.toISOString()}::timestamptz`);
     if (q.toTs) conditions.push(sql`el.created_at <= ${q.toTs.toISOString()}::timestamptz`);
+    if (q.minStakeMicro) conditions.push(sql`el.stake_micro >= ${q.minStakeMicro}::bigint`);
+    if (q.maxStakeMicro) conditions.push(sql`el.stake_micro <= ${q.maxStakeMicro}::bigint`);
     if (q.before) {
       const [tsMs, idStr] = q.before.split("_");
       const ts = new Date(Number(tsMs)).toISOString();

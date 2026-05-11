@@ -1,6 +1,7 @@
 import { serverApi } from "@/lib/server-fetch";
 import { fromMicro } from "@oddzilla/types/money";
 import { BankAdjuster, type BankStateDto } from "./bank-adjuster";
+import { readRzCurrencyFromSearchParams } from "../currency-switch";
 
 export const dynamic = "force-dynamic";
 
@@ -23,7 +24,37 @@ const TYPE_LABELS: Record<string, string> = {
   manual_adjust: "Manual",
 };
 
-export default async function RiskzillaBankPage() {
+export default async function RiskzillaBankPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const sp = await searchParams;
+  const currency = readRzCurrencyFromSearchParams(sp);
+  if (currency !== "USDC") {
+    return (
+      <>
+        <p style={{ fontSize: 13, color: "var(--color-fg-muted)", marginBottom: 16 }}>
+          Operator bankroll ceiling. Real-money concept only — the
+          demo currency ({currency}) has no operator bank.
+        </p>
+        <div
+          style={{
+            border: "1px solid var(--color-border)",
+            borderRadius: 10,
+            padding: "24px 20px",
+            background: "var(--color-bg-subtle)",
+            fontSize: 13,
+            color: "var(--color-fg-muted)",
+          }}
+        >
+          The bank tracks USDC capital exposure (bettor balances + open
+          potential payouts vs. the operator-defined ceiling). Switch
+          the view back to USDC at the top of the page to manage it.
+        </div>
+      </>
+    );
+  }
   const [state, ledger] = await Promise.all([
     serverApi<BankStateDto>("/admin/riskzilla/bank"),
     serverApi<{ entries: LedgerEntry[] }>("/admin/riskzilla/bank/ledger?limit=100"),

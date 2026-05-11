@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { fromMicro } from "@oddzilla/types/money";
+import type { RzCurrency } from "../currency-switch";
 
 export interface BettorDto {
   id: string;
@@ -28,12 +29,24 @@ const SORTS = [
   { key: "win_rate", label: "Win rate" },
 ] as const;
 
-export function BettorsClient({ initial }: { initial: BettorDto[] }) {
+export function BettorsClient({
+  initial,
+  currency,
+}: {
+  initial: BettorDto[];
+  currency: RzCurrency;
+}) {
   const [rows, setRows] = useState<BettorDto[]>(initial);
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<(typeof SORTS)[number]["key"]>("recent");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Reset to server-rendered rows when the page-level currency
+  // switches — keeps the list in sync with the URL without a refresh.
+  useEffect(() => {
+    setRows(initial);
+  }, [initial]);
 
   useEffect(() => {
     const tid = setTimeout(() => {
@@ -41,6 +54,7 @@ export function BettorsClient({ initial }: { initial: BettorDto[] }) {
       const params = new URLSearchParams();
       params.set("limit", "100");
       params.set("sort", sort);
+      params.set("currency", currency);
       if (q.trim()) params.set("q", q.trim());
       clientApi<{ entries: BettorDto[] }>(`/admin/riskzilla/bettors?${params}`)
         .then((res) => {
@@ -53,7 +67,7 @@ export function BettorsClient({ initial }: { initial: BettorDto[] }) {
         .finally(() => setLoading(false));
     }, 200);
     return () => clearTimeout(tid);
-  }, [q, sort]);
+  }, [q, sort, currency]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -117,8 +131,8 @@ export function BettorsClient({ initial }: { initial: BettorDto[] }) {
             <Th align="right">RS</Th>
             <Th align="right">Tickets</Th>
             <Th align="right">Win rate</Th>
-            <Th align="right">Staked</Th>
-            <Th align="right">PnL (op)</Th>
+            <Th align="right">Staked ({currency})</Th>
+            <Th align="right">PnL op ({currency})</Th>
             <Th>Status</Th>
             <Th>Last bet</Th>
           </tr>
