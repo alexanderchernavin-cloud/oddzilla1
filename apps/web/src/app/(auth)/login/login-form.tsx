@@ -28,7 +28,7 @@ export function LoginForm({ next }: { next: string }) {
       const safe =
         next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\")
           ? next
-          : "/account";
+          : "/";
       router.push(safe);
       router.refresh();
     } catch (err) {
