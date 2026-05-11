@@ -377,6 +377,8 @@ export function ZillaTipsBadge({
   contexts,
   size = "lg",
   popoverAlign = "right",
+  onPick,
+  pickSelected = false,
 }: {
   tips: ZillaTip[];
   currentHome: string;
@@ -398,6 +400,17 @@ export function ZillaTipsBadge({
   // pins to the left edge so a badge sitting in the LEFT half of a
   // grid doesn't push its popover off-screen to the right.
   popoverAlign?: "left" | "right";
+  // CTA inside the popover — when provided, renders an "Add to bet
+  // slip" button at the bottom. Parent wires this to the same toggle
+  // the underlying OddButton uses, so the user can pick the
+  // selection from inside the tip without aiming at the small button
+  // behind the popover.
+  onPick?: () => void;
+  // Whether the bet slip ALREADY carries this outcome. Drives the
+  // pick button's label + disabled state — clicking again would
+  // remove it from the slip, which is confusing UX from a "this is
+  // your tip" popover.
+  pickSelected?: boolean;
 }) {
   const compact = size === "sm";
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -515,12 +528,17 @@ export function ZillaTipsBadge({
             // with the global mobile drawer overlay.
             zIndex: 200,
             width: "min(440px, 92vw)",
-            background: "var(--surface-1)",
+            // Use --bg-elevated (defined in globals.css for both
+            // themes: #ffffff light / #131314 dark) — previously this
+            // referenced --surface-1, which doesn't exist in the
+            // token system, so the background fell back to invalid and
+            // rendered transparent over the market cards.
+            background: "var(--bg-elevated)",
             border: "1px solid var(--border)",
             borderRadius: "var(--r-md)",
             padding: 14,
             boxShadow:
-              "0 12px 32px rgba(0, 0, 0, 0.18), 0 2px 6px rgba(0, 0, 0, 0.08)",
+              "0 12px 32px rgba(0, 0, 0, 0.28), 0 2px 6px rgba(0, 0, 0, 0.12)",
             display: "flex",
             flexDirection: "column",
             gap: 14,
@@ -560,6 +578,37 @@ export function ZillaTipsBadge({
               context={contextByKey.get(`${tip.marketId}:${tip.outcomeId}`)}
             />
           ))}
+          {onPick && (
+            <button
+              type="button"
+              onClick={() => {
+                if (pickSelected) return;
+                onPick();
+                close(myId);
+              }}
+              disabled={pickSelected}
+              style={{
+                width: "100%",
+                height: 36,
+                borderRadius: 8,
+                border: "1px solid var(--accent, #f0e9d8)",
+                background: pickSelected
+                  ? "var(--surface-2)"
+                  : "var(--accent, #f0e9d8)",
+                color: pickSelected
+                  ? "var(--fg-muted)"
+                  : "var(--accent-fg, #1c1a14)",
+                fontFamily: "inherit",
+                fontSize: 13,
+                fontWeight: 600,
+                letterSpacing: "0.01em",
+                cursor: pickSelected ? "default" : "pointer",
+                transition: "background 140ms var(--ease)",
+              }}
+            >
+              {pickSelected ? "On bet slip" : "Add to bet slip"}
+            </button>
+          )}
           <div
             style={{
               fontSize: 10.5,
