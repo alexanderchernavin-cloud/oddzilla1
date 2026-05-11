@@ -12,10 +12,22 @@
 //
 // Phase 10.3 will add /community/copy/:communityTicketId. Admin
 // backfill lives at POST /admin/community/backfill (admin/community.ts).
+//
+// ─── SECURITY NOTE: Drizzle sql`` binding-vs-fragment trap ──────────────────
+// Drizzle's sql`` tag treats interpolated values two different ways:
+//   • Plain JS values  → bound as parameters (safe, e.g. sql`x = ${userId}`)
+//   • Nested sql tags  → inlined as raw SQL fragments (NOT bound)
+// So `const FRAG = sql\`'a','b'\`; sql\`x IN (${FRAG})\`` produces literal
+// SQL — values you stash in a top-level `const X = sql\`...\`` are NEVER
+// parameter-bound at the IN call site. That shape is a footgun: it looks
+// like binding but isn't. Prefer the typed Drizzle builder
+// (eq, inArray, and, or, …) — it binds and is type-checked. When you must
+// drop to raw sql`` (e.g. CTEs), bind arrays explicitly with
+// sql`... = ANY(${jsArray}::text[])` rather than inlining a sql`` fragment.
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { and, eq, sql, desc, asc, type SQL } from "drizzle-orm";
+import { and, eq, inArray, sql, desc, asc, type SQL } from "drizzle-orm";
 import {
   users,
   communityTickets,
@@ -176,14 +188,12 @@ const userTicketsQuery = z.object({
 // resolved; keeping it lets the feed show all settled outcomes rather
 // than only winners. Phase 10.3 may filter further on the client side.
 //
-// Stored as the bare comma-separated list — the IN call site wraps in
-// its own parens. Wrapping here too produces `IN ((...))` which
-// Postgres parses as a record-vs-text comparison and 500s with
-// "operator does not exist: text = record". The original form (with
-// internal parens) shipped behind a path that didn't trigger it
-// because no settled tickets existed; loadProfileStats turned out to
-// be the path that broke once /u/:nickname loaded a user with stats.
-const FEED_STATUSES = sql`'settled', 'cashed_out', 'voided'`;
+// Held as a plain JS tuple so call sites can use Drizzle's typed
+// `inArray(...)` builder (or, on raw SQL paths, `= ANY(${arr}::text[])`)
+// — both bind the values as parameters. The earlier shape stored a
+// raw sql`` fragment which was inlined (not bound) at the IN call site;
+// see the SECURITY NOTE at top of file.
+const FEED_STATUSES = ["settled", "cashed_out", "voided"] as const;
 
 export default async function communityRoutes(app: FastifyInstance) {
   // ─── Feed ────────────────────────────────────────────────────────────────
@@ -346,7 +356,7 @@ export default async function communityRoutes(app: FastifyInstance) {
           and(
             eq(communityTickets.userId, u.id),
             eq(communityTickets.currency, currency),
-            sql`${communityTickets.status}::text IN ('settled', 'cashed_out', 'voided')`,
+            inArray(communityTickets.status, [...FEED_STATUSES]),
           ),
         )
         .orderBy(desc(communityTickets.settledAt))
@@ -858,6 +868,11 @@ async function loadProfileStats(
   // / totalPayout below. An unquoted alias is folded to lowercase, making
   // those fields undefined and crashing BigInt() for any user whose
   // settled history is non-empty.
+  //
+  // ${userId} and ${currency} are plain JS values — Drizzle's sql`` tag
+  // binds them as parameters (see SECURITY NOTE at top of file). The
+  // status array is bound via `= ANY(${arr}::text[])` rather than the
+  // older `IN (${sql-fragment})` shape, which inlined raw SQL.
   const rows = await db.execute<ProfileStatsRow>(sql`
     SELECT
       COUNT(*)::int                                         AS settled,
@@ -870,7 +885,7 @@ async function loadProfileStats(
       FROM community_tickets
      WHERE user_id = ${userId}
        AND currency = ${currency}
-       AND status::text IN (${FEED_STATUSES})
+       AND status::text = ANY(${[...FEED_STATUSES]}::text[])
   `);
 
   const row = rows[0];
@@ -998,10 +1013,11 @@ async function loadRecentFeed(
   app: FastifyInstance,
   q: FeedLoaderArgs,
 ): Promise<CommunityFeedResponse> {
-  // Query parameters are inlined via Drizzle's sql template — currency
-  // and sport are validated by the route's zod schema; the user-id /
-  // status / match-status sets are literals so injection isn't a
-  // concern even on the raw SQL path.
+  // q.currency / q.sport are plain JS values, so Drizzle's sql`` tag
+  // binds them as parameters (NOT inlined as raw SQL — see SECURITY
+  // NOTE at top of file). They're also pre-validated by the route's
+  // zod schema. Never wrap user input in an outer sql`` fragment here;
+  // that would flip the value from a bound parameter to inlined SQL.
   const currencyClause = q.currency
     ? sql`AND t.currency = ${q.currency}`
     : sql``;
@@ -1108,7 +1124,7 @@ async function loadBestWinsFeed(
   const filters = [
     eq(users.ticketsPublic, true),
     sql`${users.nickname} IS NOT NULL`,
-    sql`${communityTickets.status}::text IN ('settled', 'cashed_out')`,
+    inArray(communityTickets.status, ["settled", "cashed_out"]),
     sql`${communityTickets.payoutMicro} > ${communityTickets.stakeMicro}`,
     sql`${communityTickets.settledAt} >= ${BEST_WINS_WINDOW}`,
   ];
