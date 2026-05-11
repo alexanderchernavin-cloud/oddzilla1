@@ -11,14 +11,15 @@
 import type { FastifyInstance } from "fastify";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { SUPPORTED_CURRENCIES } from "@oddzilla/types/currencies";
+
+const currencySchema = z
+  .string()
+  .transform((s) => s.toUpperCase())
+  .pipe(z.enum(SUPPORTED_CURRENCIES));
 
 const dashboardQuery = z.object({
-  currency: z
-    .string()
-    .min(3)
-    .max(4)
-    .transform((s) => s.toUpperCase())
-    .default("USDC"),
+  currency: currencySchema.default("USDC"),
 });
 
 interface DashboardKpis {

@@ -13,6 +13,15 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { sql } from "drizzle-orm";
+import { SUPPORTED_CURRENCIES } from "@oddzilla/types/currencies";
+
+// Case-insensitive zod enum that matches one of the supported wallet
+// currencies. Length-based min/max validators would reject "OZ"
+// (2 chars), so we match by membership instead.
+const currencySchema = z
+  .string()
+  .transform((s) => s.toUpperCase())
+  .pipe(z.enum(SUPPORTED_CURRENCIES));
 
 const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(100),
@@ -40,15 +49,10 @@ const listQuery = z.object({
   sportId: z.coerce.number().int().optional(),
   matchId: z.coerce.bigint().optional(),
   riskTier: z.coerce.number().int().min(0).max(32).optional(),
-  // Currency filter — case-insensitive 3- or 4-char code. USDC + OZ
-  // are the two values event_log carries today; preflighting at the
+  // Currency filter — case-insensitive, must match one of the
+  // supported wallet currencies (USDC | OZ). Preflighting at the
   // schema layer keeps a typo from running a silent full-table scan.
-  currency: z
-    .string()
-    .min(3)
-    .max(4)
-    .transform((s) => s.toUpperCase())
-    .optional(),
+  currency: currencySchema.optional(),
   fromTs: z.coerce.date().optional(),
   toTs: z.coerce.date().optional(),
   // Stake range — both fields are bigint-shaped strings of micros so
