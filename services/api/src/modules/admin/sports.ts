@@ -116,6 +116,11 @@ const writeRateLimit = {
   rateLimit: { max: 30, timeWindow: "1 minute" },
 };
 
+// Must match the key used by /catalog/sports in modules/catalog/routes.ts.
+// Kept inline rather than re-exported to avoid a sideways module dep —
+// if a future cache invalidation surface grows we can centralise both.
+const SPORTS_CATALOG_CACHE_KEY = "catalog:sports:v1";
+
 export default async function adminSportsRoutes(app: FastifyInstance) {
   // Multipart support is local to this scope so the existing JSON-body
   // routes (GET /admin/sports, PATCH /admin/sports/:id) keep their
@@ -258,6 +263,10 @@ export default async function adminSportsRoutes(app: FastifyInstance) {
       });
     });
 
+    // /catalog/sports is cached 60s; bust on every admin sport mutation so
+    // a logo or brand-color edit shows up on the storefront immediately.
+    await app.redis.del(SPORTS_CATALOG_CACHE_KEY).catch(() => null);
+
     return { ok: true, id: params.id };
   });
 
@@ -344,6 +353,10 @@ export default async function adminSportsRoutes(app: FastifyInstance) {
         });
       });
 
+      // See PATCH handler note: bust the /catalog/sports cache so the
+      // new logo URL surfaces on the next storefront layout render.
+      await app.redis.del(SPORTS_CATALOG_CACHE_KEY).catch(() => null);
+
       reply.code(200);
       return { ok: true, id: params.id, logoUrl: newLogoUrl };
     },
@@ -402,6 +415,10 @@ export default async function adminSportsRoutes(app: FastifyInstance) {
           ipInet: request.ip ?? null,
         });
       });
+
+      // See PATCH handler note: bust the /catalog/sports cache so the
+      // logo removal surfaces on the next storefront layout render.
+      await app.redis.del(SPORTS_CATALOG_CACHE_KEY).catch(() => null);
 
       return { ok: true, id: params.id };
     },
