@@ -11,7 +11,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { clientApi } from "./api-client";
-import type { ZillaTip, ZillaTipsResponse } from "@oddzilla/types";
+import type { ZillaTip, ZillaTipsResponse } from "@oddzilla/types/zillatips";
 
 interface ZillaTipsState {
   tipsByMarket: Map<string, ZillaTip[]>;

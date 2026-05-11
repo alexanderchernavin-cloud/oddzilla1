@@ -11,12 +11,17 @@
 // ZILLATIP_TIER_GLOW and ZILLATIP_TIER_FIRE.
 
 import { useEffect, useId, useRef, useState } from "react";
+// Subpath import — @oddzilla/types' root entry chains `export *` through
+// other modules with `.js` extensions that Next.js webpack can't resolve
+// when a RUNTIME value (zillaTipTier here) forces the package to be
+// bundled. Pulling from /zillatips bypasses the root entry; same
+// convention bet-slip.tsx uses for `@oddzilla/types/currencies`.
 import {
   zillaTipTier,
   type ZillaTip,
   type ZillaTipLeg,
   type ZillaTipResult,
-} from "@oddzilla/types";
+} from "@oddzilla/types/zillatips";
 import { I } from "@/components/ui/icons";
 import { TeamMark } from "@/components/ui/primitives";
 
