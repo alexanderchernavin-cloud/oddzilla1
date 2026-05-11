@@ -196,6 +196,24 @@ func (s *Settler) applyMarketSettle(ctx context.Context, eventURN string, ts int
 		return err
 	}
 
+	// TODO(audit H6 follow-up): pipeline the per-ticket UPDATE chain
+	// (SettleTicket → UpdateRiskzillaBankOnSettle → WriteCommunityProjection
+	// → EvaluateAchievements) with pgx.Batch in groups of ~100, and replace
+	// this outer for-loop with a worker pool of 4-8 goroutines (each with
+	// its own tx) using `FOR UPDATE SKIP LOCKED` as the work-stealing
+	// primitive. Two prerequisites this PR did NOT land:
+	//   1. nextPayoutRefID is a per-ticket SELECT inside the tx that gates
+	//      the wallet_ledger INSERT — to batch SettleTicket we need to
+	//      either (a) precompute every ref_id with a single
+	//      SELECT…WHERE ticket_id = ANY($1) before the batch, or (b) move
+	//      the generation count into a deterministic suffix on the ticket
+	//      row itself. (a) is simpler; do that.
+	//   2. The per-market settle tx today doubles as the per-market
+	//      serialisation lock (no two passes for the same market). Moving
+	//      to a worker pool needs an explicit advisory lock keyed on
+	//      marketID so we don't lose that invariant.
+	// The read collapse landed in this PR removes the dominant 3N
+	// round-trip cost; the batching above buys the remaining N×4 writes.
 	settledTickets := make([]string, 0, len(tickets))
 	for _, tid := range tickets {
 		didSettle, err := s.maybeSettleTicket(ctx, tx, tid, "bet_settlement")
@@ -222,8 +240,19 @@ func (s *Settler) applyMarketSettle(ctx context.Context, eventURN string, ts int
 // settled in this tx. Returns (false, nil) if it's locked by another
 // worker (SKIP LOCKED miss), already settled, or has unresolved
 // selections remaining.
+//
+// Performance note (audit H6): the previous implementation paid three
+// sequential round-trips per ticket — LoadTicketForSettle +
+// UnresolvedCount + ResolvedSelections — just to decide whether to
+// settle. At peak Oddin throughput (a market settle that affects N
+// tickets) that was 3N round-trips before any work happened. We now
+// fold all three reads into one call via LoadTicketWithSelections,
+// reusing the in-memory selection slice for the unresolved-count
+// predicate. The per-ticket UPDATE pipeline (SettleTicket → bank →
+// projection → achievements) remains sequential — see the H6 TODO at
+// the bottom of this function for the deferred batching follow-up.
 func (s *Settler) maybeSettleTicket(ctx context.Context, tx pgx.Tx, ticketID, sourceTag string) (bool, error) {
-	t, locked, err := store.LoadTicketForSettle(ctx, tx, ticketID)
+	t, selections, locked, err := store.LoadTicketWithSelections(ctx, tx, ticketID)
 	if err != nil {
 		return false, err
 	}
@@ -241,17 +270,8 @@ func (s *Settler) maybeSettleTicket(ctx context.Context, tx pgx.Tx, ticketID, so
 		//                                 advances first); ignore safely
 		return false, nil
 	}
-	unresolved, err := store.UnresolvedCount(ctx, tx, ticketID)
-	if err != nil {
-		return false, err
-	}
-	if unresolved > 0 {
+	if store.UnresolvedCountIn(selections) > 0 {
 		return false, nil
-	}
-
-	selections, err := store.ResolvedSelections(ctx, tx, ticketID)
-	if err != nil {
-		return false, err
 	}
 
 	payout, ledgerType, err := computePayout(t, selections)

@@ -186,6 +186,166 @@ type pgxRunner interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
+// ─── Bulk upserts (audit H7) ───────────────────────────────────────────────
+//
+// The single-row variants above are kept because tests and a handful of
+// REST-driven paths still call them. The handler hot path
+// (handleOddsChange) now uses the *Bulk variants so one odds_change
+// message produces 3 round-trips total (markets + outcomes + history),
+// regardless of how many markets the message touches.
+
+// MarketUpsertBulkResult maps the natural market key back to the id
+// assigned (or already held) by the markets table. Bulk callers use
+// this to attach outcomes/history rows to the right market_id without
+// a second SELECT round-trip.
+type MarketUpsertBulkResult struct {
+	ProviderMarketID int
+	SpecifiersHash   []byte
+	ID               int64
+}
+
+// UpsertMarketsBulk performs a single UNNEST-based INSERT for every
+// market in `markets`, mirroring the single-row UpsertMarket semantics:
+// ON CONFLICT on the natural 3-tuple keeps id stable, bumps status and
+// last_oddin_ts (the latter monotonically). RETURNING + the input row's
+// provider_market_id + specifiers_hash lets the caller rebuild the
+// map[(providerMarketID, hash)] → id without a follow-up query.
+//
+// All markets in one call must share the same match_id (handleOddsChange
+// only ever calls this for a single match). That keeps the SQL signature
+// flat — match_id is a scalar arg, not an array.
+func UpsertMarketsBulk(ctx context.Context, db pgxRunner, matchID int64, markets []MarketUpsert) ([]MarketUpsertBulkResult, error) {
+	if len(markets) == 0 {
+		return nil, nil
+	}
+	providerIDs := make([]int32, len(markets))
+	specJSONs := make([]string, len(markets))
+	specHashes := make([][]byte, len(markets))
+	statuses := make([]int32, len(markets))
+	lastTs := make([]int64, len(markets))
+	for i, m := range markets {
+		providerIDs[i] = int32(m.Key.ProviderMarketID)
+		jb, err := json.Marshal(m.SpecifiersJSON)
+		if err != nil {
+			return nil, fmt.Errorf("marshal specifiers[%d]: %w", i, err)
+		}
+		specJSONs[i] = string(jb)
+		specHashes[i] = m.Key.SpecifiersHash
+		statuses[i] = int32(m.Status)
+		lastTs[i] = m.LastOddinTs
+	}
+
+	const q = `
+INSERT INTO markets
+  (match_id, provider_market_id, specifiers_json, specifiers_hash, status, last_oddin_ts, updated_at)
+SELECT $1, t.pmid, t.spec::jsonb, t.hash, t.status, t.lts, NOW()
+  FROM UNNEST($2::int[], $3::text[], $4::bytea[], $5::int[], $6::bigint[])
+       AS t(pmid, spec, hash, status, lts)
+ON CONFLICT (match_id, provider_market_id, specifiers_hash) DO UPDATE
+   SET status        = EXCLUDED.status,
+       last_oddin_ts = GREATEST(markets.last_oddin_ts, EXCLUDED.last_oddin_ts),
+       updated_at    = NOW()
+RETURNING id, provider_market_id, specifiers_hash`
+	rows, err := db.Query(ctx, q, matchID, providerIDs, specJSONs, specHashes, statuses, lastTs)
+	if err != nil {
+		return nil, fmt.Errorf("upsert markets bulk: %w", err)
+	}
+	defer rows.Close()
+	out := make([]MarketUpsertBulkResult, 0, len(markets))
+	for rows.Next() {
+		var r MarketUpsertBulkResult
+		var pmid int32
+		if err := rows.Scan(&r.ID, &pmid, &r.SpecifiersHash); err != nil {
+			return nil, fmt.Errorf("scan upsert markets bulk: %w", err)
+		}
+		r.ProviderMarketID = int(pmid)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// UpsertOutcomesBulk applies every outcome row in one UNNEST INSERT.
+// Replaces the per-market pgx.Batch loop with a single round-trip; the
+// ON CONFLICT semantics are identical to the single-call UpsertOutcomes.
+func UpsertOutcomesBulk(ctx context.Context, db pgxRunner, rows []OutcomeUpsert) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	marketIDs := make([]int64, len(rows))
+	outcomeIDs := make([]string, len(rows))
+	names := make([]string, len(rows))
+	rawOdds := make([]*string, len(rows))
+	probs := make([]*string, len(rows))
+	actives := make([]bool, len(rows))
+	lastTs := make([]int64, len(rows))
+	for i, r := range rows {
+		marketIDs[i] = r.MarketID
+		outcomeIDs[i] = r.OutcomeID
+		names[i] = r.Name
+		rawOdds[i] = r.RawOdds
+		probs[i] = r.Probability
+		actives[i] = r.Active
+		lastTs[i] = r.LastOddinTs
+	}
+	const q = `
+INSERT INTO market_outcomes
+  (market_id, outcome_id, name, raw_odds, probability, active, last_oddin_ts, updated_at)
+SELECT t.mid, t.oid, t.nm, t.odds::numeric, t.prob::numeric, t.act, t.lts, NOW()
+  FROM UNNEST(
+         $1::bigint[], $2::text[], $3::text[],
+         $4::text[],   $5::text[], $6::bool[], $7::bigint[]
+       ) AS t(mid, oid, nm, odds, prob, act, lts)
+ON CONFLICT (market_id, outcome_id) DO UPDATE
+   SET raw_odds      = COALESCE(EXCLUDED.raw_odds, market_outcomes.raw_odds),
+       probability   = COALESCE(EXCLUDED.probability, market_outcomes.probability),
+       active        = EXCLUDED.active,
+       name          = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE market_outcomes.name END,
+       last_oddin_ts = GREATEST(market_outcomes.last_oddin_ts, EXCLUDED.last_oddin_ts),
+       updated_at    = NOW()`
+	if _, err := db.Exec(ctx, q, marketIDs, outcomeIDs, names, rawOdds, probs, actives, lastTs); err != nil {
+		return fmt.Errorf("upsert outcomes bulk: %w", err)
+	}
+	return nil
+}
+
+// AppendOddsHistoryBulk batch-inserts every odds_history row from one
+// odds_change message in a single UNNEST INSERT. The semantics match
+// AppendOddsHistory: append-only, no uniqueness constraint, duplicates
+// (rare) are tolerated. We deliberately stay with INSERT-via-UNNEST
+// over CopyFrom here so the call works against both *pgxpool.Pool and
+// pgx.Tx — the latter has no CopyFrom of its own, and the handler is
+// pool-scoped anyway.
+func AppendOddsHistoryBulk(ctx context.Context, db pgxRunner, rows []OddsHistoryRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	marketIDs := make([]int64, len(rows))
+	outcomeIDs := make([]string, len(rows))
+	rawOdds := make([]*string, len(rows))
+	pubOdds := make([]*string, len(rows))
+	probs := make([]*string, len(rows))
+	ts := make([]time.Time, len(rows))
+	for i, r := range rows {
+		marketIDs[i] = r.MarketID
+		outcomeIDs[i] = r.OutcomeID
+		rawOdds[i] = r.RawOdds
+		pubOdds[i] = r.PublishedOdds
+		probs[i] = r.Probability
+		ts[i] = r.Ts
+	}
+	const q = `
+INSERT INTO odds_history (market_id, outcome_id, raw_odds, published_odds, probability, ts)
+SELECT t.mid, t.oid, t.raw::numeric, t.pub::numeric, t.prob::numeric, t.ts
+  FROM UNNEST(
+         $1::bigint[], $2::text[],
+         $3::text[],   $4::text[], $5::text[], $6::timestamptz[]
+       ) AS t(mid, oid, raw, pub, prob, ts)`
+	if _, err := db.Exec(ctx, q, marketIDs, outcomeIDs, rawOdds, pubOdds, probs, ts); err != nil {
+		return fmt.Errorf("append odds_history bulk: %w", err)
+	}
+	return nil
+}
+
 // SweepHandoverTimeouts demotes any market that's been in pre-match → live
 // "handed over" state (status=-2) for longer than `timeoutMs` to suspended
 // (status=-1). Per Oddin docs §1.4: "if you do not receive live odds within

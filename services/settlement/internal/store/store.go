@@ -410,6 +410,130 @@ SELECT odds_at_placement::text,
 	return out, rows.Err()
 }
 
+// LoadTicketWithSelections collapses LoadTicketForSettle + UnresolvedCount
+// + ResolvedSelections into a single round-trip. The driver of this
+// optimisation (audit H6) is the per-ticket settle loop in
+// settler.maybeSettleTicket, which previously paid 3 sequential round-
+// trips per ticket just to decide whether to settle.
+//
+// Implementation: the ticket's FOR UPDATE SKIP LOCKED CTE runs first;
+// every selection row joins onto it and carries the locked ticket
+// columns alongside its own result/void_factor/odds. The caller
+// reconstructs both the ticket header and the selection list from one
+// rows.Next() walk.
+//
+// Returns (ticket, selections, locked, err):
+//   - locked=false on SKIP LOCKED miss; caller short-circuits as before.
+//   - selections always contains every row attached to the ticket
+//     (resolved or not); the caller decides what to do based on
+//     UnresolvedCount(selections).
+//
+// The original LoadTicketForSettle / UnresolvedCount / ResolvedSelections
+// are intentionally retained — smoke-settle and the cancel/rollback paths
+// in settler.go still call them, and changing every call site would
+// balloon this PR.
+func LoadTicketWithSelections(ctx context.Context, tx pgx.Tx, ticketID string) (TicketForSettle, []SelectionResult, bool, error) {
+	const q = `
+WITH locked AS (
+  SELECT id, user_id, currency, status::text AS status,
+         bet_type::text AS bet_type, stake_micro,
+         potential_payout_micro, bet_meta
+    FROM tickets
+   WHERE id = $1
+     FOR UPDATE SKIP LOCKED
+)
+SELECT l.id, l.user_id, l.currency, l.status, l.bet_type,
+       l.stake_micro, l.potential_payout_micro, l.bet_meta,
+       ts.odds_at_placement::text,
+       COALESCE(ts.probability_at_placement::text, ''),
+       COALESCE(ts.result::text, ''),
+       COALESCE(ts.void_factor::text, '')
+  FROM locked l
+  LEFT JOIN ticket_selections ts ON ts.ticket_id = l.id`
+	rows, err := tx.Query(ctx, q, ticketID)
+	if err != nil {
+		return TicketForSettle{}, nil, false, fmt.Errorf("load ticket+selections: %w", err)
+	}
+	defer rows.Close()
+
+	var (
+		t    TicketForSettle
+		sels = make([]SelectionResult, 0, 4)
+		seen bool
+	)
+	for rows.Next() {
+		// Per-row scan targets. The ticket columns are duplicated across
+		// every joined row; we copy them once on the first row, then
+		// only consume the per-selection columns thereafter. nullable
+		// selection columns appear when the LEFT JOIN miss returns a
+		// header-only row (ticket exists but has zero selections — not
+		// expected under normal flow but defensive).
+		var (
+			tid, uid, cur, status, betType string
+			stake, potential               int64
+			betMeta                        []byte
+			odds, prob, result, vf         *string
+		)
+		if err := rows.Scan(
+			&tid, &uid, &cur, &status, &betType,
+			&stake, &potential, &betMeta,
+			&odds, &prob, &result, &vf,
+		); err != nil {
+			return TicketForSettle{}, nil, false, fmt.Errorf("scan ticket+selections: %w", err)
+		}
+		if !seen {
+			t = TicketForSettle{
+				ID: tid, UserID: uid, Currency: cur,
+				Status: status, BetType: betType,
+				StakeMicro: stake, PotentialPayoutMicro: potential,
+				BetMetaJSON: betMeta,
+			}
+			seen = true
+		}
+		if odds != nil { // skip the LEFT JOIN sentinel when no selections
+			sels = append(sels, SelectionResult{
+				OddsAtPlacement:        *odds,
+				ProbabilityAtPlacement: derefString(prob),
+				Result:                 derefString(result),
+				VoidFactor:             derefString(vf),
+			})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return TicketForSettle{}, nil, false, fmt.Errorf("iterate ticket+selections: %w", err)
+	}
+	if !seen {
+		// FOR UPDATE SKIP LOCKED miss OR ticket not found. Both surface
+		// as "empty result" to the caller, identical to the historical
+		// LoadTicketForSettle behaviour where pgx.ErrNoRows mapped to
+		// (zero, false, nil).
+		return TicketForSettle{}, nil, false, nil
+	}
+	return t, sels, true, nil
+}
+
+// UnresolvedCountIn returns how many selections in `sels` are still
+// awaiting a result. Mirrors the SQL `WHERE result IS NULL` predicate
+// used by UnresolvedCount, but operates on the in-memory slice
+// LoadTicketWithSelections already returned so no extra round-trip is
+// needed.
+func UnresolvedCountIn(sels []SelectionResult) int {
+	n := 0
+	for _, s := range sels {
+		if s.Result == "" {
+			n++
+		}
+	}
+	return n
+}
+
+func derefString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
 // RiskZilla currency: bank bookkeeping is USDC-only. OZ demo currency
 // has no operator risk so its tickets skip the bank update.
 const riskzillaCurrency = "USDC"

@@ -198,12 +198,31 @@ func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 
 	events := make([]bus.OddsEvent, 0, 32)
 
+	// Audit H7: collapse the per-market upsert loop into three batched
+	// SQL calls (markets, outcomes, odds_history) using UNNEST. Previously
+	// this hot path issued 3 round-trips per market — at 30-150 markets
+	// per odds_change message the connection-acquire cost alone dominated.
+	// Now it's 3 round-trips per message, regardless of market count.
+	//
+	// Pass 1: assemble the market-upsert input list and pre-hash specs so
+	//         each market can also be looked up by (providerID, hash) once
+	//         we know the assigned id.
+	type marketAux struct {
+		market    oddinxml.Market
+		canonical string
+		hash      []byte
+	}
+	aux := make([]marketAux, 0, len(msg.Odds.Markets))
+	marketUpserts := make([]store.MarketUpsert, 0, len(msg.Odds.Markets))
 	for _, m := range msg.Odds.Markets {
 		specs := oddinxml.Parse(m.Specifiers)
-		canonical := oddinxml.Canonical(specs)
 		hash := oddinxml.Hash(specs)
-
-		marketID, err := store.UpsertMarket(ctx, d.Store.Pool(), store.MarketUpsert{
+		aux = append(aux, marketAux{
+			market:    m,
+			canonical: oddinxml.Canonical(specs),
+			hash:      hash,
+		})
+		marketUpserts = append(marketUpserts, store.MarketUpsert{
 			Key: store.MarketKey{
 				MatchID:          matchID,
 				ProviderMarketID: m.ID,
@@ -213,19 +232,42 @@ func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 			Status:         int16(m.Status),
 			LastOddinTs:    msg.Timestamp,
 		})
-		if err != nil {
-			return fmt.Errorf("upsert market: %w", err)
-		}
+	}
 
-		// Outcomes
-		rows := make([]store.OutcomeUpsert, 0, len(m.Outcomes))
-		history := make([]store.OddsHistoryRow, 0, len(m.Outcomes))
-		ts := time.UnixMilli(msg.Timestamp).UTC()
-		for _, o := range m.Outcomes {
+	results, err := store.UpsertMarketsBulk(ctx, d.Store.Pool(), matchID, marketUpserts)
+	if err != nil {
+		return fmt.Errorf("upsert markets bulk: %w", err)
+	}
+	// Build (providerMarketID, hash) → id map. RETURNING order from a
+	// SELECT-with-UNNEST + ON CONFLICT in Postgres is not guaranteed to
+	// match input order (rows that conflicted vs. inserted can interleave),
+	// so we look up by key rather than by index.
+	idByKey := make(map[string]int64, len(results))
+	keyFor := func(pmid int, hash []byte) string {
+		return fmt.Sprintf("%d|%x", pmid, hash)
+	}
+	for _, r := range results {
+		idByKey[keyFor(r.ProviderMarketID, r.SpecifiersHash)] = r.ID
+	}
+
+	// Pass 2: flatten every outcome + history row across all markets and
+	// fold them into two big UNNEST INSERTs.
+	outcomeRows := make([]store.OutcomeUpsert, 0, len(aux)*4)
+	historyRows := make([]store.OddsHistoryRow, 0, len(aux)*4)
+	ts := time.UnixMilli(msg.Timestamp).UTC()
+	for _, a := range aux {
+		marketID, ok := idByKey[keyFor(a.market.ID, a.hash)]
+		if !ok {
+			// Should never happen — every input row gets returned by the
+			// UNNEST INSERT (insert or update). If we get here, treat it
+			// as a real error rather than silently dropping outcomes.
+			return fmt.Errorf("upsert markets bulk: missing id for provider_market_id=%d", a.market.ID)
+		}
+		for _, o := range a.market.Outcomes {
 			rawOdds := nullableOdds(o.Odds)
 			probability := nullableProbability(o.Probability)
 			active := o.Active == nil || *o.Active == 1
-			rows = append(rows, store.OutcomeUpsert{
+			outcomeRows = append(outcomeRows, store.OutcomeUpsert{
 				MarketID:    marketID,
 				OutcomeID:   o.ID,
 				Name:        o.Name,
@@ -234,7 +276,7 @@ func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 				Active:      active,
 				LastOddinTs: msg.Timestamp,
 			})
-			history = append(history, store.OddsHistoryRow{
+			historyRows = append(historyRows, store.OddsHistoryRow{
 				MarketID:    marketID,
 				OutcomeID:   o.ID,
 				RawOdds:     rawOdds,
@@ -245,8 +287,8 @@ func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 				ev := bus.OddsEvent{
 					MarketID:            marketID,
 					OutcomeID:           o.ID,
-					ProviderMarketID:    m.ID,
-					SpecifiersCanonical: canonical,
+					ProviderMarketID:    a.market.ID,
+					SpecifiersCanonical: a.canonical,
 					RawOdds:             *rawOdds,
 					Active:              active,
 					MatchID:             matchID,
@@ -258,14 +300,14 @@ func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 				events = append(events, ev)
 			}
 		}
-		if err := store.UpsertOutcomes(ctx, d.Store.Pool(), rows); err != nil {
-			return fmt.Errorf("upsert outcomes: %w", err)
-		}
-		if err := store.AppendOddsHistory(ctx, d.Store.Pool(), history); err != nil {
-			// Log + continue. History is nice-to-have; live state is more
-			// important. Retrying would stall the consumer.
-			d.Log.Warn().Err(err).Msg("odds_history append failed; continuing")
-		}
+	}
+	if err := store.UpsertOutcomesBulk(ctx, d.Store.Pool(), outcomeRows); err != nil {
+		return fmt.Errorf("upsert outcomes bulk: %w", err)
+	}
+	if err := store.AppendOddsHistoryBulk(ctx, d.Store.Pool(), historyRows); err != nil {
+		// Log + continue. History is nice-to-have; live state is more
+		// important. Retrying would stall the consumer.
+		d.Log.Warn().Err(err).Msg("odds_history bulk append failed; continuing")
 	}
 
 	if len(events) > 0 {
