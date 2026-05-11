@@ -23,6 +23,21 @@ const reviewBody = z.object({
   note: z.string().max(500).optional(),
 });
 
+const bulkReviewBody = z.object({
+  // Approve-all is the common case (the ingester auto-creates good
+  // mappings most of the time; the queue is a safety net). Reject-all
+  // is intentionally not exposed — operators should never wipe the
+  // queue without inspection. Per-row reject stays for those cases.
+  decision: z.literal("approve"),
+  entityType: z
+    .enum(["sport", "category", "tournament", "match", "competitor", "market_type"])
+    .optional(),
+  // Optional cap so a runaway invocation can't lock the row set for
+  // minutes. Defaults to "no cap" because the realistic queue size
+  // is bounded by Oddin's catalog size.
+  limit: z.coerce.number().int().min(1).max(100_000).optional(),
+});
+
 export default async function adminRoutes(app: FastifyInstance) {
   // ── Mapping review queue ─────────────────────────────────────────────
   app.get("/admin/mapping", async (request) => {
@@ -106,16 +121,110 @@ export default async function adminRoutes(app: FastifyInstance) {
     return { id: params.id.toString(), status: newStatus };
   });
 
+  // Bulk-approve every pending row (optionally scoped to one
+  // entity_type). Single SQL UPDATE plus a single audit_log row
+  // summarising the action — writing 20k+ per-row audit entries
+  // would crawl under the hash-chain trigger's advisory lock.
+  app.post("/admin/mapping/bulk-review", async (request) => {
+    const admin = request.requireRole("admin");
+    const body = bulkReviewBody.parse(request.body);
+    const newStatus = "approved";
+
+    const reviewedAt = new Date();
+    const result = await app.db.transaction(async (tx) => {
+      // Cap the row set via a CTE when a limit is requested; without
+      // one we update every pending row in one shot. The matching
+      // predicate stays identical to the GET filter so the operator
+      // gets exactly what they were looking at.
+      const updated = body.limit
+        ? ((await tx.execute(sql`
+            WITH target AS (
+              SELECT id FROM mapping_review_queue
+               WHERE status = 'pending'
+                 ${body.entityType ? sql`AND entity_type = ${body.entityType}` : sql``}
+               ORDER BY created_at ASC
+               LIMIT ${body.limit}
+            )
+            UPDATE mapping_review_queue m
+               SET status      = 'approved',
+                   reviewed_by = ${admin.id}::uuid,
+                   reviewed_at = ${reviewedAt.toISOString()}::timestamptz
+              FROM target
+             WHERE m.id = target.id
+             RETURNING m.id
+          `)) as unknown as Array<{ id: string }>)
+        : ((await tx.execute(sql`
+            UPDATE mapping_review_queue
+               SET status      = 'approved',
+                   reviewed_by = ${admin.id}::uuid,
+                   reviewed_at = ${reviewedAt.toISOString()}::timestamptz
+             WHERE status = 'pending'
+               ${body.entityType ? sql`AND entity_type = ${body.entityType}` : sql``}
+             RETURNING id
+          `)) as unknown as Array<{ id: string }>);
+
+      const count = updated.length;
+
+      // Audit log: one summary row, not N per-row rows. Includes the
+      // exact filter applied and the count so the action is replayable
+      // from the log alone.
+      await tx.insert(adminAuditLog).values({
+        actorUserId: admin.id,
+        action: `mapping.bulk_${newStatus}`,
+        targetType: "mapping_review_queue",
+        targetId: body.entityType ?? "*",
+        beforeJson: { status: "pending", entityType: body.entityType ?? null },
+        afterJson: {
+          status: newStatus,
+          entityType: body.entityType ?? null,
+          count,
+          limit: body.limit ?? null,
+        },
+        ipInet: request.ip ?? null,
+      });
+
+      return count;
+    });
+
+    return { decision: newStatus, count: result };
+  });
+
   // ── Lightweight summary for the dashboard KPI cards ───────────────────
+  // Optional `?entityType=…` returns counts scoped to a single type so
+  // the bulk-approve button can render the exact filtered total
+  // (the page-level list is capped at 100, so .length isn't enough).
   app.get("/admin/mapping/summary", async (request) => {
     request.requireRole("admin");
-    const rows = await app.db
-      .select({
-        status: mappingReviewQueue.status,
-        count: sql<string>`COUNT(*)::text`,
+    const q = z
+      .object({
+        entityType: z
+          .enum([
+            "sport",
+            "category",
+            "tournament",
+            "match",
+            "competitor",
+            "market_type",
+          ])
+          .optional(),
       })
-      .from(mappingReviewQueue)
-      .groupBy(mappingReviewQueue.status);
+      .parse(request.query);
+    const rows = q.entityType
+      ? await app.db
+          .select({
+            status: mappingReviewQueue.status,
+            count: sql<string>`COUNT(*)::text`,
+          })
+          .from(mappingReviewQueue)
+          .where(eq(mappingReviewQueue.entityType, q.entityType))
+          .groupBy(mappingReviewQueue.status)
+      : await app.db
+          .select({
+            status: mappingReviewQueue.status,
+            count: sql<string>`COUNT(*)::text`,
+          })
+          .from(mappingReviewQueue)
+          .groupBy(mappingReviewQueue.status);
     const byStatus: Record<string, number> = { pending: 0, approved: 0, rejected: 0 };
     for (const r of rows) byStatus[r.status] = Number(r.count);
     return byStatus;

@@ -14,6 +14,22 @@ const listQuery = z.object({
   // Sort knobs — most-risky first by default. The dashboard surfaces
   // negative-PnL whales here.
   sort: z.enum(["risk_score", "pnl", "stake", "win_rate", "recent"]).default("recent"),
+  // Stats aggregation currency. USDC = real-money view; OZ = demo view.
+  currency: z
+    .string()
+    .min(3)
+    .max(4)
+    .transform((s) => s.toUpperCase())
+    .default("USDC"),
+});
+
+const profileQuery = z.object({
+  currency: z
+    .string()
+    .min(3)
+    .max(4)
+    .transform((s) => s.toUpperCase())
+    .default("USDC"),
 });
 
 interface BettorRow {
@@ -79,7 +95,7 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
                                                                   AS payout_micro,
           MAX(t.placed_at)                                        AS last_bet_at
         FROM tickets t
-        WHERE t.currency = 'USDC'
+        WHERE t.currency = ${q.currency}
         GROUP BY t.user_id
       )
       SELECT
@@ -146,6 +162,7 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
   app.get("/admin/riskzilla/bettors/:id", async (request) => {
     request.requireRole("admin");
     const params = z.object({ id: z.string().uuid() }).parse(request.params);
+    const currency = profileQuery.parse(request.query).currency;
 
     const [u] = await app.db
       .select({
@@ -203,7 +220,7 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
         ), 0)::bigint::text                                      AS open_potential_payout_micro,
         MAX(t.placed_at)                                         AS last_bet_at
       FROM tickets t
-      WHERE t.user_id = ${params.id}::uuid AND t.currency = 'USDC'
+      WHERE t.user_id = ${params.id}::uuid AND t.currency = ${currency}
     `)) as unknown as Array<{
       tickets_count: number;
       won_count: number;
@@ -235,7 +252,7 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
           JOIN ticket_selections ts ON ts.ticket_id = t.id
           JOIN markets mk            ON mk.id = ts.market_id
           JOIN matches m             ON m.id = mk.match_id
-         WHERE t.user_id = ${params.id}::uuid AND t.currency = 'USDC'
+         WHERE t.user_id = ${params.id}::uuid AND t.currency = ${currency}
          GROUP BY t.id
       )
       SELECT
@@ -276,7 +293,7 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
           JOIN tournaments tn        ON tn.id = m.tournament_id
           JOIN categories c          ON c.id = tn.category_id
           JOIN sports s              ON s.id = c.sport_id
-         WHERE t.user_id = ${params.id}::uuid AND t.currency = 'USDC'
+         WHERE t.user_id = ${params.id}::uuid AND t.currency = ${currency}
          GROUP BY t.id, s.id, s.slug, s.name
       )
       SELECT
@@ -311,7 +328,7 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
         t.placed_at                               AS placed_at,
         t.settled_at                              AS settled_at
       FROM tickets t
-      WHERE t.user_id = ${params.id}::uuid AND t.currency = 'USDC'
+      WHERE t.user_id = ${params.id}::uuid AND t.currency = ${currency}
       ORDER BY t.stake_micro DESC
       LIMIT 5
     `)) as unknown as Array<{
@@ -391,6 +408,7 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
     };
 
     return {
+      currency,
       id: u.id,
       email: u.email,
       nickname: u.nickname,

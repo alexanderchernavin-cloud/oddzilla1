@@ -1,9 +1,12 @@
 import { serverApi } from "@/lib/server-fetch";
 import { fromMicro } from "@oddzilla/types/money";
+import { readRzCurrencyFromSearchParams } from "./currency-switch";
 
 export const dynamic = "force-dynamic";
 
 interface DashboardKpis {
+  currency: string;
+  bankApplies: boolean;
   bankLimitMicro: string;
   openLiabilityMicro: string;
   userBalancesMicro: string;
@@ -34,8 +37,16 @@ const REJECTION_LABELS: Record<string, string> = {
   rejected_market_factor: "Market factor",
 };
 
-export default async function RiskzillaDashboardPage() {
-  const data = await serverApi<DashboardKpis>("/admin/riskzilla/dashboard");
+export default async function RiskzillaDashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const sp = await searchParams;
+  const currency = readRzCurrencyFromSearchParams(sp);
+  const data = await serverApi<DashboardKpis>(
+    `/admin/riskzilla/dashboard?currency=${currency}`,
+  );
   if (!data) {
     return (
       <p style={{ color: "var(--color-fg-muted)" }}>
@@ -47,52 +58,87 @@ export default async function RiskzillaDashboardPage() {
   const utilizationPct = (data.bankUtilization * 100).toFixed(1);
   const free = BigInt(data.freeCapacityMicro);
   const freeColor = free < 0n ? "#dc2626" : undefined;
+  const cur = data.currency;
+  const bankApplies = data.bankApplies;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+      {!bankApplies && (
+        <div
+          style={{
+            border: "1px solid var(--color-border)",
+            borderRadius: 8,
+            padding: "10px 14px",
+            background: "var(--color-bg-subtle)",
+            fontSize: 13,
+            color: "var(--color-fg-muted)",
+          }}
+        >
+          Viewing <strong style={{ color: "var(--color-fg)" }}>{cur}</strong>{" "}
+          (demo). Operator bank panels are hidden — they apply to USDC only.
+        </div>
+      )}
       <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
-        <Kpi
-          label="Bank limit"
-          value={`${fromMicro(BigInt(data.bankLimitMicro))} USDC`}
-          sub="Operator ceiling on total exposure"
-        />
-        <Kpi
-          label="Bettor balances"
-          value={`${fromMicro(BigInt(data.userBalancesMicro))} USDC`}
-          sub={
-            BigInt(data.userLockedMicro) > 0n
-              ? `Withdrawable now · ${fromMicro(BigInt(data.userLockedMicro))} more locked in open bets`
-              : "Withdrawable on demand"
-          }
-        />
-        <Kpi
-          label="Open liability"
-          value={`${fromMicro(BigInt(data.openLiabilityMicro))} USDC`}
-          sub={`${utilizationPct}% of bank committed`}
-        />
-        <Kpi
-          label="Free capacity"
-          value={`${fromMicro(free)} USDC`}
-          sub="bank − balances − liability"
-          valueColor={freeColor}
-        />
+        {bankApplies && (
+          <>
+            <Kpi
+              label="Bank limit"
+              value={`${fromMicro(BigInt(data.bankLimitMicro))} ${cur}`}
+              sub="Operator ceiling on total exposure"
+            />
+            <Kpi
+              label="Bettor balances"
+              value={`${fromMicro(BigInt(data.userBalancesMicro))} ${cur}`}
+              sub={
+                BigInt(data.userLockedMicro) > 0n
+                  ? `Withdrawable now · ${fromMicro(BigInt(data.userLockedMicro))} more locked in open bets`
+                  : "Withdrawable on demand"
+              }
+            />
+            <Kpi
+              label="Open liability"
+              value={`${fromMicro(BigInt(data.openLiabilityMicro))} ${cur}`}
+              sub={`${utilizationPct}% of bank committed`}
+            />
+            <Kpi
+              label="Free capacity"
+              value={`${fromMicro(free)} ${cur}`}
+              sub="bank − balances − liability"
+              valueColor={freeColor}
+            />
+          </>
+        )}
         <Kpi
           label="Open tickets"
           value={String(data.openTicketsCount)}
-          sub={`${fromMicro(BigInt(data.openMaxLossMicro))} USDC max loss`}
+          sub={`${fromMicro(BigInt(data.openMaxLossMicro))} ${cur} max loss`}
         />
-        <Kpi
-          label="Bank delta today"
-          value={`${fromMicro(BigInt(data.todayBankDeltaMicro))} USDC`}
-        />
+        {bankApplies && (
+          <Kpi
+            label="Bank delta today"
+            value={`${fromMicro(BigInt(data.todayBankDeltaMicro))} ${cur}`}
+          />
+        )}
+        {!bankApplies && (
+          <Kpi
+            label="Bettor balances"
+            value={`${fromMicro(BigInt(data.userBalancesMicro))} ${cur}`}
+            sub={
+              BigInt(data.userLockedMicro) > 0n
+                ? `${fromMicro(BigInt(data.userLockedMicro))} locked in open bets`
+                : "Free across all OZ wallets"
+            }
+          />
+        )}
         <Kpi
           label="Rejections (24h)"
           value={String(data.rejections24h.total)}
+          sub={`${cur} placements only`}
         />
       </section>
 
       <section>
-        <SectionHeader title="Rejections by reason (24h)" />
+        <SectionHeader title={`Rejections by reason (24h, ${cur})`} />
         {data.rejections24h.total === 0 ? (
           <Empty>No rejections in the last 24 hours.</Empty>
         ) : (
@@ -124,7 +170,7 @@ export default async function RiskzillaDashboardPage() {
                 <Th>Match</Th>
                 <Th>Sport</Th>
                 <Th align="right">Open tickets</Th>
-                <Th align="right">Max loss (USDC)</Th>
+                <Th align="right">Max loss ({cur})</Th>
               </tr>
             </thead>
             <tbody>

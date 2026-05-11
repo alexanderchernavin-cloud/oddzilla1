@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { serverApi } from "@/lib/server-fetch";
 import { fromMicro } from "@oddzilla/types/money";
 import { RsEditor } from "./rs-editor";
+import { readRzCurrencyFromSearchParams } from "../../currency-switch";
 
 export const dynamic = "force-dynamic";
 
@@ -51,6 +52,7 @@ interface BiggestWin {
 }
 
 interface BettorProfile {
+  currency: string;
   id: string;
   email: string;
   nickname: string | null;
@@ -88,15 +90,23 @@ interface BettorProfile {
 
 export default async function BettorProfilePage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const { id } = await params;
-  const data = await serverApi<BettorProfile>(`/admin/riskzilla/bettors/${id}`);
+  const sp = await searchParams;
+  const currency = readRzCurrencyFromSearchParams(sp);
+  const data = await serverApi<BettorProfile>(
+    `/admin/riskzilla/bettors/${id}?currency=${currency}`,
+  );
   if (!data) notFound();
 
   const usdcWallet = data.wallets.find((w) => w.currency === "USDC");
   const ozWallet = data.wallets.find((w) => w.currency === "OZ");
+  const cur = data.currency;
+  const backHref = `/admin/riskzilla/bettors${cur === "USDC" ? "" : `?cur=${cur}`}`;
 
   const totalStake = fromMicro(BigInt(data.stats.stakedMicro));
   const totalPayout = fromMicro(BigInt(data.stats.payoutMicro));
@@ -108,7 +118,7 @@ export default async function BettorProfilePage({
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
       <Link
-        href="/admin/riskzilla/bettors"
+        href={backHref}
         style={{ fontSize: 12, color: "var(--color-fg-muted)", textDecoration: "none" }}
       >
         ← Back to bettors
@@ -170,7 +180,7 @@ export default async function BettorProfilePage({
         )}
       </Section>
 
-      <Section title="Lifetime activity (USDC)">
+      <Section title={`Lifetime activity (${cur})`}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
           <Kpi
             label="Tickets"
@@ -181,18 +191,18 @@ export default async function BettorProfilePage({
             label="Win rate"
             value={`${(data.stats.winRate * 100).toFixed(1)}%`}
           />
-          <Kpi label="Staked" value={`${totalStake} USDC`} />
-          <Kpi label="Paid out" value={`${totalPayout} USDC`} />
+          <Kpi label="Staked" value={`${totalStake} ${cur}`} />
+          <Kpi label="Paid out" value={`${totalPayout} ${cur}`} />
           <Kpi
             label="Bettor PnL"
-            value={`${pnlForBettor >= 0n ? "+" : ""}${fromMicro(pnlForBettor)} USDC`}
+            value={`${pnlForBettor >= 0n ? "+" : ""}${fromMicro(pnlForBettor)} ${cur}`}
             valueColor={pnlForBettor >= 0n ? "#16a34a" : "#dc2626"}
             sub={pnlForBettor >= 0n ? "Bettor ahead" : "Bettor down"}
           />
           <Kpi
             label="Open exposure"
-            value={`${openLoss} USDC`}
-            sub={`${openPotential} USDC potential payout`}
+            value={`${openLoss} ${cur}`}
+            sub={`${openPotential} ${cur} potential payout`}
           />
           <Kpi
             label="Last bet"

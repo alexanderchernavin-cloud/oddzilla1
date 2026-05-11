@@ -1,10 +1,29 @@
 // /admin/riskzilla/dashboard — KPI cards + headline metrics for the
 // RiskZilla landing page. Read-only.
+//
+// Accepts an optional `?currency=USDC|OZ` filter so the layout-level
+// currency switch can render the ticket/PnL view against either real
+// (USDC) or demo (OZ) volume. Bank-state columns (bank_limit,
+// open_liability, free_capacity) are always USDC — OZ has no
+// operator-bank concept — and the response carries a `currency` field
+// so the UI can hide bank panels when the operator picks OZ.
 
 import type { FastifyInstance } from "fastify";
 import { sql } from "drizzle-orm";
+import { z } from "zod";
+
+const dashboardQuery = z.object({
+  currency: z
+    .string()
+    .min(3)
+    .max(4)
+    .transform((s) => s.toUpperCase())
+    .default("USDC"),
+});
 
 interface DashboardKpis {
+  currency: string;
+  bankApplies: boolean;
   bankLimitMicro: string;
   openLiabilityMicro: string;
   // Available bettor balances (balance − locked across every USDC
@@ -37,14 +56,26 @@ interface DashboardKpis {
 export default async function riskzillaDashboardRoutes(app: FastifyInstance) {
   app.get("/admin/riskzilla/dashboard", async (request) => {
     request.requireRole("admin");
+    const q = dashboardQuery.parse(request.query);
+    const currency = q.currency;
+    // The operator bank (bank_limit, open_liability, free_capacity)
+    // is denominated in real money. For OZ the panels render zeroes
+    // and the response carries bankApplies=false so the UI can hide
+    // them and label the view as demo-only.
+    const bankApplies = currency === "USDC";
 
-    const bankRows = (await app.db.execute(sql`
-      SELECT bank_limit_micro::text AS bank_limit_micro,
-             open_liability_micro::text AS open_liability_micro
-        FROM riskzilla_bank_state
-       WHERE id = 'default'
-       LIMIT 1
-    `)) as unknown as Array<{ bank_limit_micro: string; open_liability_micro: string }>;
+    const bankRows = bankApplies
+      ? ((await app.db.execute(sql`
+          SELECT bank_limit_micro::text AS bank_limit_micro,
+                 open_liability_micro::text AS open_liability_micro
+            FROM riskzilla_bank_state
+           WHERE id = 'default'
+           LIMIT 1
+        `)) as unknown as Array<{
+          bank_limit_micro: string;
+          open_liability_micro: string;
+        }>)
+      : [];
     const bankLimit = BigInt(bankRows[0]?.bank_limit_micro ?? "0");
     const openLiability = BigInt(bankRows[0]?.open_liability_micro ?? "0");
 
@@ -53,11 +84,13 @@ export default async function riskzillaDashboardRoutes(app: FastifyInstance) {
         COALESCE(SUM(balance_micro - locked_micro), 0)::text AS available,
         COALESCE(SUM(locked_micro), 0)::text                 AS locked
         FROM wallets
-       WHERE currency = 'USDC'
+       WHERE currency = ${currency}
     `)) as unknown as Array<{ available: string; locked: string }>;
     const userBalances = BigInt(userBalanceRows[0]?.available ?? "0");
     const userLocked = BigInt(userBalanceRows[0]?.locked ?? "0");
-    const freeCapacity = bankLimit - userBalances - openLiability;
+    const freeCapacity = bankApplies
+      ? bankLimit - userBalances - openLiability
+      : 0n;
 
     const openTicketRows = (await app.db.execute(sql`
       SELECT COUNT(*)::int AS n,
@@ -65,20 +98,23 @@ export default async function riskzillaDashboardRoutes(app: FastifyInstance) {
                                      AS open_max_loss_micro
         FROM tickets
        WHERE status IN ('accepted', 'pending_delay')
-         AND currency = 'USDC'
+         AND currency = ${currency}
     `)) as unknown as Array<{ n: number; open_max_loss_micro: string }>;
 
-    const todayBankRows = (await app.db.execute(sql`
-      SELECT COALESCE(SUM(delta_micro), 0)::text AS delta_micro
-        FROM riskzilla_bank_ledger
-       WHERE created_at >= date_trunc('day', now() AT TIME ZONE 'UTC')
-    `)) as unknown as Array<{ delta_micro: string }>;
+    const todayBankRows = bankApplies
+      ? ((await app.db.execute(sql`
+          SELECT COALESCE(SUM(delta_micro), 0)::text AS delta_micro
+            FROM riskzilla_bank_ledger
+           WHERE created_at >= date_trunc('day', now() AT TIME ZONE 'UTC')
+        `)) as unknown as Array<{ delta_micro: string }>)
+      : [];
 
     const rejectionsRows = (await app.db.execute(sql`
       SELECT decision::text AS decision, COUNT(*)::int AS n
         FROM riskzilla_event_log
        WHERE created_at >= now() - INTERVAL '24 hours'
          AND decision <> 'accepted'
+         AND currency = ${currency}
        GROUP BY decision
     `)) as unknown as Array<{ decision: string; n: number }>;
     const rejectionsTotal = rejectionsRows.reduce(
@@ -105,7 +141,7 @@ export default async function riskzillaDashboardRoutes(app: FastifyInstance) {
       JOIN categories c         ON c.id = tn.category_id
       JOIN sports s             ON s.id = c.sport_id
       WHERE t.status IN ('accepted', 'pending_delay')
-        AND t.currency = 'USDC'
+        AND t.currency = ${currency}
       GROUP BY m.id, label, s.slug
       ORDER BY (m.id) ASC
       LIMIT 10
@@ -145,12 +181,17 @@ export default async function riskzillaDashboardRoutes(app: FastifyInstance) {
 
     // Utilisation now reflects total committed capital — what we owe
     // bettors right now (their balance) plus what we may owe them
-    // (open potential payouts) — relative to the bank limit.
+    // (open potential payouts) — relative to the bank limit. Only
+    // meaningful for USDC; clamps to 0 for the demo currency.
     const committed = userBalances + openLiability;
     const utilization =
-      bankLimit > 0n ? Number((committed * 10000n) / bankLimit) / 10000 : 0;
+      bankApplies && bankLimit > 0n
+        ? Number((committed * 10000n) / bankLimit) / 10000
+        : 0;
 
     const result: DashboardKpis = {
+      currency,
+      bankApplies,
       bankLimitMicro: bankLimit.toString(),
       openLiabilityMicro: openLiability.toString(),
       userBalancesMicro: userBalances.toString(),

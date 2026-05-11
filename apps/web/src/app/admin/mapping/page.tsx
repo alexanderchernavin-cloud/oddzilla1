@@ -1,5 +1,6 @@
 import { serverApi } from "@/lib/server-fetch";
 import { MappingReview, type MappingEntry } from "./mapping-review";
+import { BulkApproveButton } from "./bulk-approve-button";
 
 interface ListResponse {
   entries: MappingEntry[];
@@ -40,14 +41,28 @@ export default async function MappingPage({
   const qs = new URLSearchParams({ status, limit: "100" });
   if (entityType) qs.set("entityType", entityType);
 
-  const [summary, list] = await Promise.all([
+  // Summary KPI cards always show the total counts; a second
+  // type-scoped summary feeds the bulk-approve button so its label
+  // reflects exactly what would be approved under the current filter.
+  const filteredSummaryQs = entityType
+    ? `?entityType=${entityType}`
+    : "";
+
+  const [summary, filteredSummary, list] = await Promise.all([
     serverApi<SummaryResponse>("/admin/mapping/summary"),
+    entityType
+      ? serverApi<SummaryResponse>(`/admin/mapping/summary${filteredSummaryQs}`)
+      : Promise.resolve(null),
     serverApi<ListResponse>(`/admin/mapping?${qs.toString()}`),
   ]);
 
+  const pendingInScope = entityType
+    ? (filteredSummary?.pending ?? 0)
+    : (summary?.pending ?? 0);
+
   return (
     <div>
-      <div className="flex items-start justify-between">
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Mapping review</h1>
           <p className="mt-2 text-sm text-[var(--color-fg-muted)]">
@@ -55,6 +70,12 @@ export default async function MappingPage({
             reject to flag for manual correction.
           </p>
         </div>
+        {status === "pending" && (
+          <BulkApproveButton
+            pendingCount={pendingInScope}
+            entityType={entityType}
+          />
+        )}
       </div>
 
       <section className="mt-6 grid gap-4 sm:grid-cols-3">
