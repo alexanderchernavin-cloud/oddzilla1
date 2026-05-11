@@ -5,11 +5,27 @@
 // Useful for ops triage, OZ perf-test monitoring, and any "did this
 // user actually place that?" question that the RiskZilla view can't
 // answer (engine bypassed for OZ + no row for rejected USDC).
+//
+// Default time window is "last 3 days" so the initial page isn't
+// dominated by a single perf test or the whole project history; the
+// operator can widen via the From filter (or clear it for unbounded).
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { fromMicro, toMicro } from "@oddzilla/types/money";
+
+interface TicketSelection {
+  marketId: string;
+  providerMarketId: number;
+  marketName: string;
+  outcomeId: string;
+  outcomeName: string | null;
+  oddsAtPlacement: string;
+  matchId: string | null;
+  matchLabel: string | null;
+  result: string | null;
+}
 
 interface TicketRow {
   id: string;
@@ -28,11 +44,13 @@ interface TicketRow {
   rejectReason: string | null;
   matchId: string | null;
   matchLabel: string | null;
+  matchScheduledAt: string | null;
   sportId: number | null;
   sportSlug: string | null;
   tournamentId: number | null;
   tournamentName: string | null;
   riskTier: number | null;
+  selections: TicketSelection[];
   placedAt: string;
   settledAt: string | null;
 }
@@ -42,6 +60,8 @@ interface SportOption {
   slug: string;
   name: string;
 }
+
+const PAGE_SIZE = 100;
 
 const CURRENCIES = ["all", "USDC", "OZ"] as const;
 type CurrencyKey = (typeof CURRENCIES)[number];
@@ -83,24 +103,42 @@ interface Filters {
   maxStake: string;
 }
 
-const EMPTY: Filters = {
-  currency: "all",
-  status: "",
-  outcome: "",
-  betType: "",
-  userQuery: "",
-  sportId: "",
-  fromTs: "",
-  toTs: "",
-  minStake: "",
-  maxStake: "",
-};
+// Format a Date for the <input type="datetime-local"> value. Strips
+// the seconds + timezone so the input renders cleanly across browsers.
+function toLocalInputValue(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function defaultFromTs(): string {
+  const d = new Date();
+  d.setDate(d.getDate() - 3);
+  return toLocalInputValue(d);
+}
+
+function makeEmptyFilters(): Filters {
+  return {
+    currency: "all",
+    status: "",
+    outcome: "",
+    betType: "",
+    userQuery: "",
+    sportId: "",
+    // Default to the last 3 days so the initial page reflects recent
+    // activity rather than the full history. Operator can clear or
+    // widen.
+    fromTs: defaultFromTs(),
+    toTs: "",
+    minStake: "",
+    maxStake: "",
+  };
+}
 
 export function BetsClient() {
   const [rows, setRows] = useState<TicketRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [filters, setFilters] = useState<Filters>(EMPTY);
+  const [filters, setFilters] = useState<Filters>(() => makeEmptyFilters());
   const [sports, setSports] = useState<SportOption[]>([]);
   const [hasMore, setHasMore] = useState(true);
 
@@ -143,7 +181,7 @@ export function BetsClient() {
 
   const queryString = useMemo(() => {
     const p = new URLSearchParams();
-    p.set("limit", "100");
+    p.set("limit", String(PAGE_SIZE));
     if (filters.currency !== "all") p.set("currency", filters.currency);
     if (filters.status) p.set("status", filters.status);
     if (filters.outcome) p.set("outcome", filters.outcome);
@@ -168,7 +206,7 @@ export function BetsClient() {
         `/admin/tickets?${queryString}`,
       );
       setRows(res.entries);
-      setHasMore(res.entries.length >= 100);
+      setHasMore(res.entries.length >= PAGE_SIZE);
     } catch (err) {
       setError(err instanceof ApiFetchError ? err.message : "fetch failed");
     } finally {
@@ -191,7 +229,7 @@ export function BetsClient() {
         `/admin/tickets?${p.toString()}`,
       );
       setRows((prev) => [...prev, ...res.entries]);
-      setHasMore(res.entries.length >= 100);
+      setHasMore(res.entries.length >= PAGE_SIZE);
     } catch (err) {
       setError(err instanceof ApiFetchError ? err.message : "fetch failed");
     } finally {
@@ -202,17 +240,18 @@ export function BetsClient() {
   const setF = <K extends keyof Filters>(key: K, value: Filters[K]) =>
     setFilters((f) => ({ ...f, [key]: value }));
 
-  const hasAnyFilter =
-    filters.currency !== "all" ||
-    !!filters.status ||
-    !!filters.outcome ||
-    !!filters.betType ||
-    !!filters.userQuery ||
-    !!filters.sportId ||
-    !!filters.fromTs ||
-    !!filters.toTs ||
-    !!filters.minStake ||
-    !!filters.maxStake;
+  const empty = makeEmptyFilters();
+  const hasNonDefaultFilter =
+    filters.currency !== empty.currency ||
+    filters.status !== empty.status ||
+    filters.outcome !== empty.outcome ||
+    filters.betType !== empty.betType ||
+    filters.userQuery !== empty.userQuery ||
+    filters.sportId !== empty.sportId ||
+    filters.fromTs !== empty.fromTs ||
+    filters.toTs !== empty.toTs ||
+    filters.minStake !== empty.minStake ||
+    filters.maxStake !== empty.maxStake;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -335,7 +374,7 @@ export function BetsClient() {
             style={selectStyle}
           />
         </FilterLabel>
-        <FilterLabel label="From">
+        <FilterLabel label="From (default: 3d ago)">
           <input
             type="datetime-local"
             value={filters.fromTs}
@@ -362,13 +401,23 @@ export function BetsClient() {
         >
           {loading ? "Loading…" : "Refresh"}
         </button>
-        {hasAnyFilter && (
+        {hasNonDefaultFilter && (
           <button
             type="button"
-            onClick={() => setFilters(EMPTY)}
+            onClick={() => setFilters(makeEmptyFilters())}
             style={ghostButtonStyle}
           >
-            Clear filters
+            Reset filters
+          </button>
+        )}
+        {filters.fromTs && (
+          <button
+            type="button"
+            onClick={() => setF("fromTs", "")}
+            style={ghostButtonStyle}
+            title="Clear From filter to search the entire history"
+          >
+            Search all time
           </button>
         )}
         <span style={{ flex: 1 }} />
@@ -382,6 +431,7 @@ export function BetsClient() {
           }}
         >
           {rows.length} {rows.length === 1 ? "row" : "rows"}
+          {hasMore && " · more available"}
         </span>
       </div>
 
@@ -398,15 +448,55 @@ export function BetsClient() {
         )}
       </div>
 
-      {hasMore && rows.length > 0 && (
-        <button
-          type="button"
-          onClick={() => void loadMore()}
-          disabled={loading}
-          style={primaryButtonStyle(loading)}
+      {/* Pagination footer — explicit page count + "Show next 100"
+          button so it's obvious that more data is available. The
+          server uses cursor pagination so paging deeper into history
+          stays cheap regardless of how far you scroll. */}
+      {rows.length > 0 && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 12,
+            paddingTop: 8,
+            borderTop: "1px solid var(--color-border)",
+          }}
         >
-          {loading ? "Loading…" : "Load older"}
-        </button>
+          <span
+            className="mono"
+            style={{
+              fontSize: 11,
+              color: "var(--color-fg-muted)",
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+            }}
+          >
+            Showing {rows.length} ticket{rows.length === 1 ? "" : "s"}
+          </span>
+          {hasMore ? (
+            <button
+              type="button"
+              onClick={() => void loadMore()}
+              disabled={loading}
+              style={pageButtonStyle(loading)}
+            >
+              {loading ? "Loading…" : `Show next ${PAGE_SIZE} (older) →`}
+            </button>
+          ) : (
+            <span
+              className="mono"
+              style={{
+                fontSize: 11,
+                color: "var(--color-fg-muted)",
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+              }}
+            >
+              End of results
+            </span>
+          )}
+        </div>
       )}
     </div>
   );
@@ -419,23 +509,33 @@ function TicketCard({ row }: { row: TicketRow }) {
   const actualPayout =
     row.actualPayoutMicro != null ? fromMicro(BigInt(row.actualPayoutMicro)) : null;
   const placed = new Date(row.placedAt);
+  const scheduledAt = row.matchScheduledAt
+    ? new Date(row.matchScheduledAt)
+    : null;
 
-  // Status / outcome rendering: ACCEPTED (grey), DELAYED (grey),
-  // WON (green), LOST (red), VOID (grey), VOIDED (grey).
   const { label, color } = renderStatusLabel(row);
   const payoutLine =
     row.status === "settled" && actualPayout != null
       ? `${stake} → ${actualPayout} ${row.currency}`
       : `${stake} → ${potentialPayout} ${row.currency}`;
 
+  // Primary selection summary: first leg's market + outcome name. For
+  // multi-leg tickets the "+N more" tag points to the Detail expander
+  // for the full ladder.
+  const firstLeg = row.selections[0];
+  const extraLegs = row.selections.length - 1;
+  const summary = firstLeg
+    ? `${firstLeg.marketName} → ${firstLeg.outcomeName ?? firstLeg.outcomeId} @ ${Number(firstLeg.oddsAtPlacement).toFixed(2)}`
+    : "—";
+
   return (
     <article
       style={{
         border: "1px solid var(--color-border)",
         borderRadius: 8,
-        padding: "8px 12px",
+        padding: "10px 12px",
         display: "grid",
-        gridTemplateColumns: "100px 120px 1fr 1fr auto auto",
+        gridTemplateColumns: "100px 110px 1fr auto auto",
         gap: 12,
         alignItems: "center",
         fontSize: 13,
@@ -459,36 +559,113 @@ function TicketCard({ row }: { row: TicketRow }) {
           fontSize: 11,
           color: "var(--color-fg-muted)",
           fontVariantNumeric: "tabular-nums",
+          lineHeight: 1.35,
+        }}
+        title={`Placed ${placed.toLocaleString()}`}
+      >
+        placed
+        <br />
+        {placed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+        <br />
+        {placed.toLocaleDateString()}
+      </span>
+      <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
+        {/* Line 1: user · bet-type · currency */}
+        <div
+          style={{
+            fontSize: 13,
+            color: "var(--color-fg)",
+            display: "flex",
+            gap: 8,
+            alignItems: "center",
+            flexWrap: "wrap",
+          }}
+        >
+          <Link
+            href={`/admin/users/${row.userId}`}
+            style={{ color: "var(--color-fg)", textDecoration: "none", fontWeight: 500 }}
+          >
+            {row.userNickname ?? row.userEmail ?? row.userId.slice(0, 8)}
+          </Link>
+          <span style={{ color: "var(--color-fg-muted)" }}>·</span>
+          <span style={{ color: "var(--color-fg-muted)" }}>
+            {row.betType === "single"
+              ? "single"
+              : `${row.betType} (${row.legCount})`}
+          </span>
+          <span style={{ color: "var(--color-fg-muted)" }}>·</span>
+          <Currency cur={row.currency} />
+        </div>
+        {/* Line 2: tournament · match · sport · scheduled */}
+        <div
+          style={{
+            fontSize: 12,
+            color: "var(--color-fg-muted)",
+            display: "flex",
+            gap: 6,
+            alignItems: "center",
+            flexWrap: "wrap",
+          }}
+        >
+          {row.tournamentName && (
+            <>
+              <span>{row.tournamentName}</span>
+              <span>·</span>
+            </>
+          )}
+          <span style={{ color: "var(--color-fg)" }}>{row.matchLabel ?? "—"}</span>
+          {row.sportSlug && (
+            <>
+              <span>·</span>
+              <span>{row.sportSlug}</span>
+            </>
+          )}
+          {scheduledAt && (
+            <>
+              <span>·</span>
+              <span title={`Match scheduled ${scheduledAt.toLocaleString()}`}>
+                starts {scheduledAt.toLocaleString([], {
+                  month: "short",
+                  day: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </span>
+            </>
+          )}
+          {row.riskTier != null && (
+            <>
+              <span>·</span>
+              <span>tier {row.riskTier}</span>
+            </>
+          )}
+        </div>
+        {/* Line 3: selection summary */}
+        <div
+          style={{
+            fontSize: 12,
+            color: "var(--color-fg-muted)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={summary}
+        >
+          {summary}
+          {extraLegs > 0 && (
+            <span style={{ color: "var(--color-fg-muted)", marginLeft: 6 }}>
+              · +{extraLegs} more leg{extraLegs === 1 ? "" : "s"}
+            </span>
+          )}
+        </div>
+      </div>
+      <span
+        style={{
+          fontVariantNumeric: "tabular-nums",
+          textAlign: "right",
+          fontSize: 13,
         }}
       >
-        {placed.toLocaleTimeString()}
-        <span style={{ display: "block", fontSize: 10 }}>
-          {placed.toLocaleDateString()}
-        </span>
-      </span>
-      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        <Link
-          href={`/admin/users/${row.userId}`}
-          style={{ color: "var(--color-fg)", textDecoration: "none" }}
-        >
-          {row.userNickname ?? row.userEmail ?? row.userId.slice(0, 8)}
-        </Link>
-      </span>
-      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {row.matchLabel ?? "—"}
-        {row.sportSlug && (
-          <span style={{ color: "var(--color-fg-muted)", marginLeft: 6 }}>
-            · {row.sportSlug}
-          </span>
-        )}
-        <span style={{ color: "var(--color-fg-muted)", marginLeft: 6 }}>
-          ·{" "}
-          {row.betType === "single"
-            ? "single"
-            : `${row.betType} (${row.legCount})`}
-        </span>
-      </span>
-      <span style={{ fontVariantNumeric: "tabular-nums", textAlign: "right" }}>
         {payoutLine}
       </span>
       <button
@@ -508,47 +685,176 @@ function TicketCard({ row }: { row: TicketRow }) {
         {expanded ? "Hide" : "Detail"}
       </button>
       {expanded && (
-        <pre
+        <div
           style={{
             gridColumn: "1 / -1",
-            margin: "6px 0 0 0",
+            marginTop: 8,
             padding: "10px 12px",
             background: "var(--color-bg-subtle)",
             border: "1px solid var(--color-border)",
             borderRadius: 6,
-            fontSize: 11,
-            fontFamily: "var(--font-mono, monospace)",
-            color: "var(--color-fg-muted)",
-            overflowX: "auto",
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+            fontSize: 12,
           }}
         >
-          {JSON.stringify(
-            {
-              ticketId: row.id,
-              status: row.status,
-              outcome: row.outcome,
-              betType: row.betType,
-              legCount: row.legCount,
-              currency: row.currency,
-              stake,
-              potentialPayout,
-              actualPayout,
-              rejectReason: row.rejectReason,
-              match: row.matchLabel,
-              sport: row.sportSlug,
-              tournament: row.tournamentName,
-              riskTier: row.riskTier,
-              placedAt: row.placedAt,
-              settledAt: row.settledAt,
-            },
-            null,
-            2,
+          <div>
+            <span
+              className="mono"
+              style={{
+                fontSize: 10,
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+                color: "var(--color-fg-muted)",
+              }}
+            >
+              Selections ({row.selections.length})
+            </span>
+            <table
+              style={{
+                width: "100%",
+                borderCollapse: "collapse",
+                fontSize: 12,
+                marginTop: 6,
+              }}
+            >
+              <thead>
+                <tr style={{ color: "var(--color-fg-muted)" }}>
+                  <th style={detailThStyle}>#</th>
+                  <th style={detailThStyle}>Match</th>
+                  <th style={detailThStyle}>Market</th>
+                  <th style={detailThStyle}>Pick</th>
+                  <th style={{ ...detailThStyle, textAlign: "right" }}>Odds</th>
+                  <th style={detailThStyle}>Result</th>
+                </tr>
+              </thead>
+              <tbody>
+                {row.selections.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} style={detailTdStyle}>
+                      <span style={{ color: "var(--color-fg-muted)" }}>
+                        (no selections recorded)
+                      </span>
+                    </td>
+                  </tr>
+                ) : (
+                  row.selections.map((sel, i) => (
+                    <tr key={`${sel.marketId}-${sel.outcomeId}`}>
+                      <td style={detailTdStyle}>{i + 1}</td>
+                      <td style={detailTdStyle}>{sel.matchLabel ?? "—"}</td>
+                      <td style={detailTdStyle}>{sel.marketName}</td>
+                      <td style={detailTdStyle}>
+                        {sel.outcomeName ?? sel.outcomeId}
+                      </td>
+                      <td
+                        style={{
+                          ...detailTdStyle,
+                          textAlign: "right",
+                          fontVariantNumeric: "tabular-nums",
+                        }}
+                      >
+                        {Number(sel.oddsAtPlacement).toFixed(2)}
+                      </td>
+                      <td style={detailTdStyle}>
+                        <ResultBadge result={sel.result} />
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+          {row.rejectReason && (
+            <div>
+              <span
+                className="mono"
+                style={{
+                  fontSize: 10,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  color: "var(--color-fg-muted)",
+                }}
+              >
+                Reject reason
+              </span>
+              <p style={{ margin: "4px 0 0", color: "var(--color-fg)" }}>
+                {row.rejectReason}
+              </p>
+            </div>
           )}
-        </pre>
+          <div
+            style={{
+              fontSize: 11,
+              color: "var(--color-fg-muted)",
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 16,
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            <span>ticket {row.id}</span>
+            <span>placed {placed.toLocaleString()}</span>
+            {row.settledAt && (
+              <span>
+                settled {new Date(row.settledAt).toLocaleString()}
+              </span>
+            )}
+            {scheduledAt && (
+              <span>match starts {scheduledAt.toLocaleString()}</span>
+            )}
+          </div>
+        </div>
       )}
     </article>
+  );
+}
+
+function Currency({ cur }: { cur: string }) {
+  const real = cur === "USDC";
+  return (
+    <span
+      className="mono"
+      style={{
+        fontSize: 11,
+        padding: "1px 6px",
+        borderRadius: 4,
+        border: "1px solid var(--color-border)",
+        color: real ? "var(--color-fg)" : "var(--color-fg-muted)",
+        background: real ? "var(--color-bg-subtle)" : "transparent",
+      }}
+    >
+      {cur}
+    </span>
+  );
+}
+
+function ResultBadge({ result }: { result: string | null }) {
+  if (!result)
+    return <span style={{ color: "var(--color-fg-muted)" }}>—</span>;
+  const map: Record<string, { label: string; color: string }> = {
+    won: { label: "won", color: "#16a34a" },
+    lost: { label: "lost", color: "#dc2626" },
+    void: { label: "void", color: "var(--color-fg-muted)" },
+    half_won: { label: "half-won", color: "#16a34a" },
+    half_lost: { label: "half-lost", color: "#dc2626" },
+  };
+  const m = map[result] ?? {
+    label: result,
+    color: "var(--color-fg-muted)",
+  };
+  return (
+    <span
+      className="mono"
+      style={{
+        fontSize: 11,
+        letterSpacing: "0.04em",
+        textTransform: "uppercase",
+        color: m.color,
+      }}
+    >
+      {m.label}
+    </span>
   );
 }
 
@@ -666,6 +972,21 @@ function primaryButtonStyle(disabled: boolean): React.CSSProperties {
   };
 }
 
+function pageButtonStyle(disabled: boolean): React.CSSProperties {
+  return {
+    height: 36,
+    padding: "0 16px",
+    border: "1px solid var(--color-border)",
+    background: "var(--color-fg)",
+    color: "var(--color-bg)",
+    borderRadius: 8,
+    fontSize: 13,
+    fontWeight: 500,
+    cursor: disabled ? "default" : "pointer",
+    opacity: disabled ? 0.6 : 1,
+  };
+}
+
 const ghostButtonStyle: React.CSSProperties = {
   height: 32,
   padding: "0 12px",
@@ -676,4 +997,19 @@ const ghostButtonStyle: React.CSSProperties = {
   fontSize: 12,
   cursor: "pointer",
   textDecoration: "underline",
+};
+
+const detailThStyle: React.CSSProperties = {
+  textAlign: "left",
+  padding: "4px 6px",
+  borderBottom: "1px solid var(--color-border)",
+  fontWeight: 500,
+  fontSize: 10,
+  letterSpacing: "0.06em",
+  textTransform: "uppercase",
+};
+
+const detailTdStyle: React.CSSProperties = {
+  padding: "4px 6px",
+  borderBottom: "1px solid var(--color-border)",
 };
