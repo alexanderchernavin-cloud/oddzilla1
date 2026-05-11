@@ -83,12 +83,25 @@ async function main() {
     `;
     console.log(`  -${communityTickets.length} community_tickets rows`);
 
-    const userDevices = await tx`
-      DELETE FROM user_devices
-       WHERE user_id IN (SELECT id FROM users WHERE email LIKE ${EMAIL_PATTERN})
-       RETURNING token
+    // user_devices was added in migration 0045 — tolerate the table not
+    // existing (e.g. a box that's behind on migrations or doesn't run
+    // the push-notification feature) so the rest of the cleanup tx still
+    // commits. Without the existence check, a missing table aborts the
+    // whole tx and leaves orphan rows (which is what bit us during the
+    // 2026-05-11 load test cleanup on prod).
+    const userDevicesExists = await tx<{ exists: boolean }[]>`
+      SELECT to_regclass('public.user_devices') IS NOT NULL AS exists
     `;
-    console.log(`  -${userDevices.length} user_devices rows`);
+    if (userDevicesExists[0]?.exists) {
+      const userDevices = await tx`
+        DELETE FROM user_devices
+         WHERE user_id IN (SELECT id FROM users WHERE email LIKE ${EMAIL_PATTERN})
+         RETURNING token
+      `;
+      console.log(`  -${userDevices.length} user_devices rows`);
+    } else {
+      console.log(`  -0 user_devices rows (table absent)`);
+    }
 
     const users = await tx`
       DELETE FROM users WHERE email LIKE ${EMAIL_PATTERN} RETURNING id
