@@ -1,9 +1,16 @@
-// /admin/tickets endpoints. Currently just manual void (cancel + refund).
+// /admin/tickets endpoints. Two surfaces:
 //
-// Manual void transitions an accepted ticket to `voided` and issues a
-// full refund to the user's wallet. Single transaction; audit-logged.
-// Idempotent via the wallet_ledger unique partial index — replaying the
-// same admin action on the same ticket is a no-op ledger-wise.
+//   - GET  /admin/tickets        rich-filter ticket listing powering
+//                                the backoffice "All bets" page. Covers
+//                                every ticket regardless of currency
+//                                (USDC + OZ) or RiskZilla path
+//                                (engine-evaluated USDC tickets and
+//                                engine-bypassed OZ tickets both show).
+//   - POST /admin/tickets/:id/void  manual void (cancel + refund).
+//                                Transitions an accepted ticket to
+//                                `voided` and issues a full refund.
+//                                Audit-logged. Gated by the
+//                                balance-edit admin allowlist.
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -14,6 +21,7 @@ import {
   walletLedger,
   adminAuditLog,
 } from "@oddzilla/db";
+import { SUPPORTED_CURRENCIES } from "@oddzilla/types/currencies";
 import {
   BadRequestError,
   ConflictError,
@@ -25,41 +33,280 @@ const voidBody = z.object({
   reason: z.string().min(3).max(500),
 });
 
+const currencySchema = z
+  .string()
+  .transform((s) => s.toUpperCase())
+  .pipe(z.enum(SUPPORTED_CURRENCIES));
+
+const listQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(100),
+  // Cursor format `${epochMs}_${ticketId}` — matches the OZ branch of
+  // the riskzilla events endpoint, so the same pagination helper on
+  // the client works here too.
+  before: z
+    .string()
+    .regex(/^\d+_[A-Za-z0-9-]+$/)
+    .optional(),
+  status: z
+    .enum(["pending_delay", "accepted", "rejected", "settled", "voided"])
+    .optional(),
+  // For settled tickets, narrow further by outcome: won | lost | void.
+  // Doesn't apply to accepted / pending_delay / voided.
+  outcome: z.enum(["won", "lost", "void"]).optional(),
+  currency: currencySchema.optional(),
+  betType: z.enum(["single", "combo", "betbuilder", "tiple", "tippot"]).optional(),
+  userId: z.string().uuid().optional(),
+  // Free-text search across user email/nickname. Case-insensitive,
+  // applied as ILIKE %q% with SQL wildcards stripped.
+  userQuery: z.string().min(1).max(200).optional(),
+  sportId: z.coerce.number().int().optional(),
+  matchId: z.coerce.bigint().optional(),
+  fromTs: z.coerce.date().optional(),
+  toTs: z.coerce.date().optional(),
+  minStakeMicro: z.string().regex(/^\d+$/).optional(),
+  maxStakeMicro: z.string().regex(/^\d+$/).optional(),
+});
+
+interface TicketRowDto {
+  id: string;
+  cursor: string;
+  userId: string;
+  userEmail: string | null;
+  userNickname: string | null;
+  status: string;
+  outcome: "won" | "lost" | "void" | null;
+  currency: string;
+  betType: string;
+  legCount: number;
+  stakeMicro: string;
+  potentialPayoutMicro: string;
+  actualPayoutMicro: string | null;
+  rejectReason: string | null;
+  matchId: string | null;
+  matchLabel: string | null;
+  sportId: number | null;
+  sportSlug: string | null;
+  tournamentId: number | null;
+  tournamentName: string | null;
+  riskTier: number | null;
+  placedAt: string;
+  settledAt: string | null;
+}
+
 const USER_CHANNEL_PREFIX = "user:";
 
 export default async function adminTicketsRoutes(app: FastifyInstance) {
-  // Compact list for the admin UI — all recent tickets, not just one
-  // user's. Useful for incident triage.
+  // Rich-filter listing powering the backoffice "All bets" page.
+  // Returns every ticket regardless of currency or RiskZilla path —
+  // OZ tickets bypass the engine, but they all show here.
   app.get("/admin/tickets", async (request) => {
     request.requireRole("admin");
-    const q = z
-      .object({
-        limit: z.coerce.number().int().min(1).max(200).default(50),
-        status: z.enum(["pending_delay", "accepted", "rejected", "settled", "voided"]).optional(),
-      })
-      .parse(request.query);
+    const q = listQuery.parse(request.query);
 
-    const rows = await app.db
-      .select()
-      .from(tickets)
-      .where(q.status ? eq(tickets.status, q.status) : sql`TRUE`)
-      .orderBy(sql`${tickets.placedAt} DESC`)
-      .limit(q.limit);
+    const conditions: ReturnType<typeof sql>[] = [];
+    if (q.status) conditions.push(sql`t.status = ${q.status}::ticket_status`);
+    if (q.currency) conditions.push(sql`t.currency = ${q.currency}`);
+    if (q.betType) conditions.push(sql`t.bet_type = ${q.betType}::bet_type`);
+    if (q.userId) conditions.push(sql`t.user_id = ${q.userId}::uuid`);
+    if (q.fromTs)
+      conditions.push(sql`t.placed_at >= ${q.fromTs.toISOString()}::timestamptz`);
+    if (q.toTs)
+      conditions.push(sql`t.placed_at <= ${q.toTs.toISOString()}::timestamptz`);
+    if (q.minStakeMicro)
+      conditions.push(sql`t.stake_micro >= ${q.minStakeMicro}::bigint`);
+    if (q.maxStakeMicro)
+      conditions.push(sql`t.stake_micro <= ${q.maxStakeMicro}::bigint`);
 
-    return {
-      tickets: rows.map((t) => ({
-        id: t.id,
-        userId: t.userId,
-        status: t.status,
-        currency: t.currency.trim(),
-        stakeMicro: t.stakeMicro.toString(),
-        potentialPayoutMicro: t.potentialPayoutMicro.toString(),
-        actualPayoutMicro: t.actualPayoutMicro?.toString() ?? null,
-        placedAt: t.placedAt.toISOString(),
-        settledAt: t.settledAt?.toISOString() ?? null,
-        rejectReason: t.rejectReason,
-      })),
-    };
+    // Outcome only meaningful for settled tickets. For voided →
+    // outcome="void" is a synonym for status=voided (we still surface
+    // it as a column on the row).
+    if (q.outcome === "won") {
+      conditions.push(
+        sql`t.status = 'settled' AND t.actual_payout_micro > t.stake_micro`,
+      );
+    } else if (q.outcome === "lost") {
+      conditions.push(
+        sql`t.status = 'settled' AND COALESCE(t.actual_payout_micro, 0) = 0`,
+      );
+    } else if (q.outcome === "void") {
+      conditions.push(
+        sql`(t.status = 'voided' OR (t.status = 'settled' AND t.actual_payout_micro = t.stake_micro))`,
+      );
+    }
+
+    // User-text search joins users (email + nickname). We strip the
+    // ILIKE wildcards to keep the query plan predictable; the trailing
+    // %…% is added back here.
+    let userJoinHasText = false;
+    if (q.userQuery) {
+      const needle = `%${q.userQuery.replace(/[%_]/g, "")}%`;
+      conditions.push(
+        sql`(u.email ILIKE ${needle} OR u.nickname ILIKE ${needle})`,
+      );
+      userJoinHasText = true;
+    }
+
+    if (q.before) {
+      const [tsMs, idStr] = q.before.split("_");
+      const ts = new Date(Number(tsMs)).toISOString();
+      conditions.push(
+        sql`(t.placed_at, t.id) < (${ts}::timestamptz, ${idStr}::uuid)`,
+      );
+    }
+
+    const innerWhere =
+      conditions.length === 0
+        ? sql``
+        : sql`WHERE ${conditions.reduce((acc, c, i) =>
+            i === 0 ? c : sql`${acc} AND ${c}`,
+          )}`;
+
+    // sport/match filters operate on the first leg's joined market.
+    // Same approach as the OZ branch of the riskzilla events endpoint.
+    const postJoinConditions: ReturnType<typeof sql>[] = [];
+    if (q.sportId !== undefined)
+      postJoinConditions.push(sql`s.id = ${q.sportId}`);
+    if (q.matchId !== undefined)
+      postJoinConditions.push(sql`m.id = ${q.matchId.toString()}::bigint`);
+    const postWhere =
+      postJoinConditions.length === 0
+        ? sql``
+        : sql`WHERE ${postJoinConditions.reduce((acc, c, i) =>
+            i === 0 ? c : sql`${acc} AND ${c}`,
+          )}`;
+
+    // Two-stage query: pull matching tickets in the inner SELECT
+    // (already filtered + ordered + limited so we don't full-table
+    // join), then attach user / first-leg metadata in the outer one.
+    // The user join in the inner SELECT is only needed when filtering
+    // by free-text user query — otherwise we defer it to the outer
+    // SELECT for cheaper planning.
+    const rows = (await app.db.execute(sql`
+      WITH filtered AS (
+        SELECT t.*
+          FROM tickets t
+          ${userJoinHasText ? sql`LEFT JOIN users u ON u.id = t.user_id` : sql``}
+          ${innerWhere}
+          ORDER BY t.placed_at DESC, t.id DESC
+          LIMIT ${q.limit * 2}
+      )
+      SELECT
+        t.id::text                                    AS id,
+        EXTRACT(epoch FROM t.placed_at) * 1000        AS cursor_ms,
+        t.user_id::text                               AS user_id,
+        u.email                                       AS user_email,
+        u.nickname                                    AS user_nickname,
+        t.status::text                                AS status,
+        t.currency                                    AS currency,
+        t.bet_type::text                              AS bet_type,
+        (SELECT COUNT(*)::int FROM ticket_selections ts WHERE ts.ticket_id = t.id) AS leg_count,
+        t.stake_micro::text                           AS stake_micro,
+        t.potential_payout_micro::text                AS potential_payout_micro,
+        t.actual_payout_micro::text                   AS actual_payout_micro,
+        t.reject_reason                               AS reject_reason,
+        m.id::text                                    AS match_id,
+        CASE WHEN m.id IS NOT NULL
+             THEN m.home_team || ' vs ' || m.away_team
+             ELSE NULL END                            AS match_label,
+        s.id                                          AS sport_id,
+        s.slug                                        AS sport_slug,
+        tn.id                                         AS tournament_id,
+        tn.name                                       AS tournament_name,
+        tn.risk_tier                                  AS risk_tier,
+        t.placed_at                                   AS placed_at,
+        t.settled_at                                  AS settled_at
+      FROM filtered t
+      LEFT JOIN users u ON u.id = t.user_id
+      LEFT JOIN LATERAL (
+        SELECT ts.market_id
+          FROM ticket_selections ts
+         WHERE ts.ticket_id = t.id
+         ORDER BY ts.id ASC
+         LIMIT 1
+      ) first_leg ON true
+      LEFT JOIN markets    mk ON mk.id = first_leg.market_id
+      LEFT JOIN matches    m  ON m.id  = mk.match_id
+      LEFT JOIN tournaments tn ON tn.id = m.tournament_id
+      LEFT JOIN categories c  ON c.id = tn.category_id
+      LEFT JOIN sports     s  ON s.id = c.sport_id
+      ${postWhere}
+      ORDER BY t.placed_at DESC, t.id DESC
+      LIMIT ${q.limit}
+    `)) as unknown as Array<{
+      id: string;
+      cursor_ms: string | number;
+      user_id: string;
+      user_email: string | null;
+      user_nickname: string | null;
+      status: string;
+      currency: string;
+      bet_type: string;
+      leg_count: number;
+      stake_micro: string;
+      potential_payout_micro: string;
+      actual_payout_micro: string | null;
+      reject_reason: string | null;
+      match_id: string | null;
+      match_label: string | null;
+      sport_id: number | null;
+      sport_slug: string | null;
+      tournament_id: number | null;
+      tournament_name: string | null;
+      risk_tier: number | null;
+      placed_at: Date | string;
+      settled_at: Date | string | null;
+    }>;
+
+    const entries: TicketRowDto[] = rows.map((r) => {
+      const cursorMs = Math.floor(Number(r.cursor_ms));
+      // Derive outcome from status + payout for settled tickets so
+      // the UI can colour the row without re-doing the math.
+      let outcome: "won" | "lost" | "void" | null = null;
+      if (r.status === "settled") {
+        const stake = BigInt(r.stake_micro);
+        const payout = BigInt(r.actual_payout_micro ?? "0");
+        if (payout > stake) outcome = "won";
+        else if (payout === stake) outcome = "void"; // full refund
+        else outcome = "lost";
+      } else if (r.status === "voided") {
+        outcome = "void";
+      }
+      return {
+        id: r.id,
+        cursor: `${cursorMs}_${r.id}`,
+        userId: r.user_id,
+        userEmail: r.user_email,
+        userNickname: r.user_nickname,
+        status: r.status,
+        outcome,
+        currency: r.currency.trim(),
+        betType: r.bet_type,
+        legCount: r.leg_count,
+        stakeMicro: r.stake_micro,
+        potentialPayoutMicro: r.potential_payout_micro,
+        actualPayoutMicro: r.actual_payout_micro,
+        rejectReason: r.reject_reason,
+        matchId: r.match_id,
+        matchLabel: r.match_label,
+        sportId: r.sport_id,
+        sportSlug: r.sport_slug,
+        tournamentId: r.tournament_id,
+        tournamentName: r.tournament_name,
+        riskTier: r.risk_tier,
+        placedAt:
+          r.placed_at instanceof Date
+            ? r.placed_at.toISOString()
+            : String(r.placed_at),
+        settledAt:
+          r.settled_at == null
+            ? null
+            : r.settled_at instanceof Date
+              ? r.settled_at.toISOString()
+              : String(r.settled_at),
+      };
+    });
+
+    return { entries };
   });
 
   // Manual void refunds the stake — gate to the balance-edit operator
