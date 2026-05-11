@@ -55,6 +55,7 @@ import type {
   JoinCompetitionResponse,
   ViewerPrediction,
 } from "@oddzilla/types";
+import { cached } from "../../lib/cache.js";
 import {
   BadRequestError,
   ConflictError,
@@ -693,21 +694,47 @@ function enforceTipShape(type: CompetitionType, tip: string | undefined): void {
   }
 }
 
+// Per-competition rule cache. Rules are immutable post-publish so a
+// modest TTL is safe; the v1 suffix lets us reshape the cached payload
+// later without flushing. Draft-mutation invalidation is intentionally
+// not wired up: rules can't change on a published competition and the
+// hot paths (join, predict) only run against published comps anyway.
+const RULES_CACHE_TTL_SECONDS = 60;
+function rulesCacheKey(competitionId: string): string {
+  return `competition:rules:${competitionId}:v1`;
+}
+
+type CompetitionRulesMap = Record<string, string | null>;
+
+async function loadCompetitionRules(
+  app: FastifyInstance,
+  competitionId: string,
+): Promise<CompetitionRulesMap> {
+  return cached(
+    app.redis,
+    rulesCacheKey(competitionId),
+    RULES_CACHE_TTL_SECONDS,
+    async () => {
+      const rows = await app.db
+        .select({
+          ruleId: competitionRules.ruleId,
+          value: competitionRules.value,
+        })
+        .from(competitionRules)
+        .where(eq(competitionRules.competitionId, competitionId));
+      const out: CompetitionRulesMap = {};
+      for (const r of rows) out[r.ruleId] = r.value;
+      return out;
+    },
+  );
+}
+
 async function getGraceMinutes(
   app: FastifyInstance,
   competitionId: string,
 ): Promise<number> {
-  const rows = await app.db
-    .select({ value: competitionRules.value })
-    .from(competitionRules)
-    .where(
-      and(
-        eq(competitionRules.competitionId, competitionId),
-        eq(competitionRules.ruleId, "timing-grace-period"),
-      ),
-    )
-    .limit(1);
-  const raw = rows[0]?.value;
+  const rules = await loadCompetitionRules(app, competitionId);
+  const raw = rules["timing-grace-period"] ?? null;
   const parsed = raw ? parseInt(raw, 10) : 0;
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 }
@@ -716,17 +743,8 @@ async function getMaxParticipantsCap(
   app: FastifyInstance,
   competitionId: string,
 ): Promise<number | null> {
-  const rows = await app.db
-    .select({ value: competitionRules.value })
-    .from(competitionRules)
-    .where(
-      and(
-        eq(competitionRules.competitionId, competitionId),
-        eq(competitionRules.ruleId, "eligibility-max-participants"),
-      ),
-    )
-    .limit(1);
-  const raw = rows[0]?.value;
+  const rules = await loadCompetitionRules(app, competitionId);
+  const raw = rules["eligibility-max-participants"] ?? null;
   if (!raw) return null;
   const parsed = parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;

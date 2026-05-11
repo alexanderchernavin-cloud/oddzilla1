@@ -31,12 +31,26 @@ import {
   combiBoostConfig,
 } from "@oddzilla/db";
 import { NotFoundError } from "../../lib/errors.js";
+import { cached } from "../../lib/cache.js";
 import {
   substituteTemplate,
   renderOutcomeLabel,
   deriveScope,
   outcomeSortWeight,
 } from "../../lib/market-naming.js";
+
+// ── Catalog cache keys (v1 suffix lets us roll a shape change forward
+// without flushing). TTLs are tuned to the surface's mutation cadence:
+//   • /catalog/sports — mutates monthly at most (admin curation),
+//     invalidated explicitly on admin sport writes; 60s is the
+//     belt-and-braces eventual-consistency guarantee.
+//   • /catalog/live-counts — derived from match status (live vs
+//     scheduled), churns continuously during a busy slate; 5s absorbs
+//     burst traffic from the layout render without visible staleness.
+const SPORTS_CACHE_KEY = "catalog:sports:v1";
+const SPORTS_CACHE_TTL_SECONDS = 60;
+const LIVE_COUNTS_CACHE_KEY = "catalog:live-counts:v1";
+const LIVE_COUNTS_CACHE_TTL_SECONDS = 5;
 
 // Two aliases of `competitors` so a single match query can pull the home
 // and away team's branding columns (logo_url, brand_color) in one round
@@ -533,21 +547,26 @@ export default async function catalogRoutes(app: FastifyInstance) {
   );
 
   // ── Sports tree ─────────────────────────────────────────────────────
+  // Cached: hit on every page render via (main)/layout.tsx; underlying
+  // table mutates only via /admin/sports writes (which invalidate this
+  // key on success).
   app.get("/catalog/sports", async () => {
-    const rows = await app.db
-      .select({
-        id: sports.id,
-        slug: sports.slug,
-        name: sports.name,
-        kind: sports.kind,
-        active: sports.active,
-        logoUrl: sports.logoUrl,
-        brandColor: sports.brandColor,
-      })
-      .from(sports)
-      .where(eq(sports.active, true))
-      .orderBy(sports.slug);
-    return { sports: rows };
+    return cached(app.redis, SPORTS_CACHE_KEY, SPORTS_CACHE_TTL_SECONDS, async () => {
+      const rows = await app.db
+        .select({
+          id: sports.id,
+          slug: sports.slug,
+          name: sports.name,
+          kind: sports.kind,
+          active: sports.active,
+          logoUrl: sports.logoUrl,
+          brandColor: sports.brandColor,
+        })
+        .from(sports)
+        .where(eq(sports.active, true))
+        .orderBy(sports.slug);
+      return { sports: rows };
+    });
   });
 
   // ── Combi Boost config (read-only, live-tunable in /admin) ───────────
@@ -1599,33 +1618,43 @@ export default async function catalogRoutes(app: FastifyInstance) {
   // ── Counts across sports (for homepage live badges) ────────────────
   // Counts only matches with at least one active market — a bare
   // status='live' match with no odds flow is not useful for a badge.
+  // Cached 5s: this is a 4-way LEFT JOIN hit on every page render via
+  // (main)/layout.tsx; a 5s TTL absorbs burst traffic while keeping the
+  // badge tight to actual live/end transitions.
   app.get("/catalog/live-counts", async () => {
-    const rows = await app.db
-      .select({
-        slug: sports.slug,
-        count: sql<string>`COUNT(${matches.id})::text`,
-      })
-      .from(sports)
-      .leftJoin(categories, eq(categories.sportId, sports.id))
-      .leftJoin(
-        tournaments,
-        and(
-          eq(tournaments.categoryId, categories.id),
-          notHiddenTournament,
-        ),
-      )
-      .leftJoin(
-        matches,
-        and(
-          eq(matches.tournamentId, tournaments.id),
-          eq(matches.status, "live"),
-          hasActiveMarket,
-        ),
-      )
-      .where(eq(sports.active, true))
-      .groupBy(sports.slug);
-    const counts: Record<string, number> = {};
-    for (const r of rows) counts[r.slug] = Number(r.count);
-    return counts;
+    return cached(
+      app.redis,
+      LIVE_COUNTS_CACHE_KEY,
+      LIVE_COUNTS_CACHE_TTL_SECONDS,
+      async () => {
+        const rows = await app.db
+          .select({
+            slug: sports.slug,
+            count: sql<string>`COUNT(${matches.id})::text`,
+          })
+          .from(sports)
+          .leftJoin(categories, eq(categories.sportId, sports.id))
+          .leftJoin(
+            tournaments,
+            and(
+              eq(tournaments.categoryId, categories.id),
+              notHiddenTournament,
+            ),
+          )
+          .leftJoin(
+            matches,
+            and(
+              eq(matches.tournamentId, tournaments.id),
+              eq(matches.status, "live"),
+              hasActiveMarket,
+            ),
+          )
+          .where(eq(sports.active, true))
+          .groupBy(sports.slug);
+        const counts: Record<string, number> = {};
+        for (const r of rows) counts[r.slug] = Number(r.count);
+        return counts;
+      },
+    );
   });
 }
