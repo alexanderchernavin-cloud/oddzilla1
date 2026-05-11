@@ -3,14 +3,30 @@
 // ZillaTips widget — per-market historical-ROI hint surfaced as a small
 // badge next to the market name. Hover (desktop) or tap (mobile) opens
 // a popover listing the focused team(s) with their last N matches'
-// outcomes coloured by win/lose/void.
+// outcomes coloured by win/lose/void and a per-leg +X% / -100% label;
+// the right side of the section header shows the SUM of those legs.
 //
 // The badge is the ONLY visible affordance until the user interacts.
 // It carries the highest ROI across the market's tips and bumps its
 // chrome through three tiers (base → glow → fire) tracking
 // ZILLATIP_TIER_GLOW and ZILLATIP_TIER_FIRE.
+//
+// Only one popover may be open at a time — coordinated via a context
+// provider wrapping the markets tree. Hovering a new badge cancels
+// the previous one without flicker via a short hover-intent close
+// timer (so brief gap-crossings between badge and popover don't
+// trigger close).
 
-import { useEffect, useId, useRef, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 // Subpath import — @oddzilla/types' root entry chains `export *` through
 // other modules with `.js` extensions that Next.js webpack can't resolve
 // when a RUNTIME value (zillaTipTier here) forces the package to be
@@ -24,6 +40,50 @@ import {
 } from "@oddzilla/types/zillatips";
 import { I } from "@/components/ui/icons";
 import { TeamMark } from "@/components/ui/primitives";
+
+// ── Single-open coordination ──────────────────────────────────────────
+//
+// Each badge gets a stable useId(). When the user hovers/clicks one,
+// it calls open(myId). All other badges read context.openId, see it's
+// not theirs, and unmount their popover. No portal needed — popovers
+// stay positioned relative to their own badge wrapper.
+//
+// Close path uses a short hover-intent delay so the 6px gap between
+// the badge and its popover doesn't trigger close mid-flight. Each
+// badge tracks its own timer; the shared context only carries openId.
+
+interface ZillaTipsContextValue {
+  openId: string | null;
+  open: (id: string) => void;
+  close: (id: string) => void;
+}
+
+const ZillaTipsContext = createContext<ZillaTipsContextValue>({
+  openId: null,
+  open: () => {},
+  close: () => {},
+});
+
+export function ZillaTipsProvider({ children }: { children: ReactNode }) {
+  const [openId, setOpenId] = useState<string | null>(null);
+  const open = useCallback((id: string) => setOpenId(id), []);
+  // Idempotent close: only clear if the caller still thinks it's the
+  // open one. Prevents a stale close() from a delayed mouseLeave from
+  // tearing down a popover the user has already moved to.
+  const close = useCallback((id: string) => {
+    setOpenId((cur) => (cur === id ? null : cur));
+  }, []);
+  return (
+    <ZillaTipsContext.Provider value={{ openId, open, close }}>
+      {children}
+    </ZillaTipsContext.Provider>
+  );
+}
+
+// Delay between mouseLeave and actual close. Long enough to let the
+// user cross the 6px gap from badge to popover (or popover to badge)
+// without flicker; short enough that moving past doesn't feel sticky.
+const HOVER_CLOSE_DELAY_MS = 140;
 
 // Map outcome_result enum → semantic colour. Void / null result / unknown
 // all fall back to grey per the user spec.
@@ -112,39 +172,90 @@ function teamTag(name: string): string {
   return (words[0] ?? name).slice(0, 3).toUpperCase();
 }
 
+// Per-leg ROI as a unit-less ratio. Mirrors the SQL CASE inside
+// roi_aggregates so the per-chip label sums to the section's
+// displayed total. Returns null for void / null result / won-with-
+// no-odds — chip renders "VOID" or "—" and the leg drops from the
+// running total.
+function legRoi(leg: ZillaTipLeg): number | null {
+  const odds = leg.prematchOdds == null ? null : Number(leg.prematchOdds);
+  switch (leg.result) {
+    case "won":
+      return odds != null && Number.isFinite(odds) ? odds - 1 : null;
+    case "lost":
+      return -1;
+    case "half_won":
+      return odds != null && Number.isFinite(odds) ? (odds - 1) / 2 : null;
+    case "half_lost":
+      return -0.5;
+    default:
+      return null;
+  }
+}
+
 // One historical leg rendered as a small chip with the opponent's
-// logo, the prematch odds, and a colour-coded ring for win/loss/void.
+// logo, the prematch odds (small grey), and a bold per-leg ROI label
+// (+X% / -100% / VOID) coloured by result. The ring colour around
+// the chip echoes the result so it remains scannable from a distance
+// even without reading the percentage.
 function LegChip({ leg }: { leg: ZillaTipLeg }) {
   const palette = resultPalette(leg.result);
+  const roi = legRoi(leg);
+  const oddsLabel = leg.prematchOdds
+    ? Number(leg.prematchOdds).toFixed(2)
+    : "—";
+  // Bottom label semantics:
+  //   • rated leg (won/lost/half_*) with a numeric ROI → "+90%" / "-100%"
+  //   • void result → "VOID"
+  //   • won/half_won with no prematch_odds → "—" (unrated, hidden from sum)
+  //   • null result (still in progress) → "—"
+  const roiLabel =
+    roi != null
+      ? `${roi >= 0 ? "+" : ""}${Math.round(roi * 100)}%`
+      : leg.result === "void"
+        ? "VOID"
+        : "—";
   return (
     <div
-      title={`vs ${leg.opponentLabel} @ ${leg.prematchOdds ?? "—"}`}
+      title={`vs ${leg.opponentLabel} @ ${oddsLabel}`}
       style={{
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        gap: 4,
-        padding: "6px 4px",
+        gap: 3,
+        padding: "6px 4px 5px",
         borderRadius: 8,
         background: palette.bg,
         boxShadow: `inset 0 0 0 1px ${palette.ring}`,
-        minWidth: 56,
+        minWidth: 60,
       }}
     >
       <TeamMark
         tag={teamTag(leg.opponentLabel)}
         name={leg.opponentLabel}
-        size={28}
+        size={26}
         logoUrl={leg.opponentLogoUrl}
         color={leg.opponentBrandColor ?? undefined}
       />
       <span
         className="mono tnum"
-        style={{ fontSize: 11, fontWeight: 600, color: palette.fg }}
+        style={{
+          fontSize: 10,
+          color: "var(--fg-dim)",
+          letterSpacing: "0.02em",
+        }}
       >
-        {leg.prematchOdds
-          ? Number(leg.prematchOdds).toFixed(2)
-          : palette.label}
+        {oddsLabel}
+      </span>
+      <span
+        className="mono tnum"
+        style={{
+          fontSize: 11,
+          fontWeight: 700,
+          color: palette.fg,
+        }}
+      >
+        {roiLabel}
       </span>
     </div>
   );
@@ -272,9 +383,30 @@ export function ZillaTipsBadge({
   // label. Order doesn't matter — we key by (marketId, outcomeId).
   contexts?: TipContext[];
 }) {
-  const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const popoverId = useId();
+  const myId = useId();
+  const { openId, open, close } = useContext(ZillaTipsContext);
+  const isOpen = openId === myId;
+  // Hover-intent timer: started on either badge or popover mouseLeave,
+  // cancelled on mouseEnter of either, so brief gap-crossings between
+  // the badge and the popover (6px) don't tear it down.
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelClose = useCallback(() => {
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  }, []);
+  const scheduleClose = useCallback(() => {
+    cancelClose();
+    closeTimerRef.current = setTimeout(() => {
+      close(myId);
+    }, HOVER_CLOSE_DELAY_MS);
+  }, [cancelClose, close, myId]);
+  // Clean up timer on unmount so a closed-then-unmounted badge doesn't
+  // try to fire close() into stale state.
+  useEffect(() => () => cancelClose(), [cancelClose]);
 
   // Aggregate "best tip" for tier — same source the badge uses.
   let bestRoi = 0;
@@ -285,13 +417,13 @@ export function ZillaTipsBadge({
   const palette = badgePalette(tier);
 
   useEffect(() => {
-    if (!open) return;
+    if (!isOpen) return;
     const onDoc = (e: MouseEvent) => {
       if (!wrapRef.current) return;
-      if (!wrapRef.current.contains(e.target as Node)) setOpen(false);
+      if (!wrapRef.current.contains(e.target as Node)) close(myId);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") close(myId);
     };
     document.addEventListener("mousedown", onDoc);
     document.addEventListener("keydown", onKey);
@@ -299,7 +431,7 @@ export function ZillaTipsBadge({
       document.removeEventListener("mousedown", onDoc);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open]);
+  }, [isOpen, close, myId]);
 
   // Sort tips by ROI desc so the popover puts the strongest pick first.
   const sortedTips = [...tips].sort((a, b) => b.roi - a.roi);
@@ -312,10 +444,14 @@ export function ZillaTipsBadge({
     <div ref={wrapRef} style={{ position: "relative", display: "inline-flex" }}>
       <button
         type="button"
-        aria-expanded={open}
+        aria-expanded={isOpen}
         aria-controls={popoverId}
-        onClick={() => setOpen((v) => !v)}
-        onMouseEnter={() => setOpen(true)}
+        onClick={() => (isOpen ? close(myId) : open(myId))}
+        onMouseEnter={() => {
+          cancelClose();
+          open(myId);
+        }}
+        onMouseLeave={scheduleClose}
         style={{
           display: "inline-flex",
           alignItems: "center",
@@ -340,18 +476,24 @@ export function ZillaTipsBadge({
         {palette.icon}
         <span className="mono tnum">{fmtRoi(bestRoi)}</span>
       </button>
-      {open && (
+      {isOpen && (
         <div
           id={popoverId}
           role="dialog"
           aria-label="ZillaTips historical ROI"
-          onMouseLeave={() => setOpen(false)}
+          onMouseEnter={cancelClose}
+          onMouseLeave={scheduleClose}
           style={{
             position: "absolute",
             top: "calc(100% + 6px)",
             right: 0,
-            zIndex: 30,
-            width: "min(420px, 92vw)",
+            // High z-index so the popover always wins over neighbouring
+            // market cards and the bet-slip rail. The match page's
+            // header / live-scoreboard scope IDs sit around 20–40, so
+            // 200 leaves headroom for future modals without competing
+            // with the global mobile drawer overlay.
+            zIndex: 200,
+            width: "min(440px, 92vw)",
             background: "var(--surface-1)",
             border: "1px solid var(--border)",
             borderRadius: "var(--r-md)",
@@ -385,7 +527,7 @@ export function ZillaTipsBadge({
                 letterSpacing: "0.06em",
               }}
             >
-              last 5 trail · per leg ROI
+              last 5 trail · sum of legs
             </span>
           </div>
           {sortedTips.map((tip) => (
@@ -405,8 +547,9 @@ export function ZillaTipsBadge({
               paddingTop: 8,
             }}
           >
-            ROI is the average flat-stake return per leg. Voided legs are shown
-            grey and excluded from the average.
+            ROI is the sum of per-leg flat-stake returns (e.g. +90% + −100%
+            + +150% = +140%). Voided legs are shown grey and excluded
+            from the sum.
           </div>
         </div>
       )}

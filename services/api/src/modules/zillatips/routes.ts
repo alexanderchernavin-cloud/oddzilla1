@@ -15,8 +15,14 @@
 //      "team-equivalent" outcome — swapping outcome "1"↔"2" for
 //      team-specific markets when the team's home/away role differs
 //      across the two matches.
-//   5. Aggregates flat-stake ROI from the prematch_odds snapshot and
-//      result enum, and filters to ROI ≥ ZILLATIP_MIN_ROI.
+//   5. Sums per-leg flat-stake returns from the prematch_odds snapshot
+//      and result enum, and filters to total ≥ ZILLATIP_MIN_ROI.
+//      The "ROI" surfaced to the storefront is the SUM of per-leg
+//      returns — i.e. for N unit-stake bets, the net profit expressed
+//      as a multiple of one stake. So 2 wins at 1.90 / 2.50 sum to
+//      (0.90 + 1.50) = 2.40 → +240%. Lost legs contribute -1.0,
+//      voids contribute nothing. Matches the user-facing intuition
+//      that "lost-then-won-at-1.80" is -100% + 80% = -20% (filtered).
 //
 // Caching: each match's tips are read-mostly and ROI shifts only on
 // new settlements for one of the participants. A 5-minute Redis cache
@@ -83,7 +89,10 @@ export default async function zillatipsRoutes(app: FastifyInstance) {
       .object({ matchId: z.coerce.bigint() })
       .parse(request.params);
 
-    const cacheKey = `zillatips:v1:${matchId.toString()}`;
+    // v2: switched the surfaced ROI from average-per-leg to sum-per-leg.
+    // Bump the key prefix so cached v1 averages don't leak through the
+    // post-deploy 5-min TTL window.
+    const cacheKey = `zillatips:v2:${matchId.toString()}`;
     const payload = await cached<ZillaTipsResponse>(
       app.redis,
       cacheKey,
@@ -262,10 +271,13 @@ async function loadTips(
         current_outcome_id,
         team_id,
         role,
-        -- Per-leg ROI. Won/half_won need a prematch_odds value;
-        -- lost/half_lost are a flat -1/-0.5 regardless. Void or null
-        -- result yields NULL — SUM ignores it, so the leg drops from
-        -- both the numerator and the denominator.
+        -- Per-leg flat-stake return. Won/half_won need a prematch_odds
+        -- value; lost/half_lost are a flat -1/-0.5 regardless. Void or
+        -- null result yields NULL — SUM ignores it, so the leg is
+        -- shown grey in the popover but doesn't move the total.
+        -- profit_sum is surfaced directly as the user-facing ROI: e.g.
+        -- +90% + (-100%) + +150% = +140%. NOT normalised by sample
+        -- size, so a single +800% win = +800%.
         SUM(CASE
           WHEN result_text = 'won' AND prematch_odds IS NOT NULL
             THEN prematch_odds::numeric - 1
@@ -306,13 +318,13 @@ async function loadTips(
       current_outcome_id                      AS "outcomeId",
       team_id                                 AS "teamId",
       role::text                              AS "role",
-      (profit_sum / NULLIF(rated_count, 0))::float8 AS "roi",
+      profit_sum::float8                      AS "roi",
       rated_count::int                        AS "ratedCount",
       sample_size::int                        AS "sampleSize",
       legs_json                               AS "legsJson"
     FROM roi_aggregates
     WHERE rated_count > 0
-      AND profit_sum / NULLIF(rated_count, 0) >= ${ZILLATIP_MIN_ROI}::numeric
+      AND profit_sum >= ${ZILLATIP_MIN_ROI}::numeric
     ORDER BY roi DESC
   `);
 
