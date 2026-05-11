@@ -37,7 +37,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { parse as parseCookies } from "cookie";
 import { Redis } from "ioredis";
 import pino from "pino";
-import { loadEnv, loadAuthEnv } from "@oddzilla/config";
+import { loadEnv, loadAuthEnv, corsOrigins } from "@oddzilla/config";
 import {
   secretKey,
   verifyAccessToken,
@@ -99,6 +99,28 @@ const log = pino({ level: env.LOG_LEVEL, base: { service: env.SERVICE_NAME } });
 
 const jwtKey = secretKey(auth.jwtSecret);
 
+// Origin allowlist for the WS upgrade handshake. SameSite=Lax on the
+// access cookie is the existing mitigation against CSWSH, but Firefox
+// historically diverged and non-browser clients can still send cookies
+// cross-origin. Mirror the API's CSRF plugin: parse CORS_ORIGINS as a
+// comma-separated list, normalize (lowercase host, drop trailing slash),
+// and compare exactly. Single-value Origin only — header arrays are
+// rejected outright.
+const allowedOrigins = new Set(corsOrigins(env).map(normalizeOrigin));
+// When set to "true", require the Origin header on every upgrade.
+// Default (false) tolerates same-origin upgrades from server-side
+// runtimes that omit Origin. Browsers always send it on WS upgrades.
+const corsOriginsStrict = process.env.CORS_ORIGINS_STRICT === "true";
+
+function normalizeOrigin(origin: string): string {
+  try {
+    const u = new URL(origin);
+    return `${u.protocol}//${u.host.toLowerCase()}`;
+  } catch {
+    return origin.toLowerCase().replace(/\/+$/, "");
+  }
+}
+
 // Two Redis clients: a pub/sub subscriber can't issue normal commands, so
 // we keep a second for control (ping/healthcheck and future admin actions).
 const sub = new Redis(env.REDIS_URL, { lazyConnect: false });
@@ -139,6 +161,12 @@ const matchRefs = new Map<string, number>();
 // placement) and services/bet-delay (on finalize). Refcounted identically
 // to matchRefs — multiple browser tabs subscribe once at Redis level.
 const userRefs = new Map<string, number>();
+// Reverse indexes for O(subscribers) dispatch. The Redis refcount maps
+// above answer "do we need a Redis SUBSCRIBE?"; these answer "which
+// sockets should receive this frame?". Maintained at the same lifecycle
+// points as the refcount maps (subscribe/unsubscribe and close/sweep).
+const matchSubscribers = new Map<string, Set<ClientState>>();
+const userSockets = new Map<string, Set<ClientState>>();
 
 async function authenticate(req: IncomingMessage): Promise<AccessTokenClaims | null> {
   const cookieHeader = req.headers.cookie ?? "";
@@ -200,6 +228,34 @@ http.on("upgrade", (req, socket, head) => {
     socket.destroy();
     return;
   }
+  // Cross-site WebSocket hijacking defense. Run BEFORE authenticate()
+  // so an attacker page can't even trigger the cookie read on a
+  // disallowed origin. Mirrors services/api/src/plugins/csrf.ts: single
+  // Origin value only, exact normalized match against CORS_ORIGINS.
+  // Multi-value Origin (header array) is rejected — never produced by
+  // a real browser, almost always a smuggling attempt.
+  const rawOrigin = req.headers.origin;
+  if (Array.isArray(rawOrigin)) {
+    log.warn({ origin: rawOrigin }, "ws upgrade rejected — multi-value Origin");
+    socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+  if (!rawOrigin) {
+    if (corsOriginsStrict) {
+      log.warn("ws upgrade rejected — missing Origin (strict mode)");
+      socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    // Tolerate missing Origin for non-strict mode (server-side
+    // runtimes on same-origin upgrades).
+  } else if (!allowedOrigins.has(normalizeOrigin(rawOrigin))) {
+    log.warn({ origin: rawOrigin }, "ws upgrade rejected — origin not allowed");
+    socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+    socket.destroy();
+    return;
+  }
   void (async () => {
     // Authentication is best-effort: a missing or invalid cookie just
     // means this is an anonymous browsing session. The connection is
@@ -238,7 +294,10 @@ wss.on("connection", (ws: WebSocket, _req: IncomingMessage, claims: AccessTokenC
     matchIds: new Set(),
   };
   clients.add(state);
-  if (claims) incrementUserRef(claims.sub);
+  if (claims) {
+    addUserSocket(state);
+    incrementUserRef(claims.sub);
+  }
   send(ws, {
     type: "hello",
     userId: claims?.sub ?? null,
@@ -281,9 +340,15 @@ wss.on("connection", (ws: WebSocket, _req: IncomingMessage, claims: AccessTokenC
 // and the periodic stale sweep; the two paths previously inlined
 // identical cleanup logic.
 function cleanupClient(client: ClientState) {
-  for (const matchId of client.matchIds) decrementMatchRef(matchId);
+  for (const matchId of client.matchIds) {
+    removeMatchSubscriber(matchId, client);
+    decrementMatchRef(matchId);
+  }
   client.matchIds.clear();
-  if (client.userId) decrementUserRef(client.userId);
+  if (client.userId) {
+    removeUserSocket(client);
+    decrementUserRef(client.userId);
+  }
   clients.delete(client);
 }
 
@@ -295,6 +360,7 @@ function subscribe(state: ClientState, matchIds: string[]) {
     }
     if (state.matchIds.has(m)) continue;
     state.matchIds.add(m);
+    addMatchSubscriber(m, state);
     incrementMatchRef(m);
   }
 }
@@ -302,8 +368,41 @@ function subscribe(state: ClientState, matchIds: string[]) {
 function unsubscribe(state: ClientState, matchIds: string[]) {
   for (const m of matchIds) {
     if (!state.matchIds.delete(m)) continue;
+    removeMatchSubscriber(m, state);
     decrementMatchRef(m);
   }
+}
+
+function addMatchSubscriber(matchId: string, state: ClientState) {
+  let set = matchSubscribers.get(matchId);
+  if (!set) {
+    set = new Set();
+    matchSubscribers.set(matchId, set);
+  }
+  set.add(state);
+}
+
+function removeMatchSubscriber(matchId: string, state: ClientState) {
+  const set = matchSubscribers.get(matchId);
+  if (!set) return;
+  set.delete(state);
+  if (set.size === 0) matchSubscribers.delete(matchId);
+}
+
+function addUserSocket(state: ClientState) {
+  let set = userSockets.get(state.userId);
+  if (!set) {
+    set = new Set();
+    userSockets.set(state.userId, set);
+  }
+  set.add(state);
+}
+
+function removeUserSocket(state: ClientState) {
+  const set = userSockets.get(state.userId);
+  if (!set) return;
+  set.delete(state);
+  if (set.size === 0) userSockets.delete(state.userId);
 }
 
 function incrementMatchRef(matchId: string) {
@@ -365,8 +464,9 @@ sub.on("message", (channel: string, payload: string) => {
 });
 
 function dispatchOdds(matchId: string, payload: string) {
-  for (const client of clients) {
-    if (!client.matchIds.has(matchId)) continue;
+  const subs = matchSubscribers.get(matchId);
+  if (!subs) return;
+  for (const client of subs) {
     if (client.socket.readyState !== WebSocket.OPEN) continue;
     try {
       client.socket.send(payload);
@@ -377,8 +477,9 @@ function dispatchOdds(matchId: string, payload: string) {
 }
 
 function dispatchUser(userId: string, payload: string) {
-  for (const client of clients) {
-    if (client.userId !== userId) continue;
+  const subs = userSockets.get(userId);
+  if (!subs) return;
+  for (const client of subs) {
     if (client.socket.readyState !== WebSocket.OPEN) continue;
     try {
       client.socket.send(payload);
@@ -432,6 +533,9 @@ function shutdown(signal: string) {
   }
   clients.clear();
   matchRefs.clear();
+  matchSubscribers.clear();
+  userSockets.clear();
+  userRefs.clear();
   wss.close();
   http.close();
   sub.disconnect();
