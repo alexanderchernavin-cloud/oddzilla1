@@ -95,6 +95,38 @@ const readRateLimit = { rateLimit: { max: 60, timeWindow: "1 minute" } };
 
 const PAGE_SIZE_DEFAULT = 50;
 
+// ─── Redis cache / rate-limit keys for emit ─────────────────────────────────
+//
+// The emit helper is reachable from unauthenticated /community/copy
+// (60/min/IP) and authenticated /community/analyses/:id/inspire
+// (30/min/IP); chained through inspiration / pick_copied each insert is
+// up to 3 DB roundtrips against a single target user's notification
+// rows. We cap per-target emits at 60/min via INCR — well above any
+// real-user burst (PRD's "3 people copied your bet" expects a handful
+// per minute peak) but well below the amplification an attacker can
+// drive. On Redis blip we fail open: emit goes through, count just
+// isn't tracked for that minute.
+const EMIT_RATE_KEY = (userId: string) => `notif:emit:${userId}`;
+const EMIT_RATE_WINDOW_SECONDS = 60;
+const EMIT_RATE_MAX = 60;
+
+// Prefs cache. Same shape as the DB row; serialised as JSON. Hit on
+// every emit, so caching saves the first roundtrip on the hot path.
+// Invalidated when PATCH /me/preferences writes (below).
+const PREFS_CACHE_KEY = (userId: string) => `notif:prefs:${userId}`;
+const PREFS_CACHE_TTL_SECONDS = 60;
+
+type CachedPrefs = {
+  prefPicksCopied: boolean;
+  prefNewFollowers: boolean;
+  prefCompetitionUpdates: boolean;
+  prefCompetitionUpdatesSet: boolean;
+  prefCommunityHighlights: boolean;
+  prefAchievementsRewards: boolean;
+  privacyShowWinLossRecord: boolean;
+  privacyAllowProfileDiscovery: boolean;
+};
+
 // ─── emitNotification (exported helper) ─────────────────────────────────────
 
 export interface EmitOptions {
@@ -119,9 +151,9 @@ export interface EmitOptions {
 }
 
 // Fire-and-forget by convention. Returns the row id (or NULL when
-// pref-gated / self-emitted) but callers should not branch on the
-// return — the contract is "best effort, never block the user-facing
-// action."
+// pref-gated / self-emitted / rate-capped) but callers should not
+// branch on the return — the contract is "best effort, never block
+// the user-facing action."
 export async function emitNotification(
   app: FastifyInstance,
   opts: EmitOptions,
@@ -130,14 +162,14 @@ export async function emitNotification(
   // this; the no-op keeps the call site simple.
   if (opts.actorId && opts.actorId === opts.userId) return null;
 
-  // 2. Audit SEC-C1: skip emits whose ACTOR is an AI seed bettor.
-  // A notification fired BY an AI account is the visibility leak —
-  // it surfaces the seed account by name + avatar in the real user's
-  // panel. Notifications TO an AI account are harmless (no one reads
-  // them), but we drop those too for projection-table cleanliness on
-  // a single cheap PK lookup. System emits (actorId == null) always
-  // pass this gate. The lookup is bounded by `IN (...)` so authored
-  // and recipient stay one round-trip.
+  // 2. Audit SEC-C1: skip emits whose ACTOR or RECIPIENT is an AI
+  // seed bettor. A notification fired BY an AI account is the
+  // visibility leak — it surfaces the seed account by name + avatar
+  // in the real user's panel. Notifications TO an AI account are
+  // harmless (no one reads them), but we drop those too for
+  // projection-table cleanliness on a single cheap PK lookup. System
+  // emits (actorId == null) always pass this gate. The lookup is
+  // bounded by `IN (...)` so actor and recipient stay one round-trip.
   const idsToCheck: string[] = [];
   if (opts.actorId) idsToCheck.push(opts.actorId);
   idsToCheck.push(opts.userId);
@@ -149,25 +181,77 @@ export async function emitNotification(
   if (opts.actorId && aiSet.has(opts.actorId)) return null;
   if (aiSet.has(opts.userId)) return null;
 
-  // 3. Pref gate. Read the row (or use defaults). The column lookup
-  // is exhaustive over NotificationType so an unknown type is a
-  // compile error, not a runtime fall-through.
-  const [prefRow] = await app.db
-    .select({
-      prefPicksCopied: userPreferences.prefPicksCopied,
-      prefNewFollowers: userPreferences.prefNewFollowers,
-      prefCompetitionUpdates: userPreferences.prefCompetitionUpdates,
-      prefCompetitionUpdatesSet: userPreferences.prefCompetitionUpdatesSet,
-      prefCommunityHighlights: userPreferences.prefCommunityHighlights,
-      prefAchievementsRewards: userPreferences.prefAchievementsRewards,
-      privacyShowWinLossRecord: userPreferences.privacyShowWinLossRecord,
-      privacyAllowProfileDiscovery:
-        userPreferences.privacyAllowProfileDiscovery,
-    })
-    .from(userPreferences)
-    .where(eq(userPreferences.userId, opts.userId))
-    .limit(1);
-  const prefs = prefRow ?? DEFAULT_PREFS;
+  // 3. Per-target rate cap (audit SEC-H3). Closes the amplification
+  // path where an attacker uses /community/copy or
+  // /analyses/:id/inspire to drive notification inserts against a
+  // victim. Same INCR + EXPIRE shape as auth/service.ts login-fail
+  // tracking. Fail open on Redis blip — the calling path is
+  // best-effort and we'd rather drop a metric than 500 the
+  // user-facing action.
+  try {
+    const key = EMIT_RATE_KEY(opts.userId);
+    const count = await app.redis.incr(key);
+    if (count === 1) {
+      await app.redis.expire(key, EMIT_RATE_WINDOW_SECONDS);
+    }
+    if (count > EMIT_RATE_MAX) {
+      app.log.warn(
+        { userId: opts.userId, type: opts.type, count },
+        "notification emit rate-capped",
+      );
+      return null;
+    }
+  } catch {
+    // Redis blip — proceed without the cap.
+  }
+
+  // 4. Pref gate. Try Redis cache first; on miss, read the row (or
+  // use defaults) and cache. The column lookup is exhaustive over
+  // NotificationType so an unknown type is a compile error, not a
+  // runtime fall-through.
+  let prefs: CachedPrefs | typeof DEFAULT_PREFS;
+  let cached: string | null = null;
+  try {
+    cached = await app.redis.get(PREFS_CACHE_KEY(opts.userId));
+  } catch {
+    // Redis blip — fall through to DB read.
+  }
+  if (cached) {
+    try {
+      prefs = JSON.parse(cached) as CachedPrefs;
+    } catch {
+      prefs = DEFAULT_PREFS;
+    }
+  } else {
+    const [prefRow] = await app.db
+      .select({
+        prefPicksCopied: userPreferences.prefPicksCopied,
+        prefNewFollowers: userPreferences.prefNewFollowers,
+        prefCompetitionUpdates: userPreferences.prefCompetitionUpdates,
+        prefCompetitionUpdatesSet: userPreferences.prefCompetitionUpdatesSet,
+        prefCommunityHighlights: userPreferences.prefCommunityHighlights,
+        prefAchievementsRewards: userPreferences.prefAchievementsRewards,
+        privacyShowWinLossRecord: userPreferences.privacyShowWinLossRecord,
+        privacyAllowProfileDiscovery:
+          userPreferences.privacyAllowProfileDiscovery,
+      })
+      .from(userPreferences)
+      .where(eq(userPreferences.userId, opts.userId))
+      .limit(1);
+    prefs = prefRow ?? DEFAULT_PREFS;
+    // Cache the resolved prefs (including the defaults case — a
+    // user without a row gets the same gating decisions repeatedly).
+    try {
+      await app.redis.set(
+        PREFS_CACHE_KEY(opts.userId),
+        JSON.stringify(prefs),
+        "EX",
+        PREFS_CACHE_TTL_SECONDS,
+      );
+    } catch {
+      // ignore — best effort
+    }
+  }
   if (!prefs[TYPE_TO_PREF[opts.type]]) return null;
 
   // 4. Group collapse. Look for an existing groupable row in the
@@ -237,6 +321,15 @@ export async function ensureCompetitionUpdatesEnabled(
            updated_at = now()
      WHERE user_preferences.pref_competition_updates_set = FALSE
   `);
+  // Invalidate the prefs cache — the UPSERT may have flipped
+  // pref_competition_updates from FALSE to TRUE, and the next emit
+  // for leaderboard_move / competition_deadline needs the fresh
+  // value to gate correctly.
+  try {
+    await app.redis.del(PREFS_CACHE_KEY(userId));
+  } catch {
+    // ignore — best effort
+  }
 }
 
 // ─── Routes ─────────────────────────────────────────────────────────────────
@@ -313,17 +406,13 @@ async function loadPreferences(
   };
 }
 
-async function loadUnreadCount(
-  app: FastifyInstance,
-  userId: string,
-): Promise<number> {
-  const rows = await app.db.execute<{ count: number }>(sql`
-    SELECT COUNT(*)::int AS count
-      FROM user_notifications
-     WHERE user_id = ${userId} AND read_at IS NULL
-  `);
-  return Number(rows[0]?.count ?? 0);
-}
+// The hot GET path used to fan out a separate `loadUnreadCount` for
+// the bell badge; that COUNT is now folded into the list SELECT via a
+// window function (see the GET route below), eliminating one
+// round-trip per 60s poll (~167 qps savings at 10K concurrent
+// pollers). The mark-read mutations get their post-write count from
+// the same CTE that performs the UPDATE — single round-trip there too
+// — so we don't need a shared helper anymore.
 
 export default async function communityNotificationsRoutes(
   app: FastifyInstance,
@@ -340,36 +429,58 @@ export default async function communityNotificationsRoutes(
       const u = request.requireAuth();
       const q = listQuery.parse(request.query);
 
-      const rows = await app.db
-        .select({
-          id: userNotifications.id,
-          type: userNotifications.type,
-          payload: userNotifications.payload,
-          deepLink: userNotifications.deepLink,
-          groupCount: userNotifications.groupCount,
-          readAt: userNotifications.readAt,
-          createdAt: userNotifications.createdAt,
-        })
-        .from(userNotifications)
-        .where(eq(userNotifications.userId, u.id))
-        .orderBy(desc(userNotifications.createdAt))
-        .limit(q.pageSize);
+      // Window-function trick: COUNT(*) FILTER (WHERE read_at IS NULL)
+      // OVER () runs once across the same index scan as the list
+      // SELECT, so a 50-row read carries the total-unread back on each
+      // row "for free" instead of doing a second COUNT roundtrip. We
+      // pick it off the first row; empty result → 0.
+      const rows = await app.db.execute<{
+        id: string;
+        type: string;
+        payload: Record<string, unknown> | null;
+        deep_link: string | null;
+        group_count: number;
+        read_at: Date | string | null;
+        created_at: Date | string;
+        unread_total: number;
+      }>(sql`
+        SELECT id,
+               type::text                                                AS type,
+               payload,
+               deep_link,
+               group_count,
+               read_at,
+               created_at,
+               (COUNT(*) FILTER (WHERE read_at IS NULL) OVER ())::int    AS unread_total
+          FROM user_notifications
+         WHERE user_id = ${u.id}
+         ORDER BY created_at DESC
+         LIMIT ${q.pageSize}
+      `);
 
       const items: NotificationItem[] = rows.map((r) => {
         const payload = (r.payload as Record<string, unknown> | null) ?? {};
         const actor = payload.actorNickname;
+        const createdAt =
+          r.created_at instanceof Date
+            ? r.created_at
+            : new Date(r.created_at);
         return {
           id: r.id,
           type: r.type as NotificationType,
           actorNickname: typeof actor === "string" ? actor : null,
           payload,
-          deepLink: r.deepLink,
-          groupCount: r.groupCount,
-          read: r.readAt !== null,
-          createdAt: r.createdAt.toISOString(),
+          deepLink: r.deep_link,
+          groupCount: r.group_count,
+          read: r.read_at !== null,
+          createdAt: createdAt.toISOString(),
         };
       });
-      return { items, unreadCount: await loadUnreadCount(app, u.id) };
+      // unread_total is identical on every row (window function over
+      // the full result set); take it from the first or default to 0
+      // when there are no rows.
+      const unreadCount = Number(rows[0]?.unread_total ?? 0);
+      return { items, unreadCount };
     },
   );
 
@@ -377,45 +488,56 @@ export default async function communityNotificationsRoutes(
   //
   // Mark one row as read. Idempotent — double-tap returns the current
   // unreadCount without erroring. 404 only on truly unknown ids.
+  //
+  // Single-statement CTE: the UPDATE's RETURNING tells us whether the
+  // row was previously unread (the WHERE clause already filtered on
+  // read_at IS NULL, so any returned id means "yes, was unread"), and
+  // a sibling SELECT in the same statement counts the remaining
+  // unread rows. One round-trip instead of two (update + count). The
+  // existence check for 404 differentiation is folded in too via the
+  // `exists` CTE.
   app.post(
     "/community/notifications/:id/read",
     { config: writeRateLimit },
     async (request): Promise<MarkReadResponse> => {
       const u = request.requireAuth();
       const { id } = idParams.parse(request.params);
-      const updated = await app.db
-        .update(userNotifications)
-        .set({ readAt: new Date() })
-        .where(
-          and(
-            eq(userNotifications.id, id),
-            eq(userNotifications.userId, u.id),
-            sql`${userNotifications.readAt} IS NULL`,
-          ),
+      const rows = await app.db.execute<{
+        was_unread: boolean;
+        row_exists: boolean;
+        unread_total: number;
+      }>(sql`
+        WITH updated AS (
+          UPDATE user_notifications
+             SET read_at = now()
+           WHERE id = ${id}
+             AND user_id = ${u.id}
+             AND read_at IS NULL
+          RETURNING id
+        ),
+        ownership AS (
+          SELECT 1 FROM user_notifications
+           WHERE id = ${id} AND user_id = ${u.id}
         )
-        .returning({ id: userNotifications.id });
-      if (updated.length === 0) {
-        // No-op when already read; 404 only when the id genuinely
-        // isn't ours.
-        const [exists] = await app.db
-          .select({ id: userNotifications.id })
-          .from(userNotifications)
-          .where(
-            and(
-              eq(userNotifications.id, id),
-              eq(userNotifications.userId, u.id),
-            ),
-          )
-          .limit(1);
-        if (!exists) throw new NotFoundError();
-      }
-      return { unreadCount: await loadUnreadCount(app, u.id) };
+        SELECT
+          EXISTS(SELECT 1 FROM updated)   AS was_unread,
+          EXISTS(SELECT 1 FROM ownership) AS row_exists,
+          (
+            SELECT COUNT(*)::int FROM user_notifications
+             WHERE user_id = ${u.id} AND read_at IS NULL
+          )                               AS unread_total
+      `);
+      const r = rows[0];
+      if (!r?.row_exists) throw new NotFoundError();
+      return { unreadCount: Number(r.unread_total ?? 0) };
     },
   );
 
   // ─── POST /community/notifications/read-all ──────────────────────────────
   //
   // Bulk mark-read for the "Mark all read" link in the panel header.
+  // Post-update the count is necessarily 0, so we skip the re-count
+  // and return a constant — same contract, one fewer roundtrip.
   app.post(
     "/community/notifications/read-all",
     { config: writeRateLimit },
@@ -519,6 +641,16 @@ export default async function communityNotificationsRoutes(
             updatedAt: new Date(),
           })
           .where(eq(users.id, u.id));
+      }
+
+      // Invalidate the per-user prefs cache so the next emit picks up
+      // the new gating immediately. Without this, a user toggling
+      // "Picks Copied" off could keep receiving emits for up to 60s
+      // (the cache TTL).
+      try {
+        await app.redis.del(PREFS_CACHE_KEY(u.id));
+      } catch {
+        // ignore — best effort
       }
 
       return loadPreferences(app, u.id);

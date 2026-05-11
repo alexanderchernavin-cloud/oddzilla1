@@ -9,7 +9,7 @@
 // positioning is `position: absolute` relative to a wrapper. Visual
 // polish (animation, focus trap) is intentionally minimal for V1.
 
-import { useEffect, useRef, type ReactElement } from "react";
+import { useEffect, useRef, type CSSProperties, type ReactElement } from "react";
 import { useRouter } from "next/navigation";
 import { I } from "@/components/ui/icons";
 import {
@@ -18,6 +18,64 @@ import {
   formatRelativeTime,
 } from "@/lib/notifications";
 import type { NotificationItem } from "@oddzilla/types";
+
+// Inline styles that have no per-row dynamic input are hoisted here so
+// React doesn't see a fresh object identity on every render of every
+// row. Same shape `top-bar.tsx`'s `iconBtn` uses for the same reason.
+const ROW_TEXT_BLOCK_STYLE: CSSProperties = { flex: 1, minWidth: 0 };
+const ROW_HEADLINE_STYLE: CSSProperties = {
+  fontSize: 13,
+  lineHeight: 1.35,
+  display: "block",
+};
+const ROW_ACTOR_STYLE: CSSProperties = { fontWeight: 600 };
+const ROW_CTX_STYLE: CSSProperties = {
+  fontSize: 12,
+  color: "var(--color-fg-muted, var(--fg-muted))",
+  display: "block",
+  marginTop: 2,
+};
+const ROW_TIMESTAMP_STYLE: CSSProperties = {
+  fontSize: 11,
+  color: "var(--color-fg-subtle, var(--fg-muted))",
+  display: "block",
+  marginTop: 4,
+};
+const ROW_UNREAD_DOT_STYLE: CSSProperties = {
+  width: 8,
+  height: 8,
+  borderRadius: 999,
+  background: "#10B981",
+  marginTop: 8,
+  flexShrink: 0,
+};
+// Base of the row button. The `cursor` field is overridden per-row
+// based on whether item.deepLink is set; merging with a fresh literal
+// at render time is cheaper than rebuilding the whole 12-key object.
+const ROW_BUTTON_BASE_STYLE: CSSProperties = {
+  display: "flex",
+  gap: 10,
+  alignItems: "flex-start",
+  padding: "10px 12px",
+  width: "100%",
+  textAlign: "left",
+  background: "transparent",
+  border: 0,
+  borderBottom: "1px solid var(--color-border, var(--hairline))",
+  color: "inherit",
+};
+// Base of the per-type icon disc. `background` + `color` are mixed in
+// per row from cfg.color.
+const ROW_ICON_BASE_STYLE: CSSProperties = {
+  width: 28,
+  height: 28,
+  borderRadius: 999,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  flexShrink: 0,
+  marginTop: 2,
+};
 
 interface PanelProps {
   open: boolean;
@@ -193,79 +251,32 @@ function NotificationRow({
       type="button"
       onClick={onClick}
       style={{
-        display: "flex",
-        gap: 10,
-        alignItems: "flex-start",
-        padding: "10px 12px",
-        width: "100%",
-        textAlign: "left",
-        background: "transparent",
-        border: 0,
-        borderBottom:
-          "1px solid var(--color-border, var(--hairline))",
+        ...ROW_BUTTON_BASE_STYLE,
         cursor: item.deepLink ? "pointer" : "default",
-        color: "inherit",
       }}
     >
       <span
         style={{
-          width: 28,
-          height: 28,
-          borderRadius: 999,
+          ...ROW_ICON_BASE_STYLE,
           background: `color-mix(in oklab, ${cfg.color} 20%, transparent)`,
           color: cfg.color,
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          flexShrink: 0,
-          marginTop: 2,
         }}
       >
         <Icon size={14} />
       </span>
-      <span style={{ flex: 1, minWidth: 0 }}>
-        <span style={{ fontSize: 13, lineHeight: 1.35, display: "block" }}>
-          {actor ? (
-            <strong style={{ fontWeight: 600 }}>{actor}</strong>
-          ) : null}
+      <span style={ROW_TEXT_BLOCK_STYLE}>
+        <span style={ROW_HEADLINE_STYLE}>
+          {actor ? <strong style={ROW_ACTOR_STYLE}>{actor}</strong> : null}
           {actor ? " " : ""}
           {headline}
         </span>
-        {ctx ? (
-          <span
-            style={{
-              fontSize: 12,
-              color: "var(--color-fg-muted, var(--fg-muted))",
-              display: "block",
-              marginTop: 2,
-            }}
-          >
-            {ctx}
-          </span>
-        ) : null}
-        <span
-          style={{
-            fontSize: 11,
-            color: "var(--color-fg-subtle, var(--fg-muted))",
-            display: "block",
-            marginTop: 4,
-          }}
-        >
+        {ctx ? <span style={ROW_CTX_STYLE}>{ctx}</span> : null}
+        <span style={ROW_TIMESTAMP_STYLE}>
           {formatRelativeTime(item.createdAt)}
         </span>
       </span>
       {!item.read ? (
-        <span
-          aria-label="Unread"
-          style={{
-            width: 8,
-            height: 8,
-            borderRadius: 999,
-            background: "#10B981",
-            marginTop: 8,
-            flexShrink: 0,
-          }}
-        />
+        <span aria-label="Unread" style={ROW_UNREAD_DOT_STYLE} />
       ) : null}
     </button>
   );
