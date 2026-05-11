@@ -982,14 +982,20 @@ async function scoreMatchPredictions(
         FROM scored s
        WHERE cp.id = s.prediction_id
      RETURNING cp.user_id AS user_id,
-               cp.points_awarded AS points_awarded
+               cp.points_awarded AS points_awarded,
+               cp.outcome        AS outcome
     ),
     agg AS (
+      -- Audit 0046 (M2): MAX(outcome) is safe because the unique
+      -- (user_id, competition_match_id) constraint guarantees at most
+      -- one prediction per user per match, so the per-user group has
+      -- exactly one outcome to surface.
       SELECT
         user_id,
         SUM(points_awarded)::int                          AS pts_delta,
         COUNT(*) FILTER (WHERE points_awarded > 0)::int   AS correct_delta,
-        COUNT(*)::int                                     AS settled_delta
+        COUNT(*)::int                                     AS settled_delta,
+        MAX(outcome)                                      AS last_outcome
         FROM settled
        GROUP BY user_id
     ),
@@ -1007,7 +1013,10 @@ async function scoreMatchPredictions(
                                       THEN cp.streak + 1
                                       ELSE cp.longest_streak END
                                ),
-             last_settled_at = now()
+             last_settled_at = now(),
+             -- Audit 0046 (M2): prepend the new outcome and truncate
+             -- to 5. (ARRAY[new] || old)[1:5] = "new first, keep five".
+             recent_outcomes = (ARRAY[agg.last_outcome::text] || cp.recent_outcomes)[1:5]
         FROM agg
        WHERE cp.competition_id = ${competitionId}::uuid
          AND cp.user_id        = agg.user_id

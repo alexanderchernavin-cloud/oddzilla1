@@ -199,6 +199,10 @@ const userTicketsQuery = z.object({
 // — both bind the values as parameters. The earlier shape stored a
 // raw sql`` fragment which was inlined (not bound) at the IN call site;
 // see the SECURITY NOTE at top of file.
+//
+// loadProfileStats no longer uses this — audit H3 rewired it to read
+// from community_user_stats. Other call sites (feed loaders, profile
+// tickets) still rely on the constant.
 const FEED_STATUSES = ["settled", "cashed_out", "voided"] as const;
 
 export default async function communityRoutes(app: FastifyInstance) {
@@ -878,6 +882,14 @@ interface ProfileStats {
 // voided tickets break even (payout = stake refund). Win rate counts
 // settled tickets where payout > stake — same intuition the leaderboard
 // will use in 10.3.
+//
+// Audit 0045 (H3): replaced the per-load SUM/COUNT over
+// community_tickets with a PK lookup on community_user_stats. The
+// writer is writeCommunityProjection (community_user_stats CTE), so
+// the row exists on every (user, currency) pairing that has ever
+// settled a ticket. Missing-row case (the user has no settled tickets
+// in this currency) returns the zero-stats shape identical to the
+// pre-projection result.
 async function loadProfileStats(
   db: FastifyInstance["db"],
   userId: string,
@@ -895,17 +907,14 @@ async function loadProfileStats(
   // older `IN (${sql-fragment})` shape, which inlined raw SQL.
   const rows = await db.execute<ProfileStatsRow>(sql`
     SELECT
-      COUNT(*)::int                                         AS settled,
-      COUNT(*) FILTER (
-        WHERE status::text IN ('settled', 'cashed_out')
-          AND payout_micro > stake_micro
-      )::int                                                AS wins,
-      COALESCE(SUM(stake_micro), 0)::bigint                 AS "totalStake",
-      COALESCE(SUM(payout_micro), 0)::bigint                AS "totalPayout"
-      FROM community_tickets
+      settled_count::int          AS settled,
+      wins_count::int             AS wins,
+      total_stake_micro::bigint   AS "totalStake",
+      total_payout_micro::bigint  AS "totalPayout"
+      FROM community_user_stats
      WHERE user_id = ${userId}
        AND currency = ${currency}
-       AND status::text = ANY(${[...FEED_STATUSES]}::text[])
+     LIMIT 1
   `);
 
   const row = rows[0];

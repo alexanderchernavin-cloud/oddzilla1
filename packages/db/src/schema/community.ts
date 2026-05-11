@@ -147,6 +147,56 @@ export type CommunityTicketInspiration =
 export type NewCommunityTicketInspiration =
   typeof communityTicketInspirations.$inferInsert;
 
+// ─── Projection tables (audit 0046) ─────────────────────────────────────────
+//
+// community_author_stats + community_user_stats kill four recompute-
+// per-read aggregations:
+//   • analyses feed's per-row author win-rate subquery (H1)
+//   • analyses feed's top_authors ORDER BY (same subquery, twice/row)
+//   • loadAuthorStats' SUM(stake_micro) over copied tickets (M6)
+//   • loadProfileStats' SUM/COUNT over community_tickets (H3)
+//
+// See migration 0046_community_projection_tables.sql for the writer
+// + read-side rewiring rationale.
+
+export const communityAuthorStats = pgTable("community_author_stats", {
+  userId: uuid()
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  settledAnalyses: integer().notNull().default(0),
+  wonAnalyses: integer().notNull().default(0),
+  // NULL until 3+ settled analyses. Writer recomputes on every
+  // settlement bump; the read path joins and surfaces NULL straight
+  // through the AnalysisSummary.authorWinRate contract.
+  winRatePct: integer(),
+  inspiredTurnoverMicro: bigint({ mode: "bigint" }).notNull().default(0n),
+  updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+});
+
+export const communityUserStats = pgTable(
+  "community_user_stats",
+  {
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    // TEXT not CHAR(4) — the migration intentionally stores raw
+    // currency codes here. Callers from the API pass the trimmed
+    // Currency type; the row lookup compares as a normal text scalar.
+    currency: text().notNull(),
+    settledCount: integer().notNull().default(0),
+    winsCount: integer().notNull().default(0),
+    totalStakeMicro: bigint({ mode: "bigint" }).notNull().default(0n),
+    totalPayoutMicro: bigint({ mode: "bigint" }).notNull().default(0n),
+    updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.currency] })],
+);
+
+export type CommunityAuthorStats = typeof communityAuthorStats.$inferSelect;
+export type NewCommunityAuthorStats = typeof communityAuthorStats.$inferInsert;
+export type CommunityUserStats = typeof communityUserStats.$inferSelect;
+export type NewCommunityUserStats = typeof communityUserStats.$inferInsert;
+
 // ─── Achievements (Phase 10.4) ──────────────────────────────────────────────
 //
 // Hand-curated badge catalog and per-user unlock log. The
@@ -425,6 +475,14 @@ export const competitionParticipants = pgTable(
     streak: integer().notNull().default(0),
     longestStreak: integer().notNull().default(0),
     lastSettledAt: timestamp({ withTimezone: true }),
+    // Audit 0045 — last 5 settled prediction outcomes, newest first.
+    // Maintained by scoreMatchPredictions on every settle: it prepends
+    // and truncates via (ARRAY[new] || old)[1:5]. Replaces a 50-row
+    // correlated subquery on every leaderboard read.
+    recentOutcomes: text()
+      .array()
+      .notNull()
+      .default(sql`ARRAY[]::text[]`),
   },
   (t) => [
     primaryKey({ columns: [t.competitionId, t.userId] }),

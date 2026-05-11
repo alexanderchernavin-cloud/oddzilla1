@@ -319,7 +319,8 @@ WITH page AS (
     cp.correct_count,
     cp.total_settled,
     cp.streak,
-    cp.longest_streak
+    cp.longest_streak,
+    cp.recent_outcomes
     FROM competition_participants cp
     -- Exclude AI seed bettors from the ranking entirely so ranks are
     -- contiguous against human participants only. Mirrors the audit
@@ -348,22 +349,12 @@ SELECT
                                   AS "winRatePct",
   p.streak                        AS "streak",
   p.longest_streak                AS "longestStreak",
-  -- Last 5 settled outcomes. Subquery so the leaderboard read stays
-  -- one round-trip; ordering by settled_at DESC nullslast keeps the
-  -- recency semantics correct for partially-settled runs.
-  (
-    SELECT COALESCE(array_agg(o ORDER BY sa DESC), '{}')
-      FROM (
-        SELECT outcome AS o, settled_at AS sa
-          FROM competition_predictions
-         WHERE competition_id = ${id}::uuid
-           AND user_id = p.user_id
-           AND settled_at IS NOT NULL
-           AND outcome IS NOT NULL
-         ORDER BY settled_at DESC
-         LIMIT 5
-      ) recent
-  )                               AS "recentResults",
+  -- Audit 0046 (M2): last 5 settled outcomes read straight off
+  -- competition_participants.recent_outcomes. The array is already
+  -- newest-first because scoreMatchPredictions prepends on settle
+  -- and truncates to 5. Replaces the per-row 5-element correlated
+  -- subquery that ran 50 times per leaderboard page.
+  p.recent_outcomes               AS "recentResults",
   -- isYou flagged server-side so the FE doesn't have to compare on
   -- every row. Anonymous viewers always see false.
   (p.user_id = ${viewerId}::uuid) AS "isYou"
@@ -424,7 +415,10 @@ SELECT
                                   AS "winRatePct",
   cp.streak                       AS "streak",
   cp.longest_streak               AS "longestStreak",
-  '{}'::text[]                    AS "recentResults",
+  -- Audit 0046 (M2): viewer entry surfaces the same projected
+  -- recent_outcomes the top-N rows use; FE renders the run identically
+  -- whether the viewer is in or out of the visible page.
+  cp.recent_outcomes              AS "recentResults",
   TRUE                            AS "isYou"
   FROM competition_participants cp
   INNER JOIN users u ON u.id = cp.user_id AND u.is_ai = false
