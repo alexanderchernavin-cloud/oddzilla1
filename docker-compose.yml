@@ -78,6 +78,12 @@ x-web: &web-base
   build:
     context: .
     dockerfile: apps/web/Dockerfile
+  # Pin a shared image name so `docker compose build web1` produces the
+  # SAME tag web2 + web3 then start from. Without this, Compose names
+  # each service's image after the service (`oddzilla-web1`, `oddzilla-
+  # web2`, …) and you end up building three identical images per deploy
+  # or hand-tagging them. Building web1 alone now feeds all three.
+  image: oddzilla-web:latest
   env_file: .env
   depends_on:
     - api

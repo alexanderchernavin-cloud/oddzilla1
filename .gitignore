@@ -22,6 +22,9 @@ bin/
 .env.*.local
 !.env.example
 
+# Load-test artifacts (cookies contain valid session JWTs while a run is live)
+tests/load/*.json
+
 # Docker & data
 docker-data/
 postgres-data/
