@@ -1,16 +1,45 @@
 "use client";
 
-// Historical bet search across riskzilla_event_log. Mirrors the
-// /admin/riskzilla/events endpoint's full filter surface: status,
-// decision reason, risk tier (0–10 = the full Oddin range), sport,
-// date window, and stake range. Currency comes from the layout-level
-// switch (USDC default, OZ for demo monitoring).
+// RiskZilla Bets — historical search across every placement attempt.
+// Renders a true table with sortable column headers and page-based
+// pagination. Currency (USDC engine view / OZ ticket view) is driven
+// by the layout-level switch.
+//
+// Data source is /admin/riskzilla/events, which branches USDC →
+// riskzilla_event_log vs OZ → tickets. Both paths return the same
+// row shape (per-leg selections, match/sport/tournament/risk_tier
+// metadata, decision + reason).
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
-import { EventRow, type EventDto } from "../events-row";
+import { fromMicro, toMicro } from "@oddzilla/types/money";
 import { useRiskzillaCurrency } from "../currency-switch";
-import { toMicro } from "@oddzilla/types/money";
+import type { EventDto, EventSelectionDto } from "../events-row";
+
+const PAGE_SIZE = 100;
+
+type SortKey =
+  | "createdAt"
+  | "stake"
+  | "potentialPayout"
+  | "decision"
+  | "riskTier";
+type SortDir = "asc" | "desc";
+
+interface ListResponse {
+  entries: EventDto[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+
+interface SportOption {
+  id: number;
+  slug: string;
+  name: string;
+}
 
 type StatusKey = "all" | "accepted" | "rejected";
 const STATUS_OPTIONS: ReadonlyArray<{ key: StatusKey; label: string }> = [
@@ -28,12 +57,6 @@ const DECISION_OPTIONS = [
   { key: "rejected_market_factor", label: "Market factor" },
   { key: "rejected_user_blocked", label: "User blocked" },
 ] as const;
-
-interface SportOption {
-  id: number;
-  slug: string;
-  name: string;
-}
 
 interface Filters {
   status: StatusKey;
@@ -60,14 +83,16 @@ const EMPTY_FILTERS: Filters = {
 export function BetsClient() {
   const currency = useRiskzillaCurrency();
   const [rows, setRows] = useState<EventDto[]>([]);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [page, setPage] = useState(1);
+  const [sortBy, setSortBy] = useState<SortKey>("createdAt");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [sports, setSports] = useState<SportOption[]>([]);
-  const [hasMore, setHasMore] = useState(true);
 
-  // Load the sport dropdown once; this is cached in Redis at the API
-  // layer so the round-trip is cheap.
   useEffect(() => {
     let cancelled = false;
     clientApi<{ sports: SportOption[] }>("/catalog/sports")
@@ -83,9 +108,6 @@ export function BetsClient() {
     };
   }, []);
 
-  // Translate the human stake number ("10", "10.5") into micro-units.
-  // Returns null when the input is blank or unparseable; the latter
-  // bubbles up as a UI error rather than silently dropping the filter.
   const stakeToMicroOrNull = useCallback(
     (raw: string): string | null | "invalid" => {
       const trimmed = raw.trim();
@@ -99,27 +121,6 @@ export function BetsClient() {
     [],
   );
 
-  const queryString = useMemo(() => {
-    const p = new URLSearchParams();
-    p.set("limit", "100");
-    p.set("currency", currency);
-    if (filters.status !== "all") p.set("status", filters.status);
-    if (filters.decision) p.set("decision", filters.decision);
-    if (filters.riskTier) p.set("riskTier", filters.riskTier);
-    if (filters.sportId) p.set("sportId", filters.sportId);
-    if (filters.fromTs) p.set("fromTs", new Date(filters.fromTs).toISOString());
-    if (filters.toTs) p.set("toTs", new Date(filters.toTs).toISOString());
-
-    const minMicro = stakeToMicroOrNull(filters.minStake);
-    if (minMicro && minMicro !== "invalid") p.set("minStakeMicro", minMicro);
-    const maxMicro = stakeToMicroOrNull(filters.maxStake);
-    if (maxMicro && maxMicro !== "invalid") p.set("maxStakeMicro", maxMicro);
-
-    return p.toString();
-  }, [filters, currency, stakeToMicroOrNull]);
-
-  // Surface invalid-stake input as a foreground error so the user knows
-  // the filter isn't being applied.
   const stakeError = useMemo(() => {
     const min = stakeToMicroOrNull(filters.minStake);
     const max = stakeToMicroOrNull(filters.maxStake);
@@ -129,16 +130,37 @@ export function BetsClient() {
     return null;
   }, [filters.minStake, filters.maxStake, stakeToMicroOrNull]);
 
+  const queryString = useMemo(() => {
+    const p = new URLSearchParams();
+    p.set("limit", String(PAGE_SIZE));
+    p.set("page", String(page));
+    p.set("sortBy", sortBy);
+    p.set("sortDir", sortDir);
+    p.set("currency", currency);
+    if (filters.status !== "all") p.set("status", filters.status);
+    if (filters.decision) p.set("decision", filters.decision);
+    if (filters.riskTier) p.set("riskTier", filters.riskTier);
+    if (filters.sportId) p.set("sportId", filters.sportId);
+    if (filters.fromTs) p.set("fromTs", new Date(filters.fromTs).toISOString());
+    if (filters.toTs) p.set("toTs", new Date(filters.toTs).toISOString());
+    const minMicro = stakeToMicroOrNull(filters.minStake);
+    if (minMicro && minMicro !== "invalid") p.set("minStakeMicro", minMicro);
+    const maxMicro = stakeToMicroOrNull(filters.maxStake);
+    if (maxMicro && maxMicro !== "invalid") p.set("maxStakeMicro", maxMicro);
+    return p.toString();
+  }, [filters, page, sortBy, sortDir, currency, stakeToMicroOrNull]);
+
   const reload = useCallback(async () => {
     if (stakeError) return;
     setLoading(true);
     setError(null);
     try {
-      const res = await clientApi<{ entries: EventDto[] }>(
+      const res = await clientApi<ListResponse>(
         `/admin/riskzilla/events?${queryString}`,
       );
       setRows(res.entries);
-      setHasMore(res.entries.length >= 100);
+      setTotal(res.total);
+      setTotalPages(res.totalPages);
     } catch (err) {
       setError(err instanceof ApiFetchError ? err.message : "fetch failed");
     } finally {
@@ -150,27 +172,27 @@ export function BetsClient() {
     void reload();
   }, [reload]);
 
-  const loadMore = async () => {
-    if (rows.length === 0) return;
-    setLoading(true);
-    try {
-      const cursor = rows[rows.length - 1]!.cursor;
-      const p = new URLSearchParams(queryString);
-      p.set("before", cursor);
-      const res = await clientApi<{ entries: EventDto[] }>(
-        `/admin/riskzilla/events?${p.toString()}`,
-      );
-      setRows((prev) => [...prev, ...res.entries]);
-      setHasMore(res.entries.length >= 100);
-    } catch (err) {
-      setError(err instanceof ApiFetchError ? err.message : "fetch failed");
-    } finally {
-      setLoading(false);
-    }
+  const setFiltersAndResetPage = (
+    next: Filters | ((f: Filters) => Filters),
+  ) => {
+    setFilters((prev) =>
+      typeof next === "function" ? (next as (f: Filters) => Filters)(prev) : next,
+    );
+    setPage(1);
   };
 
   const setF = <K extends keyof Filters>(key: K, value: Filters[K]) =>
-    setFilters((f) => ({ ...f, [key]: value }));
+    setFiltersAndResetPage((f) => ({ ...f, [key]: value }));
+
+  const onSort = (col: SortKey) => {
+    if (sortBy === col) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(col);
+      setSortDir("desc");
+    }
+    setPage(1);
+  };
 
   const hasAnyFilter =
     filters.status !== "all" ||
@@ -181,6 +203,9 @@ export function BetsClient() {
     !!filters.toTs ||
     !!filters.minStake ||
     !!filters.maxStake;
+
+  const startIndex = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const endIndex = total === 0 ? 0 : (page - 1) * PAGE_SIZE + rows.length;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -203,11 +228,9 @@ export function BetsClient() {
             value={filters.decision}
             onChange={(e) => {
               const next = e.target.value;
-              setFilters((f) => ({
+              setFiltersAndResetPage((f) => ({
                 ...f,
                 decision: next,
-                // Picking a rejection reason implies status=rejected;
-                // clearing it leaves status alone.
                 status: next ? "rejected" : f.status,
               }));
             }}
@@ -288,7 +311,14 @@ export function BetsClient() {
         </FilterLabel>
       </section>
 
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          alignItems: "center",
+          flexWrap: "wrap",
+        }}
+      >
         <button
           type="button"
           onClick={() => void reload()}
@@ -300,53 +330,707 @@ export function BetsClient() {
         {hasAnyFilter && (
           <button
             type="button"
-            onClick={() => setFilters(EMPTY_FILTERS)}
+            onClick={() => setFiltersAndResetPage(EMPTY_FILTERS)}
             style={ghostButtonStyle}
           >
             Clear filters
           </button>
         )}
         <span style={{ flex: 1 }} />
+        <TotalLine
+          rows={rows.length}
+          total={total}
+          startIndex={startIndex}
+          endIndex={endIndex}
+          currency={currency}
+        />
+      </div>
+
+      {stakeError && <div style={errorStyle}>{stakeError}</div>}
+      {error && <div style={errorStyle}>{error}</div>}
+
+      <BetsTable
+        rows={rows}
+        loading={loading}
+        sortBy={sortBy}
+        sortDir={sortDir}
+        onSort={onSort}
+      />
+
+      {total > 0 && (
+        <Pagination
+          page={page}
+          totalPages={totalPages}
+          loading={loading}
+          onChange={setPage}
+        />
+      )}
+    </div>
+  );
+}
+
+function TotalLine({
+  rows,
+  total,
+  startIndex,
+  endIndex,
+  currency,
+}: {
+  rows: number;
+  total: number;
+  startIndex: number;
+  endIndex: number;
+  currency: string;
+}) {
+  const suffix = `· ${currency} view`;
+  if (total === 0) {
+    return (
+      <span className="mono" style={totalLineStyle}>
+        0 events {suffix}
+      </span>
+    );
+  }
+  if (total === rows) {
+    return (
+      <span className="mono" style={totalLineStyle}>
+        {total.toLocaleString()} event{total === 1 ? "" : "s"} · all shown{" "}
+        {suffix}
+      </span>
+    );
+  }
+  return (
+    <span className="mono" style={totalLineStyle}>
+      Showing {startIndex.toLocaleString()}–{endIndex.toLocaleString()} of{" "}
+      <span style={{ color: "var(--color-fg)", fontWeight: 600 }}>
+        {total.toLocaleString()}
+      </span>{" "}
+      event{total === 1 ? "" : "s"} {suffix}
+    </span>
+  );
+}
+
+const totalLineStyle: React.CSSProperties = {
+  fontSize: 11,
+  color: "var(--color-fg-muted)",
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+};
+
+// ── Table ──────────────────────────────────────────────────────────────
+
+const COLUMNS: Array<{
+  key: SortKey | "user" | "tournament" | "sport" | "match" | "market" | "selection" | "detail";
+  label: string;
+  align?: "right";
+  sortable?: boolean;
+}> = [
+  { key: "decision", label: "Status", sortable: true },
+  { key: "createdAt", label: "Time", sortable: true },
+  { key: "user", label: "User" },
+  { key: "tournament", label: "Tournament" },
+  { key: "sport", label: "Sport" },
+  { key: "match", label: "Match" },
+  { key: "market", label: "Market" },
+  { key: "selection", label: "Selection" },
+  { key: "stake", label: "Stake", align: "right", sortable: true },
+  { key: "potentialPayout", label: "Payout", align: "right", sortable: true },
+  { key: "riskTier", label: "Tier", align: "right", sortable: true },
+  { key: "detail", label: "" },
+];
+
+function BetsTable({
+  rows,
+  loading,
+  sortBy,
+  sortDir,
+  onSort,
+}: {
+  rows: EventDto[];
+  loading: boolean;
+  sortBy: SortKey;
+  sortDir: SortDir;
+  onSort: (col: SortKey) => void;
+}) {
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table
+        style={{
+          width: "100%",
+          borderCollapse: "collapse",
+          fontSize: 12.5,
+          tableLayout: "auto",
+        }}
+      >
+        <thead>
+          <tr>
+            {COLUMNS.map((c) => (
+              <th key={c.key} style={thStyle(c.align)}>
+                {c.sortable ? (
+                  <SortButton
+                    label={c.label}
+                    col={c.key as SortKey}
+                    active={sortBy === c.key}
+                    dir={sortDir}
+                    onClick={() => onSort(c.key as SortKey)}
+                    align={c.align}
+                  />
+                ) : (
+                  c.label
+                )}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.length === 0 && !loading ? (
+            <tr>
+              <td
+                colSpan={COLUMNS.length}
+                style={{
+                  padding: "16px 8px",
+                  fontSize: 13,
+                  color: "var(--color-fg-muted)",
+                  textAlign: "center",
+                }}
+              >
+                No matching events.
+              </td>
+            </tr>
+          ) : (
+            rows.map((r) => <BetRow key={r.id} row={r} />)
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SortButton({
+  label,
+  col,
+  active,
+  dir,
+  onClick,
+  align,
+}: {
+  label: string;
+  col: SortKey;
+  active: boolean;
+  dir: SortDir;
+  onClick: () => void;
+  align?: "right";
+}) {
+  const arrow = active ? (dir === "asc" ? "↑" : "↓") : "";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={`Sort by ${label}`}
+      style={{
+        background: "transparent",
+        border: "none",
+        padding: 0,
+        cursor: "pointer",
+        color: active ? "var(--color-fg)" : "var(--color-fg-muted)",
+        fontFamily: "var(--font-mono, monospace)",
+        fontSize: 10,
+        letterSpacing: "0.08em",
+        textTransform: "uppercase",
+        fontWeight: active ? 700 : 500,
+        display: "flex",
+        gap: 4,
+        alignItems: "center",
+        justifyContent: align === "right" ? "flex-end" : "flex-start",
+        width: "100%",
+      }}
+    >
+      <span>{label}</span>
+      {arrow && (
+        <span style={{ fontSize: 10, fontWeight: 700 }}>{arrow}</span>
+      )}
+    </button>
+  );
+}
+
+function thStyle(align?: "right"): React.CSSProperties {
+  return {
+    textAlign: align ?? "left",
+    padding: "8px 8px 6px",
+    borderBottom: "1px solid var(--color-border)",
+    fontWeight: 500,
+    fontSize: 10,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    color: "var(--color-fg-muted)",
+    fontFamily: "var(--font-mono, monospace)",
+    whiteSpace: "nowrap",
+  };
+}
+
+function tdStyle(align?: "right"): React.CSSProperties {
+  return {
+    padding: "8px 8px",
+    borderBottom: "1px solid var(--color-border)",
+    verticalAlign: "top",
+    textAlign: align ?? "left",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    maxWidth: 220,
+  };
+}
+
+const DECISION_COLOR: Record<string, string> = {
+  accepted: "#16a34a",
+  rejected_min_stake: "#f59e0b",
+  rejected_max_payout: "#f59e0b",
+  rejected_match_liability: "#dc2626",
+  rejected_bet_factor: "#dc2626",
+  rejected_bank_limit: "#dc2626",
+  rejected_user_blocked: "#94a3b8",
+  rejected_market_factor: "#dc2626",
+};
+
+const DECISION_LABEL: Record<string, string> = {
+  accepted: "ACCEPTED",
+  rejected_min_stake: "MIN STAKE",
+  rejected_max_payout: "MAX PAYOUT",
+  rejected_match_liability: "MATCH LIAB",
+  rejected_bet_factor: "BET FACTOR",
+  rejected_bank_limit: "BANK LIMIT",
+  rejected_user_blocked: "USER BLOCKED",
+  rejected_market_factor: "MARKET FACTOR",
+};
+
+function BetRow({ row }: { row: EventDto }) {
+  const [expanded, setExpanded] = useState(false);
+  const ts = new Date(row.createdAt);
+  const stake = fromMicro(BigInt(row.stakeMicro));
+  const payout = fromMicro(BigInt(row.potentialPayoutMicro));
+  const color = DECISION_COLOR[row.decision] ?? "var(--color-fg)";
+  const label = DECISION_LABEL[row.decision] ?? row.decision.toUpperCase();
+  const firstLeg = row.selections[0];
+  const extraLegs = row.selections.length - 1;
+
+  const marketCell = firstLeg
+    ? firstLeg.marketName
+    : row.matchId
+      ? "—"
+      : "—";
+  const selectionCell = firstLeg
+    ? `${firstLeg.outcomeName ?? firstLeg.outcomeId} @ ${Number(firstLeg.oddsAtPlacement).toFixed(2)}`
+    : "—";
+
+  return (
+    <>
+      <tr>
+        <td style={{ ...tdStyle(), color, fontWeight: 600 }}>
+          <span
+            className="mono"
+            style={{
+              fontSize: 11,
+              letterSpacing: "0.06em",
+            }}
+          >
+            {label}
+          </span>
+        </td>
+        <td
+          style={{
+            ...tdStyle(),
+            fontVariantNumeric: "tabular-nums",
+            color: "var(--color-fg-muted)",
+            fontSize: 11,
+          }}
+          title={ts.toLocaleString()}
+        >
+          {ts.toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          })}
+          <br />
+          <span style={{ fontSize: 10 }}>{ts.toLocaleDateString()}</span>
+        </td>
+        <td style={tdStyle()}>
+          <Link
+            href={`/admin/riskzilla/bettors/${row.userId}`}
+            style={{
+              color: "var(--color-fg)",
+              textDecoration: "none",
+            }}
+            title={row.userEmail ?? row.userId}
+          >
+            {row.userNickname ?? row.userEmail ?? row.userId.slice(0, 8)}
+          </Link>
+        </td>
+        <td style={tdStyle()} title={row.tournamentName ?? undefined}>
+          {row.tournamentName ?? "—"}
+        </td>
+        <td style={tdStyle()}>{row.sportSlug ?? "—"}</td>
+        <td style={tdStyle()} title={row.matchLabel ?? undefined}>
+          {row.matchLabel ?? "—"}
+        </td>
+        <td style={tdStyle()} title={marketCell}>
+          {marketCell}
+          {extraLegs > 0 && (
+            <span
+              style={{
+                color: "var(--color-fg-muted)",
+                marginLeft: 4,
+                fontSize: 11,
+              }}
+            >
+              +{extraLegs}
+            </span>
+          )}
+        </td>
+        <td style={tdStyle()} title={selectionCell}>
+          {selectionCell}
+        </td>
+        <td
+          style={{
+            ...tdStyle("right"),
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          {stake} {row.currency}
+        </td>
+        <td
+          style={{
+            ...tdStyle("right"),
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          {payout} {row.currency}
+        </td>
+        <td
+          style={{
+            ...tdStyle("right"),
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          {row.riskTier ?? "—"}
+        </td>
+        <td style={{ ...tdStyle("right") }}>
+          <button
+            type="button"
+            onClick={() => setExpanded((e) => !e)}
+            style={{
+              height: 24,
+              padding: "0 8px",
+              background: "transparent",
+              border: "1px solid var(--color-border)",
+              borderRadius: 4,
+              fontSize: 11,
+              color: "var(--color-fg-muted)",
+              cursor: "pointer",
+            }}
+          >
+            {expanded ? "Hide" : "Detail"}
+          </button>
+        </td>
+      </tr>
+      {expanded && (
+        <tr>
+          <td
+            colSpan={COLUMNS.length}
+            style={{
+              padding: "10px 12px",
+              background: "var(--color-bg-subtle)",
+              borderBottom: "1px solid var(--color-border)",
+            }}
+          >
+            <DetailPanel row={row} />
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function DetailPanel({ row }: { row: EventDto }) {
+  const ts = new Date(row.createdAt);
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 12,
+        fontSize: 12,
+      }}
+    >
+      {row.selections.length > 0 && (
+        <div>
+          <span
+            className="mono"
+            style={{
+              fontSize: 10,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: "var(--color-fg-muted)",
+            }}
+          >
+            Selections ({row.selections.length})
+          </span>
+          <table
+            style={{
+              width: "100%",
+              borderCollapse: "collapse",
+              fontSize: 12,
+              marginTop: 6,
+            }}
+          >
+            <thead>
+              <tr style={{ color: "var(--color-fg-muted)" }}>
+                <th style={detailThStyle}>#</th>
+                <th style={detailThStyle}>Match</th>
+                <th style={detailThStyle}>Market</th>
+                <th style={detailThStyle}>Pick</th>
+                <th style={{ ...detailThStyle, textAlign: "right" }}>Odds</th>
+                <th style={detailThStyle}>Result</th>
+              </tr>
+            </thead>
+            <tbody>
+              {row.selections.map((sel: EventSelectionDto, i: number) => (
+                <tr key={`${sel.marketId}-${sel.outcomeId}`}>
+                  <td style={detailTdStyle}>{i + 1}</td>
+                  <td style={detailTdStyle}>{sel.matchLabel ?? "—"}</td>
+                  <td style={detailTdStyle}>{sel.marketName}</td>
+                  <td style={detailTdStyle}>
+                    {sel.outcomeName ?? sel.outcomeId}
+                  </td>
+                  <td
+                    style={{
+                      ...detailTdStyle,
+                      textAlign: "right",
+                      fontVariantNumeric: "tabular-nums",
+                    }}
+                  >
+                    {Number(sel.oddsAtPlacement).toFixed(2)}
+                  </td>
+                  <td style={detailTdStyle}>
+                    <ResultBadge result={sel.result} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {row.reasonMessage && (
+        <div>
+          <span
+            className="mono"
+            style={{
+              fontSize: 10,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: "var(--color-fg-muted)",
+            }}
+          >
+            Reason
+          </span>
+          <p style={{ margin: "4px 0 0", color: "var(--color-fg)" }}>
+            {row.reasonMessage}
+          </p>
+        </div>
+      )}
+      <div>
         <span
           className="mono"
           style={{
-            fontSize: 11,
-            color: "var(--color-fg-muted)",
+            fontSize: 10,
             letterSpacing: "0.08em",
             textTransform: "uppercase",
+            color: "var(--color-fg-muted)",
           }}
         >
-          {rows.length} {rows.length === 1 ? "row" : "rows"} ·{" "}
-          {currency} view
+          Engine meta
         </span>
-      </div>
-
-      {stakeError && (
-        <div style={errorStyle}>{stakeError}</div>
-      )}
-      {error && <div style={errorStyle}>{error}</div>}
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        {rows.length === 0 && !loading ? (
-          <p style={{ fontSize: 13, color: "var(--color-fg-muted)" }}>
-            No matching events.
-          </p>
-        ) : (
-          rows.map((r) => <EventRow key={r.id} row={r} />)
-        )}
-      </div>
-
-      {hasMore && rows.length > 0 && (
-        <button
-          type="button"
-          onClick={() => void loadMore()}
-          disabled={loading}
-          style={primaryButtonStyle(loading)}
+        <pre
+          style={{
+            margin: "4px 0 0",
+            padding: "8px 10px",
+            background: "var(--color-bg)",
+            border: "1px solid var(--color-border)",
+            borderRadius: 6,
+            fontSize: 11,
+            fontFamily: "var(--font-mono, monospace)",
+            color: "var(--color-fg-muted)",
+            overflowX: "auto",
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+          }}
         >
-          {loading ? "Loading…" : "Load older"}
-        </button>
-      )}
+          {JSON.stringify(
+            {
+              ticketId: row.ticketId,
+              decision: row.decision,
+              rsAtDecision: row.rsAtDecision,
+              bankAtDecisionMicro: row.bankAtDecisionMicro,
+              tournament: row.tournamentName,
+              riskTier: row.riskTier,
+              createdAt: ts.toISOString(),
+              meta: row.decisionMeta,
+            },
+            null,
+            2,
+          )}
+        </pre>
+      </div>
     </div>
+  );
+}
+
+function ResultBadge({ result }: { result: string | null }) {
+  if (!result)
+    return <span style={{ color: "var(--color-fg-muted)" }}>—</span>;
+  const map: Record<string, { label: string; color: string }> = {
+    won: { label: "won", color: "#16a34a" },
+    lost: { label: "lost", color: "#dc2626" },
+    void: { label: "void", color: "var(--color-fg-muted)" },
+    half_won: { label: "half-won", color: "#16a34a" },
+    half_lost: { label: "half-lost", color: "#dc2626" },
+  };
+  const m = map[result] ?? {
+    label: result,
+    color: "var(--color-fg-muted)",
+  };
+  return (
+    <span
+      className="mono"
+      style={{
+        fontSize: 11,
+        letterSpacing: "0.04em",
+        textTransform: "uppercase",
+        color: m.color,
+      }}
+    >
+      {m.label}
+    </span>
+  );
+}
+
+function Pagination({
+  page,
+  totalPages,
+  loading,
+  onChange,
+}: {
+  page: number;
+  totalPages: number;
+  loading: boolean;
+  onChange: (p: number) => void;
+}) {
+  const pages = useMemo(() => {
+    const result: (number | "…")[] = [];
+    const push = (p: number | "…") => {
+      if (result[result.length - 1] === p) return;
+      result.push(p);
+    };
+    const window = [page - 1, page, page + 1].filter(
+      (p) => p >= 1 && p <= totalPages,
+    );
+    push(1);
+    if (window[0]! > 2) push("…");
+    for (const p of window) push(p);
+    if (window[window.length - 1]! < totalPages - 1) push("…");
+    if (totalPages > 1) push(totalPages);
+    return result;
+  }, [page, totalPages]);
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 6,
+        paddingTop: 8,
+        borderTop: "1px solid var(--color-border)",
+        flexWrap: "wrap",
+      }}
+    >
+      <PageButton
+        disabled={loading || page <= 1}
+        onClick={() => onChange(page - 1)}
+      >
+        ← Prev
+      </PageButton>
+      {pages.map((p, i) =>
+        p === "…" ? (
+          <span
+            key={`gap-${i}`}
+            style={{ color: "var(--color-fg-muted)", padding: "0 4px" }}
+          >
+            …
+          </span>
+        ) : (
+          <PageButton
+            key={p}
+            active={p === page}
+            disabled={loading}
+            onClick={() => onChange(p)}
+          >
+            {p}
+          </PageButton>
+        ),
+      )}
+      <PageButton
+        disabled={loading || page >= totalPages}
+        onClick={() => onChange(page + 1)}
+      >
+        Next →
+      </PageButton>
+      <span
+        className="mono"
+        style={{
+          marginLeft: 12,
+          fontSize: 11,
+          color: "var(--color-fg-muted)",
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+        }}
+      >
+        Page {page} of {totalPages}
+      </span>
+    </div>
+  );
+}
+
+function PageButton({
+  children,
+  active,
+  disabled,
+  onClick,
+}: {
+  children: React.ReactNode;
+  active?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        minWidth: 32,
+        height: 30,
+        padding: "0 8px",
+        border: "1px solid var(--color-border)",
+        background: active ? "var(--color-fg)" : "var(--color-bg)",
+        color: active ? "var(--color-bg)" : "var(--color-fg)",
+        borderRadius: 6,
+        fontSize: 12,
+        fontWeight: active ? 600 : 500,
+        cursor: disabled ? "default" : "pointer",
+        opacity: disabled && !active ? 0.5 : 1,
+      }}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -426,4 +1110,19 @@ const ghostButtonStyle: React.CSSProperties = {
   fontSize: 12,
   cursor: "pointer",
   textDecoration: "underline",
+};
+
+const detailThStyle: React.CSSProperties = {
+  textAlign: "left",
+  padding: "4px 6px",
+  borderBottom: "1px solid var(--color-border)",
+  fontWeight: 500,
+  fontSize: 10,
+  letterSpacing: "0.06em",
+  textTransform: "uppercase",
+};
+
+const detailTdStyle: React.CSSProperties = {
+  padding: "4px 6px",
+  borderBottom: "1px solid var(--color-border)",
 };

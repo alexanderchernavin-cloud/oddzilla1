@@ -4,6 +4,18 @@ import Link from "next/link";
 import { useState } from "react";
 import { fromMicro } from "@oddzilla/types/money";
 
+export interface EventSelectionDto {
+  marketId: string;
+  providerMarketId: number;
+  marketName: string;
+  outcomeId: string;
+  outcomeName: string | null;
+  oddsAtPlacement: string;
+  matchId: string | null;
+  matchLabel: string | null;
+  result: string | null;
+}
+
 export interface EventDto {
   id: string;
   cursor: string;
@@ -26,6 +38,7 @@ export interface EventDto {
   rsAtDecision: string;
   bankAtDecisionMicro: string;
   decisionMeta: unknown;
+  selections: EventSelectionDto[];
   createdAt: string;
 }
 

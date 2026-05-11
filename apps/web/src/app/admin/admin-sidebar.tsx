@@ -62,7 +62,6 @@ const SECTIONS: Section[] = [
   {
     label: "Operations",
     items: [
-      { href: "/admin/bets", label: "All bets", Icon: I.Ticket, matchPrefix: "/admin/bets" },
       { href: "/admin/deposits", label: "Deposits", Icon: I.Wallet, matchPrefix: "/admin/deposits" },
       { href: "/admin/withdrawals", label: "Withdrawals", Icon: I.Wallet, matchPrefix: "/admin/withdrawals" },
       { href: "/admin/audit", label: "Audit", Icon: I.Clock, matchPrefix: "/admin/audit" },
