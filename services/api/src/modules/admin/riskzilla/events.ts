@@ -4,6 +4,9 @@
 //
 //   - USDC: reads `riskzilla_event_log`. The engine writes both
 //     accepted + rejected decisions here, with per-bucket meta.
+//     For accepted events with a ticket_id, we additionally pull
+//     per-leg market + outcome metadata via ticket_selections so
+//     the Bets view can render market / selection columns.
 //
 //   - OZ:   reads `tickets`. The engine bypasses OZ entirely
 //     (`engine.ts` — RISKZILLA_CURRENCY = "USDC"), so event_log is
@@ -13,30 +16,37 @@
 //     code path doesn't create a ticket row.
 //
 // The two queries return the same EventRowDto shape so the
-// betticker + bets clients render either uniformly.
+// betticker + bets clients render either uniformly. Pagination is
+// page-based (OFFSET/LIMIT) with a parallel COUNT(*) so the
+// frontend can render `1–100 of N` and Prev/Next controls.
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { sql } from "drizzle-orm";
 import { SUPPORTED_CURRENCIES } from "@oddzilla/types/currencies";
 
-// Case-insensitive zod enum that matches one of the supported wallet
-// currencies. Length-based min/max validators would reject "OZ"
-// (2 chars), so we match by membership instead.
 const currencySchema = z
   .string()
   .transform((s) => s.toUpperCase())
   .pipe(z.enum(SUPPORTED_CURRENCIES));
 
+// Whitelist of sortable columns. The keys are stable strings the
+// frontend sends; each path (event_log / tickets) maps them to its
+// own column expression.
+const SORT_KEYS = [
+  "createdAt",
+  "stake",
+  "potentialPayout",
+  "decision",
+  "riskTier",
+] as const;
+type SortKey = (typeof SORT_KEYS)[number];
+
 const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(100),
-  // Pagination cursor `${epochMs}_${id}`. USDC ids are bigint, OZ
-  // ids are uuid — both serialise to strings, so the regex stays
-  // permissive (digits + dashes/letters after the underscore).
-  before: z
-    .string()
-    .regex(/^\d+_[A-Za-z0-9-]+$/)
-    .optional(),
+  page: z.coerce.number().int().min(1).max(10_000).default(1),
+  sortBy: z.enum(SORT_KEYS).default("createdAt"),
+  sortDir: z.enum(["asc", "desc"]).default("desc"),
   decision: z
     .enum([
       "accepted",
@@ -55,18 +65,24 @@ const listQuery = z.object({
   sportId: z.coerce.number().int().optional(),
   matchId: z.coerce.bigint().optional(),
   riskTier: z.coerce.number().int().min(0).max(32).optional(),
-  // Currency filter — case-insensitive, must match one of the
-  // supported wallet currencies (USDC | OZ). Preflighting at the
-  // schema layer keeps a typo from running a silent full-table scan.
   currency: currencySchema.optional(),
   fromTs: z.coerce.date().optional(),
   toTs: z.coerce.date().optional(),
-  // Stake range — both fields are bigint-shaped strings of micros so
-  // we don't lose precision on large payouts. Either bound is
-  // independently optional; passing only one acts as a half-open range.
   minStakeMicro: z.string().regex(/^\d+$/).optional(),
   maxStakeMicro: z.string().regex(/^\d+$/).optional(),
 });
+
+interface EventSelectionDto {
+  marketId: string;
+  providerMarketId: number;
+  marketName: string;
+  outcomeId: string;
+  outcomeName: string | null;
+  oddsAtPlacement: string;
+  matchId: string | null;
+  matchLabel: string | null;
+  result: string | null;
+}
 
 interface EventRowDto {
   id: string;
@@ -90,6 +106,9 @@ interface EventRowDto {
   rsAtDecision: string;
   bankAtDecisionMicro: string;
   decisionMeta: unknown;
+  // Per-leg selection list. Empty for rejected events without a
+  // ticket_id (no ticket row to JOIN to).
+  selections: EventSelectionDto[];
   createdAt: string;
 }
 
@@ -115,6 +134,7 @@ interface RawRow {
   rs_at_decision: string;
   bank_at_decision_micro: string;
   decision_meta: unknown;
+  selections: EventSelectionDto[] | null;
   created_at: Date | string;
 }
 
@@ -142,6 +162,7 @@ function rawToDto(r: RawRow): EventRowDto {
     rsAtDecision: r.rs_at_decision,
     bankAtDecisionMicro: r.bank_at_decision_micro,
     decisionMeta: r.decision_meta,
+    selections: Array.isArray(r.selections) ? r.selections : [],
     createdAt:
       r.created_at instanceof Date
         ? r.created_at.toISOString()
@@ -151,10 +172,25 @@ function rawToDto(r: RawRow): EventRowDto {
 
 type ListQuery = z.infer<typeof listQuery>;
 
+interface PathResult {
+  entries: EventRowDto[];
+  total: number;
+}
+
+// ── USDC: riskzilla_event_log ──────────────────────────────────────────
+
+const EVENT_LOG_SORT: Record<SortKey, ReturnType<typeof sql>> = {
+  createdAt: sql`el.created_at`,
+  stake: sql`el.stake_micro`,
+  potentialPayout: sql`el.potential_payout_micro`,
+  decision: sql`el.decision`,
+  riskTier: sql`el.risk_tier`,
+};
+
 async function queryEventLog(
   app: FastifyInstance,
   q: ListQuery,
-): Promise<EventRowDto[]> {
+): Promise<PathResult> {
   const conditions: ReturnType<typeof sql>[] = [];
   if (q.decision) conditions.push(sql`el.decision = ${q.decision}::riskzilla_decision`);
   if (q.status === "accepted") conditions.push(sql`el.decision = 'accepted'::riskzilla_decision`);
@@ -169,13 +205,6 @@ async function queryEventLog(
   if (q.toTs) conditions.push(sql`el.created_at <= ${q.toTs.toISOString()}::timestamptz`);
   if (q.minStakeMicro) conditions.push(sql`el.stake_micro >= ${q.minStakeMicro}::bigint`);
   if (q.maxStakeMicro) conditions.push(sql`el.stake_micro <= ${q.maxStakeMicro}::bigint`);
-  if (q.before) {
-    const [tsMs, idStr] = q.before.split("_");
-    const ts = new Date(Number(tsMs)).toISOString();
-    conditions.push(
-      sql`(el.created_at, el.id) < (${ts}::timestamptz, ${idStr}::bigint)`,
-    );
-  }
 
   const where =
     conditions.length === 0
@@ -184,7 +213,20 @@ async function queryEventLog(
           i === 0 ? c : sql`${acc} AND ${c}`,
         )}`;
 
-  const rows = (await app.db.execute(sql`
+  const sortColumn = EVENT_LOG_SORT[q.sortBy];
+  const sortClause =
+    q.sortDir === "asc"
+      ? sql`${sortColumn} ASC NULLS LAST, el.id ASC`
+      : sql`${sortColumn} DESC NULLS LAST, el.id DESC`;
+  const offset = (q.page - 1) * q.limit;
+
+  const totalPromise = app.db.execute(sql`
+    SELECT COUNT(*)::bigint AS total
+      FROM riskzilla_event_log el
+      ${where}
+  `) as unknown as Promise<Array<{ total: string }>>;
+
+  const rowsPromise = app.db.execute(sql`
     SELECT
       el.id::text                                   AS id,
       EXTRACT(epoch FROM el.created_at) * 1000      AS cursor_ms,
@@ -209,35 +251,85 @@ async function queryEventLog(
       el.rs_at_decision::text                       AS rs_at_decision,
       el.bank_at_decision_micro::text               AS bank_at_decision_micro,
       el.decision_meta                              AS decision_meta,
+      COALESCE(sel.selections, '[]'::jsonb)         AS selections,
       el.created_at                                 AS created_at
     FROM riskzilla_event_log el
     LEFT JOIN users       u  ON u.id = el.user_id
     LEFT JOIN matches     m  ON m.id = el.match_id
     LEFT JOIN sports      s  ON s.id = el.sport_id
     LEFT JOIN tournaments tn ON tn.id = el.tournament_id
+    LEFT JOIN LATERAL (
+      SELECT jsonb_agg(
+        jsonb_build_object(
+          'marketId',         lmk.id::text,
+          'providerMarketId', lmk.provider_market_id,
+          'marketName',       COALESCE(
+            (SELECT md.name_template
+               FROM market_descriptions md
+              WHERE md.provider_market_id = lmk.provider_market_id
+              ORDER BY (md.variant = '') DESC, md.variant
+              LIMIT 1),
+            'Market #' || lmk.provider_market_id
+          ),
+          'outcomeId',         ts.outcome_id,
+          'outcomeName',       mo.name,
+          'oddsAtPlacement',   ts.odds_at_placement::text,
+          'matchId',           lmk.match_id::text,
+          'matchLabel',        CASE WHEN lm.id IS NOT NULL
+                                     THEN lm.home_team || ' vs ' || lm.away_team
+                                     ELSE NULL END,
+          'result',            ts.result::text
+        )
+        ORDER BY ts.id ASC
+      ) AS selections
+      FROM ticket_selections ts
+      JOIN markets        lmk ON lmk.id = ts.market_id
+      LEFT JOIN matches   lm  ON lm.id  = lmk.match_id
+      LEFT JOIN market_outcomes mo ON mo.market_id = ts.market_id AND mo.outcome_id = ts.outcome_id
+      WHERE el.ticket_id IS NOT NULL AND ts.ticket_id = el.ticket_id
+    ) sel ON true
     ${where}
-    ORDER BY el.created_at DESC, el.id DESC
+    ORDER BY ${sortClause}
     LIMIT ${q.limit}
-  `)) as unknown as RawRow[];
+    OFFSET ${offset}
+  `) as unknown as Promise<RawRow[]>;
 
-  return rows.map(rawToDto);
+  const [rows, totalRows] = await Promise.all([rowsPromise, totalPromise]);
+  return {
+    entries: rows.map(rawToDto),
+    total: Number(totalRows[0]?.total ?? 0),
+  };
 }
 
-// OZ data path: reads `tickets`. Engine writes nothing for OZ, so we
-// synthesise a Betticker row from the ticket itself. Filtering for
-// rejection statuses returns empty (an OZ ticket cannot be rejected
-// — rejection happens before INSERT, and the engine bypass means even
-// risk-level rejection doesn't apply).
+// ── OZ: tickets ─────────────────────────────────────────────────────────
+
+const TICKETS_SORT: Record<SortKey, ReturnType<typeof sql>> = {
+  createdAt: sql`t.placed_at`,
+  stake: sql`t.stake_micro`,
+  potentialPayout: sql`t.potential_payout_micro`,
+  // The "decision" column for OZ tickets is synthesised — every OZ
+  // ticket is "accepted". Sort by ticket status to give the column
+  // something stable to do (settled / accepted / voided ordering).
+  decision: sql`t.status`,
+  riskTier: sql`(
+    SELECT tn.risk_tier
+      FROM ticket_selections ts
+      JOIN markets mk ON mk.id = ts.market_id
+      JOIN matches m  ON m.id  = mk.match_id
+      JOIN tournaments tn ON tn.id = m.tournament_id
+     WHERE ts.ticket_id = t.id
+     ORDER BY ts.id ASC
+     LIMIT 1
+  )`,
+};
+
 async function queryTicketsForOz(
   app: FastifyInstance,
   q: ListQuery,
-): Promise<EventRowDto[]> {
+): Promise<PathResult> {
   // Rejection filters never match — OZ tickets are all accepted.
-  if (
-    q.status === "rejected" ||
-    (q.decision && q.decision !== "accepted")
-  ) {
-    return [];
+  if (q.status === "rejected" || (q.decision && q.decision !== "accepted")) {
+    return { entries: [], total: 0 };
   }
 
   const conditions: ReturnType<typeof sql>[] = [sql`t.currency = 'OZ'`];
@@ -247,40 +339,64 @@ async function queryTicketsForOz(
   if (q.toTs) conditions.push(sql`t.placed_at <= ${q.toTs.toISOString()}::timestamptz`);
   if (q.minStakeMicro) conditions.push(sql`t.stake_micro >= ${q.minStakeMicro}::bigint`);
   if (q.maxStakeMicro) conditions.push(sql`t.stake_micro <= ${q.maxStakeMicro}::bigint`);
-  // sport/match/tier filters operate on the first-leg join — pushed
-  // into the outer SELECT (they reference s/tn aliases). Encoding
-  // them here so the planner sees them up-front would mean dragging
-  // the LATERAL join into every row's predicate; this is clearer.
-
-  if (q.before) {
-    const [tsMs, idStr] = q.before.split("_");
-    const ts = new Date(Number(tsMs)).toISOString();
-    conditions.push(
-      sql`(t.placed_at, t.id) < (${ts}::timestamptz, ${idStr}::uuid)`,
-    );
+  // Sport / match / tier filters land in the inner WHERE via EXISTS so
+  // COUNT(*) and LIMIT/OFFSET both see the same row set, and "any leg
+  // matches" is the right semantic for multi-leg combos.
+  if (q.sportId !== undefined) {
+    conditions.push(sql`EXISTS (
+      SELECT 1
+        FROM ticket_selections ts
+        JOIN markets    smk ON smk.id = ts.market_id
+        JOIN matches    sm  ON sm.id  = smk.match_id
+        JOIN tournaments stn ON stn.id = sm.tournament_id
+        JOIN categories sc  ON sc.id = stn.category_id
+       WHERE ts.ticket_id = t.id AND sc.sport_id = ${q.sportId}
+    )`);
+  }
+  if (q.matchId !== undefined) {
+    conditions.push(sql`EXISTS (
+      SELECT 1
+        FROM ticket_selections ts
+        JOIN markets mmk ON mmk.id = ts.market_id
+       WHERE ts.ticket_id = t.id AND mmk.match_id = ${q.matchId.toString()}::bigint
+    )`);
+  }
+  if (q.riskTier !== undefined) {
+    conditions.push(sql`EXISTS (
+      SELECT 1
+        FROM ticket_selections ts
+        JOIN markets    rmk ON rmk.id = ts.market_id
+        JOIN matches    rm  ON rm.id  = rmk.match_id
+        JOIN tournaments rtn ON rtn.id = rm.tournament_id
+       WHERE ts.ticket_id = t.id AND rtn.risk_tier = ${q.riskTier}
+    )`);
   }
 
   const innerWhere = sql`WHERE ${conditions.reduce((acc, c, i) =>
     i === 0 ? c : sql`${acc} AND ${c}`,
   )}`;
 
-  // Filters that depend on the first-leg's joined tournament / sport
-  // / match live in the outer HAVING-style WHERE below. They're
-  // applied AFTER the LATERAL pulls the first leg.
-  const postJoinConditions: ReturnType<typeof sql>[] = [];
-  if (q.sportId !== undefined) postJoinConditions.push(sql`s.id = ${q.sportId}`);
-  if (q.matchId !== undefined)
-    postJoinConditions.push(sql`m.id = ${q.matchId.toString()}::bigint`);
-  if (q.riskTier !== undefined)
-    postJoinConditions.push(sql`tn.risk_tier = ${q.riskTier}`);
-  const postWhere =
-    postJoinConditions.length === 0
-      ? sql``
-      : sql`WHERE ${postJoinConditions.reduce((acc, c, i) =>
-          i === 0 ? c : sql`${acc} AND ${c}`,
-        )}`;
+  const sortColumn = TICKETS_SORT[q.sortBy];
+  const sortClause =
+    q.sortDir === "asc"
+      ? sql`${sortColumn} ASC NULLS LAST, t.id ASC`
+      : sql`${sortColumn} DESC NULLS LAST, t.id DESC`;
+  const offset = (q.page - 1) * q.limit;
 
-  const rows = (await app.db.execute(sql`
+  const totalPromise = app.db.execute(sql`
+    SELECT COUNT(*)::bigint AS total
+      FROM tickets t
+      ${innerWhere}
+  `) as unknown as Promise<Array<{ total: string }>>;
+
+  const rowsPromise = app.db.execute(sql`
+    WITH filtered AS (
+      SELECT t.* FROM tickets t
+      ${innerWhere}
+      ORDER BY ${sortClause}
+      LIMIT ${q.limit}
+      OFFSET ${offset}
+    )
     SELECT
       t.id::text                                    AS id,
       EXTRACT(epoch FROM t.placed_at) * 1000        AS cursor_ms,
@@ -310,13 +426,9 @@ async function queryTicketsForOz(
         'betType', t.bet_type::text,
         'legs', (SELECT COUNT(*)::int FROM ticket_selections ts WHERE ts.ticket_id = t.id)
       )                                             AS decision_meta,
+      COALESCE(sel.selections, '[]'::jsonb)         AS selections,
       t.placed_at                                   AS created_at
-    FROM (
-      SELECT t.* FROM tickets t
-      ${innerWhere}
-      ORDER BY t.placed_at DESC, t.id DESC
-      LIMIT ${q.limit * 2}
-    ) t
+    FROM filtered t
     LEFT JOIN users u ON u.id = t.user_id
     LEFT JOIN LATERAL (
       SELECT ts.market_id
@@ -330,12 +442,44 @@ async function queryTicketsForOz(
     LEFT JOIN tournaments tn ON tn.id = m.tournament_id
     LEFT JOIN categories c  ON c.id = tn.category_id
     LEFT JOIN sports     s  ON s.id = c.sport_id
-    ${postWhere}
-    ORDER BY t.placed_at DESC, t.id DESC
-    LIMIT ${q.limit}
-  `)) as unknown as RawRow[];
+    LEFT JOIN LATERAL (
+      SELECT jsonb_agg(
+        jsonb_build_object(
+          'marketId',         lmk.id::text,
+          'providerMarketId', lmk.provider_market_id,
+          'marketName',       COALESCE(
+            (SELECT md.name_template
+               FROM market_descriptions md
+              WHERE md.provider_market_id = lmk.provider_market_id
+              ORDER BY (md.variant = '') DESC, md.variant
+              LIMIT 1),
+            'Market #' || lmk.provider_market_id
+          ),
+          'outcomeId',         ts.outcome_id,
+          'outcomeName',       mo.name,
+          'oddsAtPlacement',   ts.odds_at_placement::text,
+          'matchId',           lmk.match_id::text,
+          'matchLabel',        CASE WHEN lm.id IS NOT NULL
+                                     THEN lm.home_team || ' vs ' || lm.away_team
+                                     ELSE NULL END,
+          'result',            ts.result::text
+        )
+        ORDER BY ts.id ASC
+      ) AS selections
+      FROM ticket_selections ts
+      JOIN markets        lmk ON lmk.id = ts.market_id
+      LEFT JOIN matches   lm  ON lm.id  = lmk.match_id
+      LEFT JOIN market_outcomes mo ON mo.market_id = ts.market_id AND mo.outcome_id = ts.outcome_id
+      WHERE ts.ticket_id = t.id
+    ) sel ON true
+    ORDER BY ${sortClause}
+  `) as unknown as Promise<RawRow[]>;
 
-  return rows.map(rawToDto);
+  const [rows, totalRows] = await Promise.all([rowsPromise, totalPromise]);
+  return {
+    entries: rows.map(rawToDto),
+    total: Number(totalRows[0]?.total ?? 0),
+  };
 }
 
 export default async function riskzillaEventsRoutes(app: FastifyInstance) {
@@ -343,11 +487,20 @@ export default async function riskzillaEventsRoutes(app: FastifyInstance) {
     request.requireRole("admin");
     const q = listQuery.parse(request.query);
 
-    const entries =
+    const result =
       q.currency === "OZ"
         ? await queryTicketsForOz(app, q)
         : await queryEventLog(app, q);
 
-    return { entries };
+    const totalPages = Math.max(1, Math.ceil(result.total / q.limit));
+    return {
+      entries: result.entries,
+      total: result.total,
+      page: q.page,
+      pageSize: q.limit,
+      totalPages,
+      sortBy: q.sortBy,
+      sortDir: q.sortDir,
+    };
   });
 }
