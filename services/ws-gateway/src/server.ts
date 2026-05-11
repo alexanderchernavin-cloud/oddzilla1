@@ -390,6 +390,7 @@ function removeMatchSubscriber(matchId: string, state: ClientState) {
 }
 
 function addUserSocket(state: ClientState) {
+  if (state.userId === null) return;
   let set = userSockets.get(state.userId);
   if (!set) {
     set = new Set();
@@ -399,6 +400,7 @@ function addUserSocket(state: ClientState) {
 }
 
 function removeUserSocket(state: ClientState) {
+  if (state.userId === null) return;
   const set = userSockets.get(state.userId);
   if (!set) return;
   set.delete(state);
