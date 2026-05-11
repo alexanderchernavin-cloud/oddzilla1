@@ -51,25 +51,42 @@ export interface ZillaTipLeg {
   scheduledAt: string | null;
 }
 
+// One team's historical trail inside a tip. For positional outcomes
+// ("1"/"2") the parent tip has exactly one row — the team-of-interest's
+// trail. For symmetric outcomes (Totals, Parity, BTTS, …) the parent
+// tip has up to two rows so the popover can render "home team's last 5
+// over the line" + "away team's last 5 over the line" stacked, and the
+// ROI sums across both.
+export interface ZillaTipRow {
+  teamId: number;
+  // The team's role on the CURRENT (open) match — drives which side
+  // of the popover this row renders on. Home rows sort above away.
+  role: ZillaTipRole;
+  legs: ZillaTipLeg[];
+}
+
 export interface ZillaTip {
   marketId: string; // bigint serialised as string
   outcomeId: string;
-  teamId: number;
-  // The team's role on the CURRENT (open) match. Drives which row of the
-  // widget renders this tip — `home` lines up under the home banner.
-  role: ZillaTipRole;
   // SUM of per-leg flat-stake returns across `ratedCount` legs,
   // expressed as a unitless multiplier: 0.20 = +20%, 1.00 = +100%.
   // E.g. wins at 1.90 + 2.50 = (+0.90) + (+1.50) = 1.40 → +140%;
   // a -100% loss followed by a +80% win = -0.20 → -20% (filtered out).
-  // Always >= ZILLATIP_MIN_ROI by construction.
+  // For symmetric tips this is the COMBINED ROI across both teams'
+  // trails — gated by the 20% threshold on the combined number, not
+  // per-row. Always >= ZILLATIP_MIN_ROI by construction.
   roi: number;
-  // How many legs contributed to the ROI denominator. Legs with a void
-  // result or a won-with-null-prematch-odds are excluded.
+  // How many legs contributed to the ROI denominator across every
+  // row. Legs with a void result or a won-with-null-prematch-odds
+  // are excluded.
   ratedCount: number;
-  // Total leg count (rated + void + unrated). Always ≤ 5.
+  // Total leg count across every row (rated + void + unrated).
+  // Up to 5 for positional tips, up to 10 for symmetric tips.
   sampleSize: number;
-  legs: ZillaTipLeg[];
+  // One trail per team-of-interest. 1 entry for positional outcomes,
+  // 1-2 for symmetric outcomes (a team with zero past matches at this
+  // signature has no row).
+  rows: ZillaTipRow[];
 }
 
 export interface ZillaTipsResponse {
