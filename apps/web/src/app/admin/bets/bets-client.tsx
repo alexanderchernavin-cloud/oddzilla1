@@ -29,7 +29,6 @@ interface TicketSelection {
 
 interface TicketRow {
   id: string;
-  cursor: string;
   userId: string;
   userEmail: string | null;
   userNickname: string | null;
@@ -55,6 +54,16 @@ interface TicketRow {
   settledAt: string | null;
 }
 
+interface ListResponse {
+  entries: TicketRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  sortBy: SortKey;
+  sortDir: SortDir;
+}
+
 interface SportOption {
   id: number;
   slug: string;
@@ -62,6 +71,17 @@ interface SportOption {
 }
 
 const PAGE_SIZE = 100;
+
+// Must mirror the SORT_COLUMNS whitelist on the server.
+type SortKey =
+  | "placedAt"
+  | "stake"
+  | "potentialPayout"
+  | "actualPayout"
+  | "status"
+  | "betType"
+  | "settledAt";
+type SortDir = "asc" | "desc";
 
 const CURRENCIES = ["all", "USDC", "OZ"] as const;
 type CurrencyKey = (typeof CURRENCIES)[number];
@@ -124,9 +144,6 @@ function makeEmptyFilters(): Filters {
     betType: "",
     userQuery: "",
     sportId: "",
-    // Default to the last 3 days so the initial page reflects recent
-    // activity rather than the full history. Operator can clear or
-    // widen.
     fromTs: defaultFromTs(),
     toTs: "",
     minStake: "",
@@ -136,11 +153,15 @@ function makeEmptyFilters(): Filters {
 
 export function BetsClient() {
   const [rows, setRows] = useState<TicketRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [page, setPage] = useState(1);
+  const [sortBy, setSortBy] = useState<SortKey>("placedAt");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>(() => makeEmptyFilters());
   const [sports, setSports] = useState<SportOption[]>([]);
-  const [hasMore, setHasMore] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -182,6 +203,9 @@ export function BetsClient() {
   const queryString = useMemo(() => {
     const p = new URLSearchParams();
     p.set("limit", String(PAGE_SIZE));
+    p.set("page", String(page));
+    p.set("sortBy", sortBy);
+    p.set("sortDir", sortDir);
     if (filters.currency !== "all") p.set("currency", filters.currency);
     if (filters.status) p.set("status", filters.status);
     if (filters.outcome) p.set("outcome", filters.outcome);
@@ -195,18 +219,19 @@ export function BetsClient() {
     const maxMicro = stakeToMicroOrNull(filters.maxStake);
     if (maxMicro && maxMicro !== "invalid") p.set("maxStakeMicro", maxMicro);
     return p.toString();
-  }, [filters, stakeToMicroOrNull]);
+  }, [filters, page, sortBy, sortDir, stakeToMicroOrNull]);
 
   const reload = useCallback(async () => {
     if (stakeError) return;
     setLoading(true);
     setError(null);
     try {
-      const res = await clientApi<{ entries: TicketRow[] }>(
+      const res = await clientApi<ListResponse>(
         `/admin/tickets?${queryString}`,
       );
       setRows(res.entries);
-      setHasMore(res.entries.length >= PAGE_SIZE);
+      setTotal(res.total);
+      setTotalPages(res.totalPages);
     } catch (err) {
       setError(err instanceof ApiFetchError ? err.message : "fetch failed");
     } finally {
@@ -218,27 +243,27 @@ export function BetsClient() {
     void reload();
   }, [reload]);
 
-  const loadMore = async () => {
-    if (rows.length === 0) return;
-    setLoading(true);
-    try {
-      const cursor = rows[rows.length - 1]!.cursor;
-      const p = new URLSearchParams(queryString);
-      p.set("before", cursor);
-      const res = await clientApi<{ entries: TicketRow[] }>(
-        `/admin/tickets?${p.toString()}`,
-      );
-      setRows((prev) => [...prev, ...res.entries]);
-      setHasMore(res.entries.length >= PAGE_SIZE);
-    } catch (err) {
-      setError(err instanceof ApiFetchError ? err.message : "fetch failed");
-    } finally {
-      setLoading(false);
-    }
+  // Filter changes reset the page — otherwise you can land on page 17
+  // of a query whose total is now 3 pages.
+  const setFiltersAndResetPage = (next: Filters | ((f: Filters) => Filters)) => {
+    setFilters((prev) =>
+      typeof next === "function" ? (next as (f: Filters) => Filters)(prev) : next,
+    );
+    setPage(1);
   };
 
   const setF = <K extends keyof Filters>(key: K, value: Filters[K]) =>
-    setFilters((f) => ({ ...f, [key]: value }));
+    setFiltersAndResetPage((f) => ({ ...f, [key]: value }));
+
+  const onSort = (col: SortKey) => {
+    if (sortBy === col) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(col);
+      setSortDir("desc");
+    }
+    setPage(1);
+  };
 
   const empty = makeEmptyFilters();
   const hasNonDefaultFilter =
@@ -252,6 +277,9 @@ export function BetsClient() {
     filters.toTs !== empty.toTs ||
     filters.minStake !== empty.minStake ||
     filters.maxStake !== empty.maxStake;
+
+  const startIndex = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const endIndex = total === 0 ? 0 : (page - 1) * PAGE_SIZE + rows.length;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -300,11 +328,9 @@ export function BetsClient() {
             value={filters.outcome}
             onChange={(e) => {
               const next = e.target.value;
-              setFilters((f) => ({
+              setFiltersAndResetPage((f) => ({
                 ...f,
                 outcome: next,
-                // Outcome only meaningful for settled tickets — auto-
-                // narrow status so the UI matches the server filter.
                 status: next ? "settled" : f.status,
               }));
             }}
@@ -404,7 +430,7 @@ export function BetsClient() {
         {hasNonDefaultFilter && (
           <button
             type="button"
-            onClick={() => setFilters(makeEmptyFilters())}
+            onClick={() => setFiltersAndResetPage(makeEmptyFilters())}
             style={ghostButtonStyle}
           >
             Reset filters
@@ -421,22 +447,21 @@ export function BetsClient() {
           </button>
         )}
         <span style={{ flex: 1 }} />
-        <span
-          className="mono"
-          style={{
-            fontSize: 11,
-            color: "var(--color-fg-muted)",
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
-          }}
-        >
-          {rows.length} {rows.length === 1 ? "row" : "rows"}
-          {hasMore && " · more available"}
-        </span>
+        <TotalLine
+          rows={rows.length}
+          total={total}
+          startIndex={startIndex}
+          endIndex={endIndex}
+        />
       </div>
 
       {stakeError && <div style={errorStyle}>{stakeError}</div>}
       {error && <div style={errorStyle}>{error}</div>}
+
+      {/* Sortable column header strip. Mirrors the grid layout of the
+          row cards below so clicking the right place sorts the column
+          you're aiming at. */}
+      <ColumnHeader sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
 
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {rows.length === 0 && !loading ? (
@@ -448,57 +473,311 @@ export function BetsClient() {
         )}
       </div>
 
-      {/* Pagination footer — explicit page count + "Show next 100"
-          button so it's obvious that more data is available. The
-          server uses cursor pagination so paging deeper into history
-          stays cheap regardless of how far you scroll. */}
-      {rows.length > 0 && (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 12,
-            paddingTop: 8,
-            borderTop: "1px solid var(--color-border)",
-          }}
-        >
-          <span
-            className="mono"
-            style={{
-              fontSize: 11,
-              color: "var(--color-fg-muted)",
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-            }}
-          >
-            Showing {rows.length} ticket{rows.length === 1 ? "" : "s"}
-          </span>
-          {hasMore ? (
-            <button
-              type="button"
-              onClick={() => void loadMore()}
-              disabled={loading}
-              style={pageButtonStyle(loading)}
-            >
-              {loading ? "Loading…" : `Show next ${PAGE_SIZE} (older) →`}
-            </button>
-          ) : (
-            <span
-              className="mono"
-              style={{
-                fontSize: 11,
-                color: "var(--color-fg-muted)",
-                letterSpacing: "0.08em",
-                textTransform: "uppercase",
-              }}
-            >
-              End of results
-            </span>
-          )}
-        </div>
+      {/* Pagination footer */}
+      {total > 0 && (
+        <Pagination
+          page={page}
+          totalPages={totalPages}
+          loading={loading}
+          onChange={setPage}
+        />
       )}
     </div>
+  );
+}
+
+function TotalLine({
+  rows,
+  total,
+  startIndex,
+  endIndex,
+}: {
+  rows: number;
+  total: number;
+  startIndex: number;
+  endIndex: number;
+}) {
+  if (total === 0) {
+    return (
+      <span
+        className="mono"
+        style={totalLineStyle}
+      >
+        0 tickets match filters
+      </span>
+    );
+  }
+  if (total === rows) {
+    return (
+      <span className="mono" style={totalLineStyle}>
+        {total.toLocaleString()} ticket{total === 1 ? "" : "s"} · all shown
+      </span>
+    );
+  }
+  return (
+    <span className="mono" style={totalLineStyle}>
+      Showing {startIndex.toLocaleString()}–{endIndex.toLocaleString()} of{" "}
+      <span style={{ color: "var(--color-fg)", fontWeight: 600 }}>
+        {total.toLocaleString()}
+      </span>{" "}
+      ticket{total === 1 ? "" : "s"}
+    </span>
+  );
+}
+
+const totalLineStyle: React.CSSProperties = {
+  fontSize: 11,
+  color: "var(--color-fg-muted)",
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+};
+
+function ColumnHeader({
+  sortBy,
+  sortDir,
+  onSort,
+}: {
+  sortBy: SortKey;
+  sortDir: SortDir;
+  onSort: (col: SortKey) => void;
+}) {
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "100px 110px 1fr auto auto",
+        gap: 12,
+        padding: "0 12px 6px 12px",
+        borderBottom: "1px solid var(--color-border)",
+      }}
+    >
+      <SortHeader
+        label="Status"
+        col="status"
+        sortBy={sortBy}
+        sortDir={sortDir}
+        onSort={onSort}
+      />
+      <SortHeader
+        label="Placed"
+        col="placedAt"
+        sortBy={sortBy}
+        sortDir={sortDir}
+        onSort={onSort}
+      />
+      <span style={headerCellStyle}>User · match · pick</span>
+      <SortHeader
+        label="Stake → Payout"
+        col="stake"
+        secondaryCol="potentialPayout"
+        sortBy={sortBy}
+        sortDir={sortDir}
+        onSort={onSort}
+        align="right"
+      />
+      <span style={{ ...headerCellStyle, width: 50 }} />
+    </div>
+  );
+}
+
+function SortHeader({
+  label,
+  col,
+  secondaryCol,
+  sortBy,
+  sortDir,
+  onSort,
+  align,
+}: {
+  label: string;
+  col: SortKey;
+  secondaryCol?: SortKey;
+  sortBy: SortKey;
+  sortDir: SortDir;
+  onSort: (col: SortKey) => void;
+  align?: "right";
+}) {
+  // When a column has a primary + secondary sort key (e.g. Stake / Payout),
+  // the header treats them as a single toggle that cycles primary-DESC
+  // → primary-ASC → secondary-DESC → secondary-ASC → back to primary-DESC.
+  // Simpler implementation: a small overlay button for the secondary
+  // appears on hover; for now just click the secondary label inline.
+  const active = sortBy === col || sortBy === secondaryCol;
+  const arrow = active ? (sortDir === "asc" ? "↑" : "↓") : "";
+  const activeLabel =
+    sortBy === secondaryCol ? `${label.split(" → ")[1] ?? label}` : label;
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        if (secondaryCol && sortBy === col && sortDir === "asc") {
+          // Switch to secondary column after one full toggle on primary.
+          onSort(secondaryCol);
+        } else if (secondaryCol && sortBy === secondaryCol && sortDir === "asc") {
+          // Cycle back to primary.
+          onSort(col);
+        } else {
+          onSort(col);
+        }
+      }}
+      style={{
+        ...headerCellStyle,
+        background: "transparent",
+        border: "none",
+        padding: 0,
+        textAlign: align ?? "left",
+        cursor: "pointer",
+        color: active ? "var(--color-fg)" : "var(--color-fg-muted)",
+        fontWeight: active ? 600 : 500,
+        display: "flex",
+        gap: 4,
+        alignItems: "center",
+        justifyContent: align === "right" ? "flex-end" : "flex-start",
+      }}
+      title={
+        secondaryCol
+          ? `Click to sort by ${label}. Click again to flip direction; click a third time to switch to the secondary key.`
+          : `Click to sort by ${label}.`
+      }
+    >
+      <span>{activeLabel}</span>
+      {arrow && (
+        <span style={{ fontSize: 11, fontWeight: 700 }}>{arrow}</span>
+      )}
+    </button>
+  );
+}
+
+const headerCellStyle: React.CSSProperties = {
+  fontSize: 10,
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+  color: "var(--color-fg-muted)",
+  fontFamily: "var(--font-mono, monospace)",
+};
+
+function Pagination({
+  page,
+  totalPages,
+  loading,
+  onChange,
+}: {
+  page: number;
+  totalPages: number;
+  loading: boolean;
+  onChange: (p: number) => void;
+}) {
+  // Page-number rendering: always show first, last, current, and the
+  // immediate neighbours. Anything else collapses to an ellipsis.
+  const pages = useMemo(() => {
+    const result: (number | "…")[] = [];
+    const push = (p: number | "…") => {
+      if (result[result.length - 1] === p) return;
+      result.push(p);
+    };
+    const window = [page - 1, page, page + 1].filter(
+      (p) => p >= 1 && p <= totalPages,
+    );
+    push(1);
+    if (window[0]! > 2) push("…");
+    for (const p of window) push(p);
+    if (window[window.length - 1]! < totalPages - 1) push("…");
+    if (totalPages > 1) push(totalPages);
+    return result;
+  }, [page, totalPages]);
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 6,
+        paddingTop: 8,
+        borderTop: "1px solid var(--color-border)",
+        flexWrap: "wrap",
+      }}
+    >
+      <PageButton
+        disabled={loading || page <= 1}
+        onClick={() => onChange(page - 1)}
+      >
+        ← Prev
+      </PageButton>
+      {pages.map((p, i) =>
+        p === "…" ? (
+          <span
+            key={`gap-${i}`}
+            style={{ color: "var(--color-fg-muted)", padding: "0 4px" }}
+          >
+            …
+          </span>
+        ) : (
+          <PageButton
+            key={p}
+            active={p === page}
+            disabled={loading}
+            onClick={() => onChange(p)}
+          >
+            {p}
+          </PageButton>
+        ),
+      )}
+      <PageButton
+        disabled={loading || page >= totalPages}
+        onClick={() => onChange(page + 1)}
+      >
+        Next →
+      </PageButton>
+      <span
+        className="mono"
+        style={{
+          marginLeft: 12,
+          fontSize: 11,
+          color: "var(--color-fg-muted)",
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+        }}
+      >
+        Page {page} of {totalPages}
+      </span>
+    </div>
+  );
+}
+
+function PageButton({
+  children,
+  active,
+  disabled,
+  onClick,
+}: {
+  children: React.ReactNode;
+  active?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        minWidth: 32,
+        height: 30,
+        padding: "0 8px",
+        border: "1px solid var(--color-border)",
+        background: active ? "var(--color-fg)" : "var(--color-bg)",
+        color: active ? "var(--color-bg)" : "var(--color-fg)",
+        borderRadius: 6,
+        fontSize: 12,
+        fontWeight: active ? 600 : 500,
+        cursor: disabled ? "default" : "pointer",
+        opacity: disabled && !active ? 0.5 : 1,
+      }}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -519,9 +798,6 @@ function TicketCard({ row }: { row: TicketRow }) {
       ? `${stake} → ${actualPayout} ${row.currency}`
       : `${stake} → ${potentialPayout} ${row.currency}`;
 
-  // Primary selection summary: first leg's market + outcome name. For
-  // multi-leg tickets the "+N more" tag points to the Detail expander
-  // for the full ladder.
   const firstLeg = row.selections[0];
   const extraLegs = row.selections.length - 1;
   const summary = firstLeg
@@ -570,7 +846,6 @@ function TicketCard({ row }: { row: TicketRow }) {
         {placed.toLocaleDateString()}
       </span>
       <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
-        {/* Line 1: user · bet-type · currency */}
         <div
           style={{
             fontSize: 13,
@@ -596,7 +871,6 @@ function TicketCard({ row }: { row: TicketRow }) {
           <span style={{ color: "var(--color-fg-muted)" }}>·</span>
           <Currency cur={row.currency} />
         </div>
-        {/* Line 2: tournament · match · sport · scheduled */}
         <div
           style={{
             fontSize: 12,
@@ -640,7 +914,6 @@ function TicketCard({ row }: { row: TicketRow }) {
             </>
           )}
         </div>
-        {/* Line 3: selection summary */}
         <div
           style={{
             fontSize: 12,
@@ -967,21 +1240,6 @@ function primaryButtonStyle(disabled: boolean): React.CSSProperties {
     color: "var(--color-fg)",
     borderRadius: 6,
     fontSize: 12,
-    cursor: disabled ? "default" : "pointer",
-    opacity: disabled ? 0.6 : 1,
-  };
-}
-
-function pageButtonStyle(disabled: boolean): React.CSSProperties {
-  return {
-    height: 36,
-    padding: "0 16px",
-    border: "1px solid var(--color-border)",
-    background: "var(--color-fg)",
-    color: "var(--color-bg)",
-    borderRadius: 8,
-    fontSize: 13,
-    fontWeight: 500,
     cursor: disabled ? "default" : "pointer",
     opacity: disabled ? 0.6 : 1,
   };

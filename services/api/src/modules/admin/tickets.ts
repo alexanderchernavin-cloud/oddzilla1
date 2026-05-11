@@ -38,15 +38,29 @@ const currencySchema = z
   .transform((s) => s.toUpperCase())
   .pipe(z.enum(SUPPORTED_CURRENCIES));
 
+// Whitelist of sortable columns. Each maps to a SQL expression evaluated
+// on the `tickets t` row — keeping sorts to ticket-level columns means
+// we never have to join just to ORDER BY (the first-leg join is for
+// row metadata only).
+const SORT_COLUMNS = {
+  placedAt: sql`t.placed_at`,
+  stake: sql`t.stake_micro`,
+  potentialPayout: sql`t.potential_payout_micro`,
+  actualPayout: sql`t.actual_payout_micro`,
+  status: sql`t.status`,
+  betType: sql`t.bet_type`,
+  settledAt: sql`t.settled_at`,
+} as const;
+type SortKey = keyof typeof SORT_COLUMNS;
+
 const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(100),
-  // Cursor format `${epochMs}_${ticketId}` — matches the OZ branch of
-  // the riskzilla events endpoint, so the same pagination helper on
-  // the client works here too.
-  before: z
-    .string()
-    .regex(/^\d+_[A-Za-z0-9-]+$/)
-    .optional(),
+  // Page-based pagination. Page 1 = OFFSET 0. The frontend uses this
+  // instead of cursor pagination so the same page-N URL renders the
+  // same content regardless of which sort the operator picked.
+  page: z.coerce.number().int().min(1).max(10_000).default(1),
+  sortBy: z.enum(Object.keys(SORT_COLUMNS) as [SortKey, ...SortKey[]]).default("placedAt"),
+  sortDir: z.enum(["asc", "desc"]).default("desc"),
   status: z
     .enum(["pending_delay", "accepted", "rejected", "settled", "voided"])
     .optional(),
@@ -164,12 +178,28 @@ export default async function adminTicketsRoutes(app: FastifyInstance) {
       userJoinHasText = true;
     }
 
-    if (q.before) {
-      const [tsMs, idStr] = q.before.split("_");
-      const ts = new Date(Number(tsMs)).toISOString();
-      conditions.push(
-        sql`(t.placed_at, t.id) < (${ts}::timestamptz, ${idStr}::uuid)`,
-      );
+    // Sport / match filter via EXISTS — "any leg of the ticket touches
+    // this sport/match". This keeps all filtering in the inner WHERE so
+    // the COUNT(*) for the pagination total reflects exactly the row
+    // set the list returns, with no post-join filtering surprises.
+    if (q.sportId !== undefined) {
+      conditions.push(sql`EXISTS (
+        SELECT 1
+          FROM ticket_selections ts
+          JOIN markets    smk ON smk.id = ts.market_id
+          JOIN matches    sm  ON sm.id  = smk.match_id
+          JOIN tournaments stn ON stn.id = sm.tournament_id
+          JOIN categories sc  ON sc.id = stn.category_id
+         WHERE ts.ticket_id = t.id AND sc.sport_id = ${q.sportId}
+      )`);
+    }
+    if (q.matchId !== undefined) {
+      conditions.push(sql`EXISTS (
+        SELECT 1
+          FROM ticket_selections ts
+          JOIN markets mmk ON mmk.id = ts.market_id
+         WHERE ts.ticket_id = t.id AND mmk.match_id = ${q.matchId.toString()}::bigint
+      )`);
     }
 
     const innerWhere =
@@ -179,34 +209,33 @@ export default async function adminTicketsRoutes(app: FastifyInstance) {
             i === 0 ? c : sql`${acc} AND ${c}`,
           )}`;
 
-    // sport/match filters operate on the first leg's joined market.
-    // Same approach as the OZ branch of the riskzilla events endpoint.
-    const postJoinConditions: ReturnType<typeof sql>[] = [];
-    if (q.sportId !== undefined)
-      postJoinConditions.push(sql`s.id = ${q.sportId}`);
-    if (q.matchId !== undefined)
-      postJoinConditions.push(sql`m.id = ${q.matchId.toString()}::bigint`);
-    const postWhere =
-      postJoinConditions.length === 0
-        ? sql``
-        : sql`WHERE ${postJoinConditions.reduce((acc, c, i) =>
-            i === 0 ? c : sql`${acc} AND ${c}`,
-          )}`;
+    // ORDER BY clause from the whitelisted sort column. Ties always
+    // resolved by id DESC for deterministic pagination across pages.
+    const sortColumn = SORT_COLUMNS[q.sortBy];
+    const sortClause =
+      q.sortDir === "asc"
+        ? sql`${sortColumn} ASC NULLS LAST, t.id ASC`
+        : sql`${sortColumn} DESC NULLS LAST, t.id DESC`;
+    const offset = (q.page - 1) * q.limit;
 
-    // Two-stage query: pull matching tickets in the inner SELECT
-    // (already filtered + ordered + limited so we don't full-table
-    // join), then attach user / first-leg metadata in the outer one.
-    // The user join in the inner SELECT is only needed when filtering
-    // by free-text user query — otherwise we defer it to the outer
-    // SELECT for cheaper planning.
-    const rows = (await app.db.execute(sql`
+    // Total count uses the same WHERE on the same `tickets t` source.
+    // The user-search join is only present when q.userQuery is set, so
+    // we mirror that conditionally. Run in parallel with the row query.
+    const totalPromise = app.db.execute(sql`
+      SELECT COUNT(*)::bigint AS total
+        FROM tickets t
+        ${userJoinHasText ? sql`LEFT JOIN users u ON u.id = t.user_id` : sql``}
+        ${innerWhere}
+    `) as unknown as Promise<Array<{ total: string }>>;
+    const rowsPromise = app.db.execute(sql`
       WITH filtered AS (
         SELECT t.*
           FROM tickets t
           ${userJoinHasText ? sql`LEFT JOIN users u ON u.id = t.user_id` : sql``}
           ${innerWhere}
-          ORDER BY t.placed_at DESC, t.id DESC
-          LIMIT ${q.limit * 2}
+          ORDER BY ${sortClause}
+          LIMIT ${q.limit}
+          OFFSET ${offset}
       )
       SELECT
         t.id::text                                    AS id,
@@ -282,10 +311,8 @@ export default async function adminTicketsRoutes(app: FastifyInstance) {
         LEFT JOIN market_outcomes mo ON mo.market_id = ts.market_id AND mo.outcome_id = ts.outcome_id
         WHERE ts.ticket_id = t.id
       ) sel ON true
-      ${postWhere}
-      ORDER BY t.placed_at DESC, t.id DESC
-      LIMIT ${q.limit}
-    `)) as unknown as Array<{
+      ORDER BY ${sortClause}
+    `) as unknown as Promise<Array<{
       id: string;
       cursor_ms: string | number;
       user_id: string;
@@ -310,7 +337,11 @@ export default async function adminTicketsRoutes(app: FastifyInstance) {
       selections: TicketSelectionDto[] | null;
       placed_at: Date | string;
       settled_at: Date | string | null;
-    }>;
+    }>>;
+
+    const [rows, totalRows] = await Promise.all([rowsPromise, totalPromise]);
+    const total = Number(totalRows[0]?.total ?? 0);
+    const totalPages = Math.max(1, Math.ceil(total / q.limit));
 
     const entries: TicketRowDto[] = rows.map((r) => {
       const cursorMs = Math.floor(Number(r.cursor_ms));
@@ -368,7 +399,15 @@ export default async function adminTicketsRoutes(app: FastifyInstance) {
       };
     });
 
-    return { entries };
+    return {
+      entries,
+      total,
+      page: q.page,
+      pageSize: q.limit,
+      totalPages,
+      sortBy: q.sortBy,
+      sortDir: q.sortDir,
+    };
   });
 
   // Manual void refunds the stake — gate to the balance-edit operator
