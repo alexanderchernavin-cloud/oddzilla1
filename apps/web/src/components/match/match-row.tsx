@@ -27,43 +27,17 @@ export interface ListMatch {
     home: { outcomeId: string; price: string | null; probability?: string | null };
     away: { outcomeId: string; price: string | null; probability?: string | null };
   } | null;
-  topMarket?: TopMarketInline | null;
 }
-
-// Inline rendering of a curated Top market on a match card. The card
-// shows two outcomes side-by-side; Top markets with a different outcome
-// count fall back to "—" buttons + still allow click-through to the
-// match page for the full picker.
-export interface TopMarketInline {
-  marketId: string;
-  providerMarketId: number;
-  specifiers: Record<string, string>;
-  outcomes: Array<{
-    outcomeId: string;
-    name: string;
-    publishedOdds: string | null;
-    probability: string | null;
-  }>;
-}
-
-export type MatchListTab = "match" | "top";
 
 interface Props {
   match: ListMatch;
   sportSlug: string;
   sportShort: string;
-  // Which inline market to render. Defaults to "match" — the existing
-  // match-winner buttons. "top" renders the configured Top market when
-  // the API supplied one for this match; otherwise the trailing column
-  // shows "—" placeholders.
-  tab?: MatchListTab;
 }
 
-export function MatchRow({ match, sportSlug, sportShort, tab = "match" }: Props) {
+export function MatchRow({ match, sportSlug, sportShort }: Props) {
   const slip = useBetSlip();
   const isLive = match.status === "live";
-  const showTop = tab === "top" && !!match.topMarket;
-  const top = showTop ? match.topMarket! : null;
 
   function handlePick(side: "home" | "away", e: MouseEvent<HTMLButtonElement>) {
     e.preventDefault();
@@ -96,51 +70,12 @@ export function MatchRow({ match, sportSlug, sportShort, tab = "match" }: Props)
     }
   }
 
-  function handleTopPick(slot: 0 | 1, e: MouseEvent<HTMLButtonElement>) {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!top) return;
-    const o = top.outcomes[slot];
-    if (!o || !o.publishedOdds) return;
-    const selection: SlipSelection = {
-      matchId: match.id,
-      marketId: top.marketId,
-      outcomeId: o.outcomeId,
-      odds: o.publishedOdds,
-      probability: o.probability ?? undefined,
-      homeTeam: match.homeTeam,
-      awayTeam: match.awayTeam,
-      marketLabel: `Market #${top.providerMarketId}`,
-      outcomeLabel: outcomeLabelForCard(o, match.homeTeam, match.awayTeam),
-      sportSlug,
-      // Stamped active=true here because the click-handler bails on null
-      // price above; mergeMatchWithLive in MatchListTabs already nulls
-      // the price when an in-flight WS tick reports active=false, so
-      // reaching this code path means the outcome was bettable when the
-      // user clicked. The slip rail re-derives active from later ticks.
-      active: true,
-    };
-    if (slip.has(selection.marketId, selection.outcomeId)) {
-      slip.remove(selection.marketId, selection.outcomeId);
-    } else {
-      slip.add(selection);
-    }
-  }
-
   const homePicked = match.matchWinner
     ? slip.has(match.matchWinner.marketId, match.matchWinner.home.outcomeId)
     : false;
   const awayPicked = match.matchWinner
     ? slip.has(match.matchWinner.marketId, match.matchWinner.away.outcomeId)
     : false;
-  const topHomePicked =
-    top && top.outcomes[0]
-      ? slip.has(top.marketId, top.outcomes[0].outcomeId)
-      : false;
-  const topAwayPicked =
-    top && top.outcomes[1]
-      ? slip.has(top.marketId, top.outcomes[1].outcomeId)
-      : false;
 
   const whenLabel = (() => {
     if (isLive) return null;
@@ -162,22 +97,7 @@ export function MatchRow({ match, sportSlug, sportShort, tab = "match" }: Props)
     ? Number(match.matchWinner.away.price)
     : null;
 
-  const topHomePrice = top?.outcomes[0]?.publishedOdds
-    ? Number(top.outcomes[0].publishedOdds)
-    : null;
-  const topAwayPrice = top?.outcomes[1]?.publishedOdds
-    ? Number(top.outcomes[1].publishedOdds)
-    : null;
-
-  const homeOdds = top ? (
-    <RowOddBtn
-      label={shortOutcomeLabel(top.outcomes[0], "1", match.homeTeam)}
-      price={topHomePrice}
-      selected={topHomePicked}
-      locked={!topHomePrice}
-      onClick={(e) => handleTopPick(0, e)}
-    />
-  ) : (
+  const homeOdds = (
     <RowOddBtn
       label="1"
       price={homePrice}
@@ -186,15 +106,7 @@ export function MatchRow({ match, sportSlug, sportShort, tab = "match" }: Props)
       onClick={(e) => handlePick("home", e)}
     />
   );
-  const awayOdds = top ? (
-    <RowOddBtn
-      label={shortOutcomeLabel(top.outcomes[1], "2", match.awayTeam)}
-      price={topAwayPrice}
-      selected={topAwayPicked}
-      locked={!topAwayPrice}
-      onClick={(e) => handleTopPick(1, e)}
-    />
-  ) : (
+  const awayOdds = (
     <RowOddBtn
       label="2"
       price={awayPrice}
@@ -328,48 +240,6 @@ function teamTag(name: string): string {
     .slice(0, 4);
 }
 
-// Compact label for the inline Top button. Tries to derive a short token
-// from the outcome name (numeric outcome ids → "1"/"2", "under"/"over"
-// → "U"/"O", team-name outcomes → first letter of the team's tag, …);
-// falls back to the supplied default ("1"/"2"). Keeps the card row tidy
-// when the underlying market has long outcome names.
-function shortOutcomeLabel(
-  o: { outcomeId: string; name: string } | undefined,
-  fallback: string,
-  teamHint: string,
-): string {
-  if (!o) return fallback;
-  const name = (o.name || "").toLowerCase();
-  if (name === "under") return "U";
-  if (name === "over") return "O";
-  if (name === "draw") return "X";
-  if (o.outcomeId === "1" || o.outcomeId === "2" || o.outcomeId === "3") {
-    return o.outcomeId;
-  }
-  if (name && teamHint.toLowerCase().startsWith(name.split(/\s+/)[0] ?? "")) {
-    return teamTag(teamHint).slice(0, 2);
-  }
-  return fallback;
-}
-
-// Resolve a human-readable outcome label for the bet slip when the user
-// clicks an inline Top button. Mirrors renderOutcomeLabel on the API
-// side at a much simpler level — list cards don't render templated
-// names, just the raw outcome name (or team name for home/away).
-function outcomeLabelForCard(
-  o: { outcomeId: string; name: string },
-  homeTeam: string,
-  awayTeam: string,
-): string {
-  const lower = (o.name || "").toLowerCase();
-  if (lower === "home") return homeTeam;
-  if (lower === "away") return awayTeam;
-  if (lower === "draw") return "Draw";
-  if (lower === "under") return "Under";
-  if (lower === "over") return "Over";
-  return o.name || o.outcomeId;
-}
-
 // ScoreTable renders a two-row mini-scoreboard mirroring the match-detail
 // page's Scoreboard but in compact form for list cards:
 //   [team mark + name] | Σ | Map 1 | Map 2 | Map N | [trailing]
@@ -449,17 +319,18 @@ function ScoreTable({
         minWidth: 0,
       }}
     >
-      {/* Header row — only when there are numeric columns to label.
-          Pre-match has neither series nor maps, so the header is suppressed
-          to keep the card short. */}
-      {(showSeries || cols.length > 0) && (
+      {/* Header row — always rendered when the card has a trailing odds
+          column so bettors see "Match winner" above the buttons. The
+          first cell stays blank (it sits above the team-name column);
+          numeric cols still label themselves Σ / map-number when live. */}
+      {(showSeries || cols.length > 0 || hasTrailing) && (
         <div role="row" style={{ display: "contents" }}>
           <div />
           {showSeries && <ColHeader label="Σ" />}
           {cols.map((n) => (
             <ColHeader key={n} label={String(n)} live={currentMap === n} />
           ))}
-          {hasTrailing && <div />}
+          {hasTrailing && <TrailingHeader />}
         </div>
       )}
 
@@ -511,6 +382,29 @@ function ColHeader({ label, live = false }: { label: string; live?: boolean }) {
     >
       {live ? <LiveDot size={4} /> : null}
       {label}
+    </div>
+  );
+}
+
+// Header for the trailing odds column. Uses sentence-case "Match
+// winner" so bettors immediately recognise the market type — the
+// numeric column headers (Σ / 1 / 2 / 3) are too cryptic to carry
+// this hint. Slightly tighter letter-spacing + nowrap+ellipsis so the
+// label survives the ~58px trail column on narrow mobile viewports.
+function TrailingHeader() {
+  return (
+    <div
+      style={{
+        fontSize: 10,
+        color: "var(--fg-dim)",
+        textAlign: "center",
+        letterSpacing: "-0.01em",
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+      }}
+    >
+      Match winner
     </div>
   );
 }
