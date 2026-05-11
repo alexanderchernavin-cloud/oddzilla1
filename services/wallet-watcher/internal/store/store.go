@@ -21,6 +21,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/oddzilla/wallet-watcher/internal/currency"
 )
 
 type Store struct {
@@ -285,19 +287,24 @@ UPDATE deposit_intents
 		return tx.Commit(ctx)
 	}
 
+	cur, err := currency.NetworkToCurrency(intent.Network)
+	if err != nil {
+		return err
+	}
+
 	if _, err := tx.Exec(ctx, `
 UPDATE wallets
    SET balance_micro = balance_micro + $2,
        updated_at    = NOW()
- WHERE user_id = $1 AND currency = 'USDC'`, intent.UserID, intent.AmountMicro); err != nil {
+ WHERE user_id = $1 AND currency = $3`, intent.UserID, intent.AmountMicro, cur); err != nil {
 		return fmt.Errorf("credit wallet: %w", err)
 	}
 
 	if _, err := tx.Exec(ctx, `
 INSERT INTO wallet_ledger (user_id, currency, delta_micro, type, ref_type, ref_id, tx_hash, memo)
-VALUES ($1, 'USDC', $2, 'deposit', 'deposit_intent', $3, $4, NULL)
+VALUES ($1, $5, $2, 'deposit', 'deposit_intent', $3, $4, NULL)
 ON CONFLICT (type, ref_type, ref_id) WHERE ref_id IS NOT NULL DO NOTHING`,
-		intent.UserID, intent.AmountMicro, intent.ID, intent.TxHash); err != nil {
+		intent.UserID, intent.AmountMicro, intent.ID, intent.TxHash, cur); err != nil {
 		return fmt.Errorf("ledger deposit: %w", err)
 	}
 

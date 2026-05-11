@@ -35,7 +35,13 @@ import {
 // Match the doc table for prematch — esports vs eSims accept different
 // timeframes/tabs. The proxy passes whatever the client sends; Disir
 // returns its own 405 if the combo is invalid for the match's sport.
-const themeSchema = z.string().min(1).max(64).optional();
+//
+// Theme is restricted to the documented Disir values. The frontend
+// only emits "dark" today; "light" and "auto" are reserved for the
+// theming work tracked under the operator-dashboard skinning epic.
+// Previously a free-form string up to 64 chars, which let an attacker
+// flood the per-query Redis cache with garbage variants.
+const themeSchema = z.enum(["dark", "light", "auto"]).optional();
 const languageSchema = z
   .string()
   .regex(/^[a-z]{2}$/, "language must be a 2-letter ISO 639-1 code")
@@ -44,12 +50,15 @@ const allowCloseSchema = z
   .preprocess((v) => (v === "true" ? true : v === "false" ? false : v), z.boolean())
   .optional();
 
+// Restrict tab/timeframe to Disir's documented enum values. Previously
+// these were free-form strings; the proxy keys its Redis cache on the
+// query string, so unbounded values let an attacker flood the cache.
 const prematchMatchQuery = z.object({
   theme: themeSchema,
   language: languageSchema,
   allowClose: allowCloseSchema,
-  tab: z.string().max(64).optional(),
-  timeframe: z.string().max(64).optional(),
+  tab: z.enum(["teams", "players", "tournament", "stats", "ranking"]).optional(),
+  timeframe: z.enum(["ONE_MONTH", "TWO_MONTHS", "THREE_MONTHS"]).optional(),
 });
 
 const prematchTournamentQuery = z.object({

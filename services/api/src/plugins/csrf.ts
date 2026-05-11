@@ -49,7 +49,11 @@ export default fp<{ allowedOrigins: string[] }>(async (app, opts) => {
 
 function headerString(v: string | string[] | undefined): string | null {
   if (!v) return null;
-  return Array.isArray(v) ? (v[0] ?? null) : v;
+  // Origin/Referer are single-valued per spec. A multi-value array
+  // indicates a non-browser (or hostile) actor — reject by treating it
+  // as absent, which downstream maps to origin_required.
+  if (Array.isArray(v)) return v.length === 1 ? (v[0] ?? null) : null;
+  return v;
 }
 
 function refererOrigin(referer: string | null): string | null {

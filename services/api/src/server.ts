@@ -78,6 +78,11 @@ const app = Fastify({
       'req.headers["x-api-key"]',
       'req.headers["x-csrf-token"]',
       'req.headers["x-signer-token"]',
+      // Defensive: no current handler logs parsed cookies, but cover
+      // request.cookies + any nested .cookies shape so a future log
+      // statement doesn't leak the session cookie value.
+      "req.cookies",
+      "*.cookies",
     ],
   },
   // Read X-Request-ID from the inbound request so a single grep finds

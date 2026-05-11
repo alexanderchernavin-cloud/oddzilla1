@@ -85,12 +85,40 @@ const readRateLimit = {
   rateLimit: { max: 60, timeWindow: "1 minute" },
 };
 
+// V1 renders perex and body as plain text (React escapes by default).
+// This sanitiser rejects the basic HTML-tag pattern (so a future
+// Markdown or HTML render path can't inherit stored-XSS from rows
+// authored today) and strips zero-width / ASCII control characters
+// so invisible-text exploits can't ride along either. Reject (don't
+// silently strip) tag-shaped input — silent stripping would mangle
+// the author's prose without telling them.
+const HTML_TAG_RE = /<[^>]+>/u;
+const sanitiseText = (field: string) =>
+  z.string().transform((s, ctx) => {
+    if (HTML_TAG_RE.test(s)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${field}_invalid` });
+      return z.NEVER;
+    }
+    // Strip U+0000..U+0008, U+000B, U+000C, U+000E..U+001F (ASCII
+    // control chars except \t U+0009, \n U+000A, \r U+000D), plus
+    // zero-width space/joiners U+200B..U+200D and the BOM U+FEFF.
+    return s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u200B-\u200D\uFEFF]/gu, "");
+  });
+
 const createBody = z
   .object({
     matchId: z.string().regex(/^\d+$/u, "matchId_invalid"),
     ticketId: z.string().regex(UUID_RE, "ticketId_invalid"),
-    perex: z.string().min(PEREX_MIN, "perex_invalid").max(PEREX_MAX, "perex_invalid"),
-    body: z.string().min(BODY_MIN, "body_invalid").max(BODY_MAX, "body_invalid"),
+    perex: z
+      .string()
+      .min(PEREX_MIN, "perex_invalid")
+      .max(PEREX_MAX, "perex_invalid")
+      .pipe(sanitiseText("perex")),
+    body: z
+      .string()
+      .min(BODY_MIN, "body_invalid")
+      .max(BODY_MAX, "body_invalid")
+      .pipe(sanitiseText("body")),
   })
   .strict();
 
@@ -441,7 +469,9 @@ SELECT
       // a thumbs-up doesn't emit — un-engagement isn't notification-
       // worthy.) Fire-and-forget; the helper drops self-emits.
       if (wasAdded && a.authorId !== u.id) {
-        (async () => {
+        // Fire-and-forget engagement notification; logged on failure.
+        // The `void` prefix makes the unawaited promise explicit.
+        void (async () => {
           const [actor] = await app.db
             .select({ nickname: users.nickname })
             .from(users)
@@ -459,7 +489,7 @@ SELECT
             // Group on the analysis so a flurry of thumbs-up
             // collapses to "N people liked your analysis".
             groupKey: `analysis_shared:${id}`,
-            deepLink: `/community/analyses/${id}`,
+            deepLink: `/community/analyses/${encodeURIComponent(id)}`,
           });
         })().catch((err: unknown) => {
           app.log.warn({ err, analysisId: id }, "analysis_shared emit failed");
