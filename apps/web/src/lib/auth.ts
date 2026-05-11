@@ -8,10 +8,11 @@
 // signature + audience + revocation verification.
 
 import "server-only";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 
 const ACCESS_COOKIE = "oddzilla_access";
 const REFRESH_COOKIE = "oddzilla_refresh";
+const REQUEST_ID_HEADER = "x-request-id";
 
 export interface SessionUser {
   id: string;
@@ -39,6 +40,9 @@ export async function getSessionUser(): Promise<SessionUser | null> {
 
   if (!cookieHeader) return null;
 
+  const requestHeaders = await headers();
+  const requestId = requestHeaders.get(REQUEST_ID_HEADER);
+
   const apiUrl = process.env.INTERNAL_API_URL ?? "http://api:3001";
   try {
     const res = await fetch(`${apiUrl}/auth/me`, {
@@ -52,6 +56,7 @@ export async function getSessionUser(): Promise<SessionUser | null> {
         origin: process.env.FRONTEND_HOST
           ? `https://${process.env.FRONTEND_HOST}`
           : "http://localhost:3000",
+        ...(requestId ? { [REQUEST_ID_HEADER]: requestId } : {}),
       },
       cache: "no-store",
     });

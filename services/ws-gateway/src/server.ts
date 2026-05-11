@@ -47,6 +47,11 @@ import {
 const ACCESS_COOKIE = "oddzilla_access";
 const PUB_CHANNEL_PREFIX = "odds:match:";
 const USER_CHANNEL_PREFIX = "user:";
+const REQUEST_ID_HEADER = "x-request-id";
+// Inbound IDs are echoed verbatim only when they match this shape.
+// Anything else is treated as missing — same defense-in-depth as the
+// api + web layers.
+const REQUEST_ID_SHAPE = /^[A-Za-z0-9_-]{1,128}$/;
 const MAX_SUBSCRIPTIONS_PER_CLIENT = 100;
 // Hard cap on concurrent connections. Without it, a reconnect storm
 // during a Caddy / network blip stacks every browser's reconnects on
@@ -182,7 +187,14 @@ const http = createServer(async (req, res) => {
 // cookies get a proper HTTP 401 rather than being accepted then closed.
 const wss = new WebSocketServer({ noServer: true });
 
+function extractRequestId(req: IncomingMessage): string | undefined {
+  const raw = req.headers[REQUEST_ID_HEADER];
+  if (typeof raw === "string" && REQUEST_ID_SHAPE.test(raw)) return raw;
+  return undefined;
+}
+
 http.on("upgrade", (req, socket, head) => {
+  const requestId = extractRequestId(req);
   if (req.url !== "/ws") {
     socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
     socket.destroy();
@@ -198,13 +210,20 @@ http.on("upgrade", (req, socket, head) => {
       // Reject new upgrades over the cap. Browser-side reconnect logic
       // (use-live-odds.ts) backs off with jitter, so this isn't a busy
       // loop — it's a load-shed signal.
-      log.warn({ clients: clients.size, max: MAX_CLIENTS }, "rejecting upgrade — client cap reached");
+      log.warn(
+        { clients: clients.size, max: MAX_CLIENTS, requestId },
+        "rejecting upgrade — client cap reached",
+      );
       socket.write(
         "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 5\r\nConnection: close\r\n\r\n",
       );
       socket.destroy();
       return;
     }
+    log.debug(
+      { userId: claims?.sub ?? null, requestId, clients: clients.size + 1 },
+      "ws upgrade accepted",
+    );
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit("connection", ws, req, claims);
     });

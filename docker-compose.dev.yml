@@ -35,7 +35,10 @@ services:
       - ./:/app
       - /app/node_modules
 
-  web:
+  # Production runs three replicas (web1 / web2 / web3) under the `scaled`
+  # Compose profile. Dev runs web1 only — no `--profile scaled` flag —
+  # so a single hot-reloading Node process is enough.
+  web1:
     command: ["pnpm", "--filter", "@oddzilla/web", "dev"]
     ports:
       - "127.0.0.1:${WEB_PORT:-3000}:${WEB_PORT:-3000}"

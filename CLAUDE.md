@@ -16,7 +16,7 @@ Postgres 16 + Redis 7 + Caddy, all on one Hetzner box via Docker Compose.
 | Which markets? | All Oddin markets — the `provider_market_id` whitelist was dropped at both feed-ingester and `/catalog/matches/:id`. Known labels for match-winner (`1`) and map-winner (`4`); others render as "Market #N". |
 | Which feed? | Oddin.gg, **protocol level** (raw AMQP + REST, no SDK) |
 | Which chains? | USDC on ERC20 (Ethereum) only. Migration 0032 renamed the currency from USDT and dropped Tron + per-user HD addresses. |
-| Where does it run? | Hetzner CPX22 at `178.104.174.24` (see [`CONNECT.md`](./CONNECT.md)). Public URLs: **`oddzilla.cc`** (storefront, apex) + **`sadmin.oddzilla.cc`** (admin; `/` redirects to `/admin`). The legacy `s.oddzilla.cc` host 301s to the apex via a hard-coded Caddyfile block — drop the block and DNS record once the old subdomain stops receiving traffic. Let's Encrypt via Caddy. |
+| Where does it run? | Hetzner CPX31 at `178.104.174.24` (see [`CONNECT.md`](./CONNECT.md)). 4 vCPU / 8 GB / 160 GB — upgraded from CPX22 on 2026-05-11 to give the storefront SSR replica fan-out (3× Next.js processes) room to breathe alongside postgres, api, and the Go workers. Public URLs: **`oddzilla.cc`** (storefront, apex) + **`sadmin.oddzilla.cc`** (admin; `/` redirects to `/admin`). The legacy `s.oddzilla.cc` host 301s to the apex via a hard-coded Caddyfile block — drop the block and DNS record once the old subdomain stops receiving traffic. Let's Encrypt via Caddy. |
 | How is money stored? | `BIGINT _micro` (6 decimals = 1,000,000 micro per unit) on every wallet/ledger/ticket row, with a sibling `currency CHAR(4)`. Two currencies: `USDC` (real, on-chain via ERC20) and `OZ` (demo, every signup gets a 1000 OZ bonus for testing the bet flow). Withdrawals + deposits stay USDC-only. |
 | Auth? | Email + password (argon2id), JWT access (15 min) + refresh cookie (30 d). `Domain=.oddzilla.cc` so session works on both subdomains. |
 | UI aesthetic? | Premium / quiet editorial: Instrument Serif display + Geist UI + Geist Mono for odds. Light theme default (`#f4f2ec`), dark via `data-theme="dark"` (toggle in the top bar; choice persists in `localStorage["oz:theme"]`). Ported from the Claude Design handoff bundle. **No emojis.** |
@@ -48,13 +48,16 @@ Redis pub/sub ──► ws-gateway (TS) ──► browsers (WebSocket, 5 msg/s/c
                                        │
                                        └─ also user:{id} channels for ticket frames
 
-Browser ── Next.js (apps/web) ──► api (TS Fastify) ──► Postgres
-                                    │
-                                    ├─► POST /bets → ticket → pg_notify('bet_delay')
-                                    │      ▼
-                                    │   bet-delay (Go) ──► Postgres (promote/reject)
-                                    │
-                                    └─► POST /wallet/withdrawals → locks stake → admin queue
+Browser ── Caddy (lb_policy least_conn) ──► web1 / web2 / web3 (Next.js SSR)
+                                                  │
+                                                  ▼
+                                              api (TS Fastify) ──► Postgres
+                                                  │
+                                                  ├─► POST /bets → ticket → pg_notify('bet_delay')
+                                                  │      ▼
+                                                  │   bet-delay (Go) ──► Postgres (promote/reject)
+                                                  │
+                                                  └─► POST /wallet/withdrawals → locks stake → admin queue
 
 Oddin AMQP ──► settlement (Go) ──► Postgres (settlements + tickets + wallet_ledger)
                                     └─► Redis pub/sub (user:{id} ticket frames)
@@ -220,12 +223,14 @@ These rules are load-bearing. Breaking them causes money or data loss.
 | Browser API/WS clients | [`apps/web/src/lib/api-client.ts`](./apps/web/src/lib/api-client.ts) (empty `NEXT_PUBLIC_API_URL` → `/api` prefix; in dev set `.env.local`), [`ws-client.ts`](./apps/web/src/lib/ws-client.ts) (empty `NEXT_PUBLIC_WS_URL` → `wss://<host>/ws`) |
 | Design tokens + Tailwind @theme bridge | [`apps/web/src/app/globals.css`](./apps/web/src/app/globals.css) |
 | Route groups | `apps/web/src/app/{(main),(auth)}/` — `(main)` shares the shell, `(auth)` = login/signup, `admin/*` outside both |
+| Replica healthcheck (Caddy lb probe) | [`apps/web/src/app/healthz/route.ts`](./apps/web/src/app/healthz/route.ts) — bare 200 JSON; excluded from the middleware matcher so the 5 s active health probe across N replicas doesn't pay for CSP nonce + silent-refresh on every hit. |
+| Request-id propagation (cross-process trace) | Caddy (passes headers through) → [`apps/web/src/middleware.ts`](./apps/web/src/middleware.ts) (`resolveRequestId` + `applyRequestId`) → [`lib/server-fetch.ts`](./apps/web/src/lib/server-fetch.ts) + [`lib/auth.ts`](./apps/web/src/lib/auth.ts) (forward header on outbound /api fetch) → [`services/api/src/server.ts`](./services/api/src/server.ts) (`genReqId` reads `x-request-id`; `onSend` echoes it on the response) → ws-gateway logs it on upgrade. Inbound IDs are clamped to `^[A-Za-z0-9_-]{1,128}$` at every layer so a hostile client can't poison log lines. |
 | Admin pages (web) | [`apps/web/src/app/admin/`](./apps/web/src/app/admin/) — `page.tsx` (PnL dashboard), `users` (Bettor user management — pinned to `role=user`), `users/[id]` (edit; breadcrumb routes back to Bettors or Admins per role), `admins` (Admin user management — admin + support, with an admin-mode `CreateUserForm`), `logs` (sport→tournament→match browser with inline SVG odds-history charts and a raw AMQP feed viewer per match), `audit`, `mapping`, `margins`, `withdrawals`, `feed` (recovery controls), `wedged-matches` (lists matches stuck at `not_started` past their scheduled start with active markets; per-row Refresh-from-REST button → `pg_notify('fixture_refresh', urn)` → feed-ingester applies Oddin's authoritative status. Operator visibility for whatever the suspend-before-recover flush didn't catch), `fe-settings` (storefront-display knobs; first sub-section: `markets-order` per-sport ordering of market types), `competitors` (team logos + brand colours; sport-filterable list with inline edit, missing-logo toggle, and a bulk-seed endpoint). Not yet reskinned; uses legacy `--color-*` tokens mapped in `@theme`. |
 | Android client (WebView shell) | [`apps/mobile-android/`](./apps/mobile-android/) — storefront-only Android app distributed as a self-hosted APK (never published to Play Store). **Pivoted to a Chromium WebView shell in v0.5.0** (was a native Compose rewrite up to 0.4.0). [`web/WebViewHost.kt`](./apps/mobile-android/app/src/main/java/cc/oddzilla/app/web/WebViewHost.kt) hosts a single `WebView` pointing at `https://oddzilla.cc`; the web app is already responsive (`MobileBetSlipBar`, `MobileDrawersProvider`, `MobileShellOverlay`, mobile-first breakpoints in `apps/web/src/app/globals.css`) so wrapping it gives pixel parity with mobile Chrome. Native chrome that stays native: system splash, `UpdateGate` modal (overlays the WebView so a mandatory update can't be tapped past), and the FCM scaffolding in `fcm/`. WebView config: `domStorageEnabled`, third-party cookies on (Disir / Twitch / YouTube embeds), strict mixed-content, UA-stamped with `Oddzilla-Android/<ver>` for log attribution, in-app for `oddzilla.cc` + `*.oddin.gg` + Twitch / YouTube / Kick / Gjirafa hosts and `Intent.ACTION_VIEW` for everything else. Cookies mirror from the WebView's `CookieManager` into [`PersistentCookieJar`](./apps/mobile-android/app/src/main/java/cc/oddzilla/app/data/api/CookieStore.kt) on every page-finished so the OkHttp client used by `DevicesRepository` (FCM device-register) authenticates against the same session. REST surface trimmed to the three `/devices/*` endpoints — auth, catalog, wallet, bets, community, cashout flows now happen entirely inside the WebView. Self-update flow lives in `update/`: `UpdateController` polls `https://oddzilla.cc/app/version.json` on cold start, downloads the APK via OkHttp into `externalCacheDir/updates/`, verifies SHA-256 against the manifest, and hands off to `Intent.ACTION_VIEW + application/vnd.android.package-archive` via `FileProvider`. Version source-of-truth is `version.properties` at the project root; `scripts/release.ps1` (and the bash twin) builds a signed APK, hashes it, scps both the APK + new `version.json` to `team@178.104.174.24:/srv/oddzilla-apk/`. |
 | Android APK distribution | `/srv/oddzilla-apk/` on the box, served by Caddy at `https://oddzilla.cc/app/*` (mounted read-only into the caddy container). Bootstrap once via [`infra/hetzner/oddzilla-apk-init.sh`](./infra/hetzner/oddzilla-apk-init.sh). The directory holds `version.json` (no-cache) + `oddzilla-<versionName>.apk` files (long immutable cache). The mobile app fetches the manifest on launch; tapping Update streams the APK + verifies the SHA-256 from the manifest before launching the system installer. |
 | Server access | [`CONNECT.md`](./CONNECT.md) |
 | GitHub repo | https://github.com/alexanderchernavin-cloud/oddzilla1 (private) |
-| Production server | `team@178.104.174.24` (Hetzner CPX22, Ubuntu 24.04). Repo lives at `/home/team/oddzilla`. Docker 29 + pnpm 9.12 + Node 22 installed. |
+| Production server | `team@178.104.174.24` (Hetzner CPX31, 4 vCPU / 8 GB / 160 GB, Ubuntu 24.04 — upgraded from CPX22 on 2026-05-11). Repo lives at `/home/team/oddzilla`. Docker 29 + pnpm 9.12 + Node 22 installed. |
 | Plan file (original brainstorm) | `C:\Users\q1qoo\.claude\plans\initialize-a-full-stack-b2c-peppy-pearl.md` |
 
 ## Deep references
@@ -333,6 +338,7 @@ post-Phase-8 Oddin-workflow hardening pass; production stack is live at
 | Top-bar global search | Live | `/catalog/search?q=…` (case-insensitive, 6 hits per facet across active sports / tournaments / teams / matches; matches gated on at least one active market). Frontend popover in `top-bar-search.tsx` debounces 180 ms, supports arrow-key nav, Cmd/Ctrl+K focus, Esc/click-outside close. Picking a team result navigates to `/sport/:slug?team=ID` so the sport page renders only that team's matches with a dismissible chip. |
 | Sidebar tournament sub-tree | Live | When the user is on `/sport/:slug`, the sidebar auto-fetches `/catalog/sports/:slug/tournaments` and renders an indented list under the sport. Each tournament links to `/sport/:slug?tournament=ID`; the sport page reads the param server-side and shows a dismissible filter chip. |
 | Frontend design | Live (2026-04-18) | Ported from Claude Design handoff bundle. Grid shell: top-bar + left sidebar + main + right-rail bet slip. Route groups: `(auth)` = login/signup, `(main)` = home/sport/match/account/bets/wallet, `admin/*` keeps its own layout. Sidebar order: CS2 → Dota 2 → LoL → Valorant → every other active sport (alphabetical); `efootballbots` + `ebasketballbots` are hidden via both the feed-ingester blocklist (`BLOCKED_ODDIN_SPORT_SLUGS`) and a defensive filter in `sidebar.tsx`. Tokens in `apps/web/src/app/globals.css`; legacy `--color-*` aliases kept for admin/bets/wallet pages. |
+| Web SSR replica fan-out + request-id tracing | Live (2026-05-11) | Storefront runs three Next.js replicas (`web1` / `web2` / `web3`) behind Caddy `lb_policy least_conn` with active health checks on `/healthz` (5 s interval; replica drops out within 7 s if it goes down). `web1` always runs; `web2` + `web3` are gated on the `scaled` Compose profile so local dev keeps the single-process behaviour. Per-replica `mem_limit` is 400 MiB (down from the previous single-replica 640) so the three together fit cleanly in 8 GB alongside postgres + api + workers. Rolling deploys via `make recreate-web` cycle the replicas serially and wait for each healthcheck, so updates never take all three down at once. Cross-process tracing rides an `x-request-id` header: the Next.js middleware ([apps/web/src/middleware.ts](./apps/web/src/middleware.ts)) generates or echoes one per page render and forwards it on every server-side fetch (`lib/server-fetch.ts`, `lib/auth.ts`); Fastify's `genReqId` picks it up so `reqId` lands on every api log line; ws-gateway logs it on upgrade; the api echoes it back to the browser via `onSend`. A single grep with the request id finds the SSR render + every API call + WS upgrade it triggered (`make weblogs` interleaves all three replicas; the production-side jq recipe is in [docs/OPERATIONS.md](./docs/OPERATIONS.md#logs)). |
 | Bet slip + placement | Live | Singles + combos (up to 20 legs, cross-match only — same-match legs rejected server-side). Always-visible right rail (`apps/web/src/components/shell/bet-slip-rail.tsx`) drives the `BetSlipProvider` store, with a Single/Combo toggle and a USDT/OZ currency switcher (default OZ for the demo flow). The chosen currency is persisted in localStorage and forwarded as `currency` on `POST /bets`; the API debits the matching `(user_id, currency)` wallet. Withdrawals also block non-active users at request time. |
 | bet-delay worker | Live | LISTEN + 1s sweep + 5% drift tolerance |
 | Oddin AMQP feed (feed-ingester + settlement) | Live | AMQPS over `:5672` (not 5671), vhost `/oddinfeed/{customer_id}` URL-assembled by hand to preserve `%2F`. Bookmaker 142 |
@@ -462,21 +468,29 @@ ssh team@178.104.174.24 "set -a; . /home/team/oddzilla/.env; set +a; \
 # 3. Build ONLY the services this PR changed, ONE AT A TIME, then
 #    recreate just those. NEVER run `docker compose build` (no
 #    service argument) on this box.
-for svc in api web feed-ingester; do
+#    The web image is shared across three replicas — build it once
+#    against `web1` and the other two pick it up at recreate time.
+for svc in api web1 feed-ingester; do
   ssh team@178.104.174.24 "cd /home/team/oddzilla && \
-    sudo -n docker compose -f docker-compose.yml build $svc"
+    sudo -n docker compose -f docker-compose.yml --profile scaled build $svc"
 done
 ssh team@178.104.174.24 "cd /home/team/oddzilla && \
-  sudo -n docker compose -f docker-compose.yml up -d --no-deps --force-recreate api web feed-ingester"
+  sudo -n docker compose -f docker-compose.yml --profile scaled up -d \
+  --no-deps --force-recreate api feed-ingester"
+# Roll web1 → web2 → web3 serially so traffic stays on the other two
+# replicas while each one cycles (zero-downtime). Wait for healthcheck
+# to pass before moving on.
+ssh team@178.104.174.24 "cd /home/team/oddzilla && make recreate-web"
 ```
 
 > **DO NOT run `docker compose build` without a service argument on
-> this box.** CPX22 has 4 GB RAM — building all 7 services in
-> parallel exhausts memory, drives the kernel into swap thrash
-> (CPU pegged at 200%, disk reads sustained at ~1 GB/s), and SSH
-> banner exchange starts timing out. The site goes dark until
-> someone power-cycles the VM via the Hetzner console. The serial
-> per-service form above stays well under the RAM ceiling.
+> this box.** The box is now CPX31 (8 GB) so a bare parallel build
+> *might* not OOM the way the 4 GB CPX22 did on 2026-05-06 (see
+> `project_build_oom_incident`), but we have not retested. Parallel
+> builds across the full service set still produce sustained CPU +
+> disk pressure that can drop ws-gateway / feed-ingester to
+> millisecond responsiveness during the build. The serial
+> per-service form below is the proven path; stick to it.
 >
 > Migration → build → recreate is the right order. The new column
 > appears before the new code reads it; running images can ignore

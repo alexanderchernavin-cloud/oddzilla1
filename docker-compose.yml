@@ -1,6 +1,7 @@
-# Oddzilla — single-box Docker Compose (Hetzner CPX22 target).
-# Every service is designed so it can be moved to a separate box by
-# changing hostnames in `.env`; no localhost assumptions in code.
+# Oddzilla — single-box Docker Compose (Hetzner CPX31 target;
+# upgraded from CPX22 on 2026-05-11). Every service is designed so it
+# can be moved to a separate box by changing hostnames in `.env`; no
+# localhost assumptions in code.
 
 name: oddzilla
 
@@ -59,6 +60,31 @@ x-ts-service: &ts-service
       condition: service_healthy
   env_file: .env
   logging: *default-logging
+
+# Next.js storefront runs as N identical replicas fronted by Caddy
+# (lb_policy least_conn). SSR is single-threaded per Node process; one
+# replica saturates one vCPU under load. Three replicas use ~3 of the
+# 4 vCPU on CPX31, leaving one core for api / postgres / ws-gateway.
+# Per-replica mem_limit is sized so 3× sums under 1.5 GiB, well within
+# the 8 GiB box budget. The image, env, and healthcheck are all
+# identical — only the REPLICA_NAME differs so a log line identifies
+# which container produced it.
+x-web: &web-base
+  <<: *sandbox
+  restart: unless-stopped
+  logging: *default-logging
+  mem_limit: 400m
+  cpus: 0.75
+  build:
+    context: .
+    dockerfile: apps/web/Dockerfile
+  env_file: .env
+  depends_on:
+    - api
+    - ws-gateway
+  healthcheck:
+    <<: *hc
+    test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${WEB_PORT:-3000}/healthz"]
 
 services:
   postgres:
@@ -157,7 +183,11 @@ services:
       ADMIN_HOST: ${ADMIN_HOST:-admin.localhost}
       ACME_EMAIL: ${ACME_EMAIL:-admin@localhost}
     depends_on:
-      - web
+      # web1 always runs; web2 + web3 join under the `scaled` profile in
+      # production. Caddy's active health checks ride out their startup
+      # gap — listing them as deps would tangle dev (no `scaled` profile)
+      # into an unresolvable wait.
+      - web1
       - api
       - ws-gateway
 
@@ -245,19 +275,9 @@ services:
       <<: *hc
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${WS_GATEWAY_PORT:-3002}/healthz"]
 
-  web:
-    restart: unless-stopped
-    logging: *default-logging
-    mem_limit: 640m
-    cpus: 0.75
-    security_opt:
-      - "no-new-privileges:true"
-    cap_drop:
-      - ALL
-    build:
-      context: .
-      dockerfile: apps/web/Dockerfile
-    env_file: .env
+  web1:
+    <<: *web-base
+    container_name: oddzilla-web1
     environment:
       PORT: ${WEB_PORT:-3000}
       # Next.js standalone reads HOSTNAME for the bind address. Default is
@@ -267,12 +287,36 @@ services:
       # Shared with Caddy so the app can recognize admin-backoffice requests
       # (e.g. suppress the signup surface there).
       ADMIN_HOST: ${ADMIN_HOST:-admin.localhost}
-    depends_on:
-      - api
-      - ws-gateway
-    healthcheck:
-      <<: *hc
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${WEB_PORT:-3000}"]
+      # REPLICA_NAME lands in every log line emitted from middleware +
+      # server-fetch. Combined with the x-request-id header propagated
+      # from Caddy → web → api, a single grep finds the SSR render and
+      # every API call it triggered, regardless of which replica
+      # produced it.
+      REPLICA_NAME: web1
+
+  # web2 + web3 are gated on the `scaled` profile so local dev runs a
+  # single replica without the cost of three Node processes. Production
+  # deploy commands include `--profile scaled` (see CLAUDE.md) so all
+  # three come up under one Caddy upstream.
+  web2:
+    <<: *web-base
+    container_name: oddzilla-web2
+    profiles: [scaled]
+    environment:
+      PORT: ${WEB_PORT:-3000}
+      HOSTNAME: 0.0.0.0
+      ADMIN_HOST: ${ADMIN_HOST:-admin.localhost}
+      REPLICA_NAME: web2
+
+  web3:
+    <<: *web-base
+    container_name: oddzilla-web3
+    profiles: [scaled]
+    environment:
+      PORT: ${WEB_PORT:-3000}
+      HOSTNAME: 0.0.0.0
+      ADMIN_HOST: ${ADMIN_HOST:-admin.localhost}
+      REPLICA_NAME: web3
 
   feed-ingester:
     <<: *go-service

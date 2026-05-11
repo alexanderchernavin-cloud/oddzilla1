@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 COMPOSE := docker compose
 
-.PHONY: help up down logs ps restart build recreate migrate seed psql redis-cli fmt lint test typecheck clean nuke
+.PHONY: help up down logs weblogs ps restart build recreate recreate-web migrate seed psql redis-cli fmt lint test typecheck clean nuke
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -16,6 +16,9 @@ down: ## Stop the stack
 
 logs: ## Tail all service logs
 	$(COMPOSE) logs -f --tail=200
+
+weblogs: ## Tail interleaved logs from every Next.js replica (web1/web2/web3)
+	$(COMPOSE) logs -f --tail=200 web1 web2 web3
 
 ps: ## Show container status
 	$(COMPOSE) ps
@@ -39,6 +42,19 @@ recreate: ## Recreate one service: make recreate SVC=api
 		exit 1; \
 	fi
 	$(COMPOSE) -f docker-compose.yml up -d --no-deps --force-recreate $(SVC)
+
+recreate-web: ## Rolling-recreate web1 → web2 → web3 (waits for each to pass healthcheck)
+	@for r in web1 web2 web3; do \
+		echo "→ recreating $$r"; \
+		$(COMPOSE) -f docker-compose.yml --profile scaled up -d --no-deps --force-recreate $$r; \
+		for i in 1 2 3 4 5 6 7 8 9 10 11 12; do \
+			state=$$(docker inspect -f '{{.State.Health.Status}}' oddzilla-$$r 2>/dev/null || echo "missing"); \
+			if [ "$$state" = "healthy" ]; then \
+				echo "  $$r healthy"; break; \
+			fi; \
+			sleep 2; \
+		done; \
+	done
 
 migrate: ## Apply database migrations
 	pnpm --filter @oddzilla/db db:migrate
