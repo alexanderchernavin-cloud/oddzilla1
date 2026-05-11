@@ -1,16 +1,26 @@
-// Server-rendered Analyses section on /match/[id].
-//
-// Fetches the per-match analyses feed (sort=recommended, top 10),
-// renders each via AnalysisCard, and inlines a client-only Write
-// button that opens the editor modal. The Write button is gated
-// server-side: only logged-in users with at least one accepted
-// ticket on this match see it (the editor would server-reject any
-// publish attempt without one anyway, but skipping the CTA when
-// it can't possibly succeed is the kinder UX).
+"use client";
 
-import type { AnalysisFeedResponse } from "@oddzilla/types";
-import { getSessionUser } from "@/lib/auth";
-import { serverApi } from "@/lib/server-fetch";
+// Client-side Analyses section on /match/[id].
+//
+// Lifted out of SSR on 2026-05-11 — see docs/LOADTEST.md. The previous
+// server-rendered version added a third /api/community/* fetch to every
+// match-page render and the path is per-IP-rate-limited (which all
+// k6 VUs share, so the section's 429s were dominating the load test's
+// failure mode). Moving it client-side:
+//   - Lets the match page SSR finish in one /catalog/matches/:id round
+//     trip, regardless of how slow community is
+//   - Spreads the /api/community/analyses load across each viewer's
+//     own IP (proper per-user rate limiting)
+//   - Renders the match data immediately; the analyses panel fills in
+//     post-hydration with a brief skeleton
+//
+// Caller props are unchanged. `loggedIn` replaces the previous
+// server-side `getSessionUser()` because we can't call /auth/me from
+// a client component — the parent server component passes it down.
+
+import { useEffect, useState } from "react";
+import type { AnalysisFeedResponse, AnalysisSummary } from "@oddzilla/types";
+import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { AnalysisCard } from "./analysis-card";
 import { WriteAnalysisButton } from "./write-analysis-button";
 
@@ -22,28 +32,65 @@ interface Props {
   // the historical record), but the section's framing of "predict"
   // doesn't apply once the match is in progress.
   matchStatus: "not_started" | "live" | "closed" | "cancelled" | "suspended";
+  loggedIn: boolean;
 }
 
-export async function MatchAnalysesSection({ matchId, matchTitle, matchStatus }: Props) {
-  const sessionUser = await getSessionUser();
-
-  const feed = await serverApi<AnalysisFeedResponse>(
-    `/community/analyses?match=${encodeURIComponent(matchId)}&sort=recommended&pageSize=10`,
-  );
-  const analyses = feed?.analyses ?? [];
-
+export function MatchAnalysesSection({
+  matchId,
+  matchTitle,
+  matchStatus,
+  loggedIn,
+}: Props) {
   const isPreMatch = matchStatus === "not_started";
   const isLiveOrClosed = matchStatus === "live" || matchStatus === "closed";
-  const showWriteButton = Boolean(sessionUser) && isPreMatch;
+  const showWriteButton = loggedIn && isPreMatch;
+
+  const [analyses, setAnalyses] = useState<AnalysisSummary[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [errored, setErrored] = useState(false);
+
+  useEffect(() => {
+    // Cancelled / suspended fixtures fall through to a null render
+    // below, so skip the fetch entirely — we'd just discard it.
+    if (!isPreMatch && !isLiveOrClosed) {
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+    setErrored(false);
+    clientApi<AnalysisFeedResponse>(
+      `/community/analyses?match=${encodeURIComponent(matchId)}&sort=recommended&pageSize=10`,
+    )
+      .then((res) => {
+        if (cancelled) return;
+        setAnalyses(res.analyses ?? []);
+        setLoading(false);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        // Soft-fail: a 429 from the rate limiter or a transient 5xx
+        // should not break the match page. Render the empty-hint
+        // placeholder and move on; user can refresh manually.
+        if (e instanceof ApiFetchError) {
+          // No-op — render the empty state below.
+        }
+        setAnalyses([]);
+        setErrored(true);
+        setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [matchId, isPreMatch, isLiveOrClosed]);
 
   // Render whenever the analysis window is meaningful or recently
   // closed: pre-match (so logged-in users can publish, anonymous
   // users see the affordance) OR live/closed (so any analyses are
   // visible and a viewer who arrives expecting the Write CTA gets
   // an honest "window closed" answer instead of a silent no-op).
-  // Cancelled / suspended fixtures fall through to null — they
-  // never had a meaningful pre-match window, so editorial framing
-  // would be misleading.
   if (!isPreMatch && !isLiveOrClosed) {
     return null;
   }
@@ -66,35 +113,90 @@ export async function MatchAnalysesSection({ matchId, matchTitle, matchStatus }:
         ) : null}
       </header>
 
-      {analyses.length === 0 ? (
-        <EmptyHint loggedIn={Boolean(sessionUser)} isPreMatch={isPreMatch} />
-      ) : (
+      {loading ? (
+        <AnalysesSkeleton />
+      ) : analyses && analyses.length > 0 ? (
         <ul className="mt-4 space-y-3">
           {analyses.map((a) => (
             <AnalysisCard key={a.id} analysis={a} hideMatch />
           ))}
         </ul>
+      ) : (
+        <EmptyHint
+          loggedIn={loggedIn}
+          isPreMatch={isPreMatch}
+          errored={errored}
+        />
       )}
     </section>
   );
 }
 
+// Visual placeholder while the client fetch is in flight. Three rows
+// match the average analyses count and keep the page height stable
+// so further content below doesn't jump when results arrive.
+function AnalysesSkeleton() {
+  return (
+    <ul className="mt-4 space-y-3" aria-hidden>
+      {[0, 1, 2].map((i) => (
+        <li
+          key={i}
+          className="rounded-[12px] border border-[var(--color-border)] p-4"
+          style={{ background: "var(--surface)" }}
+        >
+          <div
+            style={{
+              height: 12,
+              width: "55%",
+              borderRadius: 4,
+              background: "var(--surface-2)",
+            }}
+          />
+          <div
+            style={{
+              marginTop: 10,
+              height: 10,
+              width: "85%",
+              borderRadius: 4,
+              background: "var(--surface-2)",
+            }}
+          />
+          <div
+            style={{
+              marginTop: 6,
+              height: 10,
+              width: "70%",
+              borderRadius: 4,
+              background: "var(--surface-2)",
+            }}
+          />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 // Keeps the empty-state copy honest about *why* the user isn't
-// seeing a CTA. Three real cases (everything else falls through
-// to a returns-null upstream):
+// seeing a CTA. Four cases now (with `errored` so a transient
+// fetch failure doesn't look like a genuine "no analyses yet"):
 //   pre-match + logged in   → "Be the first" (CTA right above)
 //   pre-match + anonymous   → "Log in to publish"
 //   live/closed             → window closed (no analyses landed
 //                             before kickoff)
+//   errored                 → "Couldn't load analyses, try again"
 function EmptyHint({
   loggedIn,
   isPreMatch,
+  errored,
 }: {
   loggedIn: boolean;
   isPreMatch: boolean;
+  errored: boolean;
 }) {
   let body: string;
-  if (isPreMatch && loggedIn) {
+  if (errored) {
+    body = "Couldn't load analyses. Refresh to retry.";
+  } else if (isPreMatch && loggedIn) {
     body = "No analyses on this match yet. Be the first.";
   } else if (isPreMatch) {
     body = "No analyses on this match yet. Log in and place a bet to publish one.";

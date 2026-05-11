@@ -9,9 +9,9 @@ import { MatchPageProvider } from "@/lib/match-page-context";
 import { CombiBoostConfigProvider } from "@/lib/combi-boost-config";
 import { SportLogosProvider } from "@/lib/sport-logos";
 import { NotificationProvider } from "@/lib/notifications";
+import { WalletProvider } from "@/lib/wallets";
 import { getSessionUser } from "@/lib/auth";
 import { serverApi } from "@/lib/server-fetch";
-import type { WalletListResponse } from "@oddzilla/types";
 import {
   COMBI_BOOST_DEFAULT_CONFIG,
   type CombiBoostConfigLive,
@@ -30,17 +30,22 @@ interface SportsResponse {
 }
 
 export default async function MainLayout({ children }: { children: React.ReactNode }) {
-  const [user, sportsRes, liveCountsRes, walletRes, boostRes] = await Promise.all([
+  // /wallet used to be in this fan-out and ran on every page render.
+  // The 2026-05-11 load test traced its 5000-VU storefront crash to
+  // the per-render fan-out fired by this layout (see docs/LOADTEST.md);
+  // we moved the wallet fetch into a client-side WalletProvider so
+  // anonymous renders don't fire the request at all and authed renders
+  // return to the pool faster. The wallet pill on the top bar shows a
+  // brief skeleton before the first client fetch resolves.
+  const [user, sportsRes, liveCountsRes, boostRes] = await Promise.all([
     getSessionUser(),
     serverApi<SportsResponse>("/catalog/sports"),
     serverApi<Record<string, number>>("/catalog/live-counts"),
-    serverApi<WalletListResponse>("/wallet"),
     serverApi<CombiBoostConfigLive>("/catalog/combi-boost-config"),
   ]);
 
   const sports = sportsRes?.sports ?? [];
   const liveCounts = liveCountsRes ?? {};
-  const wallets = walletRes?.wallets ?? [];
   const combiBoostConfig: CombiBoostConfigLive =
     boostRes ?? COMBI_BOOST_DEFAULT_CONFIG;
 
@@ -52,11 +57,11 @@ export default async function MainLayout({ children }: { children: React.ReactNo
         entries={sports.map((s) => ({ slug: s.slug, logoUrl: s.logoUrl ?? null }))}
       >
       <NotificationProvider enabled={Boolean(user)}>
+      <WalletProvider signedIn={Boolean(user)}>
       <ShellContainer>
         <TopBar
           signedIn={Boolean(user)}
           user={user ?? undefined}
-          wallets={wallets}
         />
         <Sidebar
           sports={sports}
@@ -77,6 +82,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
         <MobileShellOverlay />
         <MobileBetSlipBar />
       </ShellContainer>
+      </WalletProvider>
       </NotificationProvider>
       </SportLogosProvider>
       </CombiBoostConfigProvider>

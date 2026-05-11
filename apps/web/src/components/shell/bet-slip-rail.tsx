@@ -29,7 +29,7 @@ import { I } from "@/components/ui/icons";
 import { Button } from "@/components/ui/primitives";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { useMobileDrawers } from "./mobile-drawer-context";
-import { dispatchWalletChanged } from "./wallet-pill";
+import { useWallets } from "@/lib/wallets";
 import { RailPrematchPanel } from "@/components/widgets/rail-prematch-panel";
 import type {
   SlipSelection,
@@ -66,6 +66,7 @@ export function BetSlipRail() {
   const currency = slip.currency;
   const { closeAll } = useMobileDrawers();
   const router = useRouter();
+  const { optimisticDeduct: optimisticDeductWallet } = useWallets();
   const [stakeInput, setStakeInput] = useState("10");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -463,14 +464,23 @@ export function BetSlipRail() {
         },
       );
       setPlacedTicketId(res.ticket.id);
+      // Optimistic balance deduct so the top-bar pill + any other
+      // wallet consumers reflect the new available balance immediately.
+      // For singles the server places one ticket per selection at
+      // `stakeMicro` each (total debit = stakeMicro × N); other modes
+      // produce one ticket at `stakeMicro` total. The api stays
+      // authoritative — a rejected placement (e.g. drift, insufficient
+      // funds on a second tab) shows up as an ApiFetchError above and
+      // the next /wallet refresh (settlement WS frame or a navigation)
+      // reconciles. We've already returned by this branch so the deduct
+      // only applies on confirmed-accepted placements.
+      const totalDebitMicro =
+        effectiveMode === "single"
+          ? BigInt(stakeMicro) * BigInt(selections.length)
+          : BigInt(stakeMicro);
+      optimisticDeductWallet(currency, totalDebitMicro);
       slip.clear();
       router.refresh();
-      // Stake debit landed — refresh the top-bar wallet pill so the
-      // balance reflects the placement without waiting for the next
-      // full navigation. (router.refresh() rebuilds the page but the
-      // top-bar prop comes from the layout's SSR fetch, which the
-      // pill mirrors locally — the event nudges it to re-pull.)
-      dispatchWalletChanged();
       // Surface the new ticket in-rail by flipping to History — the slip
       // body now also shows a placement-success card, but the user usually
       // wants to watch their fresh ticket pick up status.
