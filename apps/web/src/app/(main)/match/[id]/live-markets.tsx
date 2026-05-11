@@ -546,35 +546,53 @@ function SingleMarketCard({
             !price ||
             suspended ||
             builderLocked(m.id, o.outcomeId);
-          // Wrapper is block (default for div) — fills the grid cell
-          // the way the OddButton used to before per-outcome overlays
-          // existed. We also reserve 11px of top padding for the
-          // badge so the chip can sit ABOVE the OddButton without
-          // bleeding into the previous row.
+          // Wrapper is a plain block div that fills the grid cell —
+          // no paddingTop, so the cell's height is identical whether
+          // or not it has a tip badge. Keeps the OddButtons aligned
+          // across rows in line families.
+          //
+          // Stacking: the badge overlay div has NO z-index. Without
+          // one, a positioned element doesn't create a new stacking
+          // context, which means the popover (z-index 200, defined
+          // inside the badge) ESCAPES to the nearest stacking-
+          // context ancestor and beats all sibling badge chips
+          // globally. Previously the overlay carried `zIndex: 5`,
+          // which trapped the popover inside a z=5 context and
+          // peer badges from later cells painted over it.
+          //
+          // DOM order: OddButton FIRST, badge wrapper SECOND. With
+          // both at the same stacking level, the later element
+          // paints on top — the badge sits visibly over the
+          // OddButton's top-right corner without needing z-index.
           return (
             <div
               key={o.outcomeId}
-              style={{
-                position: "relative",
-                paddingTop: outcomeTips.length > 0 ? 11 : 0,
-              }}
+              style={{ position: "relative" }}
             >
+              <OddButton
+                size="lg"
+                price={price}
+                label={label}
+                selected={selected}
+                locked={locked}
+                onClick={() => toggle(slip, m, o, match, label)}
+                style={{ width: "100%" }}
+              />
               {outcomeTips.length > 0 && (
                 <div
                   style={{
                     position: "absolute",
-                    top: 0,
-                    // Sit centred above the OddButton — the button
-                    // fills 100% width of this wrapper, so 50% is the
-                    // visual centre.
-                    left: "50%",
-                    transform: "translateX(-50%)",
-                    zIndex: 5,
+                    // Inset into the top-right corner of the OddButton
+                    // frame (per the latest design ask). 6px on each
+                    // axis keeps the chip clear of the button's
+                    // rounded corner radius.
+                    top: 6,
+                    right: 6,
                     pointerEvents: "auto",
                   }}
                   // Stop click propagation so a tap on the chip's edge
                   // doesn't fall through to the OddButton underneath
-                  // and add the wrong selection to the slip.
+                  // and toggle the bet slip selection.
                   onClick={(e) => e.stopPropagation()}
                 >
                   <ZillaTipsBadge
@@ -596,15 +614,6 @@ function SingleMarketCard({
                   />
                 </div>
               )}
-              <OddButton
-                size="lg"
-                price={price}
-                label={label}
-                selected={selected}
-                locked={locked}
-                onClick={() => toggle(slip, m, o, match, label)}
-                style={{ width: "100%" }}
-              />
             </div>
           );
         })}
@@ -846,25 +855,35 @@ function LineRow({
           !price ||
           suspended ||
           builderLocked(m.id, o.outcomeId);
+        // No paddingTop — every cell in the ladder is the same height
+        // whether or not it has a tip badge. Keeps rows aligned across
+        // lines (a -3.5 row with a chip and a +6.5 row without must
+        // sit at the same baseline).
+        //
+        // DOM order: OddButton first, badge wrapper second — the
+        // badge paints on top naturally. No z-index on the wrapper
+        // so it doesn't trap the popover in a local stacking
+        // context (popover z-index 200 then beats sibling chips).
         return (
-          <div
-            key={slot}
-            style={{
-              position: "relative",
-              // Reserve top padding only when a chip will render here,
-              // so unbadged cells stay flush with the row baseline and
-              // don't drift visually.
-              paddingTop: outcomeTips.length > 0 ? 11 : 0,
-            }}
-          >
+          <div key={slot} style={{ position: "relative" }}>
+            <OddButton
+              size="md"
+              price={price}
+              label=""
+              selected={selected}
+              locked={locked}
+              onClick={() => toggle(slip, m, o, match, `${slot} ${lineLabel}`)}
+              style={{ width: "100%" }}
+            />
             {outcomeTips.length > 0 && (
               <div
                 style={{
                   position: "absolute",
-                  top: 0,
-                  left: "50%",
-                  transform: "translateX(-50%)",
-                  zIndex: 5,
+                  // Inset into the top-right corner of the OddButton.
+                  // Tighter inset (4px) than the SingleMarketCard
+                  // version because md buttons are 44px vs 52px tall.
+                  top: 4,
+                  right: 4,
                   pointerEvents: "auto",
                 }}
                 onClick={(e) => e.stopPropagation()}
@@ -891,15 +910,6 @@ function LineRow({
                 />
               </div>
             )}
-            <OddButton
-              size="md"
-              price={price}
-              label=""
-              selected={selected}
-              locked={locked}
-              onClick={() => toggle(slip, m, o, match, `${slot} ${lineLabel}`)}
-              style={{ width: "100%" }}
-            />
           </div>
         );
       })}
