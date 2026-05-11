@@ -55,11 +55,10 @@ export const PUBLIC_AUTHOR_SQL = sql`u.tickets_public = true AND u.nickname IS N
 
 // JS-side predicate. Used by code paths that have already loaded the
 // `users` row (e.g. nickname → row lookup) and want to gate on the
-// same condition without a second roundtrip.
-export function isPubliclyVisibleAuthor(row: {
-  ticketsPublic: boolean;
-  nickname: string | null;
-  isAi: boolean;
-}): boolean {
+// same condition without a second roundtrip. Acts as a type predicate
+// so callers get nickname: string (non-null) after the guard.
+export function isPubliclyVisibleAuthor<
+  T extends { ticketsPublic: boolean; nickname: string | null; isAi: boolean },
+>(row: T): row is T & { nickname: string } {
   return row.ticketsPublic && row.nickname !== null && !row.isAi;
 }
