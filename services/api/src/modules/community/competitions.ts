@@ -309,8 +309,8 @@ WITH ranked AS (
     FROM competition_participants cp
     -- Exclude AI seed bettors from the ranking entirely so ranks are
     -- contiguous against human participants only. Mirrors the audit
-    -- finding (SEC-C1): admin surfaces honoured `is_ai = true`, the
-    -- bettor surface did not — leaderboards listed seed accounts as
+    -- finding (SEC-C1): admin surfaces honoured is_ai = true, the
+    -- bettor surface did not -- leaderboards listed seed accounts as
     -- first-class entrants. The JOIN runs once per participant row,
     -- bounded by participant_count, so the cost is negligible.
     INNER JOIN users u ON u.id = cp.user_id AND u.is_ai = false
