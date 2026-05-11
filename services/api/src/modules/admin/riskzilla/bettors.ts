@@ -5,7 +5,13 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { eq, sql } from "drizzle-orm";
 import { users, adminAuditLog } from "@oddzilla/db";
+import { SUPPORTED_CURRENCIES } from "@oddzilla/types/currencies";
 import { BadRequestError, NotFoundError } from "../../../lib/errors.js";
+
+const currencySchema = z
+  .string()
+  .transform((s) => s.toUpperCase())
+  .pipe(z.enum(SUPPORTED_CURRENCIES));
 
 const listQuery = z.object({
   q: z.string().min(1).max(200).optional(),
@@ -15,21 +21,11 @@ const listQuery = z.object({
   // negative-PnL whales here.
   sort: z.enum(["risk_score", "pnl", "stake", "win_rate", "recent"]).default("recent"),
   // Stats aggregation currency. USDC = real-money view; OZ = demo view.
-  currency: z
-    .string()
-    .min(3)
-    .max(4)
-    .transform((s) => s.toUpperCase())
-    .default("USDC"),
+  currency: currencySchema.default("USDC"),
 });
 
 const profileQuery = z.object({
-  currency: z
-    .string()
-    .min(3)
-    .max(4)
-    .transform((s) => s.toUpperCase())
-    .default("USDC"),
+  currency: currencySchema.default("USDC"),
 });
 
 interface BettorRow {
