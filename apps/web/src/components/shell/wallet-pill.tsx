@@ -7,6 +7,12 @@
 // (so the bet slip + this pill + every other consumer of the slip
 // context update in lockstep). The "Open wallet" link at the bottom
 // preserves the previous "click pill → /wallet" path.
+//
+// Wallet data is read from the WalletProvider context — it fetches
+// /wallet client-side once on mount and refreshes on WS user-channel
+// frames that move money. See apps/web/src/lib/wallets.tsx for the
+// rationale (lifted from SSR to keep the (main) layout cheap under
+// load — see docs/LOADTEST.md).
 
 import Link from "next/link";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
@@ -15,23 +21,9 @@ import type { Currency, WalletSnapshot } from "@oddzilla/types";
 import { I } from "@/components/ui/icons";
 import { Divider } from "@/components/ui/primitives";
 import { useBetSlip } from "@/lib/bet-slip";
-import { clientApi } from "@/lib/api-client";
+import { useWallets } from "@/lib/wallets";
 
 const PILL_HEIGHT = 36;
-
-// Custom event other code dispatches via dispatchWalletChanged() when
-// wallet balances may have shifted from in-page actions (cashout
-// accept, bet placement, refund). The top-bar pill listens for it
-// and refetches /wallet so the user sees the new balance immediately
-// instead of having to navigate first. The event name is private —
-// only this module subscribes; external code goes through the
-// exported helper below.
-const WALLET_CHANGED_EVENT = "oz:wallet-changed";
-
-export function dispatchWalletChanged() {
-  if (typeof window === "undefined") return;
-  window.dispatchEvent(new Event(WALLET_CHANGED_EVENT));
-}
 
 const pillStyle: CSSProperties = {
   display: "flex",
@@ -48,36 +40,20 @@ const pillStyle: CSSProperties = {
   color: "var(--fg)",
 };
 
-export function WalletPill({ wallets }: { wallets?: WalletSnapshot[] }) {
+export function WalletPill() {
   const slip = useBetSlip();
   const activeCurrency = slip.currency;
-  // Locally-mirrored wallet list. Seeded from the SSR prop and kept
-  // fresh by listening for WALLET_CHANGED_EVENT (dispatched by the
-  // cashout flow + bet placement flow) — without this the top-bar
-  // balance stays stale until the next full navigation.
-  const [liveWallets, setLiveWallets] = useState<WalletSnapshot[] | undefined>(
-    wallets,
-  );
-  useEffect(() => {
-    setLiveWallets(wallets);
-  }, [wallets]);
-  useEffect(() => {
-    function refresh() {
-      clientApi<{ wallets: WalletSnapshot[] }>("/wallet")
-        .then((res) => setLiveWallets(res.wallets))
-        .catch(() => {
-          // Soft-fail: stale display is preferable to throwing
-          // inside a top-level shell component.
-        });
-    }
-    window.addEventListener(WALLET_CHANGED_EVENT, refresh);
-    return () => window.removeEventListener(WALLET_CHANGED_EVENT, refresh);
-  }, []);
+  const { wallets, loading } = useWallets();
 
-  const activeWallet = liveWallets?.find((w) => w.currency === activeCurrency);
+  const activeWallet = wallets.find((w) => w.currency === activeCurrency);
+  // Render dashes while the first /wallet response is in flight. The
+  // pill is tabular so the column stays the same width and the rest
+  // of the top-bar doesn't reflow when the real number arrives.
   const balanceText = activeWallet
     ? fromMicro(BigInt(activeWallet.availableMicro))
-    : "0";
+    : loading
+      ? "—"
+      : "0";
   const isDemo = activeCurrency === "OZ";
 
   const [open, setOpen] = useState(false);
@@ -151,7 +127,7 @@ export function WalletPill({ wallets }: { wallets?: WalletSnapshot[] }) {
 
       {open ? (
         <CurrencyPopover
-          wallets={liveWallets ?? []}
+          wallets={wallets}
           activeCurrency={activeCurrency}
           onPick={(c) => {
             slip.setCurrency(c);

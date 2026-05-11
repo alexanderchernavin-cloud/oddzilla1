@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import type { WalletSnapshot } from "@oddzilla/types";
 import { Wordmark } from "@/components/ui/monogram";
 import { I } from "@/components/ui/icons";
 import { Button } from "@/components/ui/primitives";
@@ -17,7 +16,6 @@ import { useNotifications } from "@/lib/notifications";
 interface TopBarProps {
   signedIn: boolean;
   user?: { email: string; displayName: string | null; role: string };
-  wallets?: WalletSnapshot[];
 }
 
 const iconBtn = {
@@ -34,7 +32,7 @@ const iconBtn = {
   position: "relative" as const,
 };
 
-export function TopBar({ signedIn, user, wallets }: TopBarProps) {
+export function TopBar({ signedIn, user }: TopBarProps) {
   const { toggleSidebar } = useMobileDrawers();
 
   return (
@@ -99,7 +97,10 @@ export function TopBar({ signedIn, user, wallets }: TopBarProps) {
         <>
           <NotificationBell />
 
-          <WalletPill wallets={wallets} />
+          {/* WalletPill reads its data from the WalletProvider context
+              (mounted in (main)/layout.tsx). Shows a skeleton until the
+              client-side /wallet fetch resolves on hydration. */}
+          <WalletPill />
 
           <UserMenu user={user} isAdmin={user.role === "admin"} />
           {/* `initials` formerly rendered as a static <Link> — UserMenu

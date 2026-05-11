@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { headers } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { serverApi } from "@/lib/server-fetch";
 import { LiveMarkets, type MarketGroup, type MarketSnapshot } from "./live-markets";
@@ -49,6 +49,14 @@ export default async function MatchPage({
   const parentHost = await resolveEmbedHost();
   const isLive = match.status === "live";
   const initialLiveScore = match.liveScore ?? null;
+
+  // For the analyses section CTA, "logged in" presence-checks the access
+  // cookie rather than round-tripping /auth/me. Server stays authoritative
+  // — a publish attempt with an invalid cookie still hits the api's
+  // requireAuth and gets rejected; this is purely a UI-gating signal so
+  // anonymous viewers see "log in to publish" instead of the Write button.
+  const cookieStore = await cookies();
+  const loggedIn = Boolean(cookieStore.get("oddzilla_access"));
 
   const whenLabel = match.scheduledAt
     ? new Date(match.scheduledAt).toLocaleString("en-US", {
@@ -192,6 +200,7 @@ export default async function MatchPage({
         matchId={match.id}
         matchTitle={`${match.homeTeam} vs ${match.awayTeam}`}
         matchStatus={match.status}
+        loggedIn={loggedIn}
       />
     </div>
   );
