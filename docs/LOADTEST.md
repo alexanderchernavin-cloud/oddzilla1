@@ -25,28 +25,38 @@ traffic shape (every user keeps a WS open while browsing).
 
 ## Where to launch from
 
-| Source | Realistic peak VUs | Why |
+| Source | Realistic peak VUs | Notes |
 | --- | --- | --- |
-| Home PC (Windows / macOS / Linux) | 500–1500 | Bottlenecked by home upload bandwidth and Windows TCP defaults. Fine for smoke-testing scripts. |
-| Single DigitalOcean / Hetzner droplet (4 vCPU / 8 GB, ~€20/mo) | 5000–10000 | Plenty for the full 5000 target. Pro-rated cost is ~€0.03 / hour — destroy after the run. |
-| k6 Cloud | 50000+ | Paid SaaS. Distributed across multiple regions. Overkill for the current target. |
+| Home PC (Windows / macOS / Linux) | 5000 may be feasible | Caddy ships zstd/gzip-compressed SSR (~22–25 KB/page), so 5000 VUs with realistic dwell push ~150 Mbps — inside a 250 Mbps line. Risk factors below. |
+| Cloud / Hetzner box | 5000+ | Removes home-network risk factors entirely. Recommended for the full run. |
+| k6 Cloud | 50000+ | Paid SaaS, multi-region. Overkill for the current target. |
 
-**Yes — you can launch from your PC for smoke runs, but not for the
-full 5000-VU test.** The killer isn't k6 itself (it can simulate
-5000 VUs from a single laptop) — it's network. At 5000 concurrent
-fresh page loads against `oddzilla.cc`, peak inbound bandwidth to your
-PC is ~250 MB/s (each render returns ~50 KB), which is 2 Gbps —
-nothing residential delivers that. From a cloud box with a Gbps NIC
-on a tier-1 carrier, it's a non-issue.
+**Home-network risks that aren't pure bandwidth** (and why Hetzner is
+still the safer call for the headline run):
+
+1. **NAT table size on the home router.** Each k6 VU keeps a few
+   concurrent TCP connections. 5000 VUs × 2–4 conns = 10–20 k NAT
+   entries. Cheap consumer routers cap at 8–32 k and start dropping.
+2. **Windows ephemeral port range.** Default is 49152–65535 (16 k
+   ports). Bumpable with `netsh int ipv4 set dynamicport tcp start=10000
+   num=55535` (admin shell) but the default trips at ~16 k concurrent
+   outbound connections.
+3. **ISP behaviour.** Sustained outbound at high pps on residential IPs
+   can trigger abuse heuristics. Less likely with 250 Mbps tier than a
+   gigabit symmetric, but it varies.
+4. **TLS handshake CPU during ramp.** ~5000 fresh TLS handshakes in the
+   ramp window. Modern PCs eat this for breakfast; just worth knowing
+   the CPU spike is during 0 → peak, not at steady state.
 
 ### Recommended workflow
 
 1. **Smoke from your PC** (`--vus 100 --duration 1m`) — confirms the
    scripts work, cookies are valid, paths return 2xx.
-2. **Spin up a Hetzner CX22 in a different region** (so the test load
-   doesn't compete with production traffic on the same egress) and run
-   the full ramp from there.
-3. **Tear down the droplet** once the run is done.
+2. **Full 5000-VU run from a Hetzner box** — no NAT, 1 Gbps NIC,
+   Linux defaults already permit ~32 k ephemeral ports. Same DC region
+   as production is fine: it tests pure stack throughput without
+   conflating network distance.
+3. **Tear down the test box** once the run is done.
 
 ## k6 install
 
