@@ -122,15 +122,20 @@ function resultPalette(result: ZillaTipResult | null): {
 }
 
 // Visual chrome for the badge based on ROI tier. Token-aware so the
-// badge looks coherent against both themes.
-function badgePalette(tier: ReturnType<typeof zillaTipTier>) {
+// badge looks coherent against both themes. iconSize matches the chip
+// size so the compact (outcome-overlay) variant gets a slightly
+// smaller flame/sparkle than the legacy header variant.
+function badgePalette(
+  tier: ReturnType<typeof zillaTipTier>,
+  iconSize: number,
+) {
   if (tier === "fire") {
     return {
       bg: "linear-gradient(135deg, rgba(255, 90, 30, 0.95), rgba(255, 50, 60, 0.95))",
       color: "#fff",
       border: "1px solid rgba(255, 90, 30, 0.7)",
       shadow: "0 0 14px rgba(255, 90, 30, 0.55)",
-      icon: <I.Fire size={12} />,
+      icon: <I.Fire size={iconSize} />,
       label: "FIRE",
     };
   }
@@ -140,7 +145,7 @@ function badgePalette(tier: ReturnType<typeof zillaTipTier>) {
       color: "#fff",
       border: "1px solid rgba(255, 150, 50, 0.7)",
       shadow: "0 0 8px rgba(255, 150, 50, 0.35)",
-      icon: <I.Fire size={12} />,
+      icon: <I.Fire size={iconSize} />,
       label: "HOT",
     };
   }
@@ -149,7 +154,7 @@ function badgePalette(tier: ReturnType<typeof zillaTipTier>) {
     color: "var(--accent-fg, #1c1a14)",
     border: "1px solid var(--accent-border, rgba(0, 0, 0, 0.12))",
     shadow: "none",
-    icon: <I.Sparkles size={12} />,
+    icon: <I.Sparkles size={iconSize} />,
     label: "TIP",
   };
 }
@@ -370,6 +375,8 @@ export function ZillaTipsBadge({
   currentAway,
   label,
   contexts,
+  size = "lg",
+  popoverAlign = "right",
 }: {
   tips: ZillaTip[];
   currentHome: string;
@@ -382,7 +389,17 @@ export function ZillaTipsBadge({
   // section pulls the matching entry for its line value / outcome
   // label. Order doesn't matter — we key by (marketId, outcomeId).
   contexts?: TipContext[];
+  // "lg" (default) = original chip with TIP/HOT/FIRE label + roi.
+  // "sm" = compact 16px chip used when overlaying an outcome button —
+  // just icon + roi, no text label, smaller font + tighter padding.
+  size?: "lg" | "sm";
+  // Where to anchor the popover horizontally. "right" pins to the
+  // right edge of the badge (legacy / card-header behaviour); "left"
+  // pins to the left edge so a badge sitting in the LEFT half of a
+  // grid doesn't push its popover off-screen to the right.
+  popoverAlign?: "left" | "right";
 }) {
+  const compact = size === "sm";
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const popoverId = useId();
   const myId = useId();
@@ -414,7 +431,7 @@ export function ZillaTipsBadge({
     if (t.roi > bestRoi) bestRoi = t.roi;
   }
   const tier = zillaTipTier(bestRoi);
-  const palette = badgePalette(tier);
+  const palette = badgePalette(tier, compact ? 10 : 12);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -455,21 +472,21 @@ export function ZillaTipsBadge({
         style={{
           display: "inline-flex",
           alignItems: "center",
-          gap: 4,
-          height: 22,
-          padding: "0 8px",
+          gap: compact ? 2 : 4,
+          height: compact ? 17 : 22,
+          padding: compact ? "0 5px" : "0 8px",
           borderRadius: 999,
           background: palette.bg,
           color: palette.color,
           border: palette.border,
           boxShadow: palette.shadow,
-          fontSize: 11,
+          fontSize: compact ? 9.5 : 11,
           fontWeight: 700,
           letterSpacing: "0.04em",
           textTransform: "uppercase",
           cursor: "pointer",
-          // Keep the badge visible against any market-name length —
-          // it sits on the right side of the header row's flex layout.
+          // Keep the badge on one line — sits at the right of the
+          // market header (lg) or pinned over an outcome cell (sm).
           whiteSpace: "nowrap",
         }}
       >
@@ -486,7 +503,11 @@ export function ZillaTipsBadge({
           style={{
             position: "absolute",
             top: "calc(100% + 6px)",
-            right: 0,
+            // Anchor edge depends on where the badge sits in its grid.
+            // Right-edge cells use "right: 0" so the popover stays on
+            // screen; left-edge cells use "left: 0" for the same
+            // reason. Center cells default to right anchoring.
+            ...(popoverAlign === "left" ? { left: 0 } : { right: 0 }),
             // High z-index so the popover always wins over neighbouring
             // market cards and the bet-slip rail. The match page's
             // header / live-scoreboard scope IDs sit around 20–40, so
