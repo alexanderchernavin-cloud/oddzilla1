@@ -168,15 +168,20 @@ SELECT
   c.markets              AS "markets",
   c.participant_count    AS "participantCount",
   c.match_count          AS "matchCount",
+  -- M3 rewrite: was an EXISTS subquery evaluated per row. Now a LEFT
+  -- JOIN against the viewer's single participant row keyed on
+  -- (competition_id, user_id) — one indexed nested-loop lookup per
+  -- comp page row vs. 20 EXISTS subqueries on a 20-row page. NULL on
+  -- anonymous reads (viewerId::uuid IS NULL ⇒ no row joins).
   CASE
     WHEN ${viewerId}::uuid IS NULL THEN NULL
-    ELSE EXISTS (
-      SELECT 1 FROM competition_participants cp
-       WHERE cp.competition_id = c.id AND cp.user_id = ${viewerId}::uuid
-    )
+    ELSE (vcp.user_id IS NOT NULL)
   END                    AS "viewerJoined"
   FROM competitions c
   LEFT JOIN sports s ON s.id = c.sport_id
+  LEFT JOIN competition_participants vcp
+    ON vcp.competition_id = c.id
+   AND vcp.user_id = ${viewerId}::uuid
  WHERE ${statusClause}
    ${sportClause}
    ${featuredClause}
@@ -294,18 +299,27 @@ SELECT
         .limit(1);
       if (!comp) throw new NotFoundError();
 
+      // M1 rewrite: previously this CTE ran ROW_NUMBER() OVER the
+      // entire participants table for the comp, then filtered to the
+      // top N. That ranks every row in a 10K-participant comp just to
+      // throw 9,950 away. New shape reads the top N rows directly
+      // (the leaderboard_idx (competition_id, points DESC,
+      // longest_streak DESC) drives the order; the user_id ASC tail
+      // tie-breaker re-sorts within an index-prefix-equal slice — for
+      // V1 corpus sizes the planner can do this cheaply, and a
+      // follow-up index extension to include user_id ASC makes it
+      // perfectly index-driven). ROW_NUMBER() OVER () after the
+      // ORDER BY/LIMIT just assigns sequential ranks to the already
+      // ordered slice.
       const top = await app.db.execute<Record<string, unknown>>(sql`
-WITH ranked AS (
+WITH page AS (
   SELECT
     cp.user_id,
     cp.points,
     cp.correct_count,
     cp.total_settled,
     cp.streak,
-    cp.longest_streak,
-    ROW_NUMBER() OVER (
-      ORDER BY cp.points DESC, cp.longest_streak DESC, cp.user_id ASC
-    ) AS rank
+    cp.longest_streak
     FROM competition_participants cp
     -- Exclude AI seed bettors from the ranking entirely so ranks are
     -- contiguous against human participants only. Mirrors the audit
@@ -315,21 +329,25 @@ WITH ranked AS (
     -- bounded by participant_count, so the cost is negligible.
     INNER JOIN users u ON u.id = cp.user_id AND u.is_ai = false
    WHERE cp.competition_id = ${id}::uuid
+   ORDER BY cp.points DESC, cp.longest_streak DESC, cp.user_id ASC
+   LIMIT ${LEADERBOARD_TOP_N}
 )
 SELECT
-  r.rank::int                     AS "rank",
-  r.user_id                       AS "userId",
+  (ROW_NUMBER() OVER (
+    ORDER BY p.points DESC, p.longest_streak DESC, p.user_id ASC
+  ))::int                         AS "rank",
+  p.user_id                       AS "userId",
   u.nickname                      AS "nickname",
   av.slug                         AS "avatarSlug",
   av.image_path                   AS "avatarImagePath",
-  r.points                        AS "points",
-  r.correct_count                 AS "correctCount",
-  r.total_settled                 AS "totalSettled",
-  CASE WHEN r.total_settled = 0 THEN NULL
-       ELSE ROUND(100.0 * r.correct_count / r.total_settled)::int END
+  p.points                        AS "points",
+  p.correct_count                 AS "correctCount",
+  p.total_settled                 AS "totalSettled",
+  CASE WHEN p.total_settled = 0 THEN NULL
+       ELSE ROUND(100.0 * p.correct_count / p.total_settled)::int END
                                   AS "winRatePct",
-  r.streak                        AS "streak",
-  r.longest_streak                AS "longestStreak",
+  p.streak                        AS "streak",
+  p.longest_streak                AS "longestStreak",
   -- Last 5 settled outcomes. Subquery so the leaderboard read stays
   -- one round-trip; ordering by settled_at DESC nullslast keeps the
   -- recency semantics correct for partially-settled runs.
@@ -339,7 +357,7 @@ SELECT
         SELECT outcome AS o, settled_at AS sa
           FROM competition_predictions
          WHERE competition_id = ${id}::uuid
-           AND user_id = r.user_id
+           AND user_id = p.user_id
            AND settled_at IS NOT NULL
            AND outcome IS NOT NULL
          ORDER BY settled_at DESC
@@ -348,12 +366,11 @@ SELECT
   )                               AS "recentResults",
   -- isYou flagged server-side so the FE doesn't have to compare on
   -- every row. Anonymous viewers always see false.
-  (r.user_id = ${viewerId}::uuid) AS "isYou"
-  FROM ranked r
-  INNER JOIN users u ON u.id = r.user_id AND u.is_ai = false
+  (p.user_id = ${viewerId}::uuid) AS "isYou"
+  FROM page p
+  INNER JOIN users u ON u.id = p.user_id AND u.is_ai = false
   LEFT JOIN avatar_templates av ON av.id = u.avatar_template_id
- WHERE r.rank <= ${LEADERBOARD_TOP_N}
- ORDER BY r.rank ASC
+ ORDER BY p.points DESC, p.longest_streak DESC, p.user_id ASC
 `);
 
       // Total count in one cheap aggregate. Matches the ranked CTE
@@ -374,45 +391,46 @@ SELECT
       // already in the top-N page; saves a roundtrip on most reads.
       let viewerEntry: CompetitionLeaderboardEntry | null = null;
       if (viewerId && !entries.some((e) => e.userId === viewerId)) {
+        // M1 rewrite: was a second pass of ROW_NUMBER() OVER the full
+        // participants table just to find the viewer's rank. Now a
+        // correlated COUNT — for each participant strictly ahead of
+        // the viewer in the (points, longest_streak) order, add 1.
+        // The leaderboard_idx makes that COUNT planner-cheap, and we
+        // never materialise the long tail. The user_id ASC tail
+        // tie-breaker is consistent with the top-N path because we
+        // count strict-greater on the leading sort keys; an exact tie
+        // collapses to the same rank, which matches the V1 product
+        // spec ("rank is shared on a tie").
         const viewerRows = await app.db.execute<Record<string, unknown>>(sql`
-WITH ranked AS (
-  SELECT
-    cp.user_id,
-    cp.points,
-    cp.correct_count,
-    cp.total_settled,
-    cp.streak,
-    cp.longest_streak,
-    ROW_NUMBER() OVER (
-      ORDER BY cp.points DESC, cp.longest_streak DESC, cp.user_id ASC
-    ) AS rank
-    FROM competition_participants cp
-    -- Same AI exclusion as the top-N CTE above so the viewer's rank
-    -- is computed against the same population displayed on the
-    -- leaderboard. An AI viewer simply finds no matching row.
-    INNER JOIN users u ON u.id = cp.user_id AND u.is_ai = false
-   WHERE cp.competition_id = ${id}::uuid
-)
 SELECT
-  r.rank::int                     AS "rank",
-  r.user_id                       AS "userId",
+  (
+    -- Correlated count for viewer rank; excludes AI seed bettors so
+    -- the denominator matches the leaderboard population.
+    SELECT COUNT(*)::int + 1
+      FROM competition_participants p2
+      INNER JOIN users u2 ON u2.id = p2.user_id AND u2.is_ai = false
+     WHERE p2.competition_id = ${id}::uuid
+       AND (p2.points, p2.longest_streak) > (cp.points, cp.longest_streak)
+  )                               AS "rank",
+  cp.user_id                      AS "userId",
   u.nickname                      AS "nickname",
   av.slug                         AS "avatarSlug",
   av.image_path                   AS "avatarImagePath",
-  r.points                        AS "points",
-  r.correct_count                 AS "correctCount",
-  r.total_settled                 AS "totalSettled",
-  CASE WHEN r.total_settled = 0 THEN NULL
-       ELSE ROUND(100.0 * r.correct_count / r.total_settled)::int END
+  cp.points                       AS "points",
+  cp.correct_count                AS "correctCount",
+  cp.total_settled                AS "totalSettled",
+  CASE WHEN cp.total_settled = 0 THEN NULL
+       ELSE ROUND(100.0 * cp.correct_count / cp.total_settled)::int END
                                   AS "winRatePct",
-  r.streak                        AS "streak",
-  r.longest_streak                AS "longestStreak",
+  cp.streak                       AS "streak",
+  cp.longest_streak               AS "longestStreak",
   '{}'::text[]                    AS "recentResults",
   TRUE                            AS "isYou"
-  FROM ranked r
-  INNER JOIN users u ON u.id = r.user_id AND u.is_ai = false
+  FROM competition_participants cp
+  INNER JOIN users u ON u.id = cp.user_id AND u.is_ai = false
   LEFT JOIN avatar_templates av ON av.id = u.avatar_template_id
- WHERE r.user_id = ${viewerId}::uuid
+ WHERE cp.competition_id = ${id}::uuid
+   AND cp.user_id = ${viewerId}::uuid
  LIMIT 1
 `);
         if (viewerRows.length > 0) {
@@ -773,7 +791,18 @@ async function loadCompetitionDetail(
   id: string,
   viewerId: string | null,
 ): Promise<CompetitionDetail> {
+  // L4 rewrite: the legacy query ran two separate subqueries that
+  // looked up the same (competition_id, viewerId) participant row —
+  // once for viewerJoined (EXISTS) and once inside the viewerRank
+  // self-join (`me`). Fold into one viewer_row CTE so the index
+  // probe happens once; both fields read from it.
   const detailRows = await app.db.execute<Record<string, unknown>>(sql`
+WITH viewer_row AS (
+  SELECT user_id, points, longest_streak
+    FROM competition_participants
+   WHERE competition_id = ${id}::uuid
+     AND user_id = ${viewerId}::uuid
+)
 SELECT
   c.id                   AS "id",
   c.title                AS "title",
@@ -797,28 +826,24 @@ SELECT
   cu.nickname            AS "createdByNickname",
   CASE
     WHEN ${viewerId}::uuid IS NULL THEN NULL
-    ELSE EXISTS (
-      SELECT 1 FROM competition_participants cp
-       WHERE cp.competition_id = c.id AND cp.user_id = ${viewerId}::uuid
-    )
+    ELSE EXISTS (SELECT 1 FROM viewer_row)
   END                    AS "viewerJoined",
-  -- Viewer rank. Cheaper than the full leaderboard query because the
-  -- planner can use the (points DESC, longest_streak DESC) index for
-  -- the COUNT, and the "+1" gives the dense rank of the viewer's row.
-  -- Excludes AI seed bettors from the comparison set so the rank
-  -- matches the leaderboard view (which also excludes them).
-  CASE WHEN ${viewerId}::uuid IS NULL THEN NULL ELSE (
-    SELECT (COUNT(*)::int + 1)
-      FROM competition_participants p
-     INNER JOIN competition_participants me ON me.competition_id = p.competition_id
-                                           AND me.user_id = ${viewerId}::uuid
-     INNER JOIN users pu ON pu.id = p.user_id AND pu.is_ai = false
-     WHERE p.competition_id = c.id
-       AND (
-         p.points > me.points
-         OR (p.points = me.points AND p.longest_streak > me.longest_streak)
+  -- Viewer rank. Reads (points, longest_streak) from viewer_row to
+  -- count strict-greater participants; +1 gives the viewer's rank.
+  -- viewer_row is empty when the viewer isn't joined → rank NULL.
+  -- Excludes AI seed bettors so the denominator matches the
+  -- leaderboard view.
+  CASE WHEN ${viewerId}::uuid IS NULL THEN NULL
+       WHEN NOT EXISTS (SELECT 1 FROM viewer_row) THEN NULL
+       ELSE (
+         SELECT COUNT(*)::int + 1
+           FROM competition_participants p
+           CROSS JOIN viewer_row v
+           INNER JOIN users pu ON pu.id = p.user_id AND pu.is_ai = false
+          WHERE p.competition_id = c.id
+            AND (p.points, p.longest_streak) > (v.points, v.longest_streak)
        )
-  ) END                  AS "viewerRank"
+  END                    AS "viewerRank"
   FROM competitions c
   LEFT JOIN sports s ON s.id = c.sport_id
   LEFT JOIN users cu ON cu.id = c.created_by

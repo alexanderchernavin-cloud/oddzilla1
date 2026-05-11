@@ -30,8 +30,6 @@ import {
   competitions,
   competitionRules,
   competitionMatches,
-  competitionParticipants,
-  competitionPredictions,
   adminAuditLog,
   matches as catalogMatches,
 } from "@oddzilla/db";
@@ -60,6 +58,20 @@ const UUID_RE =
 const adminWriteRateLimit = {
   rateLimit: { max: 60, timeWindow: "1 minute" },
 };
+
+// M5: list endpoint pagination. Default page size 100; clamped to a
+// hard ceiling so a single request can't scan the whole comps table.
+const ADMIN_LIST_DEFAULT_LIMIT = 100;
+const ADMIN_LIST_MAX_LIMIT = 100;
+const adminListQuery = z.object({
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(ADMIN_LIST_MAX_LIMIT)
+    .default(ADMIN_LIST_DEFAULT_LIMIT),
+  offset: z.coerce.number().int().min(0).default(0),
+});
 
 // Body schemas. We keep them lenient on input length (200-char title,
 // 2000-char description) to match the DB CHECK constraints; the API
@@ -130,6 +142,12 @@ export default async function adminCompetitionsRoutes(app: FastifyInstance) {
     async (request): Promise<AdminCompetitionListResponse> => {
       request.requireRole("admin");
 
+      // M5: paginate the list. The tab-status counts below stay
+      // uncapped — that's a cheap GROUP BY on the status enum and the
+      // dashboard needs the totals for the tab badges. Only the
+      // detailed-row read is bounded.
+      const { limit, offset } = adminListQuery.parse(request.query ?? {});
+
       const rows = await app.db.execute<Record<string, unknown>>(sql`
 SELECT
   c.id                   AS "id",
@@ -155,28 +173,36 @@ SELECT
   FROM competitions c
   LEFT JOIN sports s ON s.id = c.sport_id
  ORDER BY c.created_at DESC
+ LIMIT ${limit}
+ OFFSET ${offset}
 `);
 
       const summaries: CompetitionSummary[] = rows.map(normaliseCompetitionRow);
 
       // Counts. One aggregate keeps it cheap; the GROUP BY on the
-      // status enum is index-clean even on ten thousand rows.
+      // status enum is index-clean even on ten thousand rows. Stays
+      // uncapped intentionally — the tab strip needs the global total.
       const countRows = await app.db.execute<{ status: string; n: number }>(sql`
         SELECT status::text AS "status", COUNT(*)::int AS "n"
           FROM competitions
          GROUP BY status
       `);
       const counts = {
-        all: summaries.length,
+        all: 0,
         draft: 0,
         scheduled: 0,
         upcoming: 0,
         live: 0,
         ended: 0,
       };
+      // counts.all now reflects the table-wide total (not the current
+      // page) — the dashboard tab strip needs that. Sum the per-status
+      // tallies as the cheapest single-pass total.
       for (const r of countRows) {
         const s = r.status as keyof typeof counts;
-        if (s in counts) counts[s] = Number(r.n ?? 0);
+        const n = Number(r.n ?? 0);
+        if (s in counts) counts[s] = n;
+        counts.all += n;
       }
 
       return { competitions: summaries, counts };
@@ -835,115 +861,170 @@ async function scoreMatchPredictions(
   competitionMatchId: bigint,
   finalScore: { scoreA: number; scoreB: number },
 ): Promise<{ scoredPredictions: number; affectedParticipants: number }> {
-  // Pull all scoring rules for this competition.
-  const rules = await tx
-    .select({ ruleId: competitionRules.ruleId, value: competitionRules.value })
-    .from(competitionRules)
-    .where(
-      and(
-        eq(competitionRules.competitionId, competitionId),
-        sql`${competitionRules.ruleId} LIKE 'scoring-%'`,
-      ),
-    );
-  const ruleMap = new Map<string, number>();
-  for (const r of rules) {
-    const v = parseInt(r.value ?? "0", 10);
-    if (Number.isFinite(v)) ruleMap.set(r.ruleId, v);
-  }
+  // C1 rewrite: replace the N+U per-row loop with two set-based
+  // statements. The legacy implementation issued one UPDATE on
+  // competition_predictions per prediction and one UPDATE on
+  // competition_participants per affected user, all inside a
+  // FOR UPDATE transaction. On a 10K-participant comp that's 10K+
+  // round-trips with the row-level locks held the entire time. New
+  // shape:
+  //
+  //   1. Materialise per-prediction (points, outcome) via a CASE
+  //      expression that mirrors the legacy JS math exactly. The
+  //      scoring-rule lookup that was a JS Map is now a CTE that
+  //      pivots the 4 rule rows into per-column point values.
+  //   2. RETURNING from the predictions UPDATE feeds an aggregate
+  //      that bumps participant aggregates in a single statement.
+  //
+  // Equivalence proof (JS → SQL):
+  //   • exactScore     = (predA = scoreA AND predB = scoreB)
+  //   • finalSide      = '1' if scoreA>scoreB, '2' if <, else 'X'
+  //   • predictedSide  = same shape on predA/predB
+  //   • correctSide    = (predictedSide = finalSide)
+  //   • correctDiff    = (predA - predB) = (scoreA - scoreB)
+  //   • points = SUM(exact-score-rule  if exactScore)
+  //           +  SUM(correct-result-rule if correctSide)
+  //           +  SUM(goal-difference-rule if correctDiff)
+  //           +  SUM(tip-point-rule if tip = finalSide)
+  //     (each clause is 0 when the rule isn't configured)
+  //   • outcome = points>0 ? (exactScore ? 'correct' : 'partial') : 'wrong'
+  // The JS short-circuits with `ruleMap.has(...)` before adding —
+  // equivalent to "rule value defaults to 0 when absent", which the
+  // COALESCE(MAX FILTER, 0) on the rule pivot achieves.
+  //
+  // Streak semantics: each user has at most one prediction per match
+  // (unique constraint), so the participant bump is at most one
+  // increment-or-reset per user per call. correct_this_round mirrors
+  // the JS `bump.correct` flag (any points > 0 on this match's
+  // prediction).
+  const { scoreA, scoreB } = finalScore;
 
-  // Pull every unsettled prediction on this match.
-  const preds = await tx
-    .select({
-      id: competitionPredictions.id,
-      userId: competitionPredictions.userId,
-      predictedScoreA: competitionPredictions.predictedScoreA,
-      predictedScoreB: competitionPredictions.predictedScoreB,
-      tip: competitionPredictions.tip,
-    })
-    .from(competitionPredictions)
-    .where(
-      and(
-        eq(competitionPredictions.competitionMatchId, competitionMatchId),
-        sql`${competitionPredictions.settledAt} IS NULL`,
-      ),
-    );
-
-  const finalSide = sideOf(finalScore.scoreA, finalScore.scoreB);
-  const finalDiff = finalScore.scoreA - finalScore.scoreB;
-  const now = new Date();
-  const participantBumps = new Map<
-    string,
-    { points: number; correct: boolean }
-  >();
-
-  for (const p of preds) {
-    let pointsAwarded = 0;
-    const exactScore =
-      p.predictedScoreA === finalScore.scoreA &&
-      p.predictedScoreB === finalScore.scoreB;
-    const predictedSide = sideOf(p.predictedScoreA, p.predictedScoreB);
-    const correctSide = predictedSide === finalSide;
-    const correctDiff = p.predictedScoreA - p.predictedScoreB === finalDiff;
-
-    if (exactScore && ruleMap.has("scoring-exact-score")) {
-      pointsAwarded += ruleMap.get("scoring-exact-score") ?? 0;
-    }
-    if (correctSide && ruleMap.has("scoring-correct-result")) {
-      pointsAwarded += ruleMap.get("scoring-correct-result") ?? 0;
-    }
-    if (correctDiff && ruleMap.has("scoring-goal-difference")) {
-      pointsAwarded += ruleMap.get("scoring-goal-difference") ?? 0;
-    }
-    if (
-      p.tip &&
-      ruleMap.has("scoring-tip-point") &&
-      tipMatchesResult(p.tip, finalSide)
-    ) {
-      pointsAwarded += ruleMap.get("scoring-tip-point") ?? 0;
-    }
-
-    const outcome: string =
-      pointsAwarded > 0
-        ? exactScore
-          ? "correct"
-          : "partial"
-        : "wrong";
-
-    await tx
-      .update(competitionPredictions)
-      .set({
-        pointsAwarded,
-        outcome,
-        settledAt: now,
-      })
-      .where(eq(competitionPredictions.id, p.id));
-
-    const bump = participantBumps.get(p.userId) ?? { points: 0, correct: false };
-    bump.points += pointsAwarded;
-    if (pointsAwarded > 0) bump.correct = true;
-    participantBumps.set(p.userId, bump);
-  }
-
-  // Bump participant aggregates. We use raw SQL for the streak update
-  // because the new value depends on the current value (streak +1 if
-  // correct, else 0).
-  for (const [userId, bump] of participantBumps) {
-    await tx.execute(sql`
-      UPDATE competition_participants
-         SET points          = points + ${bump.points},
-             correct_count   = correct_count + ${bump.correct ? 1 : 0},
-             total_settled   = total_settled + 1,
-             streak          = ${bump.correct ? sql`streak + 1` : sql`0`},
-             longest_streak  = GREATEST(longest_streak, ${bump.correct ? sql`streak + 1` : sql`longest_streak`}),
-             last_settled_at = ${now.toISOString()}::timestamptz
+  // Whole pipeline runs as one modifying-CTE statement:
+  //   1. rule_values pivots the per-comp scoring-* rules into
+  //      per-rule integer columns. MAX(...) is a no-op aggregate (≤1
+  //      row per rule_id within a comp) used purely to keep the CTE
+  //      single-row; COALESCE to 0 mirrors the JS ruleMap.has() guard.
+  //   2. scored computes points + outcome for each unsettled
+  //      prediction. The CASE expressions translate the legacy JS
+  //      math literally — see the equivalence proof above.
+  //   3. settled UPDATEs competition_predictions, RETURNING the
+  //      per-row user_id / points / wins for the aggregate step.
+  //   4. agg aggregates settled by user.
+  //   5. bumped UPDATEs competition_participants from agg, returning
+  //      one row per affected participant.
+  // The final SELECT exposes the two counters the route returns.
+  // Putting both UPDATEs in a single statement avoids the dual-
+  // timestamp-equality problem between two round-trips: there's only
+  // one transaction snapshot.
+  const result = (await tx.execute(sql`
+    WITH rule_values AS (
+      SELECT
+        COALESCE(MAX(CASE WHEN rule_id = 'scoring-exact-score'
+                          THEN NULLIF(value, '')::int END), 0) AS exact_score_pts,
+        COALESCE(MAX(CASE WHEN rule_id = 'scoring-correct-result'
+                          THEN NULLIF(value, '')::int END), 0) AS correct_result_pts,
+        COALESCE(MAX(CASE WHEN rule_id = 'scoring-goal-difference'
+                          THEN NULLIF(value, '')::int END), 0) AS goal_diff_pts,
+        COALESCE(MAX(CASE WHEN rule_id = 'scoring-tip-point'
+                          THEN NULLIF(value, '')::int END), 0) AS tip_point_pts
+        FROM competition_rules
        WHERE competition_id = ${competitionId}::uuid
-         AND user_id        = ${userId}::uuid
-    `);
-  }
+         AND rule_id LIKE 'scoring-%'
+    ),
+    flags AS (
+      -- Per-prediction trigger flags. Computed once; the next CTE
+      -- references these columns directly instead of duplicating the
+      -- CASE/arithmetic in the points sum.
+      SELECT
+        p.id AS prediction_id,
+        p.user_id AS user_id,
+        (p.predicted_score_a = ${scoreA}::int AND p.predicted_score_b = ${scoreB}::int) AS exact_score,
+        (
+          CASE WHEN p.predicted_score_a > p.predicted_score_b THEN '1'
+               WHEN p.predicted_score_a < p.predicted_score_b THEN '2'
+               ELSE 'X' END
+        ) AS predicted_side,
+        (
+          CASE WHEN ${scoreA}::int > ${scoreB}::int THEN '1'
+               WHEN ${scoreA}::int < ${scoreB}::int THEN '2'
+               ELSE 'X' END
+        ) AS final_side,
+        ((p.predicted_score_a - p.predicted_score_b) = (${scoreA}::int - ${scoreB}::int)) AS correct_diff,
+        p.tip AS tip
+        FROM competition_predictions p
+       WHERE p.competition_match_id = ${competitionMatchId}::bigint
+         AND p.settled_at IS NULL
+    ),
+    scored AS (
+      SELECT
+        f.prediction_id,
+        f.user_id,
+        f.exact_score,
+        (
+          CASE WHEN f.exact_score                       THEN rv.exact_score_pts    ELSE 0 END
+        + CASE WHEN f.predicted_side = f.final_side     THEN rv.correct_result_pts ELSE 0 END
+        + CASE WHEN f.correct_diff                      THEN rv.goal_diff_pts      ELSE 0 END
+        + CASE WHEN f.tip IS NOT NULL AND f.tip = f.final_side
+                                                        THEN rv.tip_point_pts      ELSE 0 END
+        ) AS points
+        FROM flags f
+        CROSS JOIN rule_values rv
+    ),
+    settled AS (
+      UPDATE competition_predictions cp
+         SET points_awarded = s.points,
+             outcome        = CASE
+                                WHEN s.points > 0 AND s.exact_score THEN 'correct'
+                                WHEN s.points > 0                   THEN 'partial'
+                                ELSE                                     'wrong'
+                              END,
+             settled_at     = now()
+        FROM scored s
+       WHERE cp.id = s.prediction_id
+     RETURNING cp.user_id AS user_id,
+               cp.points_awarded AS points_awarded
+    ),
+    agg AS (
+      SELECT
+        user_id,
+        SUM(points_awarded)::int                          AS pts_delta,
+        COUNT(*) FILTER (WHERE points_awarded > 0)::int   AS correct_delta,
+        COUNT(*)::int                                     AS settled_delta
+        FROM settled
+       GROUP BY user_id
+    ),
+    bumped AS (
+      UPDATE competition_participants cp
+         SET points          = cp.points + agg.pts_delta,
+             correct_count   = cp.correct_count + agg.correct_delta,
+             total_settled   = cp.total_settled + agg.settled_delta,
+             streak          = CASE WHEN agg.correct_delta > 0
+                                    THEN cp.streak + 1
+                                    ELSE 0 END,
+             longest_streak  = GREATEST(
+                                 cp.longest_streak,
+                                 CASE WHEN agg.correct_delta > 0
+                                      THEN cp.streak + 1
+                                      ELSE cp.longest_streak END
+                               ),
+             last_settled_at = now()
+        FROM agg
+       WHERE cp.competition_id = ${competitionId}::uuid
+         AND cp.user_id        = agg.user_id
+     RETURNING cp.user_id
+    )
+    SELECT
+      (SELECT COUNT(*)::int FROM settled) AS scored_predictions,
+      (SELECT COUNT(*)::int FROM bumped)  AS affected_participants
+  `)) as unknown as Array<{
+    scored_predictions: number;
+    affected_participants: number;
+  }>;
 
+  const row = result[0];
   return {
-    scoredPredictions: preds.length,
-    affectedParticipants: participantBumps.size,
+    scoredPredictions: Number(row?.scored_predictions ?? 0),
+    affectedParticipants: Number(row?.affected_participants ?? 0),
   };
 }
 
@@ -956,5 +1037,4 @@ function sideOf(a: number, b: number): "1" | "X" | "2" {
 function tipMatchesResult(tip: string, side: "1" | "X" | "2"): boolean {
   return tip === side;
 }
-
 
