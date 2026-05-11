@@ -724,19 +724,31 @@ export default async function catalogRoutes(app: FastifyInstance) {
 
     // Resolve the team filter (if any) before the matches query so we can
     // surface the team's name back to the storefront for the chip. Scoped
-    // to this sport: a team id from a different sport (or unknown id)
-    // yields filteredTeam=null AND a list-narrowing predicate that
-    // returns no rows — never silently falls back to "all matches".
+    // by ACTUAL gameplay rather than `competitors.sport_id`: a team's
+    // competitor row carries the sport that first saw the URN, but the
+    // same row can be referenced as home/away_competitor_id by matches in
+    // any sport. Lookup is active+id-only, and we additionally require an
+    // EXISTS over matches in THIS sport so a team that doesn't play here
+    // yields filteredTeam=null (chip hides, list is empty) — never silently
+    // falls back to "all matches".
     let filteredTeam: { id: number; name: string } | null = null;
     if (q.team) {
+      const teamId = q.team;
       const [t] = await app.db
         .select({ id: competitors.id, name: competitors.name })
         .from(competitors)
         .where(
           and(
-            eq(competitors.id, q.team),
-            eq(competitors.sportId, sport.id),
+            eq(competitors.id, teamId),
             eq(competitors.active, true),
+            sql`EXISTS (
+              SELECT 1 FROM ${matches} mm
+              JOIN ${tournaments} tt ON tt.id = mm.tournament_id
+              JOIN ${categories} cc ON cc.id = tt.category_id
+              WHERE cc.sport_id = ${sport.id}
+                AND (mm.home_competitor_id = ${teamId}
+                     OR mm.away_competitor_id = ${teamId})
+            )`,
           ),
         )
         .limit(1);
@@ -1559,6 +1571,17 @@ export default async function catalogRoutes(app: FastifyInstance) {
         .orderBy(tournaments.name)
         .limit(q.limit),
 
+      // Team search emits one row per (competitor, sport-with-active-matches).
+      // The `competitors` table has a global UNIQUE on (provider, provider_urn),
+      // so a team like "BetBoom Team" lives as a single row whose `sport_id`
+      // is whichever sport saw the URN first — even though that team's
+      // home_competitor_id / away_competitor_id is referenced by matches in
+      // other sports. Surfacing (team, sport) pairs derived from actual
+      // match data lets the user navigate to every sport the team is
+      // currently playing in, not just the one its competitor row was first
+      // pinned to. Filtered to active markets + non-hidden tournaments + the
+      // same 6 h time gate as `hasActiveMarket` so a team only appears for
+      // sports where it has something bettable right now.
       app.db
         .select({
           id: competitors.id,
@@ -1570,7 +1593,16 @@ export default async function catalogRoutes(app: FastifyInstance) {
           sportName: sports.name,
         })
         .from(competitors)
-        .innerJoin(sports, eq(sports.id, competitors.sportId))
+        .innerJoin(
+          matches,
+          or(
+            eq(matches.homeCompetitorId, competitors.id),
+            eq(matches.awayCompetitorId, competitors.id),
+          ),
+        )
+        .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
+        .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+        .innerJoin(sports, eq(sports.id, categories.sportId))
         .where(
           and(
             eq(competitors.active, true),
@@ -1579,9 +1611,21 @@ export default async function catalogRoutes(app: FastifyInstance) {
               ilike(competitors.name, needle),
               ilike(competitors.abbreviation, needle),
             ),
+            inArray(matches.status, ["not_started", "live"]),
+            hasActiveMarket,
+            notHiddenTournament,
           ),
         )
-        .orderBy(competitors.name)
+        .groupBy(
+          competitors.id,
+          competitors.name,
+          competitors.abbreviation,
+          competitors.logoUrl,
+          competitors.brandColor,
+          sports.slug,
+          sports.name,
+        )
+        .orderBy(competitors.name, sports.name)
         .limit(q.limit),
 
       app.db

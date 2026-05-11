@@ -336,15 +336,12 @@ export function TopBarSearch() {
 function buildNavItems(r: SearchResponse | null): NavItem[] {
   if (!r) return [];
   const out: NavItem[] = [];
-  for (const s of r.sports) {
-    out.push({ kind: "sport", href: `/sport/${s.slug}`, sport: s });
-  }
-  for (const t of r.tournaments) {
-    out.push({
-      kind: "tournament",
-      href: `/sport/${t.sport.slug}?tournament=${t.id}`,
-      tournament: t,
-    });
+  // Render + keyboard-nav order: Matches → Teams → Tournaments → Sports.
+  // Matches are the most actionable hit (the user can place a bet from
+  // the link), so they lead. Sports are the broadest hit and drop to the
+  // bottom — the sidebar already exposes them as the canonical entry.
+  for (const m of r.matches) {
+    out.push({ kind: "match", href: `/match/${m.id}`, match: m });
   }
   for (const team of r.teams) {
     out.push({
@@ -353,8 +350,15 @@ function buildNavItems(r: SearchResponse | null): NavItem[] {
       team,
     });
   }
-  for (const m of r.matches) {
-    out.push({ kind: "match", href: `/match/${m.id}`, match: m });
+  for (const t of r.tournaments) {
+    out.push({
+      kind: "tournament",
+      href: `/sport/${t.sport.slug}?tournament=${t.id}`,
+      tournament: t,
+    });
+  }
+  for (const s of r.sports) {
+    out.push({ kind: "sport", href: `/sport/${s.slug}`, sport: s });
   }
   return out;
 }
@@ -371,76 +375,10 @@ function ResultGroups({
   onPick: (href: string) => void;
 }) {
   // Track a running index across groups so keyboard highlight aligns
-  // with the flat nav list built by buildNavItems.
+  // with the flat nav list built by buildNavItems. Section order is
+  // Matches → Teams → Tournaments → Sports (most-actionable first).
   let idx = 0;
   const sections: ReactNode[] = [];
-
-  if (results.sports.length > 0) {
-    sections.push(
-      <SectionLabel key="sports">Sports</SectionLabel>,
-    );
-    for (const s of results.sports) {
-      const i = idx++;
-      sections.push(
-        <Row
-          key={`s-${s.slug}`}
-          active={i === activeIndex}
-          href={`/sport/${s.slug}`}
-          onHover={() => onHoverIndex(i)}
-          onPick={onPick}
-          left={<SportGlyph sport={s.slug} size={16} />}
-          primary={s.name}
-          secondary={s.kind === "esport" ? "Esport" : "Sport"}
-        />,
-      );
-    }
-  }
-
-  if (results.tournaments.length > 0) {
-    sections.push(
-      <SectionLabel key="tournaments">Tournaments</SectionLabel>,
-    );
-    for (const t of results.tournaments) {
-      const i = idx++;
-      sections.push(
-        <Row
-          key={`t-${t.id}`}
-          active={i === activeIndex}
-          href={`/sport/${t.sport.slug}?tournament=${t.id}`}
-          onHover={() => onHoverIndex(i)}
-          onPick={onPick}
-          left={<SportGlyph sport={t.sport.slug} size={16} />}
-          primary={
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-              <TierMark tier={t.riskTier ?? null} size={11} />
-              {t.name}
-            </span>
-          }
-          secondary={t.sport.name}
-        />,
-      );
-    }
-  }
-
-  if (results.teams.length > 0) {
-    sections.push(<SectionLabel key="teams">Teams</SectionLabel>);
-    for (const team of results.teams) {
-      const i = idx++;
-      const tag = (team.abbreviation ?? team.name.slice(0, 3)).toUpperCase();
-      sections.push(
-        <Row
-          key={`c-${team.id}`}
-          active={i === activeIndex}
-          href={`/sport/${team.sport.slug}?team=${team.id}`}
-          onHover={() => onHoverIndex(i)}
-          onPick={onPick}
-          left={<TeamMark tag={tag} size={22} logoUrl={team.logoUrl} name={team.name} />}
-          primary={team.name}
-          secondary={team.sport.name}
-        />,
-      );
-    }
-  }
 
   if (results.matches.length > 0) {
     sections.push(<SectionLabel key="matches">Matches</SectionLabel>);
@@ -485,6 +423,76 @@ function ResultGroups({
               </span>
             ) : null
           }
+        />,
+      );
+    }
+  }
+
+  if (results.teams.length > 0) {
+    sections.push(<SectionLabel key="teams">Teams</SectionLabel>);
+    for (const team of results.teams) {
+      const i = idx++;
+      const tag = (team.abbreviation ?? team.name.slice(0, 3)).toUpperCase();
+      sections.push(
+        <Row
+          // Team key includes sport slug so a multi-sport team (one
+          // competitor row referenced by matches across several sports)
+          // renders distinct React rows for each (team, sport) pair.
+          key={`c-${team.id}-${team.sport.slug}`}
+          active={i === activeIndex}
+          href={`/sport/${team.sport.slug}?team=${team.id}`}
+          onHover={() => onHoverIndex(i)}
+          onPick={onPick}
+          left={<TeamMark tag={tag} size={22} logoUrl={team.logoUrl} name={team.name} />}
+          primary={team.name}
+          secondary={team.sport.name}
+        />,
+      );
+    }
+  }
+
+  if (results.tournaments.length > 0) {
+    sections.push(
+      <SectionLabel key="tournaments">Tournaments</SectionLabel>,
+    );
+    for (const t of results.tournaments) {
+      const i = idx++;
+      sections.push(
+        <Row
+          key={`t-${t.id}`}
+          active={i === activeIndex}
+          href={`/sport/${t.sport.slug}?tournament=${t.id}`}
+          onHover={() => onHoverIndex(i)}
+          onPick={onPick}
+          left={<SportGlyph sport={t.sport.slug} size={16} />}
+          primary={
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <TierMark tier={t.riskTier ?? null} size={11} />
+              {t.name}
+            </span>
+          }
+          secondary={t.sport.name}
+        />,
+      );
+    }
+  }
+
+  if (results.sports.length > 0) {
+    sections.push(
+      <SectionLabel key="sports">Sports</SectionLabel>,
+    );
+    for (const s of results.sports) {
+      const i = idx++;
+      sections.push(
+        <Row
+          key={`s-${s.slug}`}
+          active={i === activeIndex}
+          href={`/sport/${s.slug}`}
+          onHover={() => onHoverIndex(i)}
+          onPick={onPick}
+          left={<SportGlyph sport={s.slug} size={16} />}
+          primary={s.name}
+          secondary={s.kind === "esport" ? "Esport" : "Sport"}
         />,
       );
     }
