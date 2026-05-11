@@ -134,11 +134,32 @@ func (c *Consumer) runOnce(ctx context.Context) error {
 		return fmt.Errorf("qos: %w", err)
 	}
 
+	// Durable, named, non-exclusive, non-auto-delete queue.
+	//
+	// Previously this was an `amq.gen-*` server-named + auto-delete +
+	// exclusive queue. That pattern is fine for feed-ingester (which
+	// triggers Oddin REST recovery on every (re)connect to refill the
+	// stream) but lethal for settlement: when the worker container
+	// restarts the queue disappears with its unacked deliveries, so any
+	// in-flight bet_settlement / bet_cancel / rollback_* messages are
+	// silently dropped. We hit exactly that on 2026-05-11 when a 100K
+	// match-winner settlement message stayed unacked through a deploy.
+	//
+	// A durable named queue persists across consumer restarts and broker
+	// restarts; un-acked deliveries are requeued and redelivered when a
+	// fresh consumer attaches. Multiple settlement replicas (future
+	// horizontal scale) load-balance the same queue automatically.
+	//
+	// `QueueName` must be set by the caller — server-named queues can't
+	// be reattached deterministically.
+	if c.cfg.QueueName == "" {
+		return fmt.Errorf("queue declare: QueueName must be non-empty for durable queue (was: empty)")
+	}
 	q, err := ch.QueueDeclare(
-		c.cfg.QueueName, // name ("" → server-named)
-		false,           // durable
-		true,            // auto-delete
-		true,            // exclusive
+		c.cfg.QueueName, // stable name, must outlive consumer
+		true,            // durable
+		false,           // auto-delete
+		false,           // exclusive
 		false,           // no-wait
 		nil,             // args
 	)
