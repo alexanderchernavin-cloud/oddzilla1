@@ -88,6 +88,74 @@ export class AuthService {
     }
   }
 
+  // ── Refresh rotation grace window ──────────────────────────────────────
+  // A single Next.js middleware refresh on a page load fans out across
+  // every tab of an active session: each tab's SSR fires its own
+  // middleware pass and each pass calls /auth/refresh. Three tabs racing
+  // the same rotation used to play out as: one tab wins (rotates and
+  // revokes the old session), the other two see `revokedAt` set and
+  // trigger family-revocation — instant logout across every tab and
+  // every device.
+  //
+  // Fix: after a successful rotation, cache the result keyed by the
+  // OLD token hash with a short TTL (10 s). Concurrent refreshes for
+  // the same old token hit the cache and return the same new tokens
+  // instead of racing the DB. A Redis lock around the rotation
+  // serialises the first writer so the cache write happens before any
+  // late arrival reads it.
+  //
+  // Genuine token-reuse attacks still trip family revocation: a stolen
+  // token surfacing > 10 s after the rotation hits a cache miss, the
+  // DB lookup finds the session revoked, and the family is burned.
+  // The grace window narrows replay detection by 10 s — an acceptable
+  // trade for keeping legitimate multi-tab sessions alive.
+  private static readonly REFRESH_GRACE_SECONDS = 10;
+  private static readonly REFRESH_LOCK_TTL_MS = 5000;
+  private static readonly REFRESH_LOCK_POLL_DEADLINE_MS = 2500;
+  private static readonly REFRESH_LOCK_POLL_INTERVAL_MS = 50;
+  private rotationCacheKey(oldHash: string): string {
+    return `auth:refresh_rotate:${oldHash}`;
+  }
+  private rotationLockKey(oldHash: string): string {
+    return `auth:refresh_lock:${oldHash}`;
+  }
+  private async readRotationCache(oldHash: string): Promise<IssuedTokens | null> {
+    try {
+      const raw = await this.redis.get(this.rotationCacheKey(oldHash));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as Omit<IssuedTokens, "accessExpiresAt" | "refreshExpiresAt"> & {
+        accessExpiresAt: string;
+        refreshExpiresAt: string;
+      };
+      return {
+        ...parsed,
+        accessExpiresAt: new Date(parsed.accessExpiresAt),
+        refreshExpiresAt: new Date(parsed.refreshExpiresAt),
+      };
+    } catch {
+      return null;
+    }
+  }
+  private async writeRotationCache(oldHash: string, tokens: IssuedTokens): Promise<void> {
+    try {
+      await this.redis.set(
+        this.rotationCacheKey(oldHash),
+        JSON.stringify({
+          ...tokens,
+          accessExpiresAt: tokens.accessExpiresAt.toISOString(),
+          refreshExpiresAt: tokens.refreshExpiresAt.toISOString(),
+        }),
+        "EX",
+        AuthService.REFRESH_GRACE_SECONDS,
+      );
+    } catch {
+      // Cache write failure means concurrent tabs may trip family
+      // revocation. Degraded, not fatal — surface no error.
+    }
+  }
+  /** Atomic compare-and-delete so we only ever release the lock we own. */
+  private static readonly RELEASE_LOCK_LUA = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
+
   async signup(input: CreateUserInput): Promise<{ user: PublicUser; tokens: IssuedTokens }> {
     const existing = await this.db
       .select({ id: users.id })
@@ -267,54 +335,109 @@ export class AuthService {
     ctx: { ip: string | null; userAgent: string | null; deviceId: string | null },
   ): Promise<IssuedTokens> {
     const hash = hashRefreshToken(rawRefreshToken);
+    // The DB column is bytea so the lookup uses the raw Buffer, but
+    // Redis keys must be strings — convert once and reuse for every
+    // cache / lock op.
+    const hashKey = hash.toString("hex");
 
-    const now = new Date();
-    // Look up by hash WITHOUT the revoked filter so we can distinguish
-    // "no such token" from "token reuse".
-    const [session] = await this.db
-      .select()
-      .from(sessions)
-      .where(eq(sessions.refreshTokenHash, hash))
-      .limit(1);
-    if (!session) throw new UnauthorizedError("invalid_refresh", "invalid_refresh");
+    // Grace window: if this old hash was rotated in the last
+    // REFRESH_GRACE_SECONDS, return the same new tokens. Covers
+    // multi-tab SSR refreshes that race the rotation; without this,
+    // every concurrent refresh would trip family-revocation.
+    const preCached = await this.readRotationCache(hashKey);
+    if (preCached) return preCached;
 
-    if (session.revokedAt) {
-      // Token reuse — burn the whole family. The legitimate client and
-      // any thief both lose access; user re-authenticates.
-      const family = await this.db
-        .update(sessions)
-        .set({ revokedAt: new Date() })
-        .where(and(eq(sessions.familyId, session.familyId), isNull(sessions.revokedAt)))
-        .returning({ id: sessions.id });
-      await Promise.all(family.map((s) => this.cacheRevoked(s.id)));
-      throw new UnauthorizedError("refresh_replayed", "refresh_replayed");
+    // Serialise concurrent rotations of the same hash. Two tabs that
+    // both miss the cache here would otherwise both pass the
+    // session.revokedAt gate and rotate twice — second rotation
+    // either splits the family or trips replay detection.
+    const lockKey = this.rotationLockKey(hashKey);
+    const lockToken = randomUUID();
+    const lockAcquired = await this.redis
+      .set(lockKey, lockToken, "PX", AuthService.REFRESH_LOCK_TTL_MS, "NX")
+      .catch(() => null);
+    if (lockAcquired !== "OK") {
+      // Another rotation is in flight. Poll the cache briefly — the
+      // winner publishes its result there before releasing the lock.
+      const deadline = Date.now() + AuthService.REFRESH_LOCK_POLL_DEADLINE_MS;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, AuthService.REFRESH_LOCK_POLL_INTERVAL_MS));
+        const racy = await this.readRotationCache(hashKey);
+        if (racy) return racy;
+      }
+      // Lock contention without a published result is unusual — likely
+      // a Redis blip or a winner that errored before writing the
+      // cache. Surfacing 401 forces a fresh login on this tab; the
+      // user's other tabs still have the rotated cookie.
+      throw new UnauthorizedError("refresh_busy", "refresh_busy");
     }
-    if (session.expiresAt.getTime() <= now.getTime()) {
-      throw new UnauthorizedError("refresh_expired", "refresh_expired");
-    }
 
-    const [user] = await this.db
-      .select()
-      .from(users)
-      .where(eq(users.id, session.userId))
-      .limit(1);
-    if (!user || user.status === "blocked") {
-      throw new UnauthorizedError("account_unavailable", "account_unavailable");
-    }
+    try {
+      // Re-check the cache once we hold the lock: the winner may have
+      // completed and released between our initial miss and the
+      // lock-acquire above.
+      const postLockCached = await this.readRotationCache(hashKey);
+      if (postLockCached) return postLockCached;
 
-    // Rotate: revoke old, issue new in same family atomically.
-    const result = await this.db.transaction(async (tx) => {
-      await tx
-        .update(sessions)
-        .set({ revokedAt: new Date() })
-        .where(eq(sessions.id, session.id));
-      return this.issueTokensWith(tx, user.id, user.role, ctx, {
-        familyId: session.familyId,
-        parentSessionId: session.id,
+      const now = new Date();
+      // Look up by hash WITHOUT the revoked filter so we can distinguish
+      // "no such token" from "token reuse".
+      const [session] = await this.db
+        .select()
+        .from(sessions)
+        .where(eq(sessions.refreshTokenHash, hash))
+        .limit(1);
+      if (!session) throw new UnauthorizedError("invalid_refresh", "invalid_refresh");
+
+      if (session.revokedAt) {
+        // Token reuse — burn the whole family. The legitimate client and
+        // any thief both lose access; user re-authenticates.
+        const family = await this.db
+          .update(sessions)
+          .set({ revokedAt: new Date() })
+          .where(and(eq(sessions.familyId, session.familyId), isNull(sessions.revokedAt)))
+          .returning({ id: sessions.id });
+        await Promise.all(family.map((s) => this.cacheRevoked(s.id)));
+        throw new UnauthorizedError("refresh_replayed", "refresh_replayed");
+      }
+      if (session.expiresAt.getTime() <= now.getTime()) {
+        throw new UnauthorizedError("refresh_expired", "refresh_expired");
+      }
+
+      const [user] = await this.db
+        .select()
+        .from(users)
+        .where(eq(users.id, session.userId))
+        .limit(1);
+      if (!user || user.status === "blocked") {
+        throw new UnauthorizedError("account_unavailable", "account_unavailable");
+      }
+
+      // Rotate: revoke old, issue new in same family atomically.
+      const result = await this.db.transaction(async (tx) => {
+        await tx
+          .update(sessions)
+          .set({ revokedAt: new Date() })
+          .where(eq(sessions.id, session.id));
+        return this.issueTokensWith(tx, user.id, user.role, ctx, {
+          familyId: session.familyId,
+          parentSessionId: session.id,
+        });
       });
-    });
-    await this.cacheRevoked(session.id);
-    return result;
+      await this.cacheRevoked(session.id);
+      // Publish the result before releasing the lock so concurrent
+      // pollers find it.
+      await this.writeRotationCache(hashKey, result);
+      return result;
+    } finally {
+      // Release only if we still own the lock (it may have expired and
+      // been re-acquired by another worker).
+      try {
+        await this.redis.eval(AuthService.RELEASE_LOCK_LUA, 1, lockKey, lockToken);
+      } catch {
+        // Lock will expire on its own via PX TTL.
+      }
+    }
   }
 
   async logout(sessionId: string): Promise<void> {

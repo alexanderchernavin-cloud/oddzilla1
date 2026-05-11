@@ -122,6 +122,17 @@ function readSetCookieValue(setCookie: string, name: string): string | null {
   return semi === -1 ? rest : rest.slice(0, semi);
 }
 
+function firstHeaderValue(v: string | null): string | null {
+  // X-Forwarded-* can be a comma-separated list when traversing multiple
+  // proxies. Caddy emits a single value, but defensively pick the first
+  // entry and trim whitespace in case a future hop appends.
+  if (!v) return null;
+  const first = v.split(",")[0];
+  if (!first) return null;
+  const trimmed = first.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function getSetCookieHeaders(headers: Headers): string[] {
   // Node 20+/undici and Edge runtime support Headers.getSetCookie(). Fall
   // back to a single comma-joined value as a defensive read; in practice
@@ -158,7 +169,21 @@ export async function middleware(req: NextRequest) {
       // and a server-to-server fetch from middleware doesn't set one
       // automatically. We mirror the request's own origin so refresh
       // works for both oddzilla.cc and sadmin.oddzilla.cc.
-      const reqOrigin = `${req.nextUrl.protocol}//${req.nextUrl.host}`;
+      //
+      // Behind Caddy `req.nextUrl.protocol` resolves to "http:" — Caddy
+      // terminates TLS and proxies as plain HTTP to web:3000, and the
+      // Next.js standalone server doesn't honour X-Forwarded-Proto when
+      // building nextUrl. Reading the forwarded headers directly fixes
+      // that — without this every middleware refresh was sent with
+      // Origin=http://oddzilla.cc, which is not in CORS_ORIGINS, and the
+      // API rejected the call with 403. Locally (`pnpm dev`, no proxy)
+      // the forwarded headers are absent and we fall back to nextUrl,
+      // giving the correct http://localhost:3000 origin.
+      const xfProto = firstHeaderValue(req.headers.get("x-forwarded-proto"));
+      const xfHost = firstHeaderValue(req.headers.get("x-forwarded-host"));
+      const proto = xfProto ?? req.nextUrl.protocol.replace(/:$/, "");
+      const host = xfHost ?? req.nextUrl.host;
+      const reqOrigin = `${proto}://${host}`;
       const apiRes = await fetch(`${internalApiUrl()}/auth/refresh`, {
         method: "POST",
         headers: {
