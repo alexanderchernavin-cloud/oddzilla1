@@ -32,7 +32,31 @@ const iconBtn = {
   position: "relative" as const,
 };
 
-export function TopBar({ signedIn, user }: TopBarProps) {
+// Static styles for the notification bell badge — these don't depend
+// on any per-render values, so hoisting to module scope avoids a
+// fresh object identity on every poll-driven re-render of the bell.
+const BELL_WRAPPER_STYLE = { position: "relative" as const };
+const BELL_BADGE_STYLE = {
+  // Pill that sits on the bell. Width grows with the count; >99
+  // collapses to "99+" via the label.
+  position: "absolute" as const,
+  top: 4,
+  right: 2,
+  minWidth: 16,
+  height: 16,
+  padding: "0 4px",
+  borderRadius: 999,
+  background: "var(--negative, #EF4444)",
+  color: "#fff",
+  fontSize: 10,
+  fontWeight: 700,
+  display: "inline-flex" as const,
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
+  lineHeight: 1,
+};
+
+export function TopBar({ signedIn, user, wallets }: TopBarProps) {
   const { toggleSidebar } = useMobileDrawers();
 
   return (
@@ -127,7 +151,7 @@ function NotificationBell() {
   const [open, setOpen] = useState(false);
   const { unreadCount } = useNotifications();
   return (
-    <div style={{ position: "relative" }}>
+    <div style={BELL_WRAPPER_STYLE}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -139,27 +163,7 @@ function NotificationBell() {
       >
         <I.Bell size={16} />
         {unreadCount > 0 ? (
-          <span
-            style={{
-              // Pill that sits on the bell. Width grows with the
-              // count; >99 collapses to "99+" via the label below.
-              position: "absolute",
-              top: 4,
-              right: 2,
-              minWidth: 16,
-              height: 16,
-              padding: "0 4px",
-              borderRadius: 999,
-              background: "var(--negative, #EF4444)",
-              color: "#fff",
-              fontSize: 10,
-              fontWeight: 700,
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              lineHeight: 1,
-            }}
-          >
+          <span style={BELL_BADGE_STYLE}>
             {unreadCount > 99 ? "99+" : unreadCount}
           </span>
         ) : null}
