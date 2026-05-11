@@ -56,6 +56,11 @@ export const marketOutcomes = pgTable(
     rawOdds: numeric({ precision: 10, scale: 4 }),
     publishedOdds: numeric({ precision: 10, scale: 4 }),
     probability: numeric({ precision: 8, scale: 7 }),
+    // Snapshot of published_odds captured the moment the parent match
+    // transitioned not_started→live. Powers ZillaTips' historical ROI
+    // calculation; NULL for outcomes that existed before the
+    // 0047_zillatips_state migration shipped.
+    prematchOdds: numeric("prematch_odds", { precision: 10, scale: 4 }),
     active: boolean().notNull().default(true),
     result: outcomeResultEnum(),
     voidFactor: numeric({ precision: 4, scale: 3 }),

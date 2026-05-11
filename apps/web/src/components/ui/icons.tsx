@@ -158,4 +158,19 @@ export const I = {
       <path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5z" />
     </Icon>
   ),
+  Sparkles: (p: IconProps) => (
+    <Icon {...p}>
+      <path d="m12 3-1.9 5.8L4 10l6.1 1.9L12 18l1.9-6.1L20 10l-6.1-1.2Z" />
+      <path d="M5 3v4" />
+      <path d="M3 5h4" />
+      <path d="M19 17v4" />
+      <path d="M17 19h4" />
+    </Icon>
+  ),
+  TrendUp: (p: IconProps) => (
+    <Icon {...p}>
+      <polyline points="22 7 13.5 15.5 8.5 10.5 2 17" />
+      <polyline points="16 7 22 7 22 13" />
+    </Icon>
+  ),
 };
