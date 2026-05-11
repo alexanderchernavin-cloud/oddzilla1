@@ -341,6 +341,11 @@ async function loadTips(
     { logoUrl: string | null; brandColor: string | null }
   >();
   if (opponentIds.size > 0) {
+    // `${jsArray}` in drizzle's sql tag binds positionally as a tuple
+    // ($1, $2, ...) which can't be cast to int[]. Mirror the
+    // riskzilla/engine.ts pattern: build a single Postgres array
+    // literal string `{1,2,3}` and let the SQL-side cast parse it.
+    const opponentIdsLiteral = `{${Array.from(opponentIds).join(",")}}`;
     const brandRows = await app.db.execute<{
       id: number;
       logoUrl: string | null;
@@ -348,7 +353,7 @@ async function loadTips(
     }>(sql`
       SELECT id, logo_url AS "logoUrl", brand_color AS "brandColor"
       FROM competitors
-      WHERE id = ANY(${Array.from(opponentIds)}::int[])
+      WHERE id = ANY(${opponentIdsLiteral}::int[])
     `);
     for (const b of brandRows) {
       brandById.set(Number(b.id), {
