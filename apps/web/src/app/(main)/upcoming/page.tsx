@@ -12,18 +12,13 @@ interface ListMatchWithSport extends ListMatch {
 
 interface Response {
   matches: ListMatchWithSport[];
-  topConfiguredSports?: Record<string, boolean>;
 }
 
-function enrich(
-  m: ListMatchWithSport,
-  topConfigured: Record<string, boolean>,
-): ListMatchEnriched {
+function enrich(m: ListMatchWithSport): ListMatchEnriched {
   return {
     ...m,
     _sportSlug: m.sport.slug,
     _sportShort: shortName(m.sport.name),
-    _topConfigured: !!topConfigured[m.sport.slug],
   };
 }
 
@@ -67,11 +62,7 @@ export default async function UpcomingPage() {
           No upcoming matches scheduled.
         </p>
       ) : (
-        <MatchListTabs
-          matches={matches.map((m) =>
-            enrich(m, data?.topConfiguredSports ?? {}),
-          )}
-        />
+        <MatchListTabs matches={matches.map(enrich)} />
       )}
     </div>
   );

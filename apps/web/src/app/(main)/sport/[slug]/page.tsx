@@ -12,7 +12,6 @@ import { shortName } from "@/lib/sport-order";
 
 interface SportResponse {
   sport: { id: number; slug: string; name: string };
-  topConfigured: boolean;
   filteredTeam: { id: number; name: string } | null;
   matches: ListMatch[];
 }
@@ -21,13 +20,11 @@ function enrich(
   m: ListMatch,
   sportSlug: string,
   sportShort: string,
-  topConfigured: boolean,
 ): ListMatchEnriched {
   return {
     ...m,
     _sportSlug: sportSlug,
     _sportShort: sportShort,
-    _topConfigured: topConfigured,
   };
 }
 
@@ -62,9 +59,7 @@ export default async function SportPage({
     : `/sport/${slug}`;
 
   const sportShort = shortName(data.sport.name);
-  const enriched = data.matches.map((m) =>
-    enrich(m, slug, sportShort, !!data.topConfigured),
-  );
+  const enriched = data.matches.map((m) => enrich(m, slug, sportShort));
   const live = enriched.filter((m) => m.status === "live");
   const upcoming = enriched.filter((m) => m.status !== "live");
 

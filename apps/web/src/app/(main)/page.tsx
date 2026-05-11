@@ -26,18 +26,13 @@ interface ListMatchWithSport extends ListMatch {
 
 interface CrossSportResponse {
   matches: ListMatchWithSport[];
-  topConfiguredSports?: Record<string, boolean>;
 }
 
-function enrich(
-  m: ListMatchWithSport,
-  topConfigured: Record<string, boolean>,
-): ListMatchEnriched {
+function enrich(m: ListMatchWithSport): ListMatchEnriched {
   return {
     ...m,
     _sportSlug: m.sport.slug,
     _sportShort: shortName(m.sport.name),
-    _topConfigured: !!topConfigured[m.sport.slug],
   };
 }
 
@@ -102,12 +97,8 @@ export default async function HomePage() {
       </div>
 
       {(() => {
-        const topConfig: Record<string, boolean> = {
-          ...(liveRes?.topConfiguredSports ?? {}),
-          ...(upcomingRes?.topConfiguredSports ?? {}),
-        };
-        const liveEnriched = live.map((m) => enrich(m, topConfig));
-        const upcomingShown = upcoming.slice(0, 20).map((m) => enrich(m, topConfig));
+        const liveEnriched = live.map(enrich);
+        const upcomingShown = upcoming.slice(0, 20).map(enrich);
         const merged = [...liveEnriched, ...upcomingShown];
         return (
           <MatchListTabs
