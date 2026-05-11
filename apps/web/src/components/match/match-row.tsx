@@ -26,6 +26,9 @@ export interface ListMatch {
     marketId: string;
     home: { outcomeId: string; price: string | null; probability?: string | null };
     away: { outcomeId: string; price: string | null; probability?: string | null };
+    // Set when the underlying market is 3-way (BO2 esports, 1X2 sports).
+    // The card grows a "Draw" row between home and away when present.
+    draw?: { outcomeId: string; price: string | null; probability?: string | null } | null;
   } | null;
 }
 
@@ -39,12 +42,22 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
   const slip = useBetSlip();
   const isLive = match.status === "live";
 
-  function handlePick(side: "home" | "away", e: MouseEvent<HTMLButtonElement>) {
+  function handlePick(
+    side: "home" | "away" | "draw",
+    e: MouseEvent<HTMLButtonElement>,
+  ) {
     e.preventDefault();
     e.stopPropagation();
     if (!match.matchWinner) return;
-    const o = match.matchWinner[side];
-    if (!o.price) return;
+    const o =
+      side === "draw" ? match.matchWinner.draw ?? null : match.matchWinner[side];
+    if (!o || !o.price) return;
+    const outcomeLabel =
+      side === "home"
+        ? match.homeTeam
+        : side === "away"
+          ? match.awayTeam
+          : "Draw";
     const selection: SlipSelection = {
       matchId: match.id,
       marketId: match.matchWinner.marketId,
@@ -54,7 +67,7 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
       homeTeam: match.homeTeam,
       awayTeam: match.awayTeam,
       marketLabel: "Match winner",
-      outcomeLabel: side === "home" ? match.homeTeam : match.awayTeam,
+      outcomeLabel,
       sportSlug,
       // Stamped active=true here because the click-handler bails on null
       // price above; mergeMatchWithLive in MatchListTabs already nulls
@@ -76,6 +89,9 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
   const awayPicked = match.matchWinner
     ? slip.has(match.matchWinner.marketId, match.matchWinner.away.outcomeId)
     : false;
+  const drawPicked = match.matchWinner?.draw
+    ? slip.has(match.matchWinner.marketId, match.matchWinner.draw.outcomeId)
+    : false;
 
   const whenLabel = (() => {
     if (isLive) return null;
@@ -96,6 +112,10 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
   const awayPrice = match.matchWinner?.away.price
     ? Number(match.matchWinner.away.price)
     : null;
+  const drawPrice = match.matchWinner?.draw?.price
+    ? Number(match.matchWinner.draw.price)
+    : null;
+  const hasDraw = !!match.matchWinner?.draw;
 
   const homeOdds = (
     <RowOddBtn
@@ -115,6 +135,18 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
       onClick={(e) => handlePick("away", e)}
     />
   );
+  const drawOdds = hasDraw ? (
+    <RowOddBtn
+      label="X"
+      price={drawPrice}
+      selected={drawPicked}
+      // Lock the draw button only when its own price is missing —
+      // independent of home/away so a suspended draw doesn't pretend
+      // the whole market is unavailable.
+      locked={!drawPrice}
+      onClick={(e) => handlePick("draw", e)}
+    />
+  ) : null;
 
   const tier = match.tournament.riskTier ?? null;
   const featured = isFeaturedTier(tier);
@@ -216,6 +248,7 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
           sportSlug={sportSlug}
           homeTrailing={homeOdds}
           awayTrailing={awayOdds}
+          drawTrailing={drawOdds}
         />
       </article>
     </Link>
@@ -240,13 +273,18 @@ function teamTag(name: string): string {
     .slice(0, 4);
 }
 
-// ScoreTable renders a two-row mini-scoreboard mirroring the match-detail
+// ScoreTable renders a mini-scoreboard mirroring the match-detail
 // page's Scoreboard but in compact form for list cards:
 //   [team mark + name] | Σ | Map 1 | Map 2 | Map N | [trailing]
 // `homeTrailing` / `awayTrailing` add a per-row trailing cell — used by
 // MatchRow to slot the odds button vertically aligned with each team
 // row instead of as a separate 2-column block to the right. That gives
 // the name column a much wider track on narrow viewports.
+//
+// When `drawTrailing` is set (3-way match-winner — BO2 series, 1X2
+// sports) an extra "Draw" row sits between home and away. The row's
+// team-name column shows the literal word "Draw" with no logo and no
+// score cells; the trailing column carries the X-outcome odds button.
 function ScoreTable({
   homeTeam,
   awayTeam,
@@ -258,6 +296,7 @@ function ScoreTable({
   sportSlug,
   homeTrailing,
   awayTrailing,
+  drawTrailing,
 }: {
   homeTeam: string;
   awayTeam: string;
@@ -269,6 +308,7 @@ function ScoreTable({
   sportSlug: string;
   homeTrailing?: ReactNode;
   awayTrailing?: ReactNode;
+  drawTrailing?: ReactNode;
 }) {
   const periods = (liveScore?.periods ?? []).filter((p) => p.number != null);
   const periodByNumber = new Map<number, NonNullable<LiveScore["periods"]>[number]>();
@@ -286,7 +326,8 @@ function ScoreTable({
   const mapCount = Math.min(5, Math.max(bestOf ?? 0, periods.length, 0));
   const cols = isLive && mapCount > 0 ? Array.from({ length: mapCount }, (_, i) => i + 1) : [];
   const showSeries = isLive && mapCount > 1;
-  const hasTrailing = homeTrailing != null || awayTrailing != null;
+  const hasTrailing =
+    homeTrailing != null || awayTrailing != null || drawTrailing != null;
 
   // Grid template:
   //   name(1fr) [Σ] [map1..mapN] [trailing]
@@ -347,6 +388,14 @@ function ScoreTable({
         trailing={homeTrailing}
         hasTrailing={hasTrailing}
       />
+      {drawTrailing ? (
+        <DrawScoreRow
+          showSeries={showSeries}
+          colCount={cols.length}
+          trailing={drawTrailing}
+          hasTrailing={hasTrailing}
+        />
+      ) : null}
       <TeamScoreRow
         name={awayTeam}
         logoUrl={awayLogoUrl}
@@ -361,6 +410,45 @@ function ScoreTable({
         hasTrailing={hasTrailing}
       />
     </div>
+  );
+}
+
+// Middle "Draw" row for 3-way match-winner markets. Mirrors the grid
+// layout of TeamScoreRow (so columns line up under the same header)
+// but drops the team mark + logo, leaves the score cells blank, and
+// only renders content in the trailing odds slot.
+function DrawScoreRow({
+  showSeries,
+  colCount,
+  trailing,
+  hasTrailing,
+}: {
+  showSeries: boolean;
+  colCount: number;
+  trailing: ReactNode;
+  hasTrailing: boolean;
+}) {
+  return (
+    <>
+      <div
+        className="mono"
+        style={{
+          fontSize: 11.5,
+          letterSpacing: "0.06em",
+          textTransform: "uppercase",
+          color: "var(--fg-muted)",
+          paddingLeft: 30,
+          minWidth: 0,
+        }}
+      >
+        Draw
+      </div>
+      {showSeries && <div />}
+      {Array.from({ length: colCount }, (_, i) => (
+        <div key={i} />
+      ))}
+      {hasTrailing && <div>{trailing}</div>}
+    </>
   );
 }
 

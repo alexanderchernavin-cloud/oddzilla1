@@ -289,23 +289,24 @@ const hasActiveMarket = sql`EXISTS (
 const HIDDEN_TOURNAMENT_NAMES = ["Integration testing"];
 const notHiddenTournament = notInArray(tournaments.name, HIDDEN_TOURNAMENT_NAMES);
 
-// Inline match-winner odds for the list cards are restricted to two-way
-// markets (`variant='way:two'`). Sports like eFootball expose market 1
-// only as a three-way 1X2 (home/draw/away across outcomes 1/2/3). The
-// list card has just two columns labelled "1"/"2" — there's no slot for
-// the draw — so showing the 1.85/2.70 of a 1X2 looks like a fake 1/2
-// price (and depending on PG row ordering can even pair the draw odds
-// into the away column). Three-way matches still appear in listings via
-// `hasActiveMarket`; they just render without inline buttons and the
-// user clicks through to see the full 1X2 on the match page.
-const isTwoWayMatchWinner = sql`(${markets.specifiersJson}->>'variant') = 'way:two'`;
-
-// loadMatchWinnerOdds fetches the two-way match-winner outcomes for a
-// batch of matches and pairs them by Oddin's canonical outcome_id
-// ("1" = home, "2" = away). Used by both the per-sport and cross-sport
+// loadMatchWinnerOdds fetches the match-winner outcomes for a batch of
+// matches and pairs them by Oddin's canonical outcome_id ("1" = home,
+// "2" = away, "3" = draw). Used by both the per-sport and cross-sport
 // list endpoints to render inline odds on list cards without an extra
-// round trip per row. Skips matches missing either side — the
-// storefront falls back to no inline price.
+// round trip per row.
+//
+// Both 2-way and 3-way variants are accepted. Some formats (BO2 series
+// in Dota 2 / LoL, soccer-style sports like eFootball) emit a 1X2
+// market because a draw is a real outcome; in that case the storefront
+// list card grows a third "Draw" row between home and away. Matches
+// missing either home or away outcome are skipped (the storefront falls
+// back to no inline price).
+//
+// When Oddin somehow emits both 2-way and 3-way variants for the same
+// match (rare but defensible), the 3-way wins so the draw stays
+// discoverable. Pairing is scoped to a single market row so home / away
+// / draw prices always come from the same market — a 2-way home price
+// next to a 3-way away price would mismatch overround.
 interface MatchWinnerPair {
   homeMarketId: string;
   homeOutcomeId: string;
@@ -315,6 +316,9 @@ interface MatchWinnerPair {
   awayOutcomeId: string;
   awayPrice: string | null;
   awayProbability: string | null;
+  drawOutcomeId: string | null;
+  drawPrice: string | null;
+  drawProbability: string | null;
 }
 
 async function loadMatchWinnerOdds(
@@ -340,10 +344,12 @@ async function loadMatchWinnerOdds(
         inArray(markets.matchId, matchIds),
         eq(markets.providerMarketId, 1),
         eq(markets.status, 1),
-        isTwoWayMatchWinner,
       ),
     );
 
+  // Group by match, then by market_id within the match. Picking the
+  // market with the most outcomes lets 3-way variants win over 2-way
+  // when both exist for the same match.
   const byMatch = new Map<string, typeof rows>();
   for (const r of rows) {
     const key = r.matchId.toString();
@@ -352,8 +358,21 @@ async function loadMatchWinnerOdds(
     byMatch.set(key, arr);
   }
   for (const [key, outs] of byMatch) {
-    const home = outs.find((o) => o.outcomeId === "1");
-    const away = outs.find((o) => o.outcomeId === "2");
+    const byMarket = new Map<string, typeof rows>();
+    for (const r of outs) {
+      const mk = r.marketId.toString();
+      const arr = byMarket.get(mk) ?? [];
+      arr.push(r);
+      byMarket.set(mk, arr);
+    }
+    let best: typeof rows | null = null;
+    for (const arr of byMarket.values()) {
+      if (!best || arr.length > best.length) best = arr;
+    }
+    if (!best) continue;
+    const home = best.find((o) => o.outcomeId === "1");
+    const away = best.find((o) => o.outcomeId === "2");
+    const draw = best.find((o) => o.outcomeId === "3");
     if (!home || !away) continue;
     out.set(key, {
       homeMarketId: home.marketId.toString(),
@@ -367,6 +386,9 @@ async function loadMatchWinnerOdds(
       awayOutcomeId: away.outcomeId,
       awayPrice: away.active ? away.publishedOdds : null,
       awayProbability: away.probability ?? null,
+      drawOutcomeId: draw ? draw.outcomeId : null,
+      drawPrice: draw ? (draw.active ? draw.publishedOdds : null) : null,
+      drawProbability: draw?.probability ?? null,
     });
   }
   return out;
@@ -826,6 +848,17 @@ export default async function catalogRoutes(app: FastifyInstance) {
                   price: formatOdds(o.awayPrice),
                   probability: o.awayProbability,
                 },
+                // Present only when the match-winner market is 3-way
+                // (BO2 esports, 1X2 sports). Storefront list cards
+                // grow a "Draw" row between home and away when this
+                // field is non-null.
+                draw: o.drawOutcomeId
+                  ? {
+                      outcomeId: o.drawOutcomeId,
+                      price: formatOdds(o.drawPrice),
+                      probability: o.drawProbability,
+                    }
+                  : null,
               }
             : null,
           topMarket: top,
@@ -1350,6 +1383,17 @@ export default async function catalogRoutes(app: FastifyInstance) {
                   price: formatOdds(o.awayPrice),
                   probability: o.awayProbability,
                 },
+                // Present only when the match-winner market is 3-way
+                // (BO2 esports, 1X2 sports). Storefront list cards
+                // grow a "Draw" row between home and away when this
+                // field is non-null.
+                draw: o.drawOutcomeId
+                  ? {
+                      outcomeId: o.drawOutcomeId,
+                      price: formatOdds(o.drawPrice),
+                      probability: o.drawProbability,
+                    }
+                  : null,
               }
             : null,
           topMarket: top,
