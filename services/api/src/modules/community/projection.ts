@@ -60,6 +60,13 @@ WITH legs AS (
     JOIN matches mt            ON mt.id = mk.match_id
     JOIN tournaments tn        ON tn.id = mt.tournament_id
     JOIN categories c          ON c.id = tn.category_id
+    -- Audit SEC-C1: AI seed bettors (users.is_ai = true) must never
+    -- enter the community_tickets projection. Write-side skip keeps
+    -- every downstream read path (feed, leaderboards, copy, analyses,
+    -- competitions) clean without per-read filtering. The Go-side
+    -- WriteCommunityProjection applies the same exclusion — keep in
+    -- sync (services/settlement/internal/store/store.go).
+    JOIN users u               ON u.id = t.user_id AND u.is_ai = false
    WHERE t.id = ANY(${ticketIds}::uuid[])
    GROUP BY t.id
 )

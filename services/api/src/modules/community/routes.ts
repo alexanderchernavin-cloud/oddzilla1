@@ -69,6 +69,11 @@ import {
 import { isUniqueViolation } from "../../lib/pg-errors.js";
 import { resolveOptionalAvatarUrl } from "./avatar-url.js";
 import { emitNotification } from "./notifications.js";
+import {
+  publicAuthorClause,
+  PUBLIC_AUTHOR_SQL,
+  isPubliclyVisibleAuthor,
+} from "./visibility.js";
 
 // Same shape AuthService uses for `users` writes — limit per-IP-per-user
 // abuse on the nickname squat path.
@@ -214,7 +219,7 @@ export default async function communityRoutes(app: FastifyInstance) {
   //     the top forever.
   //
   // Both surfaces apply the same visibility filter: tickets_public=true
-  // AND nickname IS NOT NULL.
+  // AND nickname IS NOT NULL AND is_ai=false (audit SEC-C1).
   app.get("/community/feed", { config: readRateLimit }, async (request): Promise<CommunityFeedResponse> => {
     const q = feedQuery.parse(request.query);
     const currency: Currency | null =
@@ -257,6 +262,7 @@ export default async function communityRoutes(app: FastifyInstance) {
         nickname: users.nickname,
         bio: users.bio,
         ticketsPublic: users.ticketsPublic,
+        isAi: users.isAi,
         createdAt: users.createdAt,
         avatarSlug: avatarTemplates.slug,
         avatarImagePath: avatarTemplates.imagePath,
@@ -266,7 +272,7 @@ export default async function communityRoutes(app: FastifyInstance) {
       .where(eq(users.nickname, nickname))
       .limit(1);
 
-    if (!u || !u.nickname || !u.ticketsPublic) throw new NotFoundError();
+    if (!u || !isPubliclyVisibleAuthor(u)) throw new NotFoundError();
 
     const [stats, achievements] = await Promise.all([
       loadProfileStats(app.db, u.id, currency),
@@ -321,11 +327,12 @@ export default async function communityRoutes(app: FastifyInstance) {
           nickname: users.nickname,
           bio: users.bio,
           ticketsPublic: users.ticketsPublic,
+          isAi: users.isAi,
         })
         .from(users)
         .where(eq(users.nickname, nickname))
         .limit(1);
-      if (!u || !u.nickname || !u.ticketsPublic) throw new NotFoundError();
+      if (!u || !isPubliclyVisibleAuthor(u)) throw new NotFoundError();
 
       const rows = await app.db
         .select({
@@ -414,8 +421,7 @@ export default async function communityRoutes(app: FastifyInstance) {
         .where(
           and(
             eq(communityTickets.ticketId, id),
-            eq(users.ticketsPublic, true),
-            sql`${users.nickname} IS NOT NULL`,
+            publicAuthorClause(users),
           ),
         )
         .limit(1);
@@ -642,8 +648,7 @@ export default async function communityRoutes(app: FastifyInstance) {
         .where(
           and(
             eq(tickets.id, id),
-            eq(users.ticketsPublic, true),
-            sql`${users.nickname} IS NOT NULL`,
+            publicAuthorClause(users),
           ),
         )
         .limit(2);
@@ -1101,8 +1106,7 @@ SELECT
   FROM legs
   JOIN users u ON u.id = legs.user_id
   LEFT JOIN avatar_templates av ON av.id = u.avatar_template_id
- WHERE u.tickets_public = true
-   AND u.nickname IS NOT NULL
+ WHERE ${PUBLIC_AUTHOR_SQL}
    AND legs.bettable = true
    ${currencyClause}
    ${sportClause}
@@ -1136,9 +1140,13 @@ async function loadBestWinsFeed(
   app: FastifyInstance,
   q: BestWinsLoaderArgs,
 ): Promise<CommunityFeedResponse> {
-  const filters = [
-    eq(users.ticketsPublic, true),
-    sql`${users.nickname} IS NOT NULL`,
+  // Visibility gate funnels through the shared helper (visibility.ts) so
+  // it stays in lockstep with every other community-facing read. `and()`
+  // returns `SQL | undefined`, but with three non-optional inputs the
+  // clause is always defined — the `!` is safe here and documented in
+  // the helper.
+  const filters: SQL[] = [
+    publicAuthorClause(users)!,
     inArray(communityTickets.status, ["settled", "cashed_out"]),
     sql`${communityTickets.payoutMicro} > ${communityTickets.stakeMicro}`,
     sql`${communityTickets.settledAt} >= ${BEST_WINS_WINDOW}`,

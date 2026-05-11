@@ -30,7 +30,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   userNotifications,
   userPreferences,
@@ -130,7 +130,26 @@ export async function emitNotification(
   // this; the no-op keeps the call site simple.
   if (opts.actorId && opts.actorId === opts.userId) return null;
 
-  // 2. Pref gate. Read the row (or use defaults). The column lookup
+  // 2. Audit SEC-C1: skip emits whose ACTOR is an AI seed bettor.
+  // A notification fired BY an AI account is the visibility leak —
+  // it surfaces the seed account by name + avatar in the real user's
+  // panel. Notifications TO an AI account are harmless (no one reads
+  // them), but we drop those too for projection-table cleanliness on
+  // a single cheap PK lookup. System emits (actorId == null) always
+  // pass this gate. The lookup is bounded by `IN (...)` so authored
+  // and recipient stay one round-trip.
+  const idsToCheck: string[] = [];
+  if (opts.actorId) idsToCheck.push(opts.actorId);
+  idsToCheck.push(opts.userId);
+  const aiRows = await app.db
+    .select({ id: users.id, isAi: users.isAi })
+    .from(users)
+    .where(inArray(users.id, idsToCheck));
+  const aiSet = new Set(aiRows.filter((r) => r.isAi).map((r) => r.id));
+  if (opts.actorId && aiSet.has(opts.actorId)) return null;
+  if (aiSet.has(opts.userId)) return null;
+
+  // 3. Pref gate. Read the row (or use defaults). The column lookup
   // is exhaustive over NotificationType so an unknown type is a
   // compile error, not a runtime fall-through.
   const [prefRow] = await app.db
@@ -151,7 +170,7 @@ export async function emitNotification(
   const prefs = prefRow ?? DEFAULT_PREFS;
   if (!prefs[TYPE_TO_PREF[opts.type]]) return null;
 
-  // 3. Group collapse. Look for an existing groupable row in the
+  // 4. Group collapse. Look for an existing groupable row in the
   // window; if found, refresh it.
   if (opts.groupKey) {
     const [existing] = await app.db
@@ -183,7 +202,7 @@ export async function emitNotification(
     }
   }
 
-  // 4. Fresh insert.
+  // 5. Fresh insert.
   const [inserted] = await app.db
     .insert(userNotifications)
     .values({

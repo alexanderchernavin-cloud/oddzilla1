@@ -22,9 +22,16 @@ export async function evaluateAchievements(
 
   const result = await db.execute<Record<string, unknown>>(sql`
 WITH targets AS (
-  SELECT DISTINCT user_id
-    FROM community_tickets
-   WHERE ticket_id = ANY(${ticketIds}::uuid[])
+  -- Audit SEC-C1: explicit AI seed bettor exclusion. Belt-and-braces
+  -- on top of projection.ts skipping the write — if a future caller
+  -- ever invokes evaluateAchievements without first running
+  -- writeCommunityProjection, AI accounts still can't earn badges.
+  -- Mirrors services/settlement/internal/store/store.go ::
+  -- EvaluateAchievements.
+  SELECT DISTINCT ct.user_id
+    FROM community_tickets ct
+    JOIN users u ON u.id = ct.user_id AND u.is_ai = false
+   WHERE ct.ticket_id = ANY(${ticketIds}::uuid[])
 ),
 stats AS (
   SELECT
