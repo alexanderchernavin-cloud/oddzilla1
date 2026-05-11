@@ -853,6 +853,11 @@ async function loadProfileStats(
   userId: string,
   currency: Currency,
 ): Promise<ProfileStats> {
+  // Quote the camelCase aliases so Postgres preserves them — `db.execute`
+  // returns the raw column names as-is, and the TypeScript reads totalStake
+  // / totalPayout below. An unquoted alias is folded to lowercase, making
+  // those fields undefined and crashing BigInt() for any user whose
+  // settled history is non-empty.
   const rows = await db.execute<ProfileStatsRow>(sql`
     SELECT
       COUNT(*)::int                                         AS settled,
@@ -860,8 +865,8 @@ async function loadProfileStats(
         WHERE status::text IN ('settled', 'cashed_out')
           AND payout_micro > stake_micro
       )::int                                                AS wins,
-      COALESCE(SUM(stake_micro), 0)::bigint                 AS total_stake,
-      COALESCE(SUM(payout_micro), 0)::bigint                AS total_payout
+      COALESCE(SUM(stake_micro), 0)::bigint                 AS "totalStake",
+      COALESCE(SUM(payout_micro), 0)::bigint                AS "totalPayout"
       FROM community_tickets
      WHERE user_id = ${userId}
        AND currency = ${currency}
