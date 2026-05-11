@@ -11,10 +11,10 @@ export default async function LoginPage({
 }) {
   const user = await getSessionUser();
   const params = await searchParams;
-  if (user) {
-    redirect(safeNextPath(params.next, "/account"));
-  }
   const adminHost = await isAdminHost();
+  if (user) {
+    redirect(safeNextPath(params.next, adminHost ? "/admin" : "/"));
+  }
 
   return (
     <>
@@ -33,7 +33,7 @@ export default async function LoginPage({
         Log in to place bets and track your history.
       </p>
 
-      <LoginForm next={safeNextPath(params.next, adminHost ? "/admin" : "/account")} />
+      <LoginForm next={safeNextPath(params.next, adminHost ? "/admin" : "/")} />
 
       {!adminHost && (
         <div
