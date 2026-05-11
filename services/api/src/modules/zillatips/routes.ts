@@ -232,7 +232,7 @@ async function loadTips(
           AND hm.id <> ${matchId}
         ORDER BY hm.live_started_at DESC
         LIMIT ${ZILLATIP_LOOKBACK_LEGS}
-      ) h ON TRUE
+      ) h
     ),
     legs_raw AS (
       SELECT
