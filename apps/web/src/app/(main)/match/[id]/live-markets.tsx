@@ -492,18 +492,16 @@ function SingleMarketCard({
 }) {
   const suspended = !isMarketBettable(m);
   const cols = m.outcomes.length <= 2 ? 2 : m.outcomes.length <= 3 ? 3 : 4;
-  // Map each tip's outcomeId to its rendered label so the popover
-  // header reads "Over · Team Alpha" instead of "1 · Team Alpha".
-  const tipContexts: TipContext[] = tips.length
-    ? tips.map((t) => {
-        const oc = m.outcomes.find((o) => o.outcomeId === t.outcomeId);
-        return {
-          marketId: t.marketId,
-          outcomeId: t.outcomeId,
-          outcomeLabel: oc?.name || oc?.rawName || t.outcomeId,
-        };
-      })
-    : [];
+  // Group tips by their outcomeId so each outcome cell can render
+  // ONLY its own historical performance overlay. Removes the
+  // ambiguity the previous header-level badge had: now the badge
+  // sits directly on the outcome it endorses.
+  const tipsByOutcome = new Map<string, ZillaTip[]>();
+  for (const t of tips) {
+    const bucket = tipsByOutcome.get(t.outcomeId);
+    if (bucket) bucket.push(t);
+    else tipsByOutcome.set(t.outcomeId, [t]);
+  }
   return (
     <div
       className="card"
@@ -525,15 +523,6 @@ function SingleMarketCard({
           {m.name}
         </div>
         <div style={{ flex: 1 }} />
-        {tips.length > 0 && (
-          <ZillaTipsBadge
-            tips={tips}
-            currentHome={match.homeTeam}
-            currentAway={match.awayTeam}
-            label={m.baseName}
-            contexts={tipContexts}
-          />
-        )}
         {suspended && <SuspendedPill />}
       </div>
       <div
@@ -543,27 +532,65 @@ function SingleMarketCard({
           gap: 8,
         }}
       >
-        {m.outcomes.map((o) => {
+        {m.outcomes.map((o, idx) => {
           const selected = slip.has(m.id, o.outcomeId);
           const price = o.publishedOdds ? Number(o.publishedOdds) : null;
           const label = o.name || o.rawName || o.outcomeId;
+          const outcomeTips = tipsByOutcome.get(o.outcomeId) ?? [];
+          // Right-edge cells get a right-anchored popover; everything
+          // else anchors left so the popover doesn't push off-screen
+          // when the badge is in the leftmost column.
+          const popoverAlign = idx === cols - 1 ? "right" : "left";
           return (
-            <OddButton
+            <div
               key={o.outcomeId}
-              size="lg"
-              price={price}
-              label={label}
-              selected={selected}
-              locked={
-                !o.active ||
-                !price ||
-                suspended ||
-                builderLocked(m.id, o.outcomeId)
-              }
-              onClick={() =>
-                toggle(slip, m, o, match, label)
-              }
-            />
+              style={{ position: "relative", display: "flex" }}
+            >
+              <OddButton
+                size="lg"
+                price={price}
+                label={label}
+                selected={selected}
+                locked={
+                  !o.active ||
+                  !price ||
+                  suspended ||
+                  builderLocked(m.id, o.outcomeId)
+                }
+                onClick={() => toggle(slip, m, o, match, label)}
+              />
+              {outcomeTips.length > 0 && (
+                <div
+                  style={{
+                    position: "absolute",
+                    top: -8,
+                    right: 8,
+                    zIndex: 5,
+                    // Stop button clicks from happening when the user
+                    // clicks the badge — both share the same parent
+                    // div, so without isolation a tap that lands on
+                    // the chip's edge would propagate into the bet
+                    // slip.
+                    pointerEvents: "auto",
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <ZillaTipsBadge
+                    tips={outcomeTips}
+                    currentHome={match.homeTeam}
+                    currentAway={match.awayTeam}
+                    label={`${m.baseName} · ${label}`}
+                    contexts={outcomeTips.map((t) => ({
+                      marketId: t.marketId,
+                      outcomeId: t.outcomeId,
+                      outcomeLabel: label,
+                    }))}
+                    size="sm"
+                    popoverAlign={popoverAlign}
+                  />
+                </div>
+              )}
+            </div>
           );
         })}
       </div>
@@ -620,28 +647,10 @@ function LineFamilyCard({
     return orderSlots(seen);
   }, [visibleMarkets]);
 
-  // Gather every qualifying tip across the visible lines of this family
-  // into one flat list. The badge bumps its tier off the max ROI in the
-  // family; the popover groups by line value via TipContext.
-  const familyTips = useMemo<{ tips: ZillaTip[]; contexts: TipContext[] }>(() => {
-    const all: ZillaTip[] = [];
-    const ctx: TipContext[] = [];
-    for (const m of visibleMarkets) {
-      const ts = tipsByMarket.get(m.id);
-      if (!ts || ts.length === 0) continue;
-      for (const t of ts) all.push(t);
-      const lineLabel = formatLineValue(m.lineValue, m.lineSpec);
-      for (const o of m.outcomes) {
-        ctx.push({
-          marketId: m.id,
-          outcomeId: o.outcomeId,
-          contextLabel: lineLabel,
-          outcomeLabel: o.name || o.rawName || o.outcomeId,
-        });
-      }
-    }
-    return { tips: all, contexts: ctx };
-  }, [visibleMarkets, tipsByMarket]);
+  // Per-line slot context: each LineRow needs its own tip lookup so
+  // the overlay badge can sit on the specific cell with profitable
+  // history. Removes the previous "family aggregator" badge from the
+  // card header — too coarse to tell the user which line/outcome.
 
   // Family fully empty: no row in the ladder is currently bettable.
   // Collapse to a greyed title-only card with a Suspended pill so the
@@ -707,15 +716,6 @@ function LineFamilyCard({
           {family.lineSpec === "handicap" ? "Handicap" : "Total"}
         </span>
         <div style={{ flex: 1 }} />
-        {familyTips.tips.length > 0 && (
-          <ZillaTipsBadge
-            tips={familyTips.tips}
-            currentHome={match.homeTeam}
-            currentAway={match.awayTeam}
-            label={family.baseName}
-            contexts={familyTips.contexts}
-          />
-        )}
       </div>
       <div
         style={{
@@ -751,6 +751,8 @@ function LineFamilyCard({
             slotNames={slotNames}
             suspended={!isMarketBettable(m)}
             builderLocked={builderLocked}
+            tips={tipsByMarket.get(m.id) ?? EMPTY_TIPS}
+            familyBaseName={family.baseName}
           />
         ))}
       </div>
@@ -765,6 +767,8 @@ function LineRow({
   slotNames,
   suspended,
   builderLocked,
+  tips,
+  familyBaseName,
 }: {
   market: MarketSnapshot;
   match: MatchMeta;
@@ -772,12 +776,23 @@ function LineRow({
   slotNames: string[];
   suspended: boolean;
   builderLocked: BuilderLockFn;
+  tips: ZillaTip[];
+  familyBaseName: string;
 }) {
   const bySlot = new Map<string, MarketOutcome>();
   for (const o of m.outcomes) {
     const label = o.name || o.rawName || o.outcomeId;
     bySlot.set(label, o);
   }
+  // Per-outcome lookup so each slot only carries its OWN tip (not the
+  // whole line's set). Mirrors the SingleMarketCard structure.
+  const tipsByOutcome = new Map<string, ZillaTip[]>();
+  for (const t of tips) {
+    const bucket = tipsByOutcome.get(t.outcomeId);
+    if (bucket) bucket.push(t);
+    else tipsByOutcome.set(t.outcomeId, [t]);
+  }
+  const lineLabel = formatLineValue(m.lineValue, m.lineSpec);
   return (
     <>
       <div
@@ -789,9 +804,9 @@ function LineRow({
           textAlign: "center",
         }}
       >
-        {formatLineValue(m.lineValue, m.lineSpec)}
+        {lineLabel}
       </div>
-      {slotNames.map((slot) => {
+      {slotNames.map((slot, idx) => {
         const o = bySlot.get(slot);
         if (!o) {
           return (
@@ -807,21 +822,58 @@ function LineRow({
         }
         const selected = slip.has(m.id, o.outcomeId);
         const price = o.publishedOdds ? Number(o.publishedOdds) : null;
+        const outcomeTips = tipsByOutcome.get(o.outcomeId) ?? [];
+        // Last column anchors right; everything else left so the
+        // popover stays on-screen across the grid.
+        const popoverAlign = idx === slotNames.length - 1 ? "right" : "left";
         return (
-          <OddButton
+          <div
             key={slot}
-            size="md"
-            price={price}
-            label=""
-            selected={selected}
-            locked={
-              !o.active ||
-              !price ||
-              suspended ||
-              builderLocked(m.id, o.outcomeId)
-            }
-            onClick={() => toggle(slip, m, o, match, `${slot} ${formatLineValue(m.lineValue, m.lineSpec)}`)}
-          />
+            style={{ position: "relative", display: "flex" }}
+          >
+            <OddButton
+              size="md"
+              price={price}
+              label=""
+              selected={selected}
+              locked={
+                !o.active ||
+                !price ||
+                suspended ||
+                builderLocked(m.id, o.outcomeId)
+              }
+              onClick={() =>
+                toggle(slip, m, o, match, `${slot} ${lineLabel}`)
+              }
+            />
+            {outcomeTips.length > 0 && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: -7,
+                  right: 4,
+                  zIndex: 5,
+                  pointerEvents: "auto",
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <ZillaTipsBadge
+                  tips={outcomeTips}
+                  currentHome={match.homeTeam}
+                  currentAway={match.awayTeam}
+                  label={`${familyBaseName} ${lineLabel} · ${slot}`}
+                  contexts={outcomeTips.map((t) => ({
+                    marketId: t.marketId,
+                    outcomeId: t.outcomeId,
+                    contextLabel: lineLabel,
+                    outcomeLabel: slot,
+                  }))}
+                  size="sm"
+                  popoverAlign={popoverAlign}
+                />
+              </div>
+            )}
+          </div>
         );
       })}
     </>
