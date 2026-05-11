@@ -4,17 +4,29 @@
 //
 // The endpoint runs one parameterised SQL query that:
 //   1. Enumerates every active market × outcome on the requested match.
+//      Markets whose specifiers encode team-relative values
+//      (handicaps, correct-score) are skipped — those don't survive
+//      a home/away role flip without a proper specifier-mirroring
+//      pass, which we don't have yet.
 //   2. For each (market, outcome) decides which team(s) the outcome
-//      relates to. Match-winner / map-winner (provider_market_id 1, 4)
-//      treat outcome "1" as home-only and "2" as away-only; everything
-//      else is symmetric (both teams are relevant).
+//      relates to. The decision is OUTCOME-driven: outcome "1"
+//      always maps to home, "2" always to away. This covers
+//      everything where Oddin uses positional outcome IDs
+//      (match/map/round winners, first-to-X, first-blood, half
+//      winners, etc.) — not just match/map winner (pmi 1, 4) as the
+//      previous version assumed. Outcomes outside {"1","2"} and the
+//      symmetric allowlist below produce no tips, so unknown markets
+//      degrade silently instead of producing backwards numbers.
 //   3. For each (market, outcome, team) pulls the team's last
 //      ZILLATIP_LOOKBACK_LEGS closed matches with the same
 //      (provider_market_id, specifiers_hash) signature.
 //   4. Joins each historical match to its market_outcomes row at the
-//      "team-equivalent" outcome — swapping outcome "1"↔"2" for
-//      team-specific markets when the team's home/away role differs
-//      across the two matches.
+//      "team-equivalent" outcome — swapping outcome "1"↔"2" when the
+//      team's home/away role differs across the two matches, so a
+//      tip for "Team A wins" (Team A currently home) still finds
+//      "Team A wins" in a past match where they were away (outcome
+//      "2" there). Without this swap the lookup returns the
+//      opponent's result and the tip flips sign.
 //   5. Sums per-leg flat-stake returns from the prematch_odds snapshot
 //      and result enum, and filters to total ≥ ZILLATIP_MIN_ROI.
 //      The "ROI" surfaced to the storefront is the SUM of per-leg
@@ -89,10 +101,13 @@ export default async function zillatipsRoutes(app: FastifyInstance) {
       .object({ matchId: z.coerce.bigint() })
       .parse(request.params);
 
-    // v2: switched the surfaced ROI from average-per-leg to sum-per-leg.
-    // Bump the key prefix so cached v1 averages don't leak through the
-    // post-deploy 5-min TTL window.
-    const cacheKey = `zillatips:v2:${matchId.toString()}`;
+    // v3: corrected the team-equivalent outcome mapping so it applies
+    // to ANY market with positional outcome IDs (not just pmi 1/4),
+    // and excluded handicap / correct-score markets whose specifiers
+    // carry team-relative values that don't survive a role flip.
+    // Bump the key so cached v2 (sometimes-backwards) tips clear out
+    // of the post-deploy 5-min window.
+    const cacheKey = `zillatips:v3:${matchId.toString()}`;
     const payload = await cached<ZillaTipsResponse>(
       app.redis,
       cacheKey,
@@ -134,6 +149,20 @@ async function loadTips(
   // render the row without a second round trip per opponent.
   const rows = await app.db.execute<AggregateRow>(sql`
     WITH
+    -- Markets whose specifiers carry team-relative values (handicap
+    -- lines, correct-score result pairs). Matching past markets via
+    -- specifiers_hash for these is unsafe across role flips: a
+    -- "hcp=+1.5 on home" past market doesn't represent the same bet
+    -- for an away-now team. Exclude entirely until we have a
+    -- specifier-mirroring pass. Detection is name-template-driven
+    -- so any new handicap / correct-score market Oddin adds is
+    -- excluded automatically.
+    unsafe_markets AS (
+      SELECT DISTINCT provider_market_id
+      FROM market_descriptions
+      WHERE name_template ILIKE '%handicap%'
+         OR name_template ILIKE '%correct%score%'
+    ),
     current_match AS (
       SELECT
         m.id,
@@ -155,6 +184,7 @@ async function loadTips(
       CROSS JOIN current_match cm
       WHERE mk.match_id = cm.id
         AND mk.status = 1
+        AND mk.provider_market_id NOT IN (SELECT provider_market_id FROM unsafe_markets)
     ),
     outcome_team_pairs AS (
       SELECT
@@ -174,19 +204,27 @@ async function loadTips(
           (cms.away_competitor_id, 'away'::text)
       ) AS team(competitor_id, role)
       WHERE
-        -- Team-specific markets: outcome "1" is home, "2" is away,
-        -- everything else (e.g. "3" for the draw in 1X2) has no
-        -- single team-of-interest and is dropped.
+        -- Team-positional outcomes (Oddin convention): outcome "1"
+        -- means home wins/covers/triggers, "2" means away. Pair
+        -- outcome "1" with the home team ONLY and "2" with the
+        -- away team ONLY. Applies to match/map/round winners,
+        -- first-to-X, first-blood, first half winner, second half
+        -- winner — every market where the outcome is the team's
+        -- home/away index. NOT keyed off provider_market_id so new
+        -- positional-outcome markets get tips for free.
         (
-          cms.provider_market_id IN (1, 4)
+          mo.outcome_id IN ('1', '2')
           AND (
             (mo.outcome_id = '1' AND team.role = 'home')
             OR (mo.outcome_id = '2' AND team.role = 'away')
           )
         )
-        -- Symmetric markets: outcome is the same for both teams
-        -- (Totals, Handicaps, Correct Score, Map Race, …).
-        OR cms.provider_market_id NOT IN (1, 4)
+        -- Symmetric outcomes allowlist: Oddin outcome IDs whose
+        -- semantics don't depend on which team is home/away
+        -- (over/under = 4/5, yes/no = 6/7, odd/even = 60/61).
+        -- Both teams pair with the outcome here; equiv_outcome_id
+        -- stays the same because there's nothing to flip.
+        OR mo.outcome_id IN ('4', '5', '6', '7', '60', '61')
     ),
     historical_per_pair AS (
       SELECT
@@ -204,13 +242,22 @@ async function loadTips(
         h.scheduled_at,
         h.hist_market_id,
         h.team_role_hist,
+        -- equiv_outcome_id: when the team's role in the past match
+        -- doesn't match its role in the current match AND the
+        -- outcome is team-positional (i.e. "1"/"2"), flip the
+        -- outcome to find the team's perspective in the past row.
+        -- Example: Astralis is AWAY now (outcome "2"), but in their
+        -- last match they were HOME. The "did Astralis win" answer
+        -- lives under outcome "1" in that past row.
+        -- Symmetric outcomes ("4","5","6","7","60","61") and the
+        -- draw-style "3" don't flip — they carry the same meaning
+        -- in either match.
         CASE
-          WHEN otp.provider_market_id IN (1, 4)
+          WHEN otp.outcome_id IN ('1', '2')
            AND h.team_role_hist <> otp.role
           THEN CASE otp.outcome_id
                  WHEN '1' THEN '2'
                  WHEN '2' THEN '1'
-                 ELSE otp.outcome_id
                END
           ELSE otp.outcome_id
         END AS equiv_outcome_id
