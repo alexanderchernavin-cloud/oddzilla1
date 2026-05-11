@@ -31,6 +31,7 @@ import { and, eq, inArray, sql, desc, asc, type SQL } from "drizzle-orm";
 import {
   users,
   communityTickets,
+  communityTicketInspirations,
   tickets,
   ticketSelections,
   markets,
@@ -380,15 +381,23 @@ export default async function communityRoutes(app: FastifyInstance) {
   //
   // Returns a prefill payload in the shape POST /bets accepts. The web
   // client adds the selections to the bet-slip; the user confirms and
-  // submits via the normal placement flow. Authentication is NOT
-  // required here — this is a read endpoint and the actual placement
-  // is gated downstream. We still respect the same visibility filter
-  // as the public profile / feed: a copy from a non-public profile
-  // 404s to avoid leaking the handle.
+  // submits via the normal placement flow. We respect the same
+  // visibility filter as the public profile / feed: a copy from a
+  // non-public profile 404s to avoid leaking the handle.
+  //
+  // Audit SEC-H2: requireAuth() is now mandatory. The pre-audit
+  // version accepted anonymous requests under a 30/min/IP cap and
+  // bumped community_tickets.inspiration_count on every call —
+  // inspiration_count is the sort key on the "Most Copied" surface,
+  // so a cheap IP-rotation campaign could pin arbitrary tickets to
+  // the top, and the same path could spam pick_copied notifications.
+  // Anonymous copy is meaningless in practice because POST /bets
+  // requires a session anyway.
   app.post<{ Params: { communityTicketId: string } }>(
     "/community/copy/:communityTicketId",
     { config: writeRateLimit },
     async (request): Promise<CommunityCopyResponse> => {
+      const viewer = request.requireAuth();
       const id = request.params.communityTicketId;
       if (!UUID_RE.test(id)) throw new NotFoundError();
 
@@ -465,62 +474,70 @@ export default async function communityRoutes(app: FastifyInstance) {
           (r.matchStatus === "not_started" || r.matchStatus === "live"),
       }));
 
-      // Best-effort inspiration counter bump. Drives the Most
-      // Copied sort on the Big Wins tab. Fire-and-forget — a
-      // failed counter must never break the prefill response,
-      // since the user-visible Copy flow is what matters and the
-      // counter is a coarse sort signal (PRD: "Most Copied" is a
-      // sort key, not a number we ask the user to trust).
+      // Per-viewer dedup + counter bump in one transaction. The
+      // INSERT … ON CONFLICT DO NOTHING into
+      // community_ticket_inspirations atomically claims the
+      // (ticket, viewer) slot; .returning() yields a row only on a
+      // fresh insert. On the no-op path (this viewer already copied
+      // this ticket) we skip both the +1 bump and the pick_copied
+      // emit — the counter is a ranking signal on the "Most Copied"
+      // surface and must not be inflatable by repeat clicks from
+      // the same viewer. See migration
+      // 0045_community_ticket_inspirations.sql for the audit
+      // finding (SEC-H2) and the related fire-and-forget removal
+      // (SEC-L5).
       //
-      // Per-viewer dedup: Redis SETNX with a 24h TTL keyed on the
-      // signed-in user id when available, falling back to the
-      // request IP for anonymous visitors. Prevents both spam
-      // (same actor hammering POST) and Big-Wins leaderboard
-      // inflation. The dedup is best-effort too — if Redis is
-      // unreachable we still bump (matching the prior behaviour
-      // rather than silently dropping legitimate copies).
-      const viewerKey = request.user
-        ? `user:${request.user.id}`
-        : `ip:${request.ip}`;
-      const dedupKey = `community:copy:dedup:${viewerKey}:${id}`;
-      (async () => {
-        // SET NX returns "OK" on first write and null on duplicate.
-        // If Redis is unreachable, fail open (allow the bump) rather
-        // than silently dropping a real copy event.
-        try {
-          const set = await app.redis.set(dedupKey, "1", "EX", 86400, "NX");
-          if (set !== "OK") return; // duplicate within 24h
-        } catch (err) {
-          app.log.warn({ err, ticketId: id }, "inspiration_count dedup check failed (allowing bump)");
-        }
-        await app.db
+      // This DB-table dedup replaces an earlier Redis-SETNX
+      // best-effort approach. The DB form is more durable (survives
+      // Redis flushes), atomically composes with the counter bump,
+      // and pairs with the route's new requireAuth() so anonymous
+      // IP-based dedup is no longer needed.
+      const freshlyInspired = await app.db.transaction(async (tx) => {
+        const inserted = await tx
+          .insert(communityTicketInspirations)
+          .values({ communityTicketId: id, viewerUserId: viewer.id })
+          .onConflictDoNothing()
+          .returning({
+            communityTicketId: communityTicketInspirations.communityTicketId,
+          });
+        if (inserted.length === 0) return false;
+
+        await tx
           .update(communityTickets)
-          .set({ inspirationCount: sql`${communityTickets.inspirationCount} + 1` })
+          .set({
+            inspirationCount: sql`${communityTickets.inspirationCount} + 1`,
+          })
           .where(eq(communityTickets.ticketId, id));
-      })().catch((err: unknown) => {
-        app.log.warn({ err, ticketId: id }, "inspiration_count bump failed");
+        return true;
       });
 
-      // Emit `pick_copied` to the ticket owner. Same fire-and-forget
-      // contract as the counter bump above — a failed emit must not
-      // break the prefill. The actor is whoever is signed in
-      // (request.user is populated when a JWT cookie verifies, even
-      // on this auth-optional route); we silently skip when anonymous
-      // because the panel needs an actor name to render "X copied
-      // your bet". The emit helper itself drops self-emits.
-      const actor = request.user;
-      if (actor) {
-        (async () => {
-          const [actorRow] = await app.db
-            .select({ nickname: users.nickname })
-            .from(users)
-            .where(eq(users.id, actor.id))
-            .limit(1);
-          if (!actorRow?.nickname) return;
+      // Emit `pick_copied` to the ticket owner only on a fresh
+      // inspiration. The emit helper itself drops self-emits, but
+      // gating here keeps the actor-nickname SELECT off the hot
+      // repeat-copy path.
+      //
+      // Audit SEC-L5: the prior implementation wrapped this emit in
+      // an `(async () => {...})().catch(...)` fire-and-forget block.
+      // Now that emission is gated by a fresh dedup INSERT, dropping
+      // the emit silently after a successful dedup would leave the
+      // ticket owner with no notification for that copy ever (the
+      // viewer cannot retry — the second click no-ops at the dedup
+      // step). Awaiting the emit means a transient
+      // emitNotification failure surfaces to the client as a 5xx,
+      // which the client can retry; the dedup row + counter bump
+      // are already committed by the time we reach this point, so
+      // the retry is correctly idempotent.
+      if (freshlyInspired) {
+        const [actorRow] = await app.db
+          .select({ nickname: users.nickname })
+          .from(users)
+          .where(eq(users.id, viewer.id))
+          .limit(1);
+        if (actorRow?.nickname) {
           await emitNotification(app, {
             userId: ct.ownerId,
             type: "pick_copied",
-            actorId: actor.id,
+            actorId: viewer.id,
             payload: {
               actorNickname: actorRow.nickname,
               sourceCommunityTicketId: id,
@@ -532,9 +549,7 @@ export default async function communityRoutes(app: FastifyInstance) {
             // who's copying them.
             deepLink: actorRow.nickname ? `/u/${encodeURIComponent(actorRow.nickname)}` : null,
           });
-        })().catch((err: unknown) => {
-          app.log.warn({ err, ticketId: id }, "pick_copied emit failed");
-        });
+        }
       }
 
       return {
