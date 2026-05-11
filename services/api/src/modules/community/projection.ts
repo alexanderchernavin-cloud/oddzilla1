@@ -15,6 +15,17 @@
 // decide whether a projection error is fatal or best-effort. Cashout
 // treats it as best-effort (the ticket payout is the source of truth
 // and backfill recovers any miss). Admin backfill surfaces errors.
+//
+// Audit 0045 (PR07): the same statement now maintains two projection
+// stat tables in two appended CTEs:
+//   • community_user_stats — bumped per (user_id, currency) on TRUE
+//     INSERT (xmax=0) into community_tickets. Replaces the SUM/COUNT
+//     in loadProfileStats. TODO(PR09): mirror this CTE on the Go side
+//     in services/settlement/internal/store/store.go to keep the
+//     count exact across Go-driven settlements.
+//   • community_author_stats.inspired_turnover_micro — bumped when a
+//     newly-inserted community_tickets row has copied_from_publisher_id
+//     set. Replaces the SUM over community_tickets in loadAuthorStats.
 
 import { sql } from "drizzle-orm";
 import type { DbClient } from "@oddzilla/db";
@@ -69,7 +80,8 @@ WITH legs AS (
     JOIN users u               ON u.id = t.user_id AND u.is_ai = false
    WHERE t.id = ANY(${ticketIds}::uuid[])
    GROUP BY t.id
-)
+),
+upserted AS (
 INSERT INTO community_tickets (
   ticket_id, user_id, currency, status, bet_type,
   stake_micro, payout_micro, total_odds, num_legs, sport_ids, settled_at, score
@@ -114,7 +126,69 @@ ON CONFLICT (ticket_id) DO UPDATE
        payout_micro = EXCLUDED.payout_micro,
        settled_at   = EXCLUDED.settled_at,
        score        = EXCLUDED.score
-RETURNING ticket_id
+RETURNING ticket_id, user_id, currency, stake_micro, payout_micro,
+          (CASE
+             WHEN status::text IN ('settled', 'cashed_out')
+              AND payout_micro > stake_micro THEN 1 ELSE 0
+           END) AS is_win,
+          status,
+          xmax AS xmax_marker,
+          copied_from_publisher_id
+),
+-- Audit 0045 (H3): per-(user, currency) settlement stats. Counted
+-- once per ticket via xmax=0 (true INSERT, not a conflict update).
+-- The cashout caller is the only TS site that runs this today; Go
+-- settlement (services/settlement/) will hit the same INSERT path
+-- in PR9 — its xmax=0 guard means the count stays exact when the
+-- two paths interleave (re-running the projection for the same
+-- ticket only fires the stats update on the first land).
+user_stats_bump AS (
+  INSERT INTO community_user_stats (
+    user_id, currency, settled_count, wins_count,
+    total_stake_micro, total_payout_micro, updated_at
+  )
+  SELECT
+    u.user_id,
+    u.currency,
+    COUNT(*)::int                                                  AS settled_count,
+    COALESCE(SUM(u.is_win), 0)::int                                AS wins_count,
+    COALESCE(SUM(u.stake_micro), 0)::bigint                        AS total_stake_micro,
+    COALESCE(SUM(u.payout_micro), 0)::bigint                       AS total_payout_micro,
+    NOW()
+    FROM upserted u
+   WHERE u.xmax_marker::text = '0'
+     AND u.status::text IN ('settled', 'cashed_out', 'voided')
+   GROUP BY u.user_id, u.currency
+  ON CONFLICT (user_id, currency) DO UPDATE
+     SET settled_count      = community_user_stats.settled_count + EXCLUDED.settled_count,
+         wins_count         = community_user_stats.wins_count + EXCLUDED.wins_count,
+         total_stake_micro  = community_user_stats.total_stake_micro + EXCLUDED.total_stake_micro,
+         total_payout_micro = community_user_stats.total_payout_micro + EXCLUDED.total_payout_micro,
+         updated_at         = NOW()
+  RETURNING 1
+),
+-- Audit 0045 (M6): publisher inspired-turnover. Bumped once per
+-- copied ticket (xmax=0 filter). The community_tickets row inherits
+-- copied_from_publisher_id from the underlying tickets row at INSERT
+-- time — the column isn't on the legs CTE today because no upstream
+-- writer sets it yet (see migration 0042's comment block); when that
+-- writer lands, this CTE picks the column up via the upserted RETURNING.
+author_stats_bump AS (
+  INSERT INTO community_author_stats (user_id, inspired_turnover_micro, updated_at)
+  SELECT
+    u.copied_from_publisher_id,
+    COALESCE(SUM(u.stake_micro), 0)::bigint,
+    NOW()
+    FROM upserted u
+   WHERE u.xmax_marker::text = '0'
+     AND u.copied_from_publisher_id IS NOT NULL
+   GROUP BY u.copied_from_publisher_id
+  ON CONFLICT (user_id) DO UPDATE
+     SET inspired_turnover_micro = community_author_stats.inspired_turnover_micro + EXCLUDED.inspired_turnover_micro,
+         updated_at               = NOW()
+  RETURNING 1
+)
+SELECT ticket_id FROM upserted
 `);
 
   // RETURNING gives us one row per actual upsert (insert + conflict-update

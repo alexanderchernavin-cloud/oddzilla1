@@ -333,21 +333,11 @@ SELECT
   u.nickname                   AS "authorNickname",
   av.slug                      AS "avatarSlug",
   av.image_path                AS "avatarImagePath",
-  -- Author win-rate over settled analyses. Computed inline so the
-  -- top-authors sort can read it without a separate roundtrip.
-  -- NULL when the author has fewer than 3 settled analyses.
-  (
-    SELECT CASE
-      WHEN COUNT(*) FILTER (WHERE outcome IS NOT NULL AND outcome IN ('won','lost','void','cashed_out_void')) >= 3
-      THEN ROUND(
-        100.0 * COUNT(*) FILTER (WHERE outcome = 'won')
-              / NULLIF(COUNT(*) FILTER (WHERE outcome IN ('won','lost')), 0)
-      )::int
-      ELSE NULL
-    END
-    FROM analyses
-    WHERE author_id = a.author_id AND status = 'published'
-  )                            AS "authorWinRate",
+  -- Audit 0045 (H1): author win-rate now reads from
+  -- community_author_stats. NULL fall-through (LEFT JOIN miss OR
+  -- fewer than 3 settled analyses) preserves the original null
+  -- semantics — no change to AnalysisSummary.authorWinRate.
+  cas.win_rate_pct             AS "authorWinRate",
   m.id                         AS "matchId",
   m.home_team || ' vs ' || m.away_team AS "matchTitle",
   m.scheduled_at               AS "scheduledAt",
@@ -387,6 +377,7 @@ SELECT
   FROM analyses a
   INNER JOIN users u ON u.id = a.author_id
   LEFT JOIN avatar_templates av ON av.id = u.avatar_template_id
+  LEFT JOIN community_author_stats cas ON cas.user_id = a.author_id
   INNER JOIN matches m ON m.id = a.match_id
   INNER JOIN tournaments tn ON tn.id = m.tournament_id
   INNER JOIN categories c   ON c.id = tn.category_id
@@ -578,10 +569,13 @@ SELECT
       const denom = wins + losses;
       const winRatePct = settled >= 3 && denom > 0 ? Math.round((wins / denom) * 100) : null;
 
+      // Audit 0045 (M6): inspired turnover is now a PK lookup on
+      // community_author_stats. Missing-row case (author has never
+      // inspired a copy) returns "0" exactly as the SUM did.
       const turnoverRows = await app.db.execute<{ total: string | null }>(sql`
-        SELECT COALESCE(SUM(stake_micro), 0)::bigint::text AS total
-          FROM community_tickets
-         WHERE copied_from_publisher_id = ${u.id}
+        SELECT COALESCE(inspired_turnover_micro, 0)::bigint::text AS total
+          FROM community_author_stats
+         WHERE user_id = ${u.id}
       `);
       const inspiredTurnoverMicro = String(turnoverRows[0]?.total ?? "0");
 
@@ -771,18 +765,10 @@ SELECT
   u.nickname                   AS "authorNickname",
   av.slug                      AS "avatarSlug",
   av.image_path                AS "avatarImagePath",
-  (
-    SELECT CASE
-      WHEN COUNT(*) FILTER (WHERE outcome IS NOT NULL) >= 3
-      THEN ROUND(
-        100.0 * COUNT(*) FILTER (WHERE outcome = 'won')
-              / NULLIF(COUNT(*) FILTER (WHERE outcome IN ('won','lost')), 0)
-      )::int
-      ELSE NULL
-    END
-    FROM analyses
-    WHERE author_id = a.author_id AND status = 'published'
-  )                            AS "authorWinRate",
+  -- Audit 0045 (H1): replaces the per-row correlated subquery with
+  -- a PK join on community_author_stats. NULL when the author has
+  -- no row OR fewer than 3 settled analyses — same contract.
+  cas.win_rate_pct             AS "authorWinRate",
   m.id                         AS "matchId",
   m.home_team || ' vs ' || m.away_team AS "matchTitle",
   m.scheduled_at               AS "scheduledAt",
@@ -811,6 +797,7 @@ SELECT
   FROM analyses a
   INNER JOIN users u ON u.id = a.author_id
   LEFT JOIN avatar_templates av ON av.id = u.avatar_template_id
+  LEFT JOIN community_author_stats cas ON cas.user_id = a.author_id
   INNER JOIN matches m ON m.id = a.match_id
   INNER JOIN tournaments tn ON tn.id = m.tournament_id
   INNER JOIN categories c   ON c.id = tn.category_id
@@ -905,10 +892,9 @@ function orderByForSort(sort: AnalysisSort): ReturnType<typeof sql> {
       return sql`ORDER BY inner_q."inspirationCount" DESC, inner_q."publishedAt" DESC`;
     case "top_authors":
       // Authors with ≥3 settled analyses sort by win rate first;
-      // unranked authors fall to the bottom by recency. The author
-      // win-rate column is already materialised in the inner SELECT
-      // ("authorWinRate"); reuse it instead of running the COUNT
-      // FILTER subquery a second time.
+      // unranked authors fall to the bottom by recency. Reads
+      // cas.win_rate_pct via the LEFT JOIN, surfaced as the
+      // inner_q."authorWinRate" alias after the L5 subquery wrap.
       return sql`ORDER BY COALESCE(inner_q."authorWinRate", 0) DESC, inner_q."publishedAt" DESC`;
     case "recommended":
       return sql`ORDER BY inner_q."feedScore" DESC, inner_q."publishedAt" DESC`;
