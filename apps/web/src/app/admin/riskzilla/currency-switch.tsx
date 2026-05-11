@@ -7,26 +7,33 @@
 // a fresh visit to /admin/riskzilla without ?cur respects the last
 // pick once the client hydrates.
 //
-// We also expose helper hooks (`useRiskzillaCurrency`) so the
-// Bets/Betticker/Bettors client components can read the same value
-// without prop-drilling.
+// Pure helpers (constants, normalizers, the server-side searchParams
+// reader) live in `./currency` so they can be imported from server
+// components without dragging in this "use client" boundary.
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo } from "react";
+import {
+  RZ_CURRENCIES,
+  RZ_CURRENCY_PARAM,
+  RZ_CURRENCY_STORAGE,
+  RZ_DEFAULT_CURRENCY,
+  normalizeRzCurrency,
+  rzCurrencyQueryFragment,
+  type RzCurrency,
+} from "./currency";
 
-export const RZ_CURRENCY_PARAM = "cur";
-export const RZ_CURRENCY_STORAGE = "oz:riskzilla:cur";
-export const RZ_CURRENCIES = ["USDC", "OZ"] as const;
-export type RzCurrency = (typeof RZ_CURRENCIES)[number];
-export const RZ_DEFAULT_CURRENCY: RzCurrency = "USDC";
-
-export function normalizeRzCurrency(raw: string | null | undefined): RzCurrency {
-  if (!raw) return RZ_DEFAULT_CURRENCY;
-  const up = raw.toUpperCase();
-  return (RZ_CURRENCIES as readonly string[]).includes(up)
-    ? (up as RzCurrency)
-    : RZ_DEFAULT_CURRENCY;
-}
+// Re-export from the pure module so existing client-component imports
+// (`from "./currency-switch"`) keep working.
+export {
+  RZ_CURRENCIES,
+  RZ_CURRENCY_PARAM,
+  RZ_CURRENCY_STORAGE,
+  RZ_DEFAULT_CURRENCY,
+  normalizeRzCurrency,
+  rzCurrencyQueryFragment,
+} from "./currency";
+export type { RzCurrency } from "./currency";
 
 export function useRiskzillaCurrency(): RzCurrency {
   const sp = useSearchParams();
@@ -55,8 +62,9 @@ export function RiskzillaCurrencySwitch() {
       next.set(RZ_CURRENCY_PARAM, normalized);
       router.replace(`${pathname}?${next.toString()}`, { scroll: false });
     }
-    // Intentionally run once per pathname change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Intentionally run once per pathname change. We don't depend on
+    // `sp`/`router` references — only on the initial-mount-for-this-
+    // route signal that `pathname` provides.
   }, [pathname]);
 
   const onPick = (cur: RzCurrency) => {
@@ -116,31 +124,6 @@ export function RiskzillaCurrencySwitch() {
       })}
     </div>
   );
-}
-
-// Server-side equivalent — read the same param off Next's
-// `searchParams` prop without instantiating a client component.
-// Server pages call this to pass the value down to the API.
-export function readRzCurrencyFromSearchParams(
-  searchParams:
-    | Record<string, string | string[] | undefined>
-    | URLSearchParams
-    | undefined,
-): RzCurrency {
-  if (!searchParams) return RZ_DEFAULT_CURRENCY;
-  if (searchParams instanceof URLSearchParams) {
-    return normalizeRzCurrency(searchParams.get(RZ_CURRENCY_PARAM));
-  }
-  const raw = searchParams[RZ_CURRENCY_PARAM];
-  if (Array.isArray(raw)) return normalizeRzCurrency(raw[0]);
-  return normalizeRzCurrency(raw);
-}
-
-// Helper for client components — produce the `?cur=…` suffix to
-// append to an outbound API URL. Returns `""` for the default so we
-// keep URLs clean.
-export function rzCurrencyQueryFragment(cur: RzCurrency): string {
-  return `currency=${cur}`;
 }
 
 // Hook to read the chosen currency and produce a stable label

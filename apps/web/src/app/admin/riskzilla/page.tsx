@@ -1,6 +1,6 @@
 import { serverApi } from "@/lib/server-fetch";
 import { fromMicro } from "@oddzilla/types/money";
-import { readRzCurrencyFromSearchParams } from "./currency-switch";
+import { readRzCurrencyFromSearchParams } from "./currency";
 
 export const dynamic = "force-dynamic";
 

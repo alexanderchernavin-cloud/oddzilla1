@@ -1,6 +1,6 @@
 import { serverApi } from "@/lib/server-fetch";
 import { BettorsClient, type BettorDto } from "./bettors-client";
-import { readRzCurrencyFromSearchParams } from "../currency-switch";
+import { readRzCurrencyFromSearchParams } from "../currency";
 
 export const dynamic = "force-dynamic";
 
