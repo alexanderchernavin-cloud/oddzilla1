@@ -72,22 +72,38 @@ ALTER TABLE market_outcomes
 -- ticks (Oddin emits NULL when an outcome is mid-suspension) so we
 -- snapshot the last REAL pre-game number, not the moment Oddin pulled
 -- the price right before kickoff.
-UPDATE market_outcomes mo
-   SET prematch_odds = h.published_odds
-  FROM markets mk
+--
+-- Structure: the candidates CTE assembles (market_outcome row,
+-- new_prematch_odds) pairs via a SELECT — Postgres won't let an
+-- UPDATE's target table appear in its own LATERAL FROM-list (42P10
+-- "invalid reference to FROM-clause entry"), but a plain SELECT can
+-- LATERAL freely. The outer UPDATE then applies the prepared values
+-- in a single pass keyed by (market_id, outcome_id).
+WITH candidates AS (
+  SELECT
+    mo.market_id,
+    mo.outcome_id,
+    h.published_odds AS new_prematch_odds
+  FROM market_outcomes mo
+  JOIN markets mk ON mk.id = mo.market_id
   JOIN matches m ON m.id = mk.match_id
   CROSS JOIN LATERAL (
     SELECT published_odds
     FROM odds_history
-    WHERE market_id = mk.id
+    WHERE market_id = mo.market_id
       AND outcome_id = mo.outcome_id
       AND ts < m.live_started_at
       AND published_odds IS NOT NULL
     ORDER BY ts DESC
     LIMIT 1
   ) h
- WHERE mo.market_id = mk.id
-   AND mo.prematch_odds IS NULL
-   AND m.live_started_at IS NOT NULL
-   AND m.live_started_at > NOW() - INTERVAL '90 days'
-   AND m.status::text IN ('live', 'closed', 'cancelled');
+  WHERE mo.prematch_odds IS NULL
+    AND m.live_started_at IS NOT NULL
+    AND m.live_started_at > NOW() - INTERVAL '90 days'
+    AND m.status::text IN ('live', 'closed', 'cancelled')
+)
+UPDATE market_outcomes mo
+   SET prematch_odds = c.new_prematch_odds
+  FROM candidates c
+ WHERE mo.market_id = c.market_id
+   AND mo.outcome_id = c.outcome_id;
