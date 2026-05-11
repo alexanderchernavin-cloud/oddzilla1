@@ -12,15 +12,30 @@ import (
 	"sync"
 	"time"
 
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// marketCacheSize bounds the in-process MarketInfo cache. 4096 fits the
+// peak concurrent-market working set with comfortable headroom (hot
+// matches × 30-150 markets each); each entry is ~40 bytes so the cache
+// caps at well under 1 MiB. Sized large enough that recovery snapshots
+// don't churn it.
+const marketCacheSize = 4096
 
 type Store struct {
 	pool *pgxpool.Pool
 
 	cacheMu     sync.RWMutex
 	marginCache *marginCache
+
+	// marketCache memoises the market→match→tournament→category lineage
+	// resolved in ResolveMarket. The data is immutable for a market's
+	// lifetime (IDs don't move), so no TTL is needed and stale reads are
+	// impossible. Cache miss falls through to the 4-way JOIN; hit short-
+	// circuits the round-trip. Mirrors the marginCache pattern above.
+	marketCache *lru.Cache[int64, MarketInfo]
 }
 
 type marginCache struct {
@@ -32,7 +47,14 @@ type marginCache struct {
 }
 
 func New(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool}
+	// lru.New returns an error only when size <= 0; the constant above is
+	// safe. We surface a panic anyway so a future copy-paste at size=0
+	// fails loudly instead of silently disabling the cache.
+	mc, err := lru.New[int64, MarketInfo](marketCacheSize)
+	if err != nil {
+		panic(fmt.Sprintf("odds-publisher: init market cache: %v", err))
+	}
+	return &Store{pool: pool, marketCache: mc}
 }
 
 // MarketInfo is everything the publisher needs for one outcome update:
@@ -47,8 +69,17 @@ type MarketInfo struct {
 }
 
 // ResolveMarket returns the metadata for a market row. Called once per
-// event processed; result is stable per market (IDs don't move).
+// event processed; result is stable per market (IDs don't move). The
+// 4-way JOIN to categories is hot — hundreds of QPS at peak Oddin
+// throughput, all reading immutable IDs — so results are memoised in
+// the per-process LRU. A market only gets evicted when 4095 fresher
+// markets crowd it out, at which point re-resolving is cheap.
 func (s *Store) ResolveMarket(ctx context.Context, marketID int64) (MarketInfo, error) {
+	if s.marketCache != nil {
+		if info, ok := s.marketCache.Get(marketID); ok {
+			return info, nil
+		}
+	}
 	const q = `
 SELECT m.id, m.match_id, ma.tournament_id, c.sport_id, m.provider_market_id
   FROM markets m
@@ -64,6 +95,9 @@ SELECT m.id, m.match_id, ma.tournament_id, c.sport_id, m.provider_market_id
 			return info, fmt.Errorf("market %d not found (race with ingester?)", marketID)
 		}
 		return info, fmt.Errorf("resolve market: %w", err)
+	}
+	if s.marketCache != nil {
+		s.marketCache.Add(marketID, info)
 	}
 	return info, nil
 }
