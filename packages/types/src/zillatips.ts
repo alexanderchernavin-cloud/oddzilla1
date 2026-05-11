@@ -58,9 +58,11 @@ export interface ZillaTip {
   // The team's role on the CURRENT (open) match. Drives which row of the
   // widget renders this tip — `home` lines up under the home banner.
   role: ZillaTipRole;
-  // Aggregate flat-stake ROI over `ratedCount` legs, expressed as a
-  // unitless multiplier: 0.20 = +20%, 1.00 = +100%.
-  // Always >= MIN_ROI_THRESHOLD by construction.
+  // SUM of per-leg flat-stake returns across `ratedCount` legs,
+  // expressed as a unitless multiplier: 0.20 = +20%, 1.00 = +100%.
+  // E.g. wins at 1.90 + 2.50 = (+0.90) + (+1.50) = 1.40 → +140%;
+  // a -100% loss followed by a +80% win = -0.20 → -20% (filtered out).
+  // Always >= ZILLATIP_MIN_ROI by construction.
   roi: number;
   // How many legs contributed to the ROI denominator. Legs with a void
   // result or a won-with-null-prematch-odds are excluded.

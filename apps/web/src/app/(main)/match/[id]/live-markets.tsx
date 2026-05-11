@@ -13,6 +13,7 @@ import {
 } from "@/components/match/betbuilder-toggle";
 import {
   ZillaTipsBadge,
+  ZillaTipsProvider,
   type TipContext,
 } from "@/components/match/zillatips-widget";
 
@@ -335,7 +336,14 @@ export function LiveMarkets({
   // Render the row only when EITHER has something to show — otherwise
   // the parent's column-gap would steal 18px of vertical space for an
   // empty flex container.
+  //
+  // ZillaTipsProvider wraps the entire markets tree so every ZillaTips
+  // badge across all groups (single markets + line families) shares
+  // one open-state. Hovering a new badge auto-closes the previous;
+  // without this, every badge tracks its own state and the popovers
+  // stack on top of each other.
   return (
+    <ZillaTipsProvider>
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       {showScopeRow && (
         <div
@@ -423,6 +431,7 @@ export function LiveMarkets({
         );
       })}
     </div>
+    </ZillaTipsProvider>
   );
 }
 
