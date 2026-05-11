@@ -56,7 +56,7 @@ export const options = {
 };
 
 export function setup() {
-  const r = http.get(`${BASE}/api/catalog/sports/cs2`);
+  const r = http.get(`${BASE}/api/catalog/sports/cs2`, { responseType: "text" });
   if (r.status !== 200) fail(`prefetch returned ${r.status}`);
   const body = JSON.parse(r.body);
   const matches = (body.matches || []).map((m) => String(m.id));

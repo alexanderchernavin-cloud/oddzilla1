@@ -71,8 +71,11 @@ export const options = {
 // instead of hard-coding stale ones. If the prefetch fails the test
 // aborts — there's no point measuring SSR throughput against a 500.
 export function setup() {
+  // Override the global discardResponseBodies for this one request —
+  // we need to parse the catalog JSON to populate the match-id pool.
   const r = http.get(`${BASE}/api/catalog/sports/cs2`, {
     tags: { name: "catalog_api" },
+    responseType: "text",
   });
   if (r.status !== 200) {
     fail(`prefetch /api/catalog/sports/cs2 returned ${r.status} — aborting`);
