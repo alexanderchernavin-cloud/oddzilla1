@@ -12,3 +12,4 @@ export * from "./community.js";
 export * from "./competitions-catalog.js";
 export * from "./combi-boost.js";
 export * from "./avatars.js";
+export * from "./zillatips.js";

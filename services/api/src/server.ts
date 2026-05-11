@@ -49,6 +49,7 @@ import adminCompetitionsRoutes from "./modules/admin/competitions.js";
 import adminAvatarRoutes from "./modules/admin/avatars.js";
 import widgetsRoutes from "./modules/widgets/routes.js";
 import betbuilderRoutes from "./modules/betbuilder/routes.js";
+import zillatipsRoutes from "./modules/zillatips/routes.js";
 import devicesRoutes from "./modules/devices/routes.js";
 import riskzillaRoutes from "./modules/admin/riskzilla/routes.js";
 import { ApiError } from "./lib/errors.js";
@@ -239,6 +240,7 @@ await app.register(adminCompetitionsRoutes);
 await app.register(adminAvatarRoutes);
 await app.register(widgetsRoutes);
 await app.register(betbuilderRoutes);
+await app.register(zillatipsRoutes);
 await app.register(devicesRoutes);
 await app.register(riskzillaRoutes);
 

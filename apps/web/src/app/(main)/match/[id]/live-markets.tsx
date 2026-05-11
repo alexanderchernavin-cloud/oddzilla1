@@ -3,12 +3,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLiveOdds } from "@/lib/use-live-odds";
 import { useBetSlip } from "@/lib/bet-slip";
+import { useZillaTips } from "@/lib/use-zillatips";
+import type { ZillaTip } from "@oddzilla/types";
 import { OddButton } from "@/components/ui/primitives";
 import { I } from "@/components/ui/icons";
 import {
   BetBuilderTogglePill,
   useBetBuilderProbe,
 } from "@/components/match/betbuilder-toggle";
+import {
+  ZillaTipsBadge,
+  type TipContext,
+} from "@/components/match/zillatips-widget";
 
 export interface MarketOutcome {
   outcomeId: string;
@@ -141,6 +147,10 @@ function entryShouldRender(entry: RenderEntry): boolean {
   return entry.markets.some((m) => !isMarketDeactivated(m));
 }
 
+// Stable empty array so card props that take a tips list don't churn
+// reference identity on every render of a no-tip card.
+const EMPTY_TIPS: ZillaTip[] = [];
+
 // BetBuilder reachability gate. Computed once per render in LiveMarkets
 // and threaded down to each outcome button. Returns true when an
 // outcome should be locked because the slip is in BetBuilder mode for
@@ -163,6 +173,9 @@ export function LiveMarkets({
 }) {
   const ticks = useLiveOdds(matchId);
   const slip = useBetSlip();
+  // ZillaTips loads lazily after first render so the SSR'd markets
+  // tree appears without waiting on the historical ROI calc.
+  const { tipsByMarket } = useZillaTips(matchId);
 
   const builderLocked = useMemo<BuilderLockFn>(() => {
     const isBuilderForThisMatch =
@@ -392,6 +405,7 @@ export function LiveMarkets({
                   match={match}
                   slip={slip}
                   builderLocked={builderLocked}
+                  tips={tipsByMarket.get(entry.market.id) ?? EMPTY_TIPS}
                 />
               ) : (
                 <LineFamilyCard
@@ -400,6 +414,7 @@ export function LiveMarkets({
                   match={match}
                   slip={slip}
                   builderLocked={builderLocked}
+                  tipsByMarket={tipsByMarket}
                 />
               ),
             )}
@@ -458,14 +473,28 @@ function SingleMarketCard({
   match,
   slip,
   builderLocked,
+  tips,
 }: {
   market: MarketSnapshot;
   match: MatchMeta;
   slip: ReturnType<typeof useBetSlip>;
   builderLocked: BuilderLockFn;
+  tips: ZillaTip[];
 }) {
   const suspended = !isMarketBettable(m);
   const cols = m.outcomes.length <= 2 ? 2 : m.outcomes.length <= 3 ? 3 : 4;
+  // Map each tip's outcomeId to its rendered label so the popover
+  // header reads "Over · Team Alpha" instead of "1 · Team Alpha".
+  const tipContexts: TipContext[] = tips.length
+    ? tips.map((t) => {
+        const oc = m.outcomes.find((o) => o.outcomeId === t.outcomeId);
+        return {
+          marketId: t.marketId,
+          outcomeId: t.outcomeId,
+          outcomeLabel: oc?.name || oc?.rawName || t.outcomeId,
+        };
+      })
+    : [];
   return (
     <div
       className="card"
@@ -487,6 +516,15 @@ function SingleMarketCard({
           {m.name}
         </div>
         <div style={{ flex: 1 }} />
+        {tips.length > 0 && (
+          <ZillaTipsBadge
+            tips={tips}
+            currentHome={match.homeTeam}
+            currentAway={match.awayTeam}
+            label={m.baseName}
+            contexts={tipContexts}
+          />
+        )}
         {suspended && <SuspendedPill />}
       </div>
       <div
@@ -532,11 +570,13 @@ function LineFamilyCard({
   match,
   slip,
   builderLocked,
+  tipsByMarket,
 }: {
   family: LineFamily;
   match: MatchMeta;
   slip: ReturnType<typeof useBetSlip>;
   builderLocked: BuilderLockFn;
+  tipsByMarket: Map<string, ZillaTip[]>;
 }) {
   // Drop deactivated lines (status=0; Oddin closed them and they're
   // not coming back this session) and lines whose outcomes have no
@@ -570,6 +610,29 @@ function LineFamilyCard({
     // intuition (Under before Over, Home before Away).
     return orderSlots(seen);
   }, [visibleMarkets]);
+
+  // Gather every qualifying tip across the visible lines of this family
+  // into one flat list. The badge bumps its tier off the max ROI in the
+  // family; the popover groups by line value via TipContext.
+  const familyTips = useMemo<{ tips: ZillaTip[]; contexts: TipContext[] }>(() => {
+    const all: ZillaTip[] = [];
+    const ctx: TipContext[] = [];
+    for (const m of visibleMarkets) {
+      const ts = tipsByMarket.get(m.id);
+      if (!ts || ts.length === 0) continue;
+      for (const t of ts) all.push(t);
+      const lineLabel = formatLineValue(m.lineValue, m.lineSpec);
+      for (const o of m.outcomes) {
+        ctx.push({
+          marketId: m.id,
+          outcomeId: o.outcomeId,
+          contextLabel: lineLabel,
+          outcomeLabel: o.name || o.rawName || o.outcomeId,
+        });
+      }
+    }
+    return { tips: all, contexts: ctx };
+  }, [visibleMarkets, tipsByMarket]);
 
   // Family fully empty: no row in the ladder is currently bettable.
   // Collapse to a greyed title-only card with a Suspended pill so the
@@ -635,6 +698,15 @@ function LineFamilyCard({
           {family.lineSpec === "handicap" ? "Handicap" : "Total"}
         </span>
         <div style={{ flex: 1 }} />
+        {familyTips.tips.length > 0 && (
+          <ZillaTipsBadge
+            tips={familyTips.tips}
+            currentHome={match.homeTeam}
+            currentAway={match.awayTeam}
+            label={family.baseName}
+            contexts={familyTips.contexts}
+          />
+        )}
       </div>
       <div
         style={{

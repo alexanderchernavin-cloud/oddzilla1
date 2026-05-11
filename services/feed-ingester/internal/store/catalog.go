@@ -265,7 +265,41 @@ RETURNING id`
 // sometimes drops the final `<sport_event_status>` once the last
 // market settles), settlement.MarkMatchClosedIfAllMarketsTerminal
 // flips the match closed once every market reaches a terminal state.
+//
+// ZillaTips: when the new status is 'live' and the match has not yet
+// been stamped with a live_started_at, this also (a) records the
+// transition timestamp and (b) snapshots every market_outcomes
+// .published_odds for the match into prematch_odds. The handler runs
+// this BEFORE the new odds_change values overwrite the outcomes table
+// in handleOddsChange — so the snapshot captures the final pre-game
+// price, not the first live tick. The IS NULL guards keep the path
+// idempotent under recovery replay and concurrent flips.
 func UpdateMatchStatus(ctx context.Context, db pgxRunner, matchID int64, status string) error {
+	if status == "live" {
+		_, err := db.Exec(ctx, `
+WITH upd AS (
+  UPDATE matches
+     SET status = 'live'::match_status,
+         live_started_at = COALESCE(live_started_at, NOW()),
+         updated_at = NOW()
+   WHERE id = $1
+     AND status::text NOT IN ('closed','cancelled')
+   RETURNING id
+)
+UPDATE market_outcomes mo
+   SET prematch_odds = mo.published_odds
+  FROM markets m
+  JOIN upd ON upd.id = m.match_id
+ WHERE m.id = mo.market_id
+   AND mo.prematch_odds IS NULL
+   AND mo.published_odds IS NOT NULL`,
+			matchID,
+		)
+		if err != nil {
+			return fmt.Errorf("update match status (live): %w", err)
+		}
+		return nil
+	}
 	_, err := db.Exec(ctx, `
 UPDATE matches
    SET status = $2::match_status, updated_at = NOW()

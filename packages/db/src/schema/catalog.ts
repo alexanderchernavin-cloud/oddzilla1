@@ -157,6 +157,10 @@ export const matches = pgTable(
     status: matchStatusEnum().notNull().default("not_started"),
     oddinStatusCode: smallint(),
     bestOf: smallint(),
+    // First not_started→live transition timestamp. Captured by
+    // feed-ingester's UpdateMatchStatus and used by ZillaTips to anchor
+    // "last prematch snapshot" queries across the historical sample.
+    liveStartedAt: timestamp("live_started_at", { withTimezone: true }),
     liveScore: jsonb(),
     // Oddin's fixture endpoint exposes <tv_channels><tv_channel name=...
     // language=... stream_url=.../></tv_channels>. We store the parsed
@@ -173,6 +177,15 @@ export const matches = pgTable(
     index("matches_live_idx").on(t.status).where(sql`${t.status} = 'live'`),
     index("matches_home_competitor_idx").on(t.homeCompetitorId),
     index("matches_away_competitor_idx").on(t.awayCompetitorId),
+    // ZillaTips lookback hot path — fetch "last 5 closed matches for team T,
+    // ordered by recency". Partial-index pair lets Postgres index-scan
+    // straight to the top-5 instead of sort-after-filter.
+    index("matches_home_team_recency_idx")
+      .on(t.homeCompetitorId, t.status, t.liveStartedAt.desc())
+      .where(sql`${t.liveStartedAt} IS NOT NULL`),
+    index("matches_away_team_recency_idx")
+      .on(t.awayCompetitorId, t.status, t.liveStartedAt.desc())
+      .where(sql`${t.liveStartedAt} IS NOT NULL`),
   ],
 );
 
