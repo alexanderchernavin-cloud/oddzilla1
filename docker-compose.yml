@@ -84,7 +84,13 @@ x-web: &web-base
   restart: unless-stopped
   logging: *default-logging
   mem_limit: 700m
-  cpus: 0.75
+  # Each Next.js process is single-threaded for SSR. The original
+  # 0.75 cap pinned every replica at 75% of one core during the 1500-
+  # VU load test (see docker-stats samples in docs/LOADTEST.md) —
+  # cgroup throttling, not host saturation: the 4-vCPU box still had
+  # ~1.2 cores free at peak. 1.0 lets each replica fully use one
+  # core; 3 replicas = 3 cores, leaving 1 for api + postgres + caddy.
+  cpus: 1.0
   build:
     context: .
     dockerfile: apps/web/Dockerfile
@@ -172,7 +178,13 @@ services:
     # for TLS session caching + per-upstream connection pool at the
     # fan-out tier (3 web replicas × N upstreams + api + ws-gateway).
     mem_limit: 256m
-    cpus: 0.5
+    # Bumped 0.5 -> 1.0 after the 1500-VU run: Caddy hit ~50% on its
+    # 0.5 cap (= pinned) during the test; under TLS handshake + zstd
+    # encoding for thousands of concurrent connections it needs one
+    # whole core. Still oversubscribed with web (3 × 1.0) + postgres
+    # (1.5) + api (1.0) on a 4-vCPU host, but only web is sustained-
+    # contended; Caddy CPU spikes are bursty and brief.
+    cpus: 1.0
     # Caddy needs to bind privileged ports 80 and 443. cap_drop ALL strips
     # every capability and we only re-add NET_BIND_SERVICE so a Caddy RCE
     # cannot, for example, modify routing tables (NET_ADMIN) or read raw
