@@ -288,6 +288,31 @@ export default async function communityAnalysesRoutes(app: FastifyInstance) {
       // recency); top_authors orders by author win-rate computed on the
       // fly via a windowed aggregate. See V1-cuts comment at top.
       const orderClause = orderByForSort(q.sort);
+      // L5 rewrite: when sort=recommended, materialise the score
+      // expression as a named column on the SELECT so the ORDER BY
+      // references an alias instead of recomputing a 4-factor formula
+      // inline. Functionally equivalent — same expression, same
+      // planner cost on a <1K-row corpus — but explicit. When the
+      // corpus crosses ~10K rows the next move is a generated column
+      // (or a materialised feed_score on analyses) so the sort can
+      // use an index. Tracked as a follow-up.
+      // TODO(V2): persist feed_score as a generated/stored column or
+      // a denormalised metric on `analyses`; rebuild on
+      // inspire/thumbs-up writes. Index (status, feed_score DESC)
+      // unlocks index-only scans.
+      const feedScoreExpr =
+        q.sort === "recommended"
+          ? sql`(
+              a.inspiration_count * 2
+              + a.thumbs_up_count * 3
+              + CASE
+                  WHEN m.scheduled_at - now() BETWEEN interval '0' AND interval '24 hours' THEN 50
+                  WHEN m.scheduled_at - now() BETWEEN interval '24 hours' AND interval '72 hours' THEN 25
+                  ELSE 0
+                END
+              - LEAST(50, FLOOR(EXTRACT(EPOCH FROM (now() - a.published_at)) / 86400))
+            )`
+          : sql`NULL::int`;
 
       const matchClause = q.match !== undefined
         ? sql`AND a.match_id = ${q.match}::bigint`
@@ -300,7 +325,9 @@ export default async function communityAnalysesRoutes(app: FastifyInstance) {
         : sql``;
 
       const rows = await app.db.execute<Record<string, unknown>>(sql`
+SELECT * FROM (
 SELECT
+  ${feedScoreExpr}              AS "feedScore",
   a.id                         AS "id",
   a.author_id                  AS "authorId",
   u.nickname                   AS "authorNickname",
@@ -370,6 +397,7 @@ SELECT
    ${matchClause}
    ${authorClause}
    ${sportClause}
+) inner_q
  ${orderClause}
  LIMIT ${limit}
  OFFSET ${offset}
@@ -596,34 +624,73 @@ SELECT
       }
       const matchId = BigInt(matchIdRaw);
 
-      // Read every accepted ticket the caller owns, then aggregate
-      // legs by ticket and reject any whose legs span multiple
-      // matches or fall under the min-odds floor. Doing this in one
-      // round-trip keeps the editor's pre-fetch cheap.
+      // H2 rewrite: the legacy query scanned the caller's entire
+      // accepted-but-unsettled ticket history, aggregated all legs,
+      // then HAVING-filtered to "every leg on this match". On heavy
+      // bettors that's thousands of leg-rows aggregated to be thrown
+      // away. New shape:
+      //   1. Time-window the candidate tickets to ~14 days before the
+      //      requested match's kickoff. Anything older can't credibly
+      //      be a pre-match-attached ticket for this match.
+      //   2. Restrict the LEG join to legs whose market is on this
+      //      match BEFORE aggregating. The author-side rule is
+      //      "every leg on this match" — equivalently "ticket has at
+      //      least one leg on this match AND no legs on a different
+      //      match". Pre-filter to legs on this match, then count
+      //      against the ticket's total leg count.
       const rows = await app.db.execute<Record<string, unknown>>(sql`
+        WITH match_legs AS (
+          -- Pre-filter to candidate tickets (caller, accepted, recent)
+          -- and to legs on the requested match. The HAVING below then
+          -- only has to verify "every ticket leg is in this set".
+          SELECT
+            t.id                                                  AS ticket_id,
+            t.currency                                            AS currency,
+            t.stake_micro                                         AS stake_micro,
+            t.bet_type                                            AS bet_type,
+            t.placed_at                                           AS placed_at,
+            ts.odds_at_placement                                  AS odds_at_placement
+            FROM tickets t
+            INNER JOIN ticket_selections ts ON ts.ticket_id = t.id
+            INNER JOIN markets mk           ON mk.id = ts.market_id
+           WHERE t.user_id = ${u.id}
+             AND t.status = 'accepted'
+             AND t.placed_at >= now() - interval '14 days'
+             AND t.placed_at < (SELECT scheduled_at FROM matches WHERE id = ${matchId}::bigint)
+             AND mk.match_id = ${matchId}::bigint
+        ),
+        ticket_totals AS (
+          -- Total legs on each candidate ticket — needed because
+          -- match_legs only contains legs on the requested match;
+          -- BOOL_AND would lose the cross-match check otherwise.
+          SELECT ts.ticket_id AS ticket_id, COUNT(*)::int AS total_legs
+            FROM ticket_selections ts
+           WHERE ts.ticket_id IN (SELECT ticket_id FROM match_legs)
+           GROUP BY ts.ticket_id
+        )
         SELECT
-          t.id                                                 AS "ticketId",
-          t.currency                                           AS "currency",
-          t.stake_micro                                        AS "stakeMicro",
-          t.bet_type::text                                     AS "betType",
-          COUNT(ts.*)::int                                     AS "legCount",
-          EXP(SUM(LN(ts.odds_at_placement::float8)))::numeric(10,4) AS "totalOdds",
-          MIN(ts.odds_at_placement::float8)                    AS "minOdds",
-          BOOL_AND(mk.match_id = ${matchId}::bigint)           AS "allOnMatch",
+          ml.ticket_id                                          AS "ticketId",
+          ml.currency                                           AS "currency",
+          ml.stake_micro                                        AS "stakeMicro",
+          ml.bet_type::text                                     AS "betType",
+          COUNT(*)::int                                         AS "legCount",
+          EXP(SUM(LN(ml.odds_at_placement::float8)))::numeric(10,4) AS "totalOdds",
+          MIN(ml.odds_at_placement::float8)                     AS "minOdds",
+          -- "All legs on this match" ≡ legs counted here == ticket
+          -- total legs. No BOOL_AND needed because match_legs is
+          -- already pre-filtered to mk.match_id = matchId.
+          (COUNT(*) = tt.total_legs)                            AS "allOnMatch",
           -- Author already published an analysis on this ticket?
           EXISTS (
             SELECT 1 FROM analyses a
-             WHERE a.ticket_id = t.id AND a.status = 'published'
+             WHERE a.ticket_id = ml.ticket_id AND a.status = 'published'
           )                                                    AS "alreadyAttached"
-          FROM tickets t
-          INNER JOIN ticket_selections ts ON ts.ticket_id = t.id
-          INNER JOIN markets mk           ON mk.id = ts.market_id
-         WHERE t.user_id = ${u.id}
-           AND t.status = 'accepted'
-         GROUP BY t.id
-        HAVING BOOL_AND(mk.match_id = ${matchId}::bigint) = true
-           AND MIN(ts.odds_at_placement::float8) >= ${parseFloat(MIN_ODDS)}
-         ORDER BY t.placed_at DESC
+          FROM match_legs ml
+          INNER JOIN ticket_totals tt ON tt.ticket_id = ml.ticket_id
+         GROUP BY ml.ticket_id, ml.currency, ml.stake_micro, ml.bet_type, ml.placed_at, tt.total_legs
+        HAVING COUNT(*) = tt.total_legs
+           AND MIN(ml.odds_at_placement::float8) >= ${parseFloat(MIN_ODDS)}
+         ORDER BY ml.placed_at DESC
       `);
 
       const tickets: EligibleTicketSummary[] = rows
@@ -818,6 +885,14 @@ function toIso(v: unknown): string {
 // PR but haven't yet wired through. The contract `sort=recommended`
 // stays; new factors land incrementally without an API change.
 //
+// L5 rewrite (audit): the recommended-sort score is now materialised
+// as a "feedScore" column on the inner SELECT and the outer ORDER BY
+// references that alias. Same per-row math; the planner sees one
+// computation instead of one inline in ORDER BY and one in the (then
+// hypothetical) projection. The other sort modes also reference
+// inner_q's output aliases ("publishedAt", "inspirationCount") because
+// the whole result set is wrapped — see L5 V2 TODO at the call site.
+//
 // Score (per-row, computed inline for the planner):
 //   • Inspirations × 2
 //   • Thumbs-up × 3
@@ -827,31 +902,19 @@ function toIso(v: unknown): string {
 function orderByForSort(sort: AnalysisSort): ReturnType<typeof sql> {
   switch (sort) {
     case "most_inspired":
-      return sql`ORDER BY a.inspiration_count DESC, a.published_at DESC`;
+      return sql`ORDER BY inner_q."inspirationCount" DESC, inner_q."publishedAt" DESC`;
     case "top_authors":
       // Authors with ≥3 settled analyses sort by win rate first;
-      // unranked authors fall to the bottom by recency.
-      return sql`ORDER BY (
-        SELECT CASE WHEN COUNT(*) FILTER (WHERE outcome IS NOT NULL) >= 3
-          THEN ROUND(100.0 * COUNT(*) FILTER (WHERE outcome = 'won')
-                / NULLIF(COUNT(*) FILTER (WHERE outcome IN ('won','lost')), 0))
-          ELSE 0 END
-        FROM analyses ai WHERE ai.author_id = a.author_id AND ai.status = 'published'
-      ) DESC, a.published_at DESC`;
+      // unranked authors fall to the bottom by recency. The author
+      // win-rate column is already materialised in the inner SELECT
+      // ("authorWinRate"); reuse it instead of running the COUNT
+      // FILTER subquery a second time.
+      return sql`ORDER BY COALESCE(inner_q."authorWinRate", 0) DESC, inner_q."publishedAt" DESC`;
     case "recommended":
-      return sql`ORDER BY (
-        a.inspiration_count * 2
-        + a.thumbs_up_count * 3
-        + CASE
-            WHEN m.scheduled_at - now() BETWEEN interval '0' AND interval '24 hours' THEN 50
-            WHEN m.scheduled_at - now() BETWEEN interval '24 hours' AND interval '72 hours' THEN 25
-            ELSE 0
-          END
-        - LEAST(50, FLOOR(EXTRACT(EPOCH FROM (now() - a.published_at)) / 86400))
-      ) DESC, a.published_at DESC`;
+      return sql`ORDER BY inner_q."feedScore" DESC, inner_q."publishedAt" DESC`;
     case "recent":
     default:
-      return sql`ORDER BY a.published_at DESC`;
+      return sql`ORDER BY inner_q."publishedAt" DESC`;
   }
 }
 
