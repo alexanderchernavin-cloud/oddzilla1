@@ -916,10 +916,7 @@ async function scoreMatchPredictions(
   // Putting both UPDATEs in a single statement avoids the dual-
   // timestamp-equality problem between two round-trips: there's only
   // one transaction snapshot.
-  const result = await tx.execute<{
-    scored_predictions: number;
-    affected_participants: number;
-  }>(sql`
+  const result = (await tx.execute(sql`
     WITH rule_values AS (
       SELECT
         COALESCE(MAX(CASE WHEN rule_id = 'scoring-exact-score'
@@ -1019,12 +1016,12 @@ async function scoreMatchPredictions(
     SELECT
       (SELECT COUNT(*)::int FROM settled) AS scored_predictions,
       (SELECT COUNT(*)::int FROM bumped)  AS affected_participants
-  `);
-
-  const row = (result as Array<{
+  `)) as unknown as Array<{
     scored_predictions: number;
     affected_participants: number;
-  }>)[0];
+  }>;
+
+  const row = result[0];
   return {
     scoredPredictions: Number(row?.scored_predictions ?? 0),
     affectedParticipants: Number(row?.affected_participants ?? 0),
