@@ -56,7 +56,7 @@ const BELL_BADGE_STYLE = {
   lineHeight: 1,
 };
 
-export function TopBar({ signedIn, user, wallets }: TopBarProps) {
+export function TopBar({ signedIn, user }: TopBarProps) {
   const { toggleSidebar } = useMobileDrawers();
 
   return (
