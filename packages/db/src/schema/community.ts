@@ -64,7 +64,14 @@ export const communityTickets = pgTable(
     // denormalised-counter rationale and inflation analysis. The
     // projection writers (TS + Go) leave this column alone — the
     // route handler is the only writer.
-    inspirationCount: integer().notNull().default(0),
+    //
+    // Audit SEC-L2: BIGINT (migration 0045) — the INT4 ceiling at
+    // 2^31 is reachable in principle on a long-running viral
+    // ticket; BIGINT pushes that out to 2^63 at one extra word per
+    // row. `mode: "number"` keeps the API-facing payload a plain JS
+    // number (the realistic upper bound is far below 2^53), so
+    // callers don't have to deal with a bigint.
+    inspirationCount: bigint({ mode: "number" }).notNull().default(0),
     // 0042_community_analyses.sql — copy attribution. NULL on organic
     // tickets and on copies from non-analysis sources (Big Win cards,
     // profile copies retain only `copiedFromPublisherId`). The pair
@@ -104,6 +111,41 @@ export const communityTickets = pgTable(
 
 export type CommunityTicket = typeof communityTickets.$inferSelect;
 export type NewCommunityTicket = typeof communityTickets.$inferInsert;
+
+// Per-viewer dedup ledger for /community/copy. One row per
+// (community_ticket, viewer) lifetime; written via INSERT … ON
+// CONFLICT DO NOTHING inside the same transaction that bumps
+// communityTickets.inspirationCount and emits `pick_copied`. See
+// migration 0045_community_ticket_inspirations.sql for the audit-
+// finding rationale (SEC-H2). The route handler is the only writer;
+// readers are limited to the dedup INSERT itself.
+export const communityTicketInspirations = pgTable(
+  "community_ticket_inspirations",
+  {
+    communityTicketId: uuid()
+      .notNull()
+      .references(() => communityTickets.ticketId, { onDelete: "cascade" }),
+    viewerUserId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    inspiredAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.communityTicketId, t.viewerUserId] }),
+    // Supports a future "tickets I copied" history surface without a
+    // backfill. Cheap: the table is sparse compared to
+    // community_tickets (one row per copy event).
+    index("community_ticket_inspirations_viewer_idx").on(
+      t.viewerUserId,
+      sql`${t.inspiredAt} DESC`,
+    ),
+  ],
+);
+
+export type CommunityTicketInspiration =
+  typeof communityTicketInspirations.$inferSelect;
+export type NewCommunityTicketInspiration =
+  typeof communityTicketInspirations.$inferInsert;
 
 // ─── Achievements (Phase 10.4) ──────────────────────────────────────────────
 //
@@ -171,8 +213,11 @@ export const analyses = pgTable(
     perex: text().notNull(),
     body: text().notNull(),
     status: analysisStatusEnum().notNull().default("published"),
-    thumbsUpCount: integer().notNull().default(0),
-    inspirationCount: integer().notNull().default(0),
+    // Audit SEC-L2: BIGINT (migration 0045) — same rationale as
+    // community_tickets.inspirationCount above; closes the slow
+    // 2^31 overflow path on viral analyses.
+    thumbsUpCount: bigint({ mode: "number" }).notNull().default(0),
+    inspirationCount: bigint({ mode: "number" }).notNull().default(0),
     outcome: analysisOutcomeEnum(),
     settledAt: timestamp({ withTimezone: true }),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
