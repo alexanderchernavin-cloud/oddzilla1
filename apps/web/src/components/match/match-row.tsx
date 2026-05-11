@@ -145,6 +145,9 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
       // the whole market is unavailable.
       locked={!drawPrice}
       onClick={(e) => handlePick("draw", e)}
+      // Keep the "X" visible on mobile — without a team name on its
+      // row, the label is the only cue this is the draw outcome.
+      keepLabelOnMobile
     />
   ) : null;
 
@@ -415,8 +418,9 @@ function ScoreTable({
 
 // Middle "Draw" row for 3-way match-winner markets. Mirrors the grid
 // layout of TeamScoreRow (so columns line up under the same header)
-// but drops the team mark + logo, leaves the score cells blank, and
-// only renders content in the trailing odds slot.
+// but only renders content in the trailing odds slot — the "X" label
+// on the button itself identifies the row as the draw outcome (kept
+// visible on mobile via RowOddBtn's keepLabelOnMobile flag).
 function DrawScoreRow({
   showSeries,
   colCount,
@@ -430,19 +434,7 @@ function DrawScoreRow({
 }) {
   return (
     <>
-      <div
-        className="mono"
-        style={{
-          fontSize: 11.5,
-          letterSpacing: "0.06em",
-          textTransform: "uppercase",
-          color: "var(--fg-muted)",
-          paddingLeft: 30,
-          minWidth: 0,
-        }}
-      >
-        Draw
-      </div>
+      <div />
       {showSeries && <div />}
       {Array.from({ length: colCount }, (_, i) => (
         <div key={i} />
@@ -618,12 +610,19 @@ function RowOddBtn({
   selected,
   locked,
   onClick,
+  keepLabelOnMobile = false,
 }: {
   label: string;
   price: number | null;
   selected: boolean;
   locked: boolean;
   onClick: (e: MouseEvent<HTMLButtonElement>) => void;
+  // When true, the label stays visible on mobile (the `oz-odd-label`
+  // class is dropped so the global mobile rule that hides it doesn't
+  // apply). Used for the X button on the draw row, where there's no
+  // team name on the left to identify the outcome — the label is the
+  // only cue that this is the draw.
+  keepLabelOnMobile?: boolean;
 }) {
   // Same green/red flash as OddButton. Skipped while locked so an
   // inactive→active transition doesn't flash on resume.
@@ -661,7 +660,7 @@ function RowOddBtn({
       style={baseStyle}
     >
       <span
-        className="mono oz-odd-label"
+        className={keepLabelOnMobile ? "mono" : "mono oz-odd-label"}
         style={{
           fontSize: 10.5,
           color: selected
