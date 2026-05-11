@@ -67,6 +67,18 @@ const listQuery = z.object({
   maxStakeMicro: z.string().regex(/^\d+$/).optional(),
 });
 
+interface TicketSelectionDto {
+  marketId: string;
+  providerMarketId: number;
+  marketName: string;
+  outcomeId: string;
+  outcomeName: string | null;
+  oddsAtPlacement: string;
+  matchId: string | null;
+  matchLabel: string | null;
+  result: string | null;
+}
+
 interface TicketRowDto {
   id: string;
   cursor: string;
@@ -82,13 +94,19 @@ interface TicketRowDto {
   potentialPayoutMicro: string;
   actualPayoutMicro: string | null;
   rejectReason: string | null;
+  // First-leg metadata — useful for compact list display.
   matchId: string | null;
   matchLabel: string | null;
+  matchScheduledAt: string | null;
   sportId: number | null;
   sportSlug: string | null;
   tournamentId: number | null;
   tournamentName: string | null;
   riskTier: number | null;
+  // Full per-leg selection list (in placement order). For singles this
+  // is a one-element array; for combos / betbuilder / tiple / tippot
+  // it's the full ladder.
+  selections: TicketSelectionDto[];
   placedAt: string;
   settledAt: string | null;
 }
@@ -208,11 +226,16 @@ export default async function adminTicketsRoutes(app: FastifyInstance) {
         CASE WHEN m.id IS NOT NULL
              THEN m.home_team || ' vs ' || m.away_team
              ELSE NULL END                            AS match_label,
+        m.scheduled_at                                AS match_scheduled_at,
         s.id                                          AS sport_id,
         s.slug                                        AS sport_slug,
         tn.id                                         AS tournament_id,
         tn.name                                       AS tournament_name,
         tn.risk_tier                                  AS risk_tier,
+        -- Per-leg selection list as a JSON array. Aggregated via a
+        -- LATERAL subquery so the per-ticket join cardinality stays
+        -- at 1 and the ORDER BY / LIMIT on the outer query is stable.
+        COALESCE(sel.selections, '[]'::jsonb)         AS selections,
         t.placed_at                                   AS placed_at,
         t.settled_at                                  AS settled_at
       FROM filtered t
@@ -229,6 +252,36 @@ export default async function adminTicketsRoutes(app: FastifyInstance) {
       LEFT JOIN tournaments tn ON tn.id = m.tournament_id
       LEFT JOIN categories c  ON c.id = tn.category_id
       LEFT JOIN sports     s  ON s.id = c.sport_id
+      LEFT JOIN LATERAL (
+        SELECT jsonb_agg(
+          jsonb_build_object(
+            'marketId',         lmk.id::text,
+            'providerMarketId', lmk.provider_market_id,
+            'marketName',       COALESCE(
+              (SELECT md.name_template
+                 FROM market_descriptions md
+                WHERE md.provider_market_id = lmk.provider_market_id
+                ORDER BY (md.variant = '') DESC, md.variant
+                LIMIT 1),
+              'Market #' || lmk.provider_market_id
+            ),
+            'outcomeId',         ts.outcome_id,
+            'outcomeName',       mo.name,
+            'oddsAtPlacement',   ts.odds_at_placement::text,
+            'matchId',           lmk.match_id::text,
+            'matchLabel',        CASE WHEN lm.id IS NOT NULL
+                                       THEN lm.home_team || ' vs ' || lm.away_team
+                                       ELSE NULL END,
+            'result',            ts.result::text
+          )
+          ORDER BY ts.id ASC
+        ) AS selections
+        FROM ticket_selections ts
+        JOIN markets        lmk ON lmk.id = ts.market_id
+        LEFT JOIN matches   lm  ON lm.id  = lmk.match_id
+        LEFT JOIN market_outcomes mo ON mo.market_id = ts.market_id AND mo.outcome_id = ts.outcome_id
+        WHERE ts.ticket_id = t.id
+      ) sel ON true
       ${postWhere}
       ORDER BY t.placed_at DESC, t.id DESC
       LIMIT ${q.limit}
@@ -248,11 +301,13 @@ export default async function adminTicketsRoutes(app: FastifyInstance) {
       reject_reason: string | null;
       match_id: string | null;
       match_label: string | null;
+      match_scheduled_at: Date | string | null;
       sport_id: number | null;
       sport_slug: string | null;
       tournament_id: number | null;
       tournament_name: string | null;
       risk_tier: number | null;
+      selections: TicketSelectionDto[] | null;
       placed_at: Date | string;
       settled_at: Date | string | null;
     }>;
@@ -288,11 +343,18 @@ export default async function adminTicketsRoutes(app: FastifyInstance) {
         rejectReason: r.reject_reason,
         matchId: r.match_id,
         matchLabel: r.match_label,
+        matchScheduledAt:
+          r.match_scheduled_at == null
+            ? null
+            : r.match_scheduled_at instanceof Date
+              ? r.match_scheduled_at.toISOString()
+              : String(r.match_scheduled_at),
         sportId: r.sport_id,
         sportSlug: r.sport_slug,
         tournamentId: r.tournament_id,
         tournamentName: r.tournament_name,
         riskTier: r.risk_tier,
+        selections: Array.isArray(r.selections) ? r.selections : [],
         placedAt:
           r.placed_at instanceof Date
             ? r.placed_at.toISOString()
