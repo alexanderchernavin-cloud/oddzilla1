@@ -514,18 +514,26 @@ export default async function communityRoutes(app: FastifyInstance) {
       // Emit `pick_copied` to the ticket owner only on a fresh
       // inspiration. The emit helper itself drops self-emits, but
       // gating here keeps the actor-nickname SELECT off the hot
-      // repeat-copy path. Fire-and-forget by helper contract — a
-      // failed emit must not break the prefill response, and the
-      // dedup row is already committed so the action stays
-      // idempotent on the user's next click.
+      // repeat-copy path.
+      //
+      // Audit SEC-L5: the prior implementation wrapped this emit in
+      // an `(async () => {...})().catch(...)` fire-and-forget block.
+      // Now that emission is gated by a fresh dedup INSERT, dropping
+      // the emit silently after a successful dedup would leave the
+      // ticket owner with no notification for that copy ever (the
+      // viewer cannot retry — the second click no-ops at the dedup
+      // step). Awaiting the emit means a transient
+      // emitNotification failure surfaces to the client as a 5xx,
+      // which the client can retry; the dedup row + counter bump
+      // are already committed by the time we reach this point, so
+      // the retry is correctly idempotent.
       if (freshlyInspired) {
-        (async () => {
-          const [actorRow] = await app.db
-            .select({ nickname: users.nickname })
-            .from(users)
-            .where(eq(users.id, viewer.id))
-            .limit(1);
-          if (!actorRow?.nickname) return;
+        const [actorRow] = await app.db
+          .select({ nickname: users.nickname })
+          .from(users)
+          .where(eq(users.id, viewer.id))
+          .limit(1);
+        if (actorRow?.nickname) {
           await emitNotification(app, {
             userId: ct.ownerId,
             type: "pick_copied",
@@ -541,9 +549,7 @@ export default async function communityRoutes(app: FastifyInstance) {
             // who's copying them.
             deepLink: actorRow.nickname ? `/u/${encodeURIComponent(actorRow.nickname)}` : null,
           });
-        })().catch((err: unknown) => {
-          app.log.warn({ err, ticketId: id }, "pick_copied emit failed");
-        });
+        }
       }
 
       return {
