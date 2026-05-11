@@ -54,7 +54,7 @@ func main() {
 
 	st := store.New(pool)
 	log := zerolog.Nop()
-	_ = settler.New(st, nil, 100, log) // future: drive via Settler.Handle
+	_ = settler.New(st, nil, 100, 1, log) // future: drive via Settler.Handle
 
 	tx, err := pool.Begin(ctx)
 	if err != nil {

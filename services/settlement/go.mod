@@ -7,6 +7,7 @@ require (
 	github.com/rabbitmq/amqp091-go v1.10.0
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/rs/zerolog v1.33.0
+	golang.org/x/sync v0.10.0
 )
 
 require (
@@ -19,7 +20,6 @@ require (
 	github.com/mattn/go-isatty v0.0.19 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/crypto v0.31.0 // indirect
-	golang.org/x/sync v0.10.0 // indirect
 	golang.org/x/sys v0.28.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
 )

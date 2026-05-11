@@ -83,7 +83,7 @@ func main() {
 	}
 
 	st := store.New(pool)
-	stt := settler.New(st, rdb, cfg.RollbackBatchSize, logger)
+	stt := settler.New(st, rdb, cfg.RollbackBatchSize, cfg.WorkerCount, logger)
 
 	type row struct {
 		ID         int64
