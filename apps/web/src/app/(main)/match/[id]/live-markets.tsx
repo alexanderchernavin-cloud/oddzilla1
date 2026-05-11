@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useLiveOdds } from "@/lib/use-live-odds";
 import { useBetSlip } from "@/lib/bet-slip";
 import { useZillaTips } from "@/lib/use-zillatips";
-import type { ZillaTip } from "@oddzilla/types";
+import type { ZillaTip } from "@oddzilla/types/zillatips";
 import { OddButton } from "@/components/ui/primitives";
 import { I } from "@/components/ui/icons";
 import {
