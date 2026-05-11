@@ -67,6 +67,11 @@ const app = Fastify({
       'req.headers["x-api-key"]',
       'req.headers["x-csrf-token"]',
       'req.headers["x-signer-token"]',
+      // Defensive: no current handler logs parsed cookies, but cover
+      // request.cookies + any nested .cookies shape so a future log
+      // statement doesn't leak the session cookie value.
+      "req.cookies",
+      "*.cookies",
     ],
   },
   // Single hop in front of api: Caddy. trustProxy: 1 makes Fastify

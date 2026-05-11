@@ -500,7 +500,7 @@ export default async function communityRoutes(app: FastifyInstance) {
             groupKey: `pick_copied:${id}`,
             // Deep-link to the copier's profile. The owner can see
             // who's copying them.
-            deepLink: actorRow.nickname ? `/u/${actorRow.nickname}` : null,
+            deepLink: actorRow.nickname ? `/u/${encodeURIComponent(actorRow.nickname)}` : null,
           });
         })().catch((err: unknown) => {
           app.log.warn({ err, ticketId: id }, "pick_copied emit failed");

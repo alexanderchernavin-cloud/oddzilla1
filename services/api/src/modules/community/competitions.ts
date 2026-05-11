@@ -495,7 +495,9 @@ SELECT
       // Skip on alreadyJoined; the user has presumably been getting
       // updates already.
       if (result.isNew) {
-        ensureCompetitionUpdatesEnabled(app, u.id).catch((err: unknown) => {
+        // Fire-and-forget: pref auto-enable must not block the join
+        // response. `void` makes intent explicit (no missing await).
+        void ensureCompetitionUpdatesEnabled(app, u.id).catch((err: unknown) => {
           app.log.warn(
             { err, userId: u.id, competitionId: id },
             "competition_updates auto-enable failed",
@@ -511,7 +513,8 @@ SELECT
         const hoursToClose =
           (comp.betCloseAt.getTime() - Date.now()) / (60 * 60 * 1000);
         if (hoursToClose > 0 && hoursToClose <= 24) {
-          emitNotification(app, {
+          // Fire-and-forget deadline reminder; logged on failure.
+          void emitNotification(app, {
             userId: u.id,
             type: "competition_deadline",
             // System emit — no actor. The PRD's competition_deadline
@@ -526,7 +529,7 @@ SELECT
             // No group_key: each unique deadline reminder should
             // surface separately (a future cron may emit T-24h, T-2h
             // — collapsing them would lose the urgency progression).
-            deepLink: `/community/competitions/${id}`,
+            deepLink: `/community/competitions/${encodeURIComponent(id)}`,
           }).catch((err: unknown) => {
             app.log.warn(
               { err, userId: u.id, competitionId: id },

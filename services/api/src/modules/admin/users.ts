@@ -518,6 +518,17 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
     if (delta === 0n) {
       throw new BadRequestError("delta_zero", "delta_zero");
     }
+    // Per-call magnitude cap (1M units, i.e. 1_000_000 * 1e6 micro). The
+    // route is already behind the 1-email allowlist; this is a typo
+    // guard so a slipped zero can't 100× the intended adjustment. Bigger
+    // corrections must be split across multiple deliberate calls.
+    const MAX_DELTA_MICRO = 1_000_000_000_000n;
+    if (delta > MAX_DELTA_MICRO || delta < -MAX_DELTA_MICRO) {
+      throw new BadRequestError(
+        "delta_too_large: split into multiple smaller adjustments",
+        "delta_too_large",
+      );
+    }
     const adjustmentId = randomUUID();
 
     await app.db.transaction(async (tx) => {

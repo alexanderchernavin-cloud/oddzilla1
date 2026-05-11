@@ -13,7 +13,8 @@
     "./specifiers": "./src/specifiers.ts",
     "./community": "./src/community.ts",
     "./combi-boost": "./src/combi-boost.ts",
-    "./competitions-catalog": "./src/competitions-catalog.ts"
+    "./competitions-catalog": "./src/competitions-catalog.ts",
+    "./networks": "./src/networks.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

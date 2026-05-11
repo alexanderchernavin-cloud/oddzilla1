@@ -30,6 +30,7 @@ import {
   NotFoundError,
 } from "../../lib/errors.js";
 import { requireBalanceEditAdmin } from "../../lib/balance-edit-gate.js";
+import { networkToCurrency } from "@oddzilla/types/networks";
 
 const listQuery = z.object({
   status: z
@@ -126,6 +127,14 @@ export default async function adminDepositsRoutes(app: FastifyInstance) {
         throw new BadRequestError("already_credited", "already_credited");
       }
 
+      const currency = networkToCurrency(row.network);
+      if (!currency) {
+        throw new BadRequestError(
+          "unsupported_deposit_network",
+          `unsupported_deposit_network:${row.network}`,
+        );
+      }
+
       const blockNumber = body.blockNumber ? BigInt(body.blockNumber) : row.blockNumber;
       await tx
         .update(depositIntents)
@@ -145,7 +154,7 @@ export default async function adminDepositsRoutes(app: FastifyInstance) {
           balanceMicro: sql`${wallets.balanceMicro} + ${amount}`,
           updatedAt: new Date(),
         })
-        .where(sql`${wallets.userId} = ${row.userId} AND ${wallets.currency} = 'USDC'`);
+        .where(sql`${wallets.userId} = ${row.userId} AND ${wallets.currency} = ${currency}`);
 
       // Apply-once via the unique partial index. A second manual
       // credit using the same intent id no-ops at the ledger row level
@@ -154,7 +163,7 @@ export default async function adminDepositsRoutes(app: FastifyInstance) {
         .insert(walletLedger)
         .values({
           userId: row.userId,
-          currency: "USDC",
+          currency,
           deltaMicro: amount,
           type: "deposit",
           refType: "deposit_intent",
