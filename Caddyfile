@@ -41,6 +41,32 @@
 	}
 }
 
+# Storefront SSR fan-out. The Next.js layer scales horizontally — three
+# Node processes (web1 / web2 / web3) behind one Caddy upstream group.
+# Each replica is single-threaded for SSR, so spreading load across
+# three matches the CPX31's available cores (the api / postgres / Go
+# workers consume the rest). Production starts the extra two replicas
+# with `--profile scaled`; local dev runs web1 only, and Caddy's active
+# health check marks web2 / web3 unreachable within seconds — traffic
+# still flows through the one live upstream.
+#
+# `lb_policy least_conn` picks the replica with the fewest in-flight
+# requests, which matters once one slow SSR render (deep tree, cold
+# data cache) holds a worker for hundreds of ms. `lb_try_duration`
+# retries the next replica when one returns a connection error so a
+# rolling restart doesn't show 502s to users. The health probe hits the
+# dedicated /healthz route in apps/web/src/app/healthz/route.ts — a
+# stateless 200 that never touches DB or upstream API.
+(web_upstream) {
+	reverse_proxy web1:3000 web2:3000 web3:3000 {
+		lb_policy least_conn
+		lb_try_duration 5s
+		health_uri /healthz
+		health_interval 5s
+		health_timeout 2s
+	}
+}
+
 # Note: Content-Security-Policy is emitted by the Next.js middleware so
 # it can mint a per-request nonce and tag the inline theme-boot script.
 # Caddy intentionally does NOT set CSP for the web origin; the API origin
@@ -110,7 +136,7 @@
 	}
 
 	handle {
-		reverse_proxy web:3000
+		import web_upstream
 	}
 }
 
@@ -173,6 +199,6 @@ s.oddzilla.cc {
 	}
 
 	handle {
-		reverse_proxy web:3000
+		import web_upstream
 	}
 }

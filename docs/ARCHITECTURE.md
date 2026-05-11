@@ -61,8 +61,12 @@ Deep dive on how Oddzilla's services fit together. For quick reference see
        │                                       ▼
        │                          ┌────────────────────────────┐
        │◄─────── HTTP ────────────│  apps/web (Next.js 16)     │
-       │ (catalog SSR, bet slip,  │   • Tailwind v4 dark theme │
-       │  history, admin UI)      │   • App Router             │
+       │ (catalog SSR, bet slip,  │   • web1 / web2 / web3     │
+       │  history, admin UI)      │     behind Caddy           │
+       │                          │     lb_policy least_conn   │
+       │                          │   • Per-replica /healthz   │
+       │                          │   • Tailwind v4 dark theme │
+       │                          │   • App Router             │
        │                          │   • WS client reconnect    │
        │                          └────────────┬───────────────┘
        │                                       │
@@ -508,7 +512,8 @@ Bottlenecks we'll hit first:
 
 | Symptom | Mitigation |
 | --- | --- |
-| Postgres CPU pegged on odds updates | Add read replica for `apps/web` SSR + admin; feed-ingester stays on primary. Increase `work_mem` once we're off the 4 GB box. |
+| Storefront SSR queue depth (single Node process maxed) | **Done 2026-05-11** — three replicas behind Caddy `lb_policy least_conn`. Bumps SSR throughput ~3× before the next bottleneck. Gated on the `scaled` Compose profile so dev keeps one process; prod brings up `web1` + `web2` + `web3`. |
+| Postgres CPU pegged on odds updates | Add read replica for `apps/web` SSR + admin; feed-ingester stays on primary. Increase `work_mem` (already on the 8 GB CPX31, but room for more). |
 | Redis stream backlog | Move `odds-publisher` and `ws-gateway` to separate boxes; increase consumer group parallelism. |
 | WS fanout memory | Shard ws-gateway by match-id range; introduce a sticky-session layer in Caddy. |
 | Settlement lag on big rollbacks | Increase chunk size from 100 to 500; partition `tickets` by month once table exceeds ~50 M rows. |

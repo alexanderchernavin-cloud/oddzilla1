@@ -2,6 +2,7 @@
 // Route surface: /auth, /users, /wallet, /catalog, /admin (role-gated).
 
 import Fastify, { type FastifyError } from "fastify";
+import { randomUUID } from "node:crypto";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
@@ -56,6 +57,13 @@ const env = loadEnv();
 const auth = loadAuthEnv();
 const startedAt = Date.now();
 
+// X-Request-ID accepted from upstream callers (browser, Caddy, Next.js
+// SSR via lib/server-fetch.ts) is echoed onto every log line and the
+// response header. Bound the shape so a hostile client can't poison
+// log lines with newlines / control characters / huge payloads.
+const REQUEST_ID_HEADER = "x-request-id";
+const REQUEST_ID_SHAPE = /^[A-Za-z0-9_-]{1,128}$/;
+
 const app = Fastify({
   logger: {
     level: env.LOG_LEVEL,
@@ -71,6 +79,19 @@ const app = Fastify({
       'req.headers["x-csrf-token"]',
       'req.headers["x-signer-token"]',
     ],
+  },
+  // Read X-Request-ID from the inbound request so a single grep finds
+  // the SSR render and every API call it triggered across both log
+  // streams. Pino auto-includes the resolved value as `reqId` on every
+  // log line scoped to the request. Default-case generates a v4 UUID
+  // (the Fastify default is an incrementing counter — useless for cross-
+  // process correlation).
+  genReqId: (req) => {
+    const inbound = req.headers[REQUEST_ID_HEADER];
+    if (typeof inbound === "string" && REQUEST_ID_SHAPE.test(inbound)) {
+      return inbound;
+    }
+    return randomUUID();
   },
   // Single hop in front of api: Caddy. trustProxy: 1 makes Fastify
   // honour ONLY the last X-Forwarded-For entry, which Caddy appends —
@@ -120,6 +141,14 @@ await app.register(dbPlugin, { databaseUrl: env.DATABASE_URL });
 await app.register(redisPlugin, { redisUrl: env.REDIS_URL });
 await app.register(authPlugin, { auth });
 await app.register(csrfPlugin, { allowedOrigins: corsOrigins(env) });
+
+// Echo the resolved request id on the response so the browser dev-tools
+// network tab + any client-side log line can quote it back to support.
+// Running BEFORE the response is sent (onSend) is important — onResponse
+// fires too late to add headers.
+app.addHook("onSend", async (request, reply) => {
+  reply.header(REQUEST_ID_HEADER, request.id);
+});
 
 // ─── Error handler ──────────────────────────────────────────────────────────
 

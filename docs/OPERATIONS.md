@@ -1,7 +1,9 @@
 # Operations
 
-Deploy, backup, observability, and incident response for the Hetzner CPX22
-deployment. See [`CONNECT.md`](../CONNECT.md) for server access credentials.
+Deploy, backup, observability, and incident response for the Hetzner CPX31
+deployment (4 vCPU / 8 GB / 160 GB; upgraded from CPX22 on 2026-05-11 to
+support the Next.js SSR replica fan-out). See [`CONNECT.md`](../CONNECT.md)
+for server access credentials.
 
 ## Server state (current)
 
@@ -42,10 +44,10 @@ $EDITOR .env                          # fill real secrets, set ODDIN_CUSTOMER_ID
 # Build services SERIALLY — `docker compose build` (no service arg)
 # parallel-builds 7 services and OOMs the 4 GB CPX22 (see
 # project_build_oom_incident; took the site down ~30 min on 2026-05-06).
-for svc in postgres redis caddy api web ws-gateway feed-ingester odds-publisher settlement bet-delay wallet-watcher; do
-  sudo -n docker compose -f docker-compose.yml build $svc
+for svc in postgres redis caddy api web1 ws-gateway feed-ingester odds-publisher settlement bet-delay wallet-watcher; do
+  sudo -n docker compose -f docker-compose.yml --profile scaled build $svc
 done
-sudo -n docker compose -f docker-compose.yml up -d
+sudo -n docker compose -f docker-compose.yml --profile scaled up -d
 pnpm install --frozen-lockfile=false
 PGUSER=$(grep ^POSTGRES_USER= .env | cut -d= -f2) \
   PGPASS=$(grep ^POSTGRES_PASSWORD= .env | cut -d= -f2) \
@@ -67,6 +69,12 @@ OOMs the 4 GB CPX22 (see `project_build_oom_incident`; the site went dark
 ~30 min on 2026-05-06 until a Hetzner power cycle). The `make build` /
 `make recreate` targets enforce this — they refuse without `SVC=name`.
 
+The storefront runs three Next.js replicas (`web1`, `web2`, `web3`)
+behind Caddy's `lb_policy least_conn` upstream group. `web1` always
+runs; `web2` + `web3` are gated on the `scaled` Compose profile, so
+every production command below carries `--profile scaled`. Local dev
+omits the flag and runs the single `web1` replica.
+
 ```bash
 # 1. Fast-forward the worktree on the box.
 ssh team@178.104.174.24 "cd /home/team/oddzilla && \
@@ -74,20 +82,32 @@ ssh team@178.104.174.24 "cd /home/team/oddzilla && \
 
 # 2. (If migrations shipped — see next block.) Run them BEFORE recreating.
 
-# 3. Build the changed services serially and recreate them with --no-deps
-#    so dependency containers (postgres, redis, caddy, …) keep running.
-for svc in api web feed-ingester; do  # <-- only the services this PR touched
+# 3. Build the changed services serially. Three web replicas all share
+#    the same image, so build the web image once via `web1`; web2 + web3
+#    pick it up at recreate time.
+for svc in api web1 feed-ingester; do  # <-- only the services this PR touched
   ssh team@178.104.174.24 "cd /home/team/oddzilla && make build SVC=$svc"
 done
+
+# 4. Recreate. For non-web services use the existing pattern. For web,
+#    use the rolling helper so traffic stays on the other two replicas
+#    while each one cycles — zero downtime.
 ssh team@178.104.174.24 "cd /home/team/oddzilla && \
-  sudo -n docker compose -f docker-compose.yml up -d --no-deps \
-  --force-recreate api web feed-ingester"
+  sudo -n docker compose -f docker-compose.yml --profile scaled up -d \
+  --no-deps --force-recreate api feed-ingester"
+ssh team@178.104.174.24 "cd /home/team/oddzilla && make recreate-web"
 ```
 
 > **Never run `docker compose build` without a service argument on this
 > box.** The `make build` target now refuses bare invocations; `sudo -n
 > docker compose build api` (or the `make build SVC=api` shortcut) is the
 > safe form.
+
+> **Never recreate all three web replicas in parallel.** A flat
+> `docker compose up -d --force-recreate web1 web2 web3` takes them down
+> together and surfaces a ~10 s 502 wall to users. `make recreate-web`
+> cycles them serially and waits for each healthcheck to pass before
+> moving on.
 
 Migrations are additive — only run when you've shipped one:
 
@@ -154,7 +174,9 @@ sudo -n docker compose exec ws-gateway   wget -qO- http://127.0.0.1:3002/healthz
 sudo -n docker compose exec feed-ingester wget -qO- http://127.0.0.1:8081/healthz
 # … same pattern for odds-publisher (8082), settlement (8083),
 #   bet-delay (8084), wallet-watcher (8085).
-sudo -n docker compose exec web          wget -qO- http://127.0.0.1:3000
+for r in web1 web2 web3; do
+  sudo -n docker compose exec $r        wget -qO- http://127.0.0.1:3000/healthz
+done
 ```
 
 In **dev** (`-f docker-compose.yml -f docker-compose.dev.yml`) the same
@@ -170,9 +192,29 @@ All services emit structured JSON (`pino` / `zerolog`).
 
 ```bash
 make logs                              # tail all
+make weblogs                           # interleaved tail of web1/web2/web3
 docker compose logs -f api             # single service
 docker compose logs --since=1h feed-ingester | jq 'select(.level=="error")'
 ```
+
+**Tracing a request across the stack.** Every page render generates (or
+echoes inbound) an `x-request-id` header in the Next.js middleware. The
+ID is forwarded on every server-side fetch to the api, picked up by
+Fastify's `genReqId`, and echoed back to the browser on the response
+header. To follow one user's session:
+
+```bash
+# Find their request id from the browser dev-tools network tab, or ask
+# them to copy/paste the x-request-id from a stuck response. Then:
+docker compose logs --since=15m api web1 web2 web3 ws-gateway | \
+  jq -c "select(.reqId == \"$REQ\" or .requestId == \"$REQ\")"
+```
+
+The request id is the only field guaranteed to correlate web SSR → api
+→ ws-gateway hops. `reqId` is Fastify's auto-injected field name on api
+log lines; `requestId` is the same value emitted by the Next.js
+middleware + server-fetch logging — the jq predicate above accepts
+both.
 
 ### Metrics (Phase 4+)
 

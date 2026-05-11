@@ -27,6 +27,11 @@ import { NextResponse, type NextRequest } from "next/server";
 
 const ACCESS_COOKIE = "oddzilla_access";
 const REFRESH_COOKIE = "oddzilla_refresh";
+const REQUEST_ID_HEADER = "x-request-id";
+// Inbound request IDs (header from the browser, a proxy, or a previous
+// hop) are echoed verbatim. Bound the accepted shape so a hostile client
+// can't poison logs with newlines / control characters / huge payloads.
+const REQUEST_ID_SHAPE = /^[A-Za-z0-9_-]{1,128}$/;
 
 const PROTECTED_PREFIXES = ["/account", "/wallet", "/bets", "/admin"];
 
@@ -38,6 +43,12 @@ function generateNonce(): string {
   let s = "";
   for (const b of arr) s += String.fromCharCode(b);
   return btoa(s);
+}
+
+function resolveRequestId(req: NextRequest): string {
+  const inbound = req.headers.get(REQUEST_ID_HEADER);
+  if (inbound && REQUEST_ID_SHAPE.test(inbound)) return inbound;
+  return crypto.randomUUID();
 }
 
 // Build the CSP. `nonce` is per-request and ties to the inline theme
@@ -87,6 +98,17 @@ function applyCsp(req: NextRequest, response: NextResponse, nonce: string): void
   // exposes request headers to Server Components via `headers()`.
   req.headers.set("x-csp-nonce", nonce);
   response.headers.set("Content-Security-Policy", buildCsp(nonce));
+}
+
+function applyRequestId(req: NextRequest, response: NextResponse, requestId: string): void {
+  // Make the ID visible to:
+  //   - Server Components via `headers().get("x-request-id")` (server-fetch
+  //     reads it back out to forward on outbound API calls).
+  //   - The browser via the response header (devtools network tab; support
+  //     can ask a user to copy/paste the ID for a stuck request).
+  //   - Any log line the SSR layer writes (see lib/server-fetch.ts).
+  req.headers.set(REQUEST_ID_HEADER, requestId);
+  response.headers.set(REQUEST_ID_HEADER, requestId);
 }
 
 function isProtectedPath(pathname: string): boolean {
@@ -147,10 +169,12 @@ function getSetCookieHeaders(headers: Headers): string[] {
 
 export async function middleware(req: NextRequest) {
   const nonce = generateNonce();
+  const requestId = resolveRequestId(req);
   // Mutate the inbound request so the layout can read the nonce via
   // `headers()`. We then echo it onto whichever response we eventually
   // return below.
   req.headers.set("x-csp-nonce", nonce);
+  req.headers.set(REQUEST_ID_HEADER, requestId);
 
   const access = req.cookies.get(ACCESS_COOKIE);
   if (access) {
@@ -158,6 +182,7 @@ export async function middleware(req: NextRequest) {
       request: { headers: req.headers },
     });
     applyCsp(req, response, nonce);
+    applyRequestId(req, response, requestId);
     return response;
   }
 
@@ -190,6 +215,7 @@ export async function middleware(req: NextRequest) {
           cookie: `${REFRESH_COOKIE}=${refresh.value}`,
           accept: "application/json",
           origin: reqOrigin,
+          [REQUEST_ID_HEADER]: requestId,
         },
       });
       if (apiRes.ok) {
@@ -227,6 +253,7 @@ export async function middleware(req: NextRequest) {
           response.headers.append("set-cookie", sc);
         }
         applyCsp(req, response, nonce);
+        applyRequestId(req, response, requestId);
         return response;
       }
     } catch (err) {
@@ -239,6 +266,8 @@ export async function middleware(req: NextRequest) {
           service: "web-middleware",
           event: "silent_refresh_failed",
           path: req.nextUrl.pathname,
+          requestId,
+          replica: process.env.REPLICA_NAME ?? "web",
           error: (err as Error).message,
         }),
       );
@@ -253,6 +282,7 @@ export async function middleware(req: NextRequest) {
     redirect.cookies.delete(ACCESS_COOKIE);
     redirect.cookies.delete(REFRESH_COOKIE);
     applyCsp(req, redirect, nonce);
+    applyRequestId(req, redirect, requestId);
     return redirect;
   }
 
@@ -260,14 +290,18 @@ export async function middleware(req: NextRequest) {
     request: { headers: req.headers },
   });
   applyCsp(req, passThrough, nonce);
+  applyRequestId(req, passThrough, requestId);
   return passThrough;
 }
 
 export const config = {
   matcher: [
-    // Run on every page route. Skip Next internals, static assets, and the
+    // Run on every page route. Skip Next internals, static assets, the
     // /api and /ws pass-throughs (Caddy handles those before Next sees them,
-    // but we still exclude them defensively for local `next dev`).
-    "/((?!_next/static|_next/image|api/|ws|favicon.ico|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico|css|js|woff2?|map|txt|xml)).*)",
+    // but we still exclude them defensively for local `next dev`), and the
+    // /healthz endpoint Caddy probes every few seconds across N replicas —
+    // there's no point paying for CSP nonce generation + silent refresh on
+    // an unauthenticated liveness check.
+    "/((?!_next/static|_next/image|api/|ws|healthz|favicon.ico|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico|css|js|woff2?|map|txt|xml)).*)",
   ],
 };
