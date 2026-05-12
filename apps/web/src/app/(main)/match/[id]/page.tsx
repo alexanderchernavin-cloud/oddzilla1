@@ -12,7 +12,6 @@ import { MatchLiveMedia } from "@/components/widgets/match-live-media";
 import { MatchPrematchMobile } from "@/components/widgets/match-prematch-mobile";
 import { MatchPageRegistrar } from "@/lib/match-page-context";
 import { type LiveScore } from "@/lib/live-score";
-import { MatchSidePanel } from "@/components/match/match-side-panel";
 import { getSessionUser } from "@/lib/auth";
 
 interface MatchResponse {
@@ -78,7 +77,7 @@ export default async function MatchPage({
         flexDirection: "column",
         gap: 24,
         padding: "28px 32px 60px",
-        maxWidth: 1280,
+        maxWidth: 1000,
       }}
     >
       <Link
@@ -179,52 +178,35 @@ export default async function MatchPage({
         sportName={match.sport.name}
         homeTeam={match.homeTeam}
         awayTeam={match.awayTeam}
+        matchStatus={match.status}
+        viewerId={viewer ? viewer.id : null}
+        loggedIn={loggedIn}
       />
 
-      {/* Markets on the left, side panel (chat + analyses tabs) on the
-          right at >=lg. Below lg the grid collapses and the side panel
-          drops under the markets in normal flow. The side panel hoists
-          chat and analyses up next to the betting action so bettors
-          actually discover them — previously both lived below the
-          markets and required scrolling past every bet row to find.
-
-          Always mount LiveMarkets — even when the SSR snapshot has zero
+      {/* Always mount LiveMarkets — even when the SSR snapshot has zero
           markets — so the WebSocket subscription is up and ready. The
           previous early-return rendered a static placeholder with no
           subscription, so when markets re-activated mid-game (a common
           basketball / hockey pattern between possessions) the user
           needed a hard refresh to see them. The empty-state copy now
           lives inside LiveMarkets and disappears the moment any market
-          appears in the merged tree. */}
-      {/* Explicit `grid-cols-1` for the mobile case. Without it the
-          grid falls back to auto-track sizing, which honours the
-          widest child's min-content — the chat panel's inner content
-          forced an intrinsic width of ~765 px so the panel overflowed
-          to the right of a 390 px viewport. `minmax(0, 1fr)` (which
-          `grid-cols-1` expands to) is the canonical fix: it caps each
-          track at the container width regardless of child content. */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
-        <div className="min-w-0">
-          <LiveMarkets
-            matchId={match.id}
-            match={{
-              id: match.id,
-              homeTeam: match.homeTeam,
-              awayTeam: match.awayTeam,
-              sportSlug: match.sport.slug,
-            }}
-            initialGroups={marketGroups}
-          />
-        </div>
+          appears in the merged tree.
 
-        <MatchSidePanel
-          matchId={match.id}
-          matchTitle={`${match.homeTeam} vs ${match.awayTeam}`}
-          matchStatus={match.status}
-          loggedIn={loggedIn}
-          viewer={viewer ? { id: viewer.id } : null}
-        />
-      </div>
+          Chat + Analyses no longer render below markets — they live
+          in the right rail's Match panel (RailMatchPanel), tabbed
+          alongside the Disir Match Insights widget. The registrar
+          above passes matchStatus + viewer auth state through context
+          so the rail can render the correct default tab and CTAs. */}
+      <LiveMarkets
+        matchId={match.id}
+        match={{
+          id: match.id,
+          homeTeam: match.homeTeam,
+          awayTeam: match.awayTeam,
+          sportSlug: match.sport.slug,
+        }}
+        initialGroups={marketGroups}
+      />
     </div>
   );
 }

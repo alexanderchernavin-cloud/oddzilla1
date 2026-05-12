@@ -30,7 +30,7 @@ import { Button } from "@/components/ui/primitives";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { useMobileDrawers } from "./mobile-drawer-context";
 import { useWallets } from "@/lib/wallets";
-import { RailPrematchPanel } from "@/components/widgets/rail-prematch-panel";
+import { RailMatchPanel } from "@/components/widgets/rail-match-panel";
 import type {
   SlipSelection,
   TicketListResponse,
@@ -1153,14 +1153,17 @@ export function BetSlipRail() {
         </>
       )}
       {/*
-        Match-insights widget — only relevant while building a slip
-        for the active match. Hidden on the History tab (the user is
-        reviewing past tickets, prematch stats are off-topic) and
-        right after placement (the success card / freshly-flipped
-        history view should breathe). This stops the widget's
-        minHeight from squeezing the rail's primary content.
+        Match panel — Insights / Chat / Analyses tabs, all keyed off
+        the active match-detail page via MatchPageContext. Hidden on
+        the History tab (the user is reviewing past tickets and
+        match-specific tools are off-topic) and right after placement
+        (the success card / freshly-flipped history view should
+        breathe). Chat and Analyses live here instead of below the
+        markets so they share the bet slip's vertical real estate
+        — bet slip + Place button stay above the fold, match-specific
+        content stacks below where it competes only with itself.
       */}
-      {activeTab === "slip" && !placedTicketId && <RailPrematchPanel />}
+      {activeTab === "slip" && !placedTicketId && <RailMatchPanel />}
     </aside>
   );
 }
