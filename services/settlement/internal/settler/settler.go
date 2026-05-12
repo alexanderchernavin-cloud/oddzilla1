@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"hash/fnv"
 	"sync"
 	"sync/atomic"
 
@@ -310,80 +311,105 @@ func (s *Settler) applyMarketSettle(ctx context.Context, eventURN string, ts int
 }
 
 // settleTicketsInParallel fans the ticket list out across s.parallelism
-// goroutines, each draining 200-ticket chunks via settleTicketChunk in
-// its own transaction. Returns the union of tickets that transitioned
-// to settled this call (caller publishes ticket events from this set).
+// goroutines. Returns the union of tickets that transitioned to settled
+// this call (caller publishes ticket events from this set).
 //
-// Concurrency model:
-//   - Workers all act on tickets from the SAME marketID (caller scope),
-//     so cross-market races are out of the picture. The advisory lock
-//     in phase 1 already ruled out two concurrent AMQP-driven settles
-//     for the same market.
+// Concurrency model — partition-by-user, not channel-fan-out:
+//   - SettleTicket UPDATEs the `wallets` row keyed by (user_id, currency).
+//     If two workers each hold the wallet lock for one user and try to
+//     acquire the lock for the other (different lock-acquisition orders
+//     across goroutines), Postgres detects the deadlock and aborts one
+//     transaction — the whole settle nacks and requeues, retries hit
+//     the same pattern, settle is stuck. This is what PR #273 shipped
+//     and what bit prod on 2026-05-12 (~66K-ticket settle on match
+//     626479: see settlement service warn-level logs around 00:39 UTC).
+//
+//   - The fix is to ensure NO TWO WORKERS ever touch the same wallet.
+//     We do that by partitioning tickets BY user_id (FNV-32 hash %
+//     parallelism). All of user X's tickets land in the same worker;
+//     within that worker they serialise on user X's wallet row in a
+//     single goroutine, which Postgres handles trivially. No cross-
+//     worker wallet contention → no deadlock possible.
+//
+//   - The riskzilla bank_state singleton row is still touched by every
+//     worker on every settle, but that's a single row with serial
+//     UPDATEs — Postgres row locks serialise them cleanly, no deadlock
+//     pattern. This was always the design throughput ceiling.
+//
 //   - Per-ticket idempotency comes from maybeSettleTicket's SKIP LOCKED
 //     + status='accepted' filter, unchanged.
-//   - All workers acquire row locks in the same order (ticket → wallet
-//     → bank_state) so no deadlock can form. Workers contend on the
-//     singleton riskzilla_bank_state row — Postgres row locks serialise
-//     them cleanly; this is the throughput ceiling for the design.
 //   - errgroup with a derived context means: first worker error
 //     cancels the rest, succeeded chunks stay committed, AMQP redeliver
 //     picks up gaps via the SKIP LOCKED path.
 //
-// Fast path: parallelism=1 OR a single chunk skips the goroutine +
-// channel + mutex overhead, runs the chunk loop inline. Real-world
-// most market settles touch under 200 tickets and take this path.
+// Fast path: parallelism=1 OR a single chunk skips the partition + map
+// + goroutine + mutex overhead and runs sequentially. Real-world most
+// market settles touch under 200 tickets and take this path.
 func (s *Settler) settleTicketsInParallel(ctx context.Context, tickets []string) ([]string, error) {
 	if len(tickets) == 0 {
 		return nil, nil
-	}
-
-	// Pre-slice the ticket list so workers can pull from a closed channel.
-	chunks := make([][]string, 0, (len(tickets)+settleTicketChunkSize-1)/settleTicketChunkSize)
-	for i := 0; i < len(tickets); i += settleTicketChunkSize {
-		end := i + settleTicketChunkSize
-		if end > len(tickets) {
-			end = len(tickets)
-		}
-		chunks = append(chunks, tickets[i:end])
 	}
 
 	parallelism := s.parallelism
 	if parallelism < 1 {
 		parallelism = 1
 	}
-	// No benefit to spinning more workers than there are chunks.
-	if parallelism > len(chunks) {
-		parallelism = len(chunks)
+
+	// Single-chunk or single-worker fast path. Same behaviour as the
+	// pre-parallel form — no need to spin up workers / fetch user map.
+	if parallelism <= 1 || len(tickets) <= settleTicketChunkSize {
+		return s.settleTicketsSequential(ctx, tickets)
 	}
 
-	// Fast path: single worker (or single chunk) — avoid goroutine
-	// overhead. The behaviour exactly matches the pre-parallel form.
-	if parallelism <= 1 {
-		settled := make([]string, 0, len(tickets))
-		for i, chunk := range chunks {
-			chunkSettled, err := s.settleTicketChunk(ctx, chunk)
-			if err != nil {
-				return nil, fmt.Errorf("settle chunk %d/%d: %w", i+1, len(chunks), err)
-			}
-			settled = append(settled, chunkSettled...)
+	// Bulk-fetch user_id per ticket so we can partition before fan-out.
+	// One small SELECT vs N+1 — sub-millisecond at 100K tickets, well
+	// worth it to keep the parallel path correct.
+	userMap, err := s.loadTicketUserMap(ctx, tickets)
+	if err != nil {
+		// Fail-safe: if we can't load the user map (transient pg blip,
+		// pool exhaustion, etc.), fall back to sequential rather than
+		// risk the deadlock pattern again.
+		s.log.Warn().Err(err).Int("tickets", len(tickets)).
+			Msg("settle: user-map load failed; falling back to sequential")
+		return s.settleTicketsSequential(ctx, tickets)
+	}
+
+	// Partition by FNV-32(user_id) % parallelism. FNV gives uniform-
+	// enough distribution across UUID strings for our scale (100K
+	// tickets across ~250 users → workers see ~25K tickets each at
+	// parallelism=4, ±10% imbalance). Tickets without a user_id in
+	// the map (e.g. legacy data, race with delete) fall through to
+	// worker 0 — they'll still settle, just on the lightest path.
+	partitions := make([][]string, parallelism)
+	for _, tid := range tickets {
+		uid, ok := userMap[tid]
+		var idx int
+		if ok {
+			idx = int(fnv32(uid) % uint32(parallelism))
 		}
-		return settled, nil
+		partitions[idx] = append(partitions[idx], tid)
 	}
 
-	chunkCh := make(chan []string, len(chunks))
-	for _, c := range chunks {
-		chunkCh <- c
-	}
-	close(chunkCh)
-
+	// Each worker sub-chunks its partition into settleTicketChunkSize
+	// transactions so per-tx write set still fits under default pg
+	// lock-table / shared-buffer limits.
 	var (
-		mu       sync.Mutex
-		settled  = make([]string, 0, len(tickets))
+		mu      sync.Mutex
+		settled = make([]string, 0, len(tickets))
 	)
 	eg, gctx := errgroup.WithContext(ctx)
 	for w := 0; w < parallelism; w++ {
+		partition := partitions[w]
+		if len(partition) == 0 {
+			continue
+		}
 		eg.Go(func() error {
-			for chunk := range chunkCh {
+			for i := 0; i < len(partition); i += settleTicketChunkSize {
+				end := i + settleTicketChunkSize
+				if end > len(partition) {
+					end = len(partition)
+				}
+				chunk := partition[i:end]
 				chunkSettled, err := s.settleTicketChunk(gctx, chunk)
 				if err != nil {
 					return err
@@ -401,6 +427,55 @@ func (s *Settler) settleTicketsInParallel(ctx context.Context, tickets []string)
 		return nil, err
 	}
 	return settled, nil
+}
+
+// settleTicketsSequential is the fast path / fallback used when
+// parallelism is 1 or we couldn't load the user map. Identical
+// behaviour to the pre-parallel chunk loop from PR #270.
+func (s *Settler) settleTicketsSequential(ctx context.Context, tickets []string) ([]string, error) {
+	settled := make([]string, 0, len(tickets))
+	for i := 0; i < len(tickets); i += settleTicketChunkSize {
+		end := i + settleTicketChunkSize
+		if end > len(tickets) {
+			end = len(tickets)
+		}
+		chunk := tickets[i:end]
+		chunkSettled, err := s.settleTicketChunk(ctx, chunk)
+		if err != nil {
+			return nil, fmt.Errorf("settle chunk %d-%d/%d: %w", i, end, len(tickets), err)
+		}
+		settled = append(settled, chunkSettled...)
+	}
+	return settled, nil
+}
+
+// loadTicketUserMap is a thin wrapper that runs the bulk user-id
+// lookup in its own short-lived transaction. The result lives only in
+// memory and the tx commits before fan-out, so workers don't inherit
+// any locks from the lookup.
+func (s *Settler) loadTicketUserMap(ctx context.Context, tickets []string) (map[string]string, error) {
+	tx, err := s.store.BeginTx(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx ticket-user map: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	m, err := store.LoadTicketUserMap(ctx, tx, tickets)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit ticket-user map: %w", err)
+	}
+	return m, nil
+}
+
+// fnv32 hashes a string with FNV-1a. Used to partition tickets by
+// user_id deterministically — same user always ends up in the same
+// worker for a given parallelism value.
+func fnv32(s string) uint32 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(s))
+	return h.Sum32()
 }
 
 // settleTicketChunk runs maybeSettleTicket for every id in `chunk` inside

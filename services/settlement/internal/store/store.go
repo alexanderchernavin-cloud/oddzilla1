@@ -204,6 +204,42 @@ SELECT DISTINCT ticket_id
 	return out, rows.Err()
 }
 
+// LoadTicketUserMap returns a map[ticketID]userID for the given ticket
+// ids in one round trip. The settler uses this to partition tickets by
+// owner before fan-out — each user's tickets always land in the same
+// worker, so two workers can never race for the same wallet row and
+// deadlock on UPDATE wallets (the failure mode PR #273 hit in prod on
+// 2026-05-12 with a 66K-ticket settle on match 626479).
+//
+// Reads `tickets.user_id` directly rather than re-joining through
+// `ticket_selections`; the caller already has the unique ticket IDs.
+// Tickets and users both use UUID PKs, so the param array is cast to
+// `uuid[]` server-side via the canonical Postgres array literal form
+// to dodge Drizzle's record-vs-array binding trap (same shape audit H4
+// addressed for FEED_STATUSES).
+func LoadTicketUserMap(ctx context.Context, tx pgx.Tx, ticketIDs []string) (map[string]string, error) {
+	out := make(map[string]string, len(ticketIDs))
+	if len(ticketIDs) == 0 {
+		return out, nil
+	}
+	rows, err := tx.Query(ctx, `
+SELECT id::text, user_id::text
+  FROM tickets
+ WHERE id = ANY($1::uuid[])`, ticketIDs)
+	if err != nil {
+		return nil, fmt.Errorf("load ticket-user map: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ticketID, userID string
+		if err := rows.Scan(&ticketID, &userID); err != nil {
+			return nil, err
+		}
+		out[ticketID] = userID
+	}
+	return out, rows.Err()
+}
+
 // ApplyOutcomeToSelections writes result + void_factor onto any
 // ticket_selections row still unresolved for this (market, outcome). The
 // table's partial index `WHERE result IS NULL` makes the scan cheap.

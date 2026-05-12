@@ -8,6 +8,7 @@
 package settler
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -34,6 +35,113 @@ func TestNewClampsParallelism(t *testing.T) {
 				t.Fatalf("parallelism: got %d, want %d (in=%d)", s.parallelism, tc.want, tc.in)
 			}
 		})
+	}
+}
+
+// TestPartitionByUserID exercises the FNV-32 partitioning that prevents
+// the cross-worker wallet deadlock PR #273 originally shipped with.
+//
+// The invariant we guard is: for every parallelism setting, every user's
+// tickets must land in EXACTLY ONE partition. If any user's tickets
+// spread across multiple partitions, two workers can race for the same
+// wallet row → deadlock under load.
+//
+// We don't test the settle path itself here (no in-process DB harness);
+// the live load test at 100K tickets in a single market is the
+// integration test that catches regressions.
+func TestPartitionByUserID(t *testing.T) {
+	// Replicates the loop in settleTicketsInParallel — keep this in
+	// sync if that path changes.
+	partition := func(tickets []string, userMap map[string]string, parallelism int) [][]string {
+		parts := make([][]string, parallelism)
+		for _, tid := range tickets {
+			uid, ok := userMap[tid]
+			var idx int
+			if ok {
+				idx = int(fnv32(uid) % uint32(parallelism))
+			}
+			parts[idx] = append(parts[idx], tid)
+		}
+		return parts
+	}
+
+	cases := []struct {
+		name        string
+		users       int
+		ticketsPer  int
+		parallelism int
+	}{
+		{"100 users × 10 tickets, 4 workers", 100, 10, 4},
+		{"250 users × 400 tickets, 8 workers (100K scale)", 250, 400, 8},
+		{"single user, all tickets in one partition", 1, 50, 4},
+		{"parallelism=2", 50, 20, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tickets := make([]string, 0, tc.users*tc.ticketsPer)
+			userMap := make(map[string]string, tc.users*tc.ticketsPer)
+			for u := 0; u < tc.users; u++ {
+				uid := fmt.Sprintf("user-%04d", u)
+				for k := 0; k < tc.ticketsPer; k++ {
+					tid := fmt.Sprintf("ticket-%04d-%04d", u, k)
+					tickets = append(tickets, tid)
+					userMap[tid] = uid
+				}
+			}
+			parts := partition(tickets, userMap, tc.parallelism)
+
+			// Invariant: each user's tickets all in the same partition.
+			userPartition := make(map[string]int)
+			for partIdx, part := range parts {
+				for _, tid := range part {
+					uid := userMap[tid]
+					if existing, seen := userPartition[uid]; seen && existing != partIdx {
+						t.Fatalf("user %s tickets split: partition %d AND partition %d", uid, existing, partIdx)
+					}
+					userPartition[uid] = partIdx
+				}
+			}
+
+			// Sanity: total tickets preserved.
+			total := 0
+			for _, part := range parts {
+				total += len(part)
+			}
+			if total != len(tickets) {
+				t.Fatalf("ticket count drift: got %d, want %d", total, len(tickets))
+			}
+
+			// Reasonable load balance — no partition more than 3× the
+			// average (FNV-32 with hundreds of users gives much better
+			// than this in practice; 3× is the runaway-skew alarm).
+			// Only check when there are enough distinct users to
+			// distribute across all workers — a single-user load
+			// CORRECTLY lands all tickets in one partition.
+			if tc.users >= tc.parallelism*4 {
+				avg := float64(total) / float64(tc.parallelism)
+				for partIdx, part := range parts {
+					if avg > 0 && float64(len(part)) > 3*avg {
+						t.Fatalf("partition %d severely imbalanced: %d tickets (avg %.1f)",
+							partIdx, len(part), avg)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestFnv32Stable confirms FNV-1a is deterministic — the deadlock fix
+// relies on "same user always hashes to same worker" across runs,
+// retries, and the AMQP redelivery path.
+func TestFnv32Stable(t *testing.T) {
+	inputs := []string{"", "a", "user-0001", "00000000-0000-0000-0000-000000000000"}
+	for _, in := range inputs {
+		first := fnv32(in)
+		for i := 0; i < 10; i++ {
+			if got := fnv32(in); got != first {
+				t.Fatalf("fnv32(%q) not stable: got %d, want %d", in, got, first)
+			}
+		}
 	}
 }
 
