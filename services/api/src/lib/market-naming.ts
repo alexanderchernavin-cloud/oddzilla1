@@ -7,13 +7,35 @@
 // specifiers_json. URN-style outcome ids (od:competitor:N, od:player:N)
 // resolve via the cached profile maps the caller passes in.
 
+// teams is the optional pair of team-name resolvers used to translate
+// Oddin's "{side}" specifier. Without them the template falls back to
+// the literal word — "Team away total goals 2.5" — which is what the
+// API returned before this argument existed; storefront callers should
+// always pass them so the market reads as "Team Astralis total goals
+// 2.5" instead. Admin / debug callers that have no match context can
+// keep the no-arg form.
+export interface TeamNamePair {
+  homeTeam: string;
+  awayTeam: string;
+}
+
 export function substituteTemplate(
   template: string,
   specs: Record<string, string>,
+  teams?: TeamNamePair,
 ): string {
   const out = template.replace(/\{([a-z0-9_]+)\}/gi, (_, key: string) => {
     const v = specs[key];
-    return v == null ? `{${key}}` : v;
+    if (v == null) return `{${key}}`;
+    // Special-case the "side" specifier: when the caller has the
+    // match's team names, render the actual team instead of the
+    // literal "home" / "away" word. Markets like "Team {side} total
+    // goals {threshold}" then read "Team Astralis total goals 2.5".
+    if (key === "side" && teams) {
+      if (v === "home") return teams.homeTeam;
+      if (v === "away") return teams.awayTeam;
+    }
+    return v;
   });
   return out.replace(/\s{2,}/g, " ").replace(/\s-\s$/, "").trim();
 }
@@ -24,7 +46,7 @@ export function renderOutcomeLabel(
   homeTeam: string,
   awayTeam: string,
 ): string {
-  const sub = substituteTemplate(template, specs);
+  const sub = substituteTemplate(template, specs, { homeTeam, awayTeam });
   const lower = sub.trim().toLowerCase();
   if (lower === "home") return homeTeam;
   if (lower === "away") return awayTeam;

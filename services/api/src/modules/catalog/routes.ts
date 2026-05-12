@@ -1081,13 +1081,22 @@ export default async function catalogRoutes(app: FastifyInstance) {
         const baseTemplate = line.lineSpec
           ? stripLinePlaceholder(template, line.lineSpec)
           : template;
+        // Pass match team names so "{side}" templates render as the
+        // actual team ("Astralis total rounds 2.5") instead of the
+        // literal word ("away total rounds 2.5"). Same on the base
+        // template since the {side} placeholder lives in both name +
+        // baseName paths.
+        const teams = {
+          homeTeam: match.homeTeam,
+          awayTeam: match.awayTeam,
+        };
         m = {
           id: key,
           providerMarketId: r.providerMarketId,
           specifiers: specs,
           variant,
-          name: substituteTemplate(template, specs),
-          baseName: substituteTemplate(baseTemplate, specs),
+          name: substituteTemplate(template, specs, teams),
+          baseName: substituteTemplate(baseTemplate, specs, teams),
           scope: deriveScope(specs),
           status: r.status,
           lastOddinTs: r.lastOddinTs.toString(),
