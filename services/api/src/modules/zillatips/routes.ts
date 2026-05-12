@@ -345,6 +345,14 @@ async function loadTips(
         WHERE hm.status = 'closed'
           AND hm.live_started_at IS NOT NULL
           AND hm.live_started_at > NOW() - (${LOOKBACK_DAYS}::int * INTERVAL '1 day')
+          -- Sport-scoping is implicit here. otp.team_id is a
+          -- competitors.id, and competitors are sport-scoped per
+          -- migration 0009's UNIQUE(sport_id, slug). A given
+          -- competitor.id therefore belongs to exactly ONE sport,
+          -- so any past match whose home/away competitor equals
+          -- otp.team_id is necessarily in the same sport as the
+          -- current match. No need for an explicit JOIN through
+          -- tournaments -> categories -> sports.
           AND (hm.home_competitor_id = otp.team_id OR hm.away_competitor_id = otp.team_id)
           AND hm.id <> ${matchId}
         ORDER BY hm.live_started_at DESC

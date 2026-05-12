@@ -308,30 +308,69 @@ function tipContextKey(c: TipContext): string {
   return `${c.marketId}:${c.outcomeId}`;
 }
 
+// Compact "DD MMM" formatter for the date strip above each chip.
+// en-GB gives DD MMM, which fits in ~50px chip columns without
+// wrapping; en-US would give "May 11" which exceeds the width.
+function formatChipDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.valueOf())) return "";
+  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+}
+
 // One row of chips inside a tip section — represents a single team's
 // historical trail. Used twice for symmetric tips (home + away), once
-// for positional tips. Aligned with a small team-name label so the
-// user can tell whose chip row they're looking at.
+// for positional tips. A small date strip above each chip column
+// shows when that historical match was played. For single-row tips
+// (positional outcomes) the team name is already in the popover's
+// section header — no per-row team label needed. For multi-row
+// symmetric tips the team label is the ONLY way to tell rows apart,
+// so we still render it.
 function TipRow({
   row,
   teamLabel,
+  showTeamName,
 }: {
   row: ZillaTipRow;
   teamLabel: string;
+  showTeamName: boolean;
 }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      <span
-        className="mono"
+      {showTeamName && (
+        <span
+          className="mono"
+          style={{
+            fontSize: 10,
+            color: "var(--fg-dim)",
+            textTransform: "uppercase",
+            letterSpacing: "0.06em",
+          }}
+        >
+          {teamLabel} · last {row.legs.length}
+        </span>
+      )}
+      <div
         style={{
-          fontSize: 10,
-          color: "var(--fg-dim)",
-          textTransform: "uppercase",
-          letterSpacing: "0.06em",
+          display: "grid",
+          gridTemplateColumns: `repeat(${row.legs.length}, minmax(0, 1fr))`,
+          gap: 6,
         }}
       >
-        {teamLabel} · last {row.legs.length}
-      </span>
+        {row.legs.map((leg) => (
+          <span
+            key={`date:${leg.histMatchId}`}
+            className="mono"
+            style={{
+              fontSize: 10,
+              color: "var(--fg-dim)",
+              textAlign: "center",
+              letterSpacing: "0.02em",
+            }}
+          >
+            {formatChipDate(leg.liveStartedAt)}
+          </span>
+        ))}
+      </div>
       <div
         style={{
           display: "grid",
@@ -434,6 +473,12 @@ function TipSection({
             key={`${row.teamId}:${row.role}`}
             row={row}
             teamLabel={row.role === "home" ? currentHome : currentAway}
+            // Multi-row tips need the team label to tell rows apart.
+            // Single-row tips already identify the team in the
+            // popover section header (e.g. "ZillaTips · Match
+            // winner · Aurora Gaming"), so the per-row label would
+            // be redundant — replaced by the dates strip alone.
+            showTeamName={tip.rows.length > 1}
           />
         ))}
       </div>
