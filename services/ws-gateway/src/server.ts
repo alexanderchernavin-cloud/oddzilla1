@@ -1,11 +1,16 @@
-// ws-gateway: WebSocket fanout for live odds + ticket frames.
+// ws-gateway: authenticated WebSocket fanout for live odds, ticket
+// frames, and live match chat. All three dimensions ride the same
+// WebSocket; clients opt into chat independently per matchId via the
+// `chat` flag on the subscribe / unsubscribe envelope.
 //
 // Protocol (see packages/types/src/ws.ts):
-//   Client → server:  { type: "subscribe",   matchIds: [...] }
-//                     { type: "unsubscribe", matchIds: [...] }
+//   Client → server:  { type: "subscribe",   matchIds: [...], chat?: boolean }
+//                     { type: "unsubscribe", matchIds: [...], chat?: boolean }
 //                     { type: "ping" }
 //   Server → client:  { type: "hello", userId, role }
 //                     { type: "odds", matchId, marketId, outcomeId, publishedOdds, ... }
+//                     { type: "chat_message" | "chat_reaction" | "chat_picks_update"
+//                       | "chat_match_update" | "chat_viewer_count", matchId, ... }
 //                     { type: "pong" }
 //                     { type: "error", message }
 //
@@ -52,6 +57,17 @@ const REQUEST_ID_HEADER = "x-request-id";
 // Anything else is treated as missing — same defense-in-depth as the
 // api + web layers.
 const REQUEST_ID_SHAPE = /^[A-Za-z0-9_-]{1,128}$/;
+// Live chat broadcast channel — services/api publishes chat_message /
+// chat_reaction / chat_picks_update / chat_match_update payloads
+// (LiveChatBroadcastFrame in packages/types/src/live-chat.ts) when a
+// client posts a message, submits a pick, or the match-state watcher
+// detects a goal / HT / FT. Viewer-count deltas are emitted by this
+// gateway itself when chatMatchRefs changes.
+const CHAT_CHANNEL_PREFIX = "chat:match:";
+// Mirror of chatMatchRefs in Redis — the API snapshot endpoint reads
+// this so a mid-match joiner sees the correct viewer count before
+// the next pub/sub delta arrives.
+const VIEWERS_KEY_PREFIX = "chat:viewers:";
 const MAX_SUBSCRIPTIONS_PER_CLIENT = 100;
 // Hard cap on concurrent connections. Without it, a reconnect storm
 // during a Caddy / network blip stacks every browser's reconnects on
@@ -83,10 +99,12 @@ type OutboundFrame = HelloMessage | PongMessage | ErrorMessage;
 interface SubscribeMessage {
   type: "subscribe";
   matchIds?: string[];
+  chat?: boolean;
 }
 interface UnsubscribeMessage {
   type: "unsubscribe";
   matchIds?: string[];
+  chat?: boolean;
 }
 interface PingMessage {
   type: "ping";
@@ -153,6 +171,12 @@ interface ClientState {
   userId: string | null;
   role: AccessTokenClaims["role"] | null;
   matchIds: Set<string>;
+  // Independent from matchIds. A client may subscribe to chat for a
+  // match without subscribing to its odds (e.g. a spectator with no
+  // bet), or vice versa. Counted against the same per-client cap so
+  // a chatty room can't push a client past MAX_SUBSCRIPTIONS_PER_CLIENT
+  // by combining the two dimensions.
+  chatMatchIds: Set<string>;
 }
 
 const clients = new Set<ClientState>();
@@ -167,6 +191,15 @@ const userRefs = new Map<string, number>();
 // points as the refcount maps (subscribe/unsubscribe and close/sweep).
 const matchSubscribers = new Map<string, Set<ClientState>>();
 const userSockets = new Map<string, Set<ClientState>>();
+// Chat dimension — refcounted same way as matchRefs. We also use this
+// map to derive viewer-count deltas (Notion Epic 1): every time a
+// matchId transitions between 0/N or N/0 we publish a chat_viewer_count
+// frame onto chat:match:{id} so every other subscriber sees the change.
+const chatMatchRefs = new Map<string, number>();
+// Reverse index for chat dispatch — same shape as matchSubscribers but
+// for the chat dimension. Lets dispatchChat send to interested clients
+// in O(subscribers) instead of scanning every connected socket.
+const chatMatchSubscribers = new Map<string, Set<ClientState>>();
 
 async function authenticate(req: IncomingMessage): Promise<AccessTokenClaims | null> {
   const cookieHeader = req.headers.cookie ?? "";
@@ -203,6 +236,7 @@ const http = createServer(async (req, res) => {
         maxClients: MAX_CLIENTS,
         matchSubscriptions: matchRefs.size,
         userSubscriptions: userRefs.size,
+        chatSubscriptions: chatMatchRefs.size,
         uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
       }),
     );
@@ -292,6 +326,7 @@ wss.on("connection", (ws: WebSocket, _req: IncomingMessage, claims: AccessTokenC
     userId: claims?.sub ?? null,
     role: claims?.role ?? null,
     matchIds: new Set(),
+    chatMatchIds: new Set(),
   };
   clients.add(state);
   if (claims) {
@@ -318,11 +353,13 @@ wss.on("connection", (ws: WebSocket, _req: IncomingMessage, claims: AccessTokenC
       return;
     }
     if (msg.type === "subscribe") {
-      subscribe(state, msg.matchIds ?? []);
+      if (msg.chat) subscribeChat(state, msg.matchIds ?? []);
+      else subscribe(state, msg.matchIds ?? []);
       return;
     }
     if (msg.type === "unsubscribe") {
-      unsubscribe(state, msg.matchIds ?? []);
+      if (msg.chat) unsubscribeChat(state, msg.matchIds ?? []);
+      else unsubscribe(state, msg.matchIds ?? []);
       return;
     }
     send(ws, { type: "error", message: "unknown_message_type" });
@@ -345,6 +382,11 @@ function cleanupClient(client: ClientState) {
     decrementMatchRef(matchId);
   }
   client.matchIds.clear();
+  for (const matchId of client.chatMatchIds) {
+    removeChatMatchSubscriber(matchId, client);
+    decrementChatMatchRef(matchId);
+  }
+  client.chatMatchIds.clear();
   if (client.userId) {
     removeUserSocket(client);
     decrementUserRef(client.userId);
@@ -354,7 +396,7 @@ function cleanupClient(client: ClientState) {
 
 function subscribe(state: ClientState, matchIds: string[]) {
   for (const m of matchIds) {
-    if (state.matchIds.size >= MAX_SUBSCRIPTIONS_PER_CLIENT) {
+    if (totalSubscriptions(state) >= MAX_SUBSCRIPTIONS_PER_CLIENT) {
       send(state.socket, { type: "error", message: "subscription_limit" });
       return;
     }
@@ -373,6 +415,31 @@ function unsubscribe(state: ClientState, matchIds: string[]) {
   }
 }
 
+function subscribeChat(state: ClientState, matchIds: string[]) {
+  for (const m of matchIds) {
+    if (totalSubscriptions(state) >= MAX_SUBSCRIPTIONS_PER_CLIENT) {
+      send(state.socket, { type: "error", message: "subscription_limit" });
+      return;
+    }
+    if (state.chatMatchIds.has(m)) continue;
+    state.chatMatchIds.add(m);
+    addChatMatchSubscriber(m, state);
+    incrementChatMatchRef(m);
+  }
+}
+
+function unsubscribeChat(state: ClientState, matchIds: string[]) {
+  for (const m of matchIds) {
+    if (!state.chatMatchIds.delete(m)) continue;
+    removeChatMatchSubscriber(m, state);
+    decrementChatMatchRef(m);
+  }
+}
+
+function totalSubscriptions(state: ClientState): number {
+  return state.matchIds.size + state.chatMatchIds.size;
+}
+
 function addMatchSubscriber(matchId: string, state: ClientState) {
   let set = matchSubscribers.get(matchId);
   if (!set) {
@@ -387,6 +454,22 @@ function removeMatchSubscriber(matchId: string, state: ClientState) {
   if (!set) return;
   set.delete(state);
   if (set.size === 0) matchSubscribers.delete(matchId);
+}
+
+function addChatMatchSubscriber(matchId: string, state: ClientState) {
+  let set = chatMatchSubscribers.get(matchId);
+  if (!set) {
+    set = new Set();
+    chatMatchSubscribers.set(matchId, set);
+  }
+  set.add(state);
+}
+
+function removeChatMatchSubscriber(matchId: string, state: ClientState) {
+  const set = chatMatchSubscribers.get(matchId);
+  if (!set) return;
+  set.delete(state);
+  if (set.size === 0) chatMatchSubscribers.delete(matchId);
 }
 
 function addUserSocket(state: ClientState) {
@@ -451,8 +534,87 @@ function decrementUserRef(userId: string) {
   userRefs.set(userId, current - 1);
 }
 
+function incrementChatMatchRef(matchId: string) {
+  const current = chatMatchRefs.get(matchId) ?? 0;
+  chatMatchRefs.set(matchId, current + 1);
+  if (current === 0) {
+    sub.subscribe(CHAT_CHANNEL_PREFIX + matchId).catch((err: Error) => {
+      log.warn({ err: err.message, matchId }, "redis subscribe chat failed");
+    });
+  }
+  broadcastViewerCount(matchId);
+}
+
+function decrementChatMatchRef(matchId: string) {
+  const current = chatMatchRefs.get(matchId) ?? 0;
+  if (current <= 1) {
+    chatMatchRefs.delete(matchId);
+    sub.unsubscribe(CHAT_CHANNEL_PREFIX + matchId).catch((err: Error) => {
+      log.debug({ err: err.message, matchId }, "redis unsubscribe chat failed");
+    });
+    // Reaches every other subscriber via Redis, which keeps the
+    // viewer count consistent across ws-gateway processes (when we
+    // eventually horizontally scale).
+    return;
+  }
+  chatMatchRefs.set(matchId, current - 1);
+  broadcastViewerCount(matchId);
+}
+
+// Publish a viewer_count frame onto the chat channel so subscribers
+// — including this very process via the sub client — see the new
+// count. Routing it through Redis (rather than a direct local
+// dispatch) keeps the wire format identical for a single-process and
+// future multi-process gateway, and means the count is the same
+// across processes since every gateway publishes its delta.
+//
+// Also writes the count to `chat:viewers:{matchId}` so the API's
+// snapshot endpoint (GET /live-chat/match/:matchId/room) can return
+// the current count to clients that join mid-match — pub/sub frames
+// only deliver future deltas, not the current state.
+//
+// In the single-process case the count is just chatMatchRefs.get(),
+// which is the source of truth.
+function broadcastViewerCount(matchId: string) {
+  const viewerCount = chatMatchRefs.get(matchId) ?? 0;
+  const payload = JSON.stringify({
+    type: "chat_viewer_count",
+    matchId,
+    viewerCount,
+  });
+  if (viewerCount === 0) {
+    // Empty room — drop the key entirely. Avoids stale snapshots
+    // showing "1 viewer" for hours after the last subscriber leaves.
+    ctl.del(VIEWERS_KEY_PREFIX + matchId).catch((err: Error) => {
+      log.debug({ err: err.message, matchId }, "viewers key delete failed");
+    });
+  } else {
+    // 1 hour TTL — re-extended on every delta. A long-quiet room
+    // will let the key fall out; the next subscriber bringing the
+    // count back above zero re-sets it.
+    ctl
+      .set(VIEWERS_KEY_PREFIX + matchId, viewerCount.toString(), "EX", 3600)
+      .catch((err: Error) => {
+        log.debug({ err: err.message, matchId }, "viewers key set failed");
+      });
+  }
+  ctl
+    .publish(CHAT_CHANNEL_PREFIX + matchId, payload)
+    .catch((err: Error) => {
+      log.debug(
+        { err: err.message, matchId },
+        "viewer count publish failed",
+      );
+    });
+}
+
 // Single subscriber; dispatch to interested clients.
 sub.on("message", (channel: string, payload: string) => {
+  if (channel.startsWith(CHAT_CHANNEL_PREFIX)) {
+    const matchId = channel.slice(CHAT_CHANNEL_PREFIX.length);
+    dispatchChat(matchId, payload);
+    return;
+  }
   if (channel.startsWith(PUB_CHANNEL_PREFIX)) {
     const matchId = channel.slice(PUB_CHANNEL_PREFIX.length);
     dispatchOdds(matchId, payload);
@@ -487,6 +649,19 @@ function dispatchUser(userId: string, payload: string) {
       client.socket.send(payload);
     } catch (err) {
       log.debug({ err: (err as Error).message }, "send user failed");
+    }
+  }
+}
+
+function dispatchChat(matchId: string, payload: string) {
+  const subs = chatMatchSubscribers.get(matchId);
+  if (!subs) return;
+  for (const client of subs) {
+    if (client.socket.readyState !== WebSocket.OPEN) continue;
+    try {
+      client.socket.send(payload);
+    } catch (err) {
+      log.debug({ err: (err as Error).message }, "send chat failed");
     }
   }
 }
@@ -538,6 +713,8 @@ function shutdown(signal: string) {
   matchSubscribers.clear();
   userSockets.clear();
   userRefs.clear();
+  chatMatchRefs.clear();
+  chatMatchSubscribers.clear();
   wss.close();
   http.close();
   sub.disconnect();
