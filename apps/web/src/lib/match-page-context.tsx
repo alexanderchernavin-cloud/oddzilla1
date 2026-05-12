@@ -22,7 +22,7 @@ import {
   type ReactNode,
 } from "react";
 
-interface ActiveMatch {
+export interface ActiveMatch {
   matchId: string;
   sportSlug: string;
   sportName: string;

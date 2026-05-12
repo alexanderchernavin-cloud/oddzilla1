@@ -16,9 +16,20 @@
 // All match-specific state (matchId, sportSlug, matchStatus, viewer
 // auth) is read from MatchPageContext, populated by MatchPageRegistrar
 // on the match-detail page. Renders nothing on every other page.
+//
+// Two-level split (outer gate + inner active-aware component) keeps
+// hooks rules clean: MatchPageContext starts null and populates after
+// the registrar's effect fires, so the outer's null-return changes
+// the inner's mount status — not the inner's hook count. Without
+// this split a `useState(defaultTab)` placed after a context-null
+// early-return would trip React error #310 on the very first
+// context update.
 
 import { useState } from "react";
-import { useActiveMatchPage } from "@/lib/match-page-context";
+import {
+  useActiveMatchPage,
+  type ActiveMatch,
+} from "@/lib/match-page-context";
 import { DisirWidget, type WidgetAvailability } from "./disir-widget";
 import { supportsPrematchWidget } from "./supported-sports";
 import { MatchRoom } from "@/components/match-room/match-room";
@@ -28,15 +39,41 @@ type Tab = "insights" | "chat" | "analyses";
 
 export function RailMatchPanel() {
   const active = useActiveMatchPage();
+  if (!active) return null;
+  // Re-mount on matchId change so the inner's useState initializers
+  // (default tab, Disir availability) reset for the new fixture
+  // instead of carrying stale state across navigations.
+  return <RailMatchPanelInner key={active.matchId} active={active} />;
+}
+
+function RailMatchPanelInner({ active }: { active: ActiveMatch }) {
+  const insightsSupported = supportsPrematchWidget(active.sportSlug);
+  // Analyses is gated by match status — same logic the section's own
+  // null-render uses. Cancelled and suspended don't surface analyses.
+  const analysesAvailable =
+    active.matchStatus === "not_started" ||
+    active.matchStatus === "live" ||
+    active.matchStatus === "closed";
+
   const [insightsAvailability, setInsightsAvailability] =
     useState<WidgetAvailability>("loading");
+  // Default-tab logic: pre-match leads with Insights when the sport
+  // supports it (preserves the rail's prior muscle memory), live /
+  // closed lead with Chat. Computed once at mount via the lazy
+  // initializer so toggling the Insights tab off later (e.g. iframe
+  // reports unavailable) doesn't yank the user's selection.
+  const [tab, setTab] = useState<Tab>(() => {
+    if (active.matchStatus === "not_started") {
+      if (insightsSupported) return "insights";
+      if (analysesAvailable) return "analyses";
+      return "chat";
+    }
+    return "chat";
+  });
 
-  if (!active) return null;
-
-  const insightsSupported = supportsPrematchWidget(active.sportSlug);
-  // Hide the Insights tab entirely when Disir can't ship data for this
-  // sport, OR when the embed itself reports unavailable/error after
-  // load. Keeps the tab strip honest — no dead labels.
+  // Hide the Insights tab when Disir can't ship data for this sport,
+  // OR when the embed itself reports unavailable/error after load.
+  // Keeps the tab strip honest — no dead labels.
   const insightsAvailable =
     insightsSupported &&
     insightsAvailability !== "unavailable" &&
@@ -45,30 +82,13 @@ export function RailMatchPanel() {
   const tabs: Tab[] = [];
   if (insightsAvailable) tabs.push("insights");
   tabs.push("chat");
-  // Analyses is gated by match status — same logic the section's own
-  // null-render uses. Cancelled and suspended don't surface analyses.
-  const analysesAvailable =
-    active.matchStatus === "not_started" ||
-    active.matchStatus === "live" ||
-    active.matchStatus === "closed";
   if (analysesAvailable) tabs.push("analyses");
 
-  // Default-tab logic: pre-match leads with Insights when available
-  // (the existing rail default, preserves bettor muscle memory), live
-  // leads with Chat (active social surface), closed/other fall back to
-  // Chat. If Insights is unsupported, pre-match defaults to Analyses.
-  const defaultTab: Tab = (() => {
-    if (active.matchStatus === "not_started") {
-      if (insightsAvailable) return "insights";
-      if (analysesAvailable) return "analyses";
-      return "chat";
-    }
-    return "chat";
-  })();
-  const [tab, setTab] = useState<Tab>(defaultTab);
+  // Fall back to the first available tab if the user's selection has
+  // since become unavailable (e.g. they were on Insights and the
+  // iframe failed to load).
   const activeTab: Tab = tabs.includes(tab) ? tab : (tabs[0] ?? "chat");
 
-  // Don't claim rail space when nothing's renderable for this match.
   if (tabs.length === 0) return null;
 
   return (
@@ -103,7 +123,7 @@ export function RailMatchPanel() {
           Hidden tabs use CSS `display: none` so they're inert but
           still mounted. */}
       <div role="tabpanel">
-        {insightsAvailable && (
+        {insightsSupported && (
           <div style={{ display: activeTab === "insights" ? "block" : "none" }}>
             <DisirWidget
               variant="prematch-match"
