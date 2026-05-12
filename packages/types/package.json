@@ -15,7 +15,8 @@
     "./combi-boost": "./src/combi-boost.ts",
     "./competitions-catalog": "./src/competitions-catalog.ts",
     "./networks": "./src/networks.ts",
-    "./zillatips": "./src/zillatips.ts"
+    "./zillatips": "./src/zillatips.ts",
+    "./live-chat": "./src/live-chat.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
