@@ -29,7 +29,11 @@ export function MatchSidePanel({
   const [tab, setTab] = useState<Tab>(defaultTab);
 
   return (
-    <aside className="flex flex-col">
+    // `min-w-0` belts-and-braces with the parent grid's `grid-cols-1`
+    // — defends the panel from any future placement where the parent
+    // doesn't constrain track sizing, since the chat content has an
+    // intrinsic min-width wider than typical mobile viewports.
+    <aside className="flex min-w-0 flex-col">
       <div
         role="tablist"
         aria-label="Match side panel"
