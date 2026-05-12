@@ -13,3 +13,4 @@ export * from "./competitions-catalog.js";
 export * from "./combi-boost.js";
 export * from "./avatars.js";
 export * from "./zillatips.js";
+export * from "./live-chat.js";

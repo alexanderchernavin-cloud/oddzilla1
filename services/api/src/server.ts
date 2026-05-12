@@ -51,6 +51,8 @@ import widgetsRoutes from "./modules/widgets/routes.js";
 import betbuilderRoutes from "./modules/betbuilder/routes.js";
 import zillatipsRoutes from "./modules/zillatips/routes.js";
 import devicesRoutes from "./modules/devices/routes.js";
+import liveChatRoutes from "./modules/live-chat/routes.js";
+import { startMatchWatcher } from "./modules/live-chat/match-watcher.js";
 import riskzillaRoutes from "./modules/admin/riskzilla/routes.js";
 import { ApiError } from "./lib/errors.js";
 
@@ -242,9 +244,22 @@ await app.register(widgetsRoutes);
 await app.register(betbuilderRoutes);
 await app.register(zillatipsRoutes);
 await app.register(devicesRoutes);
+await app.register(liveChatRoutes);
 await app.register(riskzillaRoutes);
 
 app.get("/", async () => ({ service: "oddzilla-api", status: "ok" }));
+
+// ─── Background workers ─────────────────────────────────────────────────────
+
+// Live-chat match-state watcher. Subscribes to odds:match:* and emits
+// goal / full-time / cancelled system messages into rooms with active
+// viewers. Set LIVE_CHAT_WATCHER_DISABLED=1 to skip — useful for
+// per-instance debugging or future multi-process deployments where
+// only one container should own the emission path.
+let matchWatcherHandle: { close: () => Promise<void> } | null = null;
+if (process.env.LIVE_CHAT_WATCHER_DISABLED !== "1") {
+  matchWatcherHandle = await startMatchWatcher(app, { redisUrl: env.REDIS_URL });
+}
 
 // ─── Boot ───────────────────────────────────────────────────────────────────
 
@@ -265,6 +280,13 @@ const stopMonitoringSampler = startMonitoringSampler(app);
 async function shutdown() {
   app.log.info("shutting down");
   stopMonitoringSampler();
+  if (matchWatcherHandle) {
+    try {
+      await matchWatcherHandle.close();
+    } catch (err) {
+      app.log.warn({ err: (err as Error).message }, "watcher shutdown error");
+    }
+  }
   await app.close();
   process.exit(0);
 }

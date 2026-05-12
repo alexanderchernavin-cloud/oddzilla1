@@ -7,6 +7,7 @@ import {
   useLiveScoresForMatches,
   type LiveOddsTick,
 } from "@/lib/use-live-odds";
+import { useViewerCountsForMatches } from "@/lib/use-viewer-counts";
 import type { LiveScore } from "@/lib/live-score";
 
 // A list match enriched server-side with the per-row metadata MatchRow
@@ -34,6 +35,10 @@ export function MatchListTabs({
   const matchIds = useMemo(() => matches.map((m) => m.id), [matches]);
   const ticks = useLiveOddsForMatches(matchIds);
   const scores = useLiveScoresForMatches(matchIds);
+  // Match-room viewer counts for the "N watching" pill. REST poll
+  // every 30s; the hook is keyed by the sorted matchIds so navigating
+  // between list pages doesn't re-fetch unnecessarily.
+  const viewerCounts = useViewerCountsForMatches(matchIds);
 
   // Merge live ticks AND scoreboards into the SSR snapshot. Each row's
   // match-winner outcomes inherit the latest publishedOdds / probability
@@ -58,6 +63,7 @@ export function MatchListTabs({
         match={live}
         sportSlug={live._sportSlug}
         sportShort={live._sportShort}
+        viewerCount={viewerCounts[live.id] ?? 0}
       />
     );
   }

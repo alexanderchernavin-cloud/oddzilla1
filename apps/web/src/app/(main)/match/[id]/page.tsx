@@ -13,6 +13,8 @@ import { MatchPrematchMobile } from "@/components/widgets/match-prematch-mobile"
 import { MatchPageRegistrar } from "@/lib/match-page-context";
 import { type LiveScore } from "@/lib/live-score";
 import { MatchAnalysesSection } from "@/components/community/match-analyses-section";
+import { MatchRoom } from "@/components/match-room/match-room";
+import { getSessionUser } from "@/lib/auth";
 
 interface MatchResponse {
   match: {
@@ -41,7 +43,10 @@ export default async function MatchPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const data = await serverApi<MatchResponse>(`/catalog/matches/${id}`);
+  const [data, viewer] = await Promise.all([
+    serverApi<MatchResponse>(`/catalog/matches/${id}`),
+    getSessionUser(),
+  ]);
   if (!data) notFound();
 
   const { match, markets, marketGroups } = data;
@@ -201,6 +206,11 @@ export default async function MatchPage({
         matchTitle={`${match.homeTeam} vs ${match.awayTeam}`}
         matchStatus={match.status}
         loggedIn={loggedIn}
+      />
+
+      <MatchRoom
+        matchId={match.id}
+        viewer={viewer ? { id: viewer.id } : null}
       />
     </div>
   );

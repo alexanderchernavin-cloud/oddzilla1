@@ -36,9 +36,17 @@ interface Props {
   match: ListMatch;
   sportSlug: string;
   sportShort: string;
+  // Live chat viewer count for this match (Notion Epic 1). Renders a
+  // "N watching" pill next to LIVE. Omit / pass 0 to hide.
+  viewerCount?: number;
 }
 
-export function MatchRow({ match, sportSlug, sportShort }: Props) {
+export function MatchRow({
+  match,
+  sportSlug,
+  sportShort,
+  viewerCount = 0,
+}: Props) {
   const slip = useBetSlip();
   const isLive = match.status === "live";
 
@@ -225,9 +233,14 @@ export function MatchRow({ match, sportSlug, sportShort }: Props) {
           <div style={{ flex: 1, minWidth: 4 }} />
 
           {isLive ? (
-            <Pill tone="live">
-              <LiveDot size={6} /> LIVE
-            </Pill>
+            <>
+              <Pill tone="live">
+                <LiveDot size={6} /> LIVE
+              </Pill>
+              {viewerCount > 0 ? (
+                <ViewerCountPill count={viewerCount} />
+              ) : null}
+            </>
           ) : (
             whenLabel && (
               <span
@@ -682,5 +695,42 @@ function RowOddBtn({
         {locked || price == null ? "—" : price.toFixed(2)}
       </span>
     </button>
+  );
+}
+
+// Compact "N watching" pill next to the LIVE indicator. Hidden when
+// count is 0 — the parent only renders it for live matches with an
+// active room. The number is formatted with thousands separators so
+// a 12 000-viewer Major final reads cleanly.
+function ViewerCountPill({ count }: { count: number }) {
+  return (
+    <span
+      className="mono"
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        padding: "2px 7px",
+        borderRadius: 999,
+        border: "1px solid var(--border)",
+        background: "var(--surface)",
+        color: "var(--fg-dim)",
+        fontSize: 10.5,
+        letterSpacing: "0.02em",
+        flexShrink: 0,
+      }}
+      title={`${count.toLocaleString()} watching the match room`}
+    >
+      <span
+        style={{
+          width: 4,
+          height: 4,
+          borderRadius: 999,
+          background: "var(--fg-dim)",
+          opacity: 0.8,
+        }}
+      />
+      {count.toLocaleString()} watching
+    </span>
   );
 }
