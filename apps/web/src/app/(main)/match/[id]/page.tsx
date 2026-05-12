@@ -196,17 +196,26 @@ export default async function MatchPage({
           needed a hard refresh to see them. The empty-state copy now
           lives inside LiveMarkets and disappears the moment any market
           appears in the merged tree. */}
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
-        <LiveMarkets
-          matchId={match.id}
-          match={{
-            id: match.id,
-            homeTeam: match.homeTeam,
-            awayTeam: match.awayTeam,
-            sportSlug: match.sport.slug,
-          }}
-          initialGroups={marketGroups}
-        />
+      {/* Explicit `grid-cols-1` for the mobile case. Without it the
+          grid falls back to auto-track sizing, which honours the
+          widest child's min-content — the chat panel's inner content
+          forced an intrinsic width of ~765 px so the panel overflowed
+          to the right of a 390 px viewport. `minmax(0, 1fr)` (which
+          `grid-cols-1` expands to) is the canonical fix: it caps each
+          track at the container width regardless of child content. */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="min-w-0">
+          <LiveMarkets
+            matchId={match.id}
+            match={{
+              id: match.id,
+              homeTeam: match.homeTeam,
+              awayTeam: match.awayTeam,
+              sportSlug: match.sport.slug,
+            }}
+            initialGroups={marketGroups}
+          />
+        </div>
 
         <MatchSidePanel
           matchId={match.id}
