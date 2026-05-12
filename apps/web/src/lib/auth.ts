@@ -43,7 +43,13 @@ export async function getSessionUser(): Promise<SessionUser | null> {
   const requestHeaders = await headers();
   const requestId = requestHeaders.get(REQUEST_ID_HEADER);
 
-  const apiUrl = process.env.INTERNAL_API_URL ?? "http://api:3001";
+  // `??` would treat empty strings as set; see the same gotcha in
+  // server-fetch.ts. A stray empty assignment in a developer's
+  // .env.local otherwise produces `fetch("/auth/me")` and a
+  // "Failed to parse URL" Node error on every SSR page load.
+  const rawInternal = process.env.INTERNAL_API_URL;
+  const apiUrl =
+    rawInternal && rawInternal.length > 0 ? rawInternal : "http://api:3001";
   try {
     const res = await fetch(`${apiUrl}/auth/me`, {
       headers: {
