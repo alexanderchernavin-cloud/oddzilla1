@@ -119,7 +119,11 @@ export default async function zillatipsRoutes(app: FastifyInstance) {
     // role-flipped past match (different specifiers_hash) still
     // contributes. Bump key so cached v4 (wrong-team / missing-past
     // -match) shapes drain.
-    const cacheKey = `zillatips:v5:${matchId.toString()}`;
+    // v6: leg order flipped to ASC (oldest -> newest left-to-right)
+    // so the rightmost chip is the most recent match — matches the
+    // convention HLTV / Liquipedia results pages use. Bump key so
+    // cached v5 reverse-ordered payloads drain.
+    const cacheKey = `zillatips:v6:${matchId.toString()}`;
     const payload = await cached<ZillaTipsResponse>(
       app.redis,
       cacheKey,
@@ -413,7 +417,12 @@ async function loadTips(
             'liveStartedAt', live_started_at,
             'scheduledAt', scheduled_at
           )
-          ORDER BY live_started_at DESC
+          -- ASC so the rendered chip row reads left-to-right as
+          -- oldest -> newest. The lateral above still picks the top-5
+          -- by recency (DESC + LIMIT 5); we just stack them in the
+          -- popover so the most recent match anchors the right edge,
+          -- matching the convention used by HLTV-style results lists.
+          ORDER BY live_started_at ASC
         ) AS team_legs_json
       FROM legs_raw
       GROUP BY current_market_id, current_outcome_id, team_id, role
