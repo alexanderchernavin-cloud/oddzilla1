@@ -57,17 +57,15 @@ function RailMatchPanelInner({ active }: { active: ActiveMatch }) {
 
   const [insightsAvailability, setInsightsAvailability] =
     useState<WidgetAvailability>("loading");
-  // Default-tab logic: pre-match leads with Insights when the sport
-  // supports it (preserves the rail's prior muscle memory), live /
-  // closed lead with Chat. Computed once at mount via the lazy
-  // initializer so toggling the Insights tab off later (e.g. iframe
-  // reports unavailable) doesn't yank the user's selection.
+  // Default-tab logic: Insights leads whenever the sport supports it,
+  // regardless of match status. Falls back to Analyses then Chat for
+  // sports without a Disir prematch widget. Computed once at mount
+  // via the lazy initializer so toggling the Insights tab off later
+  // (e.g. iframe reports unavailable) doesn't yank the user's
+  // selection.
   const [tab, setTab] = useState<Tab>(() => {
-    if (active.matchStatus === "not_started") {
-      if (insightsSupported) return "insights";
-      if (analysesAvailable) return "analyses";
-      return "chat";
-    }
+    if (insightsSupported) return "insights";
+    if (analysesAvailable) return "analyses";
     return "chat";
   });
 
