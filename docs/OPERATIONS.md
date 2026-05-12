@@ -109,6 +109,15 @@ ssh team@178.104.174.24 "cd /home/team/oddzilla && make recreate-web"
 > cycles them serially and waits for each healthcheck to pass before
 > moving on.
 
+> **Never recreate only `web1` when the scaled profile is up either.**
+> A `docker compose up -d --force-recreate web1` leaves `web2` and
+> `web3` running on the previous image; Caddy's `lb_policy least_conn`
+> distributes traffic across all three, so users see a ~2/3 chance of
+> stale HTML per request. Symptom: the page chunk hash differs between
+> `oddzilla.cc/<page>` (mix of new + old) and an in-container
+> `curl http://web1:3000/<page>` (always new). Use `make recreate-web`
+> so all three cycle.
+
 Migrations are additive — only run when you've shipped one:
 
 ```bash
