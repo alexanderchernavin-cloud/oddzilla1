@@ -28,6 +28,17 @@ interface ActiveMatch {
   sportName: string;
   homeTeam: string;
   awayTeam: string;
+  // Match lifecycle status — rail panel tabs use this to pick a sane
+  // default (pre-match → Insights, live → Chat) and to gate the
+  // Analyses tab's visibility.
+  matchStatus: "not_started" | "live" | "closed" | "cancelled" | "suspended";
+  // Server-side auth signals routed through context so the rail can
+  // render the right CTAs (write-analysis button, send-message input)
+  // without a second auth round-trip. viewerId is null for anonymous
+  // viewers; loggedIn is the cookie-presence signal — see page.tsx for
+  // the rationale.
+  viewerId: string | null;
+  loggedIn: boolean;
 }
 
 interface MatchPageContextValue {
@@ -72,6 +83,9 @@ export function MatchPageRegistrar(props: ActiveMatch) {
       sportName: props.sportName,
       homeTeam: props.homeTeam,
       awayTeam: props.awayTeam,
+      matchStatus: props.matchStatus,
+      viewerId: props.viewerId,
+      loggedIn: props.loggedIn,
     });
     return () => {
       set(null);
@@ -83,6 +97,9 @@ export function MatchPageRegistrar(props: ActiveMatch) {
     props.sportName,
     props.homeTeam,
     props.awayTeam,
+    props.matchStatus,
+    props.viewerId,
+    props.loggedIn,
   ]);
   return null;
 }
