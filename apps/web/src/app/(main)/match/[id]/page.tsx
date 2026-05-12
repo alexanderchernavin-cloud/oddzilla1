@@ -12,8 +12,7 @@ import { MatchLiveMedia } from "@/components/widgets/match-live-media";
 import { MatchPrematchMobile } from "@/components/widgets/match-prematch-mobile";
 import { MatchPageRegistrar } from "@/lib/match-page-context";
 import { type LiveScore } from "@/lib/live-score";
-import { MatchAnalysesSection } from "@/components/community/match-analyses-section";
-import { MatchRoom } from "@/components/match-room/match-room";
+import { MatchSidePanel } from "@/components/match/match-side-panel";
 import { getSessionUser } from "@/lib/auth";
 
 interface MatchResponse {
@@ -79,7 +78,7 @@ export default async function MatchPage({
         flexDirection: "column",
         gap: 24,
         padding: "28px 32px 60px",
-        maxWidth: 1000,
+        maxWidth: 1280,
       }}
     >
       <Link
@@ -182,7 +181,14 @@ export default async function MatchPage({
         awayTeam={match.awayTeam}
       />
 
-      {/* Always mount LiveMarkets — even when the SSR snapshot has zero
+      {/* Markets on the left, side panel (chat + analyses tabs) on the
+          right at >=lg. Below lg the grid collapses and the side panel
+          drops under the markets in normal flow. The side panel hoists
+          chat and analyses up next to the betting action so bettors
+          actually discover them — previously both lived below the
+          markets and required scrolling past every bet row to find.
+
+          Always mount LiveMarkets — even when the SSR snapshot has zero
           markets — so the WebSocket subscription is up and ready. The
           previous early-return rendered a static placeholder with no
           subscription, so when markets re-activated mid-game (a common
@@ -190,28 +196,26 @@ export default async function MatchPage({
           needed a hard refresh to see them. The empty-state copy now
           lives inside LiveMarkets and disappears the moment any market
           appears in the merged tree. */}
-      <LiveMarkets
-        matchId={match.id}
-        match={{
-          id: match.id,
-          homeTeam: match.homeTeam,
-          awayTeam: match.awayTeam,
-          sportSlug: match.sport.slug,
-        }}
-        initialGroups={marketGroups}
-      />
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <LiveMarkets
+          matchId={match.id}
+          match={{
+            id: match.id,
+            homeTeam: match.homeTeam,
+            awayTeam: match.awayTeam,
+            sportSlug: match.sport.slug,
+          }}
+          initialGroups={marketGroups}
+        />
 
-      <MatchAnalysesSection
-        matchId={match.id}
-        matchTitle={`${match.homeTeam} vs ${match.awayTeam}`}
-        matchStatus={match.status}
-        loggedIn={loggedIn}
-      />
-
-      <MatchRoom
-        matchId={match.id}
-        viewer={viewer ? { id: viewer.id } : null}
-      />
+        <MatchSidePanel
+          matchId={match.id}
+          matchTitle={`${match.homeTeam} vs ${match.awayTeam}`}
+          matchStatus={match.status}
+          loggedIn={loggedIn}
+          viewer={viewer ? { id: viewer.id } : null}
+        />
+      </div>
     </div>
   );
 }
