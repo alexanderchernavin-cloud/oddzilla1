@@ -25,10 +25,20 @@ export async function serverApi<T>(path: string): Promise<T | null> {
   const requestHeaders = await headers();
   const requestId = requestHeaders.get(REQUEST_ID_HEADER);
 
+  // `??` would treat empty strings as set — but the documented
+  // `.env.example` ships `NEXT_PUBLIC_API_URL=` (empty for "same
+  // origin" on the browser side), so an empty INTERNAL_API_URL
+  // would survive the coalesce and produce `fetch("/path")` which
+  // Node rejects with `Failed to parse URL`. Mirror the pattern in
+  // middleware.ts: treat empty strings as unset.
+  const internal = process.env.INTERNAL_API_URL;
+  const pub = process.env.NEXT_PUBLIC_API_URL;
   const apiUrl =
-    process.env.INTERNAL_API_URL ??
-    process.env.NEXT_PUBLIC_API_URL ??
-    "http://api:3001";
+    internal && internal.length > 0
+      ? internal
+      : pub && pub.length > 0
+        ? pub
+        : "http://api:3001";
   try {
     const res = await fetch(`${apiUrl}${path}`, {
       headers: {
