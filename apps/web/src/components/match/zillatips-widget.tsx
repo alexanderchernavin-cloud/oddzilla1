@@ -225,7 +225,12 @@ function legRoi(leg: ZillaTipLeg): number | null {
 // (+X% / -100% / VOID) coloured by result. The ring colour around
 // the chip echoes the result so it remains scannable from a distance
 // even without reading the percentage.
+//
+// Click/tap on the chip toggles a small tooltip showing the opponent
+// team name — desktop users see the HTML `title` on hover; this is
+// the mobile-friendly fallback.
 function LegChip({ leg }: { leg: ZillaTipLeg }) {
+  const [showTooltip, setShowTooltip] = useState(false);
   const palette = resultPalette(leg.result);
   const roi = legRoi(leg);
   const oddsLabel = leg.prematchOdds
@@ -245,7 +250,15 @@ function LegChip({ leg }: { leg: ZillaTipLeg }) {
   return (
     <div
       title={`vs ${leg.opponentLabel} @ ${oddsLabel}`}
+      onClick={(e) => {
+        // Don't bubble — keeps the popover open and avoids the
+        // ZillaTipsBadge's document-mousedown close handler firing
+        // when the click lands inside the portaled popover.
+        e.stopPropagation();
+        setShowTooltip((v) => !v);
+      }}
       style={{
+        position: "relative",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
@@ -255,8 +268,31 @@ function LegChip({ leg }: { leg: ZillaTipLeg }) {
         background: palette.bg,
         boxShadow: `inset 0 0 0 1px ${palette.ring}`,
         minWidth: 60,
+        cursor: "pointer",
       }}
     >
+      {showTooltip && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: "calc(100% + 6px)",
+            left: "50%",
+            transform: "translateX(-50%)",
+            background: "var(--fg, #1c1a14)",
+            color: "var(--bg, #f4f2ec)",
+            padding: "4px 8px",
+            borderRadius: 6,
+            fontSize: 11,
+            fontWeight: 500,
+            whiteSpace: "nowrap",
+            pointerEvents: "none",
+            zIndex: 1,
+            boxShadow: "0 4px 12px rgba(0, 0, 0, 0.3)",
+          }}
+        >
+          {leg.opponentLabel}
+        </div>
+      )}
       <TeamMark
         tag={teamTag(leg.opponentLabel)}
         name={leg.opponentLabel}

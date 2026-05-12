@@ -119,11 +119,14 @@ export default async function zillatipsRoutes(app: FastifyInstance) {
     // role-flipped past match (different specifiers_hash) still
     // contributes. Bump key so cached v4 (wrong-team / missing-past
     // -match) shapes drain.
-    // v6: leg order flipped to ASC (oldest -> newest left-to-right)
-    // so the rightmost chip is the most recent match — matches the
-    // convention HLTV / Liquipedia results pages use. Bump key so
-    // cached v5 reverse-ordered payloads drain.
-    const cacheKey = `zillatips:v6:${matchId.toString()}`;
+    // v7: added EXPLICIT sport filter to the historical lateral.
+    // The previous version trusted competitors to be sport-scoped,
+    // which they aren't reliably — the auto-mapper reuses
+    // competitor rows across sports when team names collide.
+    // Bump key so the 24+ active CS2 / r6 / valorant / lol /
+    // etc. matches that were silently pulling another sport's
+    // history clear out of the post-deploy TTL.
+    const cacheKey = `zillatips:v7:${matchId.toString()}`;
     const payload = await cached<ZillaTipsResponse>(
       app.redis,
       cacheKey,
@@ -183,8 +186,18 @@ async function loadTips(
       SELECT
         m.id,
         m.home_competitor_id,
-        m.away_competitor_id
+        m.away_competitor_id,
+        -- Resolve the match's sport via tournament -> category. We
+        -- CANNOT rely on competitors.sport_id for this — the auto-
+        -- mapper sometimes links a fresh match to an existing
+        -- competitor row from a DIFFERENT sport (e.g. a CS2
+        -- "Aurora Gaming" match referencing the Dota 2 Aurora's
+        -- competitor row). The tournament->category->sports chain
+        -- is the only authoritative source of the match's sport.
+        cat.sport_id AS sport_id
       FROM matches m
+      JOIN tournaments t ON t.id = m.tournament_id
+      JOIN categories cat ON cat.id = t.category_id
       WHERE m.id = ${matchId}
         AND m.home_competitor_id IS NOT NULL
         AND m.away_competitor_id IS NOT NULL
@@ -203,7 +216,8 @@ async function loadTips(
         -- specifiers_hash).
         mk.specifiers_json,
         cm.home_competitor_id,
-        cm.away_competitor_id
+        cm.away_competitor_id,
+        cm.sport_id AS current_sport_id
       FROM markets mk
       CROSS JOIN current_match cm
       WHERE mk.match_id = cm.id
@@ -216,6 +230,7 @@ async function loadTips(
         cms.provider_market_id,
         cms.specifiers_hash,
         cms.specifiers_json,
+        cms.current_sport_id,
         mo.outcome_id,
         team.competitor_id AS team_id,
         team.role
@@ -315,6 +330,12 @@ async function loadTips(
             ELSE 'away'::text
           END AS team_role_hist
         FROM matches hm
+        -- Resolve the PAST match's sport so we can compare against
+        -- the current match's sport. Necessary because competitors
+        -- are not reliably sport-scoped in our data — see the note
+        -- on current_match.sport_id above.
+        JOIN tournaments ht ON ht.id = hm.tournament_id
+        JOIN categories hcat ON hcat.id = ht.category_id
         JOIN markets hmk
           ON hmk.match_id = hm.id
          AND hmk.provider_market_id = otp.provider_market_id
@@ -345,14 +366,18 @@ async function loadTips(
         WHERE hm.status = 'closed'
           AND hm.live_started_at IS NOT NULL
           AND hm.live_started_at > NOW() - (${LOOKBACK_DAYS}::int * INTERVAL '1 day')
-          -- Sport-scoping is implicit here. otp.team_id is a
-          -- competitors.id, and competitors are sport-scoped per
-          -- migration 0009's UNIQUE(sport_id, slug). A given
-          -- competitor.id therefore belongs to exactly ONE sport,
-          -- so any past match whose home/away competitor equals
-          -- otp.team_id is necessarily in the same sport as the
-          -- current match. No need for an explicit JOIN through
-          -- tournaments -> categories -> sports.
+          -- EXPLICIT sport filter. Despite competitors being
+          -- sport-scoped at the schema level (migration 0009 has
+          -- UNIQUE(sport_id, slug)), the auto-mapper in
+          -- feed-ingester sometimes reuses an existing competitor
+          -- row across sports when team names collide — e.g. a CS2
+          -- match for "Aurora Gaming" picks up the Dota 2
+          -- Aurora's competitor.id. Without this guard the past
+          -- match lookup would happily return Dota 2 matches for
+          -- a CS2 widget. We compare the past match's sport (via
+          -- tournament -> category) to the current match's sport
+          -- to keep tips inside one sport.
+          AND hcat.sport_id = otp.current_sport_id
           AND (hm.home_competitor_id = otp.team_id OR hm.away_competitor_id = otp.team_id)
           AND hm.id <> ${matchId}
         ORDER BY hm.live_started_at DESC
