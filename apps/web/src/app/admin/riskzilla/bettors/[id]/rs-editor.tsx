@@ -105,11 +105,12 @@ export function RsEditor({
       </div>
       <p style={{ fontSize: 11.5, color: "var(--color-fg-muted)", margin: 0 }}>
         Range 0.01–10. Multiplier on the bettor&apos;s slice of match
-        liability — higher RS = larger allowed exposure. Above RS 3 the
-        damper kicks in so VIPs can&apos;t single-handedly drain a match
-        pool: × 0.75 (3.01–5), × 0.50 (5.01–7), × 0.10 (7.01–9.99),
-        × 0.01 (10). See <code>vipDamper</code> in
-        <code> services/api/src/lib/riskzilla/engine.ts</code>.
+        liability — higher RS = larger allowed exposure, scaled
+        linearly. The engine ceilings the resulting per-bettor cap at
+        the absolute match cap (everyone-combined pool) so a high RS
+        can&apos;t exceed it. No automatic damping above any threshold:
+        if a bettor shouldn&apos;t get the full multiplier, dial RS
+        down explicitly.
       </p>
       {error && (
         <span style={{ fontSize: 12, color: "#dc2626" }}>{error}</span>

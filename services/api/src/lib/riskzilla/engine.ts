@@ -146,18 +146,6 @@ interface BankRow {
   open_liability_micro: string;
 }
 
-// VIP reduction ladder — Oddin's OTS docs §8.3.2.1 introduce a damping
-// factor on OAF > 3 so VIPs don't drain shared pools. We borrow that
-// shape for our single-knob RS so a 10 RS doesn't eat the entire
-// match liability cap on its own.
-function vipDamper(rs: number): number {
-  if (rs <= 3) return 1;
-  if (rs <= 5) return 0.75;
-  if (rs <= 7) return 0.5;
-  if (rs < 10) return 0.1;
-  return 0.01;
-}
-
 function bigintMax(a: bigint, b: bigint): bigint {
   return a > b ? a : b;
 }
@@ -410,20 +398,19 @@ export class RiskzillaEngine {
       buckets: [],
     };
 
-    const rsDamper = vipDamper(intent.userRiskScore);
-    const effectiveRs = intent.userRiskScore * rsDamper;
-
     for (const leg of intent.legs) {
       const tier = tierFor(leg);
       const factor = factorByProvider.get(leg.providerMarketId) ?? 1;
       const baseMatchCap = BigInt(tier.match_liability_micro);
       const matchCap = multiplyMicroByFactor(baseMatchCap, factor);
 
-      // Per-bettor cap: bet_factor × match_cap × effective RS (with VIP
-      // damping). Ceiling at the absolute match cap so an RS of 10 with
-      // a damper of 0.01 doesn't somehow exceed everyone-combined.
+      // Per-bettor cap: bet_factor × match_cap × RS. Ceiling at the
+      // absolute match cap so a high RS can't push one bettor past the
+      // everyone-combined pool. No automatic damping above RS 3 — the
+      // RS knob is the operator's single point of control; if a bettor
+      // shouldn't get the full multiplier, dial RS down explicitly.
       const betFactor = Number(tier.bet_factor);
-      const bettorCapRaw = multiplyMicroByFactor(matchCap, betFactor * effectiveRs);
+      const bettorCapRaw = multiplyMicroByFactor(matchCap, betFactor * intent.userRiskScore);
       const bettorCap = bigintMin(bettorCapRaw, matchCap);
 
       const key = bucketKey(leg.marketId.toString(), leg.outcomeId);
