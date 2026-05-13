@@ -127,18 +127,25 @@ SELECT m.id
 	return id, true, nil
 }
 
-// SetMarketStatus updates the market.status column (used for -3 settled / -4 cancelled).
-func SetMarketStatus(ctx context.Context, tx pgx.Tx, marketID int64, status int16, oddinTs int64) error {
-	_, err := tx.Exec(ctx, `
+// SetMarketStatus updates the market.status column (used for -3 settled /
+// -4 cancelled). Returns the match_id so the caller can publish a
+// `marketStatus` WS frame on the match's odds channel after committing —
+// outcome-level ticks alone don't carry market.status, and without that
+// frame the storefront keeps showing a closed market as bettable until
+// the next refresh.
+func SetMarketStatus(ctx context.Context, tx pgx.Tx, marketID int64, status int16, oddinTs int64) (int64, error) {
+	const q = `
 UPDATE markets
    SET status = $2,
        last_oddin_ts = GREATEST(last_oddin_ts, $3),
        updated_at = NOW()
- WHERE id = $1`, marketID, int(status), oddinTs)
-	if err != nil {
-		return fmt.Errorf("set market status: %w", err)
+ WHERE id = $1
+RETURNING match_id`
+	var matchID int64
+	if err := tx.QueryRow(ctx, q, marketID, int(status), oddinTs).Scan(&matchID); err != nil {
+		return 0, fmt.Errorf("set market status: %w", err)
 	}
-	return nil
+	return matchID, nil
 }
 
 // UpdateOutcomeResult sets (result, void_factor) on one market_outcomes row.

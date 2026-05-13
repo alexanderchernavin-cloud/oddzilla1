@@ -36,6 +36,24 @@ export interface LiveOddsTick {
   ts: string; // ISO
 }
 
+// Market-level status tick. Published by feed-ingester (every
+// odds_change with a status transition, bet_stop blanket,
+// suspend-before-recover flush) and by settlement (settle → -3,
+// cancel → -4, rollbacks). The storefront merges these into its
+// rendered market.status so the `isMarketBettable` predicate can lock
+// terminal statuses immediately and unlock on Oddin reactivation —
+// without it, a market settled mid-session keeps showing its last
+// outcome prices and placement rejects with `market_not_active`.
+//
+// Status codes mirror `markets.status` smallint:
+//   1 active, 0 deactivated, -1 suspended, -2 handover,
+//   -3 settled, -4 cancelled.
+export interface LiveMarketStatusTick {
+  marketId: string;
+  status: number;
+  ts: string; // ISO
+}
+
 export interface TicketFrame {
   type: "ticket";
   ticketId: string;
@@ -64,6 +82,16 @@ interface SharedConnection {
   // dimension independently of the odds dimension).
   chatSubscriptionCounts: Map<string, number>;
   listeners: Map<string, { matchIds: Set<string>; onTick: (tick: LiveOddsTick) => void }>;
+  // Per-market status listeners. Same shared connection as odds —
+  // server fans out `marketStatus` frames on the same `odds:match:{id}`
+  // channel, ws-gateway forwards them as-is, and we dispatch by `type`.
+  marketStatusListeners: Map<
+    string,
+    {
+      matchIds: Set<string>;
+      onStatus: (matchId: string, tick: LiveMarketStatusTick) => void;
+    }
+  >;
   scoreListeners: Map<
     string,
     { matchIds: Set<string>; onScore: (matchId: string, score: LiveScore) => void }
@@ -98,6 +126,7 @@ export function getShared(): SharedConnection {
       subscriptionCounts: new Map(),
       chatSubscriptionCounts: new Map(),
       listeners: new Map(),
+      marketStatusListeners: new Map(),
       scoreListeners: new Map(),
       chatListeners: new Map(),
       ticketListeners: new Set(),
@@ -169,26 +198,46 @@ function ensureConnected(conn: SharedConnection) {
         publishedOdds?: string;
         probability?: string;
         active?: boolean;
-        ts?: string;
+        ts?: string | number;
         liveScore?: LiveScore;
         ticketId?: string;
-        status?: TicketFrame["status"];
+        // `status` is overloaded: ticket frames carry TicketFrame["status"]
+        // (string), marketStatus frames carry a numeric `markets.status`.
+        // Narrowed at the dispatch site.
+        status?: TicketFrame["status"] | number;
         rejectReason?: string | null;
         actualPayoutMicro?: string | null;
       };
       if (payload.type === "odds") {
         const { matchId, marketId, outcomeId, publishedOdds, probability, active, ts } = payload;
-        if (!matchId || !marketId || !outcomeId || !publishedOdds || !ts) return;
+        if (!matchId || !marketId || !outcomeId || !publishedOdds || ts == null) return;
+        const tsStr = typeof ts === "number" ? new Date(ts).toISOString() : ts;
         const tick: LiveOddsTick = {
           marketId,
           outcomeId,
           publishedOdds,
           probability: probability && probability !== "" ? probability : undefined,
           active: active ?? true,
-          ts,
+          ts: tsStr,
         };
         for (const { matchIds, onTick } of conn.listeners.values()) {
           if (matchIds.has(matchId)) onTick(tick);
+        }
+        return;
+      }
+      if (payload.type === "marketStatus") {
+        const { matchId, marketId, status, ts } = payload;
+        if (
+          !matchId ||
+          !marketId ||
+          typeof status !== "number" ||
+          ts == null
+        )
+          return;
+        const tsStr = typeof ts === "number" ? new Date(ts).toISOString() : ts;
+        const tick: LiveMarketStatusTick = { marketId, status, ts: tsStr };
+        for (const { matchIds, onStatus } of conn.marketStatusListeners.values()) {
+          if (matchIds.has(matchId)) onStatus(matchId, tick);
         }
         return;
       }
@@ -380,6 +429,88 @@ export function useLiveOddsForMatches(
   }, [key]);
 
   return ticks;
+}
+
+// Live market-level status for one match, keyed by marketId. Returns
+// only the deltas we've seen — consumers should fall back to the SSR
+// snapshot's `m.status` for markets that haven't ticked yet. Used by
+// `live-markets.tsx` to lock placement on terminal statuses
+// (settled / cancelled / deactivated) immediately on settle, without
+// waiting for an outcome tick that may never arrive.
+export function useLiveMarketStatus(
+  matchId: string | null,
+): Record<string, LiveMarketStatusTick> {
+  const [statuses, setStatuses] = useState<Record<string, LiveMarketStatusTick>>(
+    {},
+  );
+
+  useEffect(() => {
+    if (!matchId) return;
+    const conn = getShared();
+
+    const id = crypto.randomUUID();
+    conn.marketStatusListeners.set(id, {
+      matchIds: new Set([matchId]),
+      onStatus: (_mid, tick) => {
+        setStatuses((prev) => {
+          const existing = prev[tick.marketId];
+          // Drop out-of-order frames.
+          if (existing && new Date(existing.ts) > new Date(tick.ts)) return prev;
+          return { ...prev, [tick.marketId]: tick };
+        });
+      },
+    });
+    bumpSubscription(conn, matchId, 1);
+    ensureConnected(conn);
+
+    return () => {
+      conn.marketStatusListeners.delete(id);
+      bumpSubscription(conn, matchId, -1);
+    };
+  }, [matchId]);
+
+  return statuses;
+}
+
+// Multi-match variant for the bet-slip rail — selections can span
+// matches, so we need market-status visibility across the slip's full
+// match set without each leg opening its own subscription. Keyed by
+// marketId (globally unique across matches).
+export function useLiveMarketStatusForMatches(
+  matchIds: readonly string[],
+): Record<string, LiveMarketStatusTick> {
+  const [statuses, setStatuses] = useState<Record<string, LiveMarketStatusTick>>(
+    {},
+  );
+
+  const key = [...matchIds].sort().join(",");
+
+  useEffect(() => {
+    if (key === "") return;
+    const conn = getShared();
+    const matchIdSet = new Set(key.split(","));
+
+    const id = crypto.randomUUID();
+    conn.marketStatusListeners.set(id, {
+      matchIds: matchIdSet,
+      onStatus: (_mid, tick) => {
+        setStatuses((prev) => {
+          const existing = prev[tick.marketId];
+          if (existing && new Date(existing.ts) > new Date(tick.ts)) return prev;
+          return { ...prev, [tick.marketId]: tick };
+        });
+      },
+    });
+    for (const m of matchIdSet) bumpSubscription(conn, m, 1);
+    ensureConnected(conn);
+
+    return () => {
+      conn.marketStatusListeners.delete(id);
+      for (const m of matchIdSet) bumpSubscription(conn, m, -1);
+    };
+  }, [key]);
+
+  return statuses;
 }
 
 // Live scoreboard for a single match. Returns `null` until the first

@@ -22,7 +22,10 @@ import type {
   BetBuilderQuoteResponse,
 } from "@oddzilla/types";
 import { useBetSlip, type SlipMode } from "@/lib/bet-slip";
-import { useLiveOddsForMatches } from "@/lib/use-live-odds";
+import {
+  useLiveMarketStatusForMatches,
+  useLiveOddsForMatches,
+} from "@/lib/use-live-odds";
 import { useTicketStream } from "@/lib/use-ticket-stream";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { I } from "@/components/ui/icons";
@@ -110,6 +113,14 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
     return [...ids];
   }, [selections]);
   const liveTicks = useLiveOddsForMatches(slipMatchIds);
+  // Market-level status — the server rejects POST /bets when
+  // markets.status !== 1, regardless of how live the outcome looks.
+  // Outcome ticks alone don't carry this (Oddin frequently leaves
+  // `<outcome active="1">` with the last price on a suspended market),
+  // so without this subscription a leg on a settled / cancelled /
+  // suspended market keeps appearing live in the slip and placement
+  // dead-ends at `market_not_active`.
+  const liveMarketStatuses = useLiveMarketStatusForMatches(slipMatchIds);
   useEffect(() => {
     let appliedAny = false;
     for (const s of selections) {
@@ -146,6 +157,18 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
       );
     }
   }, [liveTicks, selections, slip]);
+
+  // Forward market-status transitions into the slip — flips s.active
+  // independently of outcome ticks so legs on settled / cancelled /
+  // suspended markets lock immediately, and unlock again on
+  // reactivation (rollback or Oddin resuming a -1 market).
+  useEffect(() => {
+    for (const s of selections) {
+      const statusTick = liveMarketStatuses[s.marketId];
+      if (!statusTick) continue;
+      slip.setMarketStatus(s.marketId, statusTick.status);
+    }
+  }, [liveMarketStatuses, selections, slip]);
 
   // Once any selection is flagged inactive (either by the WS tick path
   // above or stamped at click time by the caller), surface the

@@ -124,6 +124,41 @@ func boolInt(b bool) int {
 // matches.live_score; we reparse it into the wire envelope so the
 // browser sees `{type:"score", matchId, liveScore}` and the existing
 // useLiveOdds shared-socket dispatcher can route it.
+// PublishMarketStatus broadcasts a market-level status change on the
+// match's odds channel so the storefront can lock/unlock placement
+// immediately. The outcome-level WS path doesn't carry this — Oddin
+// often keeps `<outcome active="1">` with a stale last price while the
+// parent `<market status="-1">` is suspended, so without this frame
+// the rail still thinks the market is bettable and the server rejects
+// at placement with `market_not_active`. Same channel as the odds /
+// live-score frames; ws-gateway routes by prefix and dispatches by the
+// JSON `type` field. Best-effort — pub/sub drops are tolerable, the
+// source of truth remains markets.status in pg.
+func (b *Bus) PublishMarketStatus(ctx context.Context, matchID, marketID int64, status int16, oddinTs int64) error {
+	envelope := struct {
+		Type     string `json:"type"`
+		MatchID  string `json:"matchId"`
+		MarketID string `json:"marketId"`
+		Status   int16  `json:"status"`
+		Ts       int64  `json:"ts"`
+	}{
+		Type:     "marketStatus",
+		MatchID:  strconv.FormatInt(matchID, 10),
+		MarketID: strconv.FormatInt(marketID, 10),
+		Status:   status,
+		Ts:       oddinTs,
+	}
+	encoded, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("marshal market status envelope: %w", err)
+	}
+	channel := "odds:match:" + strconv.FormatInt(matchID, 10)
+	if err := b.rdb.Publish(ctx, channel, encoded).Err(); err != nil {
+		return fmt.Errorf("publish %s: %w", channel, err)
+	}
+	return nil
+}
+
 func (b *Bus) PublishLiveScore(ctx context.Context, matchID int64, payload []byte) error {
 	if len(payload) == 0 {
 		return nil

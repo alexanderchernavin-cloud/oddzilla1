@@ -96,6 +96,17 @@ interface SlipContextValue extends SlipState {
     probability?: string,
     active?: boolean,
   ): void;
+  // Forward a market-level status change into the slip. Any leg on a
+  // market that goes terminal (0 / -3 / -4) or suspended (-1) is
+  // flipped inactive so the rail can surface the Suspended state and
+  // block placement — the server's `POST /bets` rejects on
+  // `markets.status != 1` with `market_not_active`, so without this
+  // mirror the user sees a live-priced leg in the slip, clicks Place
+  // bet, and the request dead-ends. Active (status=1) restores the
+  // leg's `active=true` so a temporarily-suspended market that comes
+  // back unlocks placement again. No-op for markets the slip doesn't
+  // touch.
+  setMarketStatus(marketId: string, status: number): void;
   // Promote every selection's pendingOdds/pendingProbability into the
   // accepted `odds`/`probability` fields and clear the pending state.
   // Called when the user clicks "Accept odds change" in the rail.
@@ -446,6 +457,31 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  const setMarketStatus = useCallback(
+    (marketId: string, status: number) => {
+      // Mirror the server's `markets.status` semantics. status===1 is
+      // bettable, anything else (suspended, settled, cancelled,
+      // deactivated, handover) is not — placement will reject with
+      // `market_not_active`. Flipping `s.active` keeps the rail in sync
+      // with the live state so the user can't dead-end on a closed
+      // market.
+      const nextActive = status === 1;
+      setState((prev) => {
+        let changed = false;
+        const next = prev.selections.map((s) => {
+          if (s.marketId !== marketId) return s;
+          const prevActive = s.active ?? true;
+          if (prevActive === nextActive) return s;
+          changed = true;
+          return { ...s, active: nextActive };
+        });
+        if (!changed) return prev;
+        return { ...prev, selections: next };
+      });
+    },
+    [],
+  );
+
   const acceptPendingOdds = useCallback(() => {
     setState((prev) => {
       let changed = false;
@@ -487,6 +523,7 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
       setCurrency,
       has,
       updateOdds,
+      setMarketStatus,
       acceptPendingOdds,
       setBetbuilderMatch,
       setBetbuilderQuote,
@@ -502,6 +539,7 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
       setCurrency,
       has,
       updateOdds,
+      setMarketStatus,
       acceptPendingOdds,
       setBetbuilderMatch,
       setBetbuilderQuote,

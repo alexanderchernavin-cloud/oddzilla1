@@ -202,6 +202,16 @@ type MarketUpsertBulkResult struct {
 	ProviderMarketID int
 	SpecifiersHash   []byte
 	ID               int64
+	// NewStatus mirrors the input status — what we just wrote.
+	NewStatus int16
+	// PrevStatus is the value the row carried BEFORE this upsert, or
+	// equals NewStatus for fresh inserts (no prior row to read). The
+	// handler uses NewStatus != PrevStatus to decide whether a
+	// `marketStatus` WS frame is worth publishing for this row. The
+	// CTE evaluates `old` against the same snapshot as the INSERT, so
+	// concurrent writers from another goroutine can't make us miss a
+	// transition for our own write.
+	PrevStatus int16
 }
 
 // UpsertMarketsBulk performs a single UNNEST-based INSERT for every
@@ -235,17 +245,47 @@ func UpsertMarketsBulk(ctx context.Context, db pgxRunner, matchID int64, markets
 		lastTs[i] = m.LastOddinTs
 	}
 
+	// The `old` CTE captures the pre-update status for every row we're
+	// about to touch on this match; the `ins` CTE performs the existing
+	// UNNEST upsert. The outer SELECT LEFT JOINs them by the natural
+	// 3-tuple so fresh inserts (no prior row) fall back to NewStatus,
+	// effectively reporting "no transition" — exactly what the publisher
+	// wants. The handler then emits a marketStatus WS frame only when
+	// NewStatus differs from PrevStatus, keeping pub/sub traffic
+	// proportional to actual transitions instead of every odds_change.
 	const q = `
-INSERT INTO markets
-  (match_id, provider_market_id, specifiers_json, specifiers_hash, status, last_oddin_ts, updated_at)
-SELECT $1, t.pmid, t.spec::jsonb, t.hash, t.status, t.lts, NOW()
-  FROM UNNEST($2::int[], $3::text[], $4::bytea[], $5::int[], $6::bigint[])
-       AS t(pmid, spec, hash, status, lts)
-ON CONFLICT (match_id, provider_market_id, specifiers_hash) DO UPDATE
-   SET status        = EXCLUDED.status,
-       last_oddin_ts = GREATEST(markets.last_oddin_ts, EXCLUDED.last_oddin_ts),
-       updated_at    = NOW()
-RETURNING id, provider_market_id, specifiers_hash`
+WITH inp AS (
+  SELECT t.pmid, t.spec, t.hash, t.status, t.lts
+    FROM UNNEST($2::int[], $3::text[], $4::bytea[], $5::int[], $6::bigint[])
+         AS t(pmid, spec, hash, status, lts)
+),
+old AS (
+  SELECT m.provider_market_id, m.specifiers_hash, m.status AS prev_status
+    FROM markets m
+    JOIN inp ON inp.pmid = m.provider_market_id
+            AND inp.hash = m.specifiers_hash
+   WHERE m.match_id = $1
+),
+ins AS (
+  INSERT INTO markets
+    (match_id, provider_market_id, specifiers_json, specifiers_hash, status, last_oddin_ts, updated_at)
+  SELECT $1, inp.pmid, inp.spec::jsonb, inp.hash, inp.status, inp.lts, NOW()
+    FROM inp
+  ON CONFLICT (match_id, provider_market_id, specifiers_hash) DO UPDATE
+     SET status        = EXCLUDED.status,
+         last_oddin_ts = GREATEST(markets.last_oddin_ts, EXCLUDED.last_oddin_ts),
+         updated_at    = NOW()
+  RETURNING id, provider_market_id, specifiers_hash, status
+)
+SELECT ins.id,
+       ins.provider_market_id,
+       ins.specifiers_hash,
+       ins.status,
+       COALESCE(old.prev_status, ins.status) AS prev_status
+  FROM ins
+  LEFT JOIN old
+    ON old.provider_market_id = ins.provider_market_id
+   AND old.specifiers_hash = ins.specifiers_hash`
 	rows, err := db.Query(ctx, q, matchID, providerIDs, specJSONs, specHashes, statuses, lastTs)
 	if err != nil {
 		return nil, fmt.Errorf("upsert markets bulk: %w", err)
@@ -255,10 +295,13 @@ RETURNING id, provider_market_id, specifiers_hash`
 	for rows.Next() {
 		var r MarketUpsertBulkResult
 		var pmid int32
-		if err := rows.Scan(&r.ID, &pmid, &r.SpecifiersHash); err != nil {
+		var newStatus, prevStatus int32
+		if err := rows.Scan(&r.ID, &pmid, &r.SpecifiersHash, &newStatus, &prevStatus); err != nil {
 			return nil, fmt.Errorf("scan upsert markets bulk: %w", err)
 		}
 		r.ProviderMarketID = int(pmid)
+		r.NewStatus = int16(newStatus)
+		r.PrevStatus = int16(prevStatus)
 		out = append(out, r)
 	}
 	return out, rows.Err()

@@ -19,6 +19,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"hash/fnv"
+	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -32,6 +33,14 @@ import (
 )
 
 const userChannelPrefix = "user:"
+
+// oddsChannelPrefix is the per-match fan-out channel ws-gateway forwards
+// to subscribed browsers. Mirrors services/odds-publisher's PubChannelPrefix
+// and feed-ingester's livescore publisher — the gateway just JSON-parses
+// each payload and routes it to clients subscribed to the matching match
+// id, so we can ride this channel for `marketStatus` frames without any
+// changes to ws-gateway.
+const oddsChannelPrefix = "odds:match:"
 
 type Settler struct {
 	store             *store.Store
@@ -187,6 +196,7 @@ func (s *Settler) applyMarketSettle(ctx context.Context, eventURN string, ts int
 	// captured from the post-cascade snapshot (committed in the same tx).
 	var (
 		marketID       int64
+		matchID        int64
 		inserted       bool
 		tickets        []string
 		marketNotFound bool
@@ -236,9 +246,11 @@ func (s *Settler) applyMarketSettle(ctx context.Context, eventURN string, ts int
 		// NULL filter. We still fetch the ticket list below so phase 2
 		// can catch tickets stranded by a previous crash.
 		if inserted {
-			if err := store.SetMarketStatus(ctx, tx, marketID, -3, ts); err != nil {
+			mid, err := store.SetMarketStatus(ctx, tx, marketID, -3, ts)
+			if err != nil {
 				return err
 			}
+			matchID = mid
 			for _, o := range market.Outcomes {
 				result := mapOutcomeResult(o.Result, o.VoidFactor)
 				if err := store.UpdateOutcomeResult(ctx, tx, marketID, o.ID, result, o.VoidFactor, ts); err != nil {
@@ -267,6 +279,14 @@ func (s *Settler) applyMarketSettle(ctx context.Context, eventURN string, ts int
 		atomic.AddInt64(&s.skipped, 1)
 		s.log.Debug().Str("event", eventURN).Int("market", market.ID).Msg("market unknown; skipping")
 		return nil
+	}
+
+	// Phase 1 committed. Broadcast the market-status flip so any browser
+	// holding this match's match page can lock the now-settled market in
+	// the same render tick. Gated on `inserted` because a replay didn't
+	// actually write a new status — clients already saw the first frame.
+	if inserted {
+		s.publishMarketStatus(ctx, matchID, marketID, -3, ts)
 	}
 
 	// ── PHASE 2: settle each ticket in chunked transactions ────────────
@@ -667,10 +687,13 @@ func (s *Settler) applyMarketCancel(ctx context.Context, eventURN string, ts int
 	//   - end_time only:         cancel bets placed BEFORE end; market stays active
 	//   - start_time + end_time: cancel bets placed during window; market stays active
 	deactivateMarket := market.EndTime == nil // true when end_time absent
+	var matchIDForPublish int64
 	if deactivateMarket {
-		if err := store.SetMarketStatus(ctx, tx, marketID, -4, ts); err != nil {
+		mid, err := store.SetMarketStatus(ctx, tx, marketID, -4, ts)
+		if err != nil {
 			return err
 		}
+		matchIDForPublish = mid
 	}
 
 	settledTickets, err := s.applyCancelToTickets(ctx, tx, marketID, market.StartTime, market.EndTime)
@@ -680,6 +703,11 @@ func (s *Settler) applyMarketCancel(ctx context.Context, eventURN string, ts int
 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit cancel: %w", err)
+	}
+
+	if deactivateMarket {
+		// market.status flipped to -4; storefront subscribers learn here.
+		s.publishMarketStatus(ctx, matchIDForPublish, marketID, -4, ts)
 	}
 
 	atomic.AddInt64(&s.cancelled, int64(len(settledTickets)))
@@ -898,7 +926,8 @@ func (s *Settler) applyRollback(ctx context.Context, eventURN string, ts int64, 
 		return nil, err
 	}
 	// Restore market to active so new settle messages can re-apply.
-	if err := store.SetMarketStatus(ctx, tx, marketID, 1, ts); err != nil {
+	matchID, err := store.SetMarketStatus(ctx, tx, marketID, 1, ts)
+	if err != nil {
 		return nil, err
 	}
 
@@ -937,6 +966,8 @@ func (s *Settler) applyRollback(ctx context.Context, eventURN string, ts int64, 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit %s: %w", rollbackType, err)
 	}
+	// Re-opens the market; storefront unlocks placement on next render.
+	s.publishMarketStatus(ctx, matchID, marketID, 1, ts)
 	return reversed, nil
 }
 
@@ -980,7 +1011,55 @@ func (s *Settler) reverseTicket(ctx context.Context, tx pgx.Tx, ticketID, reason
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
+// publishMarketStatus broadcasts a market-level status change on the
+// match's odds channel so the storefront can lock placement immediately
+// instead of waiting for an outcome-level WS tick that may never arrive.
+//
+// Callers should invoke this AFTER the tx that wrote the new status
+// commits — publishing inside the tx would race a subscriber who refetches
+// REST state and sees the pre-commit row. Best-effort: Redis pub/sub
+// drops are tolerable (the source of truth is markets.status in pg).
+func (s *Settler) publishMarketStatus(ctx context.Context, matchID, marketID int64, status int16, oddinTs int64) {
+	payload := map[string]any{
+		"type":     "marketStatus",
+		"matchId":  fmt.Sprintf("%d", matchID),
+		"marketId": fmt.Sprintf("%d", marketID),
+		"status":   status,
+		"ts":       oddinTs,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	channel := oddsChannelPrefix + fmt.Sprintf("%d", matchID)
+	if err := s.rdb.Publish(ctx, channel, body).Err(); err != nil {
+		s.log.Debug().Err(err).
+			Int64("match", matchID).Int64("market", marketID).
+			Int16("status", status).
+			Msg("publish market status failed")
+	}
+}
+
 func (s *Settler) publishTicketEvent(ctx context.Context, ticketID, status, reason string) {
+	// Fetch user_id + the freshly-committed actual_payout_micro in one
+	// hop. Payout is non-NULL for settled / cashed_out tickets and NULL
+	// otherwise; the frontend bet-history's WON/LOST/VOIDED badge derives
+	// from payout-vs-stake, so omitting it on a settled WS frame causes
+	// the row to render as "Lost" until the user refreshes and SSR
+	// re-reads the real payout. Carrying it on the frame keeps the
+	// live-update path consistent with the SSR-rendered truth.
+	var (
+		userID         string
+		actualPayoutMu *int64
+	)
+	if err := s.store.Pool().QueryRow(
+		ctx,
+		`SELECT user_id, actual_payout_micro FROM tickets WHERE id = $1`,
+		ticketID,
+	).Scan(&userID, &actualPayoutMu); err != nil {
+		return
+	}
+
 	payload := map[string]any{
 		"type":     "ticket",
 		"ticketId": ticketID,
@@ -989,15 +1068,15 @@ func (s *Settler) publishTicketEvent(ctx context.Context, ticketID, status, reas
 	if reason != "" {
 		payload["rejectReason"] = reason
 	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return
+	if actualPayoutMu != nil {
+		// Bigint-as-string on the wire — same convention every other
+		// money field uses, since JSON numbers lose precision past 2^53
+		// and a settled payout for high-stake combos can exceed that.
+		payload["actualPayoutMicro"] = strconv.FormatInt(*actualPayoutMu, 10)
 	}
 
-	// Fetch user_id once so we can address the pub/sub channel. Cheap
-	// lookup; skipping errors is fine (worst case: frame not delivered).
-	var userID string
-	if err := s.store.Pool().QueryRow(ctx, `SELECT user_id FROM tickets WHERE id = $1`, ticketID).Scan(&userID); err != nil {
+	body, err := json.Marshal(payload)
+	if err != nil {
 		return
 	}
 	if err := s.rdb.Publish(ctx, userChannelPrefix+userID, body).Err(); err != nil {
