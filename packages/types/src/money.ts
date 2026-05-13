@@ -38,6 +38,39 @@ export function formatMicro(m: MicroUsdt | bigint, options: { sign?: boolean } =
   return options.sign && !str.startsWith("-") ? `+${str}` : str;
 }
 
+// Money-style 2-decimal renderer. `fromMicro` returns the full 6-decimal
+// precision because some call-sites (settlement audit, ledger) need it;
+// the admin tables and per-bettor dashboards just want a readable
+// money figure. Pro-rated combo stakes (a 10 OZ 3-sport combo splits
+// to 3.333333 OZ per sport) read terribly without this — hence the
+// existence of this helper rather than a `.toFixed(2)` on every call
+// site. Uses ROUND-HALF-AWAY-FROM-ZERO so 0.005 displays as "0.01".
+export function fromMicroMoney(
+  m: MicroUsdt | bigint,
+  options: { sign?: boolean; decimals?: number } = {},
+): string {
+  const decimals = Math.max(0, Math.min(6, options.decimals ?? 2));
+  const value = typeof m === "bigint" ? m : (m as bigint);
+  const negative = value < 0n;
+  const abs = negative ? -value : value;
+  // Round to `decimals` places: e.g. for 2 decimals we want 4-decimal
+  // micro precision dropped. Shift micros by (6 - decimals), round
+  // half-away-from-zero, then format.
+  const dropPow = 6 - decimals;
+  const divisor = 10n ** BigInt(dropPow);
+  const half = divisor / 2n;
+  const rounded = dropPow === 0 ? abs : (abs + half) / divisor;
+  const scale = 10n ** BigInt(decimals);
+  const whole = rounded / scale;
+  const frac = rounded % scale;
+  const body =
+    decimals === 0
+      ? whole.toString()
+      : `${whole}.${frac.toString().padStart(decimals, "0")}`;
+  if (negative) return `-${body}`;
+  return options.sign ? `+${body}` : body;
+}
+
 export const MicroUsdt = {
   zero: 0n as MicroUsdt,
   one: MICRO_PER_UNIT as MicroUsdt,

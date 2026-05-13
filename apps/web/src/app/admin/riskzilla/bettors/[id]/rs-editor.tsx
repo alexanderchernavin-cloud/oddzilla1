@@ -105,7 +105,11 @@ export function RsEditor({
       </div>
       <p style={{ fontSize: 11.5, color: "var(--color-fg-muted)", margin: 0 }}>
         Range 0.01–10. Multiplier on the bettor&apos;s slice of match
-        liability. VIP-damped above RS 3.
+        liability — higher RS = larger allowed exposure. Above RS 3 the
+        damper kicks in so VIPs can&apos;t single-handedly drain a match
+        pool: × 0.75 (3.01–5), × 0.50 (5.01–7), × 0.10 (7.01–9.99),
+        × 0.01 (10). See <code>vipDamper</code> in
+        <code> services/api/src/lib/riskzilla/engine.ts</code>.
       </p>
       {error && (
         <span style={{ fontSize: 12, color: "#dc2626" }}>{error}</span>

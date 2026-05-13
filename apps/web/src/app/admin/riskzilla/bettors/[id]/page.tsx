@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { serverApi } from "@/lib/server-fetch";
-import { fromMicro } from "@oddzilla/types/money";
+import { fromMicroMoney } from "@oddzilla/types/money";
 import { RsEditor } from "./rs-editor";
 import { readRzCurrencyFromSearchParams } from "../../currency";
 
@@ -108,12 +108,12 @@ export default async function BettorProfilePage({
   const cur = data.currency;
   const backHref = `/admin/riskzilla/bettors${cur === "USDC" ? "" : `?cur=${cur}`}`;
 
-  const totalStake = fromMicro(BigInt(data.stats.stakedMicro));
-  const totalPayout = fromMicro(BigInt(data.stats.payoutMicro));
+  const totalStake = fromMicroMoney(BigInt(data.stats.stakedMicro));
+  const totalPayout = fromMicroMoney(BigInt(data.stats.payoutMicro));
   const pnlMicro = BigInt(data.stats.operatorPnlMicro);
   const pnlForBettor = -pnlMicro; // bettor's PnL is the inverse of operator's
-  const openLoss = fromMicro(BigInt(data.stats.openMaxLossMicro));
-  const openPotential = fromMicro(BigInt(data.stats.openPotentialPayoutMicro));
+  const openLoss = fromMicroMoney(BigInt(data.stats.openMaxLossMicro));
+  const openPotential = fromMicroMoney(BigInt(data.stats.openPotentialPayoutMicro));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
@@ -155,15 +155,15 @@ export default async function BettorProfilePage({
             {usdcWallet && (
               <Kpi
                 label="USDC balance"
-                value={`${fromMicro(BigInt(usdcWallet.balanceMicro))} USDC`}
-                sub={`${fromMicro(BigInt(usdcWallet.lockedMicro))} locked`}
+                value={`${fromMicroMoney(BigInt(usdcWallet.balanceMicro))} USDC`}
+                sub={`${fromMicroMoney(BigInt(usdcWallet.lockedMicro))} locked`}
               />
             )}
             {ozWallet && (
               <Kpi
                 label="OZ balance (demo)"
-                value={`${fromMicro(BigInt(ozWallet.balanceMicro))} OZ`}
-                sub={`${fromMicro(BigInt(ozWallet.lockedMicro))} locked`}
+                value={`${fromMicroMoney(BigInt(ozWallet.balanceMicro))} OZ`}
+                sub={`${fromMicroMoney(BigInt(ozWallet.lockedMicro))} locked`}
               />
             )}
             {data.wallets
@@ -172,8 +172,8 @@ export default async function BettorProfilePage({
                 <Kpi
                   key={w.currency}
                   label={`${w.currency} balance`}
-                  value={`${fromMicro(BigInt(w.balanceMicro))} ${w.currency}`}
-                  sub={`${fromMicro(BigInt(w.lockedMicro))} locked`}
+                  value={`${fromMicroMoney(BigInt(w.balanceMicro))} ${w.currency}`}
+                  sub={`${fromMicroMoney(BigInt(w.lockedMicro))} locked`}
                 />
               ))}
           </div>
@@ -195,7 +195,7 @@ export default async function BettorProfilePage({
           <Kpi label="Paid out" value={`${totalPayout} ${cur}`} />
           <Kpi
             label="Bettor PnL"
-            value={`${pnlForBettor >= 0n ? "+" : ""}${fromMicro(pnlForBettor)} ${cur}`}
+            value={`${pnlForBettor >= 0n ? "+" : ""}${fromMicroMoney(pnlForBettor)} ${cur}`}
             valueColor={pnlForBettor >= 0n ? "#16a34a" : "#dc2626"}
             sub={pnlForBettor >= 0n ? "Bettor ahead" : "Bettor down"}
           />
@@ -254,15 +254,15 @@ export default async function BettorProfilePage({
                     <Td>{s.sportName}</Td>
                     <Td align="right" mono>{s.ticketCount}</Td>
                     <Td align="right" mono>{s.wonCount}</Td>
-                    <Td align="right" mono>{fromMicro(BigInt(s.stakedMicro))}</Td>
-                    <Td align="right" mono>{fromMicro(BigInt(s.payoutMicro))}</Td>
+                    <Td align="right" mono>{fromMicroMoney(BigInt(s.stakedMicro))}</Td>
+                    <Td align="right" mono>{fromMicroMoney(BigInt(s.payoutMicro))}</Td>
                     <Td
                       align="right"
                       mono
                       color={bettorPnl >= 0n ? "#16a34a" : "#dc2626"}
                     >
                       {bettorPnl >= 0n ? "+" : ""}
-                      {fromMicro(bettorPnl)}
+                      {fromMicroMoney(bettorPnl)}
                     </Td>
                   </tr>
                 );
@@ -292,7 +292,7 @@ export default async function BettorProfilePage({
                     <Td>{new Date(b.placedAt).toLocaleDateString()}</Td>
                     <Td>{b.betType}</Td>
                     <Td align="right" mono>
-                      {fromMicro(BigInt(b.stakeMicro))}
+                      {fromMicroMoney(BigInt(b.stakeMicro))}
                     </Td>
                     <Td>
                       <StatusBadge
@@ -333,10 +333,10 @@ export default async function BettorProfilePage({
                     </Td>
                     <Td>{b.betType}</Td>
                     <Td align="right" mono>
-                      {fromMicro(BigInt(b.stakeMicro))}
+                      {fromMicroMoney(BigInt(b.stakeMicro))}
                     </Td>
                     <Td align="right" mono color="#16a34a">
-                      +{fromMicro(BigInt(b.netMicro))}
+                      +{fromMicroMoney(BigInt(b.netMicro))}
                     </Td>
                   </tr>
                 ))}
@@ -367,10 +367,10 @@ export default async function BettorProfilePage({
                   <Td>{d.decision}</Td>
                   <Td>{d.reasonMessage ?? "—"}</Td>
                   <Td align="right" mono>
-                    {fromMicro(BigInt(d.stakeMicro))}
+                    {fromMicroMoney(BigInt(d.stakeMicro))}
                   </Td>
                   <Td align="right" mono>
-                    {fromMicro(BigInt(d.potentialPayoutMicro))}
+                    {fromMicroMoney(BigInt(d.potentialPayoutMicro))}
                   </Td>
                 </tr>
               ))}
@@ -436,11 +436,11 @@ function PhaseCard({ label, phase }: { label: string; phase: PhaseStats }) {
       </span>
       <span style={{ fontSize: 12, color: "var(--color-fg-muted)" }}>Staked</span>
       <span style={{ fontVariantNumeric: "tabular-nums", textAlign: "right", fontSize: 13 }}>
-        {fromMicro(stake)}
+        {fromMicroMoney(stake)}
       </span>
       <span style={{ fontSize: 12, color: "var(--color-fg-muted)" }}>Paid out</span>
       <span style={{ fontVariantNumeric: "tabular-nums", textAlign: "right", fontSize: 13 }}>
-        {fromMicro(payout)}
+        {fromMicroMoney(payout)}
       </span>
       <span style={{ fontSize: 12, color: "var(--color-fg-muted)" }}>Bettor PnL</span>
       <span
@@ -452,7 +452,7 @@ function PhaseCard({ label, phase }: { label: string; phase: PhaseStats }) {
         }}
       >
         {bettorPnl >= 0n ? "+" : ""}
-        {fromMicro(bettorPnl)}
+        {fromMicroMoney(bettorPnl)}
       </span>
     </div>
   );
