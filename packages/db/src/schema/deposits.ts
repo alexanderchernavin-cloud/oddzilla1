@@ -5,6 +5,8 @@ import {
   text,
   integer,
   bigint,
+  smallint,
+  numeric,
   timestamp,
   unique,
   index,
@@ -70,6 +72,19 @@ export const depositIntents = pgTable(
     confirmations: integer().notNull().default(0),
     status: depositIntentStatusEnum().notNull().default("pending"),
     failureReason: text("failure_reason"),
+    // When the watcher rejects an intent because the user sent a non-USDC
+    // token to the receive address, the contract + raw amount land here
+    // so admin can see "100 USDT @ 0xdAC1..." instead of "no_usdc_transfer".
+    // amount_raw is uint256-shaped because the unknown token's decimals
+    // are not necessarily 6 — apply token_decimals (if known) on render.
+    detectedTokenContract: text("detected_token_contract"),
+    detectedTokenAmountRaw: numeric("detected_token_amount_raw", { precision: 78, scale: 0 }),
+    // Admin acknowledgement for the wrong-token alert. When this is
+    // non-null, the row stops counting toward the sidebar badge.
+    acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+    acknowledgedByUserId: uuid("acknowledged_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
     submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull().defaultNow(),
     creditedAt: timestamp("credited_at", { withTimezone: true }),
     rejectedAt: timestamp("rejected_at", { withTimezone: true }),
@@ -84,6 +99,50 @@ export const depositIntents = pgTable(
     index("deposit_intents_pending_idx")
       .on(t.status)
       .where(sql`${t.status} IN ('pending', 'confirming')`),
+    index("deposit_intents_wrong_token_unack_idx")
+      .on(sql`${t.submittedAt} DESC`)
+      .where(sql`${t.failureReason} = 'wrong_token' AND ${t.acknowledgedAt} IS NULL`),
+  ],
+);
+
+// Every ERC20 Transfer to the receive address whose contract isn't USDC.
+// Filled by wallet-watcher's wider eth_getLogs scan (topics filter on
+// the recipient address only, no contract filter), so it catches the
+// "user sent the wrong coin AND didn't paste a hash" case the
+// intent-rejection path can't reach. Admin acks per-row; partial index
+// powers the unacked-count badge.
+export const unattributedDeposits = pgTable(
+  "unattributed_deposits",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    network: chainNetworkEnum().notNull().default("ERC20"),
+    txHash: text("tx_hash").notNull(),
+    logIndex: integer("log_index").notNull(),
+    blockNumber: bigint("block_number", { mode: "bigint" }).notNull(),
+    blockHash: text("block_hash").notNull(),
+    fromAddress: text("from_address").notNull(),
+    toAddress: text("to_address").notNull(),
+    tokenContract: text("token_contract").notNull(),
+    tokenSymbol: text("token_symbol"),
+    tokenDecimals: smallint("token_decimals"),
+    amountRaw: numeric("amount_raw", { precision: 78, scale: 0 }).notNull(),
+    detectedAt: timestamp("detected_at", { withTimezone: true }).notNull().defaultNow(),
+    acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+    acknowledgedByUserId: uuid("acknowledged_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    note: text(),
+  },
+  (t) => [
+    unique("unattributed_deposits_unique").on(t.network, t.txHash, t.logIndex),
+    check("unattributed_deposits_amount_pos", sql`${t.amountRaw} > 0`),
+    check(
+      "unattributed_deposits_decimals_range",
+      sql`${t.tokenDecimals} IS NULL OR (${t.tokenDecimals} >= 0 AND ${t.tokenDecimals} <= 36)`,
+    ),
+    index("unattributed_deposits_unack_idx")
+      .on(sql`${t.detectedAt} DESC`)
+      .where(sql`${t.acknowledgedAt} IS NULL`),
   ],
 );
 
@@ -150,3 +209,4 @@ export type Deposit = typeof deposits.$inferSelect;
 export type DepositIntent = typeof depositIntents.$inferSelect;
 export type Withdrawal = typeof withdrawals.$inferSelect;
 export type UserWalletAddress = typeof userWalletAddresses.$inferSelect;
+export type UnattributedDeposit = typeof unattributedDeposits.$inferSelect;

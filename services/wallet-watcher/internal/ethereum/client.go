@@ -11,6 +11,7 @@ package ethereum
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -186,13 +187,17 @@ func (c *Client) BlockHashAt(ctx context.Context, blockNumber int64) (string, er
 	return strings.ToLower(resp.Hash), nil
 }
 
-// TransferLog is one decoded Transfer event matching the discovery
-// filter (USDC contract, recipient = receive address).
+// TransferLog is one decoded ERC20 Transfer event. `Contract` is the
+// emitting token contract (always populated, lowercase). For the
+// contract-filtered scan (GetTransfersTo) this is just an echo of
+// the input; for the wider GetAllTransfersTo it's the discriminator
+// that tells "wrong-token" deposits apart from USDC.
 type TransferLog struct {
 	TxHash      string
 	LogIndex    int
 	BlockNumber int64
 	BlockHash   string
+	Contract    string // 0x-lowercase, emitting ERC20 contract
 	From        string // 0x-lowercase
 	To          string // 0x-lowercase (always equals receive address)
 	Amount      *big.Int
@@ -250,12 +255,197 @@ func (c *Client) GetTransfersTo(ctx context.Context, contract, receiveAddress st
 			LogIndex:    int(logIndex),
 			BlockNumber: blockNumber,
 			BlockHash:   strings.ToLower(r.BlockHash),
+			Contract:    strings.ToLower(r.Address),
 			From:        topicToAddress(r.Topics[1]),
 			To:          topicToAddress(r.Topics[2]),
 			Amount:      amount,
 		})
 	}
 	return out, nil
+}
+
+// GetAllTransfersTo fetches every ERC20 `Transfer(address,address,uint256)`
+// log whose recipient (topics[2]) equals `receiveAddress`, regardless of
+// emitting contract, in inclusive block range [fromBlock, toBlock]. This
+// is the "wrong-token" scan — picks up USDT/DAI/random shitcoins someone
+// sent by mistake. The contract-filtered variant `GetTransfersTo` does
+// not see those logs at all.
+//
+// No contract-address defence-in-depth check here because by design we
+// accept Transfer logs from any contract.
+func (c *Client) GetAllTransfersTo(ctx context.Context, receiveAddress string, fromBlock, toBlock int64) ([]TransferLog, error) {
+	toTopic := padAddressTopic(receiveAddress)
+	params := []any{
+		map[string]any{
+			"topics":    []any{TransferTopic, nil, toTopic},
+			"fromBlock": fmt.Sprintf("0x%x", fromBlock),
+			"toBlock":   fmt.Sprintf("0x%x", toBlock),
+		},
+	}
+	var raws []rawLog
+	if err := c.call(ctx, "eth_getLogs", params, &raws); err != nil {
+		return nil, err
+	}
+	out := make([]TransferLog, 0, len(raws))
+	for _, r := range raws {
+		if r.Removed {
+			continue
+		}
+		if len(r.Topics) < 3 {
+			continue
+		}
+		blockNumber, err := parseHexInt(r.BlockNumber)
+		if err != nil {
+			return nil, fmt.Errorf("decode blockNumber: %w", err)
+		}
+		logIndex, err := parseHexInt(r.LogIndex)
+		if err != nil {
+			return nil, fmt.Errorf("decode logIndex: %w", err)
+		}
+		if !strings.HasPrefix(r.Data, "0x") {
+			return nil, fmt.Errorf("log data missing 0x prefix: %q", r.Data)
+		}
+		amount := new(big.Int)
+		if _, ok := amount.SetString(strings.TrimPrefix(r.Data, "0x"), 16); !ok {
+			return nil, fmt.Errorf("decode log data: %q", r.Data)
+		}
+		out = append(out, TransferLog{
+			TxHash:      strings.ToLower(r.TxHash),
+			LogIndex:    int(logIndex),
+			BlockNumber: blockNumber,
+			BlockHash:   strings.ToLower(r.BlockHash),
+			Contract:    strings.ToLower(r.Address),
+			From:        topicToAddress(r.Topics[1]),
+			To:          topicToAddress(r.Topics[2]),
+			Amount:      amount,
+		})
+	}
+	return out, nil
+}
+
+// ─── eth_call helpers for ERC20 token metadata ─────────────────────────────
+//
+// keccak256-first-4 selectors for the standard ERC20 read methods we
+// use to enrich unattributed-deposit rows. Both calls are best-effort:
+// a malformed / non-ERC20 contract returns an empty / unparseable
+// response, and the caller falls back to "unknown token" (admins still
+// see the contract address and the raw uint256 amount).
+
+const (
+	erc20SymbolSelector   = "0x95d89b41" // symbol()
+	erc20DecimalsSelector = "0x313ce567" // decimals()
+)
+
+// CallContract is a minimal `eth_call` wrapper for read-only ABI
+// methods. Returns the raw hex `result` string (with the 0x prefix).
+func (c *Client) CallContract(ctx context.Context, contract, dataSelector string) (string, error) {
+	var hexStr string
+	params := []any{
+		map[string]any{
+			"to":   strings.ToLower(contract),
+			"data": dataSelector,
+		},
+		"latest",
+	}
+	if err := c.call(ctx, "eth_call", params, &hexStr); err != nil {
+		return "", err
+	}
+	return hexStr, nil
+}
+
+// TokenSymbol returns the contract's ERC20 symbol, decoded from the
+// modern Solidity `string` ABI form (offset / length / data, padded
+// to 32-byte words). Some early tokens (notably the legacy MKR) use
+// bytes32 — those return empty here and the caller falls back to
+// "unknown".
+func (c *Client) TokenSymbol(ctx context.Context, contract string) (string, error) {
+	raw, err := c.CallContract(ctx, contract, erc20SymbolSelector)
+	if err != nil {
+		return "", err
+	}
+	return decodeAbiString(raw)
+}
+
+// TokenDecimals returns the contract's ERC20 decimals. Result is a
+// uint8 left-padded to 32 bytes; we clamp to [0, 36] (any chain's
+// realistic token is well under that).
+func (c *Client) TokenDecimals(ctx context.Context, contract string) (int, error) {
+	raw, err := c.CallContract(ctx, contract, erc20DecimalsSelector)
+	if err != nil {
+		return 0, err
+	}
+	hexBody := strings.TrimPrefix(raw, "0x")
+	if hexBody == "" {
+		return 0, fmt.Errorf("decimals: empty response")
+	}
+	if len(hexBody) > 64 {
+		return 0, fmt.Errorf("decimals: response too long (%d)", len(hexBody))
+	}
+	n, err := parseHexInt("0x" + hexBody)
+	if err != nil {
+		return 0, fmt.Errorf("decimals: parse: %w", err)
+	}
+	if n < 0 || n > 36 {
+		return 0, fmt.Errorf("decimals out of range: %d", n)
+	}
+	return int(n), nil
+}
+
+// decodeAbiString decodes a Solidity dynamic-`string` ABI return value.
+// Layout:
+//
+//	[ 32 bytes offset ]   typically 0x20 (one word in)
+//	[ 32 bytes length ]   utf-8 byte length
+//	[ length bytes data, padded to a 32-byte boundary ]
+//
+// Conservative bounds: offset must equal 0x20 (the canonical form);
+// length is clamped to 64 chars (defensive — symbols are short).
+func decodeAbiString(raw string) (string, error) {
+	body := strings.TrimPrefix(raw, "0x")
+	if len(body) < 128 {
+		return "", fmt.Errorf("abi string: short response (%d)", len(body))
+	}
+	if len(body)%2 != 0 {
+		return "", fmt.Errorf("abi string: odd length")
+	}
+	offsetWord := body[:64]
+	offsetTrim := strings.TrimLeft(offsetWord, "0")
+	if offsetTrim != "20" {
+		return "", fmt.Errorf("abi string: unexpected offset 0x%s", offsetWord)
+	}
+	lengthWord := body[64:128]
+	lengthTrim := strings.TrimLeft(lengthWord, "0")
+	if lengthTrim == "" {
+		return "", nil // empty string is valid
+	}
+	strLen, err := parseHexInt("0x" + lengthTrim)
+	if err != nil {
+		return "", fmt.Errorf("abi string: length: %w", err)
+	}
+	if strLen <= 0 || strLen > 64 {
+		return "", fmt.Errorf("abi string: length out of range %d", strLen)
+	}
+	dataStart := 128
+	dataEnd := dataStart + int(strLen)*2
+	if dataEnd > len(body) {
+		return "", fmt.Errorf("abi string: data past end")
+	}
+	bs, err := hex.DecodeString(body[dataStart:dataEnd])
+	if err != nil {
+		return "", fmt.Errorf("abi string: data hex: %w", err)
+	}
+	// Drop non-printable bytes — keeps a corrupt symbol from breaking
+	// log lines and admin UI. Anything outside basic printable ASCII
+	// is replaced with '?'.
+	out := make([]byte, 0, len(bs))
+	for _, b := range bs {
+		if b < 0x20 || b > 0x7e {
+			out = append(out, '?')
+			continue
+		}
+		out = append(out, b)
+	}
+	return string(out), nil
 }
 
 // padAddressTopic encodes a 20-byte address as a 32-byte topic by

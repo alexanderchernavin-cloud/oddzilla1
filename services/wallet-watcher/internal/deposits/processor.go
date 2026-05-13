@@ -41,6 +41,13 @@ type Verifier interface {
 }
 
 // InspectResult is the verdict on one tx receipt.
+//
+// WrongToken is the "tx exists, hit our receive address, but the
+// Transfer came from a non-USDC contract" verdict — the user sent the
+// wrong coin. Surface the contract + raw amount so the admin can
+// recognise what arrived (decimals aren't known here; admin UI looks
+// them up). When set, Match is also false; the processor takes a
+// dedicated rejection path that stamps the intent's diagnostic cols.
 type InspectResult struct {
 	Found       bool
 	Reverted    bool
@@ -51,6 +58,10 @@ type InspectResult struct {
 	From        string
 	To          string
 	AmountMicro int64
+
+	WrongToken          bool
+	WrongTokenContract  string // 0x-lowercase
+	WrongTokenAmountRaw string // decimal-string uint256
 }
 
 type Processor struct {
@@ -127,6 +138,19 @@ func (p *Processor) handleOne(ctx context.Context, it store.PendingIntent, head 
 	}
 
 	if !res.Match {
+		if res.WrongToken {
+			if err := p.st.RejectIntentWrongToken(ctx, it.ID, res.WrongTokenContract, res.WrongTokenAmountRaw, res.From); err != nil {
+				p.log.Warn().Err(err).Str("intent", it.ID).Msg("reject (wrong_token) failed; will retry next tick")
+				return
+			}
+			p.log.Info().
+				Str("intent", it.ID).
+				Str("tx", it.TxHash).
+				Str("token", res.WrongTokenContract).
+				Str("amount_raw", res.WrongTokenAmountRaw).
+				Msg("intent rejected: wrong_token")
+			return
+		}
 		if err := p.st.RejectIntent(ctx, it.ID, "no_usdc_transfer_to_receive_address"); err != nil {
 			p.log.Warn().Err(err).Str("intent", it.ID).Msg("reject (no_match) failed; will retry next tick")
 			return
