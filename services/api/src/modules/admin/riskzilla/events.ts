@@ -25,6 +25,56 @@ import { z } from "zod";
 import { sql } from "drizzle-orm";
 import { SUPPORTED_CURRENCIES } from "@oddzilla/types/currencies";
 
+// Derives the visible "Status" cell. The Riskzilla decision column is
+// recorded once at placement (`accepted` / `rejected_*`) and never
+// changes — so a ticket placed last week still reads "accepted" in
+// the admin table even when it long since settled to won / lost /
+// void / cashed_out. Operators want the column to reflect the current
+// lifecycle state. This expression overlays `tickets.status` (and
+// `actual_payout_micro` for win/lose/partial classification) on top
+// of the placement decision:
+//
+//   tickets.status = 'cashed_out'    → cashed_out
+//   tickets.status = 'voided'        → void
+//   tickets.status = 'settled' & payout >= stake → won
+//   tickets.status = 'settled' & payout > 0      → partial
+//   tickets.status = 'settled' & payout = 0      → lost
+//   tickets.status = 'pending_delay'             → pending_delay
+//   otherwise (no ticket / still accepted / rejected_*) → el.decision
+//
+// Filtering (`q.decision`, `q.status`) still keys on
+// `el.decision::riskzilla_decision` so the rejection filters keep
+// working — the derived value only affects the column the UI renders.
+// Aliased `t` is the `LEFT JOIN tickets ON t.id = el.ticket_id` in
+// the USDC path, or the `tickets t` row directly in the OZ path.
+const decisionFromTicketSql = sql`
+  CASE
+    WHEN t.id IS NULL THEN el.decision::text
+    WHEN t.status = 'cashed_out' THEN 'cashed_out'
+    WHEN t.status = 'voided' THEN 'void'
+    WHEN t.status = 'settled' AND COALESCE(t.actual_payout_micro, 0) >= t.stake_micro THEN 'won'
+    WHEN t.status = 'settled' AND COALESCE(t.actual_payout_micro, 0) > 0 THEN 'partial'
+    WHEN t.status = 'settled' THEN 'lost'
+    WHEN t.status = 'pending_delay' THEN 'pending_delay'
+    ELSE el.decision::text
+  END
+`;
+
+// Same logic for the OZ branch, where the ticket row IS the source —
+// no event-log fallback. Defaults to a literal 'accepted' for the
+// open / not-yet-settled ticket states.
+const decisionFromTicketOzSql = sql`
+  CASE
+    WHEN t.status = 'cashed_out' THEN 'cashed_out'
+    WHEN t.status = 'voided' THEN 'void'
+    WHEN t.status = 'settled' AND COALESCE(t.actual_payout_micro, 0) >= t.stake_micro THEN 'won'
+    WHEN t.status = 'settled' AND COALESCE(t.actual_payout_micro, 0) > 0 THEN 'partial'
+    WHEN t.status = 'settled' THEN 'lost'
+    WHEN t.status = 'pending_delay' THEN 'pending_delay'
+    ELSE 'accepted'
+  END
+`;
+
 const currencySchema = z
   .string()
   .transform((s) => s.toUpperCase())
@@ -234,7 +284,10 @@ async function queryEventLog(
       el.user_id::text                              AS user_id,
       u.email                                       AS user_email,
       u.nickname                                    AS user_nickname,
-      el.decision::text                             AS decision,
+      -- See decisionFromTicketSql above: collapses placement decision
+      -- and post-settlement lifecycle into one cell so old tickets stop
+      -- reading ACCEPTED after they actually settled.
+      ${decisionFromTicketSql}                      AS decision,
       el.reason_message                             AS reason_message,
       el.currency                                   AS currency,
       el.stake_micro::text                          AS stake_micro,
@@ -255,6 +308,7 @@ async function queryEventLog(
       el.created_at                                 AS created_at
     FROM riskzilla_event_log el
     LEFT JOIN users       u  ON u.id = el.user_id
+    LEFT JOIN tickets     t  ON t.id = el.ticket_id
     LEFT JOIN matches     m  ON m.id = el.match_id
     LEFT JOIN sports      s  ON s.id = el.sport_id
     LEFT JOIN tournaments tn ON tn.id = el.tournament_id
@@ -404,7 +458,7 @@ async function queryTicketsForOz(
       t.user_id::text                               AS user_id,
       u.email                                       AS user_email,
       u.nickname                                    AS user_nickname,
-      'accepted'::text                              AS decision,
+      ${decisionFromTicketOzSql}                    AS decision,
       NULL::text                                    AS reason_message,
       t.currency                                    AS currency,
       t.stake_micro::text                           AS stake_micro,
