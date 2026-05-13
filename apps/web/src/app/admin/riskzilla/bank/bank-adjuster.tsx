@@ -48,7 +48,7 @@ export function BankAdjuster({ initial: _initial }: { initial: BankStateDto }) {
           method: "PUT",
           body: JSON.stringify(body),
         });
-        setInfo(`Bank limit now ${fromMicro(BigInt(next.bankLimitMicro))} USDC`);
+        setInfo(`Bank now ${fromMicro(BigInt(next.bankLimitMicro))} USDC`);
         setAmount("");
         setMemo("");
         router.refresh();

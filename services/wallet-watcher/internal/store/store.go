@@ -317,13 +317,17 @@ UPDATE unattributed_deposits AS u
 //	UPDATE deposit_intents SET status='credited', credited_at=NOW()
 //	UPDATE wallets         SET balance_micro += amount        (USDC, currency-scoped)
 //	INSERT wallet_ledger   (deposit, ref_id=intent.id)        (apply-once)
+//	INSERT riskzilla_bank_ledger (deposit_credit, ref_id=intent.id) [USDC only]
+//	UPDATE riskzilla_bank_state SET bank_limit_micro += amount     [USDC only]
 //
-// The wallet_ledger's unique partial index on (type, ref_type, ref_id)
-// is the ultimate double-credit guard.
+// The wallet_ledger AND riskzilla_bank_ledger unique partial indexes
+// on (type, ref_type, ref_id) are the double-credit guards. The bank
+// row is gated on currency=USDC because the RiskZilla bank only
+// tracks USDC capital (OZ is demo).
 //
 // pre-conditions:
 //   - intent.AmountMicro > 0
-//   - intent.UserID exists with a USDC wallet row (created at signup)
+//   - intent.UserID exists with a wallet row for `cur` (created at signup)
 func (s *Store) CreditIntent(ctx context.Context, intent PendingIntent) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -366,11 +370,37 @@ ON CONFLICT (type, ref_type, ref_id) WHERE ref_id IS NOT NULL DO NOTHING`,
 		return fmt.Errorf("ledger deposit: %w", err)
 	}
 
+	// Bank tracks USDC capital only — real crypto arrived in the
+	// operator's account. The bank_ledger ON CONFLICT guard mirrors the
+	// wallet_ledger one so a re-run of CreditIntent (or replay across
+	// restart) is a no-op at the row level.
+	if cur == riskzillaBankCurrency {
+		if _, err := tx.Exec(ctx, `
+INSERT INTO riskzilla_bank_ledger (delta_micro, type, ref_type, ref_id, memo)
+VALUES ($1, 'deposit_credit', 'deposit_intent', $2, $3)
+ON CONFLICT (type, ref_type, ref_id) WHERE ref_id IS NOT NULL DO NOTHING`,
+			intent.AmountMicro, intent.ID, intent.TxHash); err != nil {
+			return fmt.Errorf("riskzilla bank ledger deposit_credit: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+UPDATE riskzilla_bank_state
+   SET bank_limit_micro = bank_limit_micro + $1::bigint,
+       updated_at       = NOW()
+ WHERE id = 'default'`, intent.AmountMicro); err != nil {
+			return fmt.Errorf("riskzilla bank deposit credit: %w", err)
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit credit: %w", err)
 	}
 	return nil
 }
+
+// riskzillaBankCurrency mirrors RISKZILLA_CURRENCY in the API
+// (services/api/src/lib/riskzilla/engine.ts). Only USDC moves real
+// crypto into the operator's bank; OZ is a demo currency.
+const riskzillaBankCurrency = "USDC"
 
 // IntentByID returns the PendingIntent shape regardless of current
 // status. Used by the API admin override path.

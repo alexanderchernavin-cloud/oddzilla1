@@ -24,9 +24,23 @@ import { matches, sports, tournaments } from "./catalog.js";
 import { tickets } from "./tickets.js";
 
 // ── Enums ──────────────────────────────────────────────────────────────
+// `bet_loss` / `bet_payout` / `bet_refund` are kept in the enum for
+// historical audit rows but new code stops writing them after
+// migration 0049 — bet outcomes don't move crypto, only redistribute
+// it between bettor wallets and the operator's profit pool.
+// `deposit_credit` and `withdrawal_debit` (added in migration 0048)
+// are the new cash-flow event types.
 export const riskzillaBankLedgerTypeEnum = pgEnum(
   "riskzilla_bank_ledger_type",
-  ["seed", "bet_loss", "bet_payout", "bet_refund", "manual_adjust"],
+  [
+    "seed",
+    "bet_loss",
+    "bet_payout",
+    "bet_refund",
+    "manual_adjust",
+    "deposit_credit",
+    "withdrawal_debit",
+  ],
 );
 
 export const riskzillaDecisionEnum = pgEnum("riskzilla_decision", [

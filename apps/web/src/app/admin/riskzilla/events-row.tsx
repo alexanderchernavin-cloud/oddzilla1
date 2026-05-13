@@ -59,7 +59,7 @@ const DECISION_LABEL: Record<string, string> = {
   rejected_max_payout: "MAX PAYOUT",
   rejected_match_liability: "MATCH LIAB",
   rejected_bet_factor: "BET FACTOR",
-  rejected_bank_limit: "BANK LIMIT",
+  rejected_bank_limit: "BANK",
   rejected_user_blocked: "USER BLOCKED",
   rejected_market_factor: "MARKET FACTOR",
 };

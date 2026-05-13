@@ -23,6 +23,8 @@ import {
   unattributedDeposits,
   wallets,
   walletLedger,
+  riskzillaBankLedger,
+  riskzillaBankState,
   adminAuditLog,
   users,
 } from "@oddzilla/db";
@@ -403,6 +405,32 @@ export default async function adminDepositsRoutes(app: FastifyInstance) {
           memo: body.note ?? "manual_credit",
         })
         .onConflictDoNothing();
+
+      // Bank tracks USDC capital only — real crypto arrived in the
+      // operator's account. Mirrors the wallet-watcher CreditIntent
+      // (services/wallet-watcher/internal/store/store.go) so manual
+      // and automated credits stay in sync. Idempotent on the same
+      // (type, ref_type, ref_id) unique partial index.
+      if (currency === "USDC") {
+        await tx
+          .insert(riskzillaBankLedger)
+          .values({
+            deltaMicro: amount,
+            type: "deposit_credit",
+            refType: "deposit_intent",
+            refId: row.id,
+            actorUserId: admin.id,
+            memo: body.note ?? "manual_credit",
+          })
+          .onConflictDoNothing();
+        await tx
+          .update(riskzillaBankState)
+          .set({
+            bankLimitMicro: sql`${riskzillaBankState.bankLimitMicro} + ${amount}`,
+            updatedAt: new Date(),
+          })
+          .where(eq(riskzillaBankState.id, "default"));
+      }
 
       await tx.insert(adminAuditLog).values({
         actorUserId: admin.id,

@@ -691,6 +691,7 @@ export class BetsService {
             sportId: m.sportId,
             tournamentId: m.tournamentId,
             riskTier: m.tournamentRiskTier ?? null,
+            oddsAtPlacement: Number(s.odds),
           };
         }),
       };

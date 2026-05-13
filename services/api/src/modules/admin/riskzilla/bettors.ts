@@ -268,9 +268,15 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
       won_count: number;
     }>;
 
-    // PnL by sport. Combo legs are pro-rated by leg count (same
-    // convention /admin/stats/pnl-by-day uses) so a 3-leg combo
-    // touching 2 sports doesn't double-count its stake.
+    // PnL by sport. Combo legs are pro-rated by per-leg netwin
+    // share — Σ(odds_i − 1) for legs in the sport divided by
+    // Σ(odds_j − 1) across every leg — so a 3-leg combo touching
+    // 2 sports doesn't double-count its stake, and a near-1.0 leg
+    // doesn't drag its sport's attribution up the way a flat
+    // legs-count split would. Same convention /admin/stats/pnl-by-day
+    // uses; see HumanDocs/Exhibit 2 - Multibets.xlsx. NULLIF +
+    // COALESCE falls back to a legs-count split for the degenerate
+    // "every leg at odds 1.0" case.
     const sportRows = (await app.db.execute(sql`
       WITH ticket_sport_weights AS (
         SELECT
@@ -281,7 +287,11 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
           s.id         AS sport_id,
           s.slug       AS sport_slug,
           s.name       AS sport_name,
-          COUNT(*)::numeric / SUM(COUNT(*)) OVER (PARTITION BY t.id) AS weight
+          COALESCE(
+            SUM(ts.odds_at_placement - 1)
+              / NULLIF(SUM(SUM(ts.odds_at_placement - 1)) OVER (PARTITION BY t.id), 0),
+            COUNT(*)::numeric / SUM(COUNT(*)) OVER (PARTITION BY t.id)
+          ) AS weight
           FROM tickets t
           JOIN ticket_selections ts ON ts.ticket_id = t.id
           JOIN markets mk            ON mk.id = ts.market_id

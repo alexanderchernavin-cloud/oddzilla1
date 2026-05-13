@@ -193,7 +193,7 @@ const STATUS_OPTIONS: ReadonlyArray<{ key: StatusKey; label: string }> = [
 const DECISION_OPTIONS = [
   { key: "rejected_match_liability", label: "Match liability" },
   { key: "rejected_bet_factor", label: "Bet factor" },
-  { key: "rejected_bank_limit", label: "Bank limit" },
+  { key: "rejected_bank_limit", label: "Bank" },
   { key: "rejected_max_payout", label: "Max payout" },
   { key: "rejected_min_stake", label: "Min stake" },
   { key: "rejected_market_factor", label: "Market factor" },
@@ -1014,7 +1014,7 @@ const DECISION_LABEL: Record<string, string> = {
   rejected_max_payout: "MAX PAYOUT",
   rejected_match_liability: "MATCH LIAB",
   rejected_bet_factor: "BET FACTOR",
-  rejected_bank_limit: "BANK LIMIT",
+  rejected_bank_limit: "BANK",
   rejected_user_blocked: "USER BLOCKED",
   rejected_market_factor: "MARKET FACTOR",
   won: "WON",

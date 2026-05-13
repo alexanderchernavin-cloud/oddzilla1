@@ -574,39 +574,31 @@ func derefString(p *string) string {
 // has no operator risk so its tickets skip the bank update.
 const riskzillaCurrency = "USDC"
 
-// UpdateRiskzillaBankOnSettle moves the operator bankroll in response
-// to a ticket reaching a terminal state. Mirrors the apply-once
-// invariant in SettleTicket: idempotent on a `<ticketID>:N` ref_id
-// suffix shared with wallet_ledger.
+// UpdateRiskzillaBankOnSettle decrements open_liability_micro by the
+// ticket's potential_payout in response to the ticket reaching a
+// terminal state. The ticket is no longer creating exposure.
 //
-// Money flow (operator point of view):
-//   - bet_loss   (payout == 0): bettor lost; +stake to bank.
-//   - bet_payout (payout >  0): bettor won; bank pays (stake − payout).
-//     net is negative; bank shrinks.
-//   - bet_refund (payout == stake): voided; net 0; recorded for audit.
-//
-// open_liability_micro is decremented by the ticket's potential_payout
-// regardless of outcome — the ticket is no longer creating exposure.
-//
-// NOTE: when payoutMicro > stake (the common winning case) the bank
-// limit can DROP below zero on a single big win. The DB CHECK on
-// bank_limit_micro >= 0 would reject that. To keep settlement
-// crash-safe, we clamp the bank floor at 0 on payouts and surface a
-// memo so admins can review (the operator literally went broke on
-// this ticket).
+// Note: post-0049 the bank itself (bank_limit_micro) is decoupled from
+// bet outcomes. Bet wins/losses redistribute money between bettors'
+// DB wallet rows and the operator's profit pool but never move
+// crypto in/out of the operator's account — only deposits and
+// withdrawals do. So bet_loss / bet_payout / bet_refund are no
+// longer written here and bank_limit_micro is not touched.
+// stakeMicro / payoutMicro / ledgerKind parameters are retained for
+// caller compatibility but only the audit memo uses them.
 func UpdateRiskzillaBankOnSettle(
 	ctx context.Context,
 	tx pgx.Tx,
 	ticketID, currency string,
 	stakeMicro, payoutMicro, potentialPayoutMicro int64,
-	ledgerKind string, // 'bet_loss' | 'bet_payout' | 'bet_refund'
+	ledgerKind string, // unused post-0049, kept for caller signature stability
 ) error {
+	_ = stakeMicro
+	_ = payoutMicro
+	_ = ledgerKind
 	if currency != riskzillaCurrency {
 		return nil
 	}
-	// open_liability moves once per ticket terminal event regardless of
-	// generation — re-settlement uses ReverseSettledTicket to undo, so
-	// the +/− pairs balance over a settle/rollback/re-settle cycle.
 	if potentialPayoutMicro > 0 {
 		if _, err := tx.Exec(ctx, `
 UPDATE riskzilla_bank_state
@@ -616,43 +608,23 @@ UPDATE riskzilla_bank_state
 			return fmt.Errorf("riskzilla open_liability decrement: %w", err)
 		}
 	}
-
-	net := stakeMicro - payoutMicro // positive when bank wins
-	refID, err := nextRiskzillaBankRefID(ctx, tx, ticketID, ledgerKind)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `
-INSERT INTO riskzilla_bank_ledger (delta_micro, type, ref_type, ref_id, memo)
-VALUES ($1, $2::riskzilla_bank_ledger_type, 'ticket', $3, $4)
-ON CONFLICT (type, ref_type, ref_id) WHERE ref_id IS NOT NULL DO NOTHING`,
-		net, ledgerKind, refID, fmt.Sprintf("ticket=%s", ticketID)); err != nil {
-		return fmt.Errorf("riskzilla bank_ledger insert: %w", err)
-	}
-	// Adjust bank_limit by the net delta. Floor at 0 — the operator can
-	// be temporarily underwater on a big win but the column CHECK keeps
-	// the value non-negative, so we materialise the truth as 0 and rely
-	// on the ledger for the real running total.
-	if _, err := tx.Exec(ctx, `
-UPDATE riskzilla_bank_state
-   SET bank_limit_micro = GREATEST(0, bank_limit_micro + $1::bigint),
-       updated_at = NOW()
- WHERE id = 'default'`, net); err != nil {
-		return fmt.Errorf("riskzilla bank_limit update: %w", err)
-	}
 	return nil
 }
 
-// UpdateRiskzillaBankOnReverse undoes a prior bank movement. Called from
-// ReverseSettledTicket. We re-add the open_liability the ticket was
-// previously consuming and emit a compensating ledger row keyed off the
-// reversed payout's ref_id.
+// UpdateRiskzillaBankOnReverse re-adds the open_liability a ticket
+// was previously consuming, undoing a prior settle. Post-0049 the
+// bank_limit_micro is not touched (settle no longer modifies it).
+// stakeMicro / priorPayoutMicro are retained for caller compatibility
+// but unused.
 func UpdateRiskzillaBankOnReverse(
 	ctx context.Context,
 	tx pgx.Tx,
 	ticketID, currency string,
 	stakeMicro, priorPayoutMicro, potentialPayoutMicro int64,
 ) error {
+	_ = ticketID
+	_ = stakeMicro
+	_ = priorPayoutMicro
 	if currency != riskzillaCurrency {
 		return nil
 	}
@@ -665,51 +637,7 @@ UPDATE riskzilla_bank_state
 			return fmt.Errorf("riskzilla open_liability re-add: %w", err)
 		}
 	}
-	priorNet := stakeMicro - priorPayoutMicro
-	if priorNet == 0 {
-		return nil
-	}
-	// `manual_adjust` ledger type is the only one that doesn't require
-	// the unique partial index — but we still want a stable ref_id to
-	// pair it with the original. Use ticketID + ":reverse" as the key.
-	refID := fmt.Sprintf("%s:reverse", ticketID)
-	if _, err := tx.Exec(ctx, `
-INSERT INTO riskzilla_bank_ledger (delta_micro, type, ref_type, ref_id, memo)
-VALUES ($1, 'manual_adjust', 'ticket', $2, 'reverse-settle')
-ON CONFLICT (type, ref_type, ref_id) WHERE ref_id IS NOT NULL DO NOTHING`,
-		-priorNet, refID); err != nil {
-		return fmt.Errorf("riskzilla bank_ledger reverse: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `
-UPDATE riskzilla_bank_state
-   SET bank_limit_micro = GREATEST(0, bank_limit_micro - $1::bigint),
-       updated_at = NOW()
- WHERE id = 'default'`, priorNet); err != nil {
-		return fmt.Errorf("riskzilla bank_limit reverse: %w", err)
-	}
 	return nil
-}
-
-// nextRiskzillaBankRefID returns the next ref_id for a riskzilla bank
-// ledger row. Mirrors the wallet_ledger generation-suffix convention
-// (services/settlement/internal/store/store.go nextPayoutRefID): the
-// first row uses the bare ticketID; subsequent re-settlements use
-// `<ticketID>:N` so the unique partial index doesn't drop them.
-func nextRiskzillaBankRefID(ctx context.Context, tx pgx.Tx, ticketID, ledgerKind string) (string, error) {
-	var count int
-	err := tx.QueryRow(ctx, `
-SELECT COUNT(*) FROM riskzilla_bank_ledger
- WHERE type = $1::riskzilla_bank_ledger_type
-   AND ref_type = 'ticket'
-   AND (ref_id = $2 OR ref_id LIKE $2 || ':%')`,
-		ledgerKind, ticketID).Scan(&count)
-	if err != nil {
-		return "", fmt.Errorf("count riskzilla bank rows: %w", err)
-	}
-	if count == 0 {
-		return ticketID, nil
-	}
-	return fmt.Sprintf("%s:%d", ticketID, count+1), nil
 }
 
 // SettleTicket writes the final ticket state, updates the wallet, and
