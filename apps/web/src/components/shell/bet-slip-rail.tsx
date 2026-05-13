@@ -29,6 +29,7 @@ import { I } from "@/components/ui/icons";
 import { Button } from "@/components/ui/primitives";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { useMobileDrawers } from "./mobile-drawer-context";
+import { UserControls } from "./user-controls";
 import { useWallets } from "@/lib/wallets";
 import { RailMatchPanel } from "@/components/widgets/rail-match-panel";
 import type {
@@ -60,7 +61,12 @@ const SUSPENDED_ERROR_MESSAGE = "This market is suspended. Try again in a moment
 
 type RailTab = "slip" | "history";
 
-export function BetSlipRail() {
+interface BetSlipRailProps {
+  signedIn: boolean;
+  user?: { email: string; displayName: string | null; role: string };
+}
+
+export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
   const slip = useBetSlip();
   const selections = slip.selections;
   const currency = slip.currency;
@@ -502,8 +508,13 @@ export function BetSlipRail() {
         display: "flex",
         flexDirection: "column",
         position: "sticky",
-        top: 60,
-        maxHeight: "calc(100vh - 60px)",
+        // Desktop layout removed the top-bar grid row (the user
+        // controls live in the rail header now), so the rail sticks
+        // to the very top of the viewport. On tablet + mobile the
+        // bottom-sheet @media rules in globals.css override `position`
+        // / `top` entirely.
+        top: 0,
+        maxHeight: "100vh",
         // Widget panels and long histories can exceed the viewport-bounded
         // sticky aside — let the entire rail column scroll as one. The
         // selections list inside still has its own overflow so a mid-slip
@@ -525,6 +536,16 @@ export function BetSlipRail() {
       {/* Drag handle — only visible when the rail is rendered as a
           mobile bottom sheet; CSS handles the breakpoint. */}
       <span className="oz-rail-handle" aria-hidden="true" />
+      {/*
+        User controls (theme / bell / wallet / avatar) — desktop only.
+        On tablet + mobile the rail is a bottom-sheet and the twin
+        <UserControls variant="topbar" /> in the top bar carries this
+        cluster; `.oz-rail-controls` is hidden under 1100px in
+        globals.css so the duplicate copy never reaches the DOM.
+        Padding + border are applied on `.oz-rail-controls` directly
+        so hiding the cluster also collapses the strip.
+      */}
+      <UserControls signedIn={signedIn} user={user} variant="rail" />
       <div
         style={{
           padding: "10px 16px 8px",
