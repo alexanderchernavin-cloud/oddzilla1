@@ -326,16 +326,23 @@ body {
    visible — on tablet + desktop the sidebar is docked so the logo
    anchors the rail; on mobile the sidebar slides in as a drawer and
    the same logo greets the user at the top when they open it. The
-   mobile top bar no longer carries a brand mark (the lobby header's
-   `.oz-lobby-mobile-logo` is the new home for that on /).
+   mobile top bar carries its own copy via `.oz-topbar-logo` below
+   so the hamburger row reads as a proper brand strip even before
+   the user opens the drawer.
 */
 .oz-side-logo { display: flex !important; }
 
-/* Lobby header: row of [optional logo] + [date / search column]. On
-   tablet + desktop the logo cell collapses (sidebar carries the brand)
-   and the column reflows to a single inline row of date + search. On
-   mobile the logo stretches to the column's full height and the date
-   + search stack vertically to its right. */
+/* Wordmark in the mobile top bar, rendered next to the hamburger.
+   Hidden by default — the docked sidebar's `.oz-side-logo` already
+   carries the brand mark on tablet + desktop, so the top-bar copy
+   would just be a duplicate at those breakpoints. Re-enabled inside
+   the mobile breakpoint block below. */
+.oz-topbar-logo { display: none !important; }
+
+/* Lobby header: date kicker + search input. Inline row on tablet +
+   desktop, stacked vertically on mobile so the search input gets the
+   full viewport width. The brand mark lives in the top bar (mobile)
+   or the docked sidebar (tablet / desktop), not here. */
 .oz-lobby-header {
   display: flex;
   align-items: center;
@@ -353,27 +360,7 @@ body {
   flex: 0 1 420px;
   min-width: 0;
 }
-.oz-lobby-mobile-logo { display: none; }
 @media (max-width: 719px) {
-  .oz-lobby-header { align-items: stretch; }
-  .oz-lobby-mobile-logo {
-    /* The Wordmark renders an inline <span> with explicit width/height
-       props; the rule on `> span` below overrides those so the mark
-       fills this anchor instead. `aspect-ratio` keeps width tied to
-       the rendered height (set by `align-self: stretch` against the
-       sibling column) so the mascot never stretches out of proportion. */
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    align-self: stretch;
-    aspect-ratio: 1086 / 1236;
-    flex-shrink: 0;
-    text-decoration: none;
-  }
-  .oz-lobby-mobile-logo > span {
-    width: 100% !important;
-    height: 100% !important;
-  }
   .oz-lobby-header-content {
     flex-direction: column;
     align-items: stretch;
@@ -394,7 +381,7 @@ body {
 .oz-rail-controls { display: none !important; }
 @media (min-width: 1100px) {
   /* Desktop: the top bar collapses entirely; user controls now sit
-     in the rail. Hiding the top bar removes the whole 60px grid row
+     in the rail. Hiding the top bar removes the whole 90px grid row
      because the grid template above doesn't allocate one at this
      breakpoint. */
   .oz-topbar { display: none !important; }
@@ -506,10 +493,13 @@ body {
 @media (max-width: 1099px) {
   .oz-shell {
     grid-template-columns: 240px 1fr;
-    /* Re-introduce the 60px top-bar row when the right rail collapses
+    /* Re-introduce the 90px top-bar row when the right rail collapses
        to a bottom-sheet — at that point the user controls move back
-       into the top bar (`.oz-rail-controls` is hidden below 1100px). */
-    grid-template-rows: 60px 1fr;
+       into the top bar (`.oz-rail-controls` is hidden below 1100px).
+       The row is sized to match the inline `height: 90` on `.oz-topbar`
+       in top-bar.tsx; bumping that without bumping this here would
+       cause the bar to overflow into the main grid area. */
+    grid-template-rows: 90px 1fr;
     grid-template-areas: "top top" "side main";
   }
   /* Below desktop the rail collapses into a bottom-sheet bet-slip; the
@@ -558,7 +548,7 @@ body {
      This is far more thumb-friendly than a right-edge drawer. The
      sheet insets from the persistent sidebar at tablet widths.
 
-     `height: calc(100dvh - 60px)` (vs `auto`) keeps the drawer at
+     `height: calc(100dvh - 90px)` (vs `auto`) keeps the drawer at
      full available height whenever it's open — that gives the
      selections list room to actually claim leftover vertical space
      via flex:1, instead of being pinned to its natural content
@@ -570,8 +560,8 @@ body {
     bottom: 0;
     top: auto !important;
     width: auto !important;
-    height: calc(100dvh - 60px) !important;
-    max-height: calc(100dvh - 60px) !important;
+    height: calc(100dvh - 90px) !important;
+    max-height: calc(100dvh - 90px) !important;
     z-index: 60;
     background: var(--bg);
     border-left: 0 !important;
@@ -620,11 +610,11 @@ body {
 @media (max-width: 719px) {
   .oz-shell {
     grid-template-columns: 1fr;
-    grid-template-rows: 60px 1fr;
+    grid-template-rows: 90px 1fr;
     grid-template-areas: "top" "main";
   }
   .oz-topbar {
-    height: 60px !important;
+    height: 90px !important;
     /* The top bar is grid-area: top — without a relaxed min-width its
        min-content (Wordmark + Wallet pill + icon buttons + gaps) would
        force the 1fr column wider than the viewport, pulling every
@@ -640,10 +630,10 @@ body {
   }
   .oz-side {
     position: fixed !important;
-    top: 60px !important;
+    top: 90px !important;
     left: 0 !important;
     width: min(280px, 82vw) !important;
-    height: calc(100dvh - 60px) !important;
+    height: calc(100dvh - 90px) !important;
     z-index: 60;
     background: var(--bg);
     transform: translateX(-100%);
@@ -652,10 +642,14 @@ body {
   }
   .oz-shell[data-sidebar-open="true"] .oz-side { transform: translateX(0); }
   .oz-rail {
-    height: calc(100dvh - 96px) !important;
-    max-height: calc(100dvh - 96px) !important;
+    /* Same 36px breathing room above the bottom-sheet as the tablet
+       block above (60→96 there, 90→126 here) so a sliver of the
+       page peeks above the open slip on a phone. */
+    height: calc(100dvh - 126px) !important;
+    max-height: calc(100dvh - 126px) !important;
   }
   .oz-topbar-toggle { display: inline-flex !important; }
+  .oz-topbar-logo { display: inline-flex !important; }
   .oz-topbar-bell { display: none !important; }
   /* Theme toggle moves into the sidebar drawer on mobile so the top
      bar has room for the wallet pill + avatar on a 360-414px phone.

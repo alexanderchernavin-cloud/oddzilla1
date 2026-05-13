@@ -1,6 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { I } from "@/components/ui/icons";
+import { Wordmark } from "@/components/ui/monogram";
 import { useMobileDrawers } from "./mobile-drawer-context";
 import { UserControls } from "./user-controls";
 
@@ -35,7 +37,7 @@ export function TopBar({ signedIn, user }: TopBarProps) {
         alignItems: "center",
         gap: 12,
         padding: "0 clamp(12px, 3vw, 24px)",
-        height: 60,
+        height: 90,
         borderBottom: "1px solid var(--hairline)",
         background: "color-mix(in oklab, var(--bg) 80%, transparent)",
         backdropFilter: "blur(12px)",
@@ -45,22 +47,36 @@ export function TopBar({ signedIn, user }: TopBarProps) {
       }}
     >
       {/*
-        Hamburger — mobile only. Bumped to a 44px hit target (Apple's
-        recommended minimum, slightly above Material's 40dp) with an
-        18→22px icon so the visual weight matches. The wordmark used to
-        live to the right of this button; it moved into the lobby
-        header's left column on mobile (see `oz-lobby-mobile-logo` in
-        globals.css) and the sidebar drawer header on tablet/desktop.
+        Hamburger — mobile only. 66px hit target (1.5× the prior 44px
+        baseline) so the whole row reads as a dedicated mobile chrome
+        strip; the 33px Grid icon scales with it. The wordmark sits to
+        the right of this button on mobile via `.oz-topbar-logo`
+        (hidden on tablet, where the docked sidebar already carries
+        the brand mark).
       */}
       <button
         type="button"
         onClick={toggleSidebar}
         className="oz-topbar-toggle"
-        style={{ ...iconBtn, width: 44, height: 44, display: undefined, marginLeft: -10 }}
+        style={{ ...iconBtn, width: 66, height: 66, display: undefined, marginLeft: -10 }}
         aria-label="Open navigation"
       >
-        <I.Grid size={22} />
+        <I.Grid size={33} />
       </button>
+
+      <Link
+        href="/"
+        className="oz-topbar-logo"
+        aria-label="Oddzilla home"
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          textDecoration: "none",
+          flexShrink: 0,
+        }}
+      >
+        <Wordmark size={60} priority />
+      </Link>
 
       <div style={{ flex: 1 }} />
 
