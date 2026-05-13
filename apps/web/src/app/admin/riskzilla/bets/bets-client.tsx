@@ -10,7 +10,7 @@
 // row shape (per-leg selections, match/sport/tournament/risk_tier
 // metadata, decision + reason).
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { fromMicro, toMicro } from "@oddzilla/types/money";
@@ -18,6 +18,148 @@ import { useRiskzillaCurrency } from "../currency-switch";
 import type { EventDto, EventSelectionDto } from "../events-row";
 
 const PAGE_SIZE = 100;
+
+// ── Column layout ──────────────────────────────────────────────────────
+// The bets table carries long-text columns (Tournament / Match / Market
+// / Selection) that push the right side off-screen on most CS2 + LoL
+// rows. We give every column an explicit pixel width, persist user
+// overrides + visibility to localStorage, and render with
+// tableLayout: fixed + a <colgroup> so widths actually stick (auto
+// table layout silently ignores explicit col widths when the content
+// disagrees). A small drag handle on each header's right edge resizes
+// the column; the Columns button opens a popover to hide/show columns
+// and reset to defaults.
+
+type ColumnKey =
+  | "decision"
+  | "createdAt"
+  | "user"
+  | "stake"
+  | "potentialPayout"
+  | "riskTier"
+  | "sport"
+  | "tournament"
+  | "match"
+  | "market"
+  | "selection"
+  | "detail";
+
+interface ColumnDef {
+  key: ColumnKey;
+  label: string;
+  settingsLabel?: string;
+  defaultWidth: number;
+  minWidth: number;
+  align?: "right";
+  sortable?: boolean;
+}
+
+const COLUMN_DEFS: ColumnDef[] = [
+  { key: "decision", label: "Status", defaultWidth: 110, minWidth: 80, sortable: true },
+  { key: "createdAt", label: "Time", defaultWidth: 100, minWidth: 80, sortable: true },
+  { key: "user", label: "User", defaultWidth: 130, minWidth: 80 },
+  { key: "stake", label: "Stake", defaultWidth: 100, minWidth: 70, align: "right", sortable: true },
+  { key: "potentialPayout", label: "Payout", defaultWidth: 100, minWidth: 70, align: "right", sortable: true },
+  { key: "riskTier", label: "Tier", defaultWidth: 70, minWidth: 50, align: "right", sortable: true },
+  { key: "sport", label: "Sport", defaultWidth: 90, minWidth: 60 },
+  { key: "tournament", label: "Tournament", defaultWidth: 180, minWidth: 100 },
+  { key: "match", label: "Match", defaultWidth: 180, minWidth: 100 },
+  { key: "market", label: "Market", defaultWidth: 160, minWidth: 100 },
+  { key: "selection", label: "Selection", defaultWidth: 160, minWidth: 100 },
+  { key: "detail", label: "", settingsLabel: "Detail toggle", defaultWidth: 70, minWidth: 60 },
+];
+
+const COLUMN_KEYS = COLUMN_DEFS.map((c) => c.key);
+const COLUMN_DEF_BY_KEY: Record<ColumnKey, ColumnDef> = COLUMN_DEFS.reduce(
+  (acc, c) => {
+    acc[c.key] = c;
+    return acc;
+  },
+  {} as Record<ColumnKey, ColumnDef>,
+);
+
+const COLUMN_STORAGE_KEY = "oz:admin:riskzilla:bets:columns:v1";
+
+interface ColumnLayoutState {
+  widths: Record<ColumnKey, number>;
+  visible: Record<ColumnKey, boolean>;
+}
+
+function defaultColumnLayout(): ColumnLayoutState {
+  const widths = {} as Record<ColumnKey, number>;
+  const visible = {} as Record<ColumnKey, boolean>;
+  for (const c of COLUMN_DEFS) {
+    widths[c.key] = c.defaultWidth;
+    visible[c.key] = true;
+  }
+  return { widths, visible };
+}
+
+function mergeColumnLayout(stored: unknown): ColumnLayoutState {
+  const base = defaultColumnLayout();
+  if (!stored || typeof stored !== "object") return base;
+  const s = stored as Partial<ColumnLayoutState>;
+  for (const c of COLUMN_DEFS) {
+    const w = s.widths?.[c.key];
+    if (typeof w === "number" && Number.isFinite(w) && w >= c.minWidth) {
+      base.widths[c.key] = Math.max(c.minWidth, Math.min(800, Math.round(w)));
+    }
+    const v = s.visible?.[c.key];
+    if (typeof v === "boolean") {
+      base.visible[c.key] = v;
+    }
+  }
+  return base;
+}
+
+function useBetsColumnLayout() {
+  const [state, setState] = useState<ColumnLayoutState>(defaultColumnLayout);
+  const [hydrated, setHydrated] = useState(false);
+
+  // Hydrate from localStorage post-mount so SSR + first client render
+  // agree on the default layout (no hydration mismatch); persisted
+  // overrides then snap in.
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(COLUMN_STORAGE_KEY);
+      if (raw) {
+        setState(mergeColumnLayout(JSON.parse(raw)));
+      }
+    } catch {
+      // Bad JSON / disabled storage — fall back to defaults.
+    }
+    setHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    try {
+      window.localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(state));
+    } catch {
+      // Quota or disabled storage — silently degrade.
+    }
+  }, [hydrated, state]);
+
+  const setWidth = useCallback((key: ColumnKey, width: number) => {
+    setState((prev) => {
+      const def = COLUMN_DEF_BY_KEY[key];
+      const clamped = Math.max(def.minWidth, Math.min(800, Math.round(width)));
+      if (prev.widths[key] === clamped) return prev;
+      return { ...prev, widths: { ...prev.widths, [key]: clamped } };
+    });
+  }, []);
+
+  const setVisible = useCallback((key: ColumnKey, vis: boolean) => {
+    setState((prev) => ({
+      ...prev,
+      visible: { ...prev.visible, [key]: vis },
+    }));
+  }, []);
+
+  const reset = useCallback(() => setState(defaultColumnLayout()), []);
+
+  return { state, setWidth, setVisible, reset };
+}
 
 type SortKey =
   | "createdAt"
@@ -92,6 +234,7 @@ export function BetsClient() {
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [sports, setSports] = useState<SportOption[]>([]);
+  const columnLayout = useBetsColumnLayout();
 
   useEffect(() => {
     let cancelled = false;
@@ -344,6 +487,7 @@ export function BetsClient() {
           endIndex={endIndex}
           currency={currency}
         />
+        <ColumnSettings layout={columnLayout} />
       </div>
 
       {stakeError && <div style={errorStyle}>{stakeError}</div>}
@@ -365,6 +509,7 @@ export function BetsClient() {
         sortBy={sortBy}
         sortDir={sortDir}
         onSort={onSort}
+        layout={columnLayout}
       />
 
       {total > 0 && (
@@ -428,32 +573,12 @@ const totalLineStyle: React.CSSProperties = {
 
 // ── Table ──────────────────────────────────────────────────────────────
 
-// Column order matters: long-text cells (tournament / match / market /
-// selection) push the right-side numeric columns off-screen on rows
-// with verbose tournament + market names — which is most CS2 / LoL
-// rows once Map / Way substitution lengthens the market label. Money
-// columns come right after User so Stake / Payout stay visible no
-// matter how wide the prose columns end up. Tier closes out the
-// numeric block; details toggle is last.
-const COLUMNS: Array<{
-  key: SortKey | "user" | "tournament" | "sport" | "match" | "market" | "selection" | "detail";
-  label: string;
-  align?: "right";
-  sortable?: boolean;
-}> = [
-  { key: "decision", label: "Status", sortable: true },
-  { key: "createdAt", label: "Time", sortable: true },
-  { key: "user", label: "User" },
-  { key: "stake", label: "Stake", align: "right", sortable: true },
-  { key: "potentialPayout", label: "Payout", align: "right", sortable: true },
-  { key: "riskTier", label: "Tier", align: "right", sortable: true },
-  { key: "sport", label: "Sport" },
-  { key: "tournament", label: "Tournament" },
-  { key: "match", label: "Match" },
-  { key: "market", label: "Market" },
-  { key: "selection", label: "Selection" },
-  { key: "detail", label: "" },
-];
+interface BetsColumnLayout {
+  state: ColumnLayoutState;
+  setWidth: (key: ColumnKey, width: number) => void;
+  setVisible: (key: ColumnKey, vis: boolean) => void;
+  reset: () => void;
+}
 
 function BetsTable({
   rows,
@@ -461,26 +586,66 @@ function BetsTable({
   sortBy,
   sortDir,
   onSort,
+  layout,
 }: {
   rows: EventDto[];
   loading: boolean;
   sortBy: SortKey;
   sortDir: SortDir;
   onSort: (col: SortKey) => void;
+  layout: BetsColumnLayout;
 }) {
+  const visibleCols = useMemo(
+    () => COLUMN_DEFS.filter((c) => layout.state.visible[c.key] !== false),
+    [layout.state.visible],
+  );
+  const tableWidth = useMemo(
+    () => visibleCols.reduce((sum, c) => sum + layout.state.widths[c.key], 0),
+    [visibleCols, layout.state.widths],
+  );
+
+  // No visible columns is a degenerate state — render an empty hint
+  // rather than a 0-wide table. Settings popover stays reachable from
+  // the toolbar so the user can re-enable a column.
+  if (visibleCols.length === 0) {
+    return (
+      <div
+        style={{
+          padding: "20px 8px",
+          fontSize: 13,
+          color: "var(--color-fg-muted)",
+          textAlign: "center",
+          border: "1px dashed var(--color-border)",
+          borderRadius: 6,
+        }}
+      >
+        All columns are hidden. Open the Columns menu above to re-enable some.
+      </div>
+    );
+  }
+
   return (
     <div style={{ overflowX: "auto" }}>
       <table
         style={{
-          width: "100%",
+          // Explicit width = sum of visible cols. With tableLayout:
+          // fixed + a colgroup this honors the user's chosen widths
+          // exactly; horizontal scroll on the wrapper kicks in when
+          // the sum exceeds the viewport.
+          width: tableWidth,
           borderCollapse: "collapse",
           fontSize: 12.5,
-          tableLayout: "auto",
+          tableLayout: "fixed",
         }}
       >
+        <colgroup>
+          {visibleCols.map((c) => (
+            <col key={c.key} style={{ width: layout.state.widths[c.key] }} />
+          ))}
+        </colgroup>
         <thead>
           <tr>
-            {COLUMNS.map((c) => (
+            {visibleCols.map((c, i) => (
               <th key={c.key} style={thStyle(c.align)}>
                 {c.sortable ? (
                   <SortButton
@@ -492,7 +657,20 @@ function BetsTable({
                     align={c.align}
                   />
                 ) : (
-                  c.label
+                  <span style={{ display: "inline-block" }}>{c.label}</span>
+                )}
+                {/* Last column has no resize handle — there's nothing
+                    to its right to resize against, and a handle there
+                    would feel like the table itself is draggable. */}
+                {i < visibleCols.length - 1 && (
+                  <ResizeHandle
+                    onResize={(delta) =>
+                      layout.setWidth(
+                        c.key,
+                        layout.state.widths[c.key] + delta,
+                      )
+                    }
+                  />
                 )}
               </th>
             ))}
@@ -502,7 +680,7 @@ function BetsTable({
           {rows.length === 0 && !loading ? (
             <tr>
               <td
-                colSpan={COLUMNS.length}
+                colSpan={visibleCols.length}
                 style={{
                   padding: "16px 8px",
                   fontSize: 13,
@@ -514,7 +692,13 @@ function BetsTable({
               </td>
             </tr>
           ) : (
-            rows.map((r) => <BetRow key={r.id} row={r} />)
+            rows.map((r) => (
+              <BetRow
+                key={r.id}
+                row={r}
+                visibleCols={visibleCols}
+              />
+            ))
           )}
         </tbody>
       </table>
@@ -572,7 +756,7 @@ function SortButton({
 function thStyle(align?: "right"): React.CSSProperties {
   return {
     textAlign: align ?? "left",
-    padding: "8px 8px 6px",
+    padding: "8px 14px 6px 8px",
     borderBottom: "1px solid var(--color-border)",
     fontWeight: 500,
     fontSize: 10,
@@ -581,10 +765,14 @@ function thStyle(align?: "right"): React.CSSProperties {
     color: "var(--color-fg-muted)",
     fontFamily: "var(--font-mono, monospace)",
     whiteSpace: "nowrap",
+    position: "relative",
+    overflow: "hidden",
   };
 }
 
 function tdStyle(align?: "right"): React.CSSProperties {
+  // Width is enforced by the table's <colgroup>; cells just need
+  // ellipsis truncation when content overflows the assigned column.
   return {
     padding: "8px 8px",
     borderBottom: "1px solid var(--color-border)",
@@ -593,8 +781,205 @@ function tdStyle(align?: "right"): React.CSSProperties {
     whiteSpace: "nowrap",
     overflow: "hidden",
     textOverflow: "ellipsis",
-    maxWidth: 220,
   };
+}
+
+function ResizeHandle({ onResize }: { onResize: (delta: number) => void }) {
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    let lastX = e.clientX;
+    const prevCursor = document.body.style.cursor;
+    const prevSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    const onMove = (ev: PointerEvent) => {
+      const delta = ev.clientX - lastX;
+      lastX = ev.clientX;
+      if (delta !== 0) onResize(delta);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.style.cursor = prevCursor;
+      document.body.style.userSelect = prevSelect;
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+  return (
+    <div
+      onPointerDown={onPointerDown}
+      onClick={(e) => e.stopPropagation()}
+      title="Drag to resize column"
+      style={{
+        position: "absolute",
+        top: 0,
+        right: 0,
+        bottom: 0,
+        width: 8,
+        cursor: "col-resize",
+        touchAction: "none",
+        userSelect: "none",
+      }}
+    />
+  );
+}
+
+function ColumnSettings({ layout }: { layout: BetsColumnLayout }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const visibleCount = COLUMN_KEYS.reduce(
+    (n, k) => n + (layout.state.visible[k] ? 1 : 0),
+    0,
+  );
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        title="Show / hide columns and reset widths"
+        style={{
+          height: 32,
+          padding: "0 12px",
+          border: "1px solid var(--color-border)",
+          background: open ? "var(--color-bg-subtle)" : "var(--color-bg)",
+          color: "var(--color-fg)",
+          borderRadius: 6,
+          fontSize: 12,
+          cursor: "pointer",
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 6,
+        }}
+      >
+        <span>Columns</span>
+        <span
+          className="mono"
+          style={{
+            fontSize: 10,
+            color: "var(--color-fg-muted)",
+            letterSpacing: "0.06em",
+          }}
+        >
+          {visibleCount}/{COLUMN_KEYS.length}
+        </span>
+      </button>
+      {open && (
+        <div
+          role="menu"
+          style={{
+            position: "absolute",
+            top: "calc(100% + 6px)",
+            right: 0,
+            minWidth: 220,
+            background: "var(--color-bg)",
+            border: "1px solid var(--color-border)",
+            borderRadius: 8,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
+            padding: 8,
+            zIndex: 30,
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+          }}
+        >
+          <div
+            className="mono"
+            style={{
+              fontSize: 10,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: "var(--color-fg-muted)",
+              padding: "4px 6px 6px",
+            }}
+          >
+            Visible columns
+          </div>
+          {COLUMN_DEFS.map((c) => {
+            const checked = layout.state.visible[c.key] !== false;
+            return (
+              <label
+                key={c.key}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "4px 6px",
+                  fontSize: 13,
+                  color: "var(--color-fg)",
+                  cursor: "pointer",
+                  borderRadius: 4,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={(e) => layout.setVisible(c.key, e.target.checked)}
+                />
+                <span>{c.settingsLabel ?? c.label}</span>
+              </label>
+            );
+          })}
+          <div
+            style={{
+              borderTop: "1px solid var(--color-border)",
+              marginTop: 6,
+              paddingTop: 6,
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 8,
+            }}
+          >
+            <span
+              style={{
+                fontSize: 11,
+                color: "var(--color-fg-muted)",
+              }}
+            >
+              Drag column edges to resize
+            </span>
+            <button
+              type="button"
+              onClick={layout.reset}
+              style={{
+                background: "transparent",
+                border: "1px solid var(--color-border)",
+                color: "var(--color-fg)",
+                borderRadius: 4,
+                padding: "4px 10px",
+                fontSize: 11,
+                cursor: "pointer",
+              }}
+            >
+              Reset
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // Status pill colour + label for every state the API may surface.
@@ -640,7 +1025,13 @@ const DECISION_LABEL: Record<string, string> = {
   pending_delay: "DELAYED",
 };
 
-function BetRow({ row }: { row: EventDto }) {
+function BetRow({
+  row,
+  visibleCols,
+}: {
+  row: EventDto;
+  visibleCols: ColumnDef[];
+}) {
   const [expanded, setExpanded] = useState(false);
   const ts = new Date(row.createdAt);
   const stake = fromMicro(BigInt(row.stakeMicro));
@@ -659,120 +1050,148 @@ function BetRow({ row }: { row: EventDto }) {
     ? `${firstLeg.outcomeName ?? firstLeg.outcomeId} @ ${Number(firstLeg.oddsAtPlacement).toFixed(2)}`
     : "—";
 
+  const cells: Record<ColumnKey, React.ReactNode> = {
+    decision: (
+      <td style={{ ...tdStyle(), color, fontWeight: 600 }}>
+        <span
+          className="mono"
+          style={{
+            fontSize: 11,
+            letterSpacing: "0.06em",
+          }}
+        >
+          {label}
+        </span>
+      </td>
+    ),
+    createdAt: (
+      <td
+        style={{
+          ...tdStyle(),
+          fontVariantNumeric: "tabular-nums",
+          color: "var(--color-fg-muted)",
+          fontSize: 11,
+        }}
+        title={ts.toLocaleString()}
+      >
+        {ts.toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        })}
+        <br />
+        <span style={{ fontSize: 10 }}>{ts.toLocaleDateString()}</span>
+      </td>
+    ),
+    user: (
+      <td style={tdStyle()}>
+        <Link
+          href={`/admin/riskzilla/bettors/${row.userId}`}
+          style={{
+            color: "var(--color-fg)",
+            textDecoration: "none",
+          }}
+          title={row.userEmail ?? row.userId}
+        >
+          {row.userNickname ?? row.userEmail ?? row.userId.slice(0, 8)}
+        </Link>
+      </td>
+    ),
+    stake: (
+      <td
+        style={{
+          ...tdStyle("right"),
+          fontVariantNumeric: "tabular-nums",
+        }}
+      >
+        {stake} {row.currency}
+      </td>
+    ),
+    potentialPayout: (
+      <td
+        style={{
+          ...tdStyle("right"),
+          fontVariantNumeric: "tabular-nums",
+        }}
+      >
+        {payout} {row.currency}
+      </td>
+    ),
+    riskTier: (
+      <td
+        style={{
+          ...tdStyle("right"),
+          fontVariantNumeric: "tabular-nums",
+        }}
+      >
+        {row.riskTier ?? "—"}
+      </td>
+    ),
+    sport: <td style={tdStyle()}>{row.sportSlug ?? "—"}</td>,
+    tournament: (
+      <td style={tdStyle()} title={row.tournamentName ?? undefined}>
+        {row.tournamentName ?? "—"}
+      </td>
+    ),
+    match: (
+      <td style={tdStyle()} title={row.matchLabel ?? undefined}>
+        {row.matchLabel ?? "—"}
+      </td>
+    ),
+    market: (
+      <td style={tdStyle()} title={marketCell}>
+        {marketCell}
+        {extraLegs > 0 && (
+          <span
+            style={{
+              color: "var(--color-fg-muted)",
+              marginLeft: 4,
+              fontSize: 11,
+            }}
+          >
+            +{extraLegs}
+          </span>
+        )}
+      </td>
+    ),
+    selection: (
+      <td style={tdStyle()} title={selectionCell}>
+        {selectionCell}
+      </td>
+    ),
+    detail: (
+      <td style={{ ...tdStyle("right") }}>
+        <button
+          type="button"
+          onClick={() => setExpanded((e) => !e)}
+          style={{
+            height: 24,
+            padding: "0 8px",
+            background: "transparent",
+            border: "1px solid var(--color-border)",
+            borderRadius: 4,
+            fontSize: 11,
+            color: "var(--color-fg-muted)",
+            cursor: "pointer",
+          }}
+        >
+          {expanded ? "Hide" : "Detail"}
+        </button>
+      </td>
+    ),
+  };
+
   return (
     <>
       <tr>
-        <td style={{ ...tdStyle(), color, fontWeight: 600 }}>
-          <span
-            className="mono"
-            style={{
-              fontSize: 11,
-              letterSpacing: "0.06em",
-            }}
-          >
-            {label}
-          </span>
-        </td>
-        <td
-          style={{
-            ...tdStyle(),
-            fontVariantNumeric: "tabular-nums",
-            color: "var(--color-fg-muted)",
-            fontSize: 11,
-          }}
-          title={ts.toLocaleString()}
-        >
-          {ts.toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-            second: "2-digit",
-          })}
-          <br />
-          <span style={{ fontSize: 10 }}>{ts.toLocaleDateString()}</span>
-        </td>
-        <td style={tdStyle()}>
-          <Link
-            href={`/admin/riskzilla/bettors/${row.userId}`}
-            style={{
-              color: "var(--color-fg)",
-              textDecoration: "none",
-            }}
-            title={row.userEmail ?? row.userId}
-          >
-            {row.userNickname ?? row.userEmail ?? row.userId.slice(0, 8)}
-          </Link>
-        </td>
-        <td
-          style={{
-            ...tdStyle("right"),
-            fontVariantNumeric: "tabular-nums",
-          }}
-        >
-          {stake} {row.currency}
-        </td>
-        <td
-          style={{
-            ...tdStyle("right"),
-            fontVariantNumeric: "tabular-nums",
-          }}
-        >
-          {payout} {row.currency}
-        </td>
-        <td
-          style={{
-            ...tdStyle("right"),
-            fontVariantNumeric: "tabular-nums",
-          }}
-        >
-          {row.riskTier ?? "—"}
-        </td>
-        <td style={tdStyle()}>{row.sportSlug ?? "—"}</td>
-        <td style={tdStyle()} title={row.tournamentName ?? undefined}>
-          {row.tournamentName ?? "—"}
-        </td>
-        <td style={tdStyle()} title={row.matchLabel ?? undefined}>
-          {row.matchLabel ?? "—"}
-        </td>
-        <td style={tdStyle()} title={marketCell}>
-          {marketCell}
-          {extraLegs > 0 && (
-            <span
-              style={{
-                color: "var(--color-fg-muted)",
-                marginLeft: 4,
-                fontSize: 11,
-              }}
-            >
-              +{extraLegs}
-            </span>
-          )}
-        </td>
-        <td style={tdStyle()} title={selectionCell}>
-          {selectionCell}
-        </td>
-        <td style={{ ...tdStyle("right") }}>
-          <button
-            type="button"
-            onClick={() => setExpanded((e) => !e)}
-            style={{
-              height: 24,
-              padding: "0 8px",
-              background: "transparent",
-              border: "1px solid var(--color-border)",
-              borderRadius: 4,
-              fontSize: 11,
-              color: "var(--color-fg-muted)",
-              cursor: "pointer",
-            }}
-          >
-            {expanded ? "Hide" : "Detail"}
-          </button>
-        </td>
+        {visibleCols.map((c) => (
+          <Cell key={c.key}>{cells[c.key]}</Cell>
+        ))}
       </tr>
       {expanded && (
         <tr>
           <td
-            colSpan={COLUMNS.length}
+            colSpan={visibleCols.length}
             style={{
               padding: "10px 12px",
               background: "var(--color-bg-subtle)",
@@ -785,6 +1204,13 @@ function BetRow({ row }: { row: EventDto }) {
       )}
     </>
   );
+}
+
+// Each cell renders as <td> already; this passthrough keeps key semantics
+// at the row level while letting each cell carry its own props (align,
+// color, monospace, etc).
+function Cell({ children }: { children: React.ReactNode }) {
+  return <>{children}</>;
 }
 
 function DetailPanel({ row }: { row: EventDto }) {
