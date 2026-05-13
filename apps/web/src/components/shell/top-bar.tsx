@@ -1,7 +1,5 @@
 "use client";
 
-import Link from "next/link";
-import { Wordmark } from "@/components/ui/monogram";
 import { I } from "@/components/ui/icons";
 import { useMobileDrawers } from "./mobile-drawer-context";
 import { UserControls } from "./user-controls";
@@ -46,36 +44,23 @@ export function TopBar({ signedIn, user }: TopBarProps) {
         zIndex: 50,
       }}
     >
-      {/* Hamburger — mobile only */}
+      {/*
+        Hamburger — mobile only. Bumped to a 44px hit target (Apple's
+        recommended minimum, slightly above Material's 40dp) with an
+        18→22px icon so the visual weight matches. The wordmark used to
+        live to the right of this button; it moved into the lobby
+        header's left column on mobile (see `oz-lobby-mobile-logo` in
+        globals.css) and the sidebar drawer header on tablet/desktop.
+      */}
       <button
         type="button"
         onClick={toggleSidebar}
         className="oz-topbar-toggle"
-        style={{ ...iconBtn, display: undefined, marginLeft: -8 }}
+        style={{ ...iconBtn, width: 44, height: 44, display: undefined, marginLeft: -10 }}
         aria-label="Open navigation"
       >
-        <I.Grid size={18} />
+        <I.Grid size={22} />
       </button>
-
-      {/*
-        Brand mark — visible only on mobile (below 720px) where the
-        sidebar is a drawer. Tablet and desktop hide this and show the
-        full-size `.oz-side-logo` at the top of the sidebar instead;
-        see the @media rule in globals.css.
-      */}
-      <Link
-        href="/"
-        className="oz-topbar-wordmark"
-        style={{
-          textDecoration: "none",
-          display: "inline-flex",
-          color: "var(--fg)",
-          flexShrink: 0,
-          minWidth: 0,
-        }}
-      >
-        <Wordmark size={36} priority />
-      </Link>
 
       <div style={{ flex: 1 }} />
 

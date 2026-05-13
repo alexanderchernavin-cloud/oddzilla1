@@ -10,6 +10,7 @@ import { SportGlyph } from "@/components/ui/sport-glyph";
 import { ThreeFoldCards } from "@/components/lobby/three-fold-cards";
 import { TodayLabel } from "@/components/lobby/today-label";
 import { TopBarSearch } from "@/components/shell/top-bar-search";
+import { Wordmark } from "@/components/ui/monogram";
 import { buildThreeFoldSuggestions } from "@/lib/three-fold-builder";
 import {
   orderMatchesBySport,
@@ -62,29 +63,30 @@ export default async function HomePage() {
       }}
     >
       {/*
-        Lobby header: date kicker on the left, global search input on
-        the right. The search lived in the top bar before this; folding
-        it into the page header keeps the top bar slim and gives the
-        input room to breathe on desktop. On narrow viewports the row
-        wraps so the search drops below the date instead of squeezing
-        it off-screen — see `.oz-lobby-header` in globals.css.
+        Lobby header. Layout flips at the mobile breakpoint:
+          • Desktop / tablet (≥720px): no logo here (the sidebar carries
+            the brand). Date kicker on the left, search input on the
+            right of the same row.
+          • Mobile (<720px): the brand mark moves out of the top bar
+            and lives here on the left, stretched to the column's
+            full height (date + search stacked) so the three elements
+            line up flush.
+        CSS rules in globals.css key off `.oz-lobby-header` and
+        `.oz-lobby-mobile-logo`.
       */}
-      <header
-        className="oz-lobby-header"
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 16,
-          flexWrap: "wrap",
-        }}
-      >
-        <TodayLabel />
-        <div
-          className="oz-lobby-search"
-          style={{ flex: "0 1 420px", minWidth: 0 }}
+      <header className="oz-lobby-header">
+        <a
+          href="/"
+          className="oz-lobby-mobile-logo"
+          aria-label="Oddzilla home"
         >
-          <TopBarSearch />
+          <Wordmark size={80} priority />
+        </a>
+        <div className="oz-lobby-header-content">
+          <TodayLabel />
+          <div className="oz-lobby-search">
+            <TopBarSearch />
+          </div>
         </div>
       </header>
 

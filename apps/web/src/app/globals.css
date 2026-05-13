@@ -322,16 +322,65 @@ body {
    on desktop otherwise. Re-shown under the mobile breakpoint below. */
 .oz-sidebar-theme { display: none !important; }
 
-/* Brand mark in the sidebar header (size=132 Wordmark). Visible
-   whenever the sidebar is docked (tablet + desktop, ≥720px); hidden
-   on mobile where the sidebar is a drawer and the small `.oz-topbar-
-   wordmark` carries the brand in the always-visible top bar. The
-   reverse rule for `.oz-topbar-wordmark` lives at the bottom of this
-   file. */
-.oz-side-logo { display: none; }
-@media (min-width: 720px) {
-  .oz-side-logo { display: flex !important; }
-  .oz-topbar-wordmark { display: none !important; }
+/* Brand mark in the sidebar header (size=132 Wordmark). Always
+   visible — on tablet + desktop the sidebar is docked so the logo
+   anchors the rail; on mobile the sidebar slides in as a drawer and
+   the same logo greets the user at the top when they open it. The
+   mobile top bar no longer carries a brand mark (the lobby header's
+   `.oz-lobby-mobile-logo` is the new home for that on /).
+*/
+.oz-side-logo { display: flex !important; }
+
+/* Lobby header: row of [optional logo] + [date / search column]. On
+   tablet + desktop the logo cell collapses (sidebar carries the brand)
+   and the column reflows to a single inline row of date + search. On
+   mobile the logo stretches to the column's full height and the date
+   + search stack vertically to its right. */
+.oz-lobby-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.oz-lobby-header-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.oz-lobby-search {
+  flex: 0 1 420px;
+  min-width: 0;
+}
+.oz-lobby-mobile-logo { display: none; }
+@media (max-width: 719px) {
+  .oz-lobby-header { align-items: stretch; }
+  .oz-lobby-mobile-logo {
+    /* The Wordmark renders an inline <span> with explicit width/height
+       props; the rule on `> span` below overrides those so the mark
+       fills this anchor instead. `aspect-ratio` keeps width tied to
+       the rendered height (set by `align-self: stretch` against the
+       sibling column) so the mascot never stretches out of proportion. */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    align-self: stretch;
+    aspect-ratio: 1086 / 1236;
+    flex-shrink: 0;
+    text-decoration: none;
+  }
+  .oz-lobby-mobile-logo > span {
+    width: 100% !important;
+    height: 100% !important;
+  }
+  .oz-lobby-header-content {
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: center;
+    gap: 12px;
+  }
+  .oz-lobby-search { flex: 0 1 auto; }
 }
 
 /* Twin top-right user-controls cluster (theme / bell / wallet / avatar).
@@ -566,26 +615,6 @@ body {
   .oz-topbar-kbd { display: none; }
   .oz-topbar-wallet-unit { display: none; }
   .oz-topbar-wallet-deposit { display: none; }
-}
-
-/* Top-bar shrinks the brand mark below tablet so the wallet pill +
-   theme toggle + avatar all fit on a 360-414px phone viewport. The new
-   mascot's source aspect is 2616 / 1632 ≈ 1.60, so the explicit
-   width/height pairs below preserve it without relying on aspect-ratio
-   (which interacts awkwardly with the inline width/height on the
-   wrapper span). The image fills 100% of the span via its own inline
-   style, so resizing the span resizes the raster. */
-@media (max-width: 719px) {
-  .oz-topbar-wordmark > span {
-    width: 51px !important;
-    height: 32px !important;
-  }
-}
-@media (max-width: 399px) {
-  .oz-topbar-wordmark > span {
-    width: 45px !important;
-    height: 28px !important;
-  }
 }
 
 @media (max-width: 719px) {
