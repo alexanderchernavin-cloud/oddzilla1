@@ -8,10 +8,15 @@ const LOGO_DARK_SRC = "/brand/oddzilla-dark.png";
 const WORDMARK_TRANSPARENT_SRC = "/brand/wordmark-transparent.png";
 const ALT = "Oddzilla";
 
-// 2616×1632 source ≈ 1.60:1 — the Oddzilla shield mascot. Used to
-// derive the rendered width from the requested height when callers
-// pass `size`.
-const WORDMARK_ASPECT = 2616 / 1632;
+// Tight-cropped master (1086×1236, aspect ≈ 0.88) — the visible shield
+// + wordmark + lightning bolt with all transparent margins stripped.
+// The raw source is 2616×1632 but most of that is empty padding around
+// the art; rebrand-logo.ps1 trims to the alpha bounding box before
+// writing every derived PNG, so this constant tracks the true content
+// aspect (slightly taller than wide because the lightning bolt above
+// the shield extends past it on the y-axis). Used to derive the
+// rendered width from the requested height when callers pass `size`.
+const WORDMARK_ASPECT = 1086 / 1236;
 
 // The mascot reads on both light and dark surfaces (its own palette
 // is red + dark grey), so the two theme files currently ship the same
