@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode, MouseEvent } from "react";
 
 import { useOddsFlash } from "@/lib/use-odds-flash";
@@ -270,11 +270,26 @@ export function OddButton({
   // Background flash on every actual price change. The hook diffs the
   // price prop and runs a Web Animations API tween on the button — a
   // soft green tint for an increase, red for a decrease, ~1s hold then
-  // fade over the remaining 9s. Skipped while the button is locked:
-  // an inactive→active transition would otherwise flash on resume,
-  // which isn't what the user is signalling.
+  // fade over the remaining 9s. Skipped while the button is locked or
+  // selected: an inactive→active transition would flash on resume, and
+  // a flash on a selected button paints over the accent background so
+  // the "this is in your slip" state stops being visible.
   const flashRef = useRef<HTMLButtonElement | null>(null);
-  useOddsFlash(locked ? null : price ?? null, flashRef);
+  useOddsFlash(locked || selected ? null : price ?? null, flashRef);
+
+  // Cancel any in-flight flash the moment the button becomes selected,
+  // so the accent (dark) background shows through cleanly instead of
+  // being repainted by the remaining seconds of the fade.
+  useEffect(() => {
+    if (!selected) return;
+    const el = flashRef.current;
+    if (!el || typeof el.getAnimations !== "function") return;
+    for (const a of el.getAnimations()) {
+      if ((a as Animation & { id?: string }).id === "oz-value-flash") {
+        a.cancel();
+      }
+    }
+  }, [selected]);
   return (
     <button
       ref={flashRef}
