@@ -56,6 +56,8 @@ export default async function RiskzillaDashboardPage({
   }
 
   const utilizationPct = (data.bankUtilization * 100).toFixed(1);
+  const committedMicro =
+    BigInt(data.userBalancesMicro) + BigInt(data.openLiabilityMicro);
   const free = BigInt(data.freeCapacityMicro);
   const freeColor = free < 0n ? "#dc2626" : undefined;
   const cur = data.currency;
@@ -85,6 +87,7 @@ export default async function RiskzillaDashboardPage({
               label="Bank"
               value={`${fromMicro(BigInt(data.bankLimitMicro))} ${cur}`}
               sub="Operator's real crypto cash"
+              subSmall={`${fromMicro(committedMicro)} ${cur} committed · ${utilizationPct}%`}
             />
             <Kpi
               label="Bettor balances"
@@ -98,7 +101,7 @@ export default async function RiskzillaDashboardPage({
             <Kpi
               label="Open liability"
               value={`${fromMicro(BigInt(data.openLiabilityMicro))} ${cur}`}
-              sub={`${utilizationPct}% of bank committed`}
+              sub="Potential payout if open tickets win"
             />
             <Kpi
               label="Free capacity"
@@ -209,11 +212,16 @@ function Kpi({
   label,
   value,
   sub,
+  subSmall,
   valueColor,
 }: {
   label: string;
   value: string;
   sub?: string;
+  // Optional second line of context, rendered below `sub` in a smaller,
+  // dimmer font. Used on the Bank cell to surface "X USDC committed · Y%"
+  // without competing visually with the bank value.
+  subSmall?: string;
   valueColor?: string;
 }) {
   return (
@@ -250,6 +258,17 @@ function Kpi({
       </span>
       {sub && (
         <span style={{ fontSize: 12, color: "var(--color-fg-muted)" }}>{sub}</span>
+      )}
+      {subSmall && (
+        <span
+          style={{
+            fontSize: 10.5,
+            color: "var(--color-fg-subtle, var(--fg-dim))",
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          {subSmall}
+        </span>
       )}
     </div>
   );
