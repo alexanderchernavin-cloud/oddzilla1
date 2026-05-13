@@ -629,10 +629,14 @@ function BetsTable({
       <table
         style={{
           // Explicit width = sum of visible cols. With tableLayout:
-          // fixed + a colgroup this honors the user's chosen widths
-          // exactly; horizontal scroll on the wrapper kicks in when
-          // the sum exceeds the viewport.
+          // fixed + a colgroup, this is the table's "natural" width.
+          // min-width: 100% then stretches the table to fill its
+          // wrapper on wide viewports — browsers scale the explicit
+          // col widths up proportionally so user-dragged ratios are
+          // preserved. When the sum exceeds the viewport, the wrapper
+          // scrolls horizontally and the exact pixel widths are kept.
           width: tableWidth,
+          minWidth: "100%",
           borderCollapse: "collapse",
           fontSize: 12.5,
           tableLayout: "fixed",
