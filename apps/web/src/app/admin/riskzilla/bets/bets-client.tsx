@@ -590,7 +590,15 @@ function tdStyle(align?: "right"): React.CSSProperties {
   };
 }
 
+// Status pill colour + label for every state the API may surface.
+// Placement decisions (accepted / rejected_*) come straight from
+// `riskzilla_event_log.decision`; the lifecycle states (won, lost,
+// partial, void, cashed_out, pending_delay) are derived in
+// `services/api/src/modules/admin/riskzilla/events.ts` from
+// `tickets.status` + `actual_payout_micro` so the column flips off
+// "ACCEPTED" once the ticket actually settles.
 const DECISION_COLOR: Record<string, string> = {
+  // Placement decisions
   accepted: "#16a34a",
   rejected_min_stake: "#f59e0b",
   rejected_max_payout: "#f59e0b",
@@ -599,6 +607,13 @@ const DECISION_COLOR: Record<string, string> = {
   rejected_bank_limit: "#dc2626",
   rejected_user_blocked: "#94a3b8",
   rejected_market_factor: "#dc2626",
+  // Post-settlement lifecycle
+  won: "#16a34a",
+  partial: "#22c55e",
+  lost: "#ef4444",
+  void: "#94a3b8",
+  cashed_out: "#0ea5e9",
+  pending_delay: "#a3a3a3",
 };
 
 const DECISION_LABEL: Record<string, string> = {
@@ -610,6 +625,12 @@ const DECISION_LABEL: Record<string, string> = {
   rejected_bank_limit: "BANK LIMIT",
   rejected_user_blocked: "USER BLOCKED",
   rejected_market_factor: "MARKET FACTOR",
+  won: "WON",
+  partial: "WON · PARTIAL",
+  lost: "LOST",
+  void: "VOID",
+  cashed_out: "CASHED OUT",
+  pending_delay: "DELAYED",
 };
 
 function BetRow({ row }: { row: EventDto }) {
