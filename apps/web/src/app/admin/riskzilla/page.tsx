@@ -32,7 +32,7 @@ const REJECTION_LABELS: Record<string, string> = {
   rejected_max_payout: "Max payout",
   rejected_match_liability: "Match liability",
   rejected_bet_factor: "Bet factor",
-  rejected_bank_limit: "Bank limit",
+  rejected_bank_limit: "Bank",
   rejected_user_blocked: "User blocked",
   rejected_market_factor: "Market factor",
 };
@@ -82,9 +82,9 @@ export default async function RiskzillaDashboardPage({
         {bankApplies && (
           <>
             <Kpi
-              label="Bank limit"
+              label="Bank"
               value={`${fromMicro(BigInt(data.bankLimitMicro))} ${cur}`}
-              sub="Operator ceiling on total exposure"
+              sub="Operator's real crypto cash"
             />
             <Kpi
               label="Bettor balances"

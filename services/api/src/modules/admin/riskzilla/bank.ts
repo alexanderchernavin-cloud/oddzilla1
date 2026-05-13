@@ -1,14 +1,27 @@
 // /admin/riskzilla/bank — singleton bank state + ledger.
 //
-// GET state and the recent ledger are admin-only. PUT bank_limit is
+// GET state and the recent ledger are admin-only. PUT bank is
 // extra-gated to a single admin email (`q1qooo@gmail.com`) — the user
 // who controls operator funding. Anyone else with admin role gets a
 // distinct "bank_admin_only" 403.
 //
-// Recompute endpoint walks open tickets + the ledger to rebuild
-// open_liability_micro and bank_limit_micro from first principles. If
-// either drifts (a settlement-side write got swallowed, a reverse
-// path missed) the recompute restores ground truth.
+// Bank semantics (post-migration 0049): `bank_limit_micro` is the
+// operator's real crypto-account cash position:
+//
+//   seed
+//   + Σ credited deposits (type='deposit_credit')
+//   − Σ confirmed withdrawals (type='withdrawal_debit', already
+//                              stored negative)
+//   + Σ admin manual_adjust rows where ref_type IS NULL or != 'ticket'
+//
+// Bet outcomes (bet_loss / bet_payout / bet_refund) and the legacy
+// settlement-reverse manual_adjust rows (ref_type='ticket') are NOT
+// part of the bank — they only redistribute between bettor wallets
+// and the operator's profit pool; no crypto leaves or enters.
+//
+// Recompute endpoint walks the ledger using that exact formula AND
+// resets open_liability_micro from open tickets. Either drifting from
+// the running counter is a bug; the recompute restores ground truth.
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -181,7 +194,15 @@ export default async function riskzillaBankRoutes(app: FastifyInstance) {
       .object({
         limit: z.coerce.number().int().min(1).max(500).default(100),
         type: z
-          .enum(["seed", "bet_loss", "bet_payout", "bet_refund", "manual_adjust"])
+          .enum([
+            "seed",
+            "bet_loss",
+            "bet_payout",
+            "bet_refund",
+            "manual_adjust",
+            "deposit_credit",
+            "withdrawal_debit",
+          ])
           .optional(),
       })
       .parse(request.query);
@@ -273,10 +294,22 @@ export default async function riskzillaBankRoutes(app: FastifyInstance) {
     return rowToDto(result, userBalances);
   });
 
-  // Rebuild open_liability_micro from open tickets in case the running
-  // counter drifted. Bank-admin-only since it can mutate state non-
-  // trivially. Doesn't touch bank_limit (that's reconstructed on
-  // demand from the ledger via /admin/riskzilla/bank/ledger).
+  // Rebuild open_liability_micro from open tickets AND bank_limit_micro
+  // from the ledger. Bank-admin-only since it can mutate state non-
+  // trivially.
+  //
+  // open_liability_micro = Σ potential_payout of open tickets (USDC).
+  //
+  // bank_limit_micro is reconstructed from the ledger using the
+  // post-0049 model: seed + deposit_credit + withdrawal_debit + admin
+  // manual_adjust (where ref_type IS NULL or <> 'ticket'). Historical
+  // bet_loss / bet_payout / bet_refund rows and settlement-reverse
+  // manual_adjust rows are EXCLUDED — bet outcomes don't move crypto.
+  //
+  // Floor at 0 to respect the column's non-negative CHECK; a recompute
+  // that comes out negative means the operator over-paid relative to
+  // what the ledger says they hold, which is a real bug to investigate
+  // rather than silently fix.
   app.post("/admin/riskzilla/bank/recompute", async (request) => {
     const admin = request.requireRole("admin");
     await requireBankAdmin(app, admin.id);
@@ -286,19 +319,30 @@ export default async function riskzillaBankRoutes(app: FastifyInstance) {
       loadUserBalances(app, "USDC"),
     ]);
 
-    const rows = (await app.db.execute(sql`
+    const openRows = (await app.db.execute(sql`
       SELECT COALESCE(SUM(t.potential_payout_micro), 0)::text AS total
         FROM tickets t
        WHERE t.status IN ('accepted', 'pending_delay')
          AND t.currency = 'USDC'
     `)) as unknown as Array<{ total: string }>;
-    const next = BigInt(rows[0]?.total ?? "0");
+    const nextOpen = BigInt(openRows[0]?.total ?? "0");
+
+    const bankRows = (await app.db.execute(sql`
+      SELECT COALESCE(SUM(delta_micro), 0)::text AS total
+        FROM riskzilla_bank_ledger
+       WHERE type IN ('seed', 'deposit_credit', 'withdrawal_debit')
+          OR (type = 'manual_adjust'
+              AND (ref_type IS NULL OR ref_type <> 'ticket'))
+    `)) as unknown as Array<{ total: string }>;
+    const nextBankRaw = BigInt(bankRows[0]?.total ?? "0");
+    const nextBank = nextBankRaw < 0n ? 0n : nextBankRaw;
 
     const result = await app.db.transaction(async (tx) => {
       const [updated] = await tx
         .update(riskzillaBankState)
         .set({
-          openLiabilityMicro: next,
+          openLiabilityMicro: nextOpen,
+          bankLimitMicro: nextBank,
           updatedBy: admin.id,
           updatedAt: new Date(),
         })

@@ -18,10 +18,15 @@ interface LedgerEntry {
 
 const TYPE_LABELS: Record<string, string> = {
   seed: "Seed",
-  bet_loss: "Bettor lost",
-  bet_payout: "Payout",
-  bet_refund: "Refund",
+  deposit_credit: "Deposit",
+  withdrawal_debit: "Withdrawal",
   manual_adjust: "Manual",
+  // Legacy types — bet outcomes haven't moved the bank since
+  // migration 0049 but historical rows remain in the ledger for
+  // audit. Labels stay so the older entries still render readably.
+  bet_loss: "Bettor lost (legacy)",
+  bet_payout: "Payout (legacy)",
+  bet_refund: "Refund (legacy)",
 };
 
 export default async function RiskzillaBankPage({
@@ -35,8 +40,9 @@ export default async function RiskzillaBankPage({
     return (
       <>
         <p style={{ fontSize: 13, color: "var(--color-fg-muted)", marginBottom: 16 }}>
-          Operator bankroll ceiling. Real-money concept only — the
-          demo currency ({currency}) has no operator bank.
+          Operator&apos;s real crypto-account cash position. Real-money
+          concept only — the demo currency ({currency}) has no operator
+          bank.
         </p>
         <div
           style={{
@@ -48,9 +54,11 @@ export default async function RiskzillaBankPage({
             color: "var(--color-fg-muted)",
           }}
         >
-          The bank tracks USDC capital exposure (bettor balances + open
-          potential payouts vs. the operator-defined ceiling). Switch
-          the view back to USDC at the top of the page to manage it.
+          The bank tracks USDC capital — what we actually hold in the
+          operator&apos;s on-chain account (seed + credited deposits −
+          confirmed withdrawals). Bettor balances + open potential
+          payouts must never exceed it. Switch the view back to USDC
+          at the top of the page to manage it.
         </div>
       </>
     );
@@ -82,15 +90,17 @@ export default async function RiskzillaBankPage({
   return (
     <>
       <p style={{ fontSize: 13, color: "var(--color-fg-muted)", marginBottom: 16 }}>
-        Operator bankroll ceiling. Bettor balances (withdrawable on
-        demand) plus open potential payouts must never exceed it — bets
-        that would breach the cap are rejected with{" "}
-        <code>rejected_bank_limit</code>. Bank limit grows when bettors
-        lose and shrinks when they win.
+        Operator&apos;s real crypto-account cash — seed plus credited
+        deposits minus confirmed withdrawals. Bettor balances
+        (withdrawable on demand) plus open potential payouts must never
+        exceed it; bets that would breach the cap are rejected with{" "}
+        <code>rejected_bank_limit</code>. Bet wins / losses don&apos;t
+        move the bank — they only redistribute between bettors&apos;
+        wallets and operator profit.
       </p>
 
       <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 24 }}>
-        <Kpi label="Bank limit" value={`${limitDecimal} USDC`} />
+        <Kpi label="Bank" value={`${limitDecimal} USDC`} />
         <Kpi
           label="Bettor balances"
           value={`${balanceDecimal} USDC`}

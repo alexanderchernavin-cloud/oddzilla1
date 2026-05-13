@@ -17,6 +17,8 @@ import {
   withdrawals as withdrawalsTable,
   wallets,
   walletLedger,
+  riskzillaBankLedger,
+  riskzillaBankState,
   adminAuditLog,
 } from "@oddzilla/db";
 import {
@@ -321,6 +323,32 @@ export default async function adminWithdrawalsRoutes(app: FastifyInstance) {
           memo: null,
         })
         .onConflictDoNothing();
+
+      // Bank tracks USDC capital — only the amount_micro physically
+      // leaves the operator's account; the fee stays with us as
+      // profit, so we decrement bank by amount and NOT amount+fee.
+      // Bookkept against (deposit_credit/withdrawal_debit) types
+      // introduced in migration 0048. Idempotent via the same
+      // (type, ref_type, ref_id) unique partial index that guards
+      // wallet_ledger.
+      await tx
+        .insert(riskzillaBankLedger)
+        .values({
+          deltaMicro: -amount,
+          type: "withdrawal_debit",
+          refType: "withdrawal",
+          refId: params.id,
+          actorUserId: admin.id,
+          memo: null,
+        })
+        .onConflictDoNothing();
+      await tx
+        .update(riskzillaBankState)
+        .set({
+          bankLimitMicro: sql`${riskzillaBankState.bankLimitMicro} - ${amount}`,
+          updatedAt: new Date(),
+        })
+        .where(eq(riskzillaBankState.id, "default"));
 
       await tx
         .update(withdrawalsTable)

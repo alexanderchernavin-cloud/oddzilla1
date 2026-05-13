@@ -122,9 +122,15 @@ export default async function adminDashboardRoutes(app: FastifyInstance) {
   // PnL by day x sport for the dashboard chart/table. One row per
   // (utc_day, sport). Combo tickets are pro-rated across the sports
   // they touch via per-(ticket,sport) weights summing to 1, so a 3-leg
-  // combo split across two sports doesn't double-count its stake. A
-  // single-leg ticket gets weight=1 in its sport (no behaviour change
-  // for the common path).
+  // combo split across two sports doesn't double-count its stake.
+  //
+  // Attribution model: each leg's share of the ticket is its netwin
+  // coefficient (odds_at_placement − 1) divided by the sum of all
+  // legs' netwins. A near-1.0 leg contributes almost nothing to the
+  // combo's potential winnings, so it pulls almost no stake / payout
+  // into its sport. Mirrors the proportional split in
+  // HumanDocs/Exhibit 2 - Multibets.xlsx. A single-leg ticket gets
+  // weight=1 in its sport (no behaviour change for the common path).
   app.get("/admin/stats/pnl-by-day", async (request) => {
     request.requireRole("admin");
     const q = pnlQuery.parse(request.query);
@@ -155,14 +161,22 @@ export default async function adminDashboardRoutes(app: FastifyInstance) {
            AND u.is_ai = false
       ),
       ticket_sport_weights AS (
-        -- For each (ticket, sport): weight = legs_in_sport / total_legs.
-        -- Weights sum to 1 per ticket.
+        -- For each (ticket, sport): weight = sport's netwin share of
+        -- the ticket. Σ(odds_i − 1) over legs in the sport, divided
+        -- by Σ(odds_j − 1) over every leg. Weights sum to 1 per
+        -- ticket. NULLIF + COALESCE falls back to a legs-count split
+        -- for the degenerate "every leg at odds 1.0" case so we
+        -- never divide by zero.
         SELECT
           t.id AS ticket_id,
           s.id AS sport_id,
           s.slug AS sport_slug,
           s.name AS sport_name,
-          COUNT(*)::numeric / SUM(COUNT(*)) OVER (PARTITION BY t.id) AS weight
+          COALESCE(
+            SUM(ts.odds_at_placement - 1)
+              / NULLIF(SUM(SUM(ts.odds_at_placement - 1)) OVER (PARTITION BY t.id), 0),
+            COUNT(*)::numeric / SUM(COUNT(*)) OVER (PARTITION BY t.id)
+          ) AS weight
         FROM relevant_tickets rt
         JOIN tickets t            ON t.id = rt.ticket_id
         JOIN ticket_selections ts ON ts.ticket_id = t.id

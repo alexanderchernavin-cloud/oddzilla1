@@ -20,10 +20,23 @@
 // Liability model — per the user's brief, we don't simulate joint
 // scenarios across correlated markets. Instead, for each (market,
 // outcome) bucket the bet touches, we ask: "what's the operator's
-// worst-case loss IF that outcome wins?" Combos and BetBuilder charge
-// the FULL ticket potential payout to every (market, outcome) bucket
-// they touch — overestimates liability, but errs on the side of safety
-// (no scenario can make us pay more than the bucket says).
+// worst-case loss IF that outcome wins?"
+//
+// Combo liability attribution uses NW-share: each leg's contribution
+// to a bucket is `ticket_payout × (odds_i − 1) / Σ(odds_j − 1)` — the
+// proportional model in HumanDocs/Exhibit 2 - Multibets.xlsx. A combo
+// touching a tier-1 match and a tier-9 match no longer slams the full
+// payout against the tier-1 match's tight cap; only the tier-1 leg's
+// NW share is charged. Historical bucket sums (other open tickets)
+// are share-weighted on-the-fly via CTE so old and new bets stay
+// consistent.
+//
+// Bank cap is intentionally NOT share-weighted — it's a hard solvency
+// check on the operator's real crypto cash, and a winning combo pays
+// the full express. The bank-side `open_liability_micro` counter
+// (commitAccepted) tracks the full ticket payout for the same reason:
+// if every open ticket wins, the operator owes the sum of full
+// payouts, not share-weighted slices.
 
 import { sql } from "drizzle-orm";
 import type { DbClient } from "@oddzilla/db";
@@ -54,6 +67,14 @@ export interface RiskzillaIntentLeg {
   sportId: number;
   tournamentId: number;
   riskTier: number | null;
+  // Decimal odds for this leg. Used to compute the leg's netwin share
+  // (odds−1) / Σ(odds−1) of the ticket's potential payout for per-bucket
+  // liability attribution — a tier-1 leg shouldn't have the full combo
+  // payout charged to its match cap when its NW share is tiny relative
+  // to a high-odds tier-9 partner. See HumanDocs/Exhibit 2 - Multibets.xlsx
+  // for the worked example. Bank cap + open_liability still use the
+  // full potential payout (operator pays the full express on a win).
+  oddsAtPlacement: number;
 }
 
 export interface RiskzillaIntent {
@@ -316,53 +337,115 @@ export class RiskzillaEngine {
       }
     }
 
+    // ── Per-leg netwin shares (for liability attribution) ───────────
+    // Each leg's slice of the combo = (odds_i − 1) / Σ(odds_j − 1).
+    // Singles fall through trivially (one leg → share = 1.0). The
+    // degenerate all-odds-1.0 case can't physically place a bet
+    // (stake = potential_payout, zero combined NW), but the fallback
+    // to equal split defends the divide-by-zero anyway.
+    const legNetwins = intent.legs.map((l) => Math.max(0, l.oddsAtPlacement - 1));
+    const totalNetwin = legNetwins.reduce((acc, v) => acc + v, 0);
+    const legShare = (idx: number): number => {
+      if (totalNetwin <= 0) return 1 / intent.legs.length;
+      return legNetwins[idx]! / totalNetwin;
+    };
+
     // ── Per-(market, outcome) liability buckets ─────────────────────
-    // Pull current bucket sums for every match touched. We do this
-    // once per match (not per leg) to amortise the scan; combos
-    // typically touch ≤ 10 matches.
+    // Share-weighted sums. Every leg of every open ticket contributes
+    // `payout × (leg_nw / ticket_total_nw)` to its bucket's payout, and
+    // `stake × (leg_nw / ticket_total_nw)` to its bucket's stake. The
+    // ticket_total_nw is computed across ALL legs of the ticket via
+    // `ticket_totals`, even if the leg-filter only matches some legs
+    // (we'd otherwise mis-renormalise the share). One round-trip per
+    // query; the per-leg loop reads from in-memory maps.
     const matchIds = Array.from(new Set(intent.legs.map((l) => l.matchId.toString())));
     const matchIdsLiteral = `{${matchIds.join(",")}}`;
+    const leg_share_cte = sql`
+      relevant_tickets AS (
+        SELECT DISTINCT t.id AS ticket_id
+          FROM tickets t
+          JOIN ticket_selections ts ON ts.ticket_id = t.id
+          JOIN markets m            ON m.id = ts.market_id
+         WHERE m.match_id = ANY(${matchIdsLiteral}::bigint[])
+           AND t.status IN ('accepted', 'pending_delay')
+           AND t.currency = ${RISKZILLA_CURRENCY}
+      ),
+      ticket_totals AS (
+        SELECT
+          ts2.ticket_id,
+          SUM(GREATEST(0::numeric, ts2.odds_at_placement - 1)) AS total_nw,
+          COUNT(*)::int                                         AS leg_count
+        FROM ticket_selections ts2
+        WHERE ts2.ticket_id IN (SELECT ticket_id FROM relevant_tickets)
+        GROUP BY ts2.ticket_id
+      ),
+      leg_shares AS (
+        SELECT
+          ts.ticket_id,
+          ts.market_id,
+          ts.outcome_id,
+          t.user_id,
+          t.stake_micro,
+          t.potential_payout_micro,
+          CASE
+            WHEN tt.total_nw <= 0 THEN 1.0 / tt.leg_count
+            ELSE GREATEST(0::numeric, ts.odds_at_placement - 1) / tt.total_nw
+          END AS share
+          FROM tickets t
+          JOIN ticket_selections ts ON ts.ticket_id = t.id
+          JOIN markets m            ON m.id = ts.market_id
+          JOIN ticket_totals tt     ON tt.ticket_id = t.id
+         WHERE m.match_id = ANY(${matchIdsLiteral}::bigint[])
+           AND t.status IN ('accepted', 'pending_delay')
+           AND t.currency = ${RISKZILLA_CURRENCY}
+      )
+    `;
+
     const bucketRows = (await tx.execute(sql`
-      SELECT ts.market_id::text         AS market_id,
-             ts.outcome_id              AS outcome_id,
-             COALESCE(SUM(t.potential_payout_micro), 0)::text AS payout_micro,
-             COALESCE(SUM(t.stake_micro),            0)::text AS stake_micro
-        FROM tickets t
-        JOIN ticket_selections ts ON ts.ticket_id = t.id
-        JOIN markets m            ON m.id = ts.market_id
-       WHERE m.match_id = ANY(${matchIdsLiteral}::bigint[])
-         AND t.status IN ('accepted', 'pending_delay')
-         AND t.currency = ${RISKZILLA_CURRENCY}
-       GROUP BY ts.market_id, ts.outcome_id
+      WITH ${leg_share_cte}
+      SELECT
+        market_id::text                                                  AS market_id,
+        outcome_id                                                       AS outcome_id,
+        COALESCE(ROUND(SUM(potential_payout_micro * share)), 0)::bigint::text AS payout_micro,
+        COALESCE(ROUND(SUM(stake_micro            * share)), 0)::bigint::text AS stake_micro
+        FROM leg_shares
+       GROUP BY market_id, outcome_id
     `)) as unknown as BucketRow[];
 
     const marketSumRows = (await tx.execute(sql`
-      SELECT ts.market_id::text AS market_id,
-             COALESCE(SUM(t.stake_micro), 0)::text AS total_stake_micro
-        FROM tickets t
-        JOIN ticket_selections ts ON ts.ticket_id = t.id
-        JOIN markets m            ON m.id = ts.market_id
-       WHERE m.match_id = ANY(${matchIdsLiteral}::bigint[])
-         AND t.status IN ('accepted', 'pending_delay')
-         AND t.currency = ${RISKZILLA_CURRENCY}
-       GROUP BY ts.market_id
+      WITH ${leg_share_cte}
+      SELECT
+        market_id::text                                                  AS market_id,
+        COALESCE(ROUND(SUM(stake_micro * share)), 0)::bigint::text       AS total_stake_micro
+        FROM leg_shares
+       GROUP BY market_id
     `)) as unknown as MarketSumRow[];
 
-    // Per-bettor bucket sums (for the bet_factor cap).
+    // Per-bettor bucket + market sums (for the bet_factor cap). Same
+    // leg-share weighting, filtered to this user. Hoists the per-leg
+    // `bettorTotalStakeOnMarket` round-trip into one query so combos
+    // with N legs touching different markets pay one SQL call total.
     const bettorBucketRows = (await tx.execute(sql`
-      SELECT ts.market_id::text         AS market_id,
-             ts.outcome_id              AS outcome_id,
-             COALESCE(SUM(t.potential_payout_micro), 0)::text AS payout_micro,
-             COALESCE(SUM(t.stake_micro),            0)::text AS stake_micro
-        FROM tickets t
-        JOIN ticket_selections ts ON ts.ticket_id = t.id
-        JOIN markets m            ON m.id = ts.market_id
-       WHERE m.match_id = ANY(${matchIdsLiteral}::bigint[])
-         AND t.user_id = ${intent.userId}::uuid
-         AND t.status IN ('accepted', 'pending_delay')
-         AND t.currency = ${RISKZILLA_CURRENCY}
-       GROUP BY ts.market_id, ts.outcome_id
+      WITH ${leg_share_cte}
+      SELECT
+        market_id::text                                                  AS market_id,
+        outcome_id                                                       AS outcome_id,
+        COALESCE(ROUND(SUM(potential_payout_micro * share)), 0)::bigint::text AS payout_micro,
+        COALESCE(ROUND(SUM(stake_micro            * share)), 0)::bigint::text AS stake_micro
+        FROM leg_shares
+       WHERE user_id = ${intent.userId}::uuid
+       GROUP BY market_id, outcome_id
     `)) as unknown as BucketRow[];
+
+    const bettorMarketSumRows = (await tx.execute(sql`
+      WITH ${leg_share_cte}
+      SELECT
+        market_id::text                                                  AS market_id,
+        COALESCE(ROUND(SUM(stake_micro * share)), 0)::bigint::text       AS total_stake_micro
+        FROM leg_shares
+       WHERE user_id = ${intent.userId}::uuid
+       GROUP BY market_id
+    `)) as unknown as MarketSumRow[];
 
     const bucketKey = (mId: string, oId: string) => `${mId}:${oId}`;
     const payoutByBucket = new Map<string, bigint>();
@@ -387,18 +470,25 @@ export class RiskzillaEngine {
         BigInt(r.stake_micro),
       );
     }
+    const bettorTotalStakeByMarket = new Map<string, bigint>();
+    for (const r of bettorMarketSumRows) {
+      bettorTotalStakeByMarket.set(r.market_id, BigInt(r.total_stake_micro));
+    }
 
     // Per-leg evaluation. For each leg we compute the bucket's
     // pre-bet liability and the post-bet liability (after we add
-    // this ticket's payout to the (m, o) bucket and this ticket's
-    // stake to the market sum). Reject as soon as any bucket
-    // breaches.
+    // this leg's SHARE of the ticket payout to the (m, o) bucket
+    // and this leg's SHARE of the stake to the market sum). Reject
+    // as soon as any bucket breaches.
     const meta: RiskzillaDecisionMeta = {
       ...baseMeta,
       buckets: [],
     };
 
-    for (const leg of intent.legs) {
+    // Indexed loop so the per-leg NW share lookup (legShare(i)) lines
+    // up with the leg.
+    for (let i = 0; i < intent.legs.length; i++) {
+      const leg = intent.legs[i]!;
       const tier = tierFor(leg);
       const factor = factorByProvider.get(leg.providerMarketId) ?? 1;
       const baseMatchCap = BigInt(tier.match_liability_micro);
@@ -413,43 +503,51 @@ export class RiskzillaEngine {
       const bettorCapRaw = multiplyMicroByFactor(matchCap, betFactor * intent.userRiskScore);
       const bettorCap = bigintMin(bettorCapRaw, matchCap);
 
+      const share = legShare(i);
+      // This leg's slice of the ticket's payout. Combo with tier-1
+      // and tier-9 matches: the tier-1 leg only contributes its NW
+      // share to the tier-1 match cap, not the full combo payout.
+      const incrementalPayoutMicro = multiplyMicroByFactor(
+        intent.potentialPayoutMicro,
+        share,
+      );
+
       const key = bucketKey(leg.marketId.toString(), leg.outcomeId);
       const payoutBefore = payoutByBucket.get(key) ?? 0n;
       const stakeBucketBefore = stakeByBucket.get(key) ?? 0n;
       const totalStakeMarketBefore =
         totalStakeByMarket.get(leg.marketId.toString()) ?? 0n;
 
-      // Per-our-formula liability for THIS bucket pre-bet:
+      // Per-formula liability for THIS bucket pre-bet:
       //   liability_before = payoutBefore − (totalStakeMarketBefore − stakeBucketBefore)
-      // post-bet (we add this leg's full ticket payout to bucket, this
-      // leg's stake to market):
-      //   liability_after = (payoutBefore + ticketPayout) − ((totalStakeMarketBefore + stake) − (stakeBucketBefore + stake))
-      //                   =  payoutBefore + ticketPayout − totalStakeMarketBefore + stakeBucketBefore
-      // The new stake cancels in the (market_total - bucket_stake)
-      // term, so the incremental liability is exactly +ticketPayout.
+      // post-bet (we add this leg's share of the payout to the bucket,
+      // this leg's share of the stake to the market AND to the bucket):
+      //   liability_after = (payoutBefore + payout × share)
+      //                     − ((market + stake × share) − (bucket + stake × share))
+      //                   =  payoutBefore + payout × share − market + bucket
+      // The share-weighted stake cancels in the (market − bucket)
+      // term identically to the full-attribution case, so the
+      // incremental liability is exactly +payout × share.
       const liabilityBefore = bigintMax(
         0n,
         payoutBefore - (totalStakeMarketBefore - stakeBucketBefore),
       );
       const liabilityAfter = bigintMax(
         0n,
-        payoutBefore + intent.potentialPayoutMicro - totalStakeMarketBefore + stakeBucketBefore,
+        payoutBefore + incrementalPayoutMicro - totalStakeMarketBefore + stakeBucketBefore,
       );
 
       const bettorPayoutBefore = bettorPayoutByBucket.get(key) ?? 0n;
       const bettorStakeBucketBefore = bettorStakeByBucket.get(key) ?? 0n;
-      const bettorTotalStakeMarketBefore = await this.bettorTotalStakeOnMarket(
-        tx,
-        intent.userId,
-        leg.marketId,
-      );
+      const bettorTotalStakeMarketBefore =
+        bettorTotalStakeByMarket.get(leg.marketId.toString()) ?? 0n;
       const bettorLiabilityBefore = bigintMax(
         0n,
         bettorPayoutBefore - (bettorTotalStakeMarketBefore - bettorStakeBucketBefore),
       );
       const bettorLiabilityAfter = bigintMax(
         0n,
-        bettorPayoutBefore + intent.potentialPayoutMicro - bettorTotalStakeMarketBefore + bettorStakeBucketBefore,
+        bettorPayoutBefore + incrementalPayoutMicro - bettorTotalStakeMarketBefore + bettorStakeBucketBefore,
       );
 
       const bucketEntry = {
@@ -600,22 +698,6 @@ export class RiskzillaEngine {
     } as RiskzillaDecisionMeta;
   }
 
-  private async bettorTotalStakeOnMarket(
-    tx: SqlRunner,
-    userId: string,
-    marketId: bigint,
-  ): Promise<bigint> {
-    const rows = (await tx.execute(sql`
-      SELECT COALESCE(SUM(t.stake_micro), 0)::text AS total
-        FROM tickets t
-        JOIN ticket_selections ts ON ts.ticket_id = t.id
-       WHERE ts.market_id = ${marketId.toString()}::bigint
-         AND t.user_id = ${userId}::uuid
-         AND t.status IN ('accepted', 'pending_delay')
-         AND t.currency = ${RISKZILLA_CURRENCY}
-    `)) as unknown as Array<{ total: string }>;
-    return BigInt(rows[0]?.total ?? "0");
-  }
 }
 
 export interface MatchContext {

@@ -25,7 +25,7 @@ const STATUS_PILLS = [
 const REJECTION_PILLS = [
   { key: "rejected_match_liability", label: "Match liability" },
   { key: "rejected_bet_factor", label: "Bet factor" },
-  { key: "rejected_bank_limit", label: "Bank limit" },
+  { key: "rejected_bank_limit", label: "Bank" },
   { key: "rejected_max_payout", label: "Max payout" },
   { key: "rejected_min_stake", label: "Min stake" },
   { key: "rejected_market_factor", label: "Market factor" },
