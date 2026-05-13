@@ -102,11 +102,23 @@ export default async function riskzillaDashboardRoutes(app: FastifyInstance) {
          AND currency = ${currency}
     `)) as unknown as Array<{ n: number; open_max_loss_micro: string }>;
 
+    // "Bank delta today" sums today's real cash-flow ledger rows:
+    // deposit_credit + withdrawal_debit + admin manual_adjust. The
+    // migration-time synthetic `seed` row (type='seed', ref_type=
+    // 'migration') is excluded — it's a historical baseline, not a
+    // today event. Legacy bet_loss / bet_payout / bet_refund and
+    // settlement-reverse manual_adjust rows (ref_type='ticket') are
+    // also excluded — those don't move crypto, only redistribute
+    // between bettor wallets and operator profit.
     const todayBankRows = bankApplies
       ? ((await app.db.execute(sql`
           SELECT COALESCE(SUM(delta_micro), 0)::text AS delta_micro
             FROM riskzilla_bank_ledger
            WHERE created_at >= date_trunc('day', now() AT TIME ZONE 'UTC')
+             AND (
+               type IN ('deposit_credit', 'withdrawal_debit')
+               OR (type = 'manual_adjust' AND (ref_type IS NULL OR ref_type <> 'ticket'))
+             )
         `)) as unknown as Array<{ delta_micro: string }>)
       : [];
 
