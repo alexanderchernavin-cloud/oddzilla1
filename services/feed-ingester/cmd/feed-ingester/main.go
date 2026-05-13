@@ -492,6 +492,22 @@ func flushBeforeRecover(ctx context.Context, deps handler.Deps, log zerolog.Logg
 		Int64("suspended_markets", summary.SuspendedMarkets).
 		Int64("suspended_outcomes", summary.SuspendedOutcomes).
 		Msg("flush-before-recover complete; awaiting replay to re-activate")
+	// Broadcast the status flip per market so any open storefront
+	// session locks placement immediately — without this the page
+	// keeps showing pre-flush prices until Oddin's replay reaches the
+	// match, and any click in that window dead-ends at
+	// `market_not_active`. Use the current wall clock as the WS frame
+	// timestamp — the flush isn't tied to a specific Oddin message.
+	if deps.Bus != nil && len(summary.SuspendedRefs) > 0 {
+		nowMs := time.Now().UnixMilli()
+		for _, ref := range summary.SuspendedRefs {
+			if perr := deps.Bus.PublishMarketStatus(ctx, ref.MatchID, ref.MarketID, -1, nowMs); perr != nil {
+				log.Debug().Err(perr).
+					Int64("match", ref.MatchID).Int64("market", ref.MarketID).
+					Msg("flush: publish market status failed")
+			}
+		}
+	}
 }
 
 func runAMQP(ctx context.Context, cfg config.Config, deps handler.Deps, log zerolog.Logger) {

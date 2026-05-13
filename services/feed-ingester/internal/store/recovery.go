@@ -31,6 +31,21 @@ import (
 type FlushSummary struct {
 	SuspendedMarkets  int64
 	SuspendedOutcomes int64
+	// SuspendedRefs is the (matchID, marketID) list for every market
+	// this call flipped from active to suspended. The caller publishes
+	// a `marketStatus` WS frame per ref so storefront sessions holding
+	// these matches lock their bet slips immediately — without it the
+	// page keeps displaying the pre-flush prices until Oddin's recovery
+	// replay reaches them (seconds), and any click in that window dead-
+	// ends at placement with `market_not_active`.
+	SuspendedRefs []FlushSuspendedRef
+}
+
+// FlushSuspendedRef pairs each suspended market with its match for the
+// pub/sub channel address (`odds:match:{matchID}`).
+type FlushSuspendedRef struct {
+	MatchID  int64
+	MarketID int64
 }
 
 // FlushAndSuspendActiveCatalog suspends every active market on a
@@ -49,18 +64,38 @@ func FlushAndSuspendActiveCatalog(ctx context.Context, pool *pgxpool.Pool) (Flus
 	// Step 1: suspend currently-active markets. Bet placement and the
 	// storefront catalog filter both reject status != 1 so nothing is
 	// bettable until the replay re-publishes prices.
-	tag, err := tx.Exec(ctx, `
+	//
+	// RETURNING captures (match_id, id) so the caller can publish a
+	// marketStatus frame per affected market on the WS bus. Without
+	// that emission the storefront stays on stale pre-flush prices for
+	// the duration of the recovery replay.
+	rows, err := tx.Query(ctx, `
 		UPDATE markets
 		   SET status = -1, updated_at = NOW()
 		  FROM matches ma
 		 WHERE ma.id = markets.match_id
 		   AND markets.status = 1
 		   AND ma.status IN ('not_started', 'live')
+		RETURNING markets.match_id, markets.id
 	`)
 	if err != nil {
 		return s, fmt.Errorf("flush: suspend markets: %w", err)
 	}
-	s.SuspendedMarkets = tag.RowsAffected()
+	refs := make([]FlushSuspendedRef, 0, 256)
+	for rows.Next() {
+		var r FlushSuspendedRef
+		if err := rows.Scan(&r.MatchID, &r.MarketID); err != nil {
+			rows.Close()
+			return s, fmt.Errorf("flush: scan suspended ref: %w", err)
+		}
+		refs = append(refs, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return s, fmt.Errorf("flush: iterate suspended refs: %w", err)
+	}
+	s.SuspendedMarkets = int64(len(refs))
+	s.SuspendedRefs = refs
 
 	// Step 2: null the outcome odds + probability for every outcome
 	// on a not_started/live match. Covers two cases:
@@ -69,7 +104,7 @@ func FlushAndSuspendActiveCatalog(ctx context.Context, pool *pgxpool.Pool) (Flus
 	//     carried stale odds — anything visible to the bet-slip or
 	//     Tiple/Tippot priceability checks gets zeroed out so the
 	//     replay refills them with truth.
-	tag, err = tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		UPDATE market_outcomes
 		   SET published_odds = NULL,
 		       raw_odds       = NULL,

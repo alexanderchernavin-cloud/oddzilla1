@@ -321,21 +321,40 @@ UPDATE matches
 // (cancelled) are left untouched — those are terminal statuses owned
 // by the settlement service and re-flipping to -1 would lose audit
 // information about why the market is closed.
-func UpdateAllMarketsStatusForMatch(ctx context.Context, db pgxRunner, matchID int64, status int16, oddinTs int64) error {
-	_, err := db.Exec(ctx, `
+//
+// Returns the ids of every market that actually changed, so the caller
+// can publish a `marketStatus` WS frame per affected market. Without
+// that the storefront keeps showing a now-suspended market as bettable
+// until the next page refresh and placement rejects with
+// `market_not_active`.
+func UpdateAllMarketsStatusForMatch(ctx context.Context, db pgxRunner, matchID int64, status int16, oddinTs int64) ([]int64, error) {
+	rows, err := db.Query(ctx, `
 UPDATE markets
    SET status = $2,
        last_oddin_ts = GREATEST(last_oddin_ts, $3),
        updated_at = NOW()
  WHERE match_id = $1
    AND status NOT IN (-3, -4)
-   AND status <> $2`,
+   AND status <> $2
+RETURNING id`,
 		matchID, status, oddinTs,
 	)
 	if err != nil {
-		return fmt.Errorf("update all markets status: %w", err)
+		return nil, fmt.Errorf("update all markets status: %w", err)
 	}
-	return nil
+	defer rows.Close()
+	ids := make([]int64, 0, 32)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan updated market id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate updated markets: %w", err)
+	}
+	return ids, nil
 }
 
 // UpdateMatchLiveScore writes the JSON-encoded scoreboard payload to

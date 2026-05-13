@@ -62,11 +62,35 @@ export interface WsTicketUpdate {
   rejectReason?: string;
 }
 
+// Market-level status frame. Published on `odds:match:{matchId}` whenever
+// a market's `markets.status` column changes — by feed-ingester (every
+// odds_change, bet_stop blanket, suspend-before-recover flush) and by
+// settlement (settle → -3, cancel → -4, rollbacks). Outcome ticks alone
+// can't carry this because the publisher's `active` flag mirrors
+// `<outcome active>`, which Oddin keeps at "1" while shipping the last
+// price on a suspended market — the rail then thinks the market is open
+// until placement is rejected with `market_not_active`.
+//
+// The storefront merges these into its rendered market.status so the
+// "is bettable" predicate can lock terminal statuses (0/-3/-4)
+// immediately and unlock when Oddin reactivates (back to 1).
+export interface WsMarketStatus {
+  type: "marketStatus";
+  matchId: string;
+  marketId: string;
+  // Mirrors the `markets.status` smallint enum:
+  //   1 active, 0 deactivated, -1 suspended, -2 handover,
+  //   -3 settled, -4 cancelled.
+  status: number;
+  ts: number; // ms since epoch
+}
+
 export type WsServerMessage =
   | WsOddsUpdate
   | WsMatchStatus
   | WsLiveScore
   | WsTicketUpdate
+  | WsMarketStatus
   | LiveChatBroadcastFrame;
 
 export interface WsSubscribeRequest {

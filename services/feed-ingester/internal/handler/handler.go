@@ -316,6 +316,28 @@ func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 		}
 	}
 
+	// Broadcast market-level status transitions. Outcome ticks above
+	// only carry per-outcome `active`, and Oddin frequently keeps
+	// `<outcome active="1">` with a stale last price while the parent
+	// `<market status="-1">` is suspended — without this frame the
+	// storefront's `isMarketBettable` predicate stays true on a
+	// suspended market and placement rejects with `market_not_active`.
+	// We emit only on actual NewStatus != PrevStatus transitions so the
+	// pub/sub volume scales with state changes, not raw odds_change
+	// burst rate. Best-effort: drops are tolerable (the source of truth
+	// is markets.status in pg; SSR refetch picks up missed transitions).
+	for _, r := range results {
+		if r.NewStatus == r.PrevStatus {
+			continue
+		}
+		if err := d.Bus.PublishMarketStatus(ctx, matchID, r.ID, r.NewStatus, msg.Timestamp); err != nil {
+			d.Log.Debug().Err(err).
+				Int64("match", matchID).Int64("market", r.ID).
+				Int16("status", r.NewStatus).
+				Msg("publish market status failed")
+		}
+	}
+
 	if err := store.BumpAfterTs(ctx, d.Store.Pool(), afterTsKey(msg.Product), msg.Timestamp); err != nil {
 		d.Log.Warn().Err(err).Msg("bump after_ts failed")
 	}
@@ -478,7 +500,7 @@ func handleBetStop(ctx context.Context, d Deps, body []byte) error {
 		if !ok {
 			d.Log.Debug().Str("event", msg.EventID).
 				Msg("bet_stop: unknown match; will resolve on next odds_change")
-		} else if uerr := store.UpdateAllMarketsStatusForMatch(ctx, d.Store.Pool(),
+		} else if changed, uerr := store.UpdateAllMarketsStatusForMatch(ctx, d.Store.Pool(),
 			matchID, int16(msg.MarketStatus), msg.Timestamp); uerr != nil {
 			d.Log.Warn().Err(uerr).
 				Int64("match_id", matchID).
@@ -489,7 +511,15 @@ func handleBetStop(ctx context.Context, d Deps, body []byte) error {
 				Str("event", msg.EventID).
 				Int64("match_id", matchID).
 				Int("market_status", msg.MarketStatus).
+				Int("changed", len(changed)).
 				Msg("bet_stop: blanket market status applied")
+			for _, mID := range changed {
+				if perr := d.Bus.PublishMarketStatus(ctx, matchID, mID, int16(msg.MarketStatus), msg.Timestamp); perr != nil {
+					d.Log.Debug().Err(perr).
+						Int64("match", matchID).Int64("market", mID).
+						Msg("bet_stop: publish market status failed")
+				}
+			}
 		}
 	} else {
 		d.Log.Debug().

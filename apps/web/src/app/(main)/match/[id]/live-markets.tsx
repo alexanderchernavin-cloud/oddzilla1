@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useLiveOdds } from "@/lib/use-live-odds";
+import { useLiveMarketStatus, useLiveOdds } from "@/lib/use-live-odds";
 import { useBetSlip } from "@/lib/bet-slip";
 import { useZillaTips } from "@/lib/use-zillatips";
 import type { ZillaTip } from "@oddzilla/types/zillatips";
@@ -125,14 +125,16 @@ function partitionIntoFamilies(markets: MarketSnapshot[]): RenderEntry[] {
   );
 }
 
-// status=0 = deactivated (Oddin closed the market, e.g. Map 1 markets
-// after Map 1 ends). Per spec these don't recover without a fresh
-// market_status_change, which our WS doesn't carry — and the user
-// asked to remove deactivated markets from the offer entirely.
-// status=-1 = suspended (mid-round freeze, pre-map idle) and stays in
-// the UI as a greyed title so the user knows it's coming back.
+// Terminal statuses — the market can never come back this session, so
+// fully dropping it from the UI is the right call. 0 = deactivated
+// (Oddin closed; e.g. Map 1 markets after Map 1 ends), -3 = settled
+// (settlement service flipped this on bet_settlement), -4 = cancelled
+// (bet_cancel without end_time). Each of these is now broadcast over
+// the WS marketStatus channel so they flip live without a refresh.
+// -1 (suspended) is recoverable and stays in the UI as a greyed title
+// so the user knows it may come back.
 function isMarketDeactivated(m: MarketSnapshot): boolean {
-  return m.status === 0;
+  return m.status === 0 || m.status === -3 || m.status === -4;
 }
 
 // Whether a render entry has any content worth keeping in the UI.
@@ -173,6 +175,16 @@ export function LiveMarkets({
   initialGroups: MarketGroup[];
 }) {
   const ticks = useLiveOdds(matchId);
+  // Per-market live status (1 active / -1 suspended / -3 settled / -4
+  // cancelled / 0 deactivated). Server publishes a `marketStatus` WS
+  // frame on every transition — outcome ticks alone can't carry this
+  // because Oddin frequently leaves `<outcome active="1">` with the
+  // last price while the parent `<market status="-1">` is suspended.
+  // Without merging the WS status, a market settled or suspended
+  // mid-session keeps showing as bettable and placement rejects with
+  // `market_not_active` (rendered to the user as "This market is
+  // suspended").
+  const marketStatusTicks = useLiveMarketStatus(matchId);
   const slip = useBetSlip();
   // ZillaTips loads lazily after first render so the SSR'd markets
   // tree appears without waiting on the historical ROI calc.
@@ -241,23 +253,31 @@ export function LiveMarkets({
     matchId,
   ]);
 
-  // Merge live odds ticks into the server-rendered group tree while
-  // preserving the grouping. A tick keyed by marketId:outcomeId updates
-  // that outcome's price + active state only.
+  // Merge live odds + market-status ticks into the server-rendered
+  // group tree while preserving the grouping. An odds tick keyed by
+  // marketId:outcomeId updates that outcome's price + active flag; a
+  // marketStatus tick keyed by marketId updates the parent
+  // `m.status`. The two flow on the same shared WS connection so a
+  // single subscription per match covers both.
   const mergedGroups = useMemo<MarketGroup[]>(() => {
     return initialGroups.map((g) => ({
       ...g,
-      markets: g.markets.map((m) => ({
-        ...m,
-        outcomes: m.outcomes.map((o) => {
-          const tick = ticks[`${m.id}:${o.outcomeId}`];
-          return tick
-            ? { ...o, publishedOdds: tick.publishedOdds, active: tick.active }
-            : o;
-        }),
-      })),
+      markets: g.markets.map((m) => {
+        const statusTick = marketStatusTicks[m.id];
+        const status = statusTick ? statusTick.status : m.status;
+        return {
+          ...m,
+          status,
+          outcomes: m.outcomes.map((o) => {
+            const tick = ticks[`${m.id}:${o.outcomeId}`];
+            return tick
+              ? { ...o, publishedOdds: tick.publishedOdds, active: tick.active }
+              : o;
+          }),
+        };
+      }),
     }));
-  }, [initialGroups, ticks]);
+  }, [initialGroups, ticks, marketStatusTicks]);
 
   const [scope, setScope] = useState<string>("all");
   const hasAnyMarket = mergedGroups.some((g) => g.markets.length > 0);
@@ -465,15 +485,20 @@ function ScopeTab({
   );
 }
 
-// Whether the market is currently bettable. Derived from the OUTCOMES
-// rather than `m.status` because the WS only carries outcome-level
-// updates (active flag + publishedOdds) — the parent market.status
-// stays at whatever the SSR snapshot baked in. If we keyed off m.status
-// alone, a market that was suspended at SSR would never visually
-// "unlock" again, even after an odds_change re-activates every outcome.
-// Symmetric on the way out: when every outcome flips inactive, the
-// market is suspended regardless of m.status.
+// Whether the market is currently bettable. Server's `POST /bets`
+// rejects on `markets.status != 1` with `market_not_active`, so the
+// predicate must agree — gate on m.status === 1 first. The WS
+// marketStatus frame (server-emitted from feed-ingester and settlement
+// on every status transition) keeps m.status in sync mid-session,
+// closing the gap that previously let settled / suspended markets keep
+// showing their last outcome prices and dead-end at placement.
+//
+// Outcome-level activity is still required on top — Oddin briefly
+// drops individual outcomes inactive within an otherwise-active market
+// (e.g. one team scored, only the live underdog markup is mid-update).
+// In that case m.status stays 1 but at least one outcome is inactive.
 function isMarketBettable(m: MarketSnapshot): boolean {
+  if (m.status !== 1) return false;
   return m.outcomes.some((o) => o.active && !!o.publishedOdds);
 }
 
