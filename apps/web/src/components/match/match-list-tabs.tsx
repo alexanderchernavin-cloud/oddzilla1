@@ -45,18 +45,33 @@ export function MatchListTabs({
   // / active flag, and the per-row mini scoreboard (series + per-map
   // cells) tracks every <sport_event_status> update without a page
   // reload — so the row stays current as the game progresses.
+  //
+  // SSR + initial client paint: ticks and scores arrive via useEffect →
+  // WebSocket, so on the first render they are empty objects. In that
+  // state mergeMatchWithLive(m, {}, {}) returns m by referential identity
+  // and the lookup Map's lookups all resolve to the original input. The
+  // hasLiveData gate skips the 180-iteration map + Map allocation for
+  // the no-data case — measurable v8 GC pressure on the SSR process at
+  // 250+ concurrent storefront requests (see docs/LOADTEST.md notes).
+  const hasLiveData =
+    Object.keys(ticks).length > 0 || Object.keys(scores).length > 0;
+
   const merged = useMemo(
-    () => matches.map((m) => mergeMatchWithLive(m, ticks, scores)),
-    [matches, ticks, scores],
+    () =>
+      hasLiveData
+        ? matches.map((m) => mergeMatchWithLive(m, ticks, scores))
+        : matches,
+    [matches, ticks, scores, hasLiveData],
   );
   const mergedById = useMemo(() => {
+    if (merged === matches) return null;
     const map = new Map<string, ListMatchEnriched>();
     for (const m of merged) map.set(m.id, m);
     return map;
-  }, [merged]);
+  }, [merged, matches]);
 
   function renderRow(m: ListMatchEnriched) {
-    const live = mergedById.get(m.id) ?? m;
+    const live = mergedById?.get(m.id) ?? m;
     return (
       <MatchRow
         key={live.id}
