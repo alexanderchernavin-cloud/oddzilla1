@@ -428,6 +428,13 @@ const totalLineStyle: React.CSSProperties = {
 
 // ── Table ──────────────────────────────────────────────────────────────
 
+// Column order matters: long-text cells (tournament / match / market /
+// selection) push the right-side numeric columns off-screen on rows
+// with verbose tournament + market names — which is most CS2 / LoL
+// rows once Map / Way substitution lengthens the market label. Money
+// columns come right after User so Stake / Payout stay visible no
+// matter how wide the prose columns end up. Tier closes out the
+// numeric block; details toggle is last.
 const COLUMNS: Array<{
   key: SortKey | "user" | "tournament" | "sport" | "match" | "market" | "selection" | "detail";
   label: string;
@@ -437,14 +444,14 @@ const COLUMNS: Array<{
   { key: "decision", label: "Status", sortable: true },
   { key: "createdAt", label: "Time", sortable: true },
   { key: "user", label: "User" },
-  { key: "tournament", label: "Tournament" },
-  { key: "sport", label: "Sport" },
-  { key: "match", label: "Match" },
-  { key: "market", label: "Market" },
-  { key: "selection", label: "Selection" },
   { key: "stake", label: "Stake", align: "right", sortable: true },
   { key: "potentialPayout", label: "Payout", align: "right", sortable: true },
   { key: "riskTier", label: "Tier", align: "right", sortable: true },
+  { key: "sport", label: "Sport" },
+  { key: "tournament", label: "Tournament" },
+  { key: "match", label: "Match" },
+  { key: "market", label: "Market" },
+  { key: "selection", label: "Selection" },
   { key: "detail", label: "" },
 ];
 
@@ -695,30 +702,6 @@ function BetRow({ row }: { row: EventDto }) {
             {row.userNickname ?? row.userEmail ?? row.userId.slice(0, 8)}
           </Link>
         </td>
-        <td style={tdStyle()} title={row.tournamentName ?? undefined}>
-          {row.tournamentName ?? "—"}
-        </td>
-        <td style={tdStyle()}>{row.sportSlug ?? "—"}</td>
-        <td style={tdStyle()} title={row.matchLabel ?? undefined}>
-          {row.matchLabel ?? "—"}
-        </td>
-        <td style={tdStyle()} title={marketCell}>
-          {marketCell}
-          {extraLegs > 0 && (
-            <span
-              style={{
-                color: "var(--color-fg-muted)",
-                marginLeft: 4,
-                fontSize: 11,
-              }}
-            >
-              +{extraLegs}
-            </span>
-          )}
-        </td>
-        <td style={tdStyle()} title={selectionCell}>
-          {selectionCell}
-        </td>
         <td
           style={{
             ...tdStyle("right"),
@@ -742,6 +725,30 @@ function BetRow({ row }: { row: EventDto }) {
           }}
         >
           {row.riskTier ?? "—"}
+        </td>
+        <td style={tdStyle()}>{row.sportSlug ?? "—"}</td>
+        <td style={tdStyle()} title={row.tournamentName ?? undefined}>
+          {row.tournamentName ?? "—"}
+        </td>
+        <td style={tdStyle()} title={row.matchLabel ?? undefined}>
+          {row.matchLabel ?? "—"}
+        </td>
+        <td style={tdStyle()} title={marketCell}>
+          {marketCell}
+          {extraLegs > 0 && (
+            <span
+              style={{
+                color: "var(--color-fg-muted)",
+                marginLeft: 4,
+                fontSize: 11,
+              }}
+            >
+              +{extraLegs}
+            </span>
+          )}
+        </td>
+        <td style={tdStyle()} title={selectionCell}>
+          {selectionCell}
         </td>
         <td style={{ ...tdStyle("right") }}>
           <button
