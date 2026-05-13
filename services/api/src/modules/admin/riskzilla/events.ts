@@ -24,6 +24,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { sql } from "drizzle-orm";
 import { SUPPORTED_CURRENCIES } from "@oddzilla/types/currencies";
+import { renderOutcomeLabel, substituteTemplate } from "../../../lib/market-naming.js";
 
 // Derives the visible "Status" cell. The Riskzilla decision column is
 // recorded once at placement (`accepted` / `rejected_*`) and never
@@ -74,6 +75,108 @@ const decisionFromTicketOzSql = sql`
     ELSE 'accepted'
   END
 `;
+
+// Shared per-selection jsonb builder. Returns each ticket leg as a
+// rich object the TS layer can post-process: the raw market /
+// outcome templates from Oddin's description catalogue plus the
+// specifiers / team names needed to substitute `{map}` / `{way}` /
+// `{round}` / `{threshold}` / `{side}` placeholders.
+//
+// Variant lookup: market_descriptions and outcome_descriptions are
+// keyed by (provider_market_id, variant). Each market carries a
+// `variant` specifier (e.g. `way:two`) — prefer the exact match,
+// fall back to the variant='' default row, fall back to a "Market #N"
+// / outcome-id stub so the column always renders something.
+//
+// Aliases referenced (assumed present at the call site):
+//   ts  — ticket_selections
+//   lmk — markets
+//   lm  — matches (LEFT JOIN — may be null for orphaned ticket rows)
+//   mo  — market_outcomes (LEFT JOIN — feed sometimes leaves name '')
+const selectionJsonBuildSql = sql`
+  jsonb_build_object(
+    'marketId',         lmk.id::text,
+    'providerMarketId', lmk.provider_market_id,
+    'marketTemplate',   COALESCE(
+      (SELECT md.name_template
+         FROM market_descriptions md
+        WHERE md.provider_market_id = lmk.provider_market_id
+          AND md.variant = COALESCE(lmk.specifiers_json->>'variant', '')
+        LIMIT 1),
+      (SELECT md.name_template
+         FROM market_descriptions md
+        WHERE md.provider_market_id = lmk.provider_market_id
+          AND md.variant = ''
+        LIMIT 1),
+      'Market #' || lmk.provider_market_id
+    ),
+    'outcomeTemplate',  COALESCE(
+      (SELECT od.name_template
+         FROM outcome_descriptions od
+        WHERE od.provider_market_id = lmk.provider_market_id
+          AND od.variant = COALESCE(lmk.specifiers_json->>'variant', '')
+          AND od.outcome_id = ts.outcome_id
+        LIMIT 1),
+      (SELECT od.name_template
+         FROM outcome_descriptions od
+        WHERE od.provider_market_id = lmk.provider_market_id
+          AND od.variant = ''
+          AND od.outcome_id = ts.outcome_id
+        LIMIT 1),
+      NULLIF(mo.name, ''),
+      ts.outcome_id
+    ),
+    'specifiers',       COALESCE(lmk.specifiers_json, '{}'::jsonb),
+    'homeTeam',         lm.home_team,
+    'awayTeam',         lm.away_team,
+    'outcomeId',        ts.outcome_id,
+    'oddsAtPlacement',  ts.odds_at_placement::text,
+    'matchId',          lmk.match_id::text,
+    'matchLabel',       CASE WHEN lm.id IS NOT NULL
+                              THEN lm.home_team || ' vs ' || lm.away_team
+                              ELSE NULL END,
+    'result',           ts.result::text
+  )
+`;
+
+// Raw selection shape returned from the SQL above. The TS layer
+// substitutes placeholders here and emits the final EventSelectionDto.
+interface RawSelection {
+  marketId: string;
+  providerMarketId: number;
+  marketTemplate: string;
+  outcomeTemplate: string;
+  specifiers: Record<string, string> | null;
+  homeTeam: string | null;
+  awayTeam: string | null;
+  outcomeId: string;
+  oddsAtPlacement: string;
+  matchId: string | null;
+  matchLabel: string | null;
+  result: string | null;
+}
+
+function renderSelection(raw: RawSelection): EventSelectionDto {
+  const specs = raw.specifiers ?? {};
+  const home = raw.homeTeam ?? "Home";
+  const away = raw.awayTeam ?? "Away";
+  const marketName = substituteTemplate(raw.marketTemplate, specs, {
+    homeTeam: home,
+    awayTeam: away,
+  });
+  const outcomeName = renderOutcomeLabel(raw.outcomeTemplate, specs, home, away);
+  return {
+    marketId: raw.marketId,
+    providerMarketId: raw.providerMarketId,
+    marketName,
+    outcomeId: raw.outcomeId,
+    outcomeName,
+    oddsAtPlacement: raw.oddsAtPlacement,
+    matchId: raw.matchId,
+    matchLabel: raw.matchLabel,
+    result: raw.result,
+  };
+}
 
 const currencySchema = z
   .string()
@@ -184,7 +287,12 @@ interface RawRow {
   rs_at_decision: string;
   bank_at_decision_micro: string;
   decision_meta: unknown;
-  selections: EventSelectionDto[] | null;
+  // Selections arrive raw (templates + specifiers) from
+  // selectionJsonBuildSql and are rendered into EventSelectionDto by
+  // rawToDto below — placeholders like {map} / {way} / {threshold}
+  // are substituted server-side so the admin table cells read
+  // "Map 1 winner - twoway" instead of the literal template.
+  selections: RawSelection[] | null;
   created_at: Date | string;
 }
 
@@ -212,7 +320,7 @@ function rawToDto(r: RawRow): EventRowDto {
     rsAtDecision: r.rs_at_decision,
     bankAtDecisionMicro: r.bank_at_decision_micro,
     decisionMeta: r.decision_meta,
-    selections: Array.isArray(r.selections) ? r.selections : [],
+    selections: Array.isArray(r.selections) ? r.selections.map(renderSelection) : [],
     createdAt:
       r.created_at instanceof Date
         ? r.created_at.toISOString()
@@ -313,29 +421,7 @@ async function queryEventLog(
     LEFT JOIN sports      s  ON s.id = el.sport_id
     LEFT JOIN tournaments tn ON tn.id = el.tournament_id
     LEFT JOIN LATERAL (
-      SELECT jsonb_agg(
-        jsonb_build_object(
-          'marketId',         lmk.id::text,
-          'providerMarketId', lmk.provider_market_id,
-          'marketName',       COALESCE(
-            (SELECT md.name_template
-               FROM market_descriptions md
-              WHERE md.provider_market_id = lmk.provider_market_id
-              ORDER BY (md.variant = '') DESC, md.variant
-              LIMIT 1),
-            'Market #' || lmk.provider_market_id
-          ),
-          'outcomeId',         ts.outcome_id,
-          'outcomeName',       mo.name,
-          'oddsAtPlacement',   ts.odds_at_placement::text,
-          'matchId',           lmk.match_id::text,
-          'matchLabel',        CASE WHEN lm.id IS NOT NULL
-                                     THEN lm.home_team || ' vs ' || lm.away_team
-                                     ELSE NULL END,
-          'result',            ts.result::text
-        )
-        ORDER BY ts.id ASC
-      ) AS selections
+      SELECT jsonb_agg(${selectionJsonBuildSql} ORDER BY ts.id ASC) AS selections
       FROM ticket_selections ts
       JOIN markets        lmk ON lmk.id = ts.market_id
       LEFT JOIN matches   lm  ON lm.id  = lmk.match_id
@@ -497,29 +583,7 @@ async function queryTicketsForOz(
     LEFT JOIN categories c  ON c.id = tn.category_id
     LEFT JOIN sports     s  ON s.id = c.sport_id
     LEFT JOIN LATERAL (
-      SELECT jsonb_agg(
-        jsonb_build_object(
-          'marketId',         lmk.id::text,
-          'providerMarketId', lmk.provider_market_id,
-          'marketName',       COALESCE(
-            (SELECT md.name_template
-               FROM market_descriptions md
-              WHERE md.provider_market_id = lmk.provider_market_id
-              ORDER BY (md.variant = '') DESC, md.variant
-              LIMIT 1),
-            'Market #' || lmk.provider_market_id
-          ),
-          'outcomeId',         ts.outcome_id,
-          'outcomeName',       mo.name,
-          'oddsAtPlacement',   ts.odds_at_placement::text,
-          'matchId',           lmk.match_id::text,
-          'matchLabel',        CASE WHEN lm.id IS NOT NULL
-                                     THEN lm.home_team || ' vs ' || lm.away_team
-                                     ELSE NULL END,
-          'result',            ts.result::text
-        )
-        ORDER BY ts.id ASC
-      ) AS selections
+      SELECT jsonb_agg(${selectionJsonBuildSql} ORDER BY ts.id ASC) AS selections
       FROM ticket_selections ts
       JOIN markets        lmk ON lmk.id = ts.market_id
       LEFT JOIN matches   lm  ON lm.id  = lmk.match_id
