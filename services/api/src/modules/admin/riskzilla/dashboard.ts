@@ -160,8 +160,10 @@ export default async function riskzillaDashboardRoutes(app: FastifyInstance) {
         Number(BigInt(b.open_max_loss_micro) - BigInt(a.open_max_loss_micro)),
     );
 
-    // RS histogram across the full bettor base. Five buckets matching
-    // the VIP damper ladder so the dashboard reads like the engine.
+    // RS histogram across the full bettor base. Buckets split around
+    // the default of 1.0 so the operator can see how many bettors are
+    // currently dialled down (limit experiments) vs trusted up. No
+    // automatic damping applies — the engine consumes RS linearly.
     const histogramRows = (await app.db.execute(sql`
       SELECT bucket, COUNT(*)::int AS n
         FROM (
