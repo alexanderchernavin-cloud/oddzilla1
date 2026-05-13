@@ -8,17 +8,17 @@ const LOGO_DARK_SRC = "/brand/oddzilla-dark.png";
 const WORDMARK_TRANSPARENT_SRC = "/brand/wordmark-transparent.png";
 const ALT = "Oddzilla";
 
-// 1830×448 source ≈ 4.08:1 — the clean wordmark on a brand-dark
-// (#1F1F0C) background. Used to derive the rendered width from the
-// requested height when callers pass `size`.
-const WORDMARK_ASPECT = 1830 / 448;
+// 2616×1632 source ≈ 1.60:1 — the Oddzilla shield mascot. Used to
+// derive the rendered width from the requested height when callers
+// pass `size`.
+const WORDMARK_ASPECT = 2616 / 1632;
 
-// The brand kit ships two finishes per asset: a transparent/white-bg PNG
-// sized for light surfaces, and a navy-tinted PNG that reads cleanly on
-// dark surfaces. We render BOTH images, stacked, and let CSS hide the
-// wrong one via [data-theme]. Doing it in CSS avoids a hydration
-// round-trip and prevents a flash of the wrong art when the pre-hydration
-// theme-boot script in app/layout.tsx flips the attribute before paint.
+// The mascot reads on both light and dark surfaces (its own palette
+// is red + dark grey), so the two theme files currently ship the same
+// art. The double-render via [data-theme] is kept in case we re-introduce
+// a tinted dark variant later — it costs one extra hidden <img> and
+// keeps the pre-hydration theme-boot script in app/layout.tsx free of
+// any JS round-trip when callers eventually swap the asset back in.
 
 // Square 1:1 icon — favicon-area, sidebars, anywhere a tight box.
 export function Logo({
@@ -45,7 +45,7 @@ export function Logo({
   );
 }
 
-// Landscape ~3.78:1 transparent wordmark — top-bar header, anywhere a
+// Landscape ~1.60:1 transparent mark — top-bar header, anywhere a
 // horizontal layout reads better than a square icon. `size` is the
 // rendered HEIGHT in pixels; width is derived from the source aspect.
 // Single transparent asset, so no theme-aware swap is needed.

@@ -523,24 +523,23 @@ body {
   .oz-topbar-wallet-deposit { display: none; }
 }
 
-/* Top-bar shrinks the brand wordmark below tablet — at 36px height the
-   landscape art renders ~147px wide, which together with the wallet
-   pill + theme toggle + avatar overflows a 360-414px phone viewport
-   and shoves the whole grid off-screen. Source aspect is 1830 / 448 ≈
-   4.08, so the explicit width/height pairs below preserve it without
-   relying on aspect-ratio (which interacts awkwardly with the inline
-   width/height on the wrapper span). The image fills 100% of the span
-   via its own inline style, so resizing the span resizes the raster. */
+/* Top-bar shrinks the brand mark below tablet so the wallet pill +
+   theme toggle + avatar all fit on a 360-414px phone viewport. The new
+   mascot's source aspect is 2616 / 1632 ≈ 1.60, so the explicit
+   width/height pairs below preserve it without relying on aspect-ratio
+   (which interacts awkwardly with the inline width/height on the
+   wrapper span). The image fills 100% of the span via its own inline
+   style, so resizing the span resizes the raster. */
 @media (max-width: 719px) {
   .oz-topbar-wordmark > span {
-    width: 114px !important;
-    height: 28px !important;
+    width: 51px !important;
+    height: 32px !important;
   }
 }
 @media (max-width: 399px) {
   .oz-topbar-wordmark > span {
-    width: 98px !important;
-    height: 24px !important;
+    width: 45px !important;
+    height: 28px !important;
   }
 }
 
