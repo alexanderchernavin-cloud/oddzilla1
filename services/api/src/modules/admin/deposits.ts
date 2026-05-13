@@ -17,9 +17,10 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq, desc, sql } from "drizzle-orm";
+import { eq, desc, sql, and } from "drizzle-orm";
 import {
   depositIntents,
+  unattributedDeposits,
   wallets,
   walletLedger,
   adminAuditLog,
@@ -32,12 +33,29 @@ import {
 import { requireBalanceEditAdmin } from "../../lib/balance-edit-gate.js";
 import { networkToCurrency } from "@oddzilla/types/networks";
 
+// `wrong_token` is a sub-filter, not a column in deposit_intents.status.
+// It maps to status='rejected' AND failure_reason='wrong_token'.
 const listQuery = z.object({
   status: z
-    .enum(["pending", "confirming", "credited", "rejected"])
+    .enum(["pending", "confirming", "credited", "rejected", "wrong_token"])
     .optional(),
   userId: z.string().uuid().optional(),
+  acked: z.enum(["all", "unack", "ack"]).default("all"),
   limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+
+const unattributedListQuery = z.object({
+  acked: z.enum(["all", "unack", "ack"]).default("all"),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+
+const acknowledgeBody = z.object({
+  // Operator note; persisted on the ack so the audit trail records
+  // why this incident was considered handled.
+  note: z.string().max(500).optional(),
+  // When true, unsets acknowledged_at so an admin can re-open an alert
+  // they acked by mistake.
+  undo: z.boolean().optional(),
 });
 
 const creditBody = z.object({
@@ -58,8 +76,20 @@ export default async function adminDepositsRoutes(app: FastifyInstance) {
     const q = listQuery.parse(request.query);
 
     const conditions = [];
-    if (q.status) conditions.push(eq(depositIntents.status, q.status));
+    if (q.status === "wrong_token") {
+      conditions.push(
+        sql`${depositIntents.status} = 'rejected'`,
+        sql`${depositIntents.failureReason} = 'wrong_token'`,
+      );
+    } else if (q.status) {
+      conditions.push(eq(depositIntents.status, q.status));
+    }
     if (q.userId) conditions.push(eq(depositIntents.userId, q.userId));
+    if (q.acked === "unack") {
+      conditions.push(sql`${depositIntents.acknowledgedAt} IS NULL`);
+    } else if (q.acked === "ack") {
+      conditions.push(sql`${depositIntents.acknowledgedAt} IS NOT NULL`);
+    }
 
     // Surface the bettor's email + display name on every row so the
     // operator can pick the right intent without decoding 8 hex chars
@@ -94,11 +124,212 @@ export default async function adminDepositsRoutes(app: FastifyInstance) {
         confirmations: r.confirmations,
         status: r.status,
         failureReason: r.failureReason,
+        detectedTokenContract: r.detectedTokenContract,
+        detectedTokenAmountRaw: r.detectedTokenAmountRaw,
+        acknowledgedAt: r.acknowledgedAt?.toISOString() ?? null,
         submittedAt: r.submittedAt.toISOString(),
         creditedAt: r.creditedAt?.toISOString() ?? null,
         rejectedAt: r.rejectedAt?.toISOString() ?? null,
       })),
     };
+  });
+
+  // Alert counts for the admin sidebar badge. Tiny query against the
+  // two partial indexes — cheap enough to poll on every admin page load.
+  app.get("/admin/deposits/alert-counts", async (request) => {
+    request.requireRole("admin");
+    const rows = await app.db.execute<{
+      wrongTokenUnack: string;
+      unattributedUnack: string;
+    }>(sql`
+      SELECT
+        (SELECT COUNT(*)::text FROM deposit_intents
+          WHERE failure_reason = 'wrong_token' AND acknowledged_at IS NULL
+        ) AS "wrongTokenUnack",
+        (SELECT COUNT(*)::text FROM unattributed_deposits
+          WHERE acknowledged_at IS NULL
+        ) AS "unattributedUnack"
+    `);
+    const row = rows[0];
+    const wt = Number(row?.wrongTokenUnack ?? 0);
+    const ud = Number(row?.unattributedUnack ?? 0);
+    return {
+      wrongTokenUnack: wt,
+      unattributedUnack: ud,
+      total: wt + ud,
+    };
+  });
+
+  // Wider eth_getLogs scan picks up any ERC20 Transfer to the receive
+  // address from a contract other than USDC. List + acknowledge here.
+  app.get("/admin/deposits/unattributed", async (request) => {
+    request.requireRole("admin");
+    const q = unattributedListQuery.parse(request.query);
+
+    const conditions: ReturnType<typeof sql>[] = [];
+    if (q.acked === "unack") {
+      conditions.push(sql`${unattributedDeposits.acknowledgedAt} IS NULL`);
+    } else if (q.acked === "ack") {
+      conditions.push(sql`${unattributedDeposits.acknowledgedAt} IS NOT NULL`);
+    }
+
+    const rows = await app.db
+      .select()
+      .from(unattributedDeposits)
+      .where(conditions.length ? sql.join(conditions, sql` AND `) : sql`TRUE`)
+      .orderBy(desc(unattributedDeposits.detectedAt))
+      .limit(q.limit);
+
+    return {
+      deposits: rows.map((r) => ({
+        id: r.id,
+        network: r.network,
+        txHash: r.txHash,
+        logIndex: r.logIndex,
+        blockNumber: r.blockNumber.toString(),
+        blockHash: r.blockHash,
+        fromAddress: r.fromAddress,
+        toAddress: r.toAddress,
+        tokenContract: r.tokenContract,
+        tokenSymbol: r.tokenSymbol,
+        tokenDecimals: r.tokenDecimals,
+        amountRaw: r.amountRaw,
+        detectedAt: r.detectedAt.toISOString(),
+        acknowledgedAt: r.acknowledgedAt?.toISOString() ?? null,
+        note: r.note,
+      })),
+    };
+  });
+
+  // Toggle the acknowledged stamp on a deposit_intents row. Only valid
+  // for wrong_token failures (the alert surface) — credited / pending
+  // rows have nothing to acknowledge.
+  app.post("/admin/deposits/:id/acknowledge", async (request) => {
+    const admin = request.requireRole("admin");
+    const params = z.object({ id: z.string().uuid() }).parse(request.params);
+    const body = acknowledgeBody.parse(request.body ?? {});
+
+    await app.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(depositIntents)
+        .where(eq(depositIntents.id, params.id))
+        .for("update")
+        .limit(1);
+      if (!row) {
+        throw new NotFoundError("deposit_intent_not_found", "deposit_intent_not_found");
+      }
+      if (row.failureReason !== "wrong_token") {
+        throw new BadRequestError(
+          "not_a_wrong_token_alert",
+          "not_a_wrong_token_alert",
+        );
+      }
+      const isUndo = body.undo === true;
+      if (!isUndo && row.acknowledgedAt) {
+        throw new BadRequestError("already_acknowledged", "already_acknowledged");
+      }
+      if (isUndo && !row.acknowledgedAt) {
+        throw new BadRequestError("not_acknowledged", "not_acknowledged");
+      }
+
+      await tx
+        .update(depositIntents)
+        .set({
+          acknowledgedAt: isUndo ? null : new Date(),
+          acknowledgedByUserId: isUndo ? null : admin.id,
+        })
+        .where(eq(depositIntents.id, params.id));
+
+      await tx.insert(adminAuditLog).values({
+        actorUserId: admin.id,
+        action: isUndo
+          ? "deposit.wrong_token.unacknowledge"
+          : "deposit.wrong_token.acknowledge",
+        targetType: "deposit_intent",
+        targetId: row.id,
+        beforeJson: {
+          acknowledgedAt: row.acknowledgedAt?.toISOString() ?? null,
+        },
+        afterJson: {
+          acknowledgedAt: isUndo ? null : new Date().toISOString(),
+          note: body.note ?? null,
+          detectedTokenContract: row.detectedTokenContract,
+          detectedTokenAmountRaw: row.detectedTokenAmountRaw,
+          txHash: row.txHash,
+        },
+        ipInet: request.ip ?? null,
+      });
+    });
+
+    return { ok: true };
+  });
+
+  app.post("/admin/deposits/unattributed/:id/acknowledge", async (request) => {
+    const admin = request.requireRole("admin");
+    const params = z.object({ id: z.string().uuid() }).parse(request.params);
+    const body = acknowledgeBody.parse(request.body ?? {});
+
+    await app.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(unattributedDeposits)
+        .where(eq(unattributedDeposits.id, params.id))
+        .for("update")
+        .limit(1);
+      if (!row) {
+        throw new NotFoundError(
+          "unattributed_deposit_not_found",
+          "unattributed_deposit_not_found",
+        );
+      }
+      const isUndo = body.undo === true;
+      if (!isUndo && row.acknowledgedAt) {
+        throw new BadRequestError("already_acknowledged", "already_acknowledged");
+      }
+      if (isUndo && !row.acknowledgedAt) {
+        throw new BadRequestError("not_acknowledged", "not_acknowledged");
+      }
+
+      // When acking with a note, append it to existing notes (pipe-
+      // separated) so an auto-dedup mark from the watcher isn't lost.
+      let nextNote = row.note;
+      if (!isUndo && body.note) {
+        nextNote = row.note ? `${row.note} | ${body.note}` : body.note;
+      }
+
+      await tx
+        .update(unattributedDeposits)
+        .set({
+          acknowledgedAt: isUndo ? null : new Date(),
+          acknowledgedByUserId: isUndo ? null : admin.id,
+          note: nextNote,
+        })
+        .where(eq(unattributedDeposits.id, params.id));
+
+      await tx.insert(adminAuditLog).values({
+        actorUserId: admin.id,
+        action: isUndo
+          ? "deposit.unattributed.unacknowledge"
+          : "deposit.unattributed.acknowledge",
+        targetType: "unattributed_deposit",
+        targetId: row.id,
+        beforeJson: {
+          acknowledgedAt: row.acknowledgedAt?.toISOString() ?? null,
+          note: row.note,
+        },
+        afterJson: {
+          acknowledgedAt: isUndo ? null : new Date().toISOString(),
+          note: nextNote,
+          tokenContract: row.tokenContract,
+          amountRaw: row.amountRaw,
+          txHash: row.txHash,
+        },
+        ipInet: request.ip ?? null,
+      });
+    });
+
+    return { ok: true };
   });
 
   // Manually credit a deposit_intent. Used when the watcher couldn't

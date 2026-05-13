@@ -254,6 +254,64 @@ UPDATE deposit_intents
 	return nil
 }
 
+// RejectIntentWrongToken rejects with failure_reason='wrong_token' and
+// stamps the diagnostic columns so the admin Wrong-Token tab can show
+// "100 USDT @ 0xdAC1..." rather than a generic "no_usdc_transfer".
+// `amountRaw` is the uint256 amount as a decimal string — the unknown
+// token's decimals aren't known at this layer; UI applies them on render.
+// Idempotent across the same row state guard as RejectIntent.
+//
+// Also opportunistically acks any unattributed_deposits row that matches
+// the same (network, tx_hash): if the wider unattributed scan beat the
+// intent-rejection path to inserting the row, this dedups the alert so
+// admin sees one incident, not two.
+func (s *Store) RejectIntentWrongToken(ctx context.Context, id, tokenContract, amountRaw, fromAddr string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin reject wrong_token: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx, `
+UPDATE deposit_intents
+   SET status                    = 'rejected',
+       failure_reason            = 'wrong_token',
+       detected_token_contract   = $2,
+       detected_token_amount_raw = $3::NUMERIC,
+       from_address              = COALESCE(NULLIF($4, ''), from_address),
+       rejected_at               = NOW()
+ WHERE id = $1
+   AND status IN ('pending', 'confirming')`,
+		id, strings.ToLower(tokenContract), amountRaw, strings.ToLower(fromAddr),
+	)
+	if err != nil {
+		return fmt.Errorf("reject wrong_token: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return tx.Commit(ctx)
+	}
+
+	// Best-effort dedup against unattributed_deposits. We don't have
+	// log_index on the intent row, so match on (network, tx_hash). The
+	// note is appended so an existing manual note (if any) survives.
+	if _, err := tx.Exec(ctx, `
+UPDATE unattributed_deposits AS u
+   SET acknowledged_at = NOW(),
+       note            = TRIM(BOTH ' | ' FROM COALESCE(u.note, '') || ' | claimed by deposit_intent ' || $1::TEXT)
+  FROM deposit_intents AS d
+ WHERE d.id = $1
+   AND u.network = d.network
+   AND u.tx_hash = d.tx_hash
+   AND u.acknowledged_at IS NULL`, id); err != nil {
+		return fmt.Errorf("dedup unattributed: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit reject wrong_token: %w", err)
+	}
+	return nil
+}
+
 // CreditIntent runs the atomic transition:
 //
 //	UPDATE deposit_intents SET status='credited', credited_at=NOW()
@@ -326,5 +384,83 @@ func (s *Store) IntentByID(ctx context.Context, id string) (PendingIntent, error
 		return p, fmt.Errorf("intent by id: %w", err)
 	}
 	return p, nil
+}
+
+// UnattributedDeposit is a Transfer to the receive address from a
+// non-USDC contract. Filled by the wider eth_getLogs scan and surfaced
+// in the admin Unattributed tab. Symbol / decimals may be empty when
+// the contract's metadata calls failed — admin still sees the contract
+// address + raw uint256 amount.
+type UnattributedDeposit struct {
+	Network            string
+	TxHash             string
+	LogIndex           int
+	BlockNumber        int64
+	BlockHash          string
+	From               string
+	To                 string
+	TokenContract      string
+	TokenSymbol        string // empty = unknown
+	TokenDecimals      int
+	TokenDecimalsKnown bool
+	AmountRaw          string // decimal-string uint256
+}
+
+// InsertUnattributedDeposit records a wrong-token Transfer to the
+// receive address. Idempotent on (network, tx_hash, log_index) so
+// multi-Transfer txs don't collide and re-scans of the same block
+// range are no-ops.
+//
+// Skips insertion when a deposit_intent with the same (network,
+// tx_hash) already exists — that path will set failure_reason =
+// 'wrong_token' on the intent and surface the same incident in the
+// Wrong-Token tab, so we don't double-alert.
+func (s *Store) InsertUnattributedDeposit(ctx context.Context, d UnattributedDeposit) error {
+	var sym any
+	if d.TokenSymbol != "" {
+		sym = d.TokenSymbol
+	}
+	var dec any
+	if d.TokenDecimalsKnown {
+		dec = d.TokenDecimals
+	}
+	_, err := s.pool.Exec(ctx, `
+INSERT INTO unattributed_deposits
+  (network, tx_hash, log_index, block_number, block_hash,
+   from_address, to_address, token_contract,
+   token_symbol, token_decimals, amount_raw)
+SELECT $1::chain_network, $2, $3, $4, $5,
+       $6, $7, $8,
+       $9, $10, $11::NUMERIC
+ WHERE NOT EXISTS (
+   SELECT 1 FROM deposit_intents
+    WHERE network = $1::chain_network AND tx_hash = $2
+ )
+ON CONFLICT (network, tx_hash, log_index) DO NOTHING`,
+		d.Network, strings.ToLower(d.TxHash), d.LogIndex, d.BlockNumber, strings.ToLower(d.BlockHash),
+		strings.ToLower(d.From), strings.ToLower(d.To), strings.ToLower(d.TokenContract),
+		sym, dec, d.AmountRaw,
+	)
+	if err != nil {
+		return fmt.Errorf("insert unattributed deposit: %w", err)
+	}
+	return nil
+}
+
+// HasDepositIntentFor returns true when a deposit_intent already
+// claims this (network, tx_hash). Used by the discovery loop to skip
+// inserting an unattributed row that's already represented by an
+// intent — avoiding the double-alert.
+func (s *Store) HasDepositIntentFor(ctx context.Context, network, txHash string) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx, `
+SELECT EXISTS (
+  SELECT 1 FROM deposit_intents
+   WHERE network = $1::chain_network AND tx_hash = $2
+)`, network, strings.ToLower(txHash)).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("has intent: %w", err)
+	}
+	return exists, nil
 }
 
