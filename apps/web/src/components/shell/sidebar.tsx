@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState, useTransition, type ReactNode } from "react";
 import { SportGlyph } from "@/components/ui/sport-glyph";
+import { Wordmark } from "@/components/ui/monogram";
 import { I } from "@/components/ui/icons";
 import { LiveDot } from "@/components/ui/primitives";
 import { TierMark, isFeaturedTier } from "@/components/ui/tier-mark";
@@ -97,6 +98,31 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
         overflow: "auto",
       }}
     >
+      {/*
+        Brand mark at the top of the sidebar. Renders ~4× the old
+        top-bar wordmark (size=132 → 211×132 raster) so the brand is
+        unmistakable in the persistent left rail. Visible only on
+        desktop via `.oz-side-logo` in globals.css; on mobile / tablet
+        the sidebar is a drawer and the brand is in the top-bar.
+        Negative horizontal margin cancels the sidebar's 14px padding
+        so the mark can fill the full 240px column when desired.
+      */}
+      <Link
+        href="/"
+        aria-label="Oddzilla home"
+        className="oz-side-logo"
+        style={{
+          display: "none",
+          alignItems: "center",
+          justifyContent: "center",
+          margin: "-4px -6px 12px",
+          padding: "4px 0",
+          textDecoration: "none",
+        }}
+      >
+        <Wordmark size={132} priority />
+      </Link>
+
       <Item href="/" icon={<I.Grid size={15} />} active={isActive("/")} label="Lobby" />
       <Item
         href="/live"

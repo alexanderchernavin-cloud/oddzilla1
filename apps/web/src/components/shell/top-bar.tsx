@@ -7,7 +7,6 @@ import { I } from "@/components/ui/icons";
 import { Button } from "@/components/ui/primitives";
 import { ThemeToggle } from "./theme-toggle";
 import { useMobileDrawers } from "./mobile-drawer-context";
-import { TopBarSearch } from "./top-bar-search";
 import { WalletPill } from "./wallet-pill";
 import { UserMenu } from "./user-menu";
 import { NotificationPanel } from "./notification-panel";
@@ -88,6 +87,12 @@ export function TopBar({ signedIn, user }: TopBarProps) {
         <I.Grid size={18} />
       </button>
 
+      {/*
+        Brand mark — visible only on mobile (below 720px) where the
+        sidebar is a drawer. Tablet and desktop hide this and show the
+        full-size `.oz-side-logo` at the top of the sidebar instead;
+        see the @media rule in globals.css.
+      */}
       <Link
         href="/"
         className="oz-topbar-wordmark"
@@ -101,9 +106,6 @@ export function TopBar({ signedIn, user }: TopBarProps) {
       >
         <Wordmark size={36} priority />
       </Link>
-
-      {/* Search — hidden under ~900px via .oz-topbar-search CSS */}
-      <TopBarSearch />
 
       <div style={{ flex: 1 }} />
 
