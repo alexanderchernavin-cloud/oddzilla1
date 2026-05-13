@@ -10,7 +10,6 @@ import { SportGlyph } from "@/components/ui/sport-glyph";
 import { ThreeFoldCards } from "@/components/lobby/three-fold-cards";
 import { TodayLabel } from "@/components/lobby/today-label";
 import { TopBarSearch } from "@/components/shell/top-bar-search";
-import { Wordmark } from "@/components/ui/monogram";
 import { buildThreeFoldSuggestions } from "@/lib/three-fold-builder";
 import {
   orderMatchesBySport,
@@ -63,25 +62,13 @@ export default async function HomePage() {
       }}
     >
       {/*
-        Lobby header. Layout flips at the mobile breakpoint:
-          • Desktop / tablet (≥720px): no logo here (the sidebar carries
-            the brand). Date kicker on the left, search input on the
-            right of the same row.
-          • Mobile (<720px): the brand mark moves out of the top bar
-            and lives here on the left, stretched to the column's
-            full height (date + search stacked) so the three elements
-            line up flush.
-        CSS rules in globals.css key off `.oz-lobby-header` and
-        `.oz-lobby-mobile-logo`.
+        Lobby header. Date kicker on the left, search input on the right
+        of the same row at tablet / desktop; date + search stack
+        vertically on mobile. The brand mark lives in the top bar on
+        mobile and in the docked sidebar on tablet / desktop, so this
+        header no longer carries it.
       */}
       <header className="oz-lobby-header">
-        <a
-          href="/"
-          className="oz-lobby-mobile-logo"
-          aria-label="Oddzilla home"
-        >
-          <Wordmark size={80} priority />
-        </a>
         <div className="oz-lobby-header-content">
           <TodayLabel />
           <div className="oz-lobby-search">
