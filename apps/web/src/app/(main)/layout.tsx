@@ -78,7 +78,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
         <main className="oz-main">
           <div className="oz-main-inner">{children}</div>
         </main>
-        <BetSlipRail />
+        <BetSlipRail signedIn={Boolean(user)} user={user ?? undefined} />
         <MobileShellOverlay />
         <MobileBetSlipBar />
       </ShellContainer>
