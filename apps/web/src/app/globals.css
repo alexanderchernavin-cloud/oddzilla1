@@ -315,6 +315,18 @@ body {
    on desktop otherwise. Re-shown under the mobile breakpoint below. */
 .oz-sidebar-theme { display: none !important; }
 
+/* Brand mark in the sidebar header (size=132 Wordmark). Visible
+   whenever the sidebar is docked (tablet + desktop, ≥720px); hidden
+   on mobile where the sidebar is a drawer and the small `.oz-topbar-
+   wordmark` carries the brand in the always-visible top bar. The
+   reverse rule for `.oz-topbar-wordmark` lives at the bottom of this
+   file. */
+.oz-side-logo { display: none; }
+@media (min-width: 720px) {
+  .oz-side-logo { display: flex !important; }
+  .oz-topbar-wordmark { display: none !important; }
+}
+
 /* Inline widget toggle + container on the match page is mobile-only;
    on desktop the same widget renders in the right rail. */
 .oz-match-prematch-mobile { display: none !important; }
@@ -582,7 +594,6 @@ body {
     max-height: calc(100dvh - 96px) !important;
   }
   .oz-topbar-toggle { display: inline-flex !important; }
-  .oz-topbar-search { display: none !important; }
   .oz-topbar-bell { display: none !important; }
   /* Theme toggle moves into the sidebar drawer on mobile so the top
      bar has room for the wallet pill + avatar on a 360-414px phone.

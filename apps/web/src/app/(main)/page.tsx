@@ -9,6 +9,7 @@ import { SectionHeader } from "@/components/match/section-header";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { ThreeFoldCards } from "@/components/lobby/three-fold-cards";
 import { TodayLabel } from "@/components/lobby/today-label";
+import { TopBarSearch } from "@/components/shell/top-bar-search";
 import { buildThreeFoldSuggestions } from "@/lib/three-fold-builder";
 import {
   orderMatchesBySport,
@@ -60,8 +61,31 @@ export default async function HomePage() {
         maxWidth: 1100,
       }}
     >
-      <header>
+      {/*
+        Lobby header: date kicker on the left, global search input on
+        the right. The search lived in the top bar before this; folding
+        it into the page header keeps the top bar slim and gives the
+        input room to breathe on desktop. On narrow viewports the row
+        wraps so the search drops below the date instead of squeezing
+        it off-screen — see `.oz-lobby-header` in globals.css.
+      */}
+      <header
+        className="oz-lobby-header"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 16,
+          flexWrap: "wrap",
+        }}
+      >
         <TodayLabel />
+        <div
+          className="oz-lobby-search"
+          style={{ flex: "0 1 420px", minWidth: 0 }}
+        >
+          <TopBarSearch />
+        </div>
       </header>
 
       <ThreeFoldCards suggestions={threeFoldSuggestions} />

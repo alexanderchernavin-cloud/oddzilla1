@@ -183,11 +183,9 @@ export function TopBarSearch() {
   return (
     <div
       ref={wrapperRef}
-      className="oz-topbar-search"
+      className="oz-search-popover"
       style={{
-        flex: 1,
-        maxWidth: 460,
-        marginLeft: 16,
+        width: "100%",
         minWidth: 0,
         position: "relative",
       }}
