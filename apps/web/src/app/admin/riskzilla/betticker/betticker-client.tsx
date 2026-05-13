@@ -2,19 +2,29 @@
 
 // Live decision feed. Polls /admin/riskzilla/events every POLL_MS and
 // merges new rows into the front of the list while preserving older
-// ones already on screen. Same filter surface as the Bets page minus
-// the date range (this view is always "now"). Currency comes from the
-// layout-level switch.
+// ones already on screen. Same column structure as the Bets page (via
+// the shared events-table module) — operators get matching mental
+// models across both surfaces. The visibility + width choices are
+// persisted under a betticker-specific localStorage key so each page
+// keeps its own layout preference.
+//
+// No sort controls: the feed is always recency-first server-side.
+// onSort is omitted, so the shared table renders plain header labels.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
-import { EventRow } from "../events-row";
-import type { EventDto } from "../events-row";
 import { useRiskzillaCurrency } from "../currency-switch";
+import {
+  ColumnSettings,
+  EventsTable,
+  useColumnLayout,
+  type EventDto,
+} from "../events-table";
 import { toMicro } from "@oddzilla/types/money";
 
 const POLL_MS = 3000;
 const MAX_ROWS = 250;
+const COLUMN_STORAGE_KEY = "oz:admin:riskzilla:betticker:columns:v1";
 
 const STATUS_PILLS = [
   { key: "all", label: "All" },
@@ -64,6 +74,7 @@ export function BettickerClient() {
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [sports, setSports] = useState<SportOption[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const columnLayout = useColumnLayout(COLUMN_STORAGE_KEY);
 
   useEffect(() => {
     let cancelled = false;
@@ -327,6 +338,31 @@ export function BettickerClient() {
         )}
       </section>
 
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          alignItems: "center",
+          flexWrap: "wrap",
+        }}
+      >
+        <span
+          className="mono"
+          style={{
+            fontSize: 11,
+            color: "var(--color-fg-muted)",
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+          }}
+        >
+          {rows.length.toLocaleString()} event{rows.length === 1 ? "" : "s"} ·{" "}
+          {filters.paused ? "paused" : `auto-refresh ${POLL_MS / 1000}s`} ·{" "}
+          {currency} view
+        </span>
+        <span style={{ flex: 1 }} />
+        <ColumnSettings layout={columnLayout} />
+      </div>
+
       {stakeError && (
         <div
           style={{
@@ -353,15 +389,13 @@ export function BettickerClient() {
           {error}
         </div>
       )}
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        {rows.length === 0 ? (
-          <p style={{ fontSize: 13, color: "var(--color-fg-muted)" }}>
-            No events yet. Place a bet on the storefront to see it here.
-          </p>
-        ) : (
-          rows.map((r) => <EventRow key={r.id} row={r} />)
-        )}
-      </div>
+
+      <EventsTable
+        rows={rows}
+        loading={false}
+        layout={columnLayout}
+        emptyText="No events yet. Place a bet on the storefront to see it here."
+      />
     </div>
   );
 }
