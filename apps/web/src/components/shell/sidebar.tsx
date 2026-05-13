@@ -99,13 +99,14 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
       }}
     >
       {/*
-        Brand mark at the top of the sidebar. Renders ~4× the old
-        top-bar wordmark (size=132 → 211×132 raster) so the brand is
-        unmistakable in the persistent left rail. Visible only on
-        desktop via `.oz-side-logo` in globals.css; on mobile / tablet
-        the sidebar is a drawer and the brand is in the top-bar.
-        Negative horizontal margin cancels the sidebar's 14px padding
-        so the mark can fill the full 240px column when desired.
+        Brand mark at the top of the sidebar. size=240 renders the
+        wordmark at 211×240 (WORDMARK_ASPECT ≈ 0.878), which lines up
+        the mascot's width with the 240px sidebar column minus a small
+        breathing margin on each side (column 240 − padding 14×2 +
+        negative margin 6×2 = 224 effective; 224 − 211 = 13 → ~6.5px
+        each side). Visible only on desktop via `.oz-side-logo` in
+        globals.css; on mobile / tablet the sidebar is a drawer and the
+        brand is in the top-bar.
       */}
       <Link
         href="/"
@@ -120,7 +121,7 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
           textDecoration: "none",
         }}
       >
-        <Wordmark size={132} priority />
+        <Wordmark size={240} priority />
       </Link>
 
       <Item href="/" icon={<I.Grid size={15} />} active={isActive("/")} label="Lobby" />
