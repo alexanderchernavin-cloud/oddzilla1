@@ -349,6 +349,16 @@ export function BetsClient() {
       {stakeError && <div style={errorStyle}>{stakeError}</div>}
       {error && <div style={errorStyle}>{error}</div>}
 
+      {total > 0 && (
+        <Pagination
+          page={page}
+          totalPages={totalPages}
+          loading={loading}
+          onChange={setPage}
+          position="top"
+        />
+      )}
+
       <BetsTable
         rows={rows}
         loading={loading}
@@ -917,11 +927,13 @@ function Pagination({
   totalPages,
   loading,
   onChange,
+  position = "bottom",
 }: {
   page: number;
   totalPages: number;
   loading: boolean;
   onChange: (p: number) => void;
+  position?: "top" | "bottom";
 }) {
   const pages = useMemo(() => {
     const result: (number | "…")[] = [];
@@ -940,6 +952,8 @@ function Pagination({
     return result;
   }, [page, totalPages]);
 
+  const isTop = position === "top";
+
   return (
     <div
       style={{
@@ -947,8 +961,10 @@ function Pagination({
         alignItems: "center",
         justifyContent: "center",
         gap: 6,
-        paddingTop: 8,
-        borderTop: "1px solid var(--color-border)",
+        paddingTop: isTop ? 0 : 8,
+        paddingBottom: isTop ? 8 : 0,
+        borderTop: isTop ? "none" : "1px solid var(--color-border)",
+        borderBottom: isTop ? "1px solid var(--color-border)" : "none",
         flexWrap: "wrap",
       }}
     >
