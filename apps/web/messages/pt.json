@@ -173,6 +173,17 @@
     "threeFoldTitle": "Tripla do dia",
     "threeFoldSubtitle": "Combinações selecionadas para começar."
   },
+  "threeFold": {
+    "safeLabel": "Segura",
+    "safeTagline": "Construa com favoritos",
+    "challengingLabel": "Desafiadora",
+    "challengingTagline": "Múltipla de risco médio",
+    "riskyLabel": "Arriscada",
+    "riskyTagline": "Empurre a cotação",
+    "ultimateLabel": "Extrema",
+    "ultimateTagline": "Tripla improvável",
+    "aria": "Carregar tripla {tier} com cota combinada {odds}"
+  },
   "sport": {
     "all": "Todas",
     "live": "Ao vivo",

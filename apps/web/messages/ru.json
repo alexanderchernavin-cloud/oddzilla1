@@ -173,6 +173,17 @@
     "threeFoldTitle": "Тройка дня",
     "threeFoldSubtitle": "Готовые экспрессы для быстрого старта."
   },
+  "threeFold": {
+    "safeLabel": "Надёжная",
+    "safeTagline": "Ставка с фаворитами",
+    "challengingLabel": "Средняя",
+    "challengingTagline": "Умеренный риск",
+    "riskyLabel": "Рискованная",
+    "riskyTagline": "Выше коэффициент",
+    "ultimateLabel": "Экстрим",
+    "ultimateTagline": "Тройка-аутсайдер",
+    "aria": "Загрузить тройку {tier} с общим коэффициентом {odds}"
+  },
   "sport": {
     "all": "Все",
     "live": "Live",

@@ -173,6 +173,17 @@
     "threeFoldTitle": "Three-fold of the day",
     "threeFoldSubtitle": "Hand-picked combos to get you started."
   },
+  "threeFold": {
+    "safeLabel": "Safe",
+    "safeTagline": "Build with favorites",
+    "challengingLabel": "Challenging",
+    "challengingTagline": "Mid-risk multi",
+    "riskyLabel": "Risky",
+    "riskyTagline": "Push the price",
+    "ultimateLabel": "Ultimate",
+    "ultimateTagline": "Long-shot 3-fold",
+    "aria": "Load {tier} 3-fold at combined odds {odds}"
+  },
   "sport": {
     "all": "All",
     "live": "Live",

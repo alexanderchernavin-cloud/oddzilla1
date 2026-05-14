@@ -173,6 +173,17 @@
     "threeFoldTitle": "Trojce dne",
     "threeFoldSubtitle": "Vybrané kombinace pro rychlý start."
   },
+  "threeFold": {
+    "safeLabel": "Jisté",
+    "safeTagline": "Sázka s favority",
+    "challengingLabel": "Náročné",
+    "challengingTagline": "Střední riziko",
+    "riskyLabel": "Riskantní",
+    "riskyTagline": "Vyšší kurz",
+    "ultimateLabel": "Extrém",
+    "ultimateTagline": "Outsider AKO",
+    "aria": "Načíst {tier} AKO s celkovým kurzem {odds}"
+  },
   "sport": {
     "all": "Vše",
     "live": "Živě",

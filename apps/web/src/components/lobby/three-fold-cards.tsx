@@ -5,6 +5,7 @@ import { useMemo, useRef } from "react";
 import { useBetSlip } from "@/lib/bet-slip";
 import { useOddsFlash } from "@/lib/use-odds-flash";
 import { useLiveOddsForMatches, type LiveOddsTick } from "@/lib/use-live-odds";
+import { useTranslations } from "@/lib/i18n";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { computeCombiBoost } from "@oddzilla/types/combi-boost";
 import { useCombiBoostConfig } from "@/lib/combi-boost-config";
@@ -23,38 +24,23 @@ interface TierMeta {
   Icon: (props: { size: number; color: string }) => JSX.Element;
 }
 
-// Accents kept muted — we only colour the icon, the tier word, and a
-// thin badge. The card body itself stays neutral so the lobby doesn't
-// turn into a traffic-light wall.
-const TIERS: TierMeta[] = [
-  {
-    key: "safe",
-    label: "Safe",
-    tagline: "Build with favorites",
-    accent: "#15803d",
-    Icon: ShieldIcon,
-  },
-  {
-    key: "challenging",
-    label: "Challenging",
-    tagline: "Mid-risk multi",
-    accent: "#b45309",
-    Icon: BoltIcon,
-  },
-  {
-    key: "risky",
-    label: "Risky",
-    tagline: "Push the price",
-    accent: "#c2410c",
-    Icon: FlameIcon,
-  },
-  {
-    key: "ultimate",
-    label: "Ultimate",
-    tagline: "Long-shot 3-fold",
-    accent: "#b91c1c",
-    Icon: SkullIcon,
-  },
+// Static portion of the tier metadata — colour + icon + (tier-key)
+// pairing. The two human-readable strings (label + tagline) are
+// resolved per-render from the i18n dictionary so they flip with the
+// active locale. Accents kept muted — we only colour the icon, the
+// tier word, and a thin badge. The card body itself stays neutral so
+// the lobby doesn't turn into a traffic-light wall.
+interface TierStatic {
+  key: TierKey;
+  accent: string;
+  Icon: (props: { size: number; color: string }) => JSX.Element;
+}
+
+const TIER_STATIC: TierStatic[] = [
+  { key: "safe", accent: "#15803d", Icon: ShieldIcon },
+  { key: "challenging", accent: "#b45309", Icon: BoltIcon },
+  { key: "risky", accent: "#c2410c", Icon: FlameIcon },
+  { key: "ultimate", accent: "#b91c1c", Icon: SkullIcon },
 ];
 
 export function ThreeFoldCards({
@@ -64,6 +50,20 @@ export function ThreeFoldCards({
 }) {
   const slip = useBetSlip();
   const boostCfg = useCombiBoostConfig();
+  const t = useTranslations("threeFold");
+
+  // Hydrate the static metadata with locale-aware label + tagline.
+  // Dictionary keys follow the `<tier>Label` / `<tier>Tagline` convention
+  // — see messages/<locale>.json #threeFold.
+  const TIERS: TierMeta[] = useMemo(
+    () =>
+      TIER_STATIC.map((s) => ({
+        ...s,
+        label: t(`${s.key}Label`),
+        tagline: t(`${s.key}Tagline`),
+      })),
+    [t],
+  );
   const visibleTiers = TIERS.filter((t) => suggestions[t.key]);
 
   const matchIds = useMemo(() => {
@@ -135,6 +135,7 @@ function Card({
   onActivate: (legs: ThreeFoldLeg[]) => void;
   boostCfg: ReturnType<typeof useCombiBoostConfig>;
 }) {
+  const t = useTranslations("threeFold");
   // Overlay live ticks onto the snapshot legs. Inactive ticks (market
   // suspended) are dropped — the snapshot odds remain visible until the
   // outcome reactivates, mirroring how the bet-slip rail behaves.
@@ -194,7 +195,7 @@ function Card({
       onMouseLeave={(e) => {
         (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--border)";
       }}
-      aria-label={`Load ${tier.label} 3-fold suggestion at combined odds ${boostedStr}${boostActive ? ` (boosted from ${baseCombinedStr})` : ""}`}
+      aria-label={t("aria", { tier: tier.label, odds: boostActive ? boostedStr : baseCombinedStr })}
     >
       <div
         style={{
@@ -266,8 +267,10 @@ function Card({
 }
 
 function LegRow({ leg }: { leg: ThreeFoldLeg }) {
+  const tMatch = useTranslations("match");
   const opponent = leg.pickedSide === "home" ? leg.awayTeam : leg.homeTeam;
   const oddsNum = Number.parseFloat(leg.odds);
+  const vsLabel = tMatch("vs");
   return (
     <div
       style={{
@@ -303,9 +306,9 @@ function LegRow({ leg }: { leg: ThreeFoldLeg }) {
           minWidth: 0,
           flexShrink: 1,
         }}
-        title={`vs ${opponent}`}
+        title={`${vsLabel} ${opponent}`}
       >
-        vs {opponent}
+        {vsLabel} {opponent}
       </span>
       <div style={{ flex: 1 }} />
       <OddsChip price={Number.isFinite(oddsNum) ? oddsNum : null} size="sm">
