@@ -539,6 +539,34 @@ func flushBeforeRecover(ctx context.Context, deps handler.Deps, log zerolog.Logg
 		Int64("suspended_markets", summary.SuspendedMarkets).
 		Int64("suspended_outcomes", summary.SuspendedOutcomes).
 		Msg("flush-before-recover complete; awaiting replay to re-activate")
+
+	// Rewind the recovery cursor for both producers to the full
+	// RecoveryWindowCap. Without this, the cursor stays pinned to "now
+	// minus a few seconds" (BumpAfterTs bumps it on every odds_change
+	// the ingester processed before this reconnect), so the subsequent
+	// InitiateRecovery asks Oddin to replay only the past few seconds
+	// — and stable prematch markets that haven't changed in hours
+	// never get re-confirmed. Result: the flush suspends everything,
+	// the replay re-activates ~nothing, and matches surface to the
+	// storefront with most of their markets stuck at status=-1.
+	//
+	// Safe to overwrite unconditionally here because OnConnect runs
+	// synchronously BEFORE the consumer's delivery loop starts, so no
+	// odds_change handler is concurrently calling BumpAfterTs. The
+	// next BumpAfterTs from the replay's first odds_change will move
+	// the cursor forward from the rewound value normally.
+	rewoundMs := time.Now().Add(-handler.RecoveryWindowCap).UnixMilli()
+	for _, key := range []string{"producer:1", "producer:2"} {
+		if rerr := store.RewindAfterTs(ctx, deps.Store.Pool(), key, rewoundMs); rerr != nil {
+			log.Warn().Err(rerr).Str("key", key).
+				Msg("flush: rewind after_ts failed; recovery window will be too narrow")
+		}
+	}
+	log.Info().
+		Int64("rewound_to_ms", rewoundMs).
+		Dur("window", handler.RecoveryWindowCap).
+		Msg("flush: rewound recovery cursor for full replay window")
+
 	// Broadcast the status flip per market so any open storefront
 	// session locks placement immediately — without this the page
 	// keeps showing pre-flush prices until Oddin's replay reaches the

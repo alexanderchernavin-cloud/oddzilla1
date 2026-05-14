@@ -624,7 +624,7 @@ func TriggerRecovery(ctx context.Context, d Deps, log zerolog.Logger) {
 	}
 }
 
-// recoveryWindowCap is the maximum lookback we ever request from Oddin.
+// RecoveryWindowCap is the maximum lookback we ever request from Oddin.
 // Oddin's hard limit is 3 days; their rate-limit tiers escalate past
 // 1 day (per ODDIN.md § "Rate limits"). Keeping the cap at 24 h keeps
 // us in the lenient tier (20/10 min, 60/hr) so a reconnect storm during
@@ -633,7 +633,7 @@ func TriggerRecovery(ctx context.Context, d Deps, log zerolog.Logger) {
 // that window simply don't replay, which under the suspend-before-
 // recover pattern means those markets stay suspended and drop from
 // listings — strictly safer than silently keeping stale state.
-const recoveryWindowCap = 24 * time.Hour
+const RecoveryWindowCap = 24 * time.Hour
 
 func triggerRecoveryForProduct(ctx context.Context, d Deps, product int) {
 	if d.Rest == nil {
@@ -648,19 +648,19 @@ func triggerRecoveryForProduct(ctx context.Context, d Deps, product int) {
 		d.Log.Warn().Err(err).Int("product", product).Msg("recovery: read cursor failed")
 		// Fall through with afterMs=0 so Oddin sends just current state.
 	}
-	// Clamp the cursor to recoveryWindowCap. A cursor older than the cap
+	// Clamp the cursor to RecoveryWindowCap. A cursor older than the cap
 	// means we've been offline beyond the window we want to replay; the
 	// clamp keeps the request within Oddin's lenient rate-limit tier and
 	// bounds the volume of replayed messages. Pairs with the
 	// suspend-before-recover flush — markets unmentioned in the clamped
 	// window stay suspended.
 	if afterMs > 0 {
-		minAllowedMs := time.Now().Add(-recoveryWindowCap).UnixMilli()
+		minAllowedMs := time.Now().Add(-RecoveryWindowCap).UnixMilli()
 		if afterMs < minAllowedMs {
 			d.Log.Warn().Int("product", product).
 				Int64("after_ms_actual", afterMs).
 				Int64("after_ms_clamped", minAllowedMs).
-				Dur("cap", recoveryWindowCap).
+				Dur("cap", RecoveryWindowCap).
 				Msg("recovery: cursor older than cap; clamping window")
 			afterMs = minAllowedMs
 		}
