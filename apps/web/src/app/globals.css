@@ -371,33 +371,51 @@ body {
 }
 
 /* Shell-level global search, rendered by the (main) layout at the top
-   of `.oz-main-inner`. Sticky to the top of the scrolling main column
-   so the input stays accessible from every page at every breakpoint.
-   The lobby's old `oz-lobby-search` is dropped in favour of this one
-   so the home page doesn't render two search fields stacked. */
+   of `.oz-main-inner`. Sticky so it stays reachable as the page
+   scrolls. On tablet + desktop the wrapper has zero effective vertical
+   footprint (margin-bottom collapses it against the next sibling) so
+   the page's own header — back link, date kicker, sport title — flows
+   up into the same line on the left while the search hovers top-right.
+   `pointer-events: none` on the wrapper lets clicks pass through the
+   empty parts of the strip to the page content underneath; the input
+   itself overrides back to `auto`. On mobile the wrapper falls back
+   to a regular flow row because a 360-px viewport can't host both
+   side-by-side. */
 .oz-shell-search {
   position: sticky;
   top: 0;
   z-index: 30;
   display: flex;
   justify-content: flex-end;
-  padding: 14px 32px 12px;
-  background: color-mix(in oklab, var(--bg) 88%, transparent);
-  backdrop-filter: blur(12px);
+  padding: 22px 32px 0;
+  margin-bottom: -58px;
+  pointer-events: none;
 }
 .oz-shell-search > * {
   width: 100%;
   max-width: 460px;
+  pointer-events: auto;
 }
 @media (max-width: 1099px) {
-  .oz-shell-search { padding: 12px 16px; }
+  .oz-shell-search {
+    padding: 18px 16px 0;
+    margin-bottom: -54px;
+  }
+  .oz-shell-search > * { max-width: 340px; }
 }
 @media (max-width: 719px) {
-  /* Override the mobile `.oz-main-inner > *` blanket padding rule —
-     the sticky search bar must not inherit the 80px bottom slot that
-     the rule carves out for the bet-slip bar. */
+  /* Mobile reverts to a normal row above the page content — the
+     overlap trick can't survive a 360-px viewport without colliding
+     with whatever the page renders at top-left. */
+  .oz-shell-search {
+    position: static;
+    margin-bottom: 0;
+    pointer-events: auto;
+  }
+  /* Reset the global `.oz-main-inner > *` mobile blanket padding so
+     the search bar doesn't inherit the 80-px bet-slip bottom slot. */
   .oz-main-inner > .oz-shell-search {
-    padding: 10px 12px !important;
+    padding: 10px 12px 0 !important;
   }
   .oz-shell-search > * { max-width: none; }
 }
