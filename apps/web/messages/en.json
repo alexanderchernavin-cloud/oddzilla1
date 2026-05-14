@@ -225,6 +225,8 @@
     "title": "My bets",
     "all": "All",
     "open": "Open",
+    "accepted": "Accepted",
+    "rejected": "Rejected",
     "settled": "Settled",
     "wins": "Wins",
     "losses": "Losses",
@@ -244,7 +246,15 @@
     "ticket": "Ticket",
     "legs": "Legs",
     "status": "Status",
-    "result": "Result"
+    "result": "Result",
+    "potentialWin": "Potential win",
+    "matchUnavailable": "Match unavailable",
+    "outcomeFallback": "outcome {id}",
+    "selectionMetadataUnavailable": "Selection metadata unavailable",
+    "reasonPrefix": "Reason: {reason}",
+    "currentLabel": "current",
+    "outcomeSuspendedHint": "outcome currently suspended",
+    "nowPrefix": "now"
   },
   "account": {
     "title": "Account settings",

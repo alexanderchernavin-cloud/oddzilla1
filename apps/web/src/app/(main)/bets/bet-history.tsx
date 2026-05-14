@@ -12,15 +12,6 @@ import { useTicketStream } from "@/lib/use-ticket-stream";
 import { useTranslations } from "@/lib/i18n";
 import { CashoutPanel } from "./cashout-panel";
 
-const STATUS_LABEL: Record<TicketStatus, string> = {
-  pending_delay: "Pending",
-  accepted: "Accepted",
-  rejected: "Rejected",
-  settled: "Settled",
-  voided: "Voided",
-  cashed_out: "Cashed out",
-};
-
 const STATUS_COLOR: Record<TicketStatus, string> = {
   pending_delay: "text-[var(--color-warning)]",
   accepted: "text-[var(--color-accent)]",
@@ -30,30 +21,48 @@ const STATUS_COLOR: Record<TicketStatus, string> = {
   cashed_out: "text-[var(--color-fg-muted)]",
 };
 
-function resolveStatusBadge(ticket: TicketSummary): {
-  label: string;
-  color: string;
-} {
+// Locale-aware status badge resolver. The "settled" branch decides
+// between Won / Voided / Lost from the payout-vs-stake comparison so a
+// fully refunded ticket reads as Voided, not Won. Other statuses come
+// straight from the dictionary.
+function resolveStatusBadge(
+  ticket: TicketSummary,
+  tBets: (key: string, vals?: Record<string, string | number>) => string,
+  tTicket: (key: string, vals?: Record<string, string | number>) => string,
+): { label: string; color: string } {
   if (ticket.status === "settled") {
-    // Compare against stake, not 0. A fully voided ticket has
-    // actual_payout == stake (refund), not 0 — labeling it "Won"
-    // would mis-frame a refund as a winning ticket. A half-lost or
-    // partially-voided ticket has 0 < payout < stake and is correctly
-    // a Lost (the bettor still came out behind).
     const payout = ticket.actualPayoutMicro
       ? BigInt(ticket.actualPayoutMicro)
       : 0n;
     const stake = BigInt(ticket.stakeMicro);
     if (payout > stake) {
-      return { label: "Won", color: "text-[var(--color-positive)]" };
+      return { label: tTicket("won"), color: "text-[var(--color-positive)]" };
     }
     if (payout === stake) {
-      return { label: "Voided", color: "text-[var(--color-fg-muted)]" };
+      return { label: tBets("voided"), color: "text-[var(--color-fg-muted)]" };
     }
-    return { label: "Lost", color: "text-[var(--color-negative)]" };
+    return { label: tTicket("lost"), color: "text-[var(--color-negative)]" };
   }
+  const STATUS_KEY: Record<TicketStatus, string> = {
+    pending_delay: "pending",
+    accepted: "accepted",
+    rejected: "rejected",
+    settled: "settled",
+    voided: "voided",
+    cashed_out: "cashedOut",
+  };
+  // Map pending_delay → ticket.pending; the rest live under bets so
+  // we don't bloat the ticket namespace with statuses that aren't
+  // result labels (cashed_out is a status, not a per-leg result).
+  const key = STATUS_KEY[ticket.status];
+  const label =
+    ticket.status === "pending_delay"
+      ? tTicket("pending")
+      : ticket.status === "cashed_out"
+        ? tTicket("cashedOut")
+        : tBets(key);
   return {
-    label: STATUS_LABEL[ticket.status],
+    label,
     color: STATUS_COLOR[ticket.status],
   };
 }
@@ -141,6 +150,10 @@ function TicketRow({
     cashedOutAt: string,
   ) => void;
 }) {
+  const tBets = useTranslations("bets");
+  const tTicket = useTranslations("ticket");
+  const tSlip = useTranslations("betSlip");
+  const tMatch = useTranslations("match");
   const stakeMicro = BigInt(ticket.stakeMicro);
   const stake = fromMicro(stakeMicro);
   const potential = fromMicro(BigInt(ticket.potentialPayoutMicro));
@@ -203,18 +216,34 @@ function TicketRow({
     }
   }
 
-  const badge = resolveStatusBadge(ticket);
+  const badge = resolveStatusBadge(ticket, tBets, tTicket);
+
+  // The API returns the bet type as the enum string ("single"/"combo"/…);
+  // we render it as an UPPERCASE pill (CSS text-transform). Look up the
+  // localized noun first, fall back to the raw enum on unknown shapes.
+  const betTypeKeyMap: Record<string, string> = {
+    single: "single",
+    combo: "combo",
+    betbuilder: "betbuilder",
+    tippot: "tippot",
+    tiple: "tiple",
+  };
+  const betTypeLabel =
+    betTypeKeyMap[ticket.betType]
+      ? tSlip(betTypeKeyMap[ticket.betType] as string)
+      : ticket.betType;
+  const legsLabel = tSlip("legs", { count: legCount });
 
   return (
     <li className="card p-5">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-            <span>{ticket.betType}</span>
+            <span>{betTypeLabel}</span>
             {legCount > 1 ? (
               <>
                 <span>·</span>
-                <span>{legCount} legs</span>
+                <span>{legsLabel}</span>
               </>
             ) : null}
             <span>·</span>
@@ -251,16 +280,17 @@ function TicketRow({
                   s.oddsAtPlacement;
                 const currentOdds = m ? fmtOdds(m.currentOdds) : null;
                 const matchLabel = m
-                  ? `${m.homeTeam} vs ${m.awayTeam}`
-                  : "Match unavailable";
+                  ? `${m.homeTeam} ${tMatch("vs")} ${m.awayTeam}`
+                  : tBets("matchUnavailable");
                 const outcomeLabel =
-                  m?.outcomeName?.trim() || `outcome ${s.outcomeId}`;
+                  m?.outcomeName?.trim() ||
+                  tBets("outcomeFallback", { id: s.outcomeId });
                 const tagLabel = isWon
-                  ? "WON"
+                  ? tTicket("won")
                   : isLost
-                    ? "LOST"
+                    ? tTicket("lost")
                     : isVoid
-                      ? "VOID"
+                      ? tTicket("void")
                       : null;
                 const effectiveFactor = isVoid
                   ? "×1.00"
@@ -326,7 +356,7 @@ function TicketRow({
                       {tagLabel ? (
                         <span
                           className={
-                            "font-mono text-[10px] tracking-[0.06em] font-semibold " +
+                            "font-mono text-[10px] tracking-[0.06em] font-semibold uppercase " +
                             legResultClass
                           }
                         >
@@ -354,7 +384,7 @@ function TicketRow({
                     {showLegCurrent ? (
                       <div className="flex items-center justify-end gap-2 text-[11px]">
                         <span className="text-[var(--color-fg-subtle)]">
-                          current
+                          {tBets("currentLabel")}
                         </span>
                         <span className="font-mono text-[var(--color-fg-muted)]">
                           {currentOdds}
@@ -363,12 +393,12 @@ function TicketRow({
                           {driftArrow}{" "}
                           {driftPct !== null && driftDir !== "flat"
                             ? `${driftPct > 0 ? "+" : ""}${driftPct.toFixed(1)}%`
-                            : "flat"}
+                            : "·"}
                         </span>
                       </div>
                     ) : showLegInactiveHint ? (
                       <div className="flex items-center justify-end gap-2 text-[11px] text-[var(--color-fg-subtle)]">
-                        outcome currently suspended
+                        {tBets("outcomeSuspendedHint")}
                       </div>
                     ) : null}
                   </div>
@@ -394,13 +424,13 @@ function TicketRow({
             </ul>
           ) : (
             <p className="mt-2 text-sm text-[var(--color-fg-muted)]">
-              Selection metadata unavailable
+              {tBets("selectionMetadataUnavailable")}
             </p>
           )}
 
           {ticket.rejectReason ? (
             <p className="mt-2 text-xs text-[var(--color-negative)]">
-              Reason: {ticket.rejectReason}
+              {tBets("reasonPrefix", { reason: ticket.rejectReason })}
             </p>
           ) : null}
         </div>
@@ -422,7 +452,7 @@ function TicketRow({
       <div className="mt-4 flex items-end justify-between gap-4 border-t border-[var(--color-border)] pt-3">
         <div>
           <div className="text-[10px] uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-            Stake
+            {tBets("stake")}
           </div>
           <div className="font-mono text-lg">
             {stake} {ticket.currency}
@@ -430,14 +460,14 @@ function TicketRow({
         </div>
         <div className="text-right">
           <div className="text-[10px] uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-            {actual !== null ? "Payout" : "Potential win"}
+            {actual !== null ? tBets("payout") : tBets("potentialWin")}
           </div>
           <div className="font-mono text-lg">
             {actual ?? potential} {ticket.currency}
           </div>
           {actual === null && currentPotentialWin !== null ? (
             <div className="mt-0.5 font-mono text-[11px] text-[var(--color-fg-muted)]">
-              now {currentPotentialWin} {ticket.currency}
+              {tBets("nowPrefix")} {currentPotentialWin} {ticket.currency}
               {currentTotalOdds !== null ? (
                 <span className="ml-1 text-[var(--color-fg-subtle)]">
                   @ {currentTotalOdds.toFixed(2)}

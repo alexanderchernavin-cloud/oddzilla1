@@ -225,6 +225,8 @@
     "title": "Moje sázky",
     "all": "Vše",
     "open": "Otevřené",
+    "accepted": "Přijato",
+    "rejected": "Zamítnuto",
     "settled": "Vyúčtované",
     "wins": "Výhry",
     "losses": "Prohry",
@@ -244,7 +246,15 @@
     "ticket": "Tiket",
     "legs": "Sázky",
     "status": "Stav",
-    "result": "Výsledek"
+    "result": "Výsledek",
+    "potentialWin": "Možná výhra",
+    "matchUnavailable": "Zápas nedostupný",
+    "outcomeFallback": "výsledek {id}",
+    "selectionMetadataUnavailable": "Metadata sázky nedostupná",
+    "reasonPrefix": "Důvod: {reason}",
+    "currentLabel": "aktuálně",
+    "outcomeSuspendedHint": "výsledek je pozastaven",
+    "nowPrefix": "nyní"
   },
   "account": {
     "title": "Nastavení účtu",
