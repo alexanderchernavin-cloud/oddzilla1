@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { I } from "@/components/ui/icons";
 import { NotificationPanel } from "./notification-panel";
 import { useNotifications } from "@/lib/notifications";
@@ -40,18 +40,21 @@ const BADGE_STYLE = {
   lineHeight: 1,
 };
 
-// Bell + popover. Lives next to the user-controls layout because
-// anchor positioning requires a positioned wrapper around both the
-// button and the panel. The optional `className` lets the caller
-// add a CSS hook (the top bar passes `oz-topbar-bell` so the
+// Bell + popover. The panel is portaled to document.body so it
+// escapes any overflow context above the bell (notably the bet-slip
+// rail's overflow-x:hidden); the button's ref is forwarded to the
+// panel for screen-rect anchoring. The optional `className` lets the
+// caller add a CSS hook (the top bar passes `oz-topbar-bell` so the
 // existing mobile @media rule that hides it on narrow phones still
 // applies; the right rail mounts it without a class).
 export function NotificationBell({ className }: { className?: string }) {
   const [open, setOpen] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
   const { unreadCount } = useNotifications();
   return (
     <div style={WRAPPER_STYLE}>
       <button
+        ref={buttonRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-label="Notifications"
@@ -67,7 +70,11 @@ export function NotificationBell({ className }: { className?: string }) {
           </span>
         ) : null}
       </button>
-      <NotificationPanel open={open} onClose={() => setOpen(false)} />
+      <NotificationPanel
+        open={open}
+        onClose={() => setOpen(false)}
+        triggerRef={buttonRef}
+      />
     </div>
   );
 }
