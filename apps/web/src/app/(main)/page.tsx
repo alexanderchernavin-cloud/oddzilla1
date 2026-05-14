@@ -9,7 +9,6 @@ import { SectionHeader } from "@/components/match/section-header";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { ThreeFoldCards } from "@/components/lobby/three-fold-cards";
 import { TodayLabel } from "@/components/lobby/today-label";
-import { TopBarSearch } from "@/components/shell/top-bar-search";
 import { buildThreeFoldSuggestions } from "@/lib/three-fold-builder";
 import {
   orderMatchesBySport,
@@ -62,18 +61,13 @@ export default async function HomePage() {
       }}
     >
       {/*
-        Lobby header. Date kicker on the left, search input on the right
-        of the same row at tablet / desktop; date + search stack
-        vertically on mobile. The brand mark lives in the top bar on
-        mobile and in the docked sidebar on tablet / desktop, so this
-        header no longer carries it.
+        Lobby header. The global search now lives at the top of every
+        page via the (main) layout (`.oz-shell-search`), so the lobby's
+        own date+search row collapsed to just the date kicker.
       */}
       <header className="oz-lobby-header">
         <div className="oz-lobby-header-content">
           <TodayLabel />
-          <div className="oz-lobby-search">
-            <TopBarSearch />
-          </div>
         </div>
       </header>
 
