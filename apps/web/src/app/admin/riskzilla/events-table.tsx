@@ -679,6 +679,15 @@ export function ColumnSettings({ layout }: { layout: ColumnLayout }) {
 
 // ── Row + detail panel ────────────────────────────────────────────────
 
+// Helper: render odds-at-placement with a "—" fallback for rejected
+// legs (the engine doesn't durably record the requested odds at
+// rejection time, only at acceptance).
+function formatOdds(raw: string): string {
+  if (!raw) return "—";
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n.toFixed(2) : "—";
+}
+
 function EventRow({
   row,
   visibleCols,
@@ -686,18 +695,68 @@ function EventRow({
   row: EventDto;
   visibleCols: ColumnDef[];
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const isCombo = row.selections.length > 1;
+  // Combo rows show their per-leg tree expanded by default — that's
+  // the operator's primary view. The collapse toggle is the chevron
+  // on the match cell. The Detail button below is independent and
+  // controls the engine-meta panel.
+  const [treeExpanded, setTreeExpanded] = useState(true);
+  const [detailExpanded, setDetailExpanded] = useState(false);
   const ts = new Date(row.createdAt);
   const stake = fromMicro(BigInt(row.stakeMicro));
   const payout = fromMicro(BigInt(row.potentialPayoutMicro));
   const color = DECISION_COLOR[row.decision] ?? "var(--color-fg)";
   const label = DECISION_LABEL[row.decision] ?? row.decision.toUpperCase();
   const firstLeg = row.selections[0];
-  const extraLegs = row.selections.length - 1;
 
-  const marketCell = firstLeg ? firstLeg.marketName : "—";
-  const selectionCell = firstLeg
-    ? `${firstLeg.outcomeName ?? firstLeg.outcomeId} @ ${Number(firstLeg.oddsAtPlacement).toFixed(2)}`
+  // For SINGLES the header row carries the only leg's market/selection
+  // directly. For COMBOS, the header shows aggregate info (decision /
+  // time / user / stake / payout / tier / sport / tournament from the
+  // event_log) and the per-leg cells (match / market / selection) live
+  // in child rows below. The tournament / sport / tier values on the
+  // event_log row come from the first leg's matchContext — close
+  // enough as a header summary; child rows carry the authoritative
+  // per-leg match.
+  const headerMatchCell = isCombo ? (
+    <button
+      type="button"
+      onClick={() => setTreeExpanded((e) => !e)}
+      title={treeExpanded ? "Collapse legs" : "Expand legs"}
+      style={{
+        background: "transparent",
+        border: "none",
+        padding: 0,
+        margin: 0,
+        cursor: "pointer",
+        color: "var(--color-fg)",
+        fontSize: 12.5,
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        fontFamily: "inherit",
+      }}
+    >
+      <span
+        style={{
+          fontSize: 10,
+          color: "var(--color-fg-muted)",
+          display: "inline-block",
+          width: 10,
+        }}
+      >
+        {treeExpanded ? "▾" : "▸"}
+      </span>
+      <span>
+        {row.selections.length} legs
+      </span>
+    </button>
+  ) : (
+    row.matchLabel ?? "—"
+  );
+
+  const singleMarketCell = firstLeg ? firstLeg.marketName : "—";
+  const singleSelectionCell = firstLeg
+    ? `${firstLeg.outcomeName ?? firstLeg.outcomeId} @ ${formatOdds(firstLeg.oddsAtPlacement)}`
     : "—";
 
   const cells: Record<ColumnKey, ReactNode> = {
@@ -784,36 +843,25 @@ function EventRow({
       </td>
     ),
     match: (
-      <td style={tdStyle()} title={row.matchLabel ?? undefined}>
-        {row.matchLabel ?? "—"}
+      <td style={tdStyle()} title={isCombo ? undefined : row.matchLabel ?? undefined}>
+        {headerMatchCell}
       </td>
     ),
     market: (
-      <td style={tdStyle()} title={marketCell}>
-        {marketCell}
-        {extraLegs > 0 && (
-          <span
-            style={{
-              color: "var(--color-fg-muted)",
-              marginLeft: 4,
-              fontSize: 11,
-            }}
-          >
-            +{extraLegs}
-          </span>
-        )}
+      <td style={tdStyle()} title={isCombo ? undefined : singleMarketCell}>
+        {isCombo ? "" : singleMarketCell}
       </td>
     ),
     selection: (
-      <td style={tdStyle()} title={selectionCell}>
-        {selectionCell}
+      <td style={tdStyle()} title={isCombo ? undefined : singleSelectionCell}>
+        {isCombo ? "" : singleSelectionCell}
       </td>
     ),
     detail: (
       <td style={{ ...tdStyle("right") }}>
         <button
           type="button"
-          onClick={() => setExpanded((e) => !e)}
+          onClick={() => setDetailExpanded((e) => !e)}
           style={{
             height: 24,
             padding: "0 8px",
@@ -825,7 +873,7 @@ function EventRow({
             cursor: "pointer",
           }}
         >
-          {expanded ? "Hide" : "Detail"}
+          {detailExpanded ? "Hide" : "Detail"}
         </button>
       </td>
     ),
@@ -834,7 +882,17 @@ function EventRow({
   return (
     <>
       <tr>{visibleCols.map((c) => <Cell key={c.key}>{cells[c.key]}</Cell>)}</tr>
-      {expanded && (
+      {isCombo &&
+        treeExpanded &&
+        row.selections.map((sel, idx) => (
+          <LegRow
+            key={`${row.id}-leg-${sel.marketId}-${sel.outcomeId}-${idx}`}
+            sel={sel}
+            visibleCols={visibleCols}
+            isLast={idx === row.selections.length - 1}
+          />
+        ))}
+      {detailExpanded && (
         <tr>
           <td
             colSpan={visibleCols.length}
@@ -849,6 +907,71 @@ function EventRow({
         </tr>
       )}
     </>
+  );
+}
+
+// Child row rendered under a combo header when the tree is expanded.
+// Only the leg-specific columns (match / market / selection) carry
+// data; the per-ticket columns stay blank with a subtle left-edge
+// accent on the first visible cell so the grouping reads
+// at-a-glance.
+function LegRow({
+  sel,
+  visibleCols,
+  isLast,
+}: {
+  sel: EventSelectionDto;
+  visibleCols: ColumnDef[];
+  isLast: boolean;
+}) {
+  // Lighter borders between consecutive leg rows of the same combo;
+  // the last leg uses the normal full-strength border to separate the
+  // group from the next ticket below.
+  const legBorder = isLast
+    ? "1px solid var(--color-border)"
+    : "1px dashed var(--color-border)";
+  const legBg = "var(--color-bg-subtle, transparent)";
+  const legTdStyle = (align?: "right"): React.CSSProperties => ({
+    padding: "6px 8px",
+    borderBottom: legBorder,
+    background: legBg,
+    verticalAlign: "top",
+    textAlign: align ?? "left",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    color: "var(--color-fg-muted)",
+    fontSize: 12,
+  });
+
+  const selectionLabel = `${sel.outcomeName ?? sel.outcomeId} @ ${formatOdds(sel.oddsAtPlacement)}`;
+  const fillByKey: Partial<Record<ColumnKey, ReactNode>> = {
+    match: (
+      <span style={{ color: "var(--color-fg)" }} title={sel.matchLabel ?? undefined}>
+        <span style={{ color: "var(--color-fg-muted)", marginRight: 6 }}>↳</span>
+        {sel.matchLabel ?? "—"}
+      </span>
+    ),
+    market: (
+      <span style={{ color: "var(--color-fg)" }} title={sel.marketName}>
+        {sel.marketName}
+      </span>
+    ),
+    selection: (
+      <span style={{ color: "var(--color-fg)" }} title={selectionLabel}>
+        {selectionLabel}
+      </span>
+    ),
+  };
+
+  return (
+    <tr>
+      {visibleCols.map((c) => (
+        <td key={c.key} style={legTdStyle(c.align)}>
+          {fillByKey[c.key] ?? null}
+        </td>
+      ))}
+    </tr>
   );
 }
 
@@ -917,7 +1040,7 @@ function DetailPanel({ row }: { row: EventDto }) {
                       fontVariantNumeric: "tabular-nums",
                     }}
                   >
-                    {Number(sel.oddsAtPlacement).toFixed(2)}
+                    {formatOdds(sel.oddsAtPlacement)}
                   </td>
                   <td style={detailTdStyle}>
                     <ResultBadge result={sel.result} />
