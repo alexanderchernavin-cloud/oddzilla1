@@ -38,19 +38,26 @@ function enrich(m: ListMatchWithSport): ListMatchEnriched {
 }
 
 export default async function HomePage() {
-  const [sportsRes, liveCountsRes, liveRes, upcomingRes, t] = await Promise.all([
+  const [sportsRes, liveCountsRes, liveRes, upcomingRes, t, tMatch] = await Promise.all([
     serverApi<SportsResponse>("/catalog/sports"),
     serverApi<Record<string, number>>("/catalog/live-counts"),
     serverApi<CrossSportResponse>("/catalog/matches?status=live&limit=120"),
     serverApi<CrossSportResponse>("/catalog/matches?status=upcoming&limit=60"),
     getTranslations("home"),
+    getTranslations("match"),
   ]);
 
   const sports = sportsRes?.sports ?? [];
   const liveCounts = liveCountsRes ?? {};
   const live = orderMatchesBySport(liveRes?.matches ?? []);
   const upcoming = orderMatchesBySport(upcomingRes?.matches ?? []);
-  const threeFoldSuggestions = buildThreeFoldSuggestions([...live, ...upcoming]);
+  // Pass the translated "Match winner" label so the SSR-embedded slip
+  // leg doesn't carry literal English through to the client (where the
+  // bet-slip rail would re-render it on click).
+  const threeFoldSuggestions = buildThreeFoldSuggestions(
+    [...live, ...upcoming],
+    tMatch("matchWinner"),
+  );
 
   return (
     <div

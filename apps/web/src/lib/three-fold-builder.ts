@@ -81,7 +81,11 @@ const TIER_BANDS: Record<TierKey, TierBand> = {
 // per tier — still trivial across 4 tiers per request.
 const POOL_CAP = 30;
 
-function buildLeg(match: MatchInput, side: "home" | "away"): ThreeFoldLeg | null {
+function buildLeg(
+  match: MatchInput,
+  side: "home" | "away",
+  marketLabel: string,
+): ThreeFoldLeg | null {
   if (!match.matchWinner) return null;
   const o = match.matchWinner[side];
   if (!o.price) return null;
@@ -95,7 +99,7 @@ function buildLeg(match: MatchInput, side: "home" | "away"): ThreeFoldLeg | null
     probability: o.probability ?? undefined,
     homeTeam: match.homeTeam,
     awayTeam: match.awayTeam,
-    marketLabel: "Match winner",
+    marketLabel,
     outcomeLabel: side === "home" ? match.homeTeam : match.awayTeam,
     sportSlug: match.sport.slug,
     pickedSide: side,
@@ -123,12 +127,12 @@ function dedupeMatches(matches: MatchInput[]): MatchInput[] {
   return out;
 }
 
-function qualifyForTier(matches: MatchInput[], band: TierBand): QualMatch[] {
+function qualifyForTier(matches: MatchInput[], band: TierBand, marketLabel: string): QualMatch[] {
   const out: QualMatch[] = [];
   for (const m of matches) {
     const sides: QualSide[] = [];
     for (const side of ["home", "away"] as const) {
-      const leg = buildLeg(m, side);
+      const leg = buildLeg(m, side, marketLabel);
       if (!leg) continue;
       const oddsNum = Number.parseFloat(leg.odds);
       if (!Number.isFinite(oddsNum)) continue;
@@ -153,8 +157,9 @@ function pickForTier(
   matches: MatchInput[],
   band: TierBand,
   excludeMatchIds: ReadonlySet<string>,
+  marketLabel: string,
 ): PickedTriple | null {
-  const qualifying = qualifyForTier(matches, band);
+  const qualifying = qualifyForTier(matches, band, marketLabel);
 
   // Try disjoint pool first; fall back to allowing reuse only if no
   // combo lands in band. With dense data we usually fill all 4 tiers
@@ -216,6 +221,7 @@ function pickForTier(
 
 export function buildThreeFoldSuggestions(
   matches: MatchInput[],
+  marketLabel: string,
 ): ThreeFoldSuggestions {
   const deduped = dedupeMatches(matches);
   if (deduped.length < 3) return {};
@@ -224,7 +230,7 @@ export function buildThreeFoldSuggestions(
   const out: ThreeFoldSuggestions = {};
 
   for (const tier of ["safe", "challenging", "risky", "ultimate"] as const) {
-    const picked = pickForTier(deduped, TIER_BANDS[tier], used);
+    const picked = pickForTier(deduped, TIER_BANDS[tier], used, marketLabel);
     if (!picked) continue;
     out[tier] = {
       legs: picked.legs,
