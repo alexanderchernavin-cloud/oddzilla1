@@ -1164,8 +1164,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
           providerMarketId: r.providerMarketId,
           specifiers: specs,
           variant,
-          name: substituteTemplate(template, specs, teams),
-          baseName: substituteTemplate(baseTemplate, specs, teams),
+          name: substituteTemplate(template, specs, teams, undefined, locale),
+          baseName: substituteTemplate(baseTemplate, specs, teams, undefined, locale),
           scope: deriveScope(specs),
           status: r.status,
           lastOddinTs: r.lastOddinTs.toString(),
@@ -1197,6 +1197,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
             m.specifiers,
             match.homeTeam,
             match.awayTeam,
+            undefined,
+            locale,
           );
         }
         m.outcomes.push({
