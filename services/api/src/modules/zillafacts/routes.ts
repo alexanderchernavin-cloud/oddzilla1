@@ -169,7 +169,13 @@ async function loadFacts(
       SELECT
         mk.id AS market_id,
         mk.provider_market_id,
-        mk.variant,
+        -- variant is held inside specifiers_json (Oddin convention,
+        -- see catalog/routes.ts where the storefront does the same
+        -- COALESCE). The markets table has no variant column; the
+        -- value is the join key into market_descriptions /
+        -- outcome_descriptions and falls back to empty string when
+        -- the market has no variant.
+        COALESCE(mk.specifiers_json->>'variant', '') AS variant,
         mk.specifiers_hash,
         mk.specifiers_json,
         cm.id AS current_match_id,
