@@ -225,6 +225,8 @@
     "title": "Minhas apostas",
     "all": "Todas",
     "open": "Abertas",
+    "accepted": "Aceita",
+    "rejected": "Recusada",
     "settled": "Liquidadas",
     "wins": "Vitórias",
     "losses": "Derrotas",
@@ -244,7 +246,15 @@
     "ticket": "Bilhete",
     "legs": "Seleções",
     "status": "Status",
-    "result": "Resultado"
+    "result": "Resultado",
+    "potentialWin": "Possível ganho",
+    "matchUnavailable": "Partida indisponível",
+    "outcomeFallback": "seleção {id}",
+    "selectionMetadataUnavailable": "Metadados da seleção indisponíveis",
+    "reasonPrefix": "Motivo: {reason}",
+    "currentLabel": "atual",
+    "outcomeSuspendedHint": "seleção atualmente suspensa",
+    "nowPrefix": "agora"
   },
   "account": {
     "title": "Configurações da conta",

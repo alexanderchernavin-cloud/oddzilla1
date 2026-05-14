@@ -225,6 +225,8 @@
     "title": "Мои ставки",
     "all": "Все",
     "open": "Активные",
+    "accepted": "Принято",
+    "rejected": "Отклонено",
     "settled": "Рассчитанные",
     "wins": "Выигрыши",
     "losses": "Проигрыши",
@@ -244,7 +246,15 @@
     "ticket": "Купон",
     "legs": "Исходы",
     "status": "Статус",
-    "result": "Итог"
+    "result": "Итог",
+    "potentialWin": "Возможный выигрыш",
+    "matchUnavailable": "Матч недоступен",
+    "outcomeFallback": "исход {id}",
+    "selectionMetadataUnavailable": "Данные ставки недоступны",
+    "reasonPrefix": "Причина: {reason}",
+    "currentLabel": "сейчас",
+    "outcomeSuspendedHint": "исход приостановлен",
+    "nowPrefix": "сейчас"
   },
   "account": {
     "title": "Настройки аккаунта",
