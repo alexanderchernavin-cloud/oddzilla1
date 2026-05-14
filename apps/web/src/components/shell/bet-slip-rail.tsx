@@ -1731,12 +1731,13 @@ function RailTabs({
   onChange: (t: RailTab) => void;
   slipCount: number;
 }) {
+  const tr = useTranslations("betSlip");
   const tabs: Array<{ id: RailTab; label: string; icon: "ticket" | "history" }> = [
-    { id: "slip", label: "Slip", icon: "ticket" },
-    { id: "history", label: "History", icon: "history" },
+    { id: "slip", label: tr("switchTab"), icon: "ticket" },
+    { id: "history", label: tr("historyTab"), icon: "history" },
   ];
   return (
-    <div role="tablist" aria-label="Bet slip view" style={{ display: "flex", gap: 4 }}>
+    <div role="tablist" aria-label={tr("title")} style={{ display: "flex", gap: 4 }}>
       {tabs.map((t) => {
         const isActive = active === t.id;
         return (

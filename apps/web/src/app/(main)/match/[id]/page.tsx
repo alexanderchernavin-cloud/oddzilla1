@@ -2,6 +2,8 @@ import Link from "next/link";
 import { cookies, headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { serverApi } from "@/lib/server-fetch";
+import { getTranslations } from "@/lib/i18n/server";
+import { LocalDateTime } from "@/components/match/local-datetime";
 import { LiveMarkets, type MarketGroup, type MarketSnapshot } from "./live-markets";
 import { LiveScoreboard } from "./live-scoreboard";
 import { Pill, LiveDot } from "@/components/ui/primitives";
@@ -61,15 +63,10 @@ export default async function MatchPage({
   // anonymous viewers see "log in to publish" instead of the Write button.
   const cookieStore = await cookies();
   const loggedIn = Boolean(cookieStore.get("oddzilla_access"));
-
-  const whenLabel = match.scheduledAt
-    ? new Date(match.scheduledAt).toLocaleString("en-US", {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      })
-    : "Time TBD";
+  const [tMatch, tHome] = await Promise.all([
+    getTranslations("match"),
+    getTranslations("home"),
+  ]);
 
   return (
     <div
@@ -96,7 +93,7 @@ export default async function MatchPage({
         <span style={{ transform: "rotate(180deg)", display: "inline-flex" }}>
           <I.Arrow size={13} />
         </span>
-        Back to {match.sport.name}
+        {match.sport.name}
       </Link>
 
       <div
@@ -117,10 +114,14 @@ export default async function MatchPage({
         >
           {isLive ? (
             <Pill tone="live">
-              <LiveDot size={6} /> LIVE
+              <LiveDot size={6} /> {tMatch("live")}
             </Pill>
           ) : (
-            <Pill>Upcoming · {whenLabel}</Pill>
+            <Pill>
+              {tHome("upcoming")}
+              {" · "}
+              <LocalDateTime iso={match.scheduledAt} mode="match-detail" />
+            </Pill>
           )}
           {(match.tournament.riskTier === 1 || match.tournament.riskTier === 2) && (
             <TopPill />
