@@ -16,7 +16,7 @@ import {
   type ZillaTip,
   type ZillaTipLeg,
   type ZillaTipResult,
-} from "@oddzilla/types";
+} from "@oddzilla/types/zillatips";
 import { I } from "@/components/ui/icons";
 import { TeamMark } from "@/components/ui/primitives";
 

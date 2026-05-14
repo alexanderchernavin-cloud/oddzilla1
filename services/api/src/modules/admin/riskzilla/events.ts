@@ -109,6 +109,15 @@ interface EventRowDto {
   // Per-leg selection list. Empty for rejected events without a
   // ticket_id (no ticket row to JOIN to).
   selections: EventSelectionDto[];
+  // Ticket lifecycle state (post-placement). Null for rejected
+  // decisions where no ticket was created. For accepted decisions,
+  // these drive the WON/LOST/VOID rendering in the Bets table:
+  //   - ticketStatus: tickets.status enum
+  //   - actualPayoutMicro: tickets.actual_payout_micro after settle
+  //   - settledAt: tickets.settled_at when status reached terminal
+  ticketStatus: string | null;
+  actualPayoutMicro: string | null;
+  settledAt: string | null;
   createdAt: string;
 }
 
@@ -135,6 +144,9 @@ interface RawRow {
   bank_at_decision_micro: string;
   decision_meta: unknown;
   selections: EventSelectionDto[] | null;
+  ticket_status: string | null;
+  actual_payout_micro: string | null;
+  settled_at: Date | string | null;
   created_at: Date | string;
 }
 
@@ -163,6 +175,14 @@ function rawToDto(r: RawRow): EventRowDto {
     bankAtDecisionMicro: r.bank_at_decision_micro,
     decisionMeta: r.decision_meta,
     selections: Array.isArray(r.selections) ? r.selections : [],
+    ticketStatus: r.ticket_status,
+    actualPayoutMicro: r.actual_payout_micro,
+    settledAt:
+      r.settled_at == null
+        ? null
+        : r.settled_at instanceof Date
+          ? r.settled_at.toISOString()
+          : String(r.settled_at),
     createdAt:
       r.created_at instanceof Date
         ? r.created_at.toISOString()
@@ -252,9 +272,13 @@ async function queryEventLog(
       el.bank_at_decision_micro::text               AS bank_at_decision_micro,
       el.decision_meta                              AS decision_meta,
       COALESCE(sel.selections, '[]'::jsonb)         AS selections,
+      t.status::text                                AS ticket_status,
+      t.actual_payout_micro::text                   AS actual_payout_micro,
+      t.settled_at                                  AS settled_at,
       el.created_at                                 AS created_at
     FROM riskzilla_event_log el
     LEFT JOIN users       u  ON u.id = el.user_id
+    LEFT JOIN tickets     t  ON el.ticket_id IS NOT NULL AND t.id = el.ticket_id
     LEFT JOIN matches     m  ON m.id = el.match_id
     LEFT JOIN sports      s  ON s.id = el.sport_id
     LEFT JOIN tournaments tn ON tn.id = el.tournament_id
@@ -427,6 +451,9 @@ async function queryTicketsForOz(
         'legs', (SELECT COUNT(*)::int FROM ticket_selections ts WHERE ts.ticket_id = t.id)
       )                                             AS decision_meta,
       COALESCE(sel.selections, '[]'::jsonb)         AS selections,
+      t.status::text                                AS ticket_status,
+      t.actual_payout_micro::text                   AS actual_payout_micro,
+      t.settled_at                                  AS settled_at,
       t.placed_at                                   AS created_at
     FROM filtered t
     LEFT JOIN users u ON u.id = t.user_id

@@ -602,13 +602,47 @@ const DECISION_LABEL: Record<string, string> = {
   rejected_market_factor: "MARKET FACTOR",
 };
 
+// Compose a display status from the engine decision + ticket lifecycle.
+// The engine's `decision` only describes placement-time outcome (was the
+// bet accepted? if not, why?). Post-placement lifecycle (won / lost /
+// voided after settlement) comes from the joined tickets row. For
+// rejected events there's no ticket, so we fall back to the decision
+// label.
+function renderDisplayStatus(row: EventDto): { label: string; color: string } {
+  if (row.decision !== "accepted") {
+    return {
+      label: DECISION_LABEL[row.decision] ?? row.decision.toUpperCase(),
+      color: DECISION_COLOR[row.decision] ?? "var(--color-fg)",
+    };
+  }
+  // Accepted: derive from the ticket's terminal state.
+  if (row.ticketStatus === "settled") {
+    const stake = BigInt(row.stakeMicro);
+    const payout = BigInt(row.actualPayoutMicro ?? "0");
+    if (payout > stake) return { label: "WON", color: "#16a34a" };
+    if (payout === stake) return { label: "VOID", color: "var(--color-fg-muted)" };
+    return { label: "LOST", color: "#dc2626" };
+  }
+  if (row.ticketStatus === "voided")
+    return { label: "VOIDED", color: "var(--color-fg-muted)" };
+  if (row.ticketStatus === "pending_delay")
+    return { label: "DELAYED", color: "#f59e0b" };
+  // Still open / freshly accepted / no ticket joined (shouldn't happen
+  // for the OZ path which is sourced from tickets directly).
+  return { label: "OPEN", color: "#16a34a" };
+}
+
 function BetRow({ row }: { row: EventDto }) {
   const [expanded, setExpanded] = useState(false);
   const ts = new Date(row.createdAt);
   const stake = fromMicro(BigInt(row.stakeMicro));
-  const payout = fromMicro(BigInt(row.potentialPayoutMicro));
-  const color = DECISION_COLOR[row.decision] ?? "var(--color-fg)";
-  const label = DECISION_LABEL[row.decision] ?? row.decision.toUpperCase();
+  const isSettled = row.ticketStatus === "settled";
+  // Show actual payout once settled (won / lost / void); show
+  // potential payout for open or rejected events.
+  const payout = isSettled && row.actualPayoutMicro != null
+    ? fromMicro(BigInt(row.actualPayoutMicro))
+    : fromMicro(BigInt(row.potentialPayoutMicro));
+  const { label, color } = renderDisplayStatus(row);
   const firstLeg = row.selections[0];
   const extraLegs = row.selections.length - 1;
 

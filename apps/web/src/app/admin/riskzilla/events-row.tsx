@@ -39,6 +39,11 @@ export interface EventDto {
   bankAtDecisionMicro: string;
   decisionMeta: unknown;
   selections: EventSelectionDto[];
+  // Ticket lifecycle (post-placement). Null for rejected decisions or
+  // when the riskzilla event was logged without a ticket attached.
+  ticketStatus: string | null;
+  actualPayoutMicro: string | null;
+  settledAt: string | null;
   createdAt: string;
 }
 
