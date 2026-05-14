@@ -221,7 +221,12 @@ func main() {
 // and again on every refresh tick. Errors are wrapped with enough
 // context for the caller to log + proceed.
 func refreshMarketDescriptions(ctx context.Context, rc *oddinrest.Client, st *store.Store, lang string, log zerolog.Logger) error {
-	body, err := rc.MarketDescriptions(ctx, lang)
+	// Storefront + DB use BCP-47 primary subtags (cs/pt/ru/es); Oddin's
+	// /v1/descriptions/{lang} endpoint uses ISO-639-1-with-quirks where
+	// Czech is `cz`. Translate at the request boundary so the DB row
+	// keys stay aligned with the storefront cookie.
+	oddinLang := oddinLangCode(lang)
+	body, err := rc.MarketDescriptions(ctx, oddinLang)
 	if err != nil {
 		return err
 	}
@@ -235,10 +240,24 @@ func refreshMarketDescriptions(ctx context.Context, rc *oddinrest.Client, st *st
 	n, _ := store.CountMarketDescriptions(ctx, st.Pool())
 	log.Info().
 		Str("lang", lang).
+		Str("oddin_lang", oddinLang).
 		Int("markets_seen", len(parsed.Markets)).
 		Int("rows_in_cache", n).
 		Msg("market descriptions refreshed")
 	return nil
+}
+
+// oddinLangCode maps a storefront locale slug to the language code
+// Oddin's REST API accepts. Discovered the hard way during the first
+// deploy: cs → cz (no ISO 639-1 alpha-2 cs). Defaults to identity for
+// codes Oddin already accepts (en, pt, ru, es).
+func oddinLangCode(storefrontLocale string) string {
+	switch storefrontLocale {
+	case "cs":
+		return "cz"
+	default:
+		return storefrontLocale
+	}
 }
 
 // descriptionLangs returns the language codes feed-ingester should
