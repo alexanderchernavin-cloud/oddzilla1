@@ -341,15 +341,11 @@ export default async function zillafactsRoutes(app: FastifyInstance) {
     const { matchId } = z
       .object({ matchId: z.coerce.bigint() })
       .parse(request.params);
-    // v8: filter facts at odds < 1.10 or score < 1.0 (closes the
-    // "7-streak at 1.04" trap where the line says the outcome is
-    // near-certain anyway); composeStreakFactText rewritten to
-    // detect player-prop markets (subject becomes the player, not
-    // the team), per-map markets ("G2 Esports' Map 2 went Over 9.5
-    // rounds" not "matches"), and question-style Yes/No markets
-    // ("No knife kill on Map 1" not "No Will there be a knife
-    // kill?"). Bump key so v7 responses drain.
-    const cacheKey = `zillafacts:v8:${matchId.toString()}`;
+    // v9: player-prop detection scans all specifier values for an
+    // od:player:... URN rather than relying on a canonical {player}
+    // specifier key — Oddin uses several variant names. v8 also
+    // added odds/score floors and the player/map/question rewordings.
+    const cacheKey = `zillafacts:v9:${matchId.toString()}`;
     return cached<ZillaFactsResponse>(
       app.redis,
       cacheKey,
@@ -981,16 +977,24 @@ async function loadStreakFacts(
       outcomeProfiles,
     );
 
-    // Resolve player name from the most-common player specifier keys
-    // Oddin uses. The composer treats a non-null `playerName` as a
-    // signal to shift the fact subject from team to player —
-    // "HeavyGod went Over 8.5 ..." instead of "G2 Esports' last 5
-    // matches went Over 8.5 HeavyGod ...".
-    const playerUrn = specs.player ?? specs.player1 ?? specs.player2 ?? null;
-    const playerName =
-      playerUrn != null
-        ? (outcomeProfiles.players?.get(playerUrn) ?? null)
-        : null;
+    // Resolve player name by scanning ALL specifier values for an
+    // `od:player:...` URN, not just the canonical {player} key —
+    // Oddin uses several specifier names for player-prop markets
+    // ({player}, {player1}, {player2}, {competitor1_player}, ...).
+    // The composer treats a non-null `playerName` as a signal to
+    // shift the fact subject from team to player ("HeavyGod went
+    // Over 8.5 ..." instead of "G2 Esports' Map 1 went Over 8.5
+    // HeavyGod ...").
+    let playerName: string | null = null;
+    for (const v of Object.values(specs)) {
+      if (typeof v !== "string") continue;
+      if (!isPlayerUrn(v)) continue;
+      const resolved = outcomeProfiles.players?.get(v);
+      if (resolved) {
+        playerName = resolved;
+        break;
+      }
+    }
 
     const legs: ZillaFactLeg[] = streakLegs.map((leg) => {
       const oppId =
