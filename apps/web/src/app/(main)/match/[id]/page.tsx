@@ -10,6 +10,7 @@ import { I } from "@/components/ui/icons";
 import { type MatchStream } from "@/components/match/match-streams";
 import { MatchLiveMedia } from "@/components/widgets/match-live-media";
 import { MatchPrematchMobile } from "@/components/widgets/match-prematch-mobile";
+import { ZillaFactsCards } from "@/components/match/zillafacts-cards";
 import { MatchPageRegistrar } from "@/lib/match-page-context";
 import { type LiveScore } from "@/lib/live-score";
 import { getSessionUser } from "@/lib/auth";
@@ -164,6 +165,16 @@ export default async function MatchPage({
         parentHost={parentHost}
         isLive={isLive}
       />
+
+      {/* ZillaFacts surfaces hard, consecutive-from-newest streaks on
+          the open match: a team has won its last N matches on the
+          same (market, outcome) signature, with the tier glow scaled
+          by streak × ln(currentOdds). Collapses to zero height when
+          no streak on the match clears ZILLAFACT_MIN_STREAK, so the
+          page layout is unchanged for matches without strong
+          patterns. Sits between the stream and the markets-tabs
+          strip so it reads as an "insights" lead-in. */}
+      <ZillaFactsCards matchId={String(match.id)} />
 
       <MatchPrematchMobile
         matchId={String(match.id)}

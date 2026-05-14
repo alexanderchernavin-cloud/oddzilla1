@@ -16,6 +16,7 @@
     "./competitions-catalog": "./src/competitions-catalog.ts",
     "./networks": "./src/networks.ts",
     "./zillatips": "./src/zillatips.ts",
+    "./zillafacts": "./src/zillafacts.ts",
     "./live-chat": "./src/live-chat.ts"
   },
   "scripts": {
