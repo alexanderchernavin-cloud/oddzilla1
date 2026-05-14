@@ -133,6 +133,19 @@ export const ZILLAFACT_LOOKBACK_DAYS = 365;
 // respects the cap so cached responses don't carry redundant entries.
 export const ZILLAFACT_MAX_CARDS = 6;
 
+// Minimum live odds for a fact to surface. Anything tighter than 1.10
+// is uninteresting as a tip: the bookmaker price already says the
+// outcome is near-certain, and even a long streak doesn't add
+// information. Filtered hard regardless of streak length.
+export const ZILLAFACT_MIN_ODDS = 1.10;
+
+// Minimum composite score for a fact to surface. streak × ln(odds) ≥
+// 1.0 means roughly: 11 in a row at 1.10 / 6 at 1.20 / 5 at 1.23 /
+// 5 at 1.50 (score 2.0). Filters the "high streak at near-certain
+// odds" trap — a 7-streak at 1.04 (score 0.275) reads like a
+// confident fact but the odds say it's the default outcome anyway.
+export const ZILLAFACT_MIN_SCORE = 1.0;
+
 // Visual tier ladder, by composite score. Same shape as ZillaTips'
 // (base → glow → fire). Examples:
 //   • 5 wins at 1.10 odds → score 0.48 → base

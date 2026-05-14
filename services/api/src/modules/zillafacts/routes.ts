@@ -32,6 +32,8 @@ import {
   ZILLAFACT_LOOKBACK_DAYS,
   ZILLAFACT_LOOKBACK_LEGS,
   ZILLAFACT_MAX_CARDS,
+  ZILLAFACT_MIN_ODDS,
+  ZILLAFACT_MIN_SCORE,
   ZILLAFACT_MIN_STREAK,
   zillaFactScore,
   type ZillaFact,
@@ -116,80 +118,196 @@ function possessive(name: string): string {
   return `${trimmed}'s`;
 }
 
-// Plain-English sentence for a streak fact. Handles the most common
-// market shapes individually (Match Winner, Map Winner, Over / Under
-// totals, parity, Yes / No) and falls back to a generic template
-// when the outcome doesn't fit one of the canned patterns. The
-// frontend renders this verbatim so the storefront doesn't have to
-// reason about Oddin's market taxonomy.
+// Plain-English sentence for a streak fact. Three axes determine the
+// shape:
+//
+//   • Subject — team or player. Player-prop markets (a `{player}`
+//     specifier in `specifiers`) belong to the PLAYER, not the team
+//     they're on. So "HeavyGod went Over 8.5 headshot kills" reads
+//     correctly even when the parent match is a G2 Esports fixture.
+//
+//   • Scope — match-level or map-level. Markets carrying `specifiers.map`
+//     are per-map ("G2 Esports' Map 2 went Over 9.5 rounds"), the rest
+//     are per-match ("G2 Esports have won their last 5 matches").
+//
+//   • Outcome shape — positional, threshold/Over-Under, parity, Yes/No
+//     (and within Yes/No, "question-style" markets like "Will there be
+//     a knife kill?" rephrase to "no knife kill" / "a knife kill", not
+//     a literal "No Will there be a knife kill?").
+//
+// The frontend renders the returned sentence verbatim — every market
+// shape decision lives here.
 function composeStreakFactText(args: {
   teamName: string;
+  // Resolved at call site from specifiers.player → outcomeProfiles.
+  // Non-null means the market is a player prop; the fact's subject
+  // shifts from team to player.
+  playerName: string | null;
   streak: number;
   marketName: string;
   outcomeLabel: string;
   providerMarketId: number;
   specifiers: Record<string, string>;
 }): string {
-  const { teamName, streak, marketName, outcomeLabel, providerMarketId, specifiers } = args;
+  const { teamName, playerName, streak, marketName, outcomeLabel, providerMarketId, specifiers } = args;
   const olc = outcomeLabel.trim().toLowerCase();
-  const teamPoss = possessive(teamName);
 
-  // Match Winner — outcome 1/2 maps to home/away, label resolves to
-  // the team name (substituteTemplate handles the "home" / "away"
-  // token). Speak about the team directly.
+  // Subject — player wins over team for player-prop markets.
+  const subject = playerName ?? teamName;
+  const subjectPoss = possessive(subject);
+  const mapN = specifiers.map ?? null;
+
+  // Match Winner (PMI 1). Team-specific by construction; the player
+  // axis doesn't apply.
   if (providerMarketId === 1) {
     return `${teamName} have won their last ${streak} matches`;
   }
-  // Map Winner — per-map version of the same shape.
+  // Map Winner (PMI 4).
   if (providerMarketId === 4) {
-    const mapHint = specifiers.map ? `Map ${specifiers.map}` : "the map";
+    const mapHint = mapN ? `Map ${mapN}` : "the map";
     return `${teamName} have won ${mapHint} in their last ${streak} matches`;
   }
 
-  // Over / Under threshold markets. outcomeLabel comes through as
-  // "Over" or "Under"; the threshold value is in specifiers.
+  // Yes / No — handle BEFORE Over / Under because question-style
+  // wording needs a special branch ("No Will there be a knife
+  // kill?" was the bug). Strip leading interrogative pieces, drop
+  // the trailing "?" and the "- map N" tail (we'll restate Map N
+  // in the surrounding sentence when present).
+  if (olc === "yes" || olc === "no") {
+    const event = stripEventPhrase(marketName, mapN);
+    const tail = perTailFor(subjectPoss, mapN, streak);
+    if (olc === "no") {
+      return `No ${event} ${tail}`.replace(/\s+/g, " ").trim();
+    }
+    return `${capitalise(event)} ${tail}`.replace(/\s+/g, " ").trim();
+  }
+
+  // Over / Under (threshold specifier). Per-map gets a Map N
+  // framing; player-prop gets a player subject.
   if (specifiers.threshold && (olc === "over" || olc === "under")) {
-    const topic = stripThreshold(marketName, specifiers.threshold);
     const direction = olc === "over" ? "Over" : "Under";
-    // Keep the topic in its original case — "Total kills - map 1"
-    // shouldn't become "total kills - map 1", which loses the proper
-    // noun feel that the storefront otherwise preserves. We just
-    // trim and collapse whitespace.
-    return `${teamPoss} last ${streak} matches went ${direction} ${specifiers.threshold} ${topic}`
+    const topic = cleanTopic(marketName, specifiers.threshold, subject, mapN);
+    if (mapN) {
+      // Per-map: "HeavyGod's Map 1 went Over 8.5 headshot kills in
+      // their last 5 matches" / "G2 Esports' Map 2 went Over 9.5
+      // rounds in their last 6 matches".
+      return `${subjectPoss} Map ${mapN} went ${direction} ${specifiers.threshold} ${topic} in their last ${streak} matches`
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+    // Match-level: "G2 Esports' last 5 matches went Over 60.5 Match
+    // total rounds" / "HeavyGod went Over 8.5 headshot kills in
+    // their last 5 matches".
+    if (playerName) {
+      return `${playerName} went ${direction} ${specifiers.threshold} ${topic} in their last ${streak} matches`
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+    return `${subjectPoss} last ${streak} matches went ${direction} ${specifiers.threshold} ${topic}`
       .replace(/\s+/g, " ")
       .trim();
   }
 
   // Parity (Odd / Even). outcomeLabel is literally "Odd" or "Even".
   if (olc === "odd" || olc === "even") {
-    return `${marketName} came back ${olc} in ${teamPoss} last ${streak} matches`;
-  }
-
-  // Yes / No. The verb depends on direction — "Yes" reads as "had
-  // X happen", "No" as "had no X".
-  if (olc === "yes") {
-    return `${marketName} hit in ${teamPoss} last ${streak} matches`;
-  }
-  if (olc === "no") {
-    return `No ${marketName} in ${teamPoss} last ${streak} matches`;
+    const topic = cleanTopic(marketName, "", subject, mapN);
+    const tail = perTailFor(subjectPoss, mapN, streak);
+    return `${capitalise(topic)} came back ${olc} ${tail}`
+      .replace(/\s+/g, " ")
+      .trim();
   }
 
   // Fallback for everything else (positional outcomes beyond 1/2,
-  // novel symmetric outcomes, etc.) — readable enough without
-  // over-fitting per-market wording.
-  return `${marketName} — ${outcomeLabel} — in ${teamPoss} last ${streak} matches`;
+  // novel symmetric outcomes, etc.). Drop trailing "- map N" so we
+  // can restate Map N in the surrounding sentence.
+  const topic = stripMapSuffix(marketName, mapN);
+  const tail = perTailFor(subjectPoss, mapN, streak);
+  return `${topic} — ${outcomeLabel} — ${tail}`.replace(/\s+/g, " ").trim();
 }
 
-function stripThreshold(marketName: string, threshold: string): string {
-  // Regex-escape the threshold value so a literal "1.5" doesn't
-  // become a regex metachar. Strip it out and tidy up the spacing
-  // and any leftover separator characters.
-  const escaped = threshold.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return marketName
-    .replace(new RegExp(`\\b${escaped}\\b`), "")
+// Strip Oddin's "Will there be (a|an)..." / "Was there..." / "Did..."
+// interrogative scaffolding, the trailing "?", and the "- map N"
+// suffix (when present) so the remainder reads as a noun phrase
+// suitable for "No <event> in X's last 5 matches".
+function stripEventPhrase(marketName: string, mapN: string | null): string {
+  let out = marketName.trim().replace(/\?+/g, " ");
+  // Order matters — more specific phrases first.
+  out = out.replace(/^Will\s+there\s+be\s+(?:a|an)\s+/i, "");
+  out = out.replace(/^Will\s+there\s+be\s+/i, "");
+  out = out.replace(/^Will\s+(?:the\s+)?/i, "");
+  out = out.replace(/^Was\s+there\s+(?:a|an)\s+/i, "");
+  out = out.replace(/^Was\s+there\s+/i, "");
+  out = out.replace(/^Were\s+there\s+(?:any\s+)?/i, "");
+  out = out.replace(/^Did\s+(?:there\s+be\s+)?(?:a|an)\s+/i, "");
+  out = out.replace(/^Has\s+(?:there\s+been\s+)?(?:a|an)?\s*/i, "");
+  out = out.replace(/^Have\s+(?:there\s+been\s+)?(?:any\s+)?/i, "");
+  return stripMapSuffix(out, mapN).toLowerCase();
+}
+
+// Trim a trailing "- map N" / "— map N" suffix so the sentence can
+// restate Map N in its own surrounding phrase ("on Map N", "Map N
+// went..."). When mapN is null we leave the suffix alone — some
+// market names just look like "Foo - bar - baz" with no map context.
+function stripMapSuffix(text: string, mapN: string | null): string {
+  if (!mapN) return text.replace(/\s+/g, " ").trim();
+  const escaped = mapN.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return text
+    .replace(new RegExp(`[\\s-–·]+map\\s+${escaped}\\s*$`, "i"), "")
     .replace(/\s+/g, " ")
-    .replace(/^[-–·\s]+|[-–·\s]+$/g, "")
     .trim();
+}
+
+// Strip the threshold value (e.g. "8.5"), the subject's name when it
+// appears as a prefix (e.g. "HeavyGod" / "G2 Esports"), and the
+// "- map N" tail, leaving just the descriptive market topic.
+function cleanTopic(
+  marketName: string,
+  threshold: string,
+  subject: string,
+  mapN: string | null,
+): string {
+  let topic = marketName;
+  // 1. Threshold value
+  if (threshold) {
+    const escaped = threshold.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    topic = topic.replace(new RegExp(`\\b${escaped}\\b`), "");
+  }
+  // 2. Subject prefix (case-insensitive exact word match, anchored
+  //    to the start of the string). Substitution leaves the rest of
+  //    the topic in its native case so "Total headshot kills" stays
+  //    proper-cased.
+  if (subject) {
+    const lower = topic.toLowerCase();
+    const lowerSubject = subject.toLowerCase();
+    if (lower.startsWith(lowerSubject + " ")) {
+      topic = topic.slice(subject.length + 1);
+    } else if (lower.startsWith(lowerSubject)) {
+      topic = topic.slice(subject.length);
+    }
+  }
+  // 3. Map N suffix
+  topic = stripMapSuffix(topic, mapN);
+  return topic.replace(/^[-–·\s]+|[-–·\s]+$/g, "").replace(/\s+/g, " ").trim();
+}
+
+// Suffix the rendered sentence with "in X's last 5 matches" for
+// match-level markets or "on Map N in X's last 5 matches" for
+// per-map markets — used by every branch that doesn't bake the
+// trailing phrase into its own template.
+function perTailFor(
+  subjectPoss: string,
+  mapN: string | null,
+  streak: number,
+): string {
+  if (mapN) {
+    return `on Map ${mapN} in ${subjectPoss} last ${streak} matches`;
+  }
+  return `in ${subjectPoss} last ${streak} matches`;
+}
+
+function capitalise(s: string): string {
+  if (!s) return s;
+  return s[0]!.toUpperCase() + s.slice(1);
 }
 
 // Group key for line-family collapse. Two markets sit in the same
@@ -223,12 +341,15 @@ export default async function zillafactsRoutes(app: FastifyInstance) {
     const { matchId } = z
       .object({ matchId: z.coerce.bigint() })
       .parse(request.params);
-    // v7: 11 new round-prefix patterns covering comebacks (lost
-    // pistol / lost first 3 / 4 / 5 rounds → still won the map),
-    // half-time deficits, tied states (1-1 after 2, tied 6-6 at
-    // side switch), and current momentum (3+ / 5+ round win streak
-    // at the live tail). Bump key so v6 responses drain.
-    const cacheKey = `zillafacts:v7:${matchId.toString()}`;
+    // v8: filter facts at odds < 1.10 or score < 1.0 (closes the
+    // "7-streak at 1.04" trap where the line says the outcome is
+    // near-certain anyway); composeStreakFactText rewritten to
+    // detect player-prop markets (subject becomes the player, not
+    // the team), per-map markets ("G2 Esports' Map 2 went Over 9.5
+    // rounds" not "matches"), and question-style Yes/No markets
+    // ("No knife kill on Map 1" not "No Will there be a knife
+    // kill?"). Bump key so v7 responses drain.
+    const cacheKey = `zillafacts:v8:${matchId.toString()}`;
     return cached<ZillaFactsResponse>(
       app.redis,
       cacheKey,
@@ -815,10 +936,32 @@ async function loadStreakFacts(
     });
   }
 
-  const facts: ZillaFact[] = dedupedSurvivors.map(({ row, streak, streakLegs }) => {
+  const facts: ZillaFact[] = [];
+  for (const { row, streak, streakLegs } of dedupedSurvivors) {
     const specs = (row.specifiersJson ?? {}) as Record<string, string>;
     const matchHome = row.matchHomeTeam;
     const matchAway = row.matchAwayTeam;
+
+    // Filter 1 — minimum odds. Anything tighter than 1.10 is
+    // uninteresting as a tip regardless of streak (the line already
+    // says "this happens almost every time"). Filtered hard.
+    const currentOddsNum =
+      row.currentOdds == null ? null : Number(row.currentOdds);
+    const usableOdds =
+      currentOddsNum != null &&
+      Number.isFinite(currentOddsNum) &&
+      currentOddsNum > 1
+        ? currentOddsNum
+        : null;
+    if (usableOdds == null || usableOdds < ZILLAFACT_MIN_ODDS) continue;
+
+    // Filter 2 — composite score floor. Catches the "high streak at
+    // near-certain odds" trap (e.g. 7-streak at 1.04 → score 0.275)
+    // where the streak count looks impressive but the odds say the
+    // outcome is the default. Translates roughly to "need 11+ at
+    // 1.10 / 6+ at 1.20 / 5+ at 1.23 / always 5+ at 1.50".
+    const score = zillaFactScore(streak, usableOdds);
+    if (score < ZILLAFACT_MIN_SCORE) continue;
 
     const marketTemplate =
       row.marketDescTemplate ?? `Market #${row.providerMarketId}`;
@@ -838,15 +981,16 @@ async function loadStreakFacts(
       outcomeProfiles,
     );
 
-    const currentOddsNum =
-      row.currentOdds == null ? null : Number(row.currentOdds);
-    const usableOdds =
-      currentOddsNum != null &&
-      Number.isFinite(currentOddsNum) &&
-      currentOddsNum > 1
-        ? currentOddsNum
+    // Resolve player name from the most-common player specifier keys
+    // Oddin uses. The composer treats a non-null `playerName` as a
+    // signal to shift the fact subject from team to player —
+    // "HeavyGod went Over 8.5 ..." instead of "G2 Esports' last 5
+    // matches went Over 8.5 HeavyGod ...".
+    const playerUrn = specs.player ?? specs.player1 ?? specs.player2 ?? null;
+    const playerName =
+      playerUrn != null
+        ? (outcomeProfiles.players?.get(playerUrn) ?? null)
         : null;
-    const score = zillaFactScore(streak, usableOdds);
 
     const legs: ZillaFactLeg[] = streakLegs.map((leg) => {
       const oppId =
@@ -871,6 +1015,7 @@ async function loadStreakFacts(
 
     const factText = composeStreakFactText({
       teamName: row.teamName,
+      playerName,
       streak,
       marketName,
       outcomeLabel,
@@ -878,7 +1023,7 @@ async function loadStreakFacts(
       specifiers: specs,
     });
 
-    return {
+    facts.push({
       marketId: row.marketId,
       outcomeId: row.outcomeId,
       teamId: Number(row.teamId),
@@ -896,12 +1041,11 @@ async function loadStreakFacts(
       // sentence variants in factText (which the streak path doesn't
       // use today but the shared type needs populated).
       sampleSize: streak,
-      currentOdds:
-        usableOdds != null ? usableOdds.toFixed(2) : row.currentOdds ?? null,
+      currentOdds: usableOdds.toFixed(2),
       score,
       legs,
-    };
-  });
+    });
+  }
 
   // Highest-impact facts first. Within the same score, longer streaks
   // win the tiebreak (more "certain"); within identical score AND
@@ -2505,7 +2649,12 @@ async function loadConditionalFacts(
         oddsNum != null && Number.isFinite(oddsNum) && oddsNum > 1
           ? oddsNum
           : null;
+      // Same odds + score floor the streak path uses. A conditional
+      // fact at 1.04 odds is just as uninteresting as a streak fact
+      // at 1.04 — the line says "this happens by default".
+      if (usableOdds == null || usableOdds < ZILLAFACT_MIN_ODDS) continue;
       const score = zillaFactScore(streak, usableOdds);
+      if (score < ZILLAFACT_MIN_SCORE) continue;
       if (emittedKeys.has(key)) {
         // Replace if this pattern scores higher.
         const existingIdx = facts.findIndex(
@@ -2604,10 +2753,14 @@ async function loadConditionalFacts(
           oddsNum != null && Number.isFinite(oddsNum) && oddsNum > 1
             ? oddsNum
             : null;
+        // Same odds + score floor the streak path uses.
+        if (usableOdds == null || usableOdds < ZILLAFACT_MIN_ODDS) continue;
         // Score formula uses the WIN count as the "streak" input —
         // a 9-of-10 rate at odds 1.80 scores 9 × ln(1.80) ≈ 5.29 (FIRE
-        // tier) while 5-of-5 at 1.10 scores 5 × ln(1.10) ≈ 0.48 (base).
+        // tier) while 5-of-5 at 1.10 scores 5 × ln(1.10) ≈ 0.48 (base
+        // and now also below MIN_SCORE).
         const score = zillaFactScore(wins, usableOdds);
+        if (score < ZILLAFACT_MIN_SCORE) continue;
         if (emittedKeys.has(key)) {
           const existingIdx = facts.findIndex(
             (f) =>
