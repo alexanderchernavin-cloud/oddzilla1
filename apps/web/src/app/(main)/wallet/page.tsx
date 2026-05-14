@@ -8,6 +8,7 @@ import type {
   WithdrawalListResponse,
 } from "@oddzilla/types";
 import { serverApi } from "@/lib/server-fetch";
+import { getTranslations } from "@/lib/i18n/server";
 import { WalletPanels } from "./wallet-panels";
 import { CurrencyCard } from "./currency-card";
 
@@ -34,7 +35,7 @@ interface LedgerResponse {
 }
 
 export default async function WalletPage() {
-  const [walletRes, ledger, addressRes, deposits, withdrawals, linkedWallets] =
+  const [walletRes, ledger, addressRes, deposits, withdrawals, linkedWallets, t] =
     await Promise.all([
       serverApi<WalletListResponse>("/wallet"),
       serverApi<LedgerResponse>("/wallet/ledger?limit=25"),
@@ -42,6 +43,7 @@ export default async function WalletPage() {
       serverApi<DepositIntentListResponse>("/wallet/deposits?limit=25"),
       serverApi<WithdrawalListResponse>("/wallet/withdrawals?limit=25"),
       serverApi<LinkedWalletListResponse>("/wallet/addresses"),
+      getTranslations("wallet"),
     ]);
 
   const wallets = walletRes?.wallets ?? [];
@@ -50,11 +52,7 @@ export default async function WalletPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-semibold tracking-tight">Wallet</h1>
-      <p className="mt-2 text-sm text-[var(--color-fg-muted)]">
-        Real-money USDC plus the OZ demo balance for testing the bet
-        flow. Deposits and withdrawals are USDC on Ethereum (ERC20).
-      </p>
+      <h1 className="text-2xl font-semibold tracking-tight">{t("title")}</h1>
 
       <section className="mt-8 grid gap-4 md:grid-cols-2">
         <CurrencyCard wallet={usdc} currency="USDC" tag={null} />
@@ -72,11 +70,11 @@ export default async function WalletPage() {
 
       <section className="mt-12">
         <h2 className="text-sm uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-          Recent ledger
+          {t("history")}
         </h2>
         {!ledger || ledger.entries.length === 0 ? (
           <p className="mt-4 text-sm text-[var(--color-fg-muted)]">
-            No wallet activity yet.
+            —
           </p>
         ) : (
           <ul className="mt-4 divide-y divide-[var(--color-border)] rounded-[14px] border border-[var(--color-border)] bg-[var(--color-bg-card)]">

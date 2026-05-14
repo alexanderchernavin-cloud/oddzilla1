@@ -15,6 +15,7 @@ import {
   orderSportsForChips,
   shortName,
 } from "@/lib/sport-order";
+import { getTranslations } from "@/lib/i18n/server";
 
 interface SportsResponse {
   sports: Array<{ id: number; slug: string; name: string; kind: string; active: boolean }>;
@@ -37,11 +38,12 @@ function enrich(m: ListMatchWithSport): ListMatchEnriched {
 }
 
 export default async function HomePage() {
-  const [sportsRes, liveCountsRes, liveRes, upcomingRes] = await Promise.all([
+  const [sportsRes, liveCountsRes, liveRes, upcomingRes, t] = await Promise.all([
     serverApi<SportsResponse>("/catalog/sports"),
     serverApi<Record<string, number>>("/catalog/live-counts"),
     serverApi<CrossSportResponse>("/catalog/matches?status=live&limit=120"),
     serverApi<CrossSportResponse>("/catalog/matches?status=upcoming&limit=60"),
+    getTranslations("home"),
   ]);
 
   const sports = sportsRes?.sports ?? [];
@@ -125,13 +127,13 @@ export default async function HomePage() {
                           }}
                         >
                           <SectionHeader
-                            kicker="Live"
-                            title="In play"
+                            kicker={t("liveKicker")}
+                            title={t("inPlay")}
                             count={live.length}
                           />
                           <SectionHeader
-                            kicker="Next"
-                            title="Upcoming"
+                            kicker={t("nextKicker")}
+                            title={t("upcoming")}
                             count={upcoming.length}
                           />
                         </div>
@@ -144,8 +146,8 @@ export default async function HomePage() {
                 key: "upcoming",
                 label: (
                   <SectionHeader
-                    kicker="Upcoming"
-                    title="Next up today"
+                    kicker={t("upcomingKicker")}
+                    title={t("nextUpToday")}
                     count={upcoming.length}
                   />
                 ),
@@ -157,7 +159,7 @@ export default async function HomePage() {
       })()}
       {upcoming.length === 0 && live.length === 0 ? (
         <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
-          Nothing scheduled. Check individual sport pages for the full slate.
+          {t("empty")}
         </p>
       ) : null}
     </div>

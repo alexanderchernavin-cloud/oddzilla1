@@ -9,6 +9,7 @@ import {
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { I } from "@/components/ui/icons";
 import { shortName } from "@/lib/sport-order";
+import { getTranslations } from "@/lib/i18n/server";
 
 interface SportResponse {
   sport: { id: number; slug: string; name: string };
@@ -42,9 +43,12 @@ export default async function SportPage({
   const qs = new URLSearchParams({ limit: "100" });
   if (tournamentId) qs.set("tournament", tournamentId);
   if (teamId) qs.set("team", teamId);
-  const data = await serverApi<SportResponse>(
-    `/catalog/sports/${slug}?${qs.toString()}`,
-  );
+  const [data, t, tShell, tCommon] = await Promise.all([
+    serverApi<SportResponse>(`/catalog/sports/${slug}?${qs.toString()}`),
+    getTranslations("sport"),
+    getTranslations("shell"),
+    getTranslations("common"),
+  ]);
   if (!data) notFound();
 
   const filteredTournamentName = tournamentId
@@ -106,7 +110,7 @@ export default async function SportPage({
               color: "var(--fg-dim)",
             }}
           >
-            Sport
+            {tShell("sports")}
           </div>
           <h1
             className="display"
@@ -138,18 +142,18 @@ export default async function SportPage({
         >
           {tournamentId && (
             <FilterChip
-              label="Tournament"
-              value={filteredTournamentName ?? "Filtered"}
+              label={tShell("sports")}
+              value={filteredTournamentName ?? ""}
               clearHref={clearTournamentHref}
-              clearAriaLabel="Clear tournament filter"
+              clearAriaLabel={t("clearFilter")}
             />
           )}
           {teamId && (
             <FilterChip
-              label="Team"
-              value={filteredTeamName ?? "Filtered"}
+              label={t("filterTeam", { name: filteredTeamName ?? "" })}
+              value={filteredTeamName ?? ""}
               clearHref={clearTeamHref}
-              clearAriaLabel="Clear team filter"
+              clearAriaLabel={t("clearFilter")}
             />
           )}
         </div>
@@ -173,7 +177,7 @@ export default async function SportPage({
                         fontWeight: 600,
                       }}
                     >
-                      Live · {live.length}
+                      {tCommon("live")} · {live.length}
                     </div>
                   ),
                   matches: live,
@@ -193,7 +197,7 @@ export default async function SportPage({
                   fontWeight: 600,
                 }}
               >
-                Upcoming · {upcoming.length}
+                {t("upcoming")} · {upcoming.length}
               </div>
             ),
             matches: upcoming,
@@ -202,7 +206,7 @@ export default async function SportPage({
       />
       {upcoming.length === 0 && live.length === 0 ? (
         <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
-          No matches scheduled.
+          {t("noMatches")}
         </p>
       ) : null}
     </div>

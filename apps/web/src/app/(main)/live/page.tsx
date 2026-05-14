@@ -7,6 +7,7 @@ import {
 } from "@/components/match/match-list-tabs";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { orderMatchesBySport, shortName } from "@/lib/sport-order";
+import { getTranslations } from "@/lib/i18n/server";
 
 interface ListMatchWithSport extends ListMatch {
   sport: { slug: string; name: string };
@@ -34,7 +35,11 @@ export default async function LivePage({ searchParams }: PageProps) {
   const selectedSport =
     typeof rawSport === "string" && rawSport.length > 0 ? rawSport : null;
 
-  const data = await serverApi<Response>("/catalog/matches?status=live&limit=120");
+  const [data, tCommon, tSport] = await Promise.all([
+    serverApi<Response>("/catalog/matches?status=live&limit=120"),
+    getTranslations("common"),
+    getTranslations("sport"),
+  ]);
   const ordered = orderMatchesBySport(data?.matches ?? []);
 
   // Preserve insertion order from `ordered` so chips inherit the
@@ -74,19 +79,19 @@ export default async function LivePage({ searchParams }: PageProps) {
             letterSpacing: "-0.02em",
           }}
         >
-          Live now
+          {tCommon("live")}
         </h1>
         <div
           className="mono tnum"
           style={{ fontSize: 12, color: "var(--fg-muted)" }}
         >
-          {visible.length} {visible.length === 1 ? "match" : "matches"}
+          {visible.length}
         </div>
       </header>
 
       {chipSports.length > 1 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-          <Chip href="/live" label="All" count={ordered.length} active={!selectedSport} />
+          <Chip href="/live" label={tSport("all")} count={ordered.length} active={!selectedSport} />
           {chipSports.map((s) => (
             <Chip
               key={s.slug}
@@ -102,9 +107,7 @@ export default async function LivePage({ searchParams }: PageProps) {
 
       {visible.length === 0 ? (
         <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
-          {selectedSport
-            ? "No live matches in this sport right now."
-            : "Nothing live right now. Check back soon."}
+          {tSport("noMatches")}
         </p>
       ) : (
         <MatchListTabs matches={visible.map(enrich)} />

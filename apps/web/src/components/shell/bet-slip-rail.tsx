@@ -34,6 +34,7 @@ import { SportGlyph } from "@/components/ui/sport-glyph";
 import { useMobileDrawers } from "./mobile-drawer-context";
 import { UserControls } from "./user-controls";
 import { useWallets } from "@/lib/wallets";
+import { useTranslations } from "@/lib/i18n";
 import { RailMatchPanel } from "@/components/widgets/rail-match-panel";
 import type {
   SlipSelection,
@@ -76,6 +77,7 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
   const { closeAll } = useMobileDrawers();
   const router = useRouter();
   const { optimisticDeduct: optimisticDeductWallet } = useWallets();
+  const t = useTranslations("betSlip");
   const [stakeInput, setStakeInput] = useState("10");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -598,14 +600,14 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
                 fontFamily: "inherit",
               }}
             >
-              Clear
+              {t("clearSlip")}
             </button>
           )}
           <button
             type="button"
             onClick={closeAll}
             className="oz-rail-close"
-            aria-label="Close bet slip"
+            aria-label={t("title")}
             style={{
               width: 28,
               height: 28,
@@ -643,7 +645,7 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
               }}
             >
               {effectiveMode === "single"
-                ? "Single"
+                ? t("single")
                 : `${effectiveMode} · ${selections.length}`}
             </span>
           </div>
@@ -685,10 +687,10 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
               className="display"
               style={{ fontSize: 16, fontWeight: 500, letterSpacing: "-0.01em" }}
             >
-              Bet placed.
+              {t("betPlaced")}
             </div>
             <div style={{ fontSize: 12, color: "var(--fg-muted)" }}>
-              Ticket id{" "}
+              {t("ticket")}{" "}
               <span className="mono">{placedTicketId.slice(0, 8)}…</span>
             </div>
             <Link
@@ -700,7 +702,7 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
                 marginTop: 4,
               }}
             >
-              View in bet history →
+              {t("viewMyBets")} →
             </Link>
           </div>
         ) : selections.length === 0 ? (
@@ -733,7 +735,7 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
               className="display"
               style={{ fontSize: 15, color: "var(--fg)", letterSpacing: "-0.01em" }}
             >
-              Empty slip
+              {t("empty")}
             </div>
             <div
               style={{
@@ -743,8 +745,7 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
                 lineHeight: 1.5,
               }}
             >
-              Tap any odds button to build your bet. Add a second match for a
-              combo — multiple markets from the same match replace each other.
+              {t("emptyHint")}
             </div>
           </div>
         ) : (
@@ -1173,24 +1174,16 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
                 style={{ width: "100%" }}
               >
                 {submitting
-                  ? "Placing…"
+                  ? t("placing")
                   : hasPendingOdds
-                    ? "Accept odds change"
-                    : isBetBuilderMode
-                      ? "Place BetBuilder"
-                      : isTiple
-                        ? "Place Tiple"
-                        : isTippot
-                          ? "Place Tippot"
-                          : isCombo
-                            ? "Place combo"
-                            : "Place bet"}
+                    ? t("accept")
+                    : t("placeBet")}
               </Button>
             </>
           )}
 
           <div style={{ fontSize: 10, color: "var(--fg-dim)", textAlign: "center" }}>
-            Odds may update before acceptance.
+            {t("oddsChanged")}
           </div>
         </form>
       )}
@@ -1219,6 +1212,8 @@ function SelectionCard({
   selection: SlipSelection;
   onRemove: () => void;
 }) {
+  const t = useTranslations("betSlip");
+  const tCommon = useTranslations("common");
   // Selections persisted from older slip versions don't carry an active
   // flag — treat the absence as bettable so the card doesn't suddenly
   // grey out for everyone after a deploy.
@@ -1291,7 +1286,7 @@ function SelectionCard({
               background: "color-mix(in oklab, var(--negative) 8%, transparent)",
             }}
           >
-            Suspended
+            {tCommon("suspended")}
           </span>
         )}
         <div style={{ flex: 1 }} />
@@ -1305,7 +1300,7 @@ function SelectionCard({
             cursor: "pointer",
             padding: 2,
           }}
-          aria-label="Remove selection"
+          aria-label={t("removeLeg")}
         >
           <I.Close size={12} />
         </button>

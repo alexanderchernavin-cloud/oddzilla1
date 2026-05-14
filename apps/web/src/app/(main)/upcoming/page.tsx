@@ -5,6 +5,7 @@ import {
   type ListMatchEnriched,
 } from "@/components/match/match-list-tabs";
 import { shortName } from "@/lib/sport-order";
+import { getTranslations } from "@/lib/i18n/server";
 
 interface ListMatchWithSport extends ListMatch {
   sport: { slug: string; name: string };
@@ -23,9 +24,11 @@ function enrich(m: ListMatchWithSport): ListMatchEnriched {
 }
 
 export default async function UpcomingPage() {
-  const data = await serverApi<Response>(
-    "/catalog/matches?status=upcoming&limit=120",
-  );
+  const [data, t, tSport] = await Promise.all([
+    serverApi<Response>("/catalog/matches?status=upcoming&limit=120"),
+    getTranslations("shell"),
+    getTranslations("sport"),
+  ]);
   const matches = data?.matches ?? [];
 
   return (
@@ -47,19 +50,19 @@ export default async function UpcomingPage() {
             letterSpacing: "-0.02em",
           }}
         >
-          Upcoming
+          {t("upcoming")}
         </h1>
         <div
           className="mono tnum"
           style={{ fontSize: 12, color: "var(--fg-muted)" }}
         >
-          {matches.length} {matches.length === 1 ? "match" : "matches"}
+          {matches.length}
         </div>
       </header>
 
       {matches.length === 0 ? (
         <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
-          No upcoming matches scheduled.
+          {tSport("noMatches")}
         </p>
       ) : (
         <MatchListTabs matches={matches.map(enrich)} />

@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
+import { useTranslations } from "@/lib/i18n";
 
 export function AccountForms({
   initialDisplayName,
@@ -34,6 +35,8 @@ function ProfileForm({
   const [countryCode, setCountryCode] = useState(initialCountryCode);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const t = useTranslations("account");
+  const tCommon = useTranslations("common");
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -47,12 +50,12 @@ function ProfileForm({
           countryCode: countryCode.trim().toUpperCase() || null,
         }),
       });
-      setMessage({ kind: "ok", text: "Saved." });
+      setMessage({ kind: "ok", text: t("saved") });
       router.refresh();
     } catch (err) {
       setMessage({
         kind: "err",
-        text: err instanceof ApiFetchError ? err.body.message : "Save failed.",
+        text: err instanceof ApiFetchError ? err.body.message : tCommon("error"),
       });
     } finally {
       setSubmitting(false);
@@ -62,11 +65,11 @@ function ProfileForm({
   return (
     <form onSubmit={onSubmit} className="card space-y-4 p-6">
       <h2 className="text-sm uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-        Profile
+        {t("profile")}
       </h2>
 
       <label className="block">
-        <span className="text-xs text-[var(--color-fg-subtle)]">Display name</span>
+        <span className="text-xs text-[var(--color-fg-subtle)]">{t("displayName")}</span>
         <input
           type="text"
           maxLength={64}
@@ -77,7 +80,7 @@ function ProfileForm({
       </label>
 
       <label className="block">
-        <span className="text-xs text-[var(--color-fg-subtle)]">Country (ISO-2)</span>
+        <span className="text-xs text-[var(--color-fg-subtle)]">{t("country")}</span>
         <input
           type="text"
           maxLength={2}
@@ -102,7 +105,7 @@ function ProfileForm({
       ) : null}
 
       <button type="submit" disabled={submitting} className="btn btn-primary">
-        {submitting ? "Saving…" : "Save profile"}
+        {submitting ? tCommon("saving") : t("saveChanges")}
       </button>
     </form>
   );
@@ -114,6 +117,8 @@ function PasswordForm() {
   const [next, setNext] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const t = useTranslations("account");
+  const tCommon = useTranslations("common");
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -136,9 +141,9 @@ function PasswordForm() {
         text:
           err instanceof ApiFetchError
             ? err.body.error === "invalid_current_password"
-              ? "Current password is wrong."
+              ? t("currentPassword")
               : err.body.message
-            : "Change failed.",
+            : tCommon("error"),
       });
     } finally {
       setSubmitting(false);
@@ -148,14 +153,14 @@ function PasswordForm() {
   return (
     <form onSubmit={onSubmit} className="card space-y-4 p-6">
       <h2 className="text-sm uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-        Change password
+        {t("changePassword")}
       </h2>
       <p className="text-xs text-[var(--color-fg-subtle)]">
-        You will be signed out of every device after saving.
+        {t("passwordChanged")}
       </p>
 
       <label className="block">
-        <span className="text-xs text-[var(--color-fg-subtle)]">Current password</span>
+        <span className="text-xs text-[var(--color-fg-subtle)]">{t("currentPassword")}</span>
         <input
           type="password"
           autoComplete="current-password"
@@ -166,7 +171,7 @@ function PasswordForm() {
         />
       </label>
       <label className="block">
-        <span className="text-xs text-[var(--color-fg-subtle)]">New password</span>
+        <span className="text-xs text-[var(--color-fg-subtle)]">{t("newPassword")}</span>
         <input
           type="password"
           autoComplete="new-password"
@@ -185,7 +190,7 @@ function PasswordForm() {
       ) : null}
 
       <button type="submit" disabled={submitting} className="btn btn-ghost">
-        {submitting ? "Changing…" : "Change password"}
+        {submitting ? t("changingPassword") : t("changePassword")}
       </button>
     </form>
   );

@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { Button } from "@/components/ui/primitives";
+import { useTranslations } from "@/lib/i18n";
 
 export function SignupForm() {
   const router = useRouter();
@@ -12,6 +13,7 @@ export function SignupForm() {
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const t = useTranslations("auth");
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -21,12 +23,12 @@ export function SignupForm() {
     // Local validation first — clearer message than round-tripping zod.
     const trimmedEmail = email.trim();
     if (!trimmedEmail.includes("@")) {
-      setError("Enter a valid email address.");
+      setError(t("errorInvalid"));
       setSubmitting(false);
       return;
     }
     if (password.length < 8) {
-      setError("Password must be at least 8 characters.");
+      setError(t("errorWeakPassword"));
       setSubmitting(false);
       return;
     }
@@ -47,21 +49,17 @@ export function SignupForm() {
     } catch (err) {
       if (err instanceof ApiFetchError) {
         if (err.body.error === "email_in_use") {
-          setError("An account with this email already exists. Try logging in.");
+          setError(t("errorEmailTaken"));
         } else if (err.body.error === "validation_error") {
           const first = err.body.issues?.[0];
-          setError(
-            first
-              ? `${first.path}: ${first.message}`
-              : "Check your inputs and try again.",
-          );
+          setError(first ? `${first.path}: ${first.message}` : t("errorInvalid"));
         } else if (err.status === 429) {
-          setError("Too many attempts. Wait a minute and try again.");
+          setError(t("errorRateLimited"));
         } else {
-          setError(err.body.message || "Signup failed.");
+          setError(err.body.message || t("errorInvalid"));
         }
       } else {
-        setError("Could not reach the server. Check your connection.");
+        setError(t("errorNetwork"));
       }
     } finally {
       setSubmitting(false);
@@ -75,7 +73,7 @@ export function SignupForm() {
       style={{ marginTop: 28, display: "flex", flexDirection: "column", gap: 10 }}
     >
       <Field
-        label="Display name"
+        label={t("displayName")}
         type="text"
         name="displayName"
         autoComplete="nickname"
@@ -84,7 +82,7 @@ export function SignupForm() {
         onChange={(e) => setDisplayName(e.target.value)}
       />
       <Field
-        label="Email"
+        label={t("email")}
         type="email"
         name="email"
         autoComplete="email"
@@ -93,7 +91,7 @@ export function SignupForm() {
         onChange={(e) => setEmail(e.target.value)}
       />
       <Field
-        label="Password (min 8 characters)"
+        label={t("password")}
         type="password"
         name="password"
         autoComplete="new-password"
@@ -122,7 +120,7 @@ export function SignupForm() {
         disabled={submitting}
         style={{ width: "100%", marginTop: 8 }}
       >
-        {submitting ? "Creating account…" : "Create account"}
+        {submitting ? t("submitting") : t("signupCta")}
       </Button>
     </form>
   );
