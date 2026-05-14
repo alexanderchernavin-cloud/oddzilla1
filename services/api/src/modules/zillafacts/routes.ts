@@ -223,13 +223,13 @@ export default async function zillafactsRoutes(app: FastifyInstance) {
     const { matchId } = z
       .object({ matchId: z.coerce.bigint() })
       .parse(request.params);
-    // v5: URN resolution. Outcome labels and market names with
-    // `od:competitor:N` / `od:player:N` ids now resolve to the
-    // human-readable name from competitor_profiles /
-    // player_profiles via the shared market-naming helper. Bump
-    // key so v4 responses ("...Over 7.5 od:player:1670 Total
-    // headshot kills...") drain.
-    const cacheKey = `zillafacts:v5:${matchId.toString()}`;
+    // v6: pin description joins to English. Post-0052 the
+    // market_descriptions / outcome_descriptions tables ship one
+    // row per (provider_market_id, variant, language); without the
+    // explicit language filter the LEFT JOIN was picking arbitrary
+    // locale rows (Czech / Portuguese leaked into the cards). Bump
+    // key so v5 mixed-locale responses drain.
+    const cacheKey = `zillafacts:v6:${matchId.toString()}`;
     return cached<ZillaFactsResponse>(
       app.redis,
       cacheKey,
@@ -664,13 +664,20 @@ async function loadStreakFacts(
       c.brand_color                             AS "teamBrandColor",
       la.legs_json                              AS "legsJson"
     FROM legs_agg la
+    -- Pin description joins to English. market_descriptions and
+    -- outcome_descriptions now key on (provider_market_id, variant,
+    -- language) post-0052 — without the filter the LEFT JOIN picks
+    -- an arbitrary locale row and the storefront sees Czech /
+    -- Portuguese / etc. text bleeding through.
     LEFT JOIN market_descriptions md
       ON md.provider_market_id = la.provider_market_id
      AND md.variant = la.variant
+     AND md.language = 'en'
     LEFT JOIN outcome_descriptions od
       ON od.provider_market_id = la.provider_market_id
      AND od.variant = la.variant
      AND od.outcome_id = la.current_outcome_id
+     AND od.language = 'en'
     LEFT JOIN competitors c
       ON c.id = la.team_id
   `);
@@ -1431,13 +1438,18 @@ async function fetchCurrentMarkets(
       mo.probability                                             AS "probability"
     FROM markets mk
     JOIN market_outcomes mo ON mo.market_id = mk.id AND mo.active = TRUE
+    -- See the legs_agg join in loadStreakFacts for the locale story —
+    -- post-0052 the description tables key on language; pin to English
+    -- so the conditional-fact label matches the storefront's default.
     LEFT JOIN market_descriptions md
       ON md.provider_market_id = mk.provider_market_id
      AND md.variant = COALESCE(mk.specifiers_json->>'variant', '')
+     AND md.language = 'en'
     LEFT JOIN outcome_descriptions od
       ON od.provider_market_id = mk.provider_market_id
      AND od.variant = COALESCE(mk.specifiers_json->>'variant', '')
      AND od.outcome_id = mo.outcome_id
+     AND od.language = 'en'
     WHERE mk.match_id = ${matchId}
       AND mk.status = 1
   `);
