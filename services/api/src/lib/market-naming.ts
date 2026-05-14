@@ -67,9 +67,10 @@ export function substituteTemplate(
   specs: Record<string, string>,
   teams?: TeamNamePair,
   profiles?: OutcomeProfiles,
+  locale?: string,
 ): string {
   const out = template.replace(/\{([a-z0-9_]+)\}/gi, (_, key: string) => {
-    const v = specs[key];
+    let v = specs[key];
     if (v == null) return `{${key}}`;
     // Special-case the "side" specifier: when the caller has the
     // match's team names, render the actual team instead of the
@@ -79,13 +80,35 @@ export function substituteTemplate(
       if (v === "home") return teams.homeTeam;
       if (v === "away") return teams.awayTeam;
     }
+    // Oddin's localized templates contain {way} but the value stays
+    // literal English ("two"/"three"). Surrounding nouns ARE
+    // translated, so the raw render reads "Победитель матча - three
+    // исхода" or "Vencedor da partida - threeopções". Substituting a
+    // digit for non-EN locales makes the line scan as "3 исхода" /
+    // "3 opções" which is readable. EN keeps the words because that
+    // is Oddin's intended reading (Match winner - threeway).
+    if (key === "way" && locale && locale !== "en") {
+      if (v === "two") v = "2";
+      else if (v === "three") v = "3";
+    }
     // URN substitution. `{player}` -> `od:player:1670` -> "Niko".
     // `{competitor1}` etc work the same. Falls back to the URN
     // verbatim when the profile map has nothing — better than
     // dropping the value silently.
     return resolveUrn(v, profiles);
   });
-  return out.replace(/\s{2,}/g, " ").replace(/\s-\s$/, "").trim();
+  let cleaned = out.replace(/\s{2,}/g, " ").replace(/\s-\s$/, "").trim();
+  // Per-locale Oddin catalogue oddities. Czech templates leave the
+  // literal English "way" suffix after {way} ("Vítěz zápasu – 3way");
+  // strip it so we read "...– 3". Portuguese sometimes jams the digit
+  // against the noun ("3opções") or uses "forma" with no space; insert
+  // a space so the digit isn't fused to the next word.
+  if (locale === "cs") {
+    cleaned = cleaned.replace(/(\d+)way\b/g, "$1");
+  } else if (locale === "pt") {
+    cleaned = cleaned.replace(/(\d+)(opç|opc|forma)/gi, "$1 $2");
+  }
+  return cleaned.replace(/\s{2,}/g, " ").trim();
 }
 
 export function renderOutcomeLabel(
@@ -94,6 +117,7 @@ export function renderOutcomeLabel(
   homeTeam: string,
   awayTeam: string,
   profiles?: OutcomeProfiles,
+  locale?: string,
 ): string {
   // When `template` itself is a URN — happens when the caller
   // fell back to outcomeId because outcome_descriptions had no row
@@ -104,7 +128,7 @@ export function renderOutcomeLabel(
     const resolved = resolveUrn(template, profiles);
     if (resolved !== template) return resolved;
   }
-  const sub = substituteTemplate(template, specs, { homeTeam, awayTeam }, profiles);
+  const sub = substituteTemplate(template, specs, { homeTeam, awayTeam }, profiles, locale);
   const lower = sub.trim().toLowerCase();
   if (lower === "home") return homeTeam;
   if (lower === "away") return awayTeam;
