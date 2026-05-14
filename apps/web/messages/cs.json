@@ -33,6 +33,7 @@
     "error": "Něco se pokazilo",
     "retry": "Zkusit znovu",
     "demo": "Demo",
+    "draw": "Remíza",
     "live": "Živě",
     "ended": "Ukončeno",
     "cancelled": "Zrušeno",
@@ -205,7 +206,9 @@
     "betbuilderUnavailable": "Bet builder není pro tento zápas k dispozici.",
     "share": "Sdílet",
     "copyLink": "Kopírovat odkaz",
-    "copied": "Zkopírováno"
+    "copied": "Zkopírováno",
+    "matchWinner": "Vítěz zápasu",
+    "watching": "{count} sleduje"
   },
   "bets": {
     "title": "Moje sázky",

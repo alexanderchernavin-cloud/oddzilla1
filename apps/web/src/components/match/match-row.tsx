@@ -9,6 +9,7 @@ import { TierMark, isFeaturedTier } from "@/components/ui/tier-mark";
 import { useBetSlip } from "@/lib/bet-slip";
 import { mapCellValue, type LiveScore } from "@/lib/live-score";
 import { useOddsFlash, useValueFlash } from "@/lib/use-odds-flash";
+import { useTranslations } from "@/lib/i18n";
 import { LocalDateTime } from "./local-datetime";
 import type { SlipSelection } from "@oddzilla/types";
 
@@ -50,6 +51,10 @@ export function MatchRow({
 }: Props) {
   const slip = useBetSlip();
   const isLive = match.status === "live";
+  const tMatch = useTranslations("match");
+  const tCommon = useTranslations("common");
+  const matchWinnerLabel = tMatch("matchWinner");
+  const drawLabel = tCommon("draw");
 
   function handlePick(
     side: "home" | "away" | "draw",
@@ -66,7 +71,7 @@ export function MatchRow({
         ? match.homeTeam
         : side === "away"
           ? match.awayTeam
-          : "Draw";
+          : drawLabel;
     const selection: SlipSelection = {
       matchId: match.id,
       marketId: match.matchWinner.marketId,
@@ -75,7 +80,7 @@ export function MatchRow({
       probability: o.probability ?? undefined,
       homeTeam: match.homeTeam,
       awayTeam: match.awayTeam,
-      marketLabel: "Match winner",
+      marketLabel: matchWinnerLabel,
       outcomeLabel,
       sportSlug,
       // Stamped active=true here because the click-handler bails on null
@@ -228,7 +233,7 @@ export function MatchRow({
           {isLive ? (
             <>
               <Pill tone="live">
-                <LiveDot size={6} /> LIVE
+                <LiveDot size={6} /> {tCommon("live")}
               </Pill>
               {viewerCount > 0 ? (
                 <ViewerCountPill count={viewerCount} />
@@ -319,6 +324,8 @@ function ScoreTable({
   awayTrailing?: ReactNode;
   drawTrailing?: ReactNode;
 }) {
+  const tMatch = useTranslations("match");
+  const matchWinnerLabel = tMatch("matchWinner");
   const periods = (liveScore?.periods ?? []).filter((p) => p.number != null);
   const periodByNumber = new Map<number, NonNullable<LiveScore["periods"]>[number]>();
   for (const p of periods) periodByNumber.set(p.number ?? 0, p);
@@ -380,7 +387,7 @@ function ScoreTable({
           {cols.map((n) => (
             <ColHeader key={n} label={String(n)} live={currentMap === n} />
           ))}
-          {hasTrailing && <TrailingHeader />}
+          {hasTrailing && <TrailingHeader label={matchWinnerLabel} />}
         </div>
       )}
 
@@ -477,7 +484,7 @@ function ColHeader({ label, live = false }: { label: string; live?: boolean }) {
 // numeric column headers (Σ / 1 / 2 / 3) are too cryptic to carry
 // this hint. Slightly tighter letter-spacing + nowrap+ellipsis so the
 // label survives the ~58px trail column on narrow mobile viewports.
-function TrailingHeader() {
+function TrailingHeader({ label }: { label: string }) {
   return (
     <div
       style={{
@@ -490,7 +497,7 @@ function TrailingHeader() {
         textOverflow: "ellipsis",
       }}
     >
-      Match winner
+      {label}
     </div>
   );
 }
@@ -696,6 +703,8 @@ function RowOddBtn({
 // active room. The number is formatted with thousands separators so
 // a 12 000-viewer Major final reads cleanly.
 function ViewerCountPill({ count }: { count: number }) {
+  const tMatch = useTranslations("match");
+  const label = tMatch("watching", { count: count.toLocaleString() });
   return (
     <span
       className="mono"
@@ -712,7 +721,7 @@ function ViewerCountPill({ count }: { count: number }) {
         letterSpacing: "0.02em",
         flexShrink: 0,
       }}
-      title={`${count.toLocaleString()} watching the match room`}
+      title={label}
     >
       <span
         style={{
@@ -723,7 +732,7 @@ function ViewerCountPill({ count }: { count: number }) {
           opacity: 0.8,
         }}
       />
-      {count.toLocaleString()} watching
+      {label}
     </span>
   );
 }
