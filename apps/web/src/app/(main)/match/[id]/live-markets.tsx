@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useLiveMarketStatus, useLiveOdds } from "@/lib/use-live-odds";
 import { useBetSlip } from "@/lib/bet-slip";
 import { useZillaTips } from "@/lib/use-zillatips";
+import { useTranslations } from "@/lib/i18n";
 import type { ZillaTip } from "@oddzilla/types/zillatips";
 import { OddButton } from "@/components/ui/primitives";
 import { I } from "@/components/ui/icons";
@@ -189,6 +190,21 @@ export function LiveMarkets({
   // ZillaTips loads lazily after first render so the SSR'd markets
   // tree appears without waiting on the historical ROI calc.
   const { tipsByMarket } = useZillaTips(matchId);
+  const tMatch = useTranslations("match");
+  const tSport = useTranslations("sport");
+
+  // Map the API-supplied `scope.id` to a translated label. The API still
+  // ships a plain-English `label` field so older clients render
+  // something readable, but every storefront fetch resolves through the
+  // i18n dictionary instead — that's the only path that respects the
+  // user's picked locale.
+  function scopeLabel(group: { id: string; label: string }): string {
+    if (group.id === "top") return tMatch("topTab");
+    if (group.id === "match") return tMatch("matchTab");
+    const m = group.id.match(/^map_(\d+)$/);
+    if (m && m[1]) return tMatch("mapTab", { n: Number(m[1]) });
+    return group.label;
+  }
 
   const builderLocked = useMemo<BuilderLockFn>(() => {
     const isBuilderForThisMatch =
@@ -346,8 +362,7 @@ export function LiveMarkets({
     // the common case (in-play suspension windows).
     return (
       <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
-        No markets from the feed yet. This page will update live when odds start
-        flowing.
+        {tMatch("noMarkets")}
       </p>
     );
   }
@@ -377,7 +392,7 @@ export function LiveMarkets({
           {renderableGroups.length > 1 && (
             <>
               <ScopeTab active={scope === "all"} onClick={() => setScope("all")}>
-                All
+                {tSport("all")}
               </ScopeTab>
               {renderableGroups.map((g) => (
                 <ScopeTab
@@ -385,7 +400,7 @@ export function LiveMarkets({
                   active={scope === g.id}
                   onClick={() => setScope(g.id)}
                 >
-                  {g.label}
+                  {scopeLabel(g)}
                 </ScopeTab>
               ))}
             </>
@@ -422,7 +437,7 @@ export function LiveMarkets({
             }}
           >
             {isTop && <I.Fire size={16} />}
-            {g.label}
+            {scopeLabel(g)}
           </h2>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {g.entries.map((entry) =>

@@ -186,10 +186,12 @@ func main() {
 			// KB of XML and changes rarely, so we don't need a tight
 			// cadence. Failures are logged but never fatal — stale
 			// descriptions are better than no descriptions.
-			if err := refreshMarketDescriptions(ctx, restClient, st, cfg.Oddin.Lang, logger); err != nil {
-				logger.Warn().Err(err).Msg("initial market descriptions refresh failed; UI will fall back to ids")
+			for _, lang := range descriptionLangs(cfg.Oddin.Lang) {
+				if err := refreshMarketDescriptions(ctx, restClient, st, lang, logger); err != nil {
+					logger.Warn().Err(err).Str("lang", lang).Msg("initial market descriptions refresh failed; UI will fall back to ids")
+				}
 			}
-			go runDescriptionsRefresher(ctx, restClient, st, cfg.Oddin.Lang, logger)
+			go runDescriptionsRefresher(ctx, restClient, st, descriptionLangs(cfg.Oddin.Lang), logger)
 			// Backfill competitor profiles for any active match whose
 			// teams we haven't fetched yet. Fire-and-forget because
 			// there can be hundreds of URNs — a fresh boot with no
@@ -227,21 +229,45 @@ func refreshMarketDescriptions(ctx context.Context, rc *oddinrest.Client, st *st
 	if err := xml.Unmarshal(body, &parsed); err != nil {
 		return err
 	}
-	if err := store.UpsertMarketDescriptions(ctx, st.Pool(), parsed.Markets); err != nil {
+	if err := store.UpsertMarketDescriptions(ctx, st.Pool(), lang, parsed.Markets); err != nil {
 		return err
 	}
 	n, _ := store.CountMarketDescriptions(ctx, st.Pool())
 	log.Info().
+		Str("lang", lang).
 		Int("markets_seen", len(parsed.Markets)).
 		Int("rows_in_cache", n).
 		Msg("market descriptions refreshed")
 	return nil
 }
 
+// descriptionLangs returns the language codes feed-ingester should
+// pull descriptions for. Storefront ships en/cs/pt/ru/es so we fetch
+// the same set; the operator's configured ODDIN_LANG always leads so
+// the legacy "fetch only one language" boot path keeps reporting the
+// same primary catalogue. Duplicates are stripped.
+func descriptionLangs(primary string) []string {
+	out := []string{}
+	seen := map[string]bool{}
+	add := func(lang string) {
+		if lang == "" || seen[lang] {
+			return
+		}
+		seen[lang] = true
+		out = append(out, lang)
+	}
+	add(primary)
+	for _, lang := range []string{"en", "cs", "pt", "ru", "es"} {
+		add(lang)
+	}
+	return out
+}
+
 // runDescriptionsRefresher refreshes the market description cache every
-// 6 hours. First refresh happens in main() before this goroutine starts,
-// so the cache is warm immediately; this loop just keeps it current.
-func runDescriptionsRefresher(ctx context.Context, rc *oddinrest.Client, st *store.Store, lang string, log zerolog.Logger) {
+// 6 hours, once per shipped language. First refresh happens in main()
+// before this goroutine starts, so the cache is warm immediately; this
+// loop just keeps it current.
+func runDescriptionsRefresher(ctx context.Context, rc *oddinrest.Client, st *store.Store, langs []string, log zerolog.Logger) {
 	const refreshEvery = 6 * time.Hour
 	t := time.NewTicker(refreshEvery)
 	defer t.Stop()
@@ -250,8 +276,10 @@ func runDescriptionsRefresher(ctx context.Context, rc *oddinrest.Client, st *sto
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := refreshMarketDescriptions(ctx, rc, st, lang, log); err != nil {
-				log.Warn().Err(err).Msg("market descriptions refresh failed")
+			for _, lang := range langs {
+				if err := refreshMarketDescriptions(ctx, rc, st, lang, log); err != nil {
+					log.Warn().Err(err).Str("lang", lang).Msg("market descriptions refresh failed")
+				}
 			}
 		}
 	}

@@ -39,6 +39,33 @@ import {
   outcomeSortWeight,
 } from "../../lib/market-naming.js";
 
+// Mirror of the storefront's i18n config — kept tiny + duplicated here
+// so the API doesn't import the web bundle. If we ship a new locale
+// the list updates in both places. Anything not in the list (or
+// missing entirely) resolves to 'en'.
+const SUPPORTED_LOCALES = new Set(["en", "cs", "pt", "ru", "es"]);
+const LOCALE_COOKIE = "oz_locale";
+
+function resolveLocale(cookies: Record<string, string | undefined>): string {
+  const raw = cookies[LOCALE_COOKIE];
+  if (raw && SUPPORTED_LOCALES.has(raw)) return raw;
+  return "en";
+}
+
+// Deduplicate a list of strings preserving order. Used to build the
+// `language IN (locale, 'en')` filter — when locale === 'en' the
+// resulting array is just ['en'] instead of ['en', 'en'].
+function uniq<T>(xs: T[]): T[] {
+  const seen = new Set<T>();
+  const out: T[] = [];
+  for (const x of xs) {
+    if (seen.has(x)) continue;
+    seen.add(x);
+    out.push(x);
+  }
+  return out;
+}
+
 // ── Catalog cache keys (v1 suffix lets us roll a shape change forward
 // without flushing). TTLs are tuned to the surface's mutation cadence:
 //   • /catalog/sports — mutates monthly at most (admin curation),
@@ -884,6 +911,14 @@ export default async function catalogRoutes(app: FastifyInstance) {
     const params = z
       .object({ id: z.coerce.bigint() })
       .parse(request.params);
+    // Storefront writes its picked language into the oz_locale cookie
+    // (see apps/web/src/lib/i18n/actions.ts). We pull the same cookie
+    // here so the description templates land in the right language.
+    // Falls back silently to 'en' on missing / unsupported values; the
+    // SQL filter below always includes 'en' as a second source so
+    // every market still gets a label even if Oddin doesn't ship the
+    // requested language.
+    const locale = resolveLocale(request.cookies as Record<string, string | undefined>);
 
     const [match] = await app.db
       .select({
@@ -1013,10 +1048,18 @@ export default async function catalogRoutes(app: FastifyInstance) {
             .select({
               providerMarketId: marketDescriptions.providerMarketId,
               variant: marketDescriptions.variant,
+              language: marketDescriptions.language,
               nameTemplate: marketDescriptions.nameTemplate,
             })
             .from(marketDescriptions)
-            .where(inArray(marketDescriptions.providerMarketId, distinctMarketIds))
+            .where(
+              and(
+                inArray(marketDescriptions.providerMarketId, distinctMarketIds),
+                // Locale + EN fallback in one shot. Migration 0051 adds
+                // the `language` column; pre-migration rows are 'en'.
+                inArray(marketDescriptions.language, uniq([locale, "en"])),
+              ),
+            )
         : Promise.resolve([]),
       distinctMarketIds.length > 0
         ? app.db
@@ -1024,10 +1067,16 @@ export default async function catalogRoutes(app: FastifyInstance) {
               providerMarketId: outcomeDescriptions.providerMarketId,
               variant: outcomeDescriptions.variant,
               outcomeId: outcomeDescriptions.outcomeId,
+              language: outcomeDescriptions.language,
               nameTemplate: outcomeDescriptions.nameTemplate,
             })
             .from(outcomeDescriptions)
-            .where(inArray(outcomeDescriptions.providerMarketId, distinctMarketIds))
+            .where(
+              and(
+                inArray(outcomeDescriptions.providerMarketId, distinctMarketIds),
+                inArray(outcomeDescriptions.language, uniq([locale, "en"])),
+              ),
+            )
         : Promise.resolve([]),
     ]);
     const competitorNameMap = new Map<string, string>();
@@ -1036,11 +1085,31 @@ export default async function catalogRoutes(app: FastifyInstance) {
     for (const p of pps) playerNameMap.set(p.urn, p.name);
 
     const descKey = (mid: number, variant: string) => `${mid}:${variant ?? ""}`;
+    // Build a locale-preferring map. We inserted both locale and 'en'
+    // rows above; if both exist for the same key, the locale row wins
+    // by overwriting the 'en' row that lands first in the sort. When
+    // locale === 'en', the inArray is just ['en'] and the preference
+    // pass is a no-op.
     const marketDescMap = new Map<string, string>();
-    for (const d of marketDescs) marketDescMap.set(descKey(d.providerMarketId, d.variant), d.nameTemplate);
+    const sortedMarketDescs = [...marketDescs].sort((a, b) => {
+      const ap = a.language === locale ? 1 : 0;
+      const bp = b.language === locale ? 1 : 0;
+      return ap - bp; // 'en' first, locale second so it wins on .set()
+    });
+    for (const d of sortedMarketDescs) {
+      marketDescMap.set(descKey(d.providerMarketId, d.variant), d.nameTemplate);
+    }
     const outcomeDescMap = new Map<string, string>();
-    for (const d of outcomeDescs) {
-      outcomeDescMap.set(`${d.providerMarketId}:${d.variant ?? ""}:${d.outcomeId}`, d.nameTemplate);
+    const sortedOutcomeDescs = [...outcomeDescs].sort((a, b) => {
+      const ap = a.language === locale ? 1 : 0;
+      const bp = b.language === locale ? 1 : 0;
+      return ap - bp;
+    });
+    for (const d of sortedOutcomeDescs) {
+      outcomeDescMap.set(
+        `${d.providerMarketId}:${d.variant ?? ""}:${d.outcomeId}`,
+        d.nameTemplate,
+      );
     }
 
     type MarketRow = {

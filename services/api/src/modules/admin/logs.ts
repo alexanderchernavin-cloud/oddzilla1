@@ -269,7 +269,13 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
             })
             .from(marketDescriptions)
             .where(
-              inArray(marketDescriptions.providerMarketId, distinctProviderIds),
+              and(
+                inArray(marketDescriptions.providerMarketId, distinctProviderIds),
+                // Admin logs viewer is English-only — pin to 'en' so
+                // the row count doesn't multiply by the number of
+                // shipped languages after migration 0051.
+                eq(marketDescriptions.language, "en"),
+              ),
             ),
           app.db
             .select({
@@ -280,7 +286,10 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
             })
             .from(outcomeDescriptions)
             .where(
-              inArray(outcomeDescriptions.providerMarketId, distinctProviderIds),
+              and(
+                inArray(outcomeDescriptions.providerMarketId, distinctProviderIds),
+                eq(outcomeDescriptions.language, "en"),
+              ),
             ),
         ])
       : [[], []];

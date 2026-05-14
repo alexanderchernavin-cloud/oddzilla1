@@ -16,6 +16,7 @@ import {
   text,
   jsonb,
   timestamp,
+  char,
   primaryKey,
 } from "drizzle-orm/pg-core";
 
@@ -24,11 +25,17 @@ export const marketDescriptions = pgTable(
   {
     providerMarketId: integer().notNull(),
     variant: text().notNull().default(""),
+    // ISO 639-1 lang code as returned by Oddin's
+    // /v1/descriptions/{lang}/markets endpoint. See migration 0051 —
+    // the same provider_market_id ships once per language now.
+    language: char({ length: 2 }).notNull().default("en"),
     nameTemplate: text().notNull(),
     specifiersJson: jsonb().notNull().default(sql`'[]'::jsonb`),
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [primaryKey({ columns: [t.providerMarketId, t.variant] })],
+  (t) => [
+    primaryKey({ columns: [t.providerMarketId, t.variant, t.language] }),
+  ],
 );
 
 export const outcomeDescriptions = pgTable(
@@ -37,10 +44,15 @@ export const outcomeDescriptions = pgTable(
     providerMarketId: integer().notNull(),
     variant: text().notNull().default(""),
     outcomeId: text().notNull(),
+    language: char({ length: 2 }).notNull().default("en"),
     nameTemplate: text().notNull(),
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [primaryKey({ columns: [t.providerMarketId, t.variant, t.outcomeId] })],
+  (t) => [
+    primaryKey({
+      columns: [t.providerMarketId, t.variant, t.outcomeId, t.language],
+    }),
+  ],
 );
 
 export type MarketDescription = typeof marketDescriptions.$inferSelect;

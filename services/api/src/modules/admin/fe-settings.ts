@@ -159,7 +159,16 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
             nameTemplate: marketDescriptions.nameTemplate,
           })
           .from(marketDescriptions)
-          .where(inArray(marketDescriptions.providerMarketId, allIds))
+          .where(
+            and(
+              inArray(marketDescriptions.providerMarketId, allIds),
+              // Admin UI is backoffice-English; pinning to 'en' also
+              // sidesteps the post-migration-0051 duplicate-row issue
+              // where the same provider_market_id ships once per
+              // language now.
+              eq(marketDescriptions.language, "en"),
+            ),
+          )
       : [];
     const labelByID = new Map<number, string>();
     for (const d of descRows) {

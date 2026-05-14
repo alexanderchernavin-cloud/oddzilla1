@@ -9,6 +9,7 @@ import { TierMark, isFeaturedTier } from "@/components/ui/tier-mark";
 import { useBetSlip } from "@/lib/bet-slip";
 import { mapCellValue, type LiveScore } from "@/lib/live-score";
 import { useOddsFlash, useValueFlash } from "@/lib/use-odds-flash";
+import { LocalDateTime } from "./local-datetime";
 import type { SlipSelection } from "@oddzilla/types";
 
 export interface ListMatch {
@@ -101,18 +102,10 @@ export function MatchRow({
     ? slip.has(match.matchWinner.marketId, match.matchWinner.draw.outcomeId)
     : false;
 
-  const whenLabel = (() => {
-    if (isLive) return null;
-    if (!match.scheduledAt) return null;
-    const d = new Date(match.scheduledAt);
-    const now = new Date();
-    const sameDay =
-      d.getUTCFullYear() === now.getUTCFullYear() &&
-      d.getUTCMonth() === now.getUTCMonth() &&
-      d.getUTCDate() === now.getUTCDate();
-    const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-    return sameDay ? `Today · ${time}` : d.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + ` · ${time}`;
-  })();
+  // Date formatting moved to LocalDateTime so the timezone is always
+  // the user's browser tz instead of the prod box's UTC. See PR #330
+  // for the bug where SSR + client rendering disagreed by 2 hours.
+  const showWhen = !isLive && match.scheduledAt != null;
 
   const homePrice = match.matchWinner?.home.price
     ? Number(match.matchWinner.home.price)
@@ -242,12 +235,12 @@ export function MatchRow({
               ) : null}
             </>
           ) : (
-            whenLabel && (
+            showWhen && (
               <span
                 className="mono"
                 style={{ fontSize: 11, color: "var(--fg-muted)", flexShrink: 0 }}
               >
-                {whenLabel}
+                <LocalDateTime iso={match.scheduledAt} mode="row" />
               </span>
             )
           )}
