@@ -65,6 +65,16 @@ export interface ZillaFact {
   marketName: string;
   outcomeLabel: string;
 
+  // Server-composed sentence stating the fact in plain English —
+  // "Aurora Gaming have won their last 5 matches" / "Total kills went
+  // under 45.5 in Aurora Gaming's last 5 matches" / "After winning
+  // Map 1, Aurora Gaming have won the match in their last 5 starts".
+  // The frontend renders this verbatim instead of trying to compose
+  // text from market + outcome — keeps the live-conditioned and
+  // prematch-streak phrasings consistent and skip the client of
+  // template-resolution branches.
+  factText: string;
+
   // Streak length: how many of the team's most recent closed matches
   // landed the same directional result (won / half_won) on this
   // (market, outcome). Always >= ZILLAFACT_MIN_STREAK by construction.
@@ -105,6 +115,11 @@ export const ZILLAFACT_MIN_STREAK = 5;
 // reported.
 export const ZILLAFACT_LOOKBACK_LEGS = 30;
 export const ZILLAFACT_LOOKBACK_DAYS = 365;
+
+// Hard cap on how many cards the storefront renders. Past this, the
+// band feels cluttered rather than informational. The server also
+// respects the cap so cached responses don't carry redundant entries.
+export const ZILLAFACT_MAX_CARDS = 6;
 
 // Visual tier ladder, by composite score. Same shape as ZillaTips'
 // (base → glow → fire). Examples:

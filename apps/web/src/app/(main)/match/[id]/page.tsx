@@ -174,7 +174,12 @@ export default async function MatchPage({
           page layout is unchanged for matches without strong
           patterns. Sits between the stream and the markets-tabs
           strip so it reads as an "insights" lead-in. */}
-      <ZillaFactsCards matchId={String(match.id)} />
+      <ZillaFactsCards
+        matchId={String(match.id)}
+        homeTeam={match.homeTeam}
+        awayTeam={match.awayTeam}
+        sportSlug={match.sport.slug}
+      />
 
       <MatchPrematchMobile
         matchId={String(match.id)}
