@@ -39,6 +39,56 @@ export interface OutcomeProfiles {
 const COMPETITOR_URN_PREFIX = "od:competitor:";
 const PLAYER_URN_PREFIX = "od:player:";
 
+// Oddin's `{sport_side}` specifier carries in-game side names that are
+// NOT localised by their /descriptions endpoint — the wire value is the
+// same `counter_terrorist`/`terrorist`/`attacker`/`defender` enum
+// regardless of language. Without humanisation the market title leaks
+// the raw snake_case enum (e.g. "counter_terrorist Total rounds 12.5
+// (Excl. Overtime) - map 1"). Note: these are *sides within a map*,
+// not teams — CS2 / Valorant teams swap sides at half-time, so mapping
+// side → team would misrepresent the market's meaning. Keep the side
+// label.
+const SPORT_SIDE_LABELS_EN: Record<string, string> = {
+  counter_terrorist: "Counter-Terrorist",
+  terrorist: "Terrorist",
+  attacker: "Attacker",
+  defender: "Defender",
+};
+const SPORT_SIDE_LABELS_BY_LOCALE: Record<string, Record<string, string>> = {
+  ru: {
+    counter_terrorist: "Контр-Террористы",
+    terrorist: "Террористы",
+    attacker: "Атакующие",
+    defender: "Защитники",
+  },
+  cs: {
+    counter_terrorist: "Counter-Terrorist",
+    terrorist: "Terrorist",
+    attacker: "Útočníci",
+    defender: "Obránci",
+  },
+  pt: {
+    counter_terrorist: "Counter-Terrorist",
+    terrorist: "Terrorist",
+    attacker: "Atacantes",
+    defender: "Defensores",
+  },
+  es: {
+    counter_terrorist: "Counter-Terrorist",
+    terrorist: "Terrorist",
+    attacker: "Atacantes",
+    defender: "Defensores",
+  },
+};
+
+function humaniseSnakeCase(v: string): string {
+  return v
+    .split("_")
+    .filter((w) => w.length > 0)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
 export function isCompetitorUrn(value: string): boolean {
   return value.startsWith(COMPETITOR_URN_PREFIX);
 }
@@ -90,6 +140,17 @@ export function substituteTemplate(
     if (key === "way" && locale && locale !== "en") {
       if (v === "two") v = "2";
       else if (v === "three") v = "3";
+    }
+    // `{sport_side}` flows in as a raw enum (`counter_terrorist`,
+    // `terrorist`, `attacker`, `defender`). Map to a per-locale label;
+    // fall through to title-cased snake_case for any future value
+    // Oddin adds (so a hypothetical `blue` renders as `Blue`).
+    if (key === "sport_side") {
+      const localised =
+        (locale && SPORT_SIDE_LABELS_BY_LOCALE[locale]?.[v]) ||
+        SPORT_SIDE_LABELS_EN[v];
+      if (localised) return localised;
+      return humaniseSnakeCase(v);
     }
     // URN substitution. `{player}` -> `od:player:1670` -> "Niko".
     // `{competitor1}` etc work the same. Falls back to the URN
