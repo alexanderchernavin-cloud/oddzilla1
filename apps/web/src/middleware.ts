@@ -72,10 +72,19 @@ function buildCsp(nonce: string): string {
   // Locked tighter than `https: wss:` per Sec S5 — without an enumerated
   // list, an injected script (CSP-unblocked via nonce reuse) could
   // exfiltrate to any HTTPS origin.
-  const wsOrigins =
-    "wss://oddzilla.cc wss://*.oddzilla.cc wss://localhost:* ws://localhost:*";
-  const apiOrigins =
-    "https://oddzilla.cc https://*.oddzilla.cc http://localhost:*";
+  //
+  // localhost:* is dev-only — pnpm dev runs api/ws-gateway on 3001/3002
+  // and the browser needs CSP to permit those calls. Shipping localhost
+  // in prod CSP would let any local app on the user's machine (debug
+  // server, ADB bridge, devtools) be reachable from the page; gating it
+  // on NODE_ENV closes that.
+  const isDev = process.env.NODE_ENV !== "production";
+  const wsOrigins = isDev
+    ? "wss://oddzilla.cc wss://*.oddzilla.cc wss://localhost:* ws://localhost:*"
+    : "wss://oddzilla.cc wss://*.oddzilla.cc";
+  const apiOrigins = isDev
+    ? "https://oddzilla.cc https://*.oddzilla.cc http://localhost:*"
+    : "https://oddzilla.cc https://*.oddzilla.cc";
   return [
     "default-src 'self'",
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`,
