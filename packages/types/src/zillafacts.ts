@@ -1,0 +1,137 @@
+// ZillaFacts — statistical streak cards that sit between the stream and
+// the markets-tabs on the match-detail page. Where ZillaTips surfaces
+// any (market, outcome) whose last-5 flat-stake ROI clears +20%,
+// ZillaFacts only surfaces hard, consecutive streaks: a team has won
+// (or hit Over / Yes / etc.) its last N matches in a row on the same
+// (provider_market_id, specifiers_hash) signature, for N ≥
+// ZILLAFACT_MIN_STREAK. The downstream tier glow scales with both
+// streak length AND current odds, so a 6-streak at 2.50 ranks as
+// "fire" while a 5-streak at 1.05 stays subtle.
+//
+// Same outcome-coverage as ZillaTips (positional 1/2, symmetric Over/
+// Under / Yes/No / Odd-Even, and {side}-specifier markets) — handicap
+// and correct-score markets are excluded until we have proper specifier
+// mirroring across home/away role flips.
+
+export type ZillaFactResult =
+  | "won"
+  | "lost"
+  | "void"
+  | "half_won"
+  | "half_lost";
+
+export type ZillaFactRole = "home" | "away";
+
+// One historical leg in the streak. Always materialised in newest-first
+// order so the rendered chip row reads as "today ← N matches back".
+// `result` and `prematchOdds` are nullable for safety (legacy matches
+// from before migration 0047 have no prematch snapshot); the streak
+// walker treats a null result as a break, so they don't silently
+// inflate streak length.
+export interface ZillaFactLeg {
+  histMatchId: string;
+  teamRoleHist: ZillaFactRole;
+  opponentLabel: string;
+  opponentLogoUrl: string | null;
+  opponentBrandColor: string | null;
+  prematchOdds: string | null;
+  result: ZillaFactResult | null;
+  equivOutcomeId: string;
+  liveStartedAt: string;
+  scheduledAt: string | null;
+}
+
+export interface ZillaFact {
+  // The (market, outcome) on the CURRENT match this fact attaches to.
+  // The storefront uses these to deep-link the corresponding outcome
+  // button when the user taps "show me this market" on the card.
+  marketId: string;
+  outcomeId: string;
+
+  // Team-of-interest pinned to the current match. For positional
+  // outcomes ("1"/"2") this is the home or away team respectively;
+  // for symmetric outcomes (over/under, yes/no) the fact is computed
+  // per-team and the response carries one fact per qualifying team.
+  teamId: number;
+  teamName: string;
+  teamRole: ZillaFactRole;
+  teamLogoUrl: string | null;
+  teamBrandColor: string | null;
+
+  // Pre-rendered display strings — server resolves both the market
+  // name template and the outcome label using the same renderer the
+  // catalog endpoint uses, so the card doesn't have to look anything
+  // up against the live LiveMarkets state.
+  marketName: string;
+  outcomeLabel: string;
+
+  // Streak length: how many of the team's most recent closed matches
+  // landed the same directional result (won / half_won) on this
+  // (market, outcome). Always >= ZILLAFACT_MIN_STREAK by construction.
+  streak: number;
+
+  // Current outcome's published odds on the live match. Null when the
+  // outcome is currently suspended (status=0) or odds haven't been
+  // published yet — the card still renders the streak but shows
+  // "Suspended" instead of an odds value.
+  currentOdds: string | null;
+
+  // Composite quality score = streak × ln(currentOdds), or just the
+  // streak itself when currentOdds is null. Used both for sort
+  // (descending) and the visual tier ladder below. A 9-streak at 1.50
+  // (~3.65) ranks above a 5-streak at 2.00 (~3.47) ranks above a
+  // 5-streak at 1.10 (~0.48).
+  score: number;
+
+  // The streak's matches, newest-first. Length === streak. Every leg
+  // here has result IN ('won', 'half_won') — losses, voids, and unrated
+  // matches break the streak so they don't appear in `legs`.
+  legs: ZillaFactLeg[];
+}
+
+export interface ZillaFactsResponse {
+  matchId: string;
+  facts: ZillaFact[];
+}
+
+// Minimum consecutive matches for a streak to surface as a fact. The
+// user spec calls out "at least 5 matches but the more the better" —
+// 5 is the floor, the score-based tier ladder rewards longer runs.
+export const ZILLAFACT_MIN_STREAK = 5;
+
+// How far back the SQL looks per team. 30 matches × 365-day window
+// bounds the per-team scan; the streak walker stops at the first
+// break anyway, so this is just the cap on how long a streak can be
+// reported.
+export const ZILLAFACT_LOOKBACK_LEGS = 30;
+export const ZILLAFACT_LOOKBACK_DAYS = 365;
+
+// Visual tier ladder, by composite score. Same shape as ZillaTips'
+// (base → glow → fire). Examples:
+//   • 5 wins at 1.10 odds → score 0.48 → base
+//   • 5 wins at 2.00 odds → score 3.47 → fire
+//   • 9 wins at 1.50 odds → score 3.65 → fire
+//   • 6 wins at 1.20 odds → score 1.09 → base
+//   • 7 wins at 1.40 odds → score 2.35 → glow
+export const ZILLAFACT_TIER_GLOW = 1.5;
+export const ZILLAFACT_TIER_FIRE = 3.0;
+
+export type ZillaFactTier = "base" | "glow" | "fire";
+
+export function zillaFactTier(score: number): ZillaFactTier {
+  if (score >= ZILLAFACT_TIER_FIRE) return "fire";
+  if (score >= ZILLAFACT_TIER_GLOW) return "glow";
+  return "base";
+}
+
+// Pure helper for the score formula. Centralised so the API and the
+// storefront agree on the number (the API ships it, but the UI may
+// recompute when filtering / sorting client-side).
+export function zillaFactScore(streak: number, odds: number | null): number {
+  if (odds == null || !Number.isFinite(odds) || odds <= 1) {
+    // Streak with no usable odds: rank below any streak with odds, but
+    // above zero so the fact still has a sortable score.
+    return streak * 0.05;
+  }
+  return streak * Math.log(odds);
+}
