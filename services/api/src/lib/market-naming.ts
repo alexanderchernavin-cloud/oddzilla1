@@ -19,10 +19,54 @@ export interface TeamNamePair {
   awayTeam: string;
 }
 
+// URN-name lookup for Oddin's URN-shaped outcome ids and specifier
+// values. Two flavours: competitor (team) URNs like `od:competitor:42`
+// and player URNs like `od:player:1670`. Both resolve via the cached
+// profile tables `competitor_profiles` and `player_profiles`.
+//
+// Caller responsibility: pre-fetch the URNs you'll touch (scan
+// `specifiers` values and the outcomeId/template, collect URN-prefixed
+// strings, batch-load the profile rows) and pass the resulting maps
+// in. Helpers below resolve at substitution time when a `{key}`
+// expands to a URN value, AND when the bare template IS a URN
+// (player-prop markets where outcome_descriptions has nothing and
+// outcomeId falls through as the label).
+export interface OutcomeProfiles {
+  competitors?: Map<string, string>;
+  players?: Map<string, string>;
+}
+
+const COMPETITOR_URN_PREFIX = "od:competitor:";
+const PLAYER_URN_PREFIX = "od:player:";
+
+export function isCompetitorUrn(value: string): boolean {
+  return value.startsWith(COMPETITOR_URN_PREFIX);
+}
+
+export function isPlayerUrn(value: string): boolean {
+  return value.startsWith(PLAYER_URN_PREFIX);
+}
+
+// Resolve a single URN-style value via the provided profile maps.
+// Returns the original string when the value isn't a URN, when no
+// profile map is provided, or when the URN isn't in the map (the
+// profile table can lag the feed for fresh competitors / players).
+function resolveUrn(value: string, profiles?: OutcomeProfiles): string {
+  if (!profiles) return value;
+  if (profiles.competitors && isCompetitorUrn(value)) {
+    return profiles.competitors.get(value) ?? value;
+  }
+  if (profiles.players && isPlayerUrn(value)) {
+    return profiles.players.get(value) ?? value;
+  }
+  return value;
+}
+
 export function substituteTemplate(
   template: string,
   specs: Record<string, string>,
   teams?: TeamNamePair,
+  profiles?: OutcomeProfiles,
 ): string {
   const out = template.replace(/\{([a-z0-9_]+)\}/gi, (_, key: string) => {
     const v = specs[key];
@@ -35,7 +79,11 @@ export function substituteTemplate(
       if (v === "home") return teams.homeTeam;
       if (v === "away") return teams.awayTeam;
     }
-    return v;
+    // URN substitution. `{player}` -> `od:player:1670` -> "Niko".
+    // `{competitor1}` etc work the same. Falls back to the URN
+    // verbatim when the profile map has nothing — better than
+    // dropping the value silently.
+    return resolveUrn(v, profiles);
   });
   return out.replace(/\s{2,}/g, " ").replace(/\s-\s$/, "").trim();
 }
@@ -45,8 +93,18 @@ export function renderOutcomeLabel(
   specs: Record<string, string>,
   homeTeam: string,
   awayTeam: string,
+  profiles?: OutcomeProfiles,
 ): string {
-  const sub = substituteTemplate(template, specs, { homeTeam, awayTeam });
+  // When `template` itself is a URN — happens when the caller
+  // fell back to outcomeId because outcome_descriptions had no row
+  // — resolve via the profile map directly. Don't pre-empt the
+  // existing template path on non-URN templates; just short-circuit
+  // the URN-as-template case.
+  if (profiles && (isCompetitorUrn(template) || isPlayerUrn(template))) {
+    const resolved = resolveUrn(template, profiles);
+    if (resolved !== template) return resolved;
+  }
+  const sub = substituteTemplate(template, specs, { homeTeam, awayTeam }, profiles);
   const lower = sub.trim().toLowerCase();
   if (lower === "home") return homeTeam;
   if (lower === "away") return awayTeam;
