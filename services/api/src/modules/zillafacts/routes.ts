@@ -44,6 +44,9 @@ import { cached } from "../../lib/cache.js";
 import {
   substituteTemplate,
   renderOutcomeLabel,
+  isCompetitorUrn,
+  isPlayerUrn,
+  type OutcomeProfiles,
 } from "../../lib/market-naming.js";
 
 // Raw SQL row shape — one row per qualifying (market, outcome, team)
@@ -220,13 +223,13 @@ export default async function zillafactsRoutes(app: FastifyInstance) {
     const { matchId } = z
       .object({ matchId: z.coerce.bigint() })
       .parse(request.params);
-    // v4: round-prefix conditional patterns ("after winning the
-    // first 2 rounds, team won the map in X of last Y starts")
-    // backed by the new map_round_history table populated by
-    // feed-ingester. Possessive-s and marketName casing fixes
-    // baked into composeStreakFactText too. Bump key so v3
-    // responses drain.
-    const cacheKey = `zillafacts:v4:${matchId.toString()}`;
+    // v5: URN resolution. Outcome labels and market names with
+    // `od:competitor:N` / `od:player:N` ids now resolve to the
+    // human-readable name from competitor_profiles /
+    // player_profiles via the shared market-naming helper. Bump
+    // key so v4 responses ("...Over 7.5 od:player:1670 Total
+    // headshot kills...") drain.
+    const cacheKey = `zillafacts:v5:${matchId.toString()}`;
     return cached<ZillaFactsResponse>(
       app.redis,
       cacheKey,
@@ -752,30 +755,58 @@ async function loadStreakFacts(
     }
   }
 
+  // Collect every URN-shaped value we'll feed through the template
+  // renderer (specifier values, outcome templates, raw outcome
+  // names, outcome ids). Batch-load profile rows in one pass so the
+  // .map() below renders "{player}" placeholders as readable names
+  // ("Niko") rather than the raw URN ("od:player:1670").
+  const urns = { competitors: new Set<string>(), players: new Set<string>() };
+  for (const s of dedupedSurvivors) {
+    const specs = (s.row.specifiersJson ?? {}) as Record<string, string>;
+    collectUrns(Object.values(specs), urns);
+    collectUrns(
+      [s.row.outcomeDescTemplate, s.row.rawOutcomeName, s.row.outcomeId],
+      urns,
+    );
+  }
+
   // One round-trip for every opponent's branding. Same array-literal
   // cast ZillaTips uses to bypass drizzle's positional tuple binding
-  // (which can't be coerced to int[]).
+  // (which can't be coerced to int[]). Plus a parallel two-trip fetch
+  // for outcome profile names.
+  const [brandRowsResult, outcomeProfiles] = await Promise.all([
+    opponentIds.size > 0
+      ? app.db.execute<{
+          id: number;
+          logoUrl: string | null;
+          brandColor: string | null;
+        }>(sql`
+          SELECT id, logo_url AS "logoUrl", brand_color AS "brandColor"
+          FROM competitors
+          WHERE id = ANY(${`{${Array.from(opponentIds).join(",")}}`}::int[])
+        `)
+      : Promise.resolve(
+          [] as Array<{
+            id: number;
+            logoUrl: string | null;
+            brandColor: string | null;
+          }>,
+        ),
+    fetchOutcomeProfiles(
+      app,
+      Array.from(urns.competitors),
+      Array.from(urns.players),
+    ),
+  ]);
   const brandById = new Map<
     number,
     { logoUrl: string | null; brandColor: string | null }
   >();
-  if (opponentIds.size > 0) {
-    const opponentIdsLiteral = `{${Array.from(opponentIds).join(",")}}`;
-    const brandRows = await app.db.execute<{
-      id: number;
-      logoUrl: string | null;
-      brandColor: string | null;
-    }>(sql`
-      SELECT id, logo_url AS "logoUrl", brand_color AS "brandColor"
-      FROM competitors
-      WHERE id = ANY(${opponentIdsLiteral}::int[])
-    `);
-    for (const b of brandRows) {
-      brandById.set(Number(b.id), {
-        logoUrl: b.logoUrl,
-        brandColor: b.brandColor,
-      });
-    }
+  for (const b of brandRowsResult) {
+    brandById.set(Number(b.id), {
+      logoUrl: b.logoUrl,
+      brandColor: b.brandColor,
+    });
   }
 
   const facts: ZillaFact[] = dedupedSurvivors.map(({ row, streak, streakLegs }) => {
@@ -785,10 +816,12 @@ async function loadStreakFacts(
 
     const marketTemplate =
       row.marketDescTemplate ?? `Market #${row.providerMarketId}`;
-    const marketName = substituteTemplate(marketTemplate, specs, {
-      homeTeam: matchHome,
-      awayTeam: matchAway,
-    });
+    const marketName = substituteTemplate(
+      marketTemplate,
+      specs,
+      { homeTeam: matchHome, awayTeam: matchAway },
+      outcomeProfiles,
+    );
     const outcomeTemplate =
       row.outcomeDescTemplate ?? row.rawOutcomeName ?? row.outcomeId;
     const outcomeLabel = renderOutcomeLabel(
@@ -796,6 +829,7 @@ async function loadStreakFacts(
       specs,
       matchHome,
       matchAway,
+      outcomeProfiles,
     );
 
     const currentOddsNum =
@@ -1995,11 +2029,28 @@ async function loadConditionalFacts(
     },
   ];
 
+  // Collect URN-shaped values from every market we might surface a
+  // fact on, so the template renderer below can resolve
+  // `od:player:1670` and `od:competitor:42` placeholders to readable
+  // names. Hits two profile tables in parallel with the team-branding
+  // round trip below.
+  const urns = { competitors: new Set<string>(), players: new Set<string>() };
+  for (const m of currentMarkets) {
+    collectUrns(Object.values(m.specifiers), urns);
+    for (const o of m.outcomes) {
+      collectUrns([o.descTemplate, o.rawName, o.outcomeId], urns);
+    }
+  }
+
   // Team branding for the team-of-interest. Opponent branding is
   // unused by the conditional path (we don't render leg chips).
-  const teamBrand = await fetchTeamBranding(app, [
-    meta.homeCompetitorId,
-    meta.awayCompetitorId,
+  const [teamBrand, outcomeProfiles] = await Promise.all([
+    fetchTeamBranding(app, [meta.homeCompetitorId, meta.awayCompetitorId]),
+    fetchOutcomeProfiles(
+      app,
+      Array.from(urns.competitors),
+      Array.from(urns.players),
+    ),
   ]);
 
   const facts: ZillaFact[] = [];
@@ -2068,10 +2119,12 @@ async function loadConditionalFacts(
       // as the corresponding outcome button on the match page.
       const marketTemplate =
         market.marketDescTemplate ?? `Market #${market.providerMarketId}`;
-      const marketName = substituteTemplate(marketTemplate, market.specifiers, {
-        homeTeam: meta.homeTeam,
-        awayTeam: meta.awayTeam,
-      });
+      const marketName = substituteTemplate(
+        marketTemplate,
+        market.specifiers,
+        { homeTeam: meta.homeTeam, awayTeam: meta.awayTeam },
+        outcomeProfiles,
+      );
       const outcomeTemplate =
         outcome.descTemplate ?? outcome.rawName ?? outcome.outcomeId;
       const outcomeLabel = renderOutcomeLabel(
@@ -2079,6 +2132,7 @@ async function loadConditionalFacts(
         market.specifiers,
         meta.homeTeam,
         meta.awayTeam,
+        outcomeProfiles,
       );
 
       const brand = teamBrand.get(team.competitorId);
@@ -2163,10 +2217,12 @@ async function loadConditionalFacts(
 
         const marketTemplate =
           market.marketDescTemplate ?? `Market #${market.providerMarketId}`;
-        const marketName = substituteTemplate(marketTemplate, market.specifiers, {
-          homeTeam: meta.homeTeam,
-          awayTeam: meta.awayTeam,
-        });
+        const marketName = substituteTemplate(
+          marketTemplate,
+          market.specifiers,
+          { homeTeam: meta.homeTeam, awayTeam: meta.awayTeam },
+          outcomeProfiles,
+        );
         const outcomeTemplate =
           outcomeRow.descTemplate ?? outcomeRow.rawName ?? outcomeRow.outcomeId;
         const outcomeLabel = renderOutcomeLabel(
@@ -2174,6 +2230,7 @@ async function loadConditionalFacts(
           market.specifiers,
           meta.homeTeam,
           meta.awayTeam,
+          outcomeProfiles,
         );
 
         const brand = teamBrand.get(team.competitorId);
@@ -2233,4 +2290,65 @@ async function fetchTeamBranding(
     result.set(Number(r.id), { logoUrl: r.logoUrl, brandColor: r.brandColor });
   }
   return result;
+}
+
+// Add any URN-shaped value in `values` to the appropriate bucket on
+// `urns`. Used to scan specifiers + outcome templates + outcome ids
+// before issuing a single batched profile lookup. Non-strings and
+// empty strings are no-ops.
+function collectUrns(
+  values: Array<string | null | undefined>,
+  urns: { competitors: Set<string>; players: Set<string> },
+): void {
+  for (const v of values) {
+    if (typeof v !== "string" || v.length === 0) continue;
+    if (isCompetitorUrn(v)) urns.competitors.add(v);
+    else if (isPlayerUrn(v)) urns.players.add(v);
+  }
+}
+
+// Build a Postgres `text[]` array-literal from a string list, with
+// the standard double-quote escape rules. URNs contain colons so
+// every value MUST be quoted to round-trip cleanly. Backslashes and
+// double quotes inside the value would also need escaping in
+// general; URNs don't contain either in practice but the regex below
+// is defensive.
+function textArrayLiteral(values: string[]): string {
+  return `{${values
+    .map((v) => `"${v.replace(/[\\"]/g, "\\$&")}"`)
+    .join(",")}}`;
+}
+
+// Pull `(urn, name)` pairs from competitor_profiles + player_profiles
+// for every URN the caller scanned out of the response. Two round
+// trips total, only fired when there's something to look up. Missing
+// profiles (the URN isn't in the table yet) silently degrade — the
+// caller's resolveUrn falls back to the URN string, which is still
+// uglier than a name but better than a hard error.
+async function fetchOutcomeProfiles(
+  app: FastifyInstance,
+  competitorUrns: string[],
+  playerUrns: string[],
+): Promise<OutcomeProfiles> {
+  const profiles: OutcomeProfiles = {
+    competitors: new Map(),
+    players: new Map(),
+  };
+  if (competitorUrns.length > 0) {
+    const literal = textArrayLiteral(competitorUrns);
+    const rows = await app.db.execute<{ urn: string; name: string }>(sql`
+      SELECT urn, name FROM competitor_profiles
+      WHERE urn = ANY(${literal}::text[])
+    `);
+    for (const r of rows) profiles.competitors!.set(r.urn, r.name);
+  }
+  if (playerUrns.length > 0) {
+    const literal = textArrayLiteral(playerUrns);
+    const rows = await app.db.execute<{ urn: string; name: string }>(sql`
+      SELECT urn, name FROM player_profiles
+      WHERE urn = ANY(${literal}::text[])
+    `);
+    for (const r of rows) profiles.players!.set(r.urn, r.name);
+  }
+  return profiles;
 }
