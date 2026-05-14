@@ -75,10 +75,22 @@ export interface ZillaFact {
   // template-resolution branches.
   factText: string;
 
-  // Streak length: how many of the team's most recent closed matches
-  // landed the same directional result (won / half_won) on this
-  // (market, outcome). Always >= ZILLAFACT_MIN_STREAK by construction.
+  // Win count among qualifying past trials. For streak-shape facts
+  // (the historical default) this is the consecutive-from-newest
+  // count of matches/maps that landed the same directional outcome;
+  // streak === sampleSize by construction. For rate-shape facts
+  // (live conditional patterns that gate on an in-match predicate)
+  // this is the number of WINS over a denominator of qualifying
+  // trials; sampleSize is the denominator and streak <= sampleSize.
+  // Always >= ZILLAFACT_MIN_STREAK by construction.
   streak: number;
+
+  // Denominator for the win count. Equals `streak` for streak-shape
+  // facts. For rate-shape facts (in-match conditional with an 80%+
+  // hit-rate floor) this is the number of past trials where the
+  // predicate matched, including the losses; e.g. streak=8 with
+  // sampleSize=10 reads as "8 of last 10 …".
+  sampleSize: number;
 
   // Current outcome's published odds on the live match. Null when the
   // outcome is currently suspended (status=0) or odds haven't been
