@@ -5,6 +5,7 @@ import { MobileBetSlipBar } from "@/components/shell/mobile-bet-slip-bar";
 import { MobileDrawersProvider } from "@/components/shell/mobile-drawer-context";
 import { MobileShellOverlay } from "@/components/shell/mobile-shell-overlay";
 import { ShellContainer } from "@/components/shell/shell-container";
+import { TopBarSearch } from "@/components/shell/top-bar-search";
 import { MatchPageProvider } from "@/lib/match-page-context";
 import { CombiBoostConfigProvider } from "@/lib/combi-boost-config";
 import { SportLogosProvider } from "@/lib/sport-logos";
@@ -76,7 +77,12 @@ export default async function MainLayout({ children }: { children: React.ReactNo
           and narrower caps where they need them.
         */}
         <main className="oz-main">
-          <div className="oz-main-inner">{children}</div>
+          <div className="oz-main-inner">
+            <div className="oz-shell-search">
+              <TopBarSearch />
+            </div>
+            {children}
+          </div>
         </main>
         <BetSlipRail signedIn={Boolean(user)} user={user ?? undefined} />
         <MobileShellOverlay />
