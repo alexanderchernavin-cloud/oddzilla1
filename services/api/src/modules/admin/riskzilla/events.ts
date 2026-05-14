@@ -93,6 +93,11 @@ const decisionFromTicketOzSql = sql`
 //   lmk — markets
 //   lm  — matches (LEFT JOIN — may be null for orphaned ticket rows)
 //   mo  — market_outcomes (LEFT JOIN — feed sometimes leaves name '')
+//
+// Used by the OZ-ticket path which always has a ticket row. The USDC
+// path (queryEventLog) uses `unifiedSelectionJsonBuildSql` below
+// instead, which sources both accepted (ticket_selections) and
+// rejected (decision_meta.buckets) legs through a `src` CTE.
 const selectionJsonBuildSql = sql`
   jsonb_build_object(
     'marketId',         lmk.id::text,
@@ -136,6 +141,64 @@ const selectionJsonBuildSql = sql`
                               THEN lm.home_team || ' vs ' || lm.away_team
                               ELSE NULL END,
     'result',           ts.result::text
+  )
+`;
+
+// Unified selection JSON build used by the USDC event_log path.
+// Differs from selectionJsonBuildSql in two ways: it reads from a
+// `src` alias (the UNION of accepted/rejected sources below) instead
+// of `ts`, and `oddsAtPlacement` / `result` may be NULL for rejected
+// events (no ticket row exists). The frontend renders odds = "—" in
+// that case.
+//
+// Aliases referenced:
+//   src — UNIONed source (market_id, outcome_id, odds_at_placement, result)
+//   lmk — markets
+//   lm  — matches (LEFT JOIN)
+//   mo  — market_outcomes (LEFT JOIN)
+const unifiedSelectionJsonBuildSql = sql`
+  jsonb_build_object(
+    'marketId',         lmk.id::text,
+    'providerMarketId', lmk.provider_market_id,
+    'marketTemplate',   COALESCE(
+      (SELECT md.name_template
+         FROM market_descriptions md
+        WHERE md.provider_market_id = lmk.provider_market_id
+          AND md.variant = COALESCE(lmk.specifiers_json->>'variant', '')
+        LIMIT 1),
+      (SELECT md.name_template
+         FROM market_descriptions md
+        WHERE md.provider_market_id = lmk.provider_market_id
+          AND md.variant = ''
+        LIMIT 1),
+      'Market #' || lmk.provider_market_id
+    ),
+    'outcomeTemplate',  COALESCE(
+      (SELECT od.name_template
+         FROM outcome_descriptions od
+        WHERE od.provider_market_id = lmk.provider_market_id
+          AND od.variant = COALESCE(lmk.specifiers_json->>'variant', '')
+          AND od.outcome_id = src.outcome_id
+        LIMIT 1),
+      (SELECT od.name_template
+         FROM outcome_descriptions od
+        WHERE od.provider_market_id = lmk.provider_market_id
+          AND od.variant = ''
+          AND od.outcome_id = src.outcome_id
+        LIMIT 1),
+      NULLIF(mo.name, ''),
+      src.outcome_id
+    ),
+    'specifiers',       COALESCE(lmk.specifiers_json, '{}'::jsonb),
+    'homeTeam',         lm.home_team,
+    'awayTeam',         lm.away_team,
+    'outcomeId',        src.outcome_id,
+    'oddsAtPlacement',  COALESCE(src.odds_at_placement, ''),
+    'matchId',          lmk.match_id::text,
+    'matchLabel',       CASE WHEN lm.id IS NOT NULL
+                              THEN lm.home_team || ' vs ' || lm.away_team
+                              ELSE NULL END,
+    'result',           src.result
   )
 `;
 
@@ -421,12 +484,41 @@ async function queryEventLog(
     LEFT JOIN sports      s  ON s.id = el.sport_id
     LEFT JOIN tournaments tn ON tn.id = el.tournament_id
     LEFT JOIN LATERAL (
-      SELECT jsonb_agg(${selectionJsonBuildSql} ORDER BY ts.id ASC) AS selections
-      FROM ticket_selections ts
-      JOIN markets        lmk ON lmk.id = ts.market_id
-      LEFT JOIN matches   lm  ON lm.id  = lmk.match_id
-      LEFT JOIN market_outcomes mo ON mo.market_id = ts.market_id AND mo.outcome_id = ts.outcome_id
-      WHERE el.ticket_id IS NOT NULL AND ts.ticket_id = el.ticket_id
+      -- Pull per-leg metadata from EITHER the ticket_selections row
+      -- (accepted) OR decision_meta.buckets (rejected — no ticket
+      -- exists, placement tx rolled back). The UNION makes both
+      -- paths emit the same (market_id, outcome_id) shape so the
+      -- jsonb_agg downstream renders market + selection columns for
+      -- rejected events too.
+      --
+      -- For rejected legs, odds + result are NULL (we don't durably
+      -- record what odds the user requested at; the engine's decision
+      -- is independent of that). Frontend renders "—" for the odds.
+      SELECT jsonb_agg(${unifiedSelectionJsonBuildSql} ORDER BY src.ord ASC)
+               AS selections
+      FROM (
+        SELECT ts.id::numeric                AS ord,
+               ts.market_id                  AS market_id,
+               ts.outcome_id                 AS outcome_id,
+               ts.odds_at_placement::text    AS odds_at_placement,
+               ts.result::text               AS result
+          FROM ticket_selections ts
+         WHERE el.ticket_id IS NOT NULL AND ts.ticket_id = el.ticket_id
+        UNION ALL
+        SELECT arr.ord::numeric              AS ord,
+               (arr.bucket->>'marketId')::bigint AS market_id,
+               arr.bucket->>'outcomeId'      AS outcome_id,
+               NULL::text                    AS odds_at_placement,
+               NULL::text                    AS result
+          FROM jsonb_array_elements(el.decision_meta->'buckets')
+            WITH ORDINALITY AS arr(bucket, ord)
+         WHERE el.ticket_id IS NULL
+           AND jsonb_typeof(el.decision_meta->'buckets') = 'array'
+      ) src
+      JOIN markets       lmk ON lmk.id = src.market_id
+      LEFT JOIN matches  lm  ON lm.id  = lmk.match_id
+      LEFT JOIN market_outcomes mo
+        ON mo.market_id = src.market_id AND mo.outcome_id = src.outcome_id
     ) sel ON true
     ${where}
     ORDER BY ${sortClause}

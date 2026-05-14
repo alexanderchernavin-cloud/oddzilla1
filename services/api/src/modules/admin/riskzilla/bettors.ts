@@ -82,7 +82,7 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
               AND t.actual_payout_micro > t.stake_micro
           )::int                                                  AS won_count,
           COALESCE(SUM(
-            CASE WHEN t.status = 'settled'
+            CASE WHEN t.status IN ('settled', 'cashed_out', 'voided')
                    THEN t.stake_micro - COALESCE(t.actual_payout_micro, 0)
                  ELSE 0 END
           ), 0)::bigint::text                                     AS pnl_micro,
@@ -190,8 +190,14 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
     }>;
 
     // Top-level USDC stats. PnL is operator POV: stake collected −
-    // payout paid out. Refunds are netted out (they don't move the
-    // bank but they do move the user's balance back).
+    // payout paid out, but ONLY over settled / cashed_out tickets —
+    // open ones haven't decided yet. (The listing endpoint already
+    // filters; profile used to compute on the client from raw
+    // staked-payout sums, which counted open tickets as full losses
+    // because actual_payout_micro is NULL → COALESCE 0.)
+    //
+    // staked_micro / payout_micro stay all-tickets so the "Total stake"
+    // / "Total payout" KPIs reflect lifetime volume, not just settled.
     const stats = (await app.db.execute(sql`
       SELECT
         COUNT(*)::int                                            AS tickets_count,
@@ -204,6 +210,11 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
         COALESCE(SUM(t.stake_micro), 0)::bigint::text            AS staked_micro,
         COALESCE(SUM(COALESCE(t.actual_payout_micro, 0)), 0)::bigint::text
                                                                  AS payout_micro,
+        COALESCE(SUM(
+          CASE WHEN t.status IN ('settled', 'cashed_out', 'voided')
+                 THEN t.stake_micro - COALESCE(t.actual_payout_micro, 0)
+               ELSE 0 END
+        ), 0)::bigint::text                                      AS pnl_micro,
         COALESCE(SUM(
           CASE WHEN t.status IN ('accepted', 'pending_delay')
                  THEN t.potential_payout_micro - t.stake_micro
@@ -224,6 +235,7 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
       open_count: number;
       staked_micro: string;
       payout_micro: string;
+      pnl_micro: string;
       open_max_loss_micro: string;
       open_potential_payout_micro: string;
       last_bet_at: Date | string | null;
@@ -256,6 +268,13 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
         COUNT(*)::int                                                       AS tickets_count,
         COALESCE(SUM(stake_micro), 0)::bigint::text                         AS staked_micro,
         COALESCE(SUM(payout_micro), 0)::bigint::text                        AS payout_micro,
+        -- Settled-only PnL: same filter as the top-level pnl_micro.
+        -- Open tickets don't contribute (their actual_payout is NULL).
+        COALESCE(SUM(
+          CASE WHEN status IN ('settled', 'cashed_out', 'voided')
+                 THEN stake_micro - payout_micro
+               ELSE 0 END
+        ), 0)::bigint::text                                                 AS pnl_micro,
         COUNT(*) FILTER (WHERE status = 'settled' AND payout_micro > stake_micro)::int
                                                                             AS won_count
       FROM ticket_classification
@@ -265,6 +284,7 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
       tickets_count: number;
       staked_micro: string;
       payout_micro: string;
+      pnl_micro: string;
       won_count: number;
     }>;
 
@@ -308,6 +328,14 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
         COUNT(DISTINCT ticket_id)::int                                                  AS ticket_count,
         COALESCE(ROUND(SUM(stake_micro * weight)), 0)::bigint::text                     AS staked_micro,
         COALESCE(ROUND(SUM(payout_micro * weight)), 0)::bigint::text                    AS payout_micro,
+        -- Settled-only PnL, share-weighted across sports the same
+        -- way staked / payout are. Open tickets contribute 0 here so
+        -- a pending bet doesn't paint its sport red.
+        COALESCE(ROUND(SUM(
+          CASE WHEN status IN ('settled', 'cashed_out', 'voided')
+                 THEN (stake_micro - payout_micro) * weight
+               ELSE 0 END
+        )), 0)::bigint::text                                                            AS pnl_micro,
         COUNT(*) FILTER (WHERE status = 'settled' AND payout_micro > stake_micro)::int  AS won_count
       FROM ticket_sport_weights
       GROUP BY sport_slug, sport_name
@@ -319,6 +347,7 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
       ticket_count: number;
       staked_micro: string;
       payout_micro: string;
+      pnl_micro: string;
       won_count: number;
     }>;
 
@@ -397,19 +426,26 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
     const s = stats[0];
     const stakedMicro = BigInt(s?.staked_micro ?? "0");
     const payoutMicro = BigInt(s?.payout_micro ?? "0");
-    const operatorPnlMicro = stakedMicro - payoutMicro;
+    // PnL comes from the settled-only `pnl_micro` aggregate (above);
+    // it intentionally excludes open / pending_delay tickets so a
+    // pending bet doesn't look like a full loss in the KPI.
+    const operatorPnlMicro = BigInt(s?.pnl_micro ?? "0");
 
     const phaseByName = new Map(phaseRows.map((r) => [r.phase, r]));
     const phaseEntry = (name: "live" | "prematch") => {
       const r = phaseByName.get(name);
       const stake = BigInt(r?.staked_micro ?? "0");
       const payout = BigInt(r?.payout_micro ?? "0");
+      // PnL is the server's settled-only aggregate — DO NOT recompute
+      // as `stake - payout` here because those sums include open
+      // tickets (lifetime volume context).
+      const pnl = BigInt(r?.pnl_micro ?? "0");
       return {
         ticketsCount: Number(r?.tickets_count ?? 0),
         wonCount: Number(r?.won_count ?? 0),
         stakedMicro: stake.toString(),
         payoutMicro: payout.toString(),
-        operatorPnlMicro: (stake - payout).toString(),
+        operatorPnlMicro: pnl.toString(),
       };
     };
 
@@ -455,6 +491,9 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
       pnlBySport: sportRows.map((r) => {
         const stake = BigInt(r.staked_micro);
         const payout = BigInt(r.payout_micro);
+        // Settled-only PnL, share-weighted across sports — see the
+        // `pnl_micro` column in the sport CTE for the filter.
+        const pnl = BigInt(r.pnl_micro);
         return {
           sportSlug: r.sport_slug,
           sportName: r.sport_name,
@@ -462,7 +501,7 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
           wonCount: Number(r.won_count),
           stakedMicro: stake.toString(),
           payoutMicro: payout.toString(),
-          operatorPnlMicro: (stake - payout).toString(),
+          operatorPnlMicro: pnl.toString(),
         };
       }),
       biggestStakes: biggestStakes.map((r) => ({
