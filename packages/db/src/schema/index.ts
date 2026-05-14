@@ -5,6 +5,7 @@ export * from "./wallet.js";
 export * from "./deposits.js";
 export * from "./catalog.js";
 export * from "./markets.js";
+export * from "./map-round-history.js";
 export * from "./descriptions.js";
 export * from "./profiles.js";
 export * from "./odds.js";

@@ -171,6 +171,34 @@ func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 			d.Log.Warn().Err(perr).Int64("match_id", matchID).Msg("build live_score payload failed; continuing")
 		}
 
+		// Round-by-round capture for sports that report per-round tallies
+		// in <sport_event_status> (CS2 / Valorant — periods carry
+		// homeWonRounds / awayWonRounds). The upsert in
+		// store.UpsertMapRoundHistory appends to map_round_history's
+		// `round_winners` string with only the delta since the previous
+		// observation, so the column accumulates exact round sequences
+		// for matches we observe from round 0 and approximate prefixes
+		// for late joiners. Powers the API's round-prefix conditional
+		// facts ("after winning the first 2 rounds, team won the map in
+		// X of last Y starts"). Best-effort — any error logs and
+		// continues; the markets path is unaffected.
+		if msg.SportEventStatus.PeriodScores != nil {
+			for _, p := range msg.SportEventStatus.PeriodScores.Periods {
+				if p.Number == nil {
+					continue
+				}
+				if p.HomeWonRounds == nil || p.AwayWonRounds == nil {
+					continue
+				}
+				if uerr := store.UpsertMapRoundHistory(
+					ctx, d.Store.Pool(), matchID, *p.Number, *p.HomeWonRounds, *p.AwayWonRounds,
+				); uerr != nil {
+					d.Log.Warn().Err(uerr).Int64("match_id", matchID).Int("map", *p.Number).
+						Msg("upsert map_round_history failed; continuing")
+				}
+			}
+		}
+
 		// Lifecycle status from <sport_event_status> drives matches.status.
 		// Per Oddin's spec (§2.4.1.2) the documented values are exactly:
 		//   0 = not_started, 1 = live, 4 = closed, 5 = cancelled

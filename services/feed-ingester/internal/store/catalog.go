@@ -382,6 +382,62 @@ func UpdateMatchLiveScore(ctx context.Context, db pgxRunner, matchID int64, payl
 	return nil
 }
 
+// UpsertMapRoundHistory appends new round-winner chars to
+// map_round_history for one (match, map) on every odds_change that
+// carries a period with homeWonRounds / awayWonRounds. Forward-only:
+// totals never regress, and a replayed-earlier message is a no-op.
+//
+// The single statement does both the INSERT (first observation of
+// this map) and the ON CONFLICT UPDATE (subsequent rounds) — the
+// INSERT path stamps approximated round_winners as "H repeated × home
+// + A repeated × away" so the totals are always exact; the UPDATE
+// path appends only the delta since the previous observation, so
+// once we've seen a map from (0, 0) every appended char reflects the
+// actual round we just witnessed (Oddin only ticks one team per
+// round). Late-joiners (we first saw the map at e.g. (3, 1)) get
+// approximate prefix ordering but exact totals.
+//
+// Best-effort: callers log on error but never block odds publishing.
+func UpsertMapRoundHistory(
+	ctx context.Context,
+	db pgxRunner,
+	matchID int64,
+	mapNumber int,
+	homeWonRounds int,
+	awayWonRounds int,
+) error {
+	// Skip noise: a period with 0/0 (pre-map snapshot) creates the row
+	// with an empty round_winners, which is fine — the next tick fills
+	// it in. But a period with NEGATIVE values shouldn't happen and
+	// shouldn't be persisted.
+	if homeWonRounds < 0 || awayWonRounds < 0 {
+		return nil
+	}
+	if mapNumber < 1 || mapNumber > 99 {
+		return nil
+	}
+	_, err := db.Exec(ctx, `
+		INSERT INTO map_round_history (match_id, map_number, home_won_total, away_won_total, round_winners)
+		VALUES (
+			$1, $2, $3::smallint, $4::smallint,
+			repeat('H', $3::int) || repeat('A', $4::int)
+		)
+		ON CONFLICT (match_id, map_number) DO UPDATE SET
+			round_winners = map_round_history.round_winners
+				|| repeat('H', GREATEST(EXCLUDED.home_won_total - map_round_history.home_won_total, 0)::int)
+				|| repeat('A', GREATEST(EXCLUDED.away_won_total - map_round_history.away_won_total, 0)::int),
+			home_won_total = GREATEST(map_round_history.home_won_total, EXCLUDED.home_won_total),
+			away_won_total = GREATEST(map_round_history.away_won_total, EXCLUDED.away_won_total),
+			updated_at = NOW()
+		WHERE EXCLUDED.home_won_total > map_round_history.home_won_total
+		   OR EXCLUDED.away_won_total > map_round_history.away_won_total
+	`, matchID, mapNumber, homeWonRounds, awayWonRounds)
+	if err != nil {
+		return fmt.Errorf("upsert map_round_history (match=%d, map=%d): %w", matchID, mapNumber, err)
+	}
+	return nil
+}
+
 // EnsureCategoryForSport returns (id, inserted, err) for the auto-mapped
 // category that sits directly under the given sport. Categories from Oddin
 // don't always exist in the source feed — we keep one synthetic "Auto" row

@@ -99,6 +99,20 @@ const CACHE_TTL_SECONDS = 300;
 // of that filter Just Works without two-places-to-update.
 const LINE_SPECIFIERS = ["threshold", "handicap"] as const;
 
+// Possessive form of a team name. "Aurora" → "Aurora's", "Team
+// Falcons" → "Team Falcons'" (English convention: drop the trailing
+// "s" after the apostrophe when the noun already ends in s/S/z).
+// Lowercase z/x are intentionally left out — esports team names
+// almost never end in those — but the check is character-class
+// extensible if a real case ever shows up.
+function possessive(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) return trimmed;
+  const last = trimmed[trimmed.length - 1]!;
+  if (last === "s" || last === "S") return `${trimmed}'`;
+  return `${trimmed}'s`;
+}
+
 // Plain-English sentence for a streak fact. Handles the most common
 // market shapes individually (Match Winner, Map Winner, Over / Under
 // totals, parity, Yes / No) and falls back to a generic template
@@ -115,6 +129,7 @@ function composeStreakFactText(args: {
 }): string {
   const { teamName, streak, marketName, outcomeLabel, providerMarketId, specifiers } = args;
   const olc = outcomeLabel.trim().toLowerCase();
+  const teamPoss = possessive(teamName);
 
   // Match Winner — outcome 1/2 maps to home/away, label resolves to
   // the team name (substituteTemplate handles the "home" / "away"
@@ -133,27 +148,33 @@ function composeStreakFactText(args: {
   if (specifiers.threshold && (olc === "over" || olc === "under")) {
     const topic = stripThreshold(marketName, specifiers.threshold);
     const direction = olc === "over" ? "Over" : "Under";
-    return `${teamName}'s last ${streak} matches went ${direction} ${specifiers.threshold} ${topic.toLowerCase()}`.trim().replace(/\s+/g, " ");
+    // Keep the topic in its original case — "Total kills - map 1"
+    // shouldn't become "total kills - map 1", which loses the proper
+    // noun feel that the storefront otherwise preserves. We just
+    // trim and collapse whitespace.
+    return `${teamPoss} last ${streak} matches went ${direction} ${specifiers.threshold} ${topic}`
+      .replace(/\s+/g, " ")
+      .trim();
   }
 
   // Parity (Odd / Even). outcomeLabel is literally "Odd" or "Even".
   if (olc === "odd" || olc === "even") {
-    return `${capitalize(marketName.toLowerCase())} came back ${olc} in ${teamName}'s last ${streak} matches`;
+    return `${marketName} came back ${olc} in ${teamPoss} last ${streak} matches`;
   }
 
   // Yes / No. The verb depends on direction — "Yes" reads as "had
   // X happen", "No" as "had no X".
   if (olc === "yes") {
-    return `${capitalize(marketName.toLowerCase())} hit in ${teamName}'s last ${streak} matches`;
+    return `${marketName} hit in ${teamPoss} last ${streak} matches`;
   }
   if (olc === "no") {
-    return `No ${marketName.toLowerCase()} in ${teamName}'s last ${streak} matches`;
+    return `No ${marketName} in ${teamPoss} last ${streak} matches`;
   }
 
   // Fallback for everything else (positional outcomes beyond 1/2,
   // novel symmetric outcomes, etc.) — readable enough without
   // over-fitting per-market wording.
-  return `${capitalize(marketName.toLowerCase())} — ${outcomeLabel} — in ${teamName}'s last ${streak} matches`;
+  return `${marketName} — ${outcomeLabel} — in ${teamPoss} last ${streak} matches`;
 }
 
 function stripThreshold(marketName: string, threshold: string): string {
@@ -166,11 +187,6 @@ function stripThreshold(marketName: string, threshold: string): string {
     .replace(/\s+/g, " ")
     .replace(/^[-–·\s]+|[-–·\s]+$/g, "")
     .trim();
-}
-
-function capitalize(s: string): string {
-  if (!s) return s;
-  return s[0]!.toUpperCase() + s.slice(1);
 }
 
 // Group key for line-family collapse. Two markets sit in the same
@@ -204,12 +220,13 @@ export default async function zillafactsRoutes(app: FastifyInstance) {
     const { matchId } = z
       .object({ matchId: z.coerce.bigint() })
       .parse(request.params);
-    // v3: live matches with completed periods switch from streak
-    // facts to in-match conditional facts ("After winning Map 1,
-    // team has won the match in their last N starts"). Streak
-    // shape extended with a server-composed `factText` sentence.
-    // Bump key so cached v2 responses drain.
-    const cacheKey = `zillafacts:v3:${matchId.toString()}`;
+    // v4: round-prefix conditional patterns ("after winning the
+    // first 2 rounds, team won the map in X of last Y starts")
+    // backed by the new map_round_history table populated by
+    // feed-ingester. Possessive-s and marketName casing fixes
+    // baked into composeStreakFactText too. Bump key so v3
+    // responses drain.
+    const cacheKey = `zillafacts:v4:${matchId.toString()}`;
     return cached<ZillaFactsResponse>(
       app.redis,
       cacheKey,
@@ -833,6 +850,12 @@ async function loadStreakFacts(
       outcomeLabel,
       factText,
       streak,
+      // Streak facts are consecutive-from-newest by construction, so
+      // every trial in the streak was a win — sampleSize matches the
+      // streak length 1:1. The frontend reads this for the "X of Y"
+      // sentence variants in factText (which the streak path doesn't
+      // use today but the shared type needs populated).
+      sampleSize: streak,
       currentOdds:
         usableOdds != null ? usableOdds.toFixed(2) : row.currentOdds ?? null,
       score,
@@ -907,6 +930,7 @@ interface ConditionalPattern {
     teamName: string,
     streak: number,
     conditionText: string,
+    sampleSize: number,
   ) => string;
 }
 
@@ -1206,7 +1230,124 @@ const CONDITIONAL_PATTERNS: ConditionalPattern[] = [
     // Match Winner is offered.
     target: (role) => ({ providerMarketId: 1, outcomeId: role === "home" ? "1" : "2" }),
     formatFact: (team, streak, _cond) =>
-      `${team}'s last ${streak} starts after winning Map 1 went to a deciding map`,
+      `${possessive(team)} last ${streak} starts after winning Map 1 went to a deciding map`,
+  },
+  // 13. Dota/LoL: Won Map 1 with high total kills (≥40) → won match.
+  // High-tempo wins where the team established a kill lead — strong
+  // predictor of series outcome in MOBAs.
+  {
+    id: "won_m1_high_kills_won_match",
+    sports: ["dota2", "lol"],
+    current: (ls, role) => {
+      const p1 = findPeriod(ls, 1);
+      if (!periodIsComplete(p1)) {
+        return { applicable: false, conditionText: "" };
+      }
+      const won = wonMap(p1, role);
+      const total = (p1?.homeKills ?? 0) + (p1?.awayKills ?? 0);
+      return {
+        applicable: won && total >= 40,
+        conditionText: "After a high-kill Map 1 win",
+      };
+    },
+    historical: (m) => {
+      const p1 = findPeriod(m.liveScore, 1);
+      if (!periodIsComplete(p1)) return false;
+      const total = (p1?.homeKills ?? 0) + (p1?.awayKills ?? 0);
+      return wonMap(p1, m.teamRole) && total >= 40;
+    },
+    outcome: (m) => (wonSeries(m.liveScore, m.teamRole) ? "won" : "lost"),
+    target: (role) => ({ providerMarketId: 1, outcomeId: role === "home" ? "1" : "2" }),
+    formatFact: (team, streak, cond) =>
+      `${cond}, ${team} have closed out the match in their last ${streak} starts`,
+  },
+  // 14. Dota/LoL: Won Map 1 with low total kills (≤25) → won match.
+  // Defensive / strategic wins where the team locked down the lane —
+  // different style than #13 but equally predictive when the
+  // historical pattern holds.
+  {
+    id: "won_m1_low_kills_won_match",
+    sports: ["dota2", "lol"],
+    current: (ls, role) => {
+      const p1 = findPeriod(ls, 1);
+      if (!periodIsComplete(p1)) {
+        return { applicable: false, conditionText: "" };
+      }
+      const won = wonMap(p1, role);
+      const total = (p1?.homeKills ?? 0) + (p1?.awayKills ?? 0);
+      return {
+        applicable: won && total > 0 && total <= 25,
+        conditionText: "After a low-kill Map 1 grind",
+      };
+    },
+    historical: (m) => {
+      const p1 = findPeriod(m.liveScore, 1);
+      if (!periodIsComplete(p1)) return false;
+      const total = (p1?.homeKills ?? 0) + (p1?.awayKills ?? 0);
+      return wonMap(p1, m.teamRole) && total > 0 && total <= 25;
+    },
+    outcome: (m) => (wonSeries(m.liveScore, m.teamRole) ? "won" : "lost"),
+    target: (role) => ({ providerMarketId: 1, outcomeId: role === "home" ? "1" : "2" }),
+    formatFact: (team, streak, cond) =>
+      `${cond}, ${team} have closed out the match in their last ${streak} starts`,
+  },
+  // 15. Dota/LoL: Map 1 was a stomp (winner doubled the loser's
+  // kills) → won match. The "kill domination" predictor.
+  {
+    id: "won_m1_stomp_won_match",
+    sports: ["dota2", "lol"],
+    current: (ls, role) => {
+      const p1 = findPeriod(ls, 1);
+      if (!periodIsComplete(p1) || p1?.homeKills == null || p1?.awayKills == null) {
+        return { applicable: false, conditionText: "" };
+      }
+      const won = wonMap(p1, role);
+      const myKills = role === "home" ? p1.homeKills : p1.awayKills;
+      const oppKills = role === "home" ? p1.awayKills : p1.homeKills;
+      const stomp = oppKills > 0 && myKills >= oppKills * 2;
+      return {
+        applicable: won && stomp,
+        conditionText: "After stomping Map 1 on kills",
+      };
+    },
+    historical: (m) => {
+      const p1 = findPeriod(m.liveScore, 1);
+      if (!periodIsComplete(p1) || p1?.homeKills == null || p1?.awayKills == null) {
+        return false;
+      }
+      const myKills = m.teamRole === "home" ? p1.homeKills : p1.awayKills;
+      const oppKills = m.teamRole === "home" ? p1.awayKills : p1.homeKills;
+      return (
+        wonMap(p1, m.teamRole) && oppKills > 0 && myKills >= oppKills * 2
+      );
+    },
+    outcome: (m) => (wonSeries(m.liveScore, m.teamRole) ? "won" : "lost"),
+    target: (role) => ({ providerMarketId: 1, outcomeId: role === "home" ? "1" : "2" }),
+    formatFact: (team, streak, cond) =>
+      `${cond}, ${team} have rolled through the match in their last ${streak} starts`,
+  },
+  // 16. CS2 / Valorant: Won Map 1 by ≥5 rounds — broader-than-blowout
+  // margin. Catches matches the ≥10 pattern misses while still
+  // representing a real margin advantage. Dedup falls back to the
+  // higher-streak pattern when both fire.
+  {
+    id: "won_m1_by_5_won_match",
+    sports: ROUND_SPORTS,
+    current: (ls, role) => {
+      const margin = map1RoundMargin(findPeriod(ls, 1), role);
+      return {
+        applicable: margin != null && margin >= 5,
+        conditionText: "After a comfortable Map 1 win",
+      };
+    },
+    historical: (m) => {
+      const margin = map1RoundMargin(findPeriod(m.liveScore, 1), m.teamRole);
+      return margin != null && margin >= 5;
+    },
+    outcome: (m) => (wonSeries(m.liveScore, m.teamRole) ? "won" : "lost"),
+    target: (role) => ({ providerMarketId: 1, outcomeId: role === "home" ? "1" : "2" }),
+    formatFact: (team, streak, cond) =>
+      `${cond}, ${team} have closed out the match in their last ${streak} starts`,
   },
 ];
 
@@ -1346,16 +1487,489 @@ async function fetchTeamHistory(
   return past;
 }
 
+// ── Round-prefix conditional facts ────────────────────────────────────
+//
+// A second category of live-conditional patterns, distinct from the
+// per-match patterns above. These check round-by-round prefixes of
+// the CURRENT in-progress map ("did the team win the first 2
+// rounds?") and aggregate historical hit-rates over the team's
+// recent maps (NOT matches) where the same prefix predicate held.
+//
+// Where the per-match patterns above use streak-shape aggregation
+// (consecutive wins from newest), these use rate-shape: count wins
+// over a sample of qualifying maps, surface when the sample is at
+// least ZILLAFACT_MIN_STREAK and the win rate clears
+// ROUND_PREFIX_MIN_RATE. So a card might read "X have won Map 1 in
+// 9 of last 10 starts after winning the first 2 rounds".
+//
+// All round-prefix patterns require map_round_history (migration
+// 0051). Matches played before the migration aren't in the table
+// and silently drop from the predicate-matching sample — over time
+// the data quality improves uniformly as teams play more matches
+// after the deploy.
+
+const ROUND_PREFIX_MIN_RATE = 0.8;
+const ROUND_PREFIX_LOOKBACK_MAPS = 50;
+
+interface MapRoundRow {
+  matchId: string;
+  mapNumber: number;
+  roundWinners: string;
+  homeWonTotal: number;
+  awayWonTotal: number;
+  // Team role in THIS map. Derived from the parent match's
+  // home_competitor_id at fetch time.
+  teamRole: ZillaFactRole;
+  // Outcome metrics — pre-computed so the per-pattern loop doesn't
+  // re-decode JSON for each match.
+  teamWonMap: boolean;
+  teamWonMatch: boolean;
+  liveStartedAt: string;
+}
+
+// Map of map_number → round history for the CURRENT match. Used by
+// the `current` predicate of each round-prefix pattern to check
+// whether the in-progress map's round prefix qualifies.
+type CurrentRoundHistory = Map<number, { roundWinners: string }>;
+
+interface RoundPrefixPattern {
+  id: string;
+  sports?: string[];
+  // Decide whether the pattern applies to the CURRENT match's
+  // in-progress map for a given team role.
+  current: (
+    ls: LiveScore,
+    history: CurrentRoundHistory,
+    role: ZillaFactRole,
+  ) => { applicable: boolean; conditionText: string };
+  // Decide whether a historical map qualifies under the same
+  // predicate (typically the same logic as `current` but reading
+  // from the historical map's row instead of the live scoreboard).
+  historical: (m: MapRoundRow) => boolean;
+  // Outcome metric — what we're proving from history. Default is
+  // "team won this specific map"; some patterns prove "team won the
+  // match" (e.g. "won first 3 rounds → won series").
+  outcome: (m: MapRoundRow) => boolean;
+  // Target market on the current match. `currentMapNumber` lets the
+  // target reflect "Map Winner Map N" where N is the live map.
+  target: (
+    role: ZillaFactRole,
+    currentMapNumber: number,
+  ) => {
+    providerMarketId: number;
+    outcomeId: string;
+    specifierMatch?: (specs: Record<string, string>) => boolean;
+  };
+  formatFact: (
+    teamName: string,
+    wins: number,
+    sampleSize: number,
+    conditionText: string,
+  ) => string;
+}
+
+// Count how many of the first N chars in round_winners belong to
+// the team. Returns null when there aren't N chars to inspect.
+function countTeamWinsInFirstNRounds(
+  roundWinners: string,
+  role: ZillaFactRole,
+  n: number,
+): number | null {
+  if (roundWinners.length < n) return null;
+  const target = role === "home" ? "H" : "A";
+  let c = 0;
+  for (let i = 0; i < n; i++) if (roundWinners[i] === target) c++;
+  return c;
+}
+
+// Same shape, but reading the full slice of `roundWinners` up to
+// length N rather than just the prefix — used for "halftime"
+// patterns where we look at the score after 12 rounds played.
+function countTeamWinsInRoundsRange(
+  roundWinners: string,
+  role: ZillaFactRole,
+  start: number,
+  endExclusive: number,
+): number | null {
+  if (roundWinners.length < endExclusive) return null;
+  const target = role === "home" ? "H" : "A";
+  let c = 0;
+  for (let i = start; i < endExclusive; i++) {
+    if (roundWinners[i] === target) c++;
+  }
+  return c;
+}
+
+// Pull the current map number from live_score with a sane fallback.
+// Patterns gate on `currentMapNumber != null` so we just return the
+// raw value and let the caller decide.
+function currentMapOf(ls: LiveScore | null): number | null {
+  if (!ls) return null;
+  return ls.currentMap ?? null;
+}
+
+const ROUND_PREFIX_PATTERNS: RoundPrefixPattern[] = [
+  // R1. Won the first 2 rounds of the CURRENT in-progress map.
+  // The user's canonical example.
+  {
+    id: "first_2_rounds_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const won = countTeamWinsInFirstNRounds(h.roundWinners, role, 2);
+      return {
+        applicable: won === 2,
+        conditionText: "After winning the first 2 rounds",
+      };
+    },
+    historical: (m) => countTeamWinsInFirstNRounds(m.roundWinners, m.teamRole, 2) === 2,
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have won the map ${wins} of last ${sample} times`,
+  },
+  // R2. Won the first 3 rounds of the CURRENT map.
+  {
+    id: "first_3_rounds_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const won = countTeamWinsInFirstNRounds(h.roundWinners, role, 3);
+      return {
+        applicable: won === 3,
+        conditionText: "After winning the first 3 rounds",
+      };
+    },
+    historical: (m) => countTeamWinsInFirstNRounds(m.roundWinners, m.teamRole, 3) === 3,
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have won the map ${wins} of last ${sample} times`,
+  },
+  // R3. Won the pistol round (round 1) of the CURRENT map.
+  // Pistol is the most-cited "rounds 1 is special" stat in CS2 /
+  // Valorant — even a single pistol-round win predicts map outcome
+  // a meaningful share of the time.
+  {
+    id: "pistol_round_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h || h.roundWinners.length < 1) {
+        return { applicable: false, conditionText: "" };
+      }
+      const won = h.roundWinners[0] === (role === "home" ? "H" : "A");
+      return {
+        applicable: won,
+        conditionText: "After winning the pistol round",
+      };
+    },
+    historical: (m) =>
+      m.roundWinners.length >= 1 &&
+      m.roundWinners[0] === (m.teamRole === "home" ? "H" : "A"),
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have won the map ${wins} of last ${sample} times`,
+  },
+  // R4. Won 5+ of the first 6 rounds of the CURRENT map (strong
+  // economic + tactical lead in CS2; less clear in Valorant but
+  // still a real signal).
+  {
+    id: "five_of_six_rounds_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const won = countTeamWinsInFirstNRounds(h.roundWinners, role, 6);
+      return {
+        applicable: won != null && won >= 5,
+        conditionText: "After winning 5 of the first 6 rounds",
+      };
+    },
+    historical: (m) => {
+      const won = countTeamWinsInFirstNRounds(m.roundWinners, m.teamRole, 6);
+      return won != null && won >= 5;
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have won the map ${wins} of last ${sample} times`,
+  },
+  // R5. Led at the side switch (after 12 rounds in CS2 / Valorant).
+  // Half-time leader effect — historically a strong predictor.
+  {
+    id: "led_at_halftime_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h || h.roundWinners.length < 12) {
+        return { applicable: false, conditionText: "" };
+      }
+      const won = countTeamWinsInRoundsRange(h.roundWinners, role, 0, 12);
+      if (won == null) return { applicable: false, conditionText: "" };
+      const led = won > 6;
+      return {
+        applicable: led,
+        conditionText: `After leading ${won}-${12 - won} at the side switch`,
+      };
+    },
+    historical: (m) => {
+      if (m.roundWinners.length < 12) return false;
+      const won = countTeamWinsInRoundsRange(m.roundWinners, m.teamRole, 0, 12);
+      return won != null && won > 6;
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have closed out the map ${wins} of last ${sample} times`,
+  },
+  // R6. Up by 4+ rounds at the side switch.
+  {
+    id: "up_by_4_at_halftime_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h || h.roundWinners.length < 12) {
+        return { applicable: false, conditionText: "" };
+      }
+      const won = countTeamWinsInRoundsRange(h.roundWinners, role, 0, 12);
+      if (won == null) return { applicable: false, conditionText: "" };
+      const margin = won - (12 - won);
+      return {
+        applicable: margin >= 4,
+        conditionText: `Up ${won}-${12 - won} at the side switch`,
+      };
+    },
+    historical: (m) => {
+      if (m.roundWinners.length < 12) return false;
+      const won = countTeamWinsInRoundsRange(m.roundWinners, m.teamRole, 0, 12);
+      if (won == null) return false;
+      return won - (12 - won) >= 4;
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have closed out the map ${wins} of last ${sample} times`,
+  },
+  // R7. Lost the first 2 rounds (the "0-2 hole" comeback predicate)
+  // → won the map. Different from R1's positive framing — surfaces
+  // teams known for recovery.
+  {
+    id: "comeback_from_0_2_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const lost = countTeamWinsInFirstNRounds(
+        h.roundWinners,
+        role === "home" ? "away" : "home",
+        2,
+      );
+      return {
+        applicable: lost === 2,
+        conditionText: "After dropping the first 2 rounds",
+      };
+    },
+    historical: (m) => {
+      const lost = countTeamWinsInFirstNRounds(
+        m.roundWinners,
+        m.teamRole === "home" ? "away" : "home",
+        2,
+      );
+      return lost === 2;
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have come back to win the map ${wins} of last ${sample} times`,
+  },
+  // R8. Won the first 4 rounds (an even stronger opening sweep
+  // predicate than R1 / R2).
+  {
+    id: "first_4_rounds_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const won = countTeamWinsInFirstNRounds(h.roundWinners, role, 4);
+      return {
+        applicable: won === 4,
+        conditionText: "After winning the first 4 rounds",
+      };
+    },
+    historical: (m) =>
+      countTeamWinsInFirstNRounds(m.roundWinners, m.teamRole, 4) === 4,
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have won the map ${wins} of last ${sample} times`,
+  },
+];
+
+async function fetchCurrentMatchRoundHistory(
+  app: FastifyInstance,
+  matchId: bigint,
+): Promise<CurrentRoundHistory> {
+  const rows = await app.db.execute<{
+    mapNumber: number;
+    roundWinners: string;
+  }>(sql`
+    SELECT map_number AS "mapNumber",
+           round_winners AS "roundWinners"
+    FROM map_round_history
+    WHERE match_id = ${matchId}
+  `);
+  const m: CurrentRoundHistory = new Map();
+  for (const r of rows) {
+    m.set(Number(r.mapNumber), { roundWinners: r.roundWinners ?? "" });
+  }
+  return m;
+}
+
+// Per-MAP history for a single team. Joins map_round_history to the
+// parent match's live_score so the per-map outcome flags (this team
+// won this map / this team won the match) can be precomputed at
+// fetch time — keeps the pattern-evaluation loop cheap.
+async function fetchTeamPastMaps(
+  app: FastifyInstance,
+  teamId: number,
+  sportId: number,
+  excludeMatchId: bigint,
+): Promise<MapRoundRow[]> {
+  const rows = await app.db.execute<{
+    matchId: string;
+    mapNumber: number;
+    roundWinners: string;
+    homeWonTotal: number;
+    awayWonTotal: number;
+    homeCompetitorId: number | null;
+    liveScore: unknown;
+    liveStartedAt: string;
+  }>(sql`
+    SELECT
+      mrh.match_id::text         AS "matchId",
+      mrh.map_number             AS "mapNumber",
+      mrh.round_winners          AS "roundWinners",
+      mrh.home_won_total         AS "homeWonTotal",
+      mrh.away_won_total         AS "awayWonTotal",
+      m.home_competitor_id       AS "homeCompetitorId",
+      m.live_score               AS "liveScore",
+      m.live_started_at          AS "liveStartedAt"
+    FROM map_round_history mrh
+    JOIN matches m ON m.id = mrh.match_id
+    JOIN tournaments t ON t.id = m.tournament_id
+    JOIN categories cat ON cat.id = t.category_id
+    WHERE m.status = 'closed'
+      AND m.live_started_at IS NOT NULL
+      AND m.live_started_at > NOW() - (${ZILLAFACT_LOOKBACK_DAYS}::int * INTERVAL '1 day')
+      AND cat.sport_id = ${sportId}
+      AND (m.home_competitor_id = ${teamId} OR m.away_competitor_id = ${teamId})
+      AND m.id <> ${excludeMatchId}
+    ORDER BY m.live_started_at DESC, mrh.map_number ASC
+    LIMIT ${ROUND_PREFIX_LOOKBACK_MAPS}
+  `);
+  const out: MapRoundRow[] = [];
+  for (const r of rows) {
+    const ls = r.liveScore as LiveScore | null;
+    if (!ls) continue;
+    const teamRole: ZillaFactRole =
+      r.homeCompetitorId === teamId ? "home" : "away";
+    const period = (ls.periods ?? []).find((p) => p.number === r.mapNumber);
+    const teamWonMap = period != null && wonMap(period, teamRole);
+    const teamWonMatch = wonSeries(ls, teamRole);
+    out.push({
+      matchId: r.matchId,
+      mapNumber: Number(r.mapNumber),
+      roundWinners: r.roundWinners ?? "",
+      homeWonTotal: Number(r.homeWonTotal),
+      awayWonTotal: Number(r.awayWonTotal),
+      teamRole,
+      teamWonMap,
+      teamWonMatch,
+      liveStartedAt: r.liveStartedAt,
+    });
+  }
+  return out;
+}
+
 async function loadConditionalFacts(
   app: FastifyInstance,
   meta: MatchMeta,
 ): Promise<ZillaFact[]> {
   if (!meta.liveScore) return [];
 
-  const [currentMarkets, homeHistory, awayHistory] = await Promise.all([
+  const includeRoundPrefix = ROUND_SPORTS.includes(meta.sportSlug);
+  const [
+    currentMarkets,
+    homeHistory,
+    awayHistory,
+    currentRoundHistory,
+    homePastMaps,
+    awayPastMaps,
+  ] = await Promise.all([
     fetchCurrentMarkets(app, meta.matchId),
     fetchTeamHistory(app, meta.homeCompetitorId, meta.sportId, meta.matchId),
     fetchTeamHistory(app, meta.awayCompetitorId, meta.sportId, meta.matchId),
+    includeRoundPrefix
+      ? fetchCurrentMatchRoundHistory(app, meta.matchId)
+      : Promise.resolve(new Map() as CurrentRoundHistory),
+    includeRoundPrefix
+      ? fetchTeamPastMaps(app, meta.homeCompetitorId, meta.sportId, meta.matchId)
+      : Promise.resolve([] as MapRoundRow[]),
+    includeRoundPrefix
+      ? fetchTeamPastMaps(app, meta.awayCompetitorId, meta.sportId, meta.matchId)
+      : Promise.resolve([] as MapRoundRow[]),
   ]);
 
   const teams: Array<{
@@ -1363,18 +1977,21 @@ async function loadConditionalFacts(
     competitorId: number;
     teamName: string;
     history: PastMatch[];
+    pastMaps: MapRoundRow[];
   }> = [
     {
       role: "home",
       competitorId: meta.homeCompetitorId,
       teamName: meta.homeTeam,
       history: homeHistory,
+      pastMaps: homePastMaps,
     },
     {
       role: "away",
       competitorId: meta.awayCompetitorId,
       teamName: meta.awayTeam,
       history: awayHistory,
+      pastMaps: awayPastMaps,
     },
   ];
 
@@ -1396,7 +2013,10 @@ async function loadConditionalFacts(
 
       // Among team's past matches that satisfy the historical
       // predicate, walk newest-first and count consecutive matches
-      // where the outcome was a win (or half-win).
+      // where the outcome was a win (or half-win). Existing patterns
+      // are streak-shape (win count == sample size == consecutive
+      // wins from newest); a future rate-shape pattern would diverge
+      // these two and surface as "won X of last Y".
       let streak = 0;
       for (const past of team.history) {
         if (!pattern.historical(past)) continue;
@@ -1405,6 +2025,7 @@ async function loadConditionalFacts(
         else break;
       }
       if (streak < ZILLAFACT_MIN_STREAK) continue;
+      const sampleSize = streak;
 
       // Resolve target market on the current match.
       const tgt = pattern.target(team.role);
@@ -1471,8 +2092,9 @@ async function loadConditionalFacts(
         teamBrandColor: brand?.brandColor ?? null,
         marketName,
         outcomeLabel,
-        factText: pattern.formatFact(team.teamName, streak, check.conditionText),
+        factText: pattern.formatFact(team.teamName, streak, check.conditionText, sampleSize),
         streak,
+        sampleSize,
         currentOdds: usableOdds != null ? usableOdds.toFixed(2) : outcome.publishedOdds,
         score,
         // The conditional path doesn't render leg chips — keep legs
@@ -1480,6 +2102,100 @@ async function loadConditionalFacts(
         // existing `legs` ignore is a no-op.
         legs: [],
       });
+    }
+  }
+
+  // ── Round-prefix pass ─────────────────────────────────────────────
+  // Per-map aggregation against map_round_history. Rate-shape: count
+  // wins among historical maps that match the same round-prefix
+  // predicate as the current in-progress map, surface when sample
+  // >= ZILLAFACT_MIN_STREAK and rate >= ROUND_PREFIX_MIN_RATE.
+  const currentMapNumber = meta.liveScore.currentMap ?? null;
+  if (includeRoundPrefix && currentMapNumber != null) {
+    for (const team of teams) {
+      for (const pattern of ROUND_PREFIX_PATTERNS) {
+        if (pattern.sports && !pattern.sports.includes(meta.sportSlug)) continue;
+        const check = pattern.current(meta.liveScore, currentRoundHistory, team.role);
+        if (!check.applicable) continue;
+
+        let wins = 0;
+        let sample = 0;
+        for (const past of team.pastMaps) {
+          if (!pattern.historical(past)) continue;
+          sample++;
+          if (pattern.outcome(past)) wins++;
+        }
+        if (sample < ZILLAFACT_MIN_STREAK) continue;
+        if (wins / sample < ROUND_PREFIX_MIN_RATE) continue;
+
+        const tgt = pattern.target(team.role, currentMapNumber);
+        const market = currentMarkets.find(
+          (m) =>
+            m.providerMarketId === tgt.providerMarketId &&
+            m.outcomes.some((o) => o.outcomeId === tgt.outcomeId) &&
+            (tgt.specifierMatch == null || tgt.specifierMatch(m.specifiers)),
+        );
+        if (!market) continue;
+        const outcomeRow = market.outcomes.find((o) => o.outcomeId === tgt.outcomeId)!;
+
+        const key = `${market.marketId}:${tgt.outcomeId}:${team.competitorId}`;
+        const oddsNum =
+          outcomeRow.publishedOdds == null ? null : Number(outcomeRow.publishedOdds);
+        const usableOdds =
+          oddsNum != null && Number.isFinite(oddsNum) && oddsNum > 1
+            ? oddsNum
+            : null;
+        // Score formula uses the WIN count as the "streak" input —
+        // a 9-of-10 rate at odds 1.80 scores 9 × ln(1.80) ≈ 5.29 (FIRE
+        // tier) while 5-of-5 at 1.10 scores 5 × ln(1.10) ≈ 0.48 (base).
+        const score = zillaFactScore(wins, usableOdds);
+        if (emittedKeys.has(key)) {
+          const existingIdx = facts.findIndex(
+            (f) =>
+              f.marketId === market.marketId &&
+              f.outcomeId === tgt.outcomeId &&
+              f.teamId === team.competitorId,
+          );
+          if (existingIdx >= 0 && facts[existingIdx]!.score >= score) continue;
+          if (existingIdx >= 0) facts.splice(existingIdx, 1);
+        }
+        emittedKeys.add(key);
+
+        const marketTemplate =
+          market.marketDescTemplate ?? `Market #${market.providerMarketId}`;
+        const marketName = substituteTemplate(marketTemplate, market.specifiers, {
+          homeTeam: meta.homeTeam,
+          awayTeam: meta.awayTeam,
+        });
+        const outcomeTemplate =
+          outcomeRow.descTemplate ?? outcomeRow.rawName ?? outcomeRow.outcomeId;
+        const outcomeLabel = renderOutcomeLabel(
+          outcomeTemplate,
+          market.specifiers,
+          meta.homeTeam,
+          meta.awayTeam,
+        );
+
+        const brand = teamBrand.get(team.competitorId);
+        facts.push({
+          marketId: market.marketId,
+          outcomeId: tgt.outcomeId,
+          teamId: team.competitorId,
+          teamName: team.teamName,
+          teamRole: team.role,
+          teamLogoUrl: brand?.logoUrl ?? null,
+          teamBrandColor: brand?.brandColor ?? null,
+          marketName,
+          outcomeLabel,
+          factText: pattern.formatFact(team.teamName, wins, sample, check.conditionText),
+          streak: wins,
+          sampleSize: sample,
+          currentOdds:
+            usableOdds != null ? usableOdds.toFixed(2) : outcomeRow.publishedOdds,
+          score,
+          legs: [],
+        });
+      }
     }
   }
 
