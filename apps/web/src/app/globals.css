@@ -784,3 +784,36 @@ body {
     font-size: 16px !important;
   }
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   ZillaFacts band — responsive card grid that sits between the live
+   stream and the markets-tabs strip on the match-detail page. Six
+   cards is the hard cap (see ZILLAFACT_MAX_CARDS in @oddzilla/types),
+   so the grid is sized for 6 cells worst-case.
+
+   Layout ladder:
+     • Wide (≥1100px main column, including 4K with the right rail
+       collapsed): 3 columns × 2 rows.
+     • Medium (720-1099px): 2 columns × 3 rows.
+     • Narrow (<720px): 1 column × 6 rows.
+
+   Cards stretch to fill their cell — no minWidth/maxWidth per card
+   needed because the grid columns own width allocation.
+   ───────────────────────────────────────────────────────────────────────── */
+.oz-zillafacts-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 1099px) {
+  .oz-zillafacts-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 719px) {
+  .oz-zillafacts-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

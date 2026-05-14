@@ -1,39 +1,37 @@
 "use client";
 
-// ZillaFacts — statistical streak band rendered between the live
-// stream and the markets-tabs strip on the match-detail page. Each
-// card states one hard, consecutive-from-newest streak that the user
-// can act on (e.g. "Guara eSports have won their last 9 matches —
-// Match Winner @ 3.30"), with the run's opponent chips below for
-// scannable provenance. Surfaces nothing — the band collapses to
-// zero height — when no streak on the match clears
-// ZILLAFACT_MIN_STREAK.
+// ZillaFacts — statistical fact band between the live stream and the
+// markets-tabs strip on the match-detail page. Each card states one
+// fact in plain English (server-composed `factText`) and exposes the
+// linked outcome's live odds as a clickable button that adds the
+// selection to the bet slip — same `add()` path the OddButton inside
+// the markets tree uses. Cards never rotate; the API caps at
+// ZILLAFACT_MAX_CARDS and surfaces them in a deterministic score-
+// sorted order, so once a card is on the page it stays put.
 //
-// Tier ladder mirrors ZillaTips' base → glow → fire ramp, but the
-// score is `streak × ln(currentOdds)` rather than ROI; the badge in
-// the upper-right of each card flames up accordingly so a 9-streak
-// at 1.50 stands out from a 5-streak at 1.05 even though the latter
-// looks like a "longer in a row" win on paper.
+// For live matches the API switches the fact source from "team's
+// last N matches on this market" to "team's last N matches in the
+// SAME in-match state as the current scoreboard" — e.g. after the
+// team has just won Map 1, the band can flip to "After winning Map
+// 1, Aurora have closed out the match in their last 6 starts" with
+// Match Winner Aurora attached. The frontend doesn't need to know
+// which path produced the fact; both ship `factText` + a target
+// market+outcome and the card renders identically.
 //
-// Card affordances are intentionally minimal: a click on the card
-// jumps the user to the matching market in the markets tree via a
-// hash anchor. The body of the card carries the entire fact — no
-// hover/popover, since the data is already digestible at a glance.
+// Layout grid lives in globals.css (.oz-zillafacts-grid): 3 columns
+// at ≥1100px (including 4K with the right rail visible), 2 at
+// 720-1099px, 1 below. Cards stretch to the column, so chip-row
+// removal also drops the previous per-card minWidth/maxWidth.
 
+import { useMemo } from "react";
 import {
   zillaFactTier,
   type ZillaFact,
-  type ZillaFactLeg,
-  type ZillaFactResult,
 } from "@oddzilla/types/zillafacts";
 import { useZillaFacts } from "@/lib/use-zillafacts";
+import { useBetSlip } from "@/lib/bet-slip";
 import { TeamMark } from "@/components/ui/primitives";
 import { I } from "@/components/ui/icons";
-
-// Max cards rendered at once. The tier-sorted list usually has 3-6
-// strong entries; capping at 6 keeps the band visually focused
-// without forcing a horizontal scroll on a 1000px column.
-const MAX_FACTS = 6;
 
 // 2-3 letter abbreviation derived from a team's display name. Same
 // algorithm ZillaTips uses for its leg chips — kept local so the
@@ -88,143 +86,66 @@ function tierChrome(tier: ReturnType<typeof zillaFactTier>) {
   };
 }
 
-// Compact "DD MMM" formatter for the date strip above each chip.
-// en-GB renders "12 May" — fits in ~40px columns without wrapping.
-function formatChipDate(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.valueOf())) return "";
-  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
-}
-
-// Result palette for the chip border — matches ZillaTips' visual
-// vocabulary so users who've seen Tips immediately read the colour
-// the same way. Every streak leg is a win by construction, so the
-// chip should never render the loss palette; the switch is here for
-// completeness and future "broke a streak last night" framing.
-function legChrome(result: ZillaFactResult | null) {
-  if (result === "won" || result === "half_won") {
-    return {
-      bg: "rgba(36, 161, 72, 0.16)",
-      ring: "rgba(36, 161, 72, 0.55)",
-      fg: "#1a7d3a",
-      label: result === "half_won" ? "½W" : "W",
-    };
-  }
-  return {
-    bg: "var(--surface-2)",
-    ring: "var(--border)",
-    fg: "var(--fg-muted)",
-    label: "—",
-  };
-}
-
-// One opponent chip in the bottom run of a card. Stacks: date label
-// (top, dim), opponent logo (middle), W stamp (bottom, green-ish).
-// Click is inert by design — the chips are read-only provenance for
-// the streak claim.
-function FactLegChip({ leg }: { leg: ZillaFactLeg }) {
-  const palette = legChrome(leg.result);
-  return (
-    <div
-      title={`vs ${leg.opponentLabel} · ${formatChipDate(leg.liveStartedAt)}`}
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        gap: 3,
-        minWidth: 0,
-      }}
-    >
-      <span
-        className="mono"
-        style={{
-          fontSize: 9.5,
-          color: "var(--fg-dim)",
-          letterSpacing: "0.02em",
-          whiteSpace: "nowrap",
-        }}
-      >
-        {formatChipDate(leg.liveStartedAt)}
-      </span>
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          gap: 3,
-          padding: "5px 4px 4px",
-          borderRadius: 8,
-          background: palette.bg,
-          boxShadow: `inset 0 0 0 1px ${palette.ring}`,
-          minWidth: 38,
-        }}
-      >
-        <TeamMark
-          tag={teamTag(leg.opponentLabel)}
-          name={leg.opponentLabel}
-          size={22}
-          logoUrl={leg.opponentLogoUrl}
-          color={leg.opponentBrandColor ?? undefined}
-        />
-        <span
-          className="mono tnum"
-          style={{
-            fontSize: 10.5,
-            fontWeight: 700,
-            color: palette.fg,
-            letterSpacing: "0.02em",
-          }}
-        >
-          {palette.label}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-// One card. Layout is intentionally compact — minWidth 260, maxWidth
-// flex so the grid wraps 2-up on desktop (1000px column) and 1-up on
-// mobile without configuring breakpoints in JS.
-function FactCard({ fact }: { fact: ZillaFact }) {
+// One card. The card itself is a static container (not an anchor)
+// so the only interactive surface is the odds pill — clicking it
+// toggles the selection on the bet slip via the same add()/remove()
+// pair the market grid uses.
+function FactCard({
+  fact,
+  matchId,
+  homeTeam,
+  awayTeam,
+  sportSlug,
+}: {
+  fact: ZillaFact;
+  matchId: string;
+  homeTeam: string;
+  awayTeam: string;
+  sportSlug: string;
+}) {
+  const slip = useBetSlip();
   const tier = zillaFactTier(fact.score);
   const chrome = tierChrome(tier);
-  // Compose the fact's headline. Markets where the outcome label
-  // already names the team ("Guara eSports") render without
-  // repeating the team — "WON LAST 9 MATCHES · Match Winner".
-  // Markets where the outcome is generic ("Over") get the team
-  // prefix — "GUARA · WON LAST 9" with "Total Maps Over" below.
-  const outcomeNamesTeam = fact.outcomeLabel
-    .toLowerCase()
-    .includes(fact.teamName.toLowerCase());
-  // Truncate ridiculously long market names so the card height stays
-  // bounded — the full name is still on the matching market button.
-  const marketLabel = fact.marketName.length > 60
-    ? `${fact.marketName.slice(0, 57)}…`
-    : fact.marketName;
+  const oddsLabel = fact.currentOdds ?? "—";
+  const selected = slip.has(fact.marketId, fact.outcomeId);
+  const oddsClickable = fact.currentOdds != null;
+
+  const onOddsClick = () => {
+    if (!oddsClickable) return;
+    if (selected) {
+      slip.remove(fact.marketId, fact.outcomeId);
+      return;
+    }
+    slip.add({
+      matchId,
+      marketId: fact.marketId,
+      outcomeId: fact.outcomeId,
+      odds: fact.currentOdds!,
+      active: true,
+      homeTeam,
+      awayTeam,
+      marketLabel: fact.marketName,
+      outcomeLabel: fact.outcomeLabel,
+      sportSlug,
+    });
+  };
+
   return (
-    <a
-      href={`#market-${fact.marketId}`}
+    <div
       style={{
         position: "relative",
         display: "flex",
         flexDirection: "column",
         gap: 10,
-        flex: "1 1 280px",
-        minWidth: 260,
-        maxWidth: 360,
         padding: 14,
         borderRadius: "var(--r-md)",
         background: "var(--bg-elevated)",
         boxShadow: chrome.cardRing,
-        textDecoration: "none",
-        color: "inherit",
         overflow: "hidden",
         isolation: "isolate",
+        minWidth: 0,
       }}
     >
-      {/* Subtle top-anchored gradient wash on glow/fire tiers. Behind
-          everything else (zIndex: 0); the content lives above on
-          zIndex: 1 via the default stacking. */}
       {chrome.cardAccent !== "none" && (
         <span
           aria-hidden
@@ -257,7 +178,7 @@ function FactCard({ fact }: { fact: ZillaFact }) {
             letterSpacing: "0.08em",
           }}
         >
-          Won last {fact.streak}
+          {fact.streak} in a row
         </span>
         <span
           style={{
@@ -289,6 +210,7 @@ function FactCard({ fact }: { fact: ZillaFact }) {
           display: "flex",
           alignItems: "center",
           gap: 10,
+          minWidth: 0,
         }}
       >
         <TeamMark
@@ -298,7 +220,13 @@ function FactCard({ fact }: { fact: ZillaFact }) {
           logoUrl={fact.teamLogoUrl}
           color={fact.teamBrandColor ?? undefined}
         />
-        <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            minWidth: 0,
+          }}
+        >
           <span
             style={{
               fontSize: 14,
@@ -311,19 +239,30 @@ function FactCard({ fact }: { fact: ZillaFact }) {
           >
             {fact.teamName}
           </span>
-          <span
-            className="mono"
-            style={{
-              fontSize: 10.5,
-              color: "var(--fg-dim)",
-              textTransform: "uppercase",
-              letterSpacing: "0.06em",
-            }}
-          >
-            {fact.streak} in a row
-          </span>
         </div>
       </div>
+
+      {/* Plain-English fact sentence — server-composed so it reads
+          identically for streak facts ("Aurora won their last 5
+          matches") and live-conditioned facts ("After winning Map 1,
+          Aurora have closed out the match in their last 5 starts").
+          Two lines max via line-clamp; longer wording wraps clean. */}
+      <p
+        style={{
+          position: "relative",
+          zIndex: 1,
+          margin: 0,
+          fontSize: 13,
+          lineHeight: 1.4,
+          color: "var(--fg)",
+          display: "-webkit-box",
+          WebkitLineClamp: 3,
+          WebkitBoxOrient: "vertical",
+          overflow: "hidden",
+        }}
+      >
+        {fact.factText}
+      </p>
 
       <div
         style={{
@@ -344,6 +283,7 @@ function FactCard({ fact }: { fact: ZillaFact }) {
             display: "flex",
             flexDirection: "column",
             minWidth: 0,
+            flex: "1 1 auto",
           }}
         >
           <span
@@ -353,9 +293,12 @@ function FactCard({ fact }: { fact: ZillaFact }) {
               color: "var(--fg-dim)",
               textTransform: "uppercase",
               letterSpacing: "0.06em",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
             }}
           >
-            {marketLabel}
+            {fact.marketName}
           </span>
           <span
             style={{
@@ -367,52 +310,69 @@ function FactCard({ fact }: { fact: ZillaFact }) {
               whiteSpace: "nowrap",
             }}
           >
-            {outcomeNamesTeam ? fact.outcomeLabel : `${fact.teamName} · ${fact.outcomeLabel}`}
+            {fact.outcomeLabel}
           </span>
         </div>
-        <span
-          className="mono tnum"
+        <button
+          type="button"
+          onClick={onOddsClick}
+          disabled={!oddsClickable}
+          aria-label={
+            selected
+              ? `Remove ${fact.outcomeLabel} from bet slip`
+              : `Add ${fact.outcomeLabel} at ${oddsLabel} to bet slip`
+          }
           style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            font: "inherit",
             fontSize: 16,
+            fontFamily: "var(--font-mono)",
+            fontVariantNumeric: "tabular-nums",
             fontWeight: 700,
-            color: "var(--accent-fg, var(--fg))",
-            background: "var(--accent, #f0e9d8)",
-            padding: "4px 10px",
+            color: selected ? "var(--accent-fg)" : "var(--accent-fg, var(--fg))",
+            background: selected ? "var(--accent)" : "var(--accent, #f0e9d8)",
+            padding: "6px 12px",
             borderRadius: "var(--r-sm)",
+            border: selected
+              ? "1px solid var(--accent)"
+              : "1px solid var(--accent, transparent)",
+            cursor: oddsClickable ? "pointer" : "not-allowed",
+            opacity: oddsClickable ? 1 : 0.55,
+            transition:
+              "transform 120ms var(--ease), background 140ms var(--ease)",
             flexShrink: 0,
           }}
         >
-          {fact.currentOdds ?? "—"}
-        </span>
+          {oddsLabel}
+        </button>
       </div>
-
-      <div
-        style={{
-          position: "relative",
-          zIndex: 1,
-          display: "flex",
-          gap: 6,
-          overflowX: "auto",
-          paddingBottom: 2,
-        }}
-      >
-        {fact.legs.map((leg) => (
-          <FactLegChip key={leg.histMatchId} leg={leg} />
-        ))}
-      </div>
-    </a>
+    </div>
   );
 }
 
 // Public widget mounted on the match-detail page. Fetches on mount
-// (one round-trip — cached server-side for 5 min), then renders a
-// fluid grid of cards. Returns null while loading OR when no streak
+// (one round-trip — server caches for 5 min), then renders a fluid
+// grid of cards. Returns null while loading OR when no fact
 // qualifies, so the band collapses to zero height without flicker.
-export function ZillaFactsCards({ matchId }: { matchId: string }) {
+export function ZillaFactsCards({
+  matchId,
+  homeTeam,
+  awayTeam,
+  sportSlug,
+}: {
+  matchId: string;
+  homeTeam: string;
+  awayTeam: string;
+  sportSlug: string;
+}) {
   const { facts, loaded } = useZillaFacts(matchId);
-  if (!loaded || facts.length === 0) return null;
-
-  const visible = facts.slice(0, MAX_FACTS);
+  // Defensive cap mirrors the server's ZILLAFACT_MAX_CARDS so a
+  // future v-bump that ships more rows doesn't accidentally overflow
+  // the band; the slice is a no-op against today's payload.
+  const visible = useMemo(() => facts.slice(0, 6), [facts]);
+  if (!loaded || visible.length === 0) return null;
 
   return (
     <section
@@ -453,17 +413,15 @@ export function ZillaFactsCards({ matchId }: { matchId: string }) {
           streaks worth knowing
         </span>
       </div>
-      <div
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          gap: 10,
-        }}
-      >
+      <div className="oz-zillafacts-grid">
         {visible.map((fact) => (
           <FactCard
             key={`${fact.marketId}:${fact.outcomeId}:${fact.teamId}`}
             fact={fact}
+            matchId={matchId}
+            homeTeam={homeTeam}
+            awayTeam={awayTeam}
+            sportSlug={sportSlug}
           />
         ))}
       </div>
