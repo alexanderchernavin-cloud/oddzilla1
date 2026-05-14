@@ -1,13 +1,25 @@
 import "server-only";
 import { cookies, headers } from "next/headers";
 import { AUTH_COOKIE_NAMES } from "@/lib/auth";
+import { LOCALE_COOKIE } from "@/lib/i18n";
 
 const REQUEST_ID_HEADER = "x-request-id";
 
+// Cookie names the SSR fetch forwards to the API. Auth cookies gate
+// the session; oz_locale lets `/catalog/matches/:id` pull
+// language-matched description rows so SSR-rendered market names land
+// in the user's picked language instead of defaulting to English.
+const FORWARD_COOKIES = [
+  AUTH_COOKIE_NAMES.access,
+  AUTH_COOKIE_NAMES.refresh,
+  LOCALE_COOKIE,
+];
+
 /**
- * Server-side fetch to the API. Forwards auth cookies if present. Returns
- * `null` on non-2xx instead of throwing, so pages can render a fallback.
- * Catalog endpoints are public, but forwarding cookies doesn't hurt.
+ * Server-side fetch to the API. Forwards auth + locale cookies if present.
+ * Returns `null` on non-2xx instead of throwing, so pages can render a
+ * fallback. Catalog endpoints are public, but the locale cookie still
+ * matters to flip translated market names.
  *
  * Also forwards `x-request-id` from the inbound request — the middleware
  * generates (or echoes) one per page render, and the API's `genReqId`
@@ -16,7 +28,7 @@ const REQUEST_ID_HEADER = "x-request-id";
  */
 export async function serverApi<T>(path: string): Promise<T | null> {
   const store = await cookies();
-  const cookieHeader = Object.values(AUTH_COOKIE_NAMES)
+  const cookieHeader = FORWARD_COOKIES
     .map((n) => store.get(n))
     .filter((c): c is { name: string; value: string } => Boolean(c))
     .map((c) => `${c.name}=${c.value}`)
