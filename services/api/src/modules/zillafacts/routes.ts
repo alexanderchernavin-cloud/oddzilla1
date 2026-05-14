@@ -90,12 +90,51 @@ interface RawLeg {
 
 const CACHE_TTL_SECONDS = 300;
 
+// Specifier keys Oddin uses to ladder a market into a family of lines.
+// Mirror of catalog/routes.ts' LINE_SPECIFIERS — kept local so the
+// dedup helper doesn't reach into the catalog module's internals.
+// `handicap` is still in the unsafe_markets exclusion so it never
+// reaches the dedup pass, but keeping it here means a future relaxation
+// of that filter Just Works without two-places-to-update.
+const LINE_SPECIFIERS = ["threshold", "handicap"] as const;
+
+// Group key for line-family collapse. Two markets sit in the same
+// family iff they share (providerMarketId, variant, every-other-
+// specifier) and differ ONLY in the value of one of the LINE_SPECIFIERS
+// keys. Returns null when no line specifier is present — markets in
+// that case are single-shot and don't collapse with anything.
+//
+// Format mirrors catalog/routes.ts' lineInfo so an admin who knows the
+// storefront's line-family grouping recognises the shape immediately.
+function lineFamilyKey(
+  providerMarketId: number,
+  variant: string,
+  specifiers: Record<string, string>,
+): string | null {
+  for (const key of LINE_SPECIFIERS) {
+    const v = specifiers[key];
+    if (v == null || v === "") continue;
+    const rest = Object.entries(specifiers)
+      .filter(([k]) => k !== key)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, val]) => `${k}=${val}`)
+      .join("|");
+    return `${providerMarketId}|${variant}|${rest}|line=${key}`;
+  }
+  return null;
+}
+
 export default async function zillafactsRoutes(app: FastifyInstance) {
   app.get("/catalog/matches/:matchId/zillafacts", async (request) => {
     const { matchId } = z
       .object({ matchId: z.coerce.bigint() })
       .parse(request.params);
-    const cacheKey = `zillafacts:v1:${matchId.toString()}`;
+    // v2: line-family collapse — when 3+ lines in the same Total
+    // Kills / Total Maps / etc. family carry the same streak (typical
+    // because streaks tend to be identical across same-direction
+    // sibling lines), surface only the highest-odds member. Bump the
+    // key so cached v1 (uncollapsed) responses drain.
+    const cacheKey = `zillafacts:v2:${matchId.toString()}`;
     return cached<ZillaFactsResponse>(
       app.redis,
       cacheKey,
@@ -413,9 +452,8 @@ async function loadFacts(
 
   // First pass: walk each candidate's legs newest-first and count the
   // consecutive prefix of wins. Drop anything below ZILLAFACT_MIN_STREAK.
-  // Collect opponent ids from surviving streak legs so we can hydrate
-  // their branding in a single second round trip.
-  const opponentIds = new Set<number>();
+  // Opponent ids get collected in a second pass after the line-family
+  // dedup so we only hydrate branding for legs that actually ship.
   const survivors: Array<{
     row: CandidateRow;
     streak: number;
@@ -436,16 +474,60 @@ async function loadFacts(
     }
     if (streak < ZILLAFACT_MIN_STREAK) continue;
     const streakLegs = legs.slice(0, streak);
-    for (const leg of streakLegs) {
-      const oppId =
-        leg.teamRoleHist === "home" ? leg.histAwayId : leg.histHomeId;
-      if (oppId != null) opponentIds.add(oppId);
-    }
     survivors.push({ row, streak, streakLegs });
   }
 
   if (survivors.length === 0) {
     return { matchId: matchId.toString(), facts: [] };
+  }
+
+  // Line-family collapse. Within the same (lineFamilyKey, outcomeId,
+  // teamId, role) group — for instance "Total kills Under" on three
+  // different threshold lines (45.5 / 46.5 / 47.5) — surface only the
+  // highest-odds member. Rationale: streaks are typically identical
+  // across same-direction sibling lines (a team consistently Under
+  // 45.5 is also Under 46.5 and Under 47.5), so the line that adds
+  // the most signal as a betting tip is the toughest one — i.e. the
+  // highest odds. Tiebreak on odds-equality: longest streak.
+  //
+  // Markets without a line specifier (no threshold/handicap key in
+  // specifiers) get a null family key and pass through unchanged via
+  // the `single:` group prefix, so single-shot markets keep their own
+  // bucket without colliding with other markets.
+  const groupBest = new Map<string, (typeof survivors)[number]>();
+  for (const s of survivors) {
+    const specs = (s.row.specifiersJson ?? {}) as Record<string, string>;
+    const fkey = lineFamilyKey(s.row.providerMarketId, s.row.variant, specs);
+    const groupKey =
+      fkey == null
+        ? `single:${s.row.marketId}:${s.row.outcomeId}:${s.row.teamId}:${s.row.teamRole}`
+        : `family:${fkey}:${s.row.outcomeId}:${s.row.teamId}:${s.row.teamRole}`;
+    const existing = groupBest.get(groupKey);
+    if (!existing) {
+      groupBest.set(groupKey, s);
+      continue;
+    }
+    const odds = s.row.currentOdds == null ? 0 : Number(s.row.currentOdds);
+    const existingOdds =
+      existing.row.currentOdds == null ? 0 : Number(existing.row.currentOdds);
+    if (odds > existingOdds || (odds === existingOdds && s.streak > existing.streak)) {
+      groupBest.set(groupKey, s);
+    }
+  }
+  const dedupedSurvivors = Array.from(groupBest.values());
+
+  // Second pass: opponent ids for the lines that survived dedup —
+  // skipping the dropped sibling lines saves a small amount of brand-
+  // lookup work and stops us shipping logos for legs that never get
+  // rendered (the chosen line's legs may differ from a dropped sibling's
+  // when a near-boundary match split the family).
+  const opponentIds = new Set<number>();
+  for (const { streakLegs } of dedupedSurvivors) {
+    for (const leg of streakLegs) {
+      const oppId =
+        leg.teamRoleHist === "home" ? leg.histAwayId : leg.histHomeId;
+      if (oppId != null) opponentIds.add(oppId);
+    }
   }
 
   // One round-trip for every opponent's branding. Same array-literal
@@ -474,7 +556,7 @@ async function loadFacts(
     }
   }
 
-  const facts: ZillaFact[] = survivors.map(({ row, streak, streakLegs }) => {
+  const facts: ZillaFact[] = dedupedSurvivors.map(({ row, streak, streakLegs }) => {
     const specs = (row.specifiersJson ?? {}) as Record<string, string>;
     const matchHome = row.matchHomeTeam;
     const matchAway = row.matchAwayTeam;
