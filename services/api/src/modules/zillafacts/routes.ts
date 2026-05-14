@@ -223,13 +223,12 @@ export default async function zillafactsRoutes(app: FastifyInstance) {
     const { matchId } = z
       .object({ matchId: z.coerce.bigint() })
       .parse(request.params);
-    // v6: pin description joins to English. Post-0052 the
-    // market_descriptions / outcome_descriptions tables ship one
-    // row per (provider_market_id, variant, language); without the
-    // explicit language filter the LEFT JOIN was picking arbitrary
-    // locale rows (Czech / Portuguese leaked into the cards). Bump
-    // key so v5 mixed-locale responses drain.
-    const cacheKey = `zillafacts:v6:${matchId.toString()}`;
+    // v7: 11 new round-prefix patterns covering comebacks (lost
+    // pistol / lost first 3 / 4 / 5 rounds → still won the map),
+    // half-time deficits, tied states (1-1 after 2, tied 6-6 at
+    // side switch), and current momentum (3+ / 5+ round win streak
+    // at the live tail). Bump key so v6 responses drain.
+    const cacheKey = `zillafacts:v7:${matchId.toString()}`;
     return cached<ZillaFactsResponse>(
       app.redis,
       cacheKey,
@@ -1654,6 +1653,52 @@ function currentMapOf(ls: LiveScore | null): number | null {
   return ls.currentMap ?? null;
 }
 
+// Length of the team's current consecutive-win SUFFIX in round_winners
+// — i.e. how many rounds in a row the team has won counting back from
+// the most recent round. Used by momentum patterns ("currently riding
+// a 5-round win streak in this map"). 0 when the most recent round
+// went to the opponent.
+function currentWinStreakSuffix(
+  roundWinners: string,
+  role: ZillaFactRole,
+): number {
+  const target = role === "home" ? "H" : "A";
+  let n = 0;
+  for (let i = roundWinners.length - 1; i >= 0; i--) {
+    if (roundWinners[i] === target) n++;
+    else break;
+  }
+  return n;
+}
+
+// Whether the team has won N rounds in a row at ANY point in the map
+// — i.e. somewhere in round_winners there's an N-char run of the
+// team's marker. Used for "won 5+ in a row" momentum facts that
+// don't require the streak to be the current tail.
+function hasNInARow(
+  roundWinners: string,
+  role: ZillaFactRole,
+  n: number,
+): boolean {
+  const target = role === "home" ? "H" : "A";
+  return roundWinners.includes(target.repeat(n));
+}
+
+// Count of the opponent's wins in the first N rounds (mirror of
+// countTeamWinsInFirstNRounds for the comeback-from-deficit family
+// of patterns). Returns null when the prefix isn't long enough.
+function countOpponentWinsInFirstNRounds(
+  roundWinners: string,
+  role: ZillaFactRole,
+  n: number,
+): number | null {
+  if (roundWinners.length < n) return null;
+  const target = role === "home" ? "A" : "H";
+  let c = 0;
+  for (let i = 0; i < n; i++) if (roundWinners[i] === target) c++;
+  return c;
+}
+
 const ROUND_PREFIX_PATTERNS: RoundPrefixPattern[] = [
   // R1. Won the first 2 rounds of the CURRENT in-progress map.
   // The user's canonical example.
@@ -1900,6 +1945,354 @@ const ROUND_PREFIX_PATTERNS: RoundPrefixPattern[] = [
     }),
     formatFact: (team, wins, sample, cond) =>
       `${cond}, ${team} have won the map ${wins} of last ${sample} times`,
+  },
+  // ── Comeback patterns ─────────────────────────────────────────────
+  // High-odds opportunities: the team is trailing right now but has
+  // a history of overcoming the same deficit. Smaller historical
+  // samples (comebacks are rare) but more impactful when they
+  // surface — the live odds are pessimistic about the trailing team,
+  // which is exactly what makes the fact valuable.
+  //
+  // R9. Lost the pistol round (R1) — the user's canonical example
+  // ("team lost the 1st round in last 5 maps but won all of them").
+  {
+    id: "lost_pistol_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h || h.roundWinners.length < 1) {
+        return { applicable: false, conditionText: "" };
+      }
+      const lostPistol = h.roundWinners[0] === (role === "home" ? "A" : "H");
+      return {
+        applicable: lostPistol,
+        conditionText: "After dropping the pistol round",
+      };
+    },
+    historical: (m) =>
+      m.roundWinners.length >= 1 &&
+      m.roundWinners[0] === (m.teamRole === "home" ? "A" : "H"),
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have still won the map ${wins} of last ${sample} times`,
+  },
+  // R10. Lost the first 3 rounds. Deeper than R7 (0-2). 1.5 / 2.0 /
+  // 2.5 odds territory on the map line typically — the kind of
+  // pattern that pays.
+  {
+    id: "lost_first_3_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const oppWins = countOpponentWinsInFirstNRounds(h.roundWinners, role, 3);
+      return {
+        applicable: oppWins === 3,
+        conditionText: "After dropping the first 3 rounds",
+      };
+    },
+    historical: (m) =>
+      countOpponentWinsInFirstNRounds(m.roundWinners, m.teamRole, 3) === 3,
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have stormed back to win the map ${wins} of last ${sample} times`,
+  },
+  // R11. Lost the first 4 rounds — even rarer comeback fuel.
+  {
+    id: "lost_first_4_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const oppWins = countOpponentWinsInFirstNRounds(h.roundWinners, role, 4);
+      return {
+        applicable: oppWins === 4,
+        conditionText: "After dropping the first 4 rounds",
+      };
+    },
+    historical: (m) =>
+      countOpponentWinsInFirstNRounds(m.roundWinners, m.teamRole, 4) === 4,
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have still won the map ${wins} of last ${sample} times`,
+  },
+  // R12. Lost the first 5 rounds straight — dramatic deep hole.
+  // Almost never surfaces but when it does the odds are sky-high.
+  {
+    id: "lost_first_5_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const oppWins = countOpponentWinsInFirstNRounds(h.roundWinners, role, 5);
+      return {
+        applicable: oppWins === 5,
+        conditionText: "After dropping the first 5 rounds",
+      };
+    },
+    historical: (m) =>
+      countOpponentWinsInFirstNRounds(m.roundWinners, m.teamRole, 5) === 5,
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have miraculously won the map ${wins} of last ${sample} times`,
+  },
+  // R13. Lost 5 of the first 6 rounds (allows one win in the prefix
+  // — less rare than R12, broader catchment).
+  {
+    id: "lost_5_of_6_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const oppWins = countOpponentWinsInFirstNRounds(h.roundWinners, role, 6);
+      return {
+        applicable: oppWins != null && oppWins >= 5,
+        conditionText: "After losing 5 of the first 6 rounds",
+      };
+    },
+    historical: (m) => {
+      const oppWins = countOpponentWinsInFirstNRounds(m.roundWinners, m.teamRole, 6);
+      return oppWins != null && oppWins >= 5;
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have won the map ${wins} of last ${sample} times`,
+  },
+  // R14. Trailed at the side switch (after 12 rounds) — counterpart
+  // to R5's "led at the side switch". The team's losing the
+  // first-half coin flip but historically pulls it back.
+  {
+    id: "trailed_at_halftime_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h || h.roundWinners.length < 12) {
+        return { applicable: false, conditionText: "" };
+      }
+      const won = countTeamWinsInRoundsRange(h.roundWinners, role, 0, 12);
+      if (won == null) return { applicable: false, conditionText: "" };
+      const trailing = won < 6;
+      return {
+        applicable: trailing,
+        conditionText: `Down ${won}-${12 - won} at the side switch`,
+      };
+    },
+    historical: (m) => {
+      if (m.roundWinners.length < 12) return false;
+      const won = countTeamWinsInRoundsRange(m.roundWinners, m.teamRole, 0, 12);
+      return won != null && won < 6;
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have flipped the map ${wins} of last ${sample} times`,
+  },
+  // R15. Down by 4+ rounds at the side switch — deep-deficit
+  // halftime variant of R14.
+  {
+    id: "down_4_at_halftime_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h || h.roundWinners.length < 12) {
+        return { applicable: false, conditionText: "" };
+      }
+      const won = countTeamWinsInRoundsRange(h.roundWinners, role, 0, 12);
+      if (won == null) return { applicable: false, conditionText: "" };
+      const deficit = 12 - won - won;
+      return {
+        applicable: deficit >= 4,
+        conditionText: `Down ${won}-${12 - won} at the side switch`,
+      };
+    },
+    historical: (m) => {
+      if (m.roundWinners.length < 12) return false;
+      const won = countTeamWinsInRoundsRange(m.roundWinners, m.teamRole, 0, 12);
+      if (won == null) return false;
+      return 12 - won - won >= 4;
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have stolen the map ${wins} of last ${sample} times`,
+  },
+  // ── Tied-state patterns ───────────────────────────────────────────
+  //
+  // R16. Tied 1-1 after the first 2 rounds — the early-balance
+  // predicate. Surprisingly few facts make this much info actionable;
+  // when one does, the odds are usually close to 2.0 because the
+  // market reads 1-1 as a coin flip.
+  {
+    id: "tied_after_2_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const won = countTeamWinsInFirstNRounds(h.roundWinners, role, 2);
+      return {
+        applicable: won === 1,
+        conditionText: "After trading the first 2 rounds 1-1",
+      };
+    },
+    historical: (m) =>
+      countTeamWinsInFirstNRounds(m.roundWinners, m.teamRole, 2) === 1,
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have won the map ${wins} of last ${sample} times`,
+  },
+  // R17. Tied 6-6 at the side switch — half-time deadlock. The map
+  // is on a knife's edge; historical wins from this state are a
+  // strong signal about the team's mental game.
+  {
+    id: "tied_at_halftime_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h || h.roundWinners.length < 12) {
+        return { applicable: false, conditionText: "" };
+      }
+      const won = countTeamWinsInRoundsRange(h.roundWinners, role, 0, 12);
+      return {
+        applicable: won === 6,
+        conditionText: "Tied 6-6 at the side switch",
+      };
+    },
+    historical: (m) => {
+      if (m.roundWinners.length < 12) return false;
+      const won = countTeamWinsInRoundsRange(m.roundWinners, m.teamRole, 0, 12);
+      return won === 6;
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have won the second half ${wins} of last ${sample} times`,
+  },
+  // ── Momentum patterns ────────────────────────────────────────────
+  //
+  // R18. Currently on a 3-round winning streak (suffix). Catches
+  // mid-map momentum even when the prefix predicate doesn't apply —
+  // a team that started 2-3 but is now 5-3 with three straight wins
+  // ahead is on the right kind of run.
+  {
+    id: "current_streak_3_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const streak = currentWinStreakSuffix(h.roundWinners, role);
+      return {
+        applicable: streak >= 3 && streak < 5,
+        conditionText: `Riding a ${streak}-round win streak`,
+      };
+    },
+    historical: (m) => {
+      // Mirror historical: did the team also have a 3+ round suffix
+      // at SOME point before the map ended? Easier (and consistent
+      // with how the live predicate reads) — check if there's a
+      // 3-in-a-row run anywhere in the team's roundWinners. The
+      // hasNInARow substring check covers both "the team built a
+      // run before the second-half collapse" and "the team's run
+      // closed out the map" cases.
+      return hasNInARow(m.roundWinners, m.teamRole, 3);
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have closed out the map ${wins} of last ${sample} times after stacking three in a row`,
+  },
+  // R19. Currently on a 5+ round winning streak (suffix). A
+  // significantly stronger momentum signal than R18 — and the live
+  // predicate is much rarer, so the rate threshold actually means
+  // something.
+  {
+    id: "current_streak_5_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const streak = currentWinStreakSuffix(h.roundWinners, role);
+      return {
+        applicable: streak >= 5,
+        conditionText: `Riding a ${streak}-round win streak`,
+      };
+    },
+    historical: (m) => hasNInARow(m.roundWinners, m.teamRole, 5),
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have run away with the map ${wins} of last ${sample} times once they hit five in a row`,
   },
 ];
 
