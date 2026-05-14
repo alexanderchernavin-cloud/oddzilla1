@@ -33,6 +33,7 @@
     "error": "Algo salió mal",
     "retry": "Reintentar",
     "demo": "Demo",
+    "draw": "Empate",
     "live": "En vivo",
     "ended": "Finalizado",
     "cancelled": "Cancelado",
@@ -205,7 +206,9 @@
     "betbuilderUnavailable": "Bet builder no está disponible para este partido.",
     "share": "Compartir",
     "copyLink": "Copiar enlace",
-    "copied": "Copiado"
+    "copied": "Copiado",
+    "matchWinner": "Ganador del partido",
+    "watching": "{count} viendo"
   },
   "bets": {
     "title": "Mis apuestas",

@@ -33,6 +33,7 @@
     "error": "Something went wrong",
     "retry": "Retry",
     "demo": "Demo",
+    "draw": "Draw",
     "live": "Live",
     "ended": "Ended",
     "cancelled": "Cancelled",
@@ -205,7 +206,9 @@
     "betbuilderUnavailable": "Bet builder is not available for this match.",
     "share": "Share",
     "copyLink": "Copy link",
-    "copied": "Copied"
+    "copied": "Copied",
+    "matchWinner": "Match winner",
+    "watching": "{count} watching"
   },
   "bets": {
     "title": "My bets",
