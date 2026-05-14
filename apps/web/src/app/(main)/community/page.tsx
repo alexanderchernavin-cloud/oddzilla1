@@ -13,6 +13,7 @@ import type {
 import { isCurrency } from "@oddzilla/types/currencies";
 import { getSessionUser } from "@/lib/auth";
 import { serverApi } from "@/lib/server-fetch";
+import { getTranslations } from "@/lib/i18n/server";
 import { FeedFilters } from "@/components/community/feed-filters";
 import { CommunityTicketCard } from "@/components/community/ticket-card";
 import { AnalysisCard } from "@/components/community/analysis-card";
@@ -148,9 +149,10 @@ export default async function CommunityFeedPage({
     hasMore = feed?.hasMore ?? false;
   }
 
-  const [sportsRes, mePromise] = await Promise.all([
+  const [sportsRes, mePromise, tCommunity] = await Promise.all([
     serverApi<SportsResponse>("/catalog/sports"),
     sessionUser ? serverApi<CommunityMe>("/community/me") : Promise.resolve(null),
+    getTranslations("community"),
   ]);
   const me = mePromise;
 
@@ -160,7 +162,7 @@ export default async function CommunityFeedPage({
   return (
     <div>
       <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Community</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">{tCommunity("title")}</h1>
         <p className="mt-2 text-sm text-[var(--color-fg-muted)]">
           {tabSubtitle(tab)}
         </p>

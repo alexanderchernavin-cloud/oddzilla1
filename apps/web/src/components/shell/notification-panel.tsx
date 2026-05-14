@@ -30,6 +30,7 @@ import {
   NOTIFICATION_DISPLAY,
   formatRelativeTime,
 } from "@/lib/notifications";
+import { useTranslations } from "@/lib/i18n";
 import type { NotificationItem } from "@oddzilla/types";
 
 // Inline styles that have no per-row dynamic input are hoisted here so
@@ -107,6 +108,8 @@ export function NotificationPanel({ open, onClose, triggerRef }: PanelProps) {
   const ref = useRef<HTMLDivElement | null>(null);
   const { items, unreadCount, markRead, markAllRead, refresh, loading } =
     useNotifications();
+  const tNot = useTranslations("notifications");
+  const tCommon = useTranslations("common");
 
   // Portal-mount guard — createPortal needs document.body which doesn't
   // exist during SSR.
@@ -195,7 +198,7 @@ export function NotificationPanel({ open, onClose, triggerRef }: PanelProps) {
     <div
       ref={ref}
       role="dialog"
-      aria-label="Notifications"
+      aria-label={tNot("title")}
       style={{
         ...pos,
         maxHeight: 480,
@@ -219,7 +222,7 @@ export function NotificationPanel({ open, onClose, triggerRef }: PanelProps) {
         }}
       >
         <strong style={{ fontSize: 13, letterSpacing: 0.2 }}>
-          Notifications
+          {tNot("title")}
         </strong>
         {unreadCount > 0 ? (
           <span
@@ -249,13 +252,13 @@ export function NotificationPanel({ open, onClose, triggerRef }: PanelProps) {
               padding: 4,
             }}
           >
-            Mark all read
+            {tNot("markAllRead")}
           </button>
         ) : null}
         <button
           type="button"
           onClick={onClose}
-          aria-label="Close"
+          aria-label={tCommon("close")}
           style={{
             background: "transparent",
             border: 0,
@@ -279,7 +282,7 @@ export function NotificationPanel({ open, onClose, triggerRef }: PanelProps) {
               color: "var(--color-fg-muted, var(--fg-muted))",
             }}
           >
-            {loading ? "Loading…" : "No notifications yet"}
+            {loading ? tCommon("loading") : tNot("empty")}
           </p>
         ) : (
           items.map((item) => (

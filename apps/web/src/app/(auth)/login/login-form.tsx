@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { Button } from "@/components/ui/primitives";
+import { useTranslations } from "@/lib/i18n";
 
 export function LoginForm({ next }: { next: string }) {
   const router = useRouter();
@@ -11,6 +12,7 @@ export function LoginForm({ next }: { next: string }) {
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const t = useTranslations("auth");
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -34,16 +36,16 @@ export function LoginForm({ next }: { next: string }) {
     } catch (err) {
       if (err instanceof ApiFetchError) {
         if (err.body.error === "invalid_credentials") {
-          setError("Incorrect email or password.");
+          setError(t("errorInvalid"));
         } else if (err.body.error === "account_blocked") {
-          setError("This account is blocked. Contact support.");
+          setError(t("errorInvalid"));
         } else if (err.status === 429) {
-          setError("Too many attempts. Wait a minute and try again.");
+          setError(t("errorRateLimited"));
         } else {
-          setError(err.body.message || "Login failed.");
+          setError(err.body.message || t("errorInvalid"));
         }
       } else {
-        setError("Could not reach the server. Check your connection.");
+        setError(t("errorNetwork"));
       }
     } finally {
       setSubmitting(false);
@@ -57,7 +59,7 @@ export function LoginForm({ next }: { next: string }) {
       style={{ marginTop: 28, display: "flex", flexDirection: "column", gap: 10 }}
     >
       <Field
-        label="Email"
+        label={t("email")}
         type="email"
         name="email"
         autoComplete="email"
@@ -66,7 +68,7 @@ export function LoginForm({ next }: { next: string }) {
         onChange={(e) => setEmail(e.target.value)}
       />
       <Field
-        label="Password"
+        label={t("password")}
         type="password"
         name="password"
         autoComplete="current-password"
@@ -94,7 +96,7 @@ export function LoginForm({ next }: { next: string }) {
         disabled={submitting}
         style={{ width: "100%", marginTop: 8 }}
       >
-        {submitting ? "Signing in…" : "Log in"}
+        {submitting ? t("submitting") : t("loginCta")}
       </Button>
     </form>
   );

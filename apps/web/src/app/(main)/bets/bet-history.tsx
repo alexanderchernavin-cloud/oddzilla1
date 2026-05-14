@@ -9,6 +9,7 @@ import type {
   WsTicketFrame,
 } from "@oddzilla/types";
 import { useTicketStream } from "@/lib/use-ticket-stream";
+import { useTranslations } from "@/lib/i18n";
 import { CashoutPanel } from "./cashout-panel";
 
 const STATUS_LABEL: Record<TicketStatus, string> = {
@@ -70,6 +71,7 @@ export function BetHistory({
   initialTickets: TicketSummary[];
 }) {
   const [tickets, setTickets] = useState<TicketSummary[]>(initialTickets);
+  const t = useTranslations("bets");
 
   // Re-sync when the server delivers fresher data on route refresh.
   useEffect(() => {
@@ -114,7 +116,7 @@ export function BetHistory({
   if (tickets.length === 0) {
     return (
       <p className="mt-8 text-sm text-[var(--color-fg-muted)]">
-        No bets yet. Head to a match page and add a selection to the slip.
+        {t("empty")}
       </p>
     );
   }

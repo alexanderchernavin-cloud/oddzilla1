@@ -3,6 +3,8 @@ import { headers } from "next/headers";
 import { Instrument_Serif, Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { BetSlipProvider } from "@/lib/bet-slip";
+import { I18nProvider } from "@/lib/i18n";
+import { getServerMessages } from "@/lib/i18n/server";
 
 const geist = Geist({
   subsets: ["latin"],
@@ -26,29 +28,35 @@ const instrumentSerif = Instrument_Serif({
   display: "swap",
 });
 
-export const metadata: Metadata = {
-  title: "Oddzilla — Esports sportsbook",
-  description:
-    "Premium, quiet esports sportsbook. CS2, Dota 2, League of Legends, Valorant.",
+export async function generateMetadata(): Promise<Metadata> {
+  // Locale-aware metadata so social previews and the browser tab pick
+  // up the language the user picked. Falls back to English when the
+  // cookie is unset (negotiator already does that — see
+  // lib/i18n/server.ts).
+  const { messages } = await getServerMessages();
+  const c = messages.common;
+  const title = `${c.appName} — ${c.appTagline}`;
   // Next.js auto-resolves icon.png, apple-icon.png and
   // opengraph-image.png placed in this directory and emits the right
   // <link>/<meta> tags. The block below adds the surrounding OG +
   // Twitter copy so social previews carry the brand image with proper
   // titles instead of the bare URL.
-  openGraph: {
-    title: "Oddzilla — Esports sportsbook",
-    description:
-      "Premium, quiet esports sportsbook. CS2, Dota 2, League of Legends, Valorant.",
-    siteName: "Oddzilla",
-    type: "website",
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "Oddzilla — Esports sportsbook",
-    description:
-      "Premium, quiet esports sportsbook. CS2, Dota 2, League of Legends, Valorant.",
-  },
-};
+  return {
+    title,
+    description: c.appDescription,
+    openGraph: {
+      title,
+      description: c.appDescription,
+      siteName: c.appName,
+      type: "website",
+    },
+    twitter: {
+      card: "summary_large_image",
+      title,
+      description: c.appDescription,
+    },
+  };
+}
 
 export const viewport: Viewport = {
   // Light bg — matches CSS `:root` default in globals.css. The
@@ -78,10 +86,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // 'unsafe-inline'), and users would briefly see a light flash on a
   // dark-themed page before hydration patched up.
   const nonce = (await headers()).get("x-csp-nonce") ?? undefined;
+  const { locale, messages } = await getServerMessages();
 
   return (
     <html
-      lang="en"
+      lang={locale}
       suppressHydrationWarning
       className={`${geist.variable} ${geistMono.variable} ${instrumentSerif.variable}`}
     >
@@ -89,7 +98,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <script nonce={nonce} dangerouslySetInnerHTML={{ __html: themeBootScript }} />
       </head>
       <body>
-        <BetSlipProvider>{children}</BetSlipProvider>
+        <I18nProvider locale={locale} messages={messages}>
+          <BetSlipProvider>{children}</BetSlipProvider>
+        </I18nProvider>
       </body>
     </html>
   );

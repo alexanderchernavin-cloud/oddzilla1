@@ -22,6 +22,7 @@ import { I } from "@/components/ui/icons";
 import { Divider } from "@/components/ui/primitives";
 import { useBetSlip } from "@/lib/bet-slip";
 import { useWallets } from "@/lib/wallets";
+import { useTranslations } from "@/lib/i18n";
 
 const PILL_HEIGHT = 36;
 
@@ -44,6 +45,8 @@ export function WalletPill() {
   const slip = useBetSlip();
   const activeCurrency = slip.currency;
   const { wallets, loading } = useWallets();
+  const tWallet = useTranslations("wallet");
+  const tCommon = useTranslations("common");
 
   const activeWallet = wallets.find((w) => w.currency === activeCurrency);
   // Render dashes while the first /wallet response is in flight. The
@@ -84,7 +87,7 @@ export function WalletPill() {
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        title="Switch wallet"
+        title={tWallet("switchWallet")}
         style={pillStyle}
       >
         <I.Wallet size={14} style={{ color: "var(--fg-muted)" }} />
@@ -112,7 +115,7 @@ export function WalletPill() {
               textTransform: "uppercase",
             }}
           >
-            Demo
+            {tCommon("demo")}
           </span>
         ) : (
           <span
@@ -151,6 +154,7 @@ function CurrencyPopover({
   onPick: (c: Currency) => void;
   onClose: () => void;
 }) {
+  const tWallet = useTranslations("wallet");
   return (
     <div
       role="menu"
@@ -172,7 +176,7 @@ function CurrencyPopover({
     >
       {wallets.length === 0 ? (
         <p style={{ padding: "10px 12px", fontSize: 12, color: "var(--fg-muted)" }}>
-          No wallets available.
+          {tWallet("noWallets")}
         </p>
       ) : (
         wallets.map((w) => (
@@ -207,7 +211,7 @@ function CurrencyPopover({
             fontSize: 12,
           }}
         >
-          <span>Open wallet</span>
+          <span>{tWallet("openWallet")}</span>
           <span aria-hidden style={{ fontSize: 14 }}>
             →
           </span>
@@ -228,6 +232,7 @@ function CurrencyRow({
 }) {
   const balance = fromMicro(BigInt(wallet.availableMicro));
   const isDemo = wallet.currency === "OZ";
+  const tCommon = useTranslations("common");
   return (
     <button
       type="button"
@@ -268,7 +273,7 @@ function CurrencyRow({
               textTransform: "uppercase",
             }}
           >
-            Demo
+            {tCommon("demo")}
           </span>
         ) : null}
       </span>

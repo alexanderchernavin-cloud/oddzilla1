@@ -10,6 +10,7 @@ import { LiveDot } from "@/components/ui/primitives";
 import { TierMark, isFeaturedTier } from "@/components/ui/tier-mark";
 import { clientApi } from "@/lib/api-client";
 import { orderSportsForChips } from "@/lib/sport-order";
+import { useTranslations } from "@/lib/i18n";
 import { ThemeToggle } from "./theme-toggle";
 
 interface SportItem {
@@ -46,6 +47,7 @@ interface SidebarProps {
 export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps) {
   const pathname = usePathname() ?? "/";
   const searchParams = useSearchParams();
+  const tShell = useTranslations("shell");
   const isActive = (href: string) => {
     if (href === "/") return pathname === "/";
     return pathname === href || pathname.startsWith(href + "/");
@@ -110,7 +112,7 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
       */}
       <Link
         href="/"
-        aria-label="Oddzilla home"
+        aria-label={tShell("homeLink")}
         className="oz-side-logo"
         style={{
           display: "none",
@@ -124,19 +126,19 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
         <Wordmark size={240} priority />
       </Link>
 
-      <Item href="/" icon={<I.Grid size={15} />} active={isActive("/")} label="Lobby" />
+      <Item href="/" icon={<I.Grid size={15} />} active={isActive("/")} label={tShell("lobby")} />
       <Item
         href="/live"
         icon={<I.Live size={15} />}
         active={isActive("/live")}
-        label="Live"
+        label={tShell("live")}
         tag={totalLive > 0 ? String(totalLive) : undefined}
       />
       <Item
         href="/upcoming"
         icon={<I.Clock size={15} />}
         active={isActive("/upcoming")}
-        label="Upcoming"
+        label={tShell("upcoming")}
       />
       {/*
         Community feed sits in the primary navigation cluster — same
@@ -148,10 +150,10 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
         href="/community"
         icon={<I.User size={15} />}
         active={isActive("/community")}
-        label="Community"
+        label={tShell("community")}
       />
 
-      <SectionLabel>Sports</SectionLabel>
+      <SectionLabel>{tShell("sports")}</SectionLabel>
       {orderSports(sports).map((s) => {
         const sportActive = isActive(`/sport/${s.slug}`);
         const expanded = sportActive && s.slug === activeSportSlug;
@@ -195,20 +197,20 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
         );
       })}
 
-      <SectionLabel>Account</SectionLabel>
+      <SectionLabel>{tShell("account")}</SectionLabel>
       {signedIn ? (
         <>
           <Item
             href="/bets"
             icon={<I.Ticket size={15} />}
             active={isActive("/bets")}
-            label="My bets"
+            label={tShell("myBets")}
           />
           <Item
             href="/wallet"
             icon={<I.Wallet size={15} />}
             active={isActive("/wallet")}
-            label="Wallet"
+            label={tShell("wallet")}
           />
           {/*
             "/account/community" is the public-handle settings page
@@ -221,32 +223,32 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
             href="/account/community"
             icon={<I.User size={15} />}
             active={isActive("/account/community")}
-            label="Public profile"
+            label={tShell("publicProfile")}
           />
           <Item
             href="/account"
             icon={<I.Gear size={15} />}
             active={pathname === "/account"}
-            label="Settings"
+            label={tShell("settings")}
           />
           {isAdmin && (
             <Item
               href="/admin"
               icon={<I.Trophy size={15} />}
               active={isActive("/admin")}
-              label="Admin"
+              label={tShell("admin")}
             />
           )}
           <LogOutItem />
         </>
       ) : (
         <>
-          <Item href="/login" icon={<I.User size={15} />} active={isActive("/login")} label="Log in" />
+          <Item href="/login" icon={<I.User size={15} />} active={isActive("/login")} label={tShell("login")} />
           <Item
             href="/signup"
             icon={<I.Plus size={15} />}
             active={isActive("/signup")}
-            label="Sign up"
+            label={tShell("signup")}
           />
         </>
       )}
@@ -270,7 +272,7 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
         }}
       >
         <ThemeToggle />
-        <span>Toggle theme</span>
+        <span>{tShell("toggleTheme")}</span>
       </div>
       <div
         style={{
@@ -281,9 +283,9 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
           lineHeight: 1.5,
         }}
       >
-        Please bet responsibly.
+        {tShell("responsibleGambling")}
         <br />
-        18+ · BeGambleAware.org
+        {tShell("ageNotice")}
       </div>
     </aside>
   );
@@ -434,6 +436,7 @@ function TournamentLogoMark({
 function LogOutItem() {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
+  const t = useTranslations("common");
 
   function onClick() {
     startTransition(async () => {
@@ -472,7 +475,7 @@ function LogOutItem() {
       }}
     >
       <I.Arrow size={15} />
-      <span style={{ flex: 1 }}>{pending ? "Logging out…" : "Log out"}</span>
+      <span style={{ flex: 1 }}>{pending ? t("loggingOut") : t("logout")}</span>
     </button>
   );
 }

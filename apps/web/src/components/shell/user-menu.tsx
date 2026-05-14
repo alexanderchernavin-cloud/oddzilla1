@@ -11,6 +11,8 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import { useRouter } from "next/navigation";
 import { I } from "@/components/ui/icons";
 import { clientApi } from "@/lib/api-client";
+import { useTranslations } from "@/lib/i18n";
+import { LanguageSwitcher } from "./language-switcher";
 
 const AVATAR_SIZE = 36;
 
@@ -42,6 +44,8 @@ export function UserMenu({
   const [open, setOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const tShell = useTranslations("shell");
+  const tCommon = useTranslations("common");
 
   const initials = (user.displayName || user.email)
     .split(/\s+/)
@@ -86,7 +90,7 @@ export function UserMenu({
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={`Account menu for ${user.displayName ?? user.email}`}
+        aria-label={tShell("accountMenu", { name: user.displayName ?? user.email })}
         title={user.displayName ?? user.email}
         style={avatarStyle}
       >
@@ -148,19 +152,29 @@ export function UserMenu({
           </div>
 
           <MenuItem href="/bets" icon={<I.Ticket size={14} />} onClick={() => setOpen(false)}>
-            My bets
+            {tShell("myBets")}
           </MenuItem>
           <MenuItem href="/wallet" icon={<I.Wallet size={14} />} onClick={() => setOpen(false)}>
-            Wallet
+            {tShell("wallet")}
           </MenuItem>
           <MenuItem href="/account" icon={<I.Gear size={14} />} onClick={() => setOpen(false)}>
-            Settings
+            {tShell("settings")}
           </MenuItem>
           {isAdmin ? (
             <MenuItem href="/admin" icon={<I.Trophy size={14} />} onClick={() => setOpen(false)}>
-              Admin
+              {tShell("admin")}
             </MenuItem>
           ) : null}
+
+          <div
+            style={{
+              marginTop: 4,
+              paddingTop: 4,
+              borderTop: "1px solid var(--hairline)",
+            }}
+          >
+            <LanguageSwitcher variant="menu" />
+          </div>
 
           <div
             style={{
@@ -192,7 +206,7 @@ export function UserMenu({
               }}
             >
               <I.Arrow size={14} />
-              <span>{loggingOut ? "Logging out…" : "Log out"}</span>
+              <span>{loggingOut ? tCommon("loggingOut") : tCommon("logout")}</span>
             </button>
           </div>
         </div>

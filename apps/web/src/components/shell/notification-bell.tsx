@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import { I } from "@/components/ui/icons";
 import { NotificationPanel } from "./notification-panel";
 import { useNotifications } from "@/lib/notifications";
+import { useTranslations } from "@/lib/i18n";
 
 // Static style objects hoisted to module scope — they don't depend on
 // any per-render value, so re-using the same identity avoids a fresh
@@ -51,15 +52,16 @@ export function NotificationBell({ className }: { className?: string }) {
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const { unreadCount } = useNotifications();
+  const tNot = useTranslations("notifications");
   return (
     <div style={WRAPPER_STYLE}>
       <button
         ref={buttonRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
-        aria-label="Notifications"
+        aria-label={tNot("title")}
         aria-expanded={open}
-        title={unreadCount > 0 ? `${unreadCount} unread` : "Notifications"}
+        title={tNot("title")}
         className={className}
         style={BUTTON_STYLE}
       >

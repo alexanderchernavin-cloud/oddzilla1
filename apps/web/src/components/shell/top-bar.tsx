@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { I } from "@/components/ui/icons";
 import { Wordmark } from "@/components/ui/monogram";
+import { useTranslations } from "@/lib/i18n";
 import { useMobileDrawers } from "./mobile-drawer-context";
 import { UserControls } from "./user-controls";
 
@@ -27,6 +28,8 @@ const iconBtn = {
 
 export function TopBar({ signedIn, user }: TopBarProps) {
   const { toggleSidebar } = useMobileDrawers();
+  const tShell = useTranslations("shell");
+  const tCommon = useTranslations("common");
 
   return (
     <header
@@ -59,7 +62,7 @@ export function TopBar({ signedIn, user }: TopBarProps) {
         onClick={toggleSidebar}
         className="oz-topbar-toggle"
         style={{ ...iconBtn, width: 66, height: 66, display: undefined, marginLeft: -10 }}
-        aria-label="Open navigation"
+        aria-label={tCommon("openNavigation")}
       >
         <I.Grid size={33} />
       </button>
@@ -67,7 +70,7 @@ export function TopBar({ signedIn, user }: TopBarProps) {
       <Link
         href="/"
         className="oz-topbar-logo"
-        aria-label="Oddzilla home"
+        aria-label={tShell("homeLink")}
         style={{
           display: "inline-flex",
           alignItems: "center",

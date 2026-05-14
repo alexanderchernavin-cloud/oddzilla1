@@ -9,11 +9,14 @@ import { useMemo } from "react";
 import { useBetSlip } from "@/lib/bet-slip";
 import { useMobileDrawers } from "./mobile-drawer-context";
 import { I } from "@/components/ui/icons";
+import { useTranslations } from "@/lib/i18n";
 
 export function MobileBetSlipBar() {
   const slip = useBetSlip();
   const { railOpen, toggleRail } = useMobileDrawers();
   const count = slip.selections.length;
+  const t = useTranslations("betSlip");
+  const tCommon = useTranslations("common");
 
   const combinedOdds = useMemo(() => {
     if (count === 0) return 0;
@@ -30,7 +33,7 @@ export function MobileBetSlipBar() {
       type="button"
       onClick={toggleRail}
       className="oz-mobile-betbar"
-      aria-label={`Open bet slip (${count} selection${count === 1 ? "" : "s"})`}
+      aria-label={`${t("title")} (${t("legs", { count })})`}
     >
       <span
         style={{
@@ -57,7 +60,7 @@ export function MobileBetSlipBar() {
         }}
       >
         <span style={{ fontSize: 13, fontWeight: 600, letterSpacing: "-0.005em" }}>
-          {isCombo ? `Combo · ${count} legs` : `${count} selection`}
+          {isCombo ? `${t("combo")} · ${t("legs", { count })}` : t("legs", { count })}
         </span>
         <span
           className="mono tnum"
@@ -76,7 +79,7 @@ export function MobileBetSlipBar() {
           fontWeight: 600,
         }}
       >
-        Review
+        {tCommon("open")}
         <I.Chev size={12} style={{ transform: "rotate(-90deg)" }} />
       </span>
     </button>

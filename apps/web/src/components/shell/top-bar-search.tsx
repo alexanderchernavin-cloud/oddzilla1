@@ -15,6 +15,7 @@ import { SportGlyph } from "@/components/ui/sport-glyph";
 import { Pill, LiveDot, TeamMark } from "@/components/ui/primitives";
 import { TierMark } from "@/components/ui/tier-mark";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
+import { useTranslations } from "@/lib/i18n";
 
 interface SportHit {
   slug: string;
@@ -63,6 +64,8 @@ type NavItem =
 const DEBOUNCE_MS = 180;
 
 export function TopBarSearch() {
+  const t = useTranslations("search");
+  const tCommon = useTranslations("common");
   const router = useRouter();
   const wrapperRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -98,9 +101,9 @@ export function TopBarSearch() {
       } catch (e) {
         if (ctrl.signal.aborted) return;
         if (e instanceof ApiFetchError) {
-          setError(e.body.message || "Search failed");
+          setError(e.body.message || tCommon("error"));
         } else {
-          setError("Search unavailable");
+          setError(tCommon("error"));
         }
         setResults(null);
       } finally {
@@ -213,7 +216,7 @@ export function TopBarSearch() {
           }}
           onFocus={() => setOpen(true)}
           onKeyDown={onKeyDown}
-          placeholder="Search teams, tournaments, matches…"
+          placeholder={t("placeholder")}
           style={{
             flex: 1,
             minWidth: 0,
@@ -234,7 +237,7 @@ export function TopBarSearch() {
               setQuery("");
               inputRef.current?.focus();
             }}
-            aria-label="Clear search"
+            aria-label={tCommon("close")}
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -303,7 +306,7 @@ export function TopBarSearch() {
                 color: "var(--fg-muted)",
               }}
             >
-              Searching…
+              {tCommon("loading")}
             </div>
           )}
           {!error && empty && !loading && (
@@ -314,7 +317,7 @@ export function TopBarSearch() {
                 color: "var(--fg-muted)",
               }}
             >
-              No matches for &ldquo;{query.trim()}&rdquo;.
+              {t("noHits", { query: query.trim() })}
             </div>
           )}
           {!error && results && !empty && (
@@ -372,6 +375,7 @@ function ResultGroups({
   onHoverIndex: (i: number) => void;
   onPick: (href: string) => void;
 }) {
+  const t = useTranslations("search");
   // Track a running index across groups so keyboard highlight aligns
   // with the flat nav list built by buildNavItems. Section order is
   // Matches → Teams → Tournaments → Sports (most-actionable first).
@@ -379,7 +383,7 @@ function ResultGroups({
   const sections: ReactNode[] = [];
 
   if (results.matches.length > 0) {
-    sections.push(<SectionLabel key="matches">Matches</SectionLabel>);
+    sections.push(<SectionLabel key="matches">{t("matches")}</SectionLabel>);
     for (const m of results.matches) {
       const i = idx++;
       const isLive = m.status === "live";
@@ -427,7 +431,7 @@ function ResultGroups({
   }
 
   if (results.teams.length > 0) {
-    sections.push(<SectionLabel key="teams">Teams</SectionLabel>);
+    sections.push(<SectionLabel key="teams">{t("teams")}</SectionLabel>);
     for (const team of results.teams) {
       const i = idx++;
       const tag = (team.abbreviation ?? team.name.slice(0, 3)).toUpperCase();
@@ -451,7 +455,7 @@ function ResultGroups({
 
   if (results.tournaments.length > 0) {
     sections.push(
-      <SectionLabel key="tournaments">Tournaments</SectionLabel>,
+      <SectionLabel key="tournaments">{t("tournaments")}</SectionLabel>,
     );
     for (const t of results.tournaments) {
       const i = idx++;
@@ -477,7 +481,7 @@ function ResultGroups({
 
   if (results.sports.length > 0) {
     sections.push(
-      <SectionLabel key="sports">Sports</SectionLabel>,
+      <SectionLabel key="sports">{t("sports")}</SectionLabel>,
     );
     for (const s of results.sports) {
       const i = idx++;

@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { getSessionUser, safeNextPath } from "@/lib/auth";
 import { isAdminHost } from "@/lib/host";
+import { getTranslations } from "@/lib/i18n/server";
 import { LoginForm } from "./login-form";
 
 export default async function LoginPage({
@@ -15,6 +16,7 @@ export default async function LoginPage({
   if (user) {
     redirect(safeNextPath(params.next, adminHost ? "/admin" : "/"));
   }
+  const t = await getTranslations("auth");
 
   return (
     <>
@@ -27,10 +29,10 @@ export default async function LoginPage({
           letterSpacing: "-0.02em",
         }}
       >
-        Welcome back.
+        {t("loginTitle")}
       </h1>
       <p style={{ margin: 0, color: "var(--fg-muted)", fontSize: 13.5, lineHeight: 1.5 }}>
-        Log in to place bets and track your history.
+        {t("loginSubtitle")}
       </p>
 
       <LoginForm next={safeNextPath(params.next, adminHost ? "/admin" : "/")} />
@@ -44,12 +46,12 @@ export default async function LoginPage({
             textAlign: "center",
           }}
         >
-          No account yet?{" "}
+          {t("noAccount")}{" "}
           <Link
             href="/signup"
             style={{ color: "var(--fg)", textDecoration: "underline" }}
           >
-            Sign up
+            {t("signupCta")}
           </Link>
         </div>
       )}
