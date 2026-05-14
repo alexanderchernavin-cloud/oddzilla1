@@ -6,10 +6,23 @@
 //
 // Built without a popover library so the bundle stays lean — the
 // click-outside detection is a single window listener, the
-// positioning is `position: absolute` relative to a wrapper. Visual
-// polish (animation, focus trap) is intentionally minimal for V1.
+// positioning is portal-mounted to document.body so the panel
+// escapes any overflow context above the bell (the bet-slip rail
+// clips overflow-x to keep COMBI BOOST inner grids from leaking;
+// the same clip would chop ~280px off this 360-wide panel without
+// the portal). Visual polish (animation, focus trap) is
+// intentionally minimal for V1.
 
-import { useEffect, useRef, type CSSProperties, type ReactElement } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactElement,
+  type RefObject,
+} from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { I } from "@/components/ui/icons";
 import {
@@ -80,13 +93,29 @@ const ROW_ICON_BASE_STYLE: CSSProperties = {
 interface PanelProps {
   open: boolean;
   onClose: () => void;
+  triggerRef: RefObject<HTMLElement | null>;
 }
 
-export function NotificationPanel({ open, onClose }: PanelProps) {
+// Panel width matches the original layout. Clamped to viewport with
+// an 8px gutter so a 320-414px phone (where the bell lives in the
+// top bar, not the rail) still shows a fully-visible popover.
+const PANEL_WIDTH = 360;
+const VIEWPORT_GUTTER = 8;
+
+export function NotificationPanel({ open, onClose, triggerRef }: PanelProps) {
   const router = useRouter();
   const ref = useRef<HTMLDivElement | null>(null);
   const { items, unreadCount, markRead, markAllRead, refresh, loading } =
     useNotifications();
+
+  // Portal-mount guard — createPortal needs document.body which doesn't
+  // exist during SSR.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
+  // Computed viewport-coord position for the portaled panel. null until
+  // the first measurement so we don't render at (0,0) for a frame.
+  const [pos, setPos] = useState<CSSProperties | null>(null);
 
   // Refresh when the panel opens — gives the user a fresh view
   // regardless of where in the 60s polling cycle they happen to land.
@@ -94,24 +123,65 @@ export function NotificationPanel({ open, onClose }: PanelProps) {
     if (open) void refresh();
   }, [open, refresh]);
 
+  // Re-measure the trigger's screen rect on open + on resize + on any
+  // scroll (capture-phase so we catch scrolls inside the rail / main
+  // grid, not just the document — scroll events don't bubble). The
+  // bell can move when the user scrolls the rail content under it.
+  useLayoutEffect(() => {
+    if (!open) {
+      setPos(null);
+      return;
+    }
+    const update = () => {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const width = Math.min(PANEL_WIDTH, vw - 2 * VIEWPORT_GUTTER);
+      // Right-anchored to the trigger: align the panel's right edge
+      // to the trigger's right edge, extending leftward.
+      let left = rect.right - width;
+      // Clamp to viewport so a narrow-screen trigger (e.g. mobile top
+      // bar bell near the right edge) doesn't push the panel off the
+      // left side.
+      if (left < VIEWPORT_GUTTER) left = VIEWPORT_GUTTER;
+      if (left + width > vw - VIEWPORT_GUTTER) {
+        left = vw - VIEWPORT_GUTTER - width;
+      }
+      setPos({
+        position: "fixed",
+        top: rect.bottom + 6,
+        left,
+        width,
+      });
+    };
+    update();
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [open, triggerRef]);
+
   // Click-outside-to-close. Mousedown (not click) so we close before
   // the same event re-opens via the bell button.
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
       const target = e.target as Node | null;
-      if (ref.current && target && !ref.current.contains(target)) {
-        // The bell itself triggers its own toggle; ignore clicks on it
-        // so we don't double-close+open.
-        const onBell = (target as HTMLElement).closest?.(".oz-topbar-bell");
-        if (!onBell) onClose();
-      }
+      if (!target) return;
+      if (ref.current?.contains(target)) return;
+      // The bell itself triggers its own toggle; ignore clicks on it
+      // (either variant) so we don't double-close+open.
+      if (triggerRef.current?.contains(target)) return;
+      onClose();
     };
     window.addEventListener("mousedown", handler);
     return () => window.removeEventListener("mousedown", handler);
-  }, [open, onClose]);
+  }, [open, onClose, triggerRef]);
 
-  if (!open) return null;
+  if (!open || !mounted || !pos) return null;
 
   function onItemClick(item: NotificationItem) {
     if (!item.read) void markRead(item.id);
@@ -121,16 +191,13 @@ export function NotificationPanel({ open, onClose }: PanelProps) {
     }
   }
 
-  return (
+  return createPortal(
     <div
       ref={ref}
       role="dialog"
       aria-label="Notifications"
       style={{
-        position: "absolute",
-        top: "calc(100% + 6px)",
-        right: 0,
-        width: 360,
+        ...pos,
         maxHeight: 480,
         overflow: "hidden",
         background: "var(--color-bg-elevated, var(--bg))",
@@ -224,7 +291,8 @@ export function NotificationPanel({ open, onClose }: PanelProps) {
           ))
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
