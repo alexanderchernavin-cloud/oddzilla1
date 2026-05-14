@@ -27,6 +27,13 @@ const instrumentSerif = Instrument_Serif({
 });
 
 export const metadata: Metadata = {
+  // Pins the absolute base URL Next.js uses when resolving the
+  // auto-emitted icon / opengraph-image / twitter:image tags. Without
+  // it Next falls back to http://localhost:3000, so the production
+  // HTML ships <meta og:image content="http://localhost:3000/..."> —
+  // breaks every link preview (Twitter / Facebook / Slack / Discord)
+  // and leaks a dev-port hint into prod.
+  metadataBase: new URL("https://oddzilla.cc"),
   title: "Oddzilla — Esports sportsbook",
   description:
     "Premium, quiet esports sportsbook. CS2, Dota 2, League of Legends, Valorant.",
