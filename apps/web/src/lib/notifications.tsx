@@ -30,18 +30,18 @@ import type {
 } from "@oddzilla/types";
 import { clientApi } from "./api-client";
 
-// 60s background refresh when the user has unread notifications and
-// the tab is visible. Tight enough to feel live for the "someone
-// copied your bet" moment without burning the API rate limit (cap is
-// 60/min, this consumes 1).
+// 60s background refresh when the tab is visible. Tight enough to
+// feel live for the "someone copied your bet" moment without burning
+// the API rate limit (cap is 60/min, this consumes 1). When the tab
+// is hidden we pause entirely; visibilitychange triggers an immediate
+// refresh on return.
 //
-// When there's nothing unread we back off to 5min — the bell's only
-// reason to refresh is to discover new arrivals, and an empty inbox
-// doesn't need sub-minute freshness. And when the tab is hidden we
-// pause entirely; visibilitychange triggers an immediate refresh on
-// return.
+// Earlier this hook backed off to 5min when unreadCount === 0 to save
+// requests on an empty inbox. The cost in user-perceived freshness was
+// too high — an arrival in an empty inbox could take up to 5min to
+// surface even on an active tab. Reverted to a single 60s cadence;
+// SSE via ws-gateway is the right long-term replacement.
 const POLL_INTERVAL_MS = 60_000;
-const POLL_INTERVAL_IDLE_MS = 300_000;
 
 interface NotificationContextValue {
   items: NotificationItem[];
@@ -146,41 +146,22 @@ export function NotificationProvider({ enabled, children }: ProviderProps) {
 
   // Mount + interval + focus + visibility refresh.
   //
-  // The interval cadence depends on the live unreadCount (60s when
-  // there's something to watch, 5min when idle) and on
-  // document.hidden (off entirely). To avoid re-creating the interval
-  // every time these change, the tick reads them off refs and decides
-  // each fire whether to actually call refresh — at most one extra
-  // no-op per minute even in the hidden case, vs the alternative
-  // (effect re-runs ping-ponging refresh()) which thrashes far worse.
-  const unreadRef = useRef(unreadCount);
-  useEffect(() => {
-    unreadRef.current = unreadCount;
-  }, [unreadCount]);
+  // The interval fires every POLL_INTERVAL_MS while the tab is
+  // visible. Hidden tabs skip the refresh entirely;
+  // visibilitychange / focus drive an immediate catch-up on return.
   useEffect(() => {
     if (!enabled) return;
     void refresh();
-    let last = Date.now();
-    // Tick at the shorter cadence; gate execution by cadence-since-
-    // last-refresh and visibility. Keeps a single interval handle so
-    // we don't churn timers on every state update.
     const interval = setInterval(() => {
       if (typeof document !== "undefined" && document.hidden) return;
-      const cadence =
-        unreadRef.current === 0 ? POLL_INTERVAL_IDLE_MS : POLL_INTERVAL_MS;
-      const now = Date.now();
-      if (now - last < cadence) return;
-      last = now;
       void refresh();
     }, POLL_INTERVAL_MS);
 
     const onFocus = () => {
-      last = Date.now();
       void refresh();
     };
     const onVisibility = () => {
       if (typeof document !== "undefined" && !document.hidden) {
-        last = Date.now();
         void refresh();
       }
     };
