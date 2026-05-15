@@ -206,6 +206,58 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
     }
   }, [state.selections, state.mode, state.currency, state.betbuilderMatchId]);
 
+  // Cross-document sync: the ultra-wide side-panel iframes
+  // (apps/web/src/components/shell/side-panels.tsx) each mount their own
+  // BetSlipProvider via the root layout. When the user clicks an outcome
+  // inside an iframe, that iframe's provider writes to localStorage and
+  // the `storage` event fires in every OTHER same-origin document. We
+  // re-hydrate state from the incoming payload so the parent shell's
+  // slip rail picks up the new leg without a refresh.
+  //
+  // Loop guard: skip setState when the incoming payload deep-equals our
+  // current persisted shape. Without this, the parent's own writer
+  // effect (above) would echo back to the iframes on every tick.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== STORAGE_KEY || !e.newValue) return;
+      const incoming = e.newValue;
+      setState((prev) => {
+        const currentSerialized = JSON.stringify({
+          selections: prev.selections,
+          mode: prev.mode,
+          currency: prev.currency,
+          betbuilderMatchId: prev.betbuilderMatchId,
+        });
+        if (currentSerialized === incoming) return prev;
+        try {
+          const parsed = JSON.parse(incoming) as Partial<SlipState>;
+          return {
+            ...prev,
+            selections: Array.isArray(parsed.selections)
+              ? parsed.selections
+              : prev.selections,
+            mode: ALL_MODES.includes(parsed.mode as SlipMode)
+              ? (parsed.mode as SlipMode)
+              : prev.mode,
+            currency: isCurrency(parsed.currency)
+              ? parsed.currency
+              : prev.currency,
+            betbuilderMatchId:
+              typeof parsed.betbuilderMatchId === "string"
+                ? parsed.betbuilderMatchId
+                : null,
+            // open / quote / eligible-markets are per-document state —
+            // never overwrite from the cross-document payload.
+          };
+        } catch {
+          return prev;
+        }
+      });
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
   const add = useCallback((selection: SlipSelection) => {
     // Strip any pending-odds carryover the caller might have copied
     // through — the click happens at the freshly-rendered price, so

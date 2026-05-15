@@ -111,6 +111,18 @@ export const I = {
       <path d="M4 5h16M7 12h10M10 19h4" />
     </Icon>
   ),
+  PanelLeft: (p: IconProps) => (
+    <Icon {...p}>
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <path d="M9 3v18" />
+    </Icon>
+  ),
+  PanelRight: (p: IconProps) => (
+    <Icon {...p}>
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <path d="M15 3v18" />
+    </Icon>
+  ),
   Grid: (p: IconProps) => (
     <Icon {...p}>
       <rect x="3" y="3" width="7" height="7" />

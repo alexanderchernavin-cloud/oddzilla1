@@ -999,7 +999,13 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
             >
               <span>Combo · {selections.length} legs</span>
               <span className="mono tnum" style={{ fontSize: 14, fontWeight: 600, color: "var(--fg)" }}>
-                {(combinedOdds * combiBoost.multiplier).toFixed(2)}
+                {/* Floor-truncate to 2dp, matching the project-wide odds
+                    convention (settlement, applyMargin, ComboZilla card
+                    display). toFixed(2) would round half-up — e.g.
+                    1.62 × 1.65 × 1.50 × 1.02 = 4.0897 rounds to 4.09
+                    but the card shows 4.08, and the engine pays the
+                    floored value. */}
+                {(Math.floor(combinedOdds * combiBoost.multiplier * 100) / 100).toFixed(2)}
               </span>
             </div>
           )}

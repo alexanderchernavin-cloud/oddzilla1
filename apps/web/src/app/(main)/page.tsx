@@ -12,8 +12,8 @@ import { ZillaFlashRow } from "@/components/lobby/zillaflash-row";
 import { TodayLabel } from "@/components/lobby/today-label";
 import { buildThreeFoldSuggestions } from "@/lib/three-fold-builder";
 import {
+  filterSportsForLobbyChips,
   orderMatchesBySport,
-  orderSportsForChips,
   shortName,
 } from "@/lib/sport-order";
 import { getTranslations } from "@/lib/i18n/server";
@@ -73,9 +73,11 @@ export default async function HomePage() {
   //
   // ComboZilla feeds on PREMATCH-only matches (the brief calls for two
   // prematch combos in the carousel). Tier 1-3 filtering, same-sport
-  // grouping, and the per-leg Combi Boost minimum-odds gate all happen
-  // inside the builder; passing the live minOdds keeps the gate in
-  // sync with whatever the admin tuned the boost to.
+  // grouping, prematch enforcement, the per-sport card cap (only CS2 /
+  // Dota 2 / LoL may hold more than one slot), and the per-leg Combi
+  // Boost minimum-odds gate all happen inside the builder; passing the
+  // live minOdds keeps the gate in sync with whatever the admin tuned
+  // the boost to.
   const threeFoldSuggestions = buildThreeFoldSuggestions(
     upcoming,
     tMatch("matchWinner"),
@@ -108,7 +110,7 @@ export default async function HomePage() {
       <ZillaFlashRow />
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-        {orderSportsForChips(sports).slice(0, 10).map((s) => (
+        {filterSportsForLobbyChips(sports).map((s) => (
           <Link
             key={s.slug}
             href={`/sport/${s.slug}`}

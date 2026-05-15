@@ -91,10 +91,13 @@ export function ThreeFoldCards({
 
   // First-visible tier index. Desktop renders [first, first+1]; mobile
   // renders [first]. Pagination is by window: desktop jumps by 2,
-  // mobile jumps by 1, and we DON'T wrap — when the user is at the
-  // boundary (safest combo on the left, ultimate on the right) the
-  // corresponding direction button hides. The user has the tier name
-  // shown on the card itself, so the cycle buttons are icon-only.
+  // mobile jumps by 1, with wraparound — prev from the first page lands
+  // on the last page, next from the last page lands on the first. Both
+  // cycle buttons stay visible on every page (symmetric layout); for
+  // the common 2-page case (4 tiers / 2 visible per page on desktop)
+  // pressing either button is the same operation. Cycle buttons are
+  // icon-only — the icon is the tier that would land in the leftmost
+  // slot after pressing.
   const N = visibleTiers.length;
   const [first, setFirst] = useState(0);
   // Clamp the desktop view if the state was set via mobile navigation
@@ -127,19 +130,34 @@ export function ThreeFoldCards({
   const slotB = visibleTiers[Math.min(desktopFirst + 1, N - 1)]!;
   const mobileTier = visibleTiers[mobileFirst]!;
 
-  // Tiers the cycle buttons advertise. The icon on each button is the
-  // tier that would land in the leftmost slot after pressing — the
-  // "next page" preview. Buttons hide entirely (via visibility:hidden
-  // to preserve layout) when the page boundary is reached.
-  const desktopPrevTier = visibleTiers[Math.max(desktopFirst - 2, 0)] ?? null;
-  const desktopNextTier = visibleTiers[Math.min(desktopFirst + 2, N - 1)] ?? null;
-  const mobilePrevTier = visibleTiers[Math.max(mobileFirst - 1, 0)] ?? null;
-  const mobileNextTier = visibleTiers[Math.min(mobileFirst + 1, N - 1)] ?? null;
+  // Where each cycle button would land. Wraparound semantics: at the
+  // start, prev → last page; at the end, next → first page. With the
+  // 2-page layout that ComboZilla normally renders this means both
+  // sides resolve to the same destination — that's what the user sees
+  // and what the symmetry asks for.
+  const desktopLastFirst = Math.max(0, N - 2);
+  const mobileLastFirst = Math.max(0, N - 1);
+  const desktopPrevFirst =
+    desktopFirst <= 0 ? desktopLastFirst : Math.max(0, desktopFirst - 2);
+  const desktopNextFirst =
+    desktopFirst >= desktopLastFirst ? 0 : Math.min(desktopFirst + 2, desktopLastFirst);
+  const mobilePrevFirst =
+    mobileFirst <= 0 ? mobileLastFirst : mobileFirst - 1;
+  const mobileNextFirst =
+    mobileFirst >= mobileLastFirst ? 0 : mobileFirst + 1;
 
-  const canPrevDesktop = desktopFirst > 0;
-  const canNextDesktop = desktopFirst + 2 < N;
-  const canPrevMobile = mobileFirst > 0;
-  const canNextMobile = mobileFirst + 1 < N;
+  const desktopPrevTier = visibleTiers[desktopPrevFirst] ?? null;
+  const desktopNextTier = visibleTiers[desktopNextFirst] ?? null;
+  const mobilePrevTier = visibleTiers[mobilePrevFirst] ?? null;
+  const mobileNextTier = visibleTiers[mobileNextFirst] ?? null;
+
+  // Buttons are present whenever there's a second window to cycle to.
+  // For desktop that means N > 2 (otherwise both cards fit on one
+  // page); for mobile that means N > 1.
+  const canPrevDesktop = N > 2;
+  const canNextDesktop = N > 2;
+  const canPrevMobile = N > 1;
+  const canNextMobile = N > 1;
 
   const renderCard = (tier: TierMeta) => (
     <Card
@@ -192,7 +210,7 @@ export function ThreeFoldCards({
                 ? t("cyclePrev", { tier: desktopPrevTier.label })
                 : t("cyclePrevGeneric")
             }
-            onClick={() => setFirst((i) => Math.max(0, i - 2))}
+            onClick={() => setFirst(desktopPrevFirst)}
           />
           <CycleButton
             className="oz-cycle-mobile"
@@ -204,7 +222,7 @@ export function ThreeFoldCards({
                 ? t("cyclePrev", { tier: mobilePrevTier.label })
                 : t("cyclePrevGeneric")
             }
-            onClick={() => setFirst((i) => Math.max(0, i - 1))}
+            onClick={() => setFirst(mobilePrevFirst)}
           />
         </div>
         <div className="oz-combozilla-track">
@@ -228,7 +246,7 @@ export function ThreeFoldCards({
                 ? t("cycleNext", { tier: desktopNextTier.label })
                 : t("cycleNextGeneric")
             }
-            onClick={() => setFirst((i) => Math.min(N - 2, i + 2))}
+            onClick={() => setFirst(desktopNextFirst)}
           />
           <CycleButton
             className="oz-cycle-mobile"
@@ -240,7 +258,7 @@ export function ThreeFoldCards({
                 ? t("cycleNext", { tier: mobileNextTier.label })
                 : t("cycleNextGeneric")
             }
-            onClick={() => setFirst((i) => Math.min(N - 1, i + 1))}
+            onClick={() => setFirst(mobileNextFirst)}
           />
         </div>
       </div>
@@ -260,9 +278,11 @@ export function ThreeFoldCards({
 // overridden and BOTH desktop + mobile buttons would render side by
 // side. The previous version had this bug.
 //
-// When `visible` is false the button stays mounted but hidden via
-// visibility:hidden so the cards don't shift sideways as the user
-// scrolls toward the boundaries.
+// When `visible` is false (only one window's worth of tiers exists,
+// so there's nothing to cycle to) the button stays mounted but
+// hidden via visibility:hidden so the cards don't shift sideways.
+// With more than one page both buttons are always visible — pages
+// wrap, so prev/next always have a destination.
 function CycleButton({
   className,
   direction,

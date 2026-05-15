@@ -22,9 +22,14 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { sql } from "drizzle-orm";
+import { sql, inArray } from "drizzle-orm";
 import { SUPPORTED_CURRENCIES } from "@oddzilla/types/currencies";
-import { renderOutcomeLabel, substituteTemplate } from "../../../lib/market-naming.js";
+import { competitorProfiles, playerProfiles } from "@oddzilla/db";
+import {
+  renderOutcomeLabel,
+  substituteTemplate,
+  type OutcomeProfiles,
+} from "../../../lib/market-naming.js";
 
 // Derives the visible "Status" cell. The Riskzilla decision column is
 // recorded once at placement (`accepted` / `rejected_*`) and never
@@ -219,15 +224,30 @@ interface RawSelection {
   result: string | null;
 }
 
-function renderSelection(raw: RawSelection): EventSelectionDto {
+function renderSelection(
+  raw: RawSelection,
+  profiles?: OutcomeProfiles,
+): EventSelectionDto {
   const specs = raw.specifiers ?? {};
   const home = raw.homeTeam ?? "Home";
   const away = raw.awayTeam ?? "Away";
-  const marketName = substituteTemplate(raw.marketTemplate, specs, {
-    homeTeam: home,
-    awayTeam: away,
-  });
-  const outcomeName = renderOutcomeLabel(raw.outcomeTemplate, specs, home, away);
+  // profiles resolves URN-shaped specifier values (e.g.
+  // `{entity}=od:player:1319` → "Myrwn") and bare-URN outcome
+  // templates that fell back to outcomeId because
+  // outcome_descriptions has no row for the player.
+  const marketName = substituteTemplate(
+    raw.marketTemplate,
+    specs,
+    { homeTeam: home, awayTeam: away },
+    profiles,
+  );
+  const outcomeName = renderOutcomeLabel(
+    raw.outcomeTemplate,
+    specs,
+    home,
+    away,
+    profiles,
+  );
   return {
     marketId: raw.marketId,
     providerMarketId: raw.providerMarketId,
@@ -239,6 +259,60 @@ function renderSelection(raw: RawSelection): EventSelectionDto {
     matchLabel: raw.matchLabel,
     result: raw.result,
   };
+}
+
+// Batch-load competitor + player profile name maps for every URN-style
+// value that appears in any selection across the page (outcome ids,
+// specifier values, outcome templates that fell back to a bare URN).
+// One round-trip per profile table; both fire in parallel. Used by
+// rawToDto so the per-page render shares a single URN cache instead
+// of doing 50–500 lookups inside the JSON-agg map.
+async function loadOutcomeProfiles(
+  app: FastifyInstance,
+  rows: RawRow[],
+): Promise<OutcomeProfiles> {
+  const competitorUrns = new Set<string>();
+  const playerUrns = new Set<string>();
+  const harvestUrn = (raw: string) => {
+    if (raw.startsWith("od:competitor:")) competitorUrns.add(raw);
+    else if (raw.startsWith("od:player:")) playerUrns.add(raw);
+  };
+  for (const r of rows) {
+    if (!Array.isArray(r.selections)) continue;
+    for (const sel of r.selections) {
+      if (sel.outcomeId) harvestUrn(sel.outcomeId);
+      // The outcome template falls back to the raw outcomeId when
+      // outcome_descriptions has no row — player-prop outcomes
+      // surface here as a bare `od:player:N` template.
+      if (sel.outcomeTemplate) harvestUrn(sel.outcomeTemplate);
+      const specs = sel.specifiers ?? {};
+      for (const v of Object.values(specs)) {
+        if (typeof v === "string" && v.startsWith("od:")) harvestUrn(v);
+      }
+    }
+  }
+  if (competitorUrns.size === 0 && playerUrns.size === 0) {
+    return { competitors: new Map(), players: new Map() };
+  }
+  const [cps, pps] = await Promise.all([
+    competitorUrns.size > 0
+      ? app.db
+          .select({ urn: competitorProfiles.urn, name: competitorProfiles.name })
+          .from(competitorProfiles)
+          .where(inArray(competitorProfiles.urn, Array.from(competitorUrns)))
+      : Promise.resolve([]),
+    playerUrns.size > 0
+      ? app.db
+          .select({ urn: playerProfiles.urn, name: playerProfiles.name })
+          .from(playerProfiles)
+          .where(inArray(playerProfiles.urn, Array.from(playerUrns)))
+      : Promise.resolve([]),
+  ]);
+  const competitors = new Map<string, string>();
+  for (const c of cps) competitors.set(c.urn, c.name);
+  const players = new Map<string, string>();
+  for (const p of pps) players.set(p.urn, p.name);
+  return { competitors, players };
 }
 
 const currencySchema = z
@@ -359,7 +433,7 @@ interface RawRow {
   created_at: Date | string;
 }
 
-function rawToDto(r: RawRow): EventRowDto {
+function rawToDto(r: RawRow, profiles?: OutcomeProfiles): EventRowDto {
   const cursorMs = Math.floor(Number(r.cursor_ms));
   return {
     id: r.id,
@@ -383,7 +457,9 @@ function rawToDto(r: RawRow): EventRowDto {
     rsAtDecision: r.rs_at_decision,
     bankAtDecisionMicro: r.bank_at_decision_micro,
     decisionMeta: r.decision_meta,
-    selections: Array.isArray(r.selections) ? r.selections.map(renderSelection) : [],
+    selections: Array.isArray(r.selections)
+      ? r.selections.map((s) => renderSelection(s, profiles))
+      : [],
     createdAt:
       r.created_at instanceof Date
         ? r.created_at.toISOString()
@@ -527,8 +603,12 @@ async function queryEventLog(
   `) as unknown as Promise<RawRow[]>;
 
   const [rows, totalRows] = await Promise.all([rowsPromise, totalPromise]);
+  // URN-name lookup for the page. Without this the betticker /
+  // bets viewer rendered "od:player:1319 Total kills - map 2" as a
+  // literal cell when the selection was a player-prop market.
+  const profiles = await loadOutcomeProfiles(app, rows);
   return {
-    entries: rows.map(rawToDto),
+    entries: rows.map((r) => rawToDto(r, profiles)),
     total: Number(totalRows[0]?.total ?? 0),
   };
 }
@@ -686,8 +766,9 @@ async function queryTicketsForOz(
   `) as unknown as Promise<RawRow[]>;
 
   const [rows, totalRows] = await Promise.all([rowsPromise, totalPromise]);
+  const profiles = await loadOutcomeProfiles(app, rows);
   return {
-    entries: rows.map(rawToDto),
+    entries: rows.map((r) => rawToDto(r, profiles)),
     total: Number(totalRows[0]?.total ?? 0),
   };
 }
