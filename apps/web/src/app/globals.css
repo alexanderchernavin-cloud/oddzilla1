@@ -561,9 +561,12 @@ body {
   display: grid;
   /* auto-fit so the row adapts to how many offers the caller showed:
      home gets 4 columns (2 prematch + 2 live), the live + upcoming
-     listing pages get 2. Each card needs ~240 px to read cleanly;
-     auto-fit handles every viewport size from there. */
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+     listing pages get 2. Floor lowered to 200 px so two cards pack
+     side-by-side on tablet / narrow-desktop viewports rather than
+     stacking single-column with a lot of empty horizontal space —
+     the card body fits at 200 px min thanks to the compact padding
+     + break-word labels. Drops to 1 column only on phone widths. */
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 10px;
 }
 
