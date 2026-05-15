@@ -40,6 +40,7 @@ import {
   deriveScope,
   outcomeSortWeight,
   type MarketScope,
+  type OutcomeProfiles,
 } from "../../lib/market-naming.js";
 
 // A match shows up in the admin logs panel iff it has at least one
@@ -305,11 +306,23 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
       );
     }
 
+    // Harvest URN-style outcome ids AND specifier values. Player-prop
+    // templates carry `{entity}` whose value is an `od:player:N` URN,
+    // and team-prop templates can put `od:competitor:N` in the same
+    // slot. Without the specifier-value pass, the admin logs panel
+    // rendered "od:player:1319 Total kills - map 2".
     const competitorUrns = new Set<string>();
     const playerUrns = new Set<string>();
-    for (const o of outcomeRows) {
-      if (o.outcomeId.startsWith("od:competitor:")) competitorUrns.add(o.outcomeId);
-      else if (o.outcomeId.startsWith("od:player:")) playerUrns.add(o.outcomeId);
+    const harvestUrn = (raw: string) => {
+      if (raw.startsWith("od:competitor:")) competitorUrns.add(raw);
+      else if (raw.startsWith("od:player:")) playerUrns.add(raw);
+    };
+    for (const o of outcomeRows) harvestUrn(o.outcomeId);
+    for (const m of marketRows) {
+      const specs = (m.specifiersJson ?? {}) as Record<string, string>;
+      for (const v of Object.values(specs)) {
+        if (typeof v === "string" && v.startsWith("od:")) harvestUrn(v);
+      }
     }
     const competitorNameMap = new Map<string, string>();
     const playerNameMap = new Map<string, string>();
@@ -327,6 +340,10 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
         .where(inArray(playerProfiles.urn, Array.from(playerUrns)));
       for (const p of pps) playerNameMap.set(p.urn, p.name);
     }
+    const profiles: OutcomeProfiles = {
+      competitors: competitorNameMap,
+      players: playerNameMap,
+    };
 
     const renderMarketName = (
       providerMarketId: number,
@@ -337,7 +354,7 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
         marketDescMap.get(descKey(providerMarketId, variant)) ??
         marketDescMap.get(descKey(providerMarketId, "")) ??
         `Market #${providerMarketId}`;
-      return substituteTemplate(template, specs);
+      return substituteTemplate(template, specs, undefined, profiles);
     };
     const renderOutcomeName = (
       providerMarketId: number,
@@ -362,6 +379,7 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
         specs,
         match.homeTeam,
         match.awayTeam,
+        profiles,
       );
     };
 
@@ -607,6 +625,43 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
     // the same as the storefront / match-detail page.
     const specs = (market.specifiersJson ?? {}) as Record<string, string>;
     const variant = specs.variant ?? "";
+
+    // Harvest URN-style outcome ids AND URN-style specifier values
+    // (e.g. {entity}=od:player:1319 in player-prop markets) up front
+    // so the market name and outcome labels share one URN→name
+    // lookup. Without this scan the header rendered
+    // "od:player:1319 Total kills - map 2" instead of "Myrwn …".
+    const compUrns = new Set<string>();
+    const playerUrns = new Set<string>();
+    const harvestUrn = (raw: string) => {
+      if (raw.startsWith("od:competitor:")) compUrns.add(raw);
+      else if (raw.startsWith("od:player:")) playerUrns.add(raw);
+    };
+    for (const o of rawOutcomes) harvestUrn(o.outcomeId);
+    for (const v of Object.values(specs)) {
+      if (typeof v === "string" && v.startsWith("od:")) harvestUrn(v);
+    }
+    const compNames = new Map<string, string>();
+    const playerNames = new Map<string, string>();
+    if (compUrns.size > 0) {
+      const cps = await app.db
+        .select({ urn: competitorProfiles.urn, name: competitorProfiles.name })
+        .from(competitorProfiles)
+        .where(inArray(competitorProfiles.urn, Array.from(compUrns)));
+      for (const c of cps) compNames.set(c.urn, c.name);
+    }
+    if (playerUrns.size > 0) {
+      const pps = await app.db
+        .select({ urn: playerProfiles.urn, name: playerProfiles.name })
+        .from(playerProfiles)
+        .where(inArray(playerProfiles.urn, Array.from(playerUrns)));
+      for (const p of pps) playerNames.set(p.urn, p.name);
+    }
+    const profiles: OutcomeProfiles = {
+      competitors: compNames,
+      players: playerNames,
+    };
+
     const [marketDescRow] = await app.db
       .select({ nameTemplate: marketDescriptions.nameTemplate })
       .from(marketDescriptions)
@@ -619,7 +674,7 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
       .orderBy(desc(marketDescriptions.variant))
       .limit(1);
     const marketName = marketDescRow
-      ? substituteTemplate(marketDescRow.nameTemplate, specs)
+      ? substituteTemplate(marketDescRow.nameTemplate, specs, undefined, profiles)
       : `Market #${market.providerMarketId}`;
 
     const outcomeDescRows = await app.db
@@ -644,29 +699,6 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
       }
     }
 
-    const compUrns = new Set<string>();
-    const playerUrns = new Set<string>();
-    for (const o of rawOutcomes) {
-      if (o.outcomeId.startsWith("od:competitor:")) compUrns.add(o.outcomeId);
-      else if (o.outcomeId.startsWith("od:player:")) playerUrns.add(o.outcomeId);
-    }
-    const compNames = new Map<string, string>();
-    const playerNames = new Map<string, string>();
-    if (compUrns.size > 0) {
-      const cps = await app.db
-        .select({ urn: competitorProfiles.urn, name: competitorProfiles.name })
-        .from(competitorProfiles)
-        .where(inArray(competitorProfiles.urn, Array.from(compUrns)));
-      for (const c of cps) compNames.set(c.urn, c.name);
-    }
-    if (playerUrns.size > 0) {
-      const pps = await app.db
-        .select({ urn: playerProfiles.urn, name: playerProfiles.name })
-        .from(playerProfiles)
-        .where(inArray(playerProfiles.urn, Array.from(playerUrns)));
-      for (const p of pps) playerNames.set(p.urn, p.name);
-    }
-
     const outcomes = rawOutcomes.map((o) => {
       let name: string;
       if (o.outcomeId.startsWith("od:competitor:")) {
@@ -675,7 +707,13 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
         name = playerNames.get(o.outcomeId) ?? o.name ?? o.outcomeId;
       } else {
         const tmpl = outcomeTemplateMap.get(o.outcomeId) ?? o.name ?? o.outcomeId;
-        name = renderOutcomeLabel(tmpl, specs, market.homeTeam, market.awayTeam);
+        name = renderOutcomeLabel(
+          tmpl,
+          specs,
+          market.homeTeam,
+          market.awayTeam,
+          profiles,
+        );
       }
       return { ...o, name };
     });

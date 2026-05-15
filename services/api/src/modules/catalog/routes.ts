@@ -37,6 +37,7 @@ import {
   renderOutcomeLabel,
   deriveScope,
   outcomeSortWeight,
+  type OutcomeProfiles,
 } from "../../lib/market-naming.js";
 
 // Mirror of the storefront's i18n config — kept tiny + duplicated here
@@ -1019,13 +1020,24 @@ export default async function catalogRoutes(app: FastifyInstance) {
     // we can join against our profile cache and substitute human names
     // on the way out. Outcomes without a matching profile fall through
     // to their existing `name` / `outcomeId`.
+    //
+    // Also harvest URN-style specifier *values* — player-prop market
+    // templates carry `{entity}` whose value is an `od:player:N` URN
+    // ("{entity} Total kills - map {map}" → "Myrwn Total kills - map
+    // 2"). Team-prop markets carry an `od:competitor:N` URN in the
+    // same slot, so probe both buckets.
     const competitorUrns = new Set<string>();
     const playerUrns = new Set<string>();
+    const harvestUrn = (raw: string) => {
+      if (raw.startsWith("od:competitor:")) competitorUrns.add(raw);
+      else if (raw.startsWith("od:player:")) playerUrns.add(raw);
+    };
     for (const r of rows) {
-      const id = r.outcomeId;
-      if (!id) continue;
-      if (id.startsWith("od:competitor:")) competitorUrns.add(id);
-      else if (id.startsWith("od:player:")) playerUrns.add(id);
+      if (r.outcomeId) harvestUrn(r.outcomeId);
+      const specs = (r.specifiersJson ?? {}) as Record<string, string>;
+      for (const v of Object.values(specs)) {
+        if (typeof v === "string" && v.startsWith("od:")) harvestUrn(v);
+      }
     }
     // All four lookups are independent — fire in parallel so the
     // match-detail page p99 isn't a sum of four round-trips.
@@ -1083,6 +1095,14 @@ export default async function catalogRoutes(app: FastifyInstance) {
     for (const c of cps) competitorNameMap.set(c.urn, c.name);
     const playerNameMap = new Map<string, string>();
     for (const p of pps) playerNameMap.set(p.urn, p.name);
+    // OutcomeProfiles bundle for substituteTemplate / renderOutcomeLabel
+    // — the URN-prefix branches below still consult the underlying
+    // maps directly because they decide on the fallback shape (raw
+    // URN vs template) per-prefix.
+    const profiles: OutcomeProfiles = {
+      competitors: competitorNameMap,
+      players: playerNameMap,
+    };
 
     const descKey = (mid: number, variant: string) => `${mid}:${variant ?? ""}`;
     // Build a locale-preferring map. We inserted both locale and 'en'
@@ -1164,8 +1184,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
           providerMarketId: r.providerMarketId,
           specifiers: specs,
           variant,
-          name: substituteTemplate(template, specs, teams, undefined, locale),
-          baseName: substituteTemplate(baseTemplate, specs, teams, undefined, locale),
+          name: substituteTemplate(template, specs, teams, profiles, locale),
+          baseName: substituteTemplate(baseTemplate, specs, teams, profiles, locale),
           scope: deriveScope(specs),
           status: r.status,
           lastOddinTs: r.lastOddinTs.toString(),
@@ -1197,7 +1217,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
             m.specifiers,
             match.homeTeam,
             match.awayTeam,
-            undefined,
+            profiles,
             locale,
           );
         }
