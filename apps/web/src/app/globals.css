@@ -1025,6 +1025,68 @@ body {
   }
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+   Match-list column toggle — QHD+ viewports only.
+   Below 2560px (QHD width) the toggle is hidden and the grid falls
+   back to its default flex column layout regardless of the saved
+   preference, because two cards per row would each be < ~450px and
+   the scoreboard + Match Winner column start to fight for space.
+   The [data-cols="2"] grid rule is scoped inside the same media
+   query so a persisted "2" silently degrades to one column on a
+   smaller monitor without needing JS to clamp the state.
+   ───────────────────────────────────────────────────────────────────────── */
+.oz-match-list-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.oz-match-list-cols {
+  display: none;
+  align-self: flex-end;
+  gap: 2px;
+  padding: 3px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm, 8px);
+}
+
+.oz-match-cols-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: background-color 140ms var(--ease), color 140ms var(--ease);
+}
+.oz-match-cols-btn:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+.oz-match-cols-btn[data-active="true"] {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+@media (min-width: 2560px) {
+  .oz-match-list-cols {
+    display: inline-flex;
+  }
+  .oz-match-list-grid[data-cols="2"] {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 12px;
+    row-gap: 12px;
+  }
+}
+
 /* Embed-route container — shell-less wrapper mounted inside the
    side-panel iframes. The page sets up its own padding + column so
    the iframe's natural width flows through. */

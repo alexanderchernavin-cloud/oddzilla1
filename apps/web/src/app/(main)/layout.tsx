@@ -12,6 +12,7 @@ import { SidePanelProvider } from "@/lib/side-panel";
 import { CombiBoostConfigProvider } from "@/lib/combi-boost-config";
 import { SportLogosProvider } from "@/lib/sport-logos";
 import { NotificationProvider } from "@/lib/notifications";
+import { SessionUserProvider } from "@/lib/session-user";
 import { WalletProvider } from "@/lib/wallets";
 import { getSessionUser } from "@/lib/auth";
 import { serverApi } from "@/lib/server-fetch";
@@ -54,6 +55,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
 
   return (
     <MobileDrawersProvider>
+      <SessionUserProvider userId={user?.id ?? null}>
       <MatchPageProvider>
       <SidePanelProvider>
       <CombiBoostConfigProvider config={combiBoostConfig}>
@@ -102,6 +104,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
       </CombiBoostConfigProvider>
       </SidePanelProvider>
       </MatchPageProvider>
+      </SessionUserProvider>
     </MobileDrawersProvider>
   );
 }
