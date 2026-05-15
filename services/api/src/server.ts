@@ -51,6 +51,8 @@ import widgetsRoutes from "./modules/widgets/routes.js";
 import betbuilderRoutes from "./modules/betbuilder/routes.js";
 import zillatipsRoutes from "./modules/zillatips/routes.js";
 import zillafactsRoutes from "./modules/zillafacts/routes.js";
+import zillaflashRoutes from "./modules/zillaflash/routes.js";
+import { startZillaFlashRotation } from "./modules/zillaflash/engine.js";
 import devicesRoutes from "./modules/devices/routes.js";
 import liveChatRoutes from "./modules/live-chat/routes.js";
 import { startMatchWatcher } from "./modules/live-chat/match-watcher.js";
@@ -245,6 +247,7 @@ await app.register(widgetsRoutes);
 await app.register(betbuilderRoutes);
 await app.register(zillatipsRoutes);
 await app.register(zillafactsRoutes);
+await app.register(zillaflashRoutes);
 await app.register(devicesRoutes);
 await app.register(liveChatRoutes);
 await app.register(riskzillaRoutes);
@@ -279,9 +282,17 @@ app
 // timer doesn't keep the event loop alive past app.close().
 const stopMonitoringSampler = startMonitoringSampler(app);
 
+// ZillaFlash offer rotation. Runs in-process: keeps 2 prematch + 2
+// live boosted offers warm, picks replacements from the eligible pool
+// (Tier 1-3 matches × per-sport `top` markets) when an offer's TTL
+// elapses (60 s prematch / 15 s live). Stop fn clears the rotation
+// timer so api shutdown doesn't dangle.
+const stopZillaFlashRotation = startZillaFlashRotation(app);
+
 async function shutdown() {
   app.log.info("shutting down");
   stopMonitoringSampler();
+  stopZillaFlashRotation();
   if (matchWatcherHandle) {
     try {
       await matchWatcherHandle.close();

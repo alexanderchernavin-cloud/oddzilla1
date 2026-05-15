@@ -187,7 +187,19 @@
     "riskyTagline": "Empurre a cotação",
     "ultimateLabel": "Extrema",
     "ultimateTagline": "Tripla improvável",
-    "aria": "Carregar tripla {tier} com cota combinada {odds}"
+    "aria": "Carregar tripla {tier} com cota combinada {odds}",
+    "kicker": "Combos prontos",
+    "cycleNext": "Próximo: {tier}"
+  },
+  "zillaflash": {
+    "kicker": "Boost por tempo limitado",
+    "subtitle": "Cotas turbinadas, rodando ao vivo",
+    "kindPrematch": "Pré-jogo",
+    "kindLive": "Ao vivo",
+    "aria": "Apostar em {team} no {market} com cota turbinada {odds}",
+    "expired": "Oferta expirada — atualizar",
+    "boostedTagShort": "BOOST",
+    "boostedTagLong": "Boost ZillaFlash"
   },
   "sport": {
     "all": "Todas",

@@ -578,6 +578,12 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
             marketId: s.marketId,
             outcomeId: s.outcomeId,
             odds: s.odds,
+            // Forward the ZillaFlash offer id when the leg came from a
+            // boosted offer; server re-validates the id + boosted odds
+            // and shaves -2 s off the live-bet acceptance delay.
+            ...(s.zillaFlashOfferId
+              ? { zillaFlashOfferId: s.zillaFlashOfferId }
+              : null),
           })),
           // Bettor opt-in for the bet-delay window. Server gates the
           // effect to single + combo; sending for other modes is a

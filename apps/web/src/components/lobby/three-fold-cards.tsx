@@ -1,7 +1,7 @@
 "use client";
 
 import type { CSSProperties, JSX, ReactNode } from "react";
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useBetSlip } from "@/lib/bet-slip";
 import { useOddsFlash } from "@/lib/use-odds-flash";
 import { useLiveOddsForMatches, type LiveOddsTick } from "@/lib/use-live-odds";
@@ -9,12 +9,20 @@ import { useTranslations } from "@/lib/i18n";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { computeCombiBoost } from "@oddzilla/types/combi-boost";
 import { useCombiBoostConfig } from "@/lib/combi-boost-config";
-import type {
-  ThreeFoldLeg,
-  ThreeFoldSuggestion,
-  ThreeFoldSuggestions,
-  TierKey,
+import {
+  TIER_ORDER,
+  type ThreeFoldLeg,
+  type ThreeFoldSuggestion,
+  type ThreeFoldSuggestions,
+  type TierKey,
 } from "@/lib/three-fold-builder";
+
+// ComboZilla rebrand: the existing four pre-built parlays are now
+// surfaced as a horizontally-paged carousel. Desktop renders two cards
+// at a time; mobile renders one. A single cycle button advances by 1
+// slot and wraps. Its label reflects whichever tier slides INTO view
+// next, so the affordance reads e.g. "Risky →" while the user is
+// currently looking at safe + challenging.
 
 interface TierMeta {
   key: TierKey;
@@ -24,12 +32,6 @@ interface TierMeta {
   Icon: (props: { size: number; color: string }) => JSX.Element;
 }
 
-// Static portion of the tier metadata — colour + icon + (tier-key)
-// pairing. The two human-readable strings (label + tagline) are
-// resolved per-render from the i18n dictionary so they flip with the
-// active locale. Accents kept muted — we only colour the icon, the
-// tier word, and a thin badge. The card body itself stays neutral so
-// the lobby doesn't turn into a traffic-light wall.
 interface TierStatic {
   key: TierKey;
   accent: string;
@@ -52,9 +54,6 @@ export function ThreeFoldCards({
   const boostCfg = useCombiBoostConfig();
   const t = useTranslations("threeFold");
 
-  // Hydrate the static metadata with locale-aware label + tagline.
-  // Dictionary keys follow the `<tier>Label` / `<tier>Tagline` convention
-  // — see messages/<locale>.json #threeFold.
   const TIERS: TierMeta[] = useMemo(
     () =>
       TIER_STATIC.map((s) => ({
@@ -64,12 +63,24 @@ export function ThreeFoldCards({
       })),
     [t],
   );
-  const visibleTiers = TIERS.filter((t) => suggestions[t.key]);
 
+  // Tiers in their canonical order. We keep all four slots in the DOM
+  // (the carousel just translates) so SSR + CSR agree on layout and
+  // the breakpoint can swap windowing without a re-render.
+  const orderedTiers: TierMeta[] = useMemo(
+    () => TIER_ORDER.map((k) => TIERS.find((t) => t.key === k)!).filter(Boolean),
+    [TIERS],
+  );
+  const visibleTiers = orderedTiers.filter((m) => !!suggestions[m.key]);
+
+  // Live-odds tick across every leg in every tier (not just the visible
+  // window). The card preview prices stay in sync even before the user
+  // pages over to a tier — and the boost preview re-renders when ticks
+  // arrive.
   const matchIds = useMemo(() => {
     const ids: string[] = [];
-    for (const t of visibleTiers) {
-      const s = suggestions[t.key];
+    for (const m of visibleTiers) {
+      const s = suggestions[m.key];
       if (!s) continue;
       for (const leg of s.legs) ids.push(leg.matchId);
     }
@@ -78,7 +89,13 @@ export function ThreeFoldCards({
 
   const ticks = useLiveOddsForMatches(matchIds);
 
-  if (visibleTiers.length === 0) return null;
+  // Carousel page index. Capped to the number of available tiers (when
+  // a tier had no qualifying combo, the index just wraps over the rest).
+  const N = visibleTiers.length;
+  const [index, setIndex] = useState(0);
+  const safeIndex = N === 0 ? 0 : index % N;
+
+  if (N === 0) return null;
 
   const handle = (legs: ThreeFoldLeg[]) => {
     slip.clear();
@@ -93,26 +110,136 @@ export function ThreeFoldCards({
               probability: tick.probability ?? leg.probability,
             }
           : leg;
-      // Default to active=true; the slip rail picks up the real WS
-      // active flag on the next tick after subscribing.
       slip.add({ ...stripPickedSide(fresh), active: tick?.active ?? true });
     }
     slip.setOpen(true);
   };
 
+  const slotA = visibleTiers[safeIndex]!;
+  const slotB = visibleTiers[(safeIndex + 1) % N]!;
+  // Cycle button labels: on desktop the user is already seeing slotA + slotB,
+  // so the "next" card sliding in is at (index+2); on mobile they're seeing
+  // only slotA, so the "next" card is at (index+1). Render both labels and
+  // CSS-pick the right one — keeps SSR-consistent.
+  const nextDesktopTier = visibleTiers[(safeIndex + 2) % N]!;
+  const nextMobileTier = slotB;
+
+  const renderCard = (tier: TierMeta) => (
+    <Card
+      key={tier.key}
+      tier={tier}
+      suggestion={suggestions[tier.key]!}
+      ticks={ticks}
+      onActivate={handle}
+      boostCfg={boostCfg}
+    />
+  );
+
   return (
-    <div className="oz-3fold-grid">
-      {visibleTiers.map((t) => (
-        <Card
-          key={t.key}
-          tier={t}
-          suggestion={suggestions[t.key]!}
-          ticks={ticks}
-          onActivate={handle}
-          boostCfg={boostCfg}
-        />
-      ))}
-    </div>
+    <section className="oz-combozilla-row" aria-label="ComboZilla">
+      <header className="oz-combozilla-header">
+        <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.1 }}>
+          <span
+            className="mono"
+            style={{
+              fontSize: 10.5,
+              letterSpacing: "0.16em",
+              textTransform: "uppercase",
+              color: "var(--fg-dim)",
+            }}
+          >
+            {t("kicker")}
+          </span>
+          <span
+            style={{
+              fontFamily: "var(--font-display, inherit)",
+              fontSize: 22,
+              fontWeight: 500,
+              letterSpacing: "-0.01em",
+              color: "var(--fg)",
+            }}
+          >
+            ComboZilla
+          </span>
+        </div>
+        <div style={{ flex: 1 }} />
+        {N > 1 ? (
+          <>
+            <CycleButton
+              className="oz-cycle-desktop"
+              label={t("cycleNext", { tier: nextDesktopTier.label })}
+              accent={nextDesktopTier.accent}
+              Icon={nextDesktopTier.Icon}
+              onClick={() => setIndex((i) => (i + 1) % N)}
+            />
+            <CycleButton
+              className="oz-cycle-mobile"
+              label={t("cycleNext", { tier: nextMobileTier.label })}
+              accent={nextMobileTier.accent}
+              Icon={nextMobileTier.Icon}
+              onClick={() => setIndex((i) => (i + 1) % N)}
+            />
+          </>
+        ) : null}
+      </header>
+      <div className="oz-combozilla-track">
+        <div className="oz-combozilla-slot" data-slot="a">
+          {renderCard(slotA)}
+        </div>
+        <div className="oz-combozilla-slot" data-slot="b">
+          {renderCard(slotB)}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function CycleButton({
+  className,
+  label,
+  accent,
+  Icon,
+  onClick,
+}: {
+  className: string;
+  label: string;
+  accent: string;
+  Icon: (props: { size: number; color: string }) => JSX.Element;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={className}
+      onClick={onClick}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 8,
+        height: 34,
+        padding: "0 14px",
+        background: "var(--surface)",
+        border: "1px solid var(--border)",
+        borderRadius: 999,
+        cursor: "pointer",
+        color: "var(--fg)",
+        fontFamily: "inherit",
+        fontSize: 12.5,
+        letterSpacing: "0.01em",
+        transition: "border-color 140ms var(--ease)",
+      }}
+      onMouseEnter={(e) => {
+        (e.currentTarget as HTMLButtonElement).style.borderColor =
+          "var(--fg-muted)";
+      }}
+      onMouseLeave={(e) => {
+        (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--border)";
+      }}
+    >
+      <Icon size={14} color={accent} />
+      <span>{label}</span>
+      <span aria-hidden style={{ color: "var(--fg-muted)" }}>→</span>
+    </button>
   );
 }
 
@@ -136,9 +263,6 @@ function Card({
   boostCfg: ReturnType<typeof useCombiBoostConfig>;
 }) {
   const t = useTranslations("threeFold");
-  // Overlay live ticks onto the snapshot legs. Inactive ticks (market
-  // suspended) are dropped — the snapshot odds remain visible until the
-  // outcome reactivates, mirroring how the bet-slip rail behaves.
   const liveLegs: ThreeFoldLeg[] = suggestion.legs.map((leg) => {
     const tick = ticks[`${leg.marketId}:${leg.outcomeId}`];
     if (!tick || !tick.active) return leg;
@@ -158,9 +282,6 @@ function Card({
     ? (Math.floor(baseCombinedNum * 100) / 100).toFixed(2)
     : suggestion.combinedOdds;
 
-  // Combi Boost preview. Mirrors what the slip + API will compute when
-  // the user clicks the card — the click handler doesn't need to do
-  // anything extra, the slip's `add` flow already triggers the boost.
   const boost = computeCombiBoost(liveLegs.map((l) => l.odds), boostCfg);
   const boostActive = boost.multiplier > 1.0;
   const boostedNum = Number.isFinite(baseCombinedNum)
@@ -182,6 +303,7 @@ function Card({
     fontFamily: "inherit",
     transition: "border-color 140ms var(--ease)",
     minWidth: 0,
+    width: "100%",
   };
 
   return (
@@ -221,7 +343,7 @@ function Card({
             {tier.label}
           </span>
           <span style={{ fontSize: 11.5, color: "var(--fg-muted)" }}>
-            {tier.tagline}
+            {suggestion.sportName} · {tier.tagline}
           </span>
         </div>
         <div style={{ flex: 1 }} />
@@ -318,10 +440,6 @@ function LegRow({ leg }: { leg: ThreeFoldLeg }) {
   );
 }
 
-// Visual twin of OddButton's price tile, rendered as a span so it stays
-// valid HTML inside the card's outer <button>. useOddsFlash flashes the
-// background green/red on every price tick — same behaviour as live
-// odds elsewhere on the site.
 function OddsChip({
   price,
   size,

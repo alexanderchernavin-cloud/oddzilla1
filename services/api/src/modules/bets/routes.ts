@@ -9,6 +9,8 @@ import { z } from "zod";
 import { SUPPORTED_CURRENCIES } from "@oddzilla/types";
 import { BetsService } from "./service.js";
 import { NotFoundError } from "../../lib/errors.js";
+import { validateOfferForBet } from "../zillaflash/engine.js";
+import { BadRequestError } from "../../lib/errors.js";
 
 const placeBody = z.object({
   stakeMicro: z.string().regex(/^\d+$/, "stake must be a positive integer string"),
@@ -24,6 +26,11 @@ const placeBody = z.object({
         marketId: z.string().regex(/^\d+$/),
         outcomeId: z.string().min(1).max(64),
         odds: z.string().regex(/^\d+(\.\d+)?$/),
+        // Optional ZillaFlash offer id. When present the server replaces
+        // the client-supplied `odds` with the engine's authoritative
+        // boosted odds for this leg and applies a -2 s shave to the
+        // effective live-bet acceptance delay if the offer was live.
+        zillaFlashOfferId: z.string().uuid().optional(),
       }),
     )
     .min(1)
@@ -57,10 +64,46 @@ export default async function betsRoutes(app: FastifyInstance) {
   app.post("/bets", { config: placeRateLimit }, async (request) => {
     const u = request.requireAuth();
     const body = placeBody.parse(request.body);
+
+    // ── ZillaFlash boost re-validation ────────────────────────────────
+    // Resolve any boost offer ids BEFORE handing the placement off to
+    // the BetsService. We re-validate against the in-memory engine
+    // (id present, not expired, leg identity matches, boosted odds
+    // within ±0.01 of what the client quoted). On success we OVERWRITE
+    // the client-supplied `odds` with the engine's authoritative
+    // boosted value so downstream code (RiskZilla, payout math,
+    // ticket_selections.odds_at_placement) all see the same number.
+    //
+    // -2 s live delay shave: we surface a `hasLiveZillaFlash` flag the
+    // service uses to subtract from the computed effective delay.
+    let zillaFlashLiveBoost = false;
+    for (const s of body.selections) {
+      if (!s.zillaFlashOfferId) continue;
+      const v = await validateOfferForBet(app, {
+        offerId: s.zillaFlashOfferId,
+        marketId: s.marketId,
+        outcomeId: s.outcomeId,
+        quotedOdds: s.odds,
+      });
+      if (!v.ok) {
+        // 400 carries enough detail for the slip to refresh the offer
+        // and re-quote. We don't expose the engine's `authoritative
+        // Odds` here — the slip will poll /catalog/zillaflash next.
+        throw new BadRequestError(
+          v.reason ?? "zillaflash_unknown_offer",
+          v.reason ?? "zillaflash_unknown_offer",
+        );
+      }
+      // Lock in the engine's authoritative odds for downstream math.
+      s.odds = v.authoritativeOdds!;
+      if (v.kind === "live") zillaFlashLiveBoost = true;
+    }
+
     const ticket = await svc.place(body, {
       userId: u.id,
       ip: request.ip ?? null,
       userAgent: request.headers["user-agent"] ?? null,
+      zillaFlashLiveBoost,
     });
     return { ticket };
   });
