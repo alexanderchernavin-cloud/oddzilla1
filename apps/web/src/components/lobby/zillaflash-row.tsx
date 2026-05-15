@@ -245,20 +245,15 @@ function ZillaFlashCard({
           </Link>
         </div>
 
-        {/* Reading order: teams + market name read as a single block
-            of muted context (this is the FIXTURE), then the selection
-            sits below as the bold prominent pick. Previously the
-            selection (e.g. "Team Vitality") sat directly between the
-            teams ("Natus Vincere · Team Vitality") and the market —
-            two adjacent lines of bold dark text were visually
-            indistinguishable. The new order separates them and lets
-            the selection be the only bold-prominent line in the card
-            body. */}
+        {/* Body order: teams (bold, the fixture identity) → market
+            name (muted, what kind of bet) → selection + price on one
+            row (left: bold selection, right: crossed + boosted
+            tucked together so the discount reads as one chunk). */}
         <span
           style={{
-            fontSize: 12,
-            fontWeight: 500,
-            color: "var(--fg-muted)",
+            fontSize: 13,
+            fontWeight: 600,
+            color: "var(--fg)",
             lineHeight: 1.3,
             wordBreak: "break-word",
           }}
@@ -277,44 +272,43 @@ function ZillaFlashCard({
           {offer.marketLabel}
         </span>
 
-        {/* Selection — the bet. Bumped to 15 px / 700 weight so it
-            anchors the card visually beneath the lighter context
-            above. Must always render in full per design ask. */}
-        <span
-          style={{
-            fontSize: 15,
-            fontWeight: 700,
-            color: "var(--fg)",
-            lineHeight: 1.25,
-            wordBreak: "break-word",
-            marginTop: 2,
-          }}
-        >
-          {offer.outcomeLabel}
-        </span>
-
-        {/* Price row. The boosted odds dominate visually; the
-            crossed-out original sits at a quieter weight on the
-            left so the discount reads at a glance. */}
+        {/* Selection + price on a single row. Selection takes flex:1
+            on the left; crossed-out original and boosted chip share
+            a tight gap on the right so they read as one discount
+            block instead of two scattered numbers. */}
         <div
           style={{
             display: "flex",
-            alignItems: "baseline",
+            alignItems: "center",
             gap: 10,
             marginTop: 2,
+            minWidth: 0,
           }}
         >
+          <span
+            style={{
+              flex: 1,
+              minWidth: 0,
+              fontSize: 14.5,
+              fontWeight: 700,
+              color: "var(--fg)",
+              lineHeight: 1.25,
+              wordBreak: "break-word",
+            }}
+          >
+            {offer.outcomeLabel}
+          </span>
           <span
             className="mono tnum"
             style={{
               fontSize: 12,
               color: "var(--fg-dim)",
               textDecoration: "line-through",
+              flexShrink: 0,
             }}
           >
             {offer.originalOdds}
           </span>
-          <span style={{ flex: 1 }} />
           <span
             ref={oddsRef}
             className="mono tnum"
@@ -326,6 +320,7 @@ function ZillaFlashCard({
               border: "1px solid var(--border)",
               borderRadius: 8,
               padding: "4px 12px",
+              flexShrink: 0,
             }}
           >
             {offer.boostedOdds}
