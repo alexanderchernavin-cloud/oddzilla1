@@ -914,3 +914,131 @@ body {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Match-row side-panel affordance — ultra-wide viewports only.
+   The centered `.oz-shell` caps at 1580px, so a 4K (3840px) or wide
+   ultrawide monitor leaves a sizeable empty band on each side. The
+   two tall buttons flanking every match card open that match in an
+   iframe that fills that band, so a bettor can keep two extra games
+   open while the central column stays on the catalog.
+   The threshold is min-width: 2400px — each band is ≥410px there,
+   the narrowest width at which the embed match view stays readable.
+   Anything narrower hides the buttons and the panels entirely.
+   ───────────────────────────────────────────────────────────────────────── */
+.oz-match-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+}
+
+.oz-match-side-btn {
+  display: none;
+  width: 32px;
+  align-self: stretch;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: background-color 140ms var(--ease), color 140ms var(--ease),
+    border-color 140ms var(--ease);
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  flex-shrink: 0;
+}
+.oz-match-side-btn:hover {
+  background: var(--surface);
+  color: var(--fg);
+  border-color: var(--fg-dim);
+}
+.oz-match-side-btn[data-active="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+
+.oz-side-panel {
+  display: none;
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  width: max(0px, calc((100vw - 1580px) / 2));
+  background: var(--bg);
+  z-index: 40;
+  overflow: hidden;
+  flex-direction: column;
+}
+.oz-side-panel[data-side="left"] {
+  left: 0;
+  border-right: 1px solid var(--hairline);
+}
+.oz-side-panel[data-side="right"] {
+  right: 0;
+  border-left: 1px solid var(--hairline);
+}
+
+.oz-side-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface);
+  flex-shrink: 0;
+}
+
+.oz-side-panel-close {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: background-color 140ms var(--ease), color 140ms var(--ease);
+}
+.oz-side-panel-close:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+.oz-side-panel-frame {
+  flex: 1;
+  width: 100%;
+  border: 0;
+  background: var(--bg);
+}
+
+@media (min-width: 2400px) {
+  .oz-match-side-btn {
+    display: inline-flex;
+  }
+  .oz-side-panel[data-open="true"] {
+    display: flex;
+  }
+}
+
+/* Embed-route container — shell-less wrapper mounted inside the
+   side-panel iframes. The page sets up its own padding + column so
+   the iframe's natural width flows through. */
+.oz-embed-root {
+  display: flex;
+  justify-content: center;
+  padding: 12px;
+  background: var(--bg);
+  min-height: 100vh;
+  color: var(--fg);
+}
+.oz-embed-inner {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}

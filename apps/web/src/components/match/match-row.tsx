@@ -6,8 +6,10 @@ import type { CSSProperties, MouseEvent, ReactNode } from "react";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { Pill, LiveDot, TeamMark } from "@/components/ui/primitives";
 import { TierMark, isFeaturedTier } from "@/components/ui/tier-mark";
+import { I } from "@/components/ui/icons";
 import { useBetSlip } from "@/lib/bet-slip";
 import { mapCellValue, type LiveScore } from "@/lib/live-score";
+import { useSidePanels, type PanelSide } from "@/lib/side-panel";
 import { useOddsFlash, useValueFlash } from "@/lib/use-odds-flash";
 import { useTranslations } from "@/lib/i18n";
 import { LocalDateTime } from "./local-datetime";
@@ -50,6 +52,7 @@ export function MatchRow({
   viewerCount = 0,
 }: Props) {
   const slip = useBetSlip();
+  const sidePanels = useSidePanels();
   const isLive = match.status === "live";
   const tMatch = useTranslations("match");
   const tCommon = useTranslations("common");
@@ -172,11 +175,18 @@ export function MatchRow({
   };
 
   return (
-    <Link
-      href={`/match/${match.id}`}
-      style={{ textDecoration: "none", color: "inherit" }}
-    >
-      <article className="card" style={cardStyle}>
+    <div className="oz-match-row">
+      <SidePanelButton
+        side="left"
+        matchId={match.id}
+        active={sidePanels.left === match.id}
+        onToggle={() => sidePanels.toggle("left", match.id)}
+      />
+      <Link
+        href={`/match/${match.id}`}
+        style={{ textDecoration: "none", color: "inherit", flex: 1, minWidth: 0 }}
+      >
+        <article className="card" style={cardStyle}>
         <div
           style={{
             display: "flex",
@@ -264,8 +274,60 @@ export function MatchRow({
           awayTrailing={awayOdds}
           drawTrailing={drawOdds}
         />
-      </article>
-    </Link>
+        </article>
+      </Link>
+      <SidePanelButton
+        side="right"
+        matchId={match.id}
+        active={sidePanels.right === match.id}
+        onToggle={() => sidePanels.toggle("right", match.id)}
+      />
+    </div>
+  );
+}
+
+// Tall vertical button on the left or right edge of a match card. Only
+// visible on ultra-wide viewports where the side-panel iframes can
+// actually fit (CSS-gated via `.oz-match-row` + a min-width media in
+// globals.css). Active state ties to which match is currently mounted
+// in that side's panel, so a second click closes it.
+function SidePanelButton({
+  side,
+  matchId: _matchId,
+  active,
+  onToggle,
+}: {
+  side: PanelSide;
+  matchId: string;
+  active: boolean;
+  onToggle: () => void;
+}) {
+  const Icon = side === "left" ? I.PanelLeft : I.PanelRight;
+  const label =
+    side === "left"
+      ? active
+        ? "Close left panel"
+        : "Open match in left panel"
+      : active
+        ? "Close right panel"
+        : "Open match in right panel";
+  return (
+    <button
+      type="button"
+      className="oz-match-side-btn"
+      data-side={side}
+      data-active={active ? "true" : "false"}
+      aria-pressed={active}
+      aria-label={label}
+      title={label}
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onToggle();
+      }}
+    >
+      <Icon size={16} />
+    </button>
   );
 }
 
