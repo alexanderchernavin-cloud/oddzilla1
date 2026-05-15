@@ -16,11 +16,11 @@
 // the historical join TWICE per (market, outcome, team):
 //   • narrow — exact specifiers_hash match (same Map N, same line),
 //     up to ZILLAFACT_LOOKBACK_LEGS legs.
-//   • broad  — per-map markets only; drops `map` and `threshold`
-//     from the specifier comparison so the streak counts the same
-//     team / player on ANY map of the same template at ANY offered
-//     line. One leg per past (match, map) where the template was
-//     offered.
+//   • broad  — per-map markets only; drops `map` from the specifier
+//     comparison so the streak counts the same team / player on ANY
+//     map of the same template AT THE SAME line (`threshold` /
+//     `handicap`). One leg per past (match, map) where the template
+//     was offered at this exact line.
 // Both scopes pass through the same streak walker, score floor, and
 // line-family dedup independently — a market that qualifies in both
 // surfaces two cards with different wording ("Map 1 plays" vs "maps
@@ -74,12 +74,13 @@ import {
 //     pre-existing behaviour; threshold and map number are constant
 //     across legs.
 //   • broad  — emitted only for per-map markets. The historical join
-//     drops `map` and `threshold` from the specifier comparison so a
-//     Map 1 Under 9.5 player-prop also counts the same player's Map 2
-//     and Map 3 settled "Under" results (against whatever line Oddin
-//     offered that map). Each leg's threshold can vary; the composed
-//     fact text reads as "Under their offered line" rather than naming
-//     the live 9.5 figure.
+//     drops `map` from the specifier comparison so a Map 1 Under 9.5
+//     player-prop also counts the same player's Map 2 / Map 3 settled
+//     "Under" results AT THE SAME 9.5 line. Threshold is kept in the
+//     comparison: a streak "stayed Over 22.5 in their last N maps
+//     played" must reflect maps where 22.5 was actually the offered
+//     line, never "Over whatever Oddin offered" — otherwise it lies
+//     to the bettor staring at the live Over 22.5 button.
 //
 // Both scopes pass through the same streak walker, score floor, and
 // line-family dedup independently; a market that qualifies for both
@@ -162,10 +163,12 @@ function possessive(name: string): string {
 //     are per-match ("G2 Esports have won their last 5 matches").
 //
 //   • Lookup scope — narrow vs broad. Narrow streaks counted past
-//     plays of the SAME Map N at the SAME threshold ("Map 1 plays").
-//     Broad streaks counted past plays of ANY Map on the SAME market
-//     template, across different thresholds ("maps played"). Broad is
-//     emitted only when specifiers carry a `map` key.
+//     plays of the SAME Map N at the SAME line ("Map 1 plays"). Broad
+//     streaks counted past plays of ANY Map at the SAME line on the
+//     SAME market template ("maps played"). Broad is emitted only
+//     when specifiers carry a `map` key. Both scopes anchor on the
+//     current threshold / handicap — a "stayed Over 22.5" streak only
+//     counts maps where 22.5 was actually offered.
 //
 //   • Outcome shape — positional, threshold/Over-Under, parity, Yes/No
 //     (and within Yes/No, "question-style" markets like "Will there be
@@ -185,9 +188,9 @@ function composeStreakFactText(args: {
   outcomeLabel: string;
   providerMarketId: number;
   specifiers: Record<string, string>;
-  // Branches the tail phrase + threshold mention. Broad facts drop
-  // the numeric threshold (legs had different lines) and the Map N
-  // tag (legs spanned all maps).
+  // Branches the tail phrase + Map N tag (legs spanned all maps in
+  // broad, the same map in narrow). The numeric threshold is constant
+  // across legs in both scopes, so both render it in the sentence.
   lookupScope: LookupScope;
 }): string {
   const {
@@ -242,19 +245,20 @@ function composeStreakFactText(args: {
   }
 
   // Over / Under (threshold specifier). Per-map gets a Map N
-  // framing; player-prop gets a player subject. Broad drops the
-  // numeric threshold from the sentence because legs had different
-  // lines — "their offered ... line" stands in for it.
+  // framing; player-prop gets a player subject. Broad keeps the
+  // threshold (post-fix: broad now requires the same line across all
+  // historical legs), so the sentence names the live figure in both
+  // scopes — anything else would mislead the bettor staring at the
+  // Over X.X button.
   if (specifiers.threshold && (olc === "over" || olc === "under")) {
     const direction = olc === "over" ? "Over" : "Under";
     const topic = cleanTopic(marketName, specifiers.threshold, subject, mapN);
     if (broad) {
-      // "YEKINDAR stayed Under their Total headshot kills line in
-      // their last 12 maps played" / "FURIA stayed Under the Total
-      // kills line in their last 8 maps played".
+      // "Waze stayed Over 22.5 Total rounds in Waze's last 7 maps
+      // played" / "YEKINDAR stayed Under 8.5 headshot kills in
+      // YEKINDAR's last 6 maps played".
       const verb = direction === "Under" ? "stayed Under" : "stayed Over";
-      const ref = playerName ? "their" : "the";
-      return `${subject} ${verb} ${ref} ${topic} line in ${subjectPoss} last ${streak} maps played`
+      return `${subject} ${verb} ${specifiers.threshold} ${topic} in ${subjectPoss} last ${streak} maps played`
         .replace(/\s+/g, " ")
         .trim();
     }
@@ -419,22 +423,28 @@ export default async function zillafactsRoutes(app: FastifyInstance) {
     const { matchId } = z
       .object({ matchId: z.coerce.bigint() })
       .parse(request.params);
-    // v11: catalog expanded to 27 conditional + 44 round-prefix
-    // patterns (was 16 + 19). New families: second-half pistol
-    // (rounds 13 onward), opponent-run survival (force-throw 3 / 4 /
-    // 5), broader prefix slices (4-of-5, 3-of-4, 4-of-6, 5-of-7) and
-    // mirror lost-variants, exact and granular halftime margins
-    // (±2 / ±6 / ±8), anywhere-in-a-row (4 / 6 / 7), match-outcome
-    // variants for the first 3 rounds + pistol of Map 1, plus
-    // Dota / LoL tower / turret / big-kill-lead patterns powered by
-    // the now-extended Period interface. v10: dual-scope historical
-    // lookup — narrow (same Map N at the same threshold) and broad
-    // (same template across ALL maps + thresholds). Per-map fact
-    // wording fixed from "in their last N matches" → "in their last
-    // N Map K plays" so the unit matches the sample. v9: player-prop
-    // detection scans all specifier values for an od:player:... URN
-    // rather than relying on a canonical {player} specifier key.
-    const cacheKey = `zillafacts:v11:${matchId.toString()}`;
+    // v12: broad-scope historical lookup now KEEPS `threshold` in
+    // the specifier comparison (previously dropped it, which let
+    // "stayed Over 22.5 in their last N maps played" cards count
+    // past maps where Oddin offered Over 18.5 / 21.5 / etc.). The
+    // sentence now names the threshold in both narrow and broad
+    // branches. v11: catalog expanded to 27 conditional + 44
+    // round-prefix patterns (was 16 + 19). New families: second-
+    // half pistol (rounds 13 onward), opponent-run survival
+    // (force-throw 3 / 4 / 5), broader prefix slices (4-of-5,
+    // 3-of-4, 4-of-6, 5-of-7) and mirror lost-variants, exact and
+    // granular halftime margins (±2 / ±6 / ±8), anywhere-in-a-row
+    // (4 / 6 / 7), match-outcome variants for the first 3 rounds +
+    // pistol of Map 1, plus Dota / LoL tower / turret / big-kill-
+    // lead patterns powered by the now-extended Period interface.
+    // v10: dual-scope historical lookup — narrow (same Map N at the
+    // same line) and broad (same template across ALL maps at the
+    // same line, post-v12). Per-map fact wording fixed from "in
+    // their last N matches" → "in their last N Map K plays" so the
+    // unit matches the sample. v9: player-prop detection scans all
+    // specifier values for an od:player:... URN rather than relying
+    // on a canonical {player} specifier key.
+    const cacheKey = `zillafacts:v12:${matchId.toString()}`;
     return cached<ZillaFactsResponse>(
       app.redis,
       cacheKey,
@@ -611,13 +621,15 @@ async function loadStreakFacts(
   //                            cross-side variant for {side} markets).
   //                            One leg per past match.
   //                          • broad  — per-map markets only. Drops
-  //                            `map` and `threshold` from the specifier
-  //                            comparison so all the team's map plays
-  //                            on the same market template count, not
-  //                            just the matching Map N at the live
-  //                            threshold. Multiple legs per past
-  //                            match — one per Map N played that had
-  //                            the same template.
+  //                            `map` from the specifier comparison so
+  //                            all the team's map plays on the same
+  //                            market template AT THE SAME line count,
+  //                            not just the matching Map N. `threshold`
+  //                            STAYS in the comparison so a "stayed
+  //                            Over 22.5" card only counts maps where
+  //                            22.5 was the offered line. Multiple
+  //                            legs per past match — one per Map N
+  //                            played that had the same line.
   //                        equiv_outcome_id swaps 1↔2 when the team's
   //                        role differs across matches so the lookup
   //                        stays pointed at "this team's perspective".
@@ -809,14 +821,19 @@ async function loadStreakFacts(
       UNION ALL
 
       -- BROAD: per-map markets only. The historical join drops the
-      -- map and threshold keys from the specifier comparison so a
-      -- Map 1 Under 9.5 player-prop also pulls in the same player's
-      -- Map 2 / Map 3 settled results (against whatever line Oddin
-      -- offered that map). Multiple maps per match are kept; ordering
-      -- inside the LATERAL is newest-match-first, then highest-map-
-      -- first within a match (Map 3 played after Map 2 played after
-      -- Map 1, so the streak walker sees most-recent-chronological
-      -- first).
+      -- map key from the specifier comparison so a Map 1 Under 9.5
+      -- player-prop also pulls in the same player's Map 2 / Map 3
+      -- settled "Under 9.5" results. The threshold key STAYS in the
+      -- comparison: a streak rendered as "stayed Over 22.5 in their
+      -- last N maps played" has to reflect maps where 22.5 was
+      -- actually the offered line. The earlier behaviour dropped
+      -- threshold too, so a Map 1 Over 22.5 card was counting past
+      -- Maps where Oddin offered Over 18.5 / 21.5 / 26.5, which is
+      -- misleading next to a live Over 22.5 button. Multiple maps
+      -- per match are kept; ordering inside the LATERAL is newest-
+      -- match-first, then highest-map-first within a match (Map 3
+      -- played after Map 2 played after Map 1, so the streak walker
+      -- sees most-recent-chronological first).
       --
       -- {side}-specifier markets keep the role-flip: the historical
       -- {side} specifier mirrors the focused team's role per past
@@ -878,12 +895,12 @@ async function loadStreakFacts(
          AND hmk.provider_market_id = otp.provider_market_id
          AND (
            (NOT (otp.specifiers_json ? 'side')
-            AND (hmk.specifiers_json - 'map' - 'threshold')
-              = (otp.specifiers_json - 'map' - 'threshold'))
+            AND (hmk.specifiers_json - 'map')
+              = (otp.specifiers_json - 'map'))
            OR
            (otp.specifiers_json ? 'side'
-            AND (hmk.specifiers_json - 'map' - 'threshold' - 'side')
-              = (otp.specifiers_json - 'map' - 'threshold' - 'side')
+            AND (hmk.specifiers_json - 'map' - 'side')
+              = (otp.specifiers_json - 'map' - 'side')
             AND hmk.specifiers_json->>'side' = (
               CASE
                 WHEN hm.home_competitor_id = otp.team_id THEN 'home'
