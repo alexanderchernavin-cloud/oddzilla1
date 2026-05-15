@@ -4,6 +4,7 @@ import {
   MatchListTabs,
   type ListMatchEnriched,
 } from "@/components/match/match-list-tabs";
+import { ZillaFlashRow } from "@/components/lobby/zillaflash-row";
 import { shortName } from "@/lib/sport-order";
 import { getTranslations } from "@/lib/i18n/server";
 
@@ -59,6 +60,9 @@ export default async function UpcomingPage() {
           {matches.length}
         </div>
       </header>
+
+      {/* Prematch-only ZillaFlash boosts. Same engine, kind-filtered. */}
+      <ZillaFlashRow kind="prematch" />
 
       {matches.length === 0 ? (
         <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
