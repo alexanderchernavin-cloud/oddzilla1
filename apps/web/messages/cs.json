@@ -112,6 +112,7 @@
     "placing": "Sázím…",
     "clearSlip": "Smazat tiket",
     "removeLeg": "Odstranit sázku",
+    "openMatch": "Otevřít zápas",
     "legs": "{count, plural, one {# sázka} few {# sázky} other {# sázek}}",
     "minStake": "Minimální vklad {amount} {currency}",
     "maxStake": "Maximální vklad {amount} {currency}",

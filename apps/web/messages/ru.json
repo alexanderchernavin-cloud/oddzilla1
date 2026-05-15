@@ -112,6 +112,7 @@
     "placing": "Принимаем…",
     "clearSlip": "Очистить купон",
     "removeLeg": "Убрать исход",
+    "openMatch": "Открыть матч",
     "legs": "{count, plural, one {# исход} few {# исхода} many {# исходов} other {# исхода}}",
     "minStake": "Минимальная ставка {amount} {currency}",
     "maxStake": "Максимальная ставка {amount} {currency}",
