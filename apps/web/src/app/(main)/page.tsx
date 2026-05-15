@@ -12,8 +12,8 @@ import { ZillaFlashRow } from "@/components/lobby/zillaflash-row";
 import { TodayLabel } from "@/components/lobby/today-label";
 import { buildThreeFoldSuggestions } from "@/lib/three-fold-builder";
 import {
+  filterSportsForLobbyChips,
   orderMatchesBySport,
-  orderSportsForChips,
   shortName,
 } from "@/lib/sport-order";
 import { getTranslations } from "@/lib/i18n/server";
@@ -108,7 +108,7 @@ export default async function HomePage() {
       <ZillaFlashRow />
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-        {orderSportsForChips(sports).slice(0, 10).map((s) => (
+        {filterSportsForLobbyChips(sports).map((s) => (
           <Link
             key={s.slug}
             href={`/sport/${s.slug}`}
