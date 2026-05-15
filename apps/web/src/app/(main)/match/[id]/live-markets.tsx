@@ -689,7 +689,6 @@ function SingleMarketCard({
                 offer={flashByOutcome.get(`${m.id}:${o.outcomeId}`)}
                 nowMs={flashNowMs}
                 kickerShort={flashKickerShort}
-                size="lg"
               />
               {outcomeTips.length > 0 && (
                 <div
@@ -1022,7 +1021,6 @@ function LineRow({
               offer={flashOffer}
               nowMs={flashNowMs}
               kickerShort={flashKickerShort}
-              size="md"
             />
             {outcomeTips.length > 0 && (
               <div
@@ -1093,12 +1091,12 @@ function ZillaFlashChip({
   offer,
   nowMs,
   kickerShort,
-  size,
 }: {
   offer: ZillaFlashOffer | undefined;
   nowMs: number;
   kickerShort: string;
-  size: "md" | "lg";
+  // `size` (md / lg) is no longer needed — the chip floats above
+  // the button frame, identical position for both sizes.
 }) {
   if (!offer) return null;
   const remainingMs = Math.max(
@@ -1106,19 +1104,25 @@ function ZillaFlashChip({
     new Date(offer.expiresAt).getTime() - nowMs,
   );
   const urgent = remainingMs <= 5_000;
-  const top = size === "lg" ? 6 : 4;
+  // Float the chip ABOVE the OddButton — previously it sat inset at
+  // the top-left and visibly covered the price on size="md" cells
+  // (which centre the price row with no label, putting it right where
+  // the chip was). top=-9 plus a 16-px chip height lands the chip
+  // half above the button frame and half over the empty top edge of
+  // the button; the surrounding outcome-grid row gap (≥ 6 px) absorbs
+  // the overhang cleanly.
   return (
     <div
       style={{
         position: "absolute",
-        top,
-        left: top,
+        top: -9,
+        left: 6,
         pointerEvents: "none",
         display: "inline-flex",
         alignItems: "center",
         gap: 4,
-        padding: "2px 6px",
-        borderRadius: 6,
+        padding: "1px 6px",
+        borderRadius: 5,
         background: urgent
           ? "rgba(185, 28, 28, 0.92)"
           : "var(--positive, #16a34a)",
@@ -1128,7 +1132,7 @@ function ZillaFlashChip({
         letterSpacing: "0.08em",
         textTransform: "uppercase",
         lineHeight: 1.1,
-        boxShadow: "0 1px 2px rgba(0,0,0,0.2)",
+        boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
       }}
     >
       <span>{kickerShort}</span>
