@@ -12,13 +12,25 @@
 //
 // The SQL shape mirrors ZillaTips' CTE — same outcome-team pairing,
 // same role-swap logic for cross-match outcome equivalence, same
-// {side}-specifier branch, same unsafe-market exclusion — but pulls
-// up to ZILLAFACT_LOOKBACK_LEGS per team and returns one JSON row
-// per (market, outcome, team). The streak walker in TS counts the
-// consecutive-from-newest prefix of won/half_won results and filters
-// to streak ≥ ZILLAFACT_MIN_STREAK. The composite score
-// `streak × ln(currentOdds)` drives both sort and tier (base / glow /
-// fire). Current odds come from the live match's market_outcomes row.
+// {side}-specifier branch, same unsafe-market exclusion — but runs
+// the historical join TWICE per (market, outcome, team):
+//   • narrow — exact specifiers_hash match (same Map N, same line),
+//     up to ZILLAFACT_LOOKBACK_LEGS legs.
+//   • broad  — per-map markets only; drops `map` and `threshold`
+//     from the specifier comparison so the streak counts the same
+//     team / player on ANY map of the same template at ANY offered
+//     line. One leg per past (match, map) where the template was
+//     offered.
+// Both scopes pass through the same streak walker, score floor, and
+// line-family dedup independently — a market that qualifies in both
+// surfaces two cards with different wording ("Map 1 plays" vs "maps
+// played").
+//
+// The streak walker in TS counts the consecutive-from-newest prefix
+// of won/half_won results and filters to streak ≥ ZILLAFACT_MIN_STREAK.
+// The composite score `streak × ln(currentOdds)` drives both sort and
+// tier (base / glow / fire). Current odds come from the live match's
+// market_outcomes row.
 //
 // Caching: 5-minute Redis TTL, key `zillafacts:v1:{matchId}`. Same
 // rationale as ZillaTips — the underlying data only shifts on new
@@ -56,7 +68,26 @@ import {
 // JSON array of leg records) and counts the consecutive prefix of
 // won/half_won. Rows whose streak doesn't clear ZILLAFACT_MIN_STREAK
 // are dropped before any further work.
+// `lookupScope` discriminates the historical join shape:
+//   • narrow — exact specifiers_hash match (one Map N per past match
+//     for per-map markets, one row per match for non-map markets). The
+//     pre-existing behaviour; threshold and map number are constant
+//     across legs.
+//   • broad  — emitted only for per-map markets. The historical join
+//     drops `map` and `threshold` from the specifier comparison so a
+//     Map 1 Under 9.5 player-prop also counts the same player's Map 2
+//     and Map 3 settled "Under" results (against whatever line Oddin
+//     offered that map). Each leg's threshold can vary; the composed
+//     fact text reads as "Under their offered line" rather than naming
+//     the live 9.5 figure.
+//
+// Both scopes pass through the same streak walker, score floor, and
+// line-family dedup independently; a market that qualifies for both
+// surfaces both cards.
+type LookupScope = "narrow" | "broad";
+
 interface CandidateRow extends Record<string, unknown> {
+  lookupScope: LookupScope;
   marketId: string;
   outcomeId: string;
   providerMarketId: number;
@@ -118,7 +149,7 @@ function possessive(name: string): string {
   return `${trimmed}'s`;
 }
 
-// Plain-English sentence for a streak fact. Three axes determine the
+// Plain-English sentence for a streak fact. Four axes determine the
 // shape:
 //
 //   • Subject — team or player. Player-prop markets (a `{player}`
@@ -129,6 +160,12 @@ function possessive(name: string): string {
 //   • Scope — match-level or map-level. Markets carrying `specifiers.map`
 //     are per-map ("G2 Esports' Map 2 went Over 9.5 rounds"), the rest
 //     are per-match ("G2 Esports have won their last 5 matches").
+//
+//   • Lookup scope — narrow vs broad. Narrow streaks counted past
+//     plays of the SAME Map N at the SAME threshold ("Map 1 plays").
+//     Broad streaks counted past plays of ANY Map on the SAME market
+//     template, across different thresholds ("maps played"). Broad is
+//     emitted only when specifiers carry a `map` key.
 //
 //   • Outcome shape — positional, threshold/Over-Under, parity, Yes/No
 //     (and within Yes/No, "question-style" markets like "Will there be
@@ -148,24 +185,46 @@ function composeStreakFactText(args: {
   outcomeLabel: string;
   providerMarketId: number;
   specifiers: Record<string, string>;
+  // Branches the tail phrase + threshold mention. Broad facts drop
+  // the numeric threshold (legs had different lines) and the Map N
+  // tag (legs spanned all maps).
+  lookupScope: LookupScope;
 }): string {
-  const { teamName, playerName, streak, marketName, outcomeLabel, providerMarketId, specifiers } = args;
+  const {
+    teamName,
+    playerName,
+    streak,
+    marketName,
+    outcomeLabel,
+    providerMarketId,
+    specifiers,
+    lookupScope,
+  } = args;
   const olc = outcomeLabel.trim().toLowerCase();
 
   // Subject — player wins over team for player-prop markets.
   const subject = playerName ?? teamName;
   const subjectPoss = possessive(subject);
   const mapN = specifiers.map ?? null;
+  const broad = lookupScope === "broad" && mapN !== null;
 
   // Match Winner (PMI 1). Team-specific by construction; the player
-  // axis doesn't apply.
+  // axis doesn't apply. No `map` specifier → broad never applies.
   if (providerMarketId === 1) {
     return `${teamName} have won their last ${streak} matches`;
   }
-  // Map Winner (PMI 4).
+  // Map Winner (PMI 4). Per-map by construction.
   if (providerMarketId === 4) {
+    if (broad) {
+      // "FURIA have won the map in their last 12 maps played" —
+      // streak counted across Map 1 / Map 2 / Map 3 wins.
+      return `${teamName} have won the map in their last ${streak} maps played`;
+    }
     const mapHint = mapN ? `Map ${mapN}` : "the map";
-    return `${teamName} have won ${mapHint} in their last ${streak} matches`;
+    const tail = mapN
+      ? `in their last ${streak} Map ${mapN} plays`
+      : `in their last ${streak} matches`;
+    return `${teamName} have won ${mapHint} ${tail}`;
   }
 
   // Yes / No — handle BEFORE Over / Under because question-style
@@ -175,7 +234,7 @@ function composeStreakFactText(args: {
   // in the surrounding sentence when present).
   if (olc === "yes" || olc === "no") {
     const event = stripEventPhrase(marketName, mapN);
-    const tail = perTailFor(subjectPoss, mapN, streak);
+    const tail = perTailFor(subjectPoss, mapN, streak, lookupScope);
     if (olc === "no") {
       return `No ${event} ${tail}`.replace(/\s+/g, " ").trim();
     }
@@ -183,15 +242,27 @@ function composeStreakFactText(args: {
   }
 
   // Over / Under (threshold specifier). Per-map gets a Map N
-  // framing; player-prop gets a player subject.
+  // framing; player-prop gets a player subject. Broad drops the
+  // numeric threshold from the sentence because legs had different
+  // lines — "their offered ... line" stands in for it.
   if (specifiers.threshold && (olc === "over" || olc === "under")) {
     const direction = olc === "over" ? "Over" : "Under";
     const topic = cleanTopic(marketName, specifiers.threshold, subject, mapN);
+    if (broad) {
+      // "YEKINDAR stayed Under their Total headshot kills line in
+      // their last 12 maps played" / "FURIA stayed Under the Total
+      // kills line in their last 8 maps played".
+      const verb = direction === "Under" ? "stayed Under" : "stayed Over";
+      const ref = playerName ? "their" : "the";
+      return `${subject} ${verb} ${ref} ${topic} line in ${subjectPoss} last ${streak} maps played`
+        .replace(/\s+/g, " ")
+        .trim();
+    }
     if (mapN) {
-      // Per-map: "HeavyGod's Map 1 went Over 8.5 headshot kills in
-      // their last 5 matches" / "G2 Esports' Map 2 went Over 9.5
-      // rounds in their last 6 matches".
-      return `${subjectPoss} Map ${mapN} went ${direction} ${specifiers.threshold} ${topic} in their last ${streak} matches`
+      // Per-map narrow: "HeavyGod's Map 1 went Over 8.5 headshot
+      // kills in their last 5 Map 1 plays" / "G2 Esports' Map 2 went
+      // Over 9.5 rounds in their last 6 Map 2 plays".
+      return `${subjectPoss} Map ${mapN} went ${direction} ${specifiers.threshold} ${topic} in their last ${streak} Map ${mapN} plays`
         .replace(/\s+/g, " ")
         .trim();
     }
@@ -211,7 +282,7 @@ function composeStreakFactText(args: {
   // Parity (Odd / Even). outcomeLabel is literally "Odd" or "Even".
   if (olc === "odd" || olc === "even") {
     const topic = cleanTopic(marketName, "", subject, mapN);
-    const tail = perTailFor(subjectPoss, mapN, streak);
+    const tail = perTailFor(subjectPoss, mapN, streak, lookupScope);
     return `${capitalise(topic)} came back ${olc} ${tail}`
       .replace(/\s+/g, " ")
       .trim();
@@ -221,7 +292,7 @@ function composeStreakFactText(args: {
   // novel symmetric outcomes, etc.). Drop trailing "- map N" so we
   // can restate Map N in the surrounding sentence.
   const topic = stripMapSuffix(marketName, mapN);
-  const tail = perTailFor(subjectPoss, mapN, streak);
+  const tail = perTailFor(subjectPoss, mapN, streak, lookupScope);
   return `${topic} — ${outcomeLabel} — ${tail}`.replace(/\s+/g, " ").trim();
 }
 
@@ -290,17 +361,24 @@ function cleanTopic(
   return topic.replace(/^[-–·\s]+|[-–·\s]+$/g, "").replace(/\s+/g, " ").trim();
 }
 
-// Suffix the rendered sentence with "in X's last 5 matches" for
-// match-level markets or "on Map N in X's last 5 matches" for
-// per-map markets — used by every branch that doesn't bake the
-// trailing phrase into its own template.
+// Suffix the rendered sentence with the right lookup-unit phrase.
+// Three shapes:
+//   • match-level (no `map` specifier) — "in X's last 5 matches".
+//   • map-level narrow — "on Map N in X's last 5 Map N plays".
+//   • map-level broad  — "in X's last 12 maps played".
+// Used by every branch that doesn't bake the trailing phrase into
+// its own template.
 function perTailFor(
   subjectPoss: string,
   mapN: string | null,
   streak: number,
+  lookupScope: LookupScope,
 ): string {
   if (mapN) {
-    return `on Map ${mapN} in ${subjectPoss} last ${streak} matches`;
+    if (lookupScope === "broad") {
+      return `in ${subjectPoss} last ${streak} maps played`;
+    }
+    return `on Map ${mapN} in ${subjectPoss} last ${streak} Map ${mapN} plays`;
   }
   return `in ${subjectPoss} last ${streak} matches`;
 }
@@ -341,11 +419,22 @@ export default async function zillafactsRoutes(app: FastifyInstance) {
     const { matchId } = z
       .object({ matchId: z.coerce.bigint() })
       .parse(request.params);
-    // v9: player-prop detection scans all specifier values for an
-    // od:player:... URN rather than relying on a canonical {player}
-    // specifier key — Oddin uses several variant names. v8 also
-    // added odds/score floors and the player/map/question rewordings.
-    const cacheKey = `zillafacts:v9:${matchId.toString()}`;
+    // v11: catalog expanded to 27 conditional + 44 round-prefix
+    // patterns (was 16 + 19). New families: second-half pistol
+    // (rounds 13 onward), opponent-run survival (force-throw 3 / 4 /
+    // 5), broader prefix slices (4-of-5, 3-of-4, 4-of-6, 5-of-7) and
+    // mirror lost-variants, exact and granular halftime margins
+    // (±2 / ±6 / ±8), anywhere-in-a-row (4 / 6 / 7), match-outcome
+    // variants for the first 3 rounds + pistol of Map 1, plus
+    // Dota / LoL tower / turret / big-kill-lead patterns powered by
+    // the now-extended Period interface. v10: dual-scope historical
+    // lookup — narrow (same Map N at the same threshold) and broad
+    // (same template across ALL maps + thresholds). Per-map fact
+    // wording fixed from "in their last N matches" → "in their last
+    // N Map K plays" so the unit matches the sample. v9: player-prop
+    // detection scans all specifier values for an od:player:... URN
+    // rather than relying on a canonical {player} specifier key.
+    const cacheKey = `zillafacts:v11:${matchId.toString()}`;
     return cached<ZillaFactsResponse>(
       app.redis,
       cacheKey,
@@ -413,6 +502,14 @@ interface Period {
   awayWonRounds: number | null;
   homeKills: number | null;
   awayKills: number | null;
+  // MOBA structure metrics — populated by feed-ingester's
+  // `periodPayload` (livescore.go) for Dota / LoL maps and stay null
+  // for CS2 / Valorant. Tower-destruction patterns use these to
+  // surface "won M1 with a tower lead" style facts post-map.
+  homeDestroyedTurrets: number | null;
+  awayDestroyedTurrets: number | null;
+  homeDestroyedTowers: number | null;
+  awayDestroyedTowers: number | null;
   isLive: boolean | null;
 }
 
@@ -506,10 +603,21 @@ async function loadStreakFacts(
   //                        (Over / Under, Yes / No, Odd / Even) →
   //                        both teams; {side}-specifier markets →
   //                        side team only.
-  // historical_per_pair  — LATERAL: each team's last N closed matches
-  //                        with the same (provider_market_id,
-  //                        specifiers_hash) signature (or the
-  //                        cross-side variant for {side} markets).
+  // historical_per_pair  — LATERAL union of two passes per (market,
+  //                        outcome, team):
+  //                          • narrow — last N closed matches with the
+  //                            exact same (provider_market_id,
+  //                            specifiers_hash) signature (or the
+  //                            cross-side variant for {side} markets).
+  //                            One leg per past match.
+  //                          • broad  — per-map markets only. Drops
+  //                            `map` and `threshold` from the specifier
+  //                            comparison so all the team's map plays
+  //                            on the same market template count, not
+  //                            just the matching Map N at the live
+  //                            threshold. Multiple legs per past
+  //                            match — one per Map N played that had
+  //                            the same template.
   //                        equiv_outcome_id swaps 1↔2 when the team's
   //                        role differs across matches so the lookup
   //                        stays pointed at "this team's perspective".
@@ -616,7 +724,12 @@ async function loadStreakFacts(
         )
     ),
     historical_per_pair AS (
+      -- NARROW: exact specifiers_hash match. For per-map markets this
+      -- means same map number AND same threshold AND same player URN
+      -- (etc.) — one historical row per past match where Map N was
+      -- played and the same line was offered. Existing behaviour.
       SELECT
+        'narrow'::text AS lookup_scope,
         otp.market_id AS current_market_id,
         otp.provider_market_id,
         otp.variant,
@@ -636,6 +749,7 @@ async function loadStreakFacts(
         h.live_started_at,
         h.scheduled_at,
         h.hist_market_id,
+        h.hist_specifiers_json,
         h.team_role_hist,
         CASE
           WHEN otp.outcome_id IN ('1', '2')
@@ -658,6 +772,7 @@ async function loadStreakFacts(
           hm.live_started_at,
           hm.scheduled_at,
           hmk.id AS hist_market_id,
+          hmk.specifiers_json AS hist_specifiers_json,
           CASE
             WHEN hm.home_competitor_id = otp.team_id THEN 'home'::text
             ELSE 'away'::text
@@ -690,9 +805,108 @@ async function loadStreakFacts(
         ORDER BY hm.live_started_at DESC
         LIMIT ${ZILLAFACT_LOOKBACK_LEGS}
       ) h
+
+      UNION ALL
+
+      -- BROAD: per-map markets only. The historical join drops the
+      -- map and threshold keys from the specifier comparison so a
+      -- Map 1 Under 9.5 player-prop also pulls in the same player's
+      -- Map 2 / Map 3 settled results (against whatever line Oddin
+      -- offered that map). Multiple maps per match are kept; ordering
+      -- inside the LATERAL is newest-match-first, then highest-map-
+      -- first within a match (Map 3 played after Map 2 played after
+      -- Map 1, so the streak walker sees most-recent-chronological
+      -- first).
+      --
+      -- {side}-specifier markets keep the role-flip: the historical
+      -- {side} specifier mirrors the focused team's role per past
+      -- match.
+      SELECT
+        'broad'::text AS lookup_scope,
+        otp.market_id AS current_market_id,
+        otp.provider_market_id,
+        otp.variant,
+        otp.specifiers_json,
+        otp.home_team,
+        otp.away_team,
+        otp.outcome_id AS current_outcome_id,
+        otp.raw_outcome_name,
+        otp.current_odds,
+        otp.team_id,
+        otp.role,
+        h.match_id AS hist_match_id,
+        h.hist_home_id,
+        h.hist_away_id,
+        h.hist_home_label,
+        h.hist_away_label,
+        h.live_started_at,
+        h.scheduled_at,
+        h.hist_market_id,
+        h.hist_specifiers_json,
+        h.team_role_hist,
+        CASE
+          WHEN otp.outcome_id IN ('1', '2')
+           AND h.team_role_hist <> otp.role
+           AND NOT (otp.specifiers_json ? 'side')
+          THEN CASE otp.outcome_id
+                 WHEN '1' THEN '2'
+                 WHEN '2' THEN '1'
+               END
+          ELSE otp.outcome_id
+        END AS equiv_outcome_id
+      FROM outcome_team_pairs otp
+      CROSS JOIN LATERAL (
+        SELECT
+          hm.id AS match_id,
+          hm.home_competitor_id AS hist_home_id,
+          hm.away_competitor_id AS hist_away_id,
+          hm.home_team AS hist_home_label,
+          hm.away_team AS hist_away_label,
+          hm.live_started_at,
+          hm.scheduled_at,
+          hmk.id AS hist_market_id,
+          hmk.specifiers_json AS hist_specifiers_json,
+          CASE
+            WHEN hm.home_competitor_id = otp.team_id THEN 'home'::text
+            ELSE 'away'::text
+          END AS team_role_hist
+        FROM matches hm
+        JOIN tournaments ht ON ht.id = hm.tournament_id
+        JOIN categories hcat ON hcat.id = ht.category_id
+        JOIN markets hmk
+          ON hmk.match_id = hm.id
+         AND hmk.provider_market_id = otp.provider_market_id
+         AND (
+           (NOT (otp.specifiers_json ? 'side')
+            AND (hmk.specifiers_json - 'map' - 'threshold')
+              = (otp.specifiers_json - 'map' - 'threshold'))
+           OR
+           (otp.specifiers_json ? 'side'
+            AND (hmk.specifiers_json - 'map' - 'threshold' - 'side')
+              = (otp.specifiers_json - 'map' - 'threshold' - 'side')
+            AND hmk.specifiers_json->>'side' = (
+              CASE
+                WHEN hm.home_competitor_id = otp.team_id THEN 'home'
+                ELSE 'away'
+              END
+            ))
+         )
+        WHERE hm.status = 'closed'
+          AND hm.live_started_at IS NOT NULL
+          AND hm.live_started_at > NOW() - (${ZILLAFACT_LOOKBACK_DAYS}::int * INTERVAL '1 day')
+          AND hcat.sport_id = otp.current_sport_id
+          AND (hm.home_competitor_id = otp.team_id OR hm.away_competitor_id = otp.team_id)
+          AND hm.id <> ${matchId}
+        ORDER BY
+          hm.live_started_at DESC,
+          NULLIF(hmk.specifiers_json->>'map', '')::int DESC NULLS LAST
+        LIMIT ${ZILLAFACT_LOOKBACK_LEGS}
+      ) h
+      WHERE otp.specifiers_json ? 'map'
     ),
     legs_raw AS (
       SELECT
+        hpp.lookup_scope,
         hpp.current_market_id,
         hpp.provider_market_id,
         hpp.variant,
@@ -713,6 +927,7 @@ async function loadStreakFacts(
         hpp.scheduled_at,
         hpp.team_role_hist,
         hpp.equiv_outcome_id,
+        hpp.hist_specifiers_json,
         hmo.prematch_odds,
         hmo.result::text AS result_text
       FROM historical_per_pair hpp
@@ -722,6 +937,7 @@ async function loadStreakFacts(
     ),
     legs_agg AS (
       SELECT
+        lookup_scope,
         current_market_id,
         provider_market_id,
         variant,
@@ -745,20 +961,30 @@ async function loadStreakFacts(
             'prematchOdds', prematch_odds,
             'result', result_text,
             'liveStartedAt', live_started_at,
-            'scheduledAt', scheduled_at
+            'scheduledAt', scheduled_at,
+            'histMapNumber', NULLIF(hist_specifiers_json->>'map', '')
           )
-          -- DESC = newest first. The streak walker reads from index 0
+          -- DESC = newest first chronologically. For NARROW (one row
+          -- per match) only live_started_at matters. For BROAD, maps
+          -- within a single match share live_started_at, so we tiebreak
+          -- on map number DESC so Map 3 (played last) ranks ahead of
+          -- Map 1 (played first). The streak walker reads from index 0
           -- and stops at the first break, so newest-first means we
-          -- always count "the streak the team is currently riding".
-          ORDER BY live_started_at DESC
+          -- always count "the streak the team / player is currently
+          -- riding".
+          ORDER BY
+            live_started_at DESC,
+            NULLIF(hist_specifiers_json->>'map', '')::int DESC NULLS LAST
         ) AS legs_json
       FROM legs_raw
       GROUP BY
+        lookup_scope,
         current_market_id, provider_market_id, variant, specifiers_json,
         home_team, away_team, current_outcome_id, raw_outcome_name,
         current_odds, team_id, role
     )
     SELECT
+      la.lookup_scope                           AS "lookupScope",
       la.current_market_id::text                AS "marketId",
       la.current_outcome_id                     AS "outcomeId",
       la.provider_market_id                     AS "providerMarketId",
@@ -829,14 +1055,19 @@ async function loadStreakFacts(
     return [];
   }
 
-  // Line-family collapse. Within the same (lineFamilyKey, outcomeId,
-  // teamId, role) group — for instance "Total kills Under" on three
-  // different threshold lines (45.5 / 46.5 / 47.5) — surface only the
-  // highest-odds member. Rationale: streaks are typically identical
-  // across same-direction sibling lines (a team consistently Under
-  // 45.5 is also Under 46.5 and Under 47.5), so the line that adds
-  // the most signal as a betting tip is the toughest one — i.e. the
-  // highest odds. Tiebreak on odds-equality: longest streak.
+  // Line-family collapse. Within the same (lookupScope, lineFamilyKey,
+  // outcomeId, teamId, role) group — for instance "Total kills Under"
+  // on three different threshold lines (45.5 / 46.5 / 47.5) — surface
+  // only the highest-odds member. Rationale: streaks are typically
+  // identical across same-direction sibling lines (a team consistently
+  // Under 45.5 is also Under 46.5 and Under 47.5), so the line that
+  // adds the most signal as a betting tip is the toughest one — i.e.
+  // the highest odds. Tiebreak on odds-equality: longest streak.
+  //
+  // `lookupScope` is included in the group key so a narrow and a broad
+  // streak for the same outcome stay as two independent cards — they
+  // are different statistical claims (narrow = "this exact map at this
+  // line", broad = "any map on this template").
   //
   // Markets without a line specifier (no threshold/handicap key in
   // specifiers) get a null family key and pass through unchanged via
@@ -848,8 +1079,8 @@ async function loadStreakFacts(
     const fkey = lineFamilyKey(s.row.providerMarketId, s.row.variant, specs);
     const groupKey =
       fkey == null
-        ? `single:${s.row.marketId}:${s.row.outcomeId}:${s.row.teamId}:${s.row.teamRole}`
-        : `family:${fkey}:${s.row.outcomeId}:${s.row.teamId}:${s.row.teamRole}`;
+        ? `single:${s.row.lookupScope}:${s.row.marketId}:${s.row.outcomeId}:${s.row.teamId}:${s.row.teamRole}`
+        : `family:${s.row.lookupScope}:${fkey}:${s.row.outcomeId}:${s.row.teamId}:${s.row.teamRole}`;
     const existing = groupBest.get(groupKey);
     if (!existing) {
       groupBest.set(groupKey, s);
@@ -1025,6 +1256,7 @@ async function loadStreakFacts(
       outcomeLabel,
       providerMarketId: row.providerMarketId,
       specifiers: specs,
+      lookupScope: row.lookupScope,
     });
 
     facts.push({
@@ -1174,7 +1406,55 @@ function map1TotalRounds(p: Period | null): number | null {
   return p!.homeWonRounds + p!.awayWonRounds;
 }
 
+// MOBA per-map kill margin (Dota / LoL). Sibling of map1RoundMargin
+// for the round-based sports. Returns null when either side's count
+// is missing on this period.
+function periodKillMargin(
+  p: Period | null,
+  role: ZillaFactRole,
+): number | null {
+  if (!periodIsComplete(p)) return null;
+  if (p!.homeKills == null || p!.awayKills == null) return null;
+  return role === "home"
+    ? p!.homeKills - p!.awayKills
+    : p!.awayKills - p!.homeKills;
+}
+
+// MOBA per-map destroyed-tower margin. In Oddin's payload `towers`
+// roughly maps to T1-T3 main towers in Dota; LoL uses the same field
+// shape but with different in-game semantics. Returns null when
+// either side's count is missing.
+function periodTowerMargin(
+  p: Period | null,
+  role: ZillaFactRole,
+): number | null {
+  if (!periodIsComplete(p)) return null;
+  if (p!.homeDestroyedTowers == null || p!.awayDestroyedTowers == null) {
+    return null;
+  }
+  return role === "home"
+    ? p!.homeDestroyedTowers - p!.awayDestroyedTowers
+    : p!.awayDestroyedTowers - p!.homeDestroyedTowers;
+}
+
+// MOBA per-map destroyed-turret margin. Distinct from `towers` —
+// some Oddin feeds populate one and not the other depending on game
+// build. Returns null when either side's count is missing.
+function periodTurretMargin(
+  p: Period | null,
+  role: ZillaFactRole,
+): number | null {
+  if (!periodIsComplete(p)) return null;
+  if (p!.homeDestroyedTurrets == null || p!.awayDestroyedTurrets == null) {
+    return null;
+  }
+  return role === "home"
+    ? p!.homeDestroyedTurrets - p!.awayDestroyedTurrets
+    : p!.awayDestroyedTurrets - p!.homeDestroyedTurrets;
+}
+
 const ROUND_SPORTS = ["cs2", "valorant"];
+const MOBA_SPORTS = ["dota2", "lol"];
 
 // Catalog. Twelve patterns at v1; round-margin + overtime patterns
 // gate on round-based sports. Order doesn't matter — every pattern
@@ -1537,6 +1817,275 @@ const CONDITIONAL_PATTERNS: ConditionalPattern[] = [
     formatFact: (team, streak, cond) =>
       `${cond}, ${team} have closed out the match in their last ${streak} starts`,
   },
+  // 17. CS2 / Valorant: Won Map 1 by ≥7 rounds — between the by-5
+  // and by-10 thresholds. Granular enough to surface separately from
+  // the comfortable-margin / blowout buckets when the historical
+  // streak only clears at this specific cut-off.
+  {
+    id: "won_m1_by_7_won_match",
+    sports: ROUND_SPORTS,
+    current: (ls, role) => {
+      const margin = map1RoundMargin(findPeriod(ls, 1), role);
+      return {
+        applicable: margin != null && margin >= 7,
+        conditionText: "After a 7+ round Map 1 win",
+      };
+    },
+    historical: (m) => {
+      const margin = map1RoundMargin(findPeriod(m.liveScore, 1), m.teamRole);
+      return margin != null && margin >= 7;
+    },
+    outcome: (m) => (wonSeries(m.liveScore, m.teamRole) ? "won" : "lost"),
+    target: (role) => ({ providerMarketId: 1, outcomeId: role === "home" ? "1" : "2" }),
+    formatFact: (team, streak, cond) =>
+      `${cond}, ${team} have closed out the match in their last ${streak} starts`,
+  },
+  // 18. CS2 / Valorant: Lost Map 1 by ≤5 rounds → won match. The
+  // "close-loss recovery" predicate — different from the deep-deficit
+  // comeback in #11. Surfaces teams that hang in despite a Map 1 drop.
+  {
+    id: "lost_m1_close_won_match",
+    sports: ROUND_SPORTS,
+    current: (ls, role) => {
+      const margin = map1RoundMargin(findPeriod(ls, 1), role);
+      const lost = lostMap(findPeriod(ls, 1), role);
+      return {
+        applicable: lost && margin != null && margin >= -5,
+        conditionText: "After a close Map 1 loss",
+      };
+    },
+    historical: (m) => {
+      const p1 = findPeriod(m.liveScore, 1);
+      const margin = map1RoundMargin(p1, m.teamRole);
+      return lostMap(p1, m.teamRole) && margin != null && margin >= -5;
+    },
+    outcome: (m) => (wonSeries(m.liveScore, m.teamRole) ? "won" : "lost"),
+    target: (role) => ({ providerMarketId: 1, outcomeId: role === "home" ? "1" : "2" }),
+    formatFact: (team, streak, cond) =>
+      `${cond}, ${team} have rebounded to win the match in their last ${streak} starts`,
+  },
+  // 19. CS2 / Valorant: Map 1 ended in regulation (≤30 rounds) AND
+  // team won → won match. Distinguishes "won M1 cleanly" from "won
+  // M1 in overtime survival" (#9). Same outcome but different texture.
+  {
+    id: "won_m1_clean_won_match",
+    sports: ROUND_SPORTS,
+    current: (ls, role) => {
+      const p1 = findPeriod(ls, 1);
+      const total = map1TotalRounds(p1);
+      const won = wonMap(p1, role);
+      return {
+        applicable: won && total != null && total > 0 && total <= 30,
+        conditionText: "After a clean Map 1 win",
+      };
+    },
+    historical: (m) => {
+      const p1 = findPeriod(m.liveScore, 1);
+      const total = map1TotalRounds(p1);
+      return wonMap(p1, m.teamRole) && total != null && total > 0 && total <= 30;
+    },
+    outcome: (m) => (wonSeries(m.liveScore, m.teamRole) ? "won" : "lost"),
+    target: (role) => ({ providerMarketId: 1, outcomeId: role === "home" ? "1" : "2" }),
+    formatFact: (team, streak, cond) =>
+      `${cond}, ${team} have closed out the match in their last ${streak} starts`,
+  },
+  // 20. Lost Map 1, won Map 2 → won match. The classic "must-win
+  // Map 2 then take the decider" trajectory; different framing from
+  // #4 (lost_m1_won_m2, which proves Map 2). Here Map 2 is already
+  // banked and we're asking whether the team usually closes out
+  // the series from 1-1.
+  {
+    id: "lost_m1_won_m2_won_match",
+    current: (ls, role) => {
+      const p1 = findPeriod(ls, 1);
+      const p2 = findPeriod(ls, 2);
+      if (!periodIsComplete(p1) || !periodIsComplete(p2)) {
+        return { applicable: false, conditionText: "" };
+      }
+      const trajectory = lostMap(p1, role) && wonMap(p2, role);
+      return { applicable: trajectory, conditionText: "After dropping Map 1 and taking Map 2" };
+    },
+    historical: (m) => {
+      const p1 = findPeriod(m.liveScore, 1);
+      const p2 = findPeriod(m.liveScore, 2);
+      if (!periodIsComplete(p1) || !periodIsComplete(p2)) return false;
+      return lostMap(p1, m.teamRole) && wonMap(p2, m.teamRole);
+    },
+    outcome: (m) => (wonSeries(m.liveScore, m.teamRole) ? "won" : "lost"),
+    target: (role) => ({ providerMarketId: 1, outcomeId: role === "home" ? "1" : "2" }),
+    formatFact: (team, streak, cond) =>
+      `${cond}, ${team} have taken the decider in their last ${streak} starts`,
+  },
+  // 21. CS2 / Valorant: Won Map 2 by ≥10 rounds → won match. Map 2
+  // counterpart of #8 — momentum-after-blowout when Map 2 is the
+  // statement win rather than Map 1.
+  {
+    id: "won_m2_by_10_won_match",
+    sports: ROUND_SPORTS,
+    current: (ls, role) => {
+      const margin = map1RoundMargin(findPeriod(ls, 2), role);
+      return {
+        applicable: margin != null && margin >= 10,
+        conditionText: "After a 10+ round Map 2 win",
+      };
+    },
+    historical: (m) => {
+      const margin = map1RoundMargin(findPeriod(m.liveScore, 2), m.teamRole);
+      return margin != null && margin >= 10;
+    },
+    outcome: (m) => (wonSeries(m.liveScore, m.teamRole) ? "won" : "lost"),
+    target: (role) => ({ providerMarketId: 1, outcomeId: role === "home" ? "1" : "2" }),
+    formatFact: (team, streak, cond) =>
+      `${cond}, ${team} have closed out the match in their last ${streak} starts`,
+  },
+  // 22. Won Map 2 → won Map 3 (the BO5 closer, or the BO3 decider
+  // predictor when Map 3 is still in play). Distinct from #5
+  // (won_m2_won_match) because it targets the Map 3 winner market,
+  // not the match winner — useful for live betting on the active map.
+  {
+    id: "won_m2_won_m3",
+    current: (ls, role) => {
+      const p2 = findPeriod(ls, 2);
+      const won = wonMap(p2, role);
+      return { applicable: won, conditionText: "After winning Map 2" };
+    },
+    historical: (m) =>
+      wonMap(findPeriod(m.liveScore, 2), m.teamRole) &&
+      periodIsComplete(findPeriod(m.liveScore, 3)),
+    outcome: (m) =>
+      wonMap(findPeriod(m.liveScore, 3), m.teamRole) ? "won" : "lost",
+    target: (role) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === "3",
+    }),
+    formatFact: (team, streak, cond) =>
+      `${cond}, ${team} have taken Map 3 in their last ${streak} starts`,
+  },
+  // 23. Dota / LoL: Lost Map 1 → won match. MOBA counterpart of #3
+  // — the comeback from M1 loss isn't round-based here, so it lives
+  // outside ROUND_SPORTS. Captures teams known for adjusting the
+  // draft / strategy after a Map 1 read.
+  {
+    id: "moba_lost_m1_won_match",
+    sports: MOBA_SPORTS,
+    current: (ls, role) => {
+      const lost = lostMap(findPeriod(ls, 1), role);
+      return { applicable: lost, conditionText: "After dropping Map 1" };
+    },
+    historical: (m) => lostMap(findPeriod(m.liveScore, 1), m.teamRole),
+    outcome: (m) => (wonSeries(m.liveScore, m.teamRole) ? "won" : "lost"),
+    target: (role) => ({ providerMarketId: 1, outcomeId: role === "home" ? "1" : "2" }),
+    formatFact: (team, streak, cond) =>
+      `${cond}, ${team} have flipped the series in their last ${streak} starts`,
+  },
+  // 24. Dota: Won Map 1 with a destroyed-tower lead → won match. The
+  // structural-objective predictor — gold and creep-kill leads
+  // matter, but towers are the hardest-to-fake advantage. Tower
+  // counts only populate for MOBA brokers, so the historical filter
+  // naturally excludes non-MOBA matches.
+  {
+    id: "moba_won_m1_tower_lead_won_match",
+    sports: MOBA_SPORTS,
+    current: (ls, role) => {
+      const p1 = findPeriod(ls, 1);
+      const margin = periodTowerMargin(p1, role);
+      const won = wonMap(p1, role);
+      return {
+        applicable: won && margin != null && margin >= 3,
+        conditionText: "After a tower-lead Map 1 win",
+      };
+    },
+    historical: (m) => {
+      const p1 = findPeriod(m.liveScore, 1);
+      const margin = periodTowerMargin(p1, m.teamRole);
+      return wonMap(p1, m.teamRole) && margin != null && margin >= 3;
+    },
+    outcome: (m) => (wonSeries(m.liveScore, m.teamRole) ? "won" : "lost"),
+    target: (role) => ({ providerMarketId: 1, outcomeId: role === "home" ? "1" : "2" }),
+    formatFact: (team, streak, cond) =>
+      `${cond}, ${team} have closed out the match in their last ${streak} starts`,
+  },
+  // 25. LoL / Dota: Won Map 1 with a destroyed-turret lead → won
+  // match. Sibling of #24 — some brokers populate turrets but not
+  // towers (or vice versa) depending on the game build. Running both
+  // patterns means we surface at least one card when either field
+  // ships.
+  {
+    id: "moba_won_m1_turret_lead_won_match",
+    sports: MOBA_SPORTS,
+    current: (ls, role) => {
+      const p1 = findPeriod(ls, 1);
+      const margin = periodTurretMargin(p1, role);
+      const won = wonMap(p1, role);
+      return {
+        applicable: won && margin != null && margin >= 3,
+        conditionText: "After a turret-lead Map 1 win",
+      };
+    },
+    historical: (m) => {
+      const p1 = findPeriod(m.liveScore, 1);
+      const margin = periodTurretMargin(p1, m.teamRole);
+      return wonMap(p1, m.teamRole) && margin != null && margin >= 3;
+    },
+    outcome: (m) => (wonSeries(m.liveScore, m.teamRole) ? "won" : "lost"),
+    target: (role) => ({ providerMarketId: 1, outcomeId: role === "home" ? "1" : "2" }),
+    formatFact: (team, streak, cond) =>
+      `${cond}, ${team} have closed out the match in their last ${streak} starts`,
+  },
+  // 26. Dota / LoL: Won Map 1 with a kill lead of ≥10 → won match.
+  // Between the stomp (#15, 2× ratio) and high_kills (#13, 40+ total)
+  // — captures matches where the absolute kill differential is large
+  // without requiring a domination ratio. Tighter signal than total
+  // kill volume.
+  {
+    id: "moba_won_m1_big_kill_lead_won_match",
+    sports: MOBA_SPORTS,
+    current: (ls, role) => {
+      const p1 = findPeriod(ls, 1);
+      const margin = periodKillMargin(p1, role);
+      const won = wonMap(p1, role);
+      return {
+        applicable: won && margin != null && margin >= 10,
+        conditionText: "After a 10+ kill Map 1 lead",
+      };
+    },
+    historical: (m) => {
+      const p1 = findPeriod(m.liveScore, 1);
+      const margin = periodKillMargin(p1, m.teamRole);
+      return wonMap(p1, m.teamRole) && margin != null && margin >= 10;
+    },
+    outcome: (m) => (wonSeries(m.liveScore, m.teamRole) ? "won" : "lost"),
+    target: (role) => ({ providerMarketId: 1, outcomeId: role === "home" ? "1" : "2" }),
+    formatFact: (team, streak, cond) =>
+      `${cond}, ${team} have rolled through the match in their last ${streak} starts`,
+  },
+  // 27. Dota / LoL: Lost Map 1 by ≤5 kills → won match. MOBA close-
+  // loss-recovery analogue of #18 — the kill metric stands in for
+  // the round-margin metric since MOBAs don't have round-based
+  // scoreboards.
+  {
+    id: "moba_lost_m1_close_won_match",
+    sports: MOBA_SPORTS,
+    current: (ls, role) => {
+      const p1 = findPeriod(ls, 1);
+      const margin = periodKillMargin(p1, role);
+      const lost = lostMap(p1, role);
+      return {
+        applicable: lost && margin != null && margin >= -5,
+        conditionText: "After a close Map 1 loss",
+      };
+    },
+    historical: (m) => {
+      const p1 = findPeriod(m.liveScore, 1);
+      const margin = periodKillMargin(p1, m.teamRole);
+      return lostMap(p1, m.teamRole) && margin != null && margin >= -5;
+    },
+    outcome: (m) => (wonSeries(m.liveScore, m.teamRole) ? "won" : "lost"),
+    target: (role) => ({ providerMarketId: 1, outcomeId: role === "home" ? "1" : "2" }),
+    formatFact: (team, streak, cond) =>
+      `${cond}, ${team} have flipped the script in their last ${streak} starts`,
+  },
 ];
 
 // Active markets on the open match — pre-resolved so each pattern's
@@ -1846,6 +2395,25 @@ function countOpponentWinsInFirstNRounds(
   for (let i = 0; i < n; i++) if (roundWinners[i] === target) c++;
   return c;
 }
+
+// Did the team win the round at 0-indexed position `idx`? Used by
+// the second-pistol family (round 13 = idx 12 in CS2 / Valorant
+// MR12 format). Returns false when the round hasn't been played yet
+// — patterns guard with a length check before evaluating.
+function teamWonRoundAt(
+  roundWinners: string,
+  idx: number,
+  role: ZillaFactRole,
+): boolean {
+  if (idx < 0 || idx >= roundWinners.length) return false;
+  return roundWinners[idx] === (role === "home" ? "H" : "A");
+}
+
+// 0-indexed position of the second-half pistol round in standard
+// CS2 / Valorant MR12. Round 1 (idx 0) is the first pistol, round
+// 13 (idx 12) is the second pistol — the side switch resets the
+// economy. Both-pistols patterns gate on this index being playable.
+const SECOND_PISTOL_IDX = 12;
 
 const ROUND_PREFIX_PATTERNS: RoundPrefixPattern[] = [
   // R1. Won the first 2 rounds of the CURRENT in-progress map.
@@ -2441,6 +3009,815 @@ const ROUND_PREFIX_PATTERNS: RoundPrefixPattern[] = [
     }),
     formatFact: (team, wins, sample, cond) =>
       `${cond}, ${team} have run away with the map ${wins} of last ${sample} times once they hit five in a row`,
+  },
+  // ── Broader early-lead patterns ───────────────────────────────────
+  //
+  // R20. Won 4 of the first 5 rounds — smoother early lead than R8
+  // (clean 4-0). Catches teams that traded one round but otherwise
+  // dominated the opener.
+  {
+    id: "four_of_first_5_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const won = countTeamWinsInFirstNRounds(h.roundWinners, role, 5);
+      return {
+        applicable: won != null && won >= 4,
+        conditionText: "After winning 4 of the first 5 rounds",
+      };
+    },
+    historical: (m) => {
+      const won = countTeamWinsInFirstNRounds(m.roundWinners, m.teamRole, 5);
+      return won != null && won >= 4;
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have won the map ${wins} of last ${sample} times`,
+  },
+  // R21. Won 3 of the first 4 rounds — softer R8 catchment.
+  {
+    id: "three_of_first_4_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const won = countTeamWinsInFirstNRounds(h.roundWinners, role, 4);
+      return {
+        applicable: won != null && won >= 3,
+        conditionText: "After winning 3 of the first 4 rounds",
+      };
+    },
+    historical: (m) => {
+      const won = countTeamWinsInFirstNRounds(m.roundWinners, m.teamRole, 4);
+      return won != null && won >= 3;
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have won the map ${wins} of last ${sample} times`,
+  },
+  // R22. Won 4 of the first 6 rounds — broader R4 (five-of-six)
+  // catchment that fires while the prefix is still being filled in.
+  {
+    id: "four_of_first_6_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const won = countTeamWinsInFirstNRounds(h.roundWinners, role, 6);
+      return {
+        applicable: won != null && won >= 4,
+        conditionText: "After winning 4 of the first 6 rounds",
+      };
+    },
+    historical: (m) => {
+      const won = countTeamWinsInFirstNRounds(m.roundWinners, m.teamRole, 6);
+      return won != null && won >= 4;
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have won the map ${wins} of last ${sample} times`,
+  },
+  // R23. Won 5 of the first 7 rounds — deepening of R22 once
+  // the seventh round lands.
+  {
+    id: "five_of_first_7_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const won = countTeamWinsInFirstNRounds(h.roundWinners, role, 7);
+      return {
+        applicable: won != null && won >= 5,
+        conditionText: "After winning 5 of the first 7 rounds",
+      };
+    },
+    historical: (m) => {
+      const won = countTeamWinsInFirstNRounds(m.roundWinners, m.teamRole, 7);
+      return won != null && won >= 5;
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have won the map ${wins} of last ${sample} times`,
+  },
+  // ── In-a-row (anywhere) patterns ─────────────────────────────────
+  //
+  // R24. Won 4 rounds in a row at SOME point in this map. Different
+  // from R18 / R19 (which require the streak to be the current tail)
+  // — fires even when the team built the run earlier in the map
+  // and then traded a round.
+  {
+    id: "four_in_a_row_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const stacked = hasNInARow(h.roundWinners, role, 4);
+      return {
+        applicable: stacked,
+        conditionText: "After stacking 4 rounds in a row",
+      };
+    },
+    historical: (m) => hasNInARow(m.roundWinners, m.teamRole, 4),
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have closed out the map ${wins} of last ${sample} times`,
+  },
+  // R25. Won 6 rounds in a row at SOME point in this map.
+  {
+    id: "six_in_a_row_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const stacked = hasNInARow(h.roundWinners, role, 6);
+      return {
+        applicable: stacked,
+        conditionText: "After stacking 6 rounds in a row",
+      };
+    },
+    historical: (m) => hasNInARow(m.roundWinners, m.teamRole, 6),
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have closed out the map ${wins} of last ${sample} times after stacking six in a row`,
+  },
+  // R26. Won 7 rounds in a row at SOME point in this map. Rare and
+  // strong — almost guarantees the map is settled mathematically by
+  // the time it fires.
+  {
+    id: "seven_in_a_row_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const stacked = hasNInARow(h.roundWinners, role, 7);
+      return {
+        applicable: stacked,
+        conditionText: "After stacking 7 rounds in a row",
+      };
+    },
+    historical: (m) => hasNInARow(m.roundWinners, m.teamRole, 7),
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have run away with the map ${wins} of last ${sample} times once they hit seven in a row`,
+  },
+  // ── Deeper comeback patterns ─────────────────────────────────────
+  //
+  // R27. Lost 4 of the first 5 rounds — softer R11 (lost the first
+  // four straight) catchment. The team is 1-4 not 0-4 but still on
+  // the comeback path.
+  {
+    id: "lost_4_of_first_5_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const oppWins = countOpponentWinsInFirstNRounds(h.roundWinners, role, 5);
+      return {
+        applicable: oppWins != null && oppWins >= 4,
+        conditionText: "After losing 4 of the first 5 rounds",
+      };
+    },
+    historical: (m) => {
+      const oppWins = countOpponentWinsInFirstNRounds(m.roundWinners, m.teamRole, 5);
+      return oppWins != null && oppWins >= 4;
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have stormed back to win the map ${wins} of last ${sample} times`,
+  },
+  // R28. Lost 5 of the first 7 rounds — broadens R13 (5 of 6) by one
+  // extra round so the prefix predicate fires later in the map.
+  {
+    id: "lost_5_of_first_7_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const oppWins = countOpponentWinsInFirstNRounds(h.roundWinners, role, 7);
+      return {
+        applicable: oppWins != null && oppWins >= 5,
+        conditionText: "After losing 5 of the first 7 rounds",
+      };
+    },
+    historical: (m) => {
+      const oppWins = countOpponentWinsInFirstNRounds(m.roundWinners, m.teamRole, 7);
+      return oppWins != null && oppWins >= 5;
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have stormed back to win the map ${wins} of last ${sample} times`,
+  },
+  // ── Second-pistol family ─────────────────────────────────────────
+  //
+  // The side switch resets the economy in CS2 / Valorant, so round
+  // 13 (0-indexed position 12) is the second pistol. Winning both
+  // pistols is a strong tactical signal; the comeback variants
+  // (lost both, lost only the second) typically pay because the
+  // market doesn't price them.
+  //
+  // R29. Won round 13 (second-half pistol) → won the map.
+  {
+    id: "won_second_pistol_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h || h.roundWinners.length <= SECOND_PISTOL_IDX) {
+        return { applicable: false, conditionText: "" };
+      }
+      const won = teamWonRoundAt(h.roundWinners, SECOND_PISTOL_IDX, role);
+      return {
+        applicable: won,
+        conditionText: "After winning the second-half pistol",
+      };
+    },
+    historical: (m) =>
+      m.roundWinners.length > SECOND_PISTOL_IDX &&
+      teamWonRoundAt(m.roundWinners, SECOND_PISTOL_IDX, m.teamRole),
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have won the map ${wins} of last ${sample} times`,
+  },
+  // R30. Won both pistol rounds (1 and 13).
+  {
+    id: "won_both_pistols_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h || h.roundWinners.length <= SECOND_PISTOL_IDX) {
+        return { applicable: false, conditionText: "" };
+      }
+      const p1 = teamWonRoundAt(h.roundWinners, 0, role);
+      const p2 = teamWonRoundAt(h.roundWinners, SECOND_PISTOL_IDX, role);
+      return {
+        applicable: p1 && p2,
+        conditionText: "After winning both pistols",
+      };
+    },
+    historical: (m) =>
+      m.roundWinners.length > SECOND_PISTOL_IDX &&
+      teamWonRoundAt(m.roundWinners, 0, m.teamRole) &&
+      teamWonRoundAt(m.roundWinners, SECOND_PISTOL_IDX, m.teamRole),
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have closed out the map ${wins} of last ${sample} times`,
+  },
+  // R31. Lost the second pistol → won the map. Forcing through a
+  // round-13 economy loss is a real "the team's defence holds up"
+  // signal.
+  {
+    id: "lost_second_pistol_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h || h.roundWinners.length <= SECOND_PISTOL_IDX) {
+        return { applicable: false, conditionText: "" };
+      }
+      const oppRole: ZillaFactRole = role === "home" ? "away" : "home";
+      const lost = teamWonRoundAt(h.roundWinners, SECOND_PISTOL_IDX, oppRole);
+      return {
+        applicable: lost,
+        conditionText: "After dropping the second-half pistol",
+      };
+    },
+    historical: (m) => {
+      const oppRole: ZillaFactRole = m.teamRole === "home" ? "away" : "home";
+      return (
+        m.roundWinners.length > SECOND_PISTOL_IDX &&
+        teamWonRoundAt(m.roundWinners, SECOND_PISTOL_IDX, oppRole)
+      );
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have still won the map ${wins} of last ${sample} times`,
+  },
+  // R32. Lost BOTH pistol rounds → won the map. Even rarer than R31
+  // — the full force-throw on the economy. Almost always at long
+  // odds when it surfaces.
+  {
+    id: "lost_both_pistols_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h || h.roundWinners.length <= SECOND_PISTOL_IDX) {
+        return { applicable: false, conditionText: "" };
+      }
+      const oppRole: ZillaFactRole = role === "home" ? "away" : "home";
+      const p1 = teamWonRoundAt(h.roundWinners, 0, oppRole);
+      const p2 = teamWonRoundAt(h.roundWinners, SECOND_PISTOL_IDX, oppRole);
+      return {
+        applicable: p1 && p2,
+        conditionText: "After dropping both pistols",
+      };
+    },
+    historical: (m) => {
+      const oppRole: ZillaFactRole = m.teamRole === "home" ? "away" : "home";
+      return (
+        m.roundWinners.length > SECOND_PISTOL_IDX &&
+        teamWonRoundAt(m.roundWinners, 0, oppRole) &&
+        teamWonRoundAt(m.roundWinners, SECOND_PISTOL_IDX, oppRole)
+      );
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have miraculously won the map ${wins} of last ${sample} times`,
+  },
+  // ── Halftime-margin granularity ──────────────────────────────────
+  //
+  // R33. Up by exactly 2 rounds (7-5) at the side switch — slim
+  // lead, not the commanding ≥4 of R6.
+  {
+    id: "up_2_at_halftime_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h || h.roundWinners.length < 12) {
+        return { applicable: false, conditionText: "" };
+      }
+      const won = countTeamWinsInRoundsRange(h.roundWinners, role, 0, 12);
+      if (won == null) return { applicable: false, conditionText: "" };
+      const margin = won - (12 - won);
+      return {
+        applicable: margin === 2,
+        conditionText: `Up ${won}-${12 - won} at the side switch`,
+      };
+    },
+    historical: (m) => {
+      if (m.roundWinners.length < 12) return false;
+      const won = countTeamWinsInRoundsRange(m.roundWinners, m.teamRole, 0, 12);
+      if (won == null) return false;
+      return won - (12 - won) === 2;
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have closed out the map ${wins} of last ${sample} times`,
+  },
+  // R34. Up by ≥6 at the side switch (9-3 or better) — commanding
+  // lead, deeper than R6 (≥4).
+  {
+    id: "up_6_at_halftime_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h || h.roundWinners.length < 12) {
+        return { applicable: false, conditionText: "" };
+      }
+      const won = countTeamWinsInRoundsRange(h.roundWinners, role, 0, 12);
+      if (won == null) return { applicable: false, conditionText: "" };
+      const margin = won - (12 - won);
+      return {
+        applicable: margin >= 6,
+        conditionText: `Up ${won}-${12 - won} at the side switch`,
+      };
+    },
+    historical: (m) => {
+      if (m.roundWinners.length < 12) return false;
+      const won = countTeamWinsInRoundsRange(m.roundWinners, m.teamRole, 0, 12);
+      if (won == null) return false;
+      return won - (12 - won) >= 6;
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have closed out the map ${wins} of last ${sample} times`,
+  },
+  // R35. Up by ≥8 at the side switch (10-2 or better) — near-
+  // decisive first half. Triggers rarely but historically near-
+  // automatic.
+  {
+    id: "up_8_at_halftime_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h || h.roundWinners.length < 12) {
+        return { applicable: false, conditionText: "" };
+      }
+      const won = countTeamWinsInRoundsRange(h.roundWinners, role, 0, 12);
+      if (won == null) return { applicable: false, conditionText: "" };
+      const margin = won - (12 - won);
+      return {
+        applicable: margin >= 8,
+        conditionText: `Up ${won}-${12 - won} at the side switch`,
+      };
+    },
+    historical: (m) => {
+      if (m.roundWinners.length < 12) return false;
+      const won = countTeamWinsInRoundsRange(m.roundWinners, m.teamRole, 0, 12);
+      if (won == null) return false;
+      return won - (12 - won) >= 8;
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have closed out the map ${wins} of last ${sample} times`,
+  },
+  // R36. Down by exactly 2 (5-7) at the side switch — slim deficit.
+  // Less impressive than R14 / R15 but cleaner attribution.
+  {
+    id: "down_2_at_halftime_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h || h.roundWinners.length < 12) {
+        return { applicable: false, conditionText: "" };
+      }
+      const won = countTeamWinsInRoundsRange(h.roundWinners, role, 0, 12);
+      if (won == null) return { applicable: false, conditionText: "" };
+      const deficit = 12 - won - won;
+      return {
+        applicable: deficit === 2,
+        conditionText: `Down ${won}-${12 - won} at the side switch`,
+      };
+    },
+    historical: (m) => {
+      if (m.roundWinners.length < 12) return false;
+      const won = countTeamWinsInRoundsRange(m.roundWinners, m.teamRole, 0, 12);
+      if (won == null) return false;
+      return 12 - won - won === 2;
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have flipped the map ${wins} of last ${sample} times`,
+  },
+  // R37. Down by ≥6 at the side switch (3-9 or worse) — deep deficit.
+  {
+    id: "down_6_at_halftime_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h || h.roundWinners.length < 12) {
+        return { applicable: false, conditionText: "" };
+      }
+      const won = countTeamWinsInRoundsRange(h.roundWinners, role, 0, 12);
+      if (won == null) return { applicable: false, conditionText: "" };
+      const deficit = 12 - won - won;
+      return {
+        applicable: deficit >= 6,
+        conditionText: `Down ${won}-${12 - won} at the side switch`,
+      };
+    },
+    historical: (m) => {
+      if (m.roundWinners.length < 12) return false;
+      const won = countTeamWinsInRoundsRange(m.roundWinners, m.teamRole, 0, 12);
+      if (won == null) return false;
+      return 12 - won - won >= 6;
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have stolen the map ${wins} of last ${sample} times`,
+  },
+  // R38. Down by ≥8 at the side switch (2-10 or worse) — extreme
+  // deficit, near-impossible recovery. When the rate clears, the
+  // odds are practically free money.
+  {
+    id: "down_8_at_halftime_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h || h.roundWinners.length < 12) {
+        return { applicable: false, conditionText: "" };
+      }
+      const won = countTeamWinsInRoundsRange(h.roundWinners, role, 0, 12);
+      if (won == null) return { applicable: false, conditionText: "" };
+      const deficit = 12 - won - won;
+      return {
+        applicable: deficit >= 8,
+        conditionText: `Down ${won}-${12 - won} at the side switch`,
+      };
+    },
+    historical: (m) => {
+      if (m.roundWinners.length < 12) return false;
+      const won = countTeamWinsInRoundsRange(m.roundWinners, m.teamRole, 0, 12);
+      if (won == null) return false;
+      return 12 - won - won >= 8;
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have pulled off the impossible ${wins} of last ${sample} times`,
+  },
+  // ── Force-throw / opponent-run patterns ──────────────────────────
+  //
+  // R39. Opponent ran 3 rounds in a row at SOME point in this map →
+  // the team STILL won the map. The "force-throw 3" predictor: the
+  // opponent had momentum but the team adjusted.
+  {
+    id: "opp_three_in_a_row_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const oppRole: ZillaFactRole = role === "home" ? "away" : "home";
+      const oppHadRun = hasNInARow(h.roundWinners, oppRole, 3);
+      return {
+        applicable: oppHadRun,
+        conditionText: "After surviving a 3-round opponent run",
+      };
+    },
+    historical: (m) => {
+      const oppRole: ZillaFactRole = m.teamRole === "home" ? "away" : "home";
+      return hasNInARow(m.roundWinners, oppRole, 3);
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have still closed out the map ${wins} of last ${sample} times`,
+  },
+  // R40. Opponent ran 4 in a row — deeper version of R39.
+  {
+    id: "opp_four_in_a_row_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const oppRole: ZillaFactRole = role === "home" ? "away" : "home";
+      const oppHadRun = hasNInARow(h.roundWinners, oppRole, 4);
+      return {
+        applicable: oppHadRun,
+        conditionText: "After surviving a 4-round opponent run",
+      };
+    },
+    historical: (m) => {
+      const oppRole: ZillaFactRole = m.teamRole === "home" ? "away" : "home";
+      return hasNInARow(m.roundWinners, oppRole, 4);
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have still won the map ${wins} of last ${sample} times`,
+  },
+  // R41. Opponent ran 5 in a row — extreme force-throw.
+  {
+    id: "opp_five_in_a_row_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const oppRole: ZillaFactRole = role === "home" ? "away" : "home";
+      const oppHadRun = hasNInARow(h.roundWinners, oppRole, 5);
+      return {
+        applicable: oppHadRun,
+        conditionText: "After surviving a 5-round opponent run",
+      };
+    },
+    historical: (m) => {
+      const oppRole: ZillaFactRole = m.teamRole === "home" ? "away" : "home";
+      return hasNInARow(m.roundWinners, oppRole, 5);
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have still won the map ${wins} of last ${sample} times`,
+  },
+  // ── Mid-half balance + match-outcome variants ────────────────────
+  //
+  // R42. Tied 4-4 after 8 rounds — early balance with enough rounds
+  // played to be meaningful (the prefix-2 tied is too noisy). Signals
+  // a competitive map; historical wins from here speak to clutch
+  // factor.
+  {
+    id: "tied_4_4_after_8_won_map",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null) return { applicable: false, conditionText: "" };
+      const h = history.get(n);
+      if (!h || h.roundWinners.length < 8) {
+        return { applicable: false, conditionText: "" };
+      }
+      const won = countTeamWinsInRoundsRange(h.roundWinners, role, 0, 8);
+      return {
+        applicable: won === 4,
+        conditionText: "Tied 4-4 after 8 rounds",
+      };
+    },
+    historical: (m) => {
+      if (m.roundWinners.length < 8) return false;
+      const won = countTeamWinsInRoundsRange(m.roundWinners, m.teamRole, 0, 8);
+      return won === 4;
+    },
+    outcome: (m) => m.teamWonMap,
+    target: (role, currentMap) => ({
+      providerMarketId: 4,
+      outcomeId: role === "home" ? "1" : "2",
+      specifierMatch: (specs) => specs.map === String(currentMap),
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have won the map ${wins} of last ${sample} times`,
+  },
+  // R43. Won the first 3 rounds → won the MATCH (not just the map).
+  // Different target from R2 — the prefix predicate stays the same
+  // but we surface against Match Winner rather than Map Winner, so
+  // the card attaches to the match line. Particularly useful in
+  // BO3 / BO5 where a strong Map 1 opening prefigures the series.
+  {
+    id: "first_3_rounds_won_match",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null || n !== 1) {
+        return { applicable: false, conditionText: "" };
+      }
+      const h = history.get(n);
+      if (!h) return { applicable: false, conditionText: "" };
+      const won = countTeamWinsInFirstNRounds(h.roundWinners, role, 3);
+      return {
+        applicable: won === 3,
+        conditionText: "After taking the first 3 rounds of Map 1",
+      };
+    },
+    historical: (m) =>
+      m.mapNumber === 1 &&
+      countTeamWinsInFirstNRounds(m.roundWinners, m.teamRole, 3) === 3,
+    outcome: (m) => m.teamWonMatch,
+    target: (role) => ({
+      providerMarketId: 1,
+      outcomeId: role === "home" ? "1" : "2",
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have won the match ${wins} of last ${sample} times`,
+  },
+  // R44. Won the pistol round of Map 1 → won the MATCH. Same prefix
+  // predicate as R3 but targets Match Winner instead of Map Winner.
+  // The "pistol-round-wins-the-series" stat — surfaces especially
+  // well for tight-margin teams.
+  {
+    id: "pistol_round_won_match",
+    sports: ROUND_SPORTS,
+    current: (ls, history, role) => {
+      const n = currentMapOf(ls);
+      if (n == null || n !== 1) {
+        return { applicable: false, conditionText: "" };
+      }
+      const h = history.get(n);
+      if (!h || h.roundWinners.length < 1) {
+        return { applicable: false, conditionText: "" };
+      }
+      const won = h.roundWinners[0] === (role === "home" ? "H" : "A");
+      return {
+        applicable: won,
+        conditionText: "After winning the Map 1 pistol round",
+      };
+    },
+    historical: (m) =>
+      m.mapNumber === 1 &&
+      m.roundWinners.length >= 1 &&
+      m.roundWinners[0] === (m.teamRole === "home" ? "H" : "A"),
+    outcome: (m) => m.teamWonMatch,
+    target: (role) => ({
+      providerMarketId: 1,
+      outcomeId: role === "home" ? "1" : "2",
+    }),
+    formatFact: (team, wins, sample, cond) =>
+      `${cond}, ${team} have won the match ${wins} of last ${sample} times`,
   },
 ];
 
