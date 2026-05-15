@@ -600,7 +600,7 @@ export const userPreferences = pgTable("user_preferences", {
   // this is FALSE — same shape as the V1 PRD's
   // `competitionUpdates_manuallySet`.
   prefCompetitionUpdatesSet: boolean().notNull().default(false),
-  prefCommunityHighlights: boolean().notNull().default(false),
+  prefCommunityHighlights: boolean().notNull().default(true),
   prefAchievementsRewards: boolean().notNull().default(true),
   // V1 save-only — public profile + search will start consulting
   // these in V2 (PRD: V2 enforcement).
