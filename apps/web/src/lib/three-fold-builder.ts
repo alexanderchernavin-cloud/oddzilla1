@@ -13,9 +13,18 @@
 // Combi Boost only applies to legs above the configured minOdds.
 //
 // Other hard constraints:
+//   - Prematch only: any match whose `status` is set and !== "not_started"
+//     is dropped before tier selection. The home page already passes
+//     `/catalog/matches?status=upcoming`, but enforcing it here means a
+//     future caller can't accidentally feed in live matches.
 //   - Every leg must come from a Tier 1-3 match (tournament.risk_tier
 //     in {1,2,3}); unranked / higher-tier matches are dropped first.
 //   - All three legs of any one combo must share the same sport.
+//   - Per-sport card cap: only CS2 / Dota 2 / LoL may hold more than
+//     one tier slot in the carousel. Every other sport (efootball,
+//     Valorant, ebasketball, …) is capped at one card — keeps the
+//     carousel from being dominated by whichever sport happens to have
+//     the largest active pool that day.
 //
 // Surviving legs join the tier's candidate pool; we enumerate up to
 // C(POOL_CAP, 3) triples per sport and keep the combo whose combined
@@ -28,6 +37,12 @@ import { COMBI_BOOST_MIN_ODDS } from "@oddzilla/types/combi-boost";
 
 interface MatchInput {
   id: string;
+  /**
+   * Lifecycle status from `/catalog/matches`. When set, only
+   * "not_started" is eligible — anything live / closed / cancelled /
+   * suspended is filtered out at the top of the builder.
+   */
+  status?: string;
   homeTeam: string;
   awayTeam: string;
   matchWinner: {
@@ -110,6 +125,12 @@ const POOL_CAP = 30;
 // ComboZilla only surfaces flagship tournaments. Anything outside the
 // 1-3 risk-tier band (4-10 or NULL) is dropped before tier selection.
 const ELIGIBLE_RISK_TIERS = new Set<number>([1, 2, 3]);
+
+// Sports that may hold more than one ComboZilla card at a time. Every
+// other sport (efootball, Valorant, ebasketball, …) is capped at one
+// card per carousel render. Slugs match the storefront's canonical
+// `sport.slug` (see apps/web/src/lib/sport-order.ts).
+const MULTI_CARD_SPORT_SLUGS = new Set<string>(["cs2", "dota2", "lol"]);
 
 function isTier1to3(m: MatchInput): boolean {
   const t = m.tournament?.riskTier ?? null;
@@ -272,13 +293,25 @@ export function buildThreeFoldSuggestions(
   // still produce output.
   boostMinOdds: number = COMBI_BOOST_MIN_ODDS,
 ): ThreeFoldSuggestions {
-  const eligible = dedupeMatches(matches).filter(isTier1to3);
+  // Prematch-only: anything that already went live (or closed / cancelled
+  // / suspended) is dropped here even though the home page already
+  // passes `status=upcoming`. Belt-and-braces — the builder owns the
+  // invariant so a future caller can't accidentally feed it live odds.
+  const prematch = matches.filter(
+    (m) => m.status === undefined || m.status === "not_started",
+  );
+  const eligible = dedupeMatches(prematch).filter(isTier1to3);
   if (eligible.length < 3) return {};
 
   const bands = buildTierBands(boostMinOdds);
   const sports = groupBySport(eligible);
   const out: ThreeFoldSuggestions = {};
   const usedMatchIds = new Set<string>();
+  // Per-sport card count. Sports outside MULTI_CARD_SPORT_SLUGS are
+  // skipped once they've already claimed one tier slot, so a single
+  // dense pool (efootball is the common offender) can't sweep the
+  // whole carousel.
+  const cardsBySport = new Map<string, number>();
 
   // Per-tier loop, per-sport inner loop. The first sport whose pool can
   // satisfy this tier wins it. Used match IDs are tracked across tiers
@@ -287,6 +320,12 @@ export function buildThreeFoldSuggestions(
   for (const tier of TIER_ORDER) {
     let picked: PickedTriple | null = null;
     for (const sport of sports) {
+      // Per-sport card cap. CS2 / Dota 2 / LoL bypass the cap; every
+      // other slug gets at most one card across the four tier slots.
+      const cardsForSport = cardsBySport.get(sport.slug) ?? 0;
+      if (cardsForSport >= 1 && !MULTI_CARD_SPORT_SLUGS.has(sport.slug)) {
+        continue;
+      }
       // First pass: disjoint pool (no match already used by another tier).
       const disjoint = sport.matches.filter((m) => !usedMatchIds.has(m.id));
       picked = pickForTierInSport(
@@ -315,6 +354,10 @@ export function buildThreeFoldSuggestions(
       sportSlug: picked.sportSlug,
       sportName: picked.sportName,
     };
+    cardsBySport.set(
+      picked.sportSlug,
+      (cardsBySport.get(picked.sportSlug) ?? 0) + 1,
+    );
     for (const leg of picked.legs) usedMatchIds.add(leg.matchId);
   }
 

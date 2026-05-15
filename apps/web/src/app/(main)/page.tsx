@@ -73,9 +73,11 @@ export default async function HomePage() {
   //
   // ComboZilla feeds on PREMATCH-only matches (the brief calls for two
   // prematch combos in the carousel). Tier 1-3 filtering, same-sport
-  // grouping, and the per-leg Combi Boost minimum-odds gate all happen
-  // inside the builder; passing the live minOdds keeps the gate in
-  // sync with whatever the admin tuned the boost to.
+  // grouping, prematch enforcement, the per-sport card cap (only CS2 /
+  // Dota 2 / LoL may hold more than one slot), and the per-leg Combi
+  // Boost minimum-odds gate all happen inside the builder; passing the
+  // live minOdds keeps the gate in sync with whatever the admin tuned
+  // the boost to.
   const threeFoldSuggestions = buildThreeFoldSuggestions(
     upcoming,
     tMatch("matchWinner"),
