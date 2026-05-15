@@ -20,7 +20,7 @@
 // idempotent if this whole transaction is re-executed with the same ticket id.
 
 import { Redis } from "ioredis";
-import { eq, and, inArray, sql } from "drizzle-orm";
+import { eq, and, inArray, or, sql } from "drizzle-orm";
 import type { DbClient } from "@oddzilla/db";
 import {
   users,
@@ -36,6 +36,7 @@ import {
   tournaments,
   betProductConfig,
   combiBoostConfig,
+  riskzillaLiveDelayConfig,
 } from "@oddzilla/db";
 import {
   DEFAULT_CURRENCY,
@@ -744,10 +745,91 @@ export class BetsService {
         throw new RiskzillaRejectError(riskResult, riskIntent, matchContext);
       }
 
+      // ── Resolve effective acceptance delay ───────────────────────────
+      // Two independent sources:
+      //   - users.bet_delay_seconds — per-user, applies to ALL bets
+      //   - riskzilla_live_delay_config — cascade override that only
+      //     contributes when at least one leg is on a LIVE match.
+      // Per-leg cascade: match > tournament > sport > global. Across
+      // legs: MAX (worst-case window). Final delay = MAX(user, cascade).
+      // Pure-prematch placements bypass the cascade — the per-user value
+      // stands alone, preserving prior behaviour.
+      let liveCascadeDelay = 0;
+      const liveLegs = req.selections
+        .map((s) => marketByID.get(s.marketId)!)
+        .filter((m) => m.matchStatus === "live");
+      if (liveLegs.length > 0) {
+        const matchIds = Array.from(new Set(liveLegs.map((m) => m.matchId)));
+        const tournamentIds = Array.from(
+          new Set(liveLegs.map((m) => m.tournamentId)),
+        );
+        const sportIds = Array.from(new Set(liveLegs.map((m) => m.sportId)));
+
+        const cfgRows = await tx
+          .select()
+          .from(riskzillaLiveDelayConfig)
+          .where(
+            or(
+              eq(riskzillaLiveDelayConfig.scope, "global"),
+              and(
+                eq(riskzillaLiveDelayConfig.scope, "sport"),
+                inArray(riskzillaLiveDelayConfig.sportId, sportIds),
+              ),
+              and(
+                eq(riskzillaLiveDelayConfig.scope, "tournament"),
+                inArray(riskzillaLiveDelayConfig.tournamentId, tournamentIds),
+              ),
+              and(
+                eq(riskzillaLiveDelayConfig.scope, "match"),
+                inArray(riskzillaLiveDelayConfig.matchId, matchIds),
+              ),
+            ),
+          );
+
+        let globalDelay = 0;
+        const sportDelay = new Map<number, number>();
+        const tournamentDelay = new Map<number, number>();
+        const matchDelay = new Map<string, number>();
+        for (const r of cfgRows) {
+          switch (r.scope) {
+            case "global":
+              globalDelay = r.delaySeconds;
+              break;
+            case "sport":
+              if (r.sportId !== null) sportDelay.set(r.sportId, r.delaySeconds);
+              break;
+            case "tournament":
+              if (r.tournamentId !== null) {
+                tournamentDelay.set(r.tournamentId, r.delaySeconds);
+              }
+              break;
+            case "match":
+              if (r.matchId !== null) {
+                matchDelay.set(r.matchId.toString(), r.delaySeconds);
+              }
+              break;
+          }
+        }
+        for (const leg of liveLegs) {
+          const v =
+            matchDelay.get(leg.matchId.toString()) ??
+            tournamentDelay.get(leg.tournamentId) ??
+            sportDelay.get(leg.sportId) ??
+            globalDelay;
+          if (v > liveCascadeDelay) liveCascadeDelay = v;
+        }
+      }
+      const effectiveDelaySeconds = Math.max(
+        user.betDelaySeconds,
+        liveCascadeDelay,
+      );
+
       // ── Insert ticket ────────────────────────────────────────────────
       const now = new Date();
-      const delayed = user.betDelaySeconds > 0;
-      const notBefore = delayed ? new Date(now.getTime() + user.betDelaySeconds * 1000) : null;
+      const delayed = effectiveDelaySeconds > 0;
+      const notBefore = delayed
+        ? new Date(now.getTime() + effectiveDelaySeconds * 1000)
+        : null;
       const status = delayed ? ("pending_delay" as const) : ("accepted" as const);
       const acceptedAt = delayed ? null : now;
 

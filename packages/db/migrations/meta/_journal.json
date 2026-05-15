@@ -274,6 +274,13 @@
       "when": 1700000038000,
       "tag": "0038_riskzilla_tiers_7_10",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1700000052000,
+      "tag": "0052_riskzilla_live_bet_delay",
+      "breakpoints": true
     }
   ]
 }
