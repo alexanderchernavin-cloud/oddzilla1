@@ -189,7 +189,10 @@
     "ultimateTagline": "Tripla improvável",
     "aria": "Carregar tripla {tier} com cota combinada {odds}",
     "kicker": "Combos prontos",
-    "cycleNext": "Próximo: {tier}"
+    "cycleNext": "Próximo: {tier}",
+    "cyclePrev": "Anterior: {tier}",
+    "cycleNextGeneric": "Próximo combo",
+    "cyclePrevGeneric": "Combo anterior"
   },
   "zillaflash": {
     "kicker": "Boost por tempo limitado",

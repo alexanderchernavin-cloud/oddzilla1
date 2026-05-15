@@ -189,7 +189,10 @@
     "ultimateTagline": "Long-shot 3-fold",
     "aria": "Load {tier} 3-fold at combined odds {odds}",
     "kicker": "Prebuilt combos",
-    "cycleNext": "Next: {tier}"
+    "cycleNext": "Next: {tier}",
+    "cyclePrev": "Previous: {tier}",
+    "cycleNextGeneric": "Next combo",
+    "cyclePrevGeneric": "Previous combo"
   },
   "zillaflash": {
     "kicker": "Limited-time boost",
