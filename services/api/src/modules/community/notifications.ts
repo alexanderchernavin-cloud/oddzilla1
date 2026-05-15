@@ -76,7 +76,7 @@ const DEFAULT_PREFS = {
   prefNewFollowers: true,
   prefCompetitionUpdates: false,
   prefCompetitionUpdatesSet: false,
-  prefCommunityHighlights: false,
+  prefCommunityHighlights: true,
   prefAchievementsRewards: true,
   privacyShowWinLossRecord: true,
   privacyAllowProfileDiscovery: true,
