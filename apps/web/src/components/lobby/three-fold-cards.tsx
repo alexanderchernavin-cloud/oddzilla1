@@ -248,13 +248,21 @@ export function ThreeFoldCards({
   );
 }
 
-// Icon-only carousel button. Renders the tier the user would land on
-// after pressing (so they get a visual hint of the discount /
-// risk-tier flavour without reading the word). Hidden via
-// `visibility: hidden` when there's nowhere to go — keeps the cards
-// from jumping sideways as the boundary toggles. The wrapping
-// .oz-combozilla-cycle-slot still reserves the gutter so the
-// carousel stays vertically aligned with the section title.
+// Icon-only carousel button. Tall and narrow — matches the card
+// height via `align-self: stretch` driven by the surrounding grid
+// (`.oz-combozilla-track-wrap { align-items: stretch }`). Renders
+// the tier that would slide into the leftmost slot after pressing,
+// so the icon alone communicates the discount / risk-tier flavour.
+//
+// Visibility is driven by CSS classes (.oz-cycle-desktop /
+// .oz-cycle-mobile), one of which display:none's per breakpoint.
+// Crucially: NO inline `display` here, or the class rule would be
+// overridden and BOTH desktop + mobile buttons would render side by
+// side. The previous version had this bug.
+//
+// When `visible` is false the button stays mounted but hidden via
+// visibility:hidden so the cards don't shift sideways as the user
+// scrolls toward the boundaries.
 function CycleButton({
   className,
   direction,
@@ -270,32 +278,25 @@ function CycleButton({
   ariaLabel: string;
   onClick: () => void;
 }) {
-  // tier is null when N < 2 in that direction — render an empty span
-  // so the slot still reserves space.
   if (!tier) {
-    return <span className={className} aria-hidden style={{ width: 36 }} />;
+    return <span className={`oz-cycle ${className}`} aria-hidden />;
   }
   return (
     <button
       type="button"
-      className={className}
+      className={`oz-cycle ${className}`}
       onClick={onClick}
       aria-label={ariaLabel}
       title={ariaLabel}
       style={{
-        width: 36,
-        height: 36,
         background: "var(--surface)",
         border: "1px solid var(--border)",
-        borderRadius: 999,
+        borderRadius: 12,
         cursor: visible ? "pointer" : "default",
         color: "var(--fg)",
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
         padding: 0,
         visibility: visible ? "visible" : "hidden",
-        transition: "border-color 140ms var(--ease), transform 80ms var(--ease)",
+        transition: "border-color 140ms var(--ease)",
       }}
       onMouseEnter={(e) => {
         (e.currentTarget as HTMLButtonElement).style.borderColor =
@@ -306,7 +307,7 @@ function CycleButton({
       }}
       data-direction={direction}
     >
-      <tier.Icon size={18} color={tier.accent} />
+      <tier.Icon size={20} color={tier.accent} />
     </button>
   );
 }

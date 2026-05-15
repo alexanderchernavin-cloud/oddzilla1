@@ -32,6 +32,7 @@ import {
   outcomeDescriptions,
   sports,
   tournaments,
+  zillaflashConfig,
 } from "@oddzilla/db";
 import {
   ZILLAFLASH_KEY_DELTA_PCT,
@@ -49,6 +50,11 @@ import {
 
 const POOL_REFRESH_MS = 30_000;
 const ROTATION_TICK_MS = 1_000;
+// Cache the admin-tunable TTL row for this long. The engine re-loads
+// roughly once every five ticks — fresh enough that an admin PUT
+// takes effect on the next offer rotation but not so chatty that we
+// query Postgres at 1 Hz for a 2-column singleton.
+const CONFIG_CACHE_MS = 5_000;
 // Defensive guard. `substituteTemplate` leaves the literal `{key}`
 // string when a specifier the template referenced isn't present on
 // the market row; if anything slips through, hydrateOffer drops the
@@ -94,6 +100,49 @@ let poolByKind: Record<ZillaFlashKind, PoolCandidate[]> = {
 let poolFetchedAt = 0;
 let rotationTimer: NodeJS.Timeout | null = null;
 let appRef: FastifyInstance | null = null;
+
+// Cached config snapshot. Default to the @oddzilla/types constants so
+// boot before the first DB load (and tests without a `zillaflash_config`
+// row) still produce coherent rotation behaviour.
+interface ConfigSnapshot {
+  enabled: boolean;
+  ttlMs: Record<ZillaFlashKind, number>;
+}
+let configCache: ConfigSnapshot = {
+  enabled: true,
+  ttlMs: { ...ZILLAFLASH_TTL_MS },
+};
+let configFetchedAt = 0;
+
+async function loadConfig(app: FastifyInstance): Promise<ConfigSnapshot> {
+  if (Date.now() - configFetchedAt < CONFIG_CACHE_MS) return configCache;
+  try {
+    const [row] = await app.db
+      .select()
+      .from(zillaflashConfig)
+      .where(eq(zillaflashConfig.id, "default"))
+      .limit(1);
+    if (row) {
+      configCache = {
+        enabled: row.enabled,
+        ttlMs: {
+          prematch: row.prematchTtlSeconds * 1000,
+          live: row.liveTtlSeconds * 1000,
+        },
+      };
+    }
+  } catch (err) {
+    // Don't propagate — engine continues with the last good snapshot
+    // (or the @oddzilla/types defaults at boot). The next tick will
+    // try again.
+    app.log.warn(
+      { err: (err as Error).message },
+      "zillaflash.config_load_failed",
+    );
+  }
+  configFetchedAt = Date.now();
+  return configCache;
+}
 
 function pickRandom<T>(arr: readonly T[]): T | null {
   if (arr.length === 0) return null;
@@ -166,6 +215,7 @@ function offerIsHydratable(slot: SlotState): boolean {
 async function pickReplacement(
   app: FastifyInstance,
   kind: ZillaFlashKind,
+  ttlMs: number,
 ): Promise<SlotState | null> {
   const pool = poolByKind[kind];
   if (pool.length === 0) return null;
@@ -187,7 +237,6 @@ async function pickReplacement(
   if (outcomes.filter((o) => o.publishedOdds > 1).length < 2) return null;
 
   const now = new Date();
-  const ttl = ZILLAFLASH_TTL_MS[kind];
   // Boost the highest-edge outcome (lowest odds wins → biggest absolute
   // boost). Skews offers toward favorites which is what makes a flash
   // boost feel "real" — boosting a 6.0 longshot to 6.4 is invisible
@@ -204,7 +253,7 @@ async function pickReplacement(
     marketId: candidate.marketId,
     outcomeId: chosenOutcome.outcomeId,
     startedAt: now,
-    expiresAt: new Date(now.getTime() + ttl),
+    expiresAt: new Date(now.getTime() + ttlMs),
   };
 }
 
@@ -477,6 +526,20 @@ async function hydrateOffer(
 }
 
 async function rotate(app: FastifyInstance): Promise<void> {
+  const cfg = await loadConfig(app);
+  // Master switch: when disabled, clear out any in-flight slots so the
+  // storefront poll immediately returns an empty payload and stop
+  // touching the pool. Re-enabling backfills naturally on the next tick.
+  if (!cfg.enabled) {
+    for (const kind of ["prematch", "live"] as ZillaFlashKind[]) {
+      for (let i = 0; i < slots[kind].length; i++) {
+        const s = slots[kind][i];
+        if (s) offerById.delete(s.offerId);
+        slots[kind][i] = null;
+      }
+    }
+    return;
+  }
   // Refresh the candidate pool periodically so newly-live matches
   // become eligible without restarting the api.
   if (Date.now() - poolFetchedAt > POOL_REFRESH_MS) {
@@ -493,7 +556,7 @@ async function rotate(app: FastifyInstance): Promise<void> {
       if (s && offerIsHydratable(s)) continue;
       if (s) offerById.delete(s.offerId);
       try {
-        const next = await pickReplacement(app, kind);
+        const next = await pickReplacement(app, kind, cfg.ttlMs[kind]);
         if (next) {
           arr[i] = next;
           offerById.set(next.offerId, next);

@@ -62,6 +62,7 @@ const SECTIONS: Section[] = [
       { href: "/admin/margins", label: "Margins", Icon: I.Filter, matchPrefix: "/admin/margins" },
       { href: "/admin/cashout", label: "Cashout", Icon: I.Wallet, matchPrefix: "/admin/cashout" },
       { href: "/admin/bet-products", label: "Products", Icon: I.Ticket, matchPrefix: "/admin/bet-products" },
+      { href: "/admin/zillaflash", label: "ZillaFlash", Icon: I.Star, matchPrefix: "/admin/zillaflash" },
     ],
   },
   {

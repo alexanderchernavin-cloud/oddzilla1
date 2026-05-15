@@ -591,27 +591,39 @@ body {
 }
 .oz-combozilla-track-wrap {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  /* Narrow gutters either side of the cards — the cycle buttons live
+     here at full-card height. */
+  grid-template-columns: 32px minmax(0, 1fr) 32px;
   gap: 10px;
   align-items: stretch;
 }
 .oz-combozilla-cycle-slot {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
-  min-width: 36px;
 }
 .oz-combozilla-track {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
+/* Tall narrow cycle buttons. Width fixed at 32 px; height stretches
+   to the card height via `align-items: stretch` on the parent grid
+   row. Icon is vertically centered inside. The `.oz-cycle-desktop`
+   / `.oz-cycle-mobile` classes drive per-breakpoint visibility — one
+   variant per side renders at any time, never both. */
+.oz-cycle {
+  width: 32px;
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.oz-cycle.oz-cycle-mobile { display: none; }
 /* On desktop slot-A renders the desktop card, mobile card stays hidden.
    On mobile slot-A renders the mobile card, slot-B is hidden entirely. */
 .oz-combozilla-card-desktop { display: block; }
 .oz-combozilla-card-mobile { display: none; }
-.oz-cycle-desktop { display: inline-flex; }
-.oz-cycle-mobile { display: none; }
 @media (max-width: 1099px) {
   .oz-combozilla-track {
     grid-template-columns: minmax(0, 1fr);
@@ -619,8 +631,8 @@ body {
   .oz-combozilla-slot[data-slot="b"] { display: none; }
   .oz-combozilla-card-desktop { display: none; }
   .oz-combozilla-card-mobile { display: block; }
-  .oz-cycle-desktop { display: none; }
-  .oz-cycle-mobile { display: inline-flex; }
+  .oz-cycle.oz-cycle-desktop { display: none; }
+  .oz-cycle.oz-cycle-mobile { display: inline-flex; }
 }
 
 @media (max-width: 1099px) {

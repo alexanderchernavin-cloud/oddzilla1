@@ -21,4 +21,5 @@ export * from "./community.js";
 export * from "./avatars.js";
 export * from "./riskzilla.js";
 export * from "./live-chat.js";
+export * from "./zillaflash.js";
 export * from "../enums.js";
