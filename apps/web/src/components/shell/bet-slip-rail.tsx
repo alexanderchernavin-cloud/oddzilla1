@@ -1376,6 +1376,10 @@ function SelectionCard({
 }) {
   const t = useTranslations("betSlip");
   const tCommon = useTranslations("common");
+  // Match-page link tap closes the mobile drawer so the navigation
+  // doesn't get hidden behind the slip overlay. No-op on desktop where
+  // the rail is always-on.
+  const { closeAll: closeMobileDrawers } = useMobileDrawers();
   // Selections persisted from older slip versions don't carry an active
   // flag — treat the absence as bettable so the card doesn't suddenly
   // grey out for everyone after a deploy.
@@ -1452,6 +1456,21 @@ function SelectionCard({
           </span>
         )}
         <div style={{ flex: 1 }} />
+        <Link
+          href={`/match/${selection.matchId}`}
+          onClick={() => closeMobileDrawers()}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            color: "var(--fg-dim)",
+            padding: 2,
+            textDecoration: "none",
+          }}
+          aria-label={t("openMatch")}
+          title={t("openMatch")}
+        >
+          <I.Chev size={12} />
+        </Link>
         <button
           type="button"
           onClick={onRemove}

@@ -112,6 +112,7 @@
     "placing": "Placing…",
     "clearSlip": "Clear slip",
     "removeLeg": "Remove leg",
+    "openMatch": "Open match",
     "legs": "{count, plural, one {# leg} other {# legs}}",
     "minStake": "Minimum stake {amount} {currency}",
     "maxStake": "Maximum stake {amount} {currency}",

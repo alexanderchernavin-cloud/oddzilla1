@@ -112,6 +112,7 @@
     "placing": "Apostando…",
     "clearSlip": "Vaciar boleto",
     "removeLeg": "Quitar selección",
+    "openMatch": "Abrir partido",
     "legs": "{count, plural, one {# selección} other {# selecciones}}",
     "minStake": "Apuesta mínima {amount} {currency}",
     "maxStake": "Apuesta máxima {amount} {currency}",
