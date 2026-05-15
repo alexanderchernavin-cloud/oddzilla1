@@ -204,14 +204,18 @@ function ZillaFlashCard({
         style={{
           background: "transparent",
           border: 0,
-          padding: "10px 12px 12px",
+          // Padding + gap tightened so two cards pack side-by-side
+          // at ~410 px container width without feeling cramped, and
+          // single-column cards on phone widths don't waste vertical
+          // space.
+          padding: "8px 10px 10px",
           textAlign: "left",
           cursor: "pointer",
           color: "var(--fg)",
           fontFamily: "inherit",
           display: "flex",
           flexDirection: "column",
-          gap: 8,
+          gap: 5,
         }}
       >
         <div
@@ -331,13 +335,13 @@ function ZillaFlashCard({
             ref={oddsRef}
             className="mono tnum"
             style={{
-              fontSize: 17,
+              fontSize: 15,
               fontWeight: 700,
               color: "var(--positive, #16a34a)",
               background: "var(--surface-2)",
               border: "1px solid var(--border)",
               borderRadius: 8,
-              padding: "4px 12px",
+              padding: "3px 10px",
               flexShrink: 0,
             }}
           >
