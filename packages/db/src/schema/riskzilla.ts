@@ -180,6 +180,69 @@ export const riskzillaEventLog = pgTable(
   ],
 );
 
+// ── Live bet acceptance delay (migration 0052) ─────────────────────────
+// Per-(global, sport, tournament, match) override of how long a LIVE
+// placement sits in pending_delay before the bet-delay worker promotes
+// or rejects it. At placement the engine resolves per-leg via
+// match > tournament > sport > global, takes MAX across all live legs,
+// then takes MAX with the per-user users.bet_delay_seconds. Pure-prematch
+// placements bypass the cascade (cascade contributes 0).
+export const liveDelayScopeEnum = pgEnum("live_delay_scope", [
+  "global",
+  "sport",
+  "tournament",
+  "match",
+]);
+
+export const riskzillaLiveDelayConfig = pgTable(
+  "riskzilla_live_delay_config",
+  {
+    id: bigserial({ mode: "bigint" }).primaryKey(),
+    scope: liveDelayScopeEnum().notNull(),
+    sportId: integer("sport_id").references(() => sports.id, { onDelete: "cascade" }),
+    tournamentId: integer("tournament_id").references(() => tournaments.id, {
+      onDelete: "cascade",
+    }),
+    matchId: bigint("match_id", { mode: "bigint" }).references(() => matches.id, {
+      onDelete: "cascade",
+    }),
+    delaySeconds: smallint("delay_seconds").notNull(),
+    updatedBy: uuid("updated_by").references(() => users.id, { onDelete: "set null" }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "riskzilla_live_delay_seconds_range",
+      sql`${t.delaySeconds} >= 0 AND ${t.delaySeconds} <= 300`,
+    ),
+    check(
+      "riskzilla_live_delay_scope_consistency",
+      sql`(${t.scope} = 'global'
+            AND ${t.sportId} IS NULL AND ${t.tournamentId} IS NULL AND ${t.matchId} IS NULL)
+        OR (${t.scope} = 'sport'
+            AND ${t.sportId} IS NOT NULL AND ${t.tournamentId} IS NULL AND ${t.matchId} IS NULL)
+        OR (${t.scope} = 'tournament'
+            AND ${t.sportId} IS NULL AND ${t.tournamentId} IS NOT NULL AND ${t.matchId} IS NULL)
+        OR (${t.scope} = 'match'
+            AND ${t.sportId} IS NULL AND ${t.tournamentId} IS NULL AND ${t.matchId} IS NOT NULL)`,
+    ),
+    uniqueIndex("riskzilla_live_delay_global_unique")
+      .on(sql`(${t.scope} = 'global')`)
+      .where(sql`${t.scope} = 'global'`),
+    uniqueIndex("riskzilla_live_delay_sport_unique")
+      .on(t.sportId)
+      .where(sql`${t.scope} = 'sport'`),
+    uniqueIndex("riskzilla_live_delay_tournament_unique")
+      .on(t.tournamentId)
+      .where(sql`${t.scope} = 'tournament'`),
+    uniqueIndex("riskzilla_live_delay_match_unique")
+      .on(t.matchId)
+      .where(sql`${t.scope} = 'match'`),
+  ],
+);
+
+export type RiskzillaLiveDelayConfig = typeof riskzillaLiveDelayConfig.$inferSelect;
+
 export type RiskzillaSettings = typeof riskzillaSettings.$inferSelect;
 export type RiskzillaMarketFactor = typeof riskzillaMarketFactors.$inferSelect;
 export type RiskzillaBankState = typeof riskzillaBankState.$inferSelect;
