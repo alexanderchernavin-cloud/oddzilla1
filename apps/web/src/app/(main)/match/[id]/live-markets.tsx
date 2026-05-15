@@ -657,10 +657,11 @@ function SingleMarketCard({
                 size="lg"
                 // ZillaFlash boost: when an offer exists for this
                 // (marketId, outcomeId), the OddButton renders the
-                // BOOSTED price + a chip overlay in the top-left
-                // corner (badge below). Click handler routes through
-                // toggle() with the offer so the slip leg carries
-                // the offer id and the boosted odds.
+                // BOOSTED price, the cell paints with a green border
+                // + soft green tint via `boosted`, and a small chip
+                // overlay anchors the top-left corner. Click handler
+                // routes through toggle() with the offer so the slip
+                // leg carries the offer id + boosted odds.
                 price={
                   flashByOutcome.get(`${m.id}:${o.outcomeId}`)
                     ? Number(
@@ -671,6 +672,7 @@ function SingleMarketCard({
                 label={label}
                 selected={selected}
                 locked={locked}
+                boosted={!!flashByOutcome.get(`${m.id}:${o.outcomeId}`)}
                 onClick={() =>
                   toggle(
                     slip,
@@ -1010,6 +1012,7 @@ function LineRow({
               label=""
               selected={selected}
               locked={locked}
+              boosted={!!flashOffer}
               onClick={() =>
                 toggle(slip, m, o, match, `${slot} ${lineLabel}`, flashOffer)
               }
