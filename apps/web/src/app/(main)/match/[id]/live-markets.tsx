@@ -568,7 +568,15 @@ function SingleMarketCard({
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: `repeat(${cols}, 1fr)`,
+          // `minmax(0, 1fr)` (not bare `1fr`) lets each column shrink
+          // below its content's min-content. Without this, a long
+          // outcome label (player props like "Jonathan E. Smith over
+          // 12.5", or a long team name) pushes the column wider than
+          // its 1fr share and the rightmost cells visibly clip past
+          // the card border on mobile — the shell's overflow-x: clip
+          // hides the actual horizontal scroll but the eye still sees
+          // the price button truncated at the viewport edge.
+          gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
           gap: 8,
         }}
       >
@@ -591,6 +599,11 @@ function SingleMarketCard({
           // or not it has a tip badge. Keeps the OddButtons aligned
           // across rows in line families.
           //
+          // `minWidth: 0` mirrors the `minmax(0, 1fr)` on the parent
+          // grid so the wrapper itself can shrink below its content's
+          // min-content; otherwise the OddButton's nowrap label would
+          // re-inflate the cell from inside.
+          //
           // Stacking: the badge overlay div has NO z-index. Without
           // one, a positioned element doesn't create a new stacking
           // context, which means the popover (z-index 200, defined
@@ -607,7 +620,7 @@ function SingleMarketCard({
           return (
             <div
               key={o.outcomeId}
-              style={{ position: "relative" }}
+              style={{ position: "relative", minWidth: 0 }}
             >
               <OddButton
                 size="lg"
@@ -784,7 +797,13 @@ function LineFamilyCard({
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: `60px repeat(${slotNames.length}, 1fr)`,
+          // `minmax(0, 1fr)` (vs bare `1fr`) lets each slot column
+          // shrink below its content's min-content. Without it, a long
+          // slot header (e.g. a team name like "Carstensz Esports" in
+          // a 2-column handicap ladder) sets the grid track wider than
+          // the card and the rightmost outcome button visibly clips
+          // past the card border on mobile.
+          gridTemplateColumns: `60px repeat(${slotNames.length}, minmax(0, 1fr))`,
           gap: "6px 8px",
           alignItems: "center",
           fontSize: 13,
@@ -900,12 +919,17 @@ function LineRow({
         // lines (a -3.5 row with a chip and a +6.5 row without must
         // sit at the same baseline).
         //
+        // `minWidth: 0` pairs with the parent grid's `minmax(0, 1fr)`
+        // so the wrapper can shrink below the OddButton's min-content;
+        // otherwise the price-row content would push the cell wider
+        // than its 1fr share on narrow viewports.
+        //
         // DOM order: OddButton first, badge wrapper second — the
         // badge paints on top naturally. No z-index on the wrapper
         // so it doesn't trap the popover in a local stacking
         // context (popover z-index 200 then beats sibling chips).
         return (
-          <div key={slot} style={{ position: "relative" }}>
+          <div key={slot} style={{ position: "relative", minWidth: 0 }}>
             <OddButton
               size="md"
               price={price}

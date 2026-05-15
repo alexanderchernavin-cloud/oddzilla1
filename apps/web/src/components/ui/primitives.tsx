@@ -331,6 +331,15 @@ export function OddButton({
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
+            // `min-width: 0` is required for the ellipsis to actually
+            // trigger. The button is `display: flex` (column), and a
+            // flex item's default `min-width: auto` resolves to its
+            // content's min-content — which for a nowrap text run is
+            // the full text width. Without this, the span refuses to
+            // shrink below its full label width and the OddButton
+            // visibly widens to fit (overflowing its grid track on
+            // long player-prop names / team names).
+            minWidth: 0,
           }}
         >
           {label}
