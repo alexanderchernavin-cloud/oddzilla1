@@ -245,39 +245,27 @@ function ZillaFlashCard({
           </Link>
         </div>
 
-        {/* Teams. Wrap allowed so a long pair like "Natus Vincere ·
-            Team Vitality" stays whole on narrow cards instead of
-            clipping mid-name. */}
+        {/* Reading order: teams + market name read as a single block
+            of muted context (this is the FIXTURE), then the selection
+            sits below as the bold prominent pick. Previously the
+            selection (e.g. "Team Vitality") sat directly between the
+            teams ("Natus Vincere · Team Vitality") and the market —
+            two adjacent lines of bold dark text were visually
+            indistinguishable. The new order separates them and lets
+            the selection be the only bold-prominent line in the card
+            body. */}
         <span
           style={{
-            fontSize: 13,
+            fontSize: 12,
             fontWeight: 500,
-            color: "var(--fg)",
-            lineHeight: 1.25,
+            color: "var(--fg-muted)",
+            lineHeight: 1.3,
             wordBreak: "break-word",
           }}
         >
           {offer.homeTeam} · {offer.awayTeam}
         </span>
 
-        {/* Selection: must always render in full (per design ask).
-            wordBreak handles long Cyrillic team names; whiteSpace
-            stays default so spaces wrap naturally. */}
-        <span
-          style={{
-            fontSize: 13.5,
-            fontWeight: 600,
-            color: "var(--fg)",
-            lineHeight: 1.3,
-            wordBreak: "break-word",
-          }}
-        >
-          {offer.outcomeLabel}
-        </span>
-
-        {/* Market name: same wrap rules. The translated market
-            description (e.g. "Total rounds parity - map 1") can be
-            long; we let it spill onto two lines rather than clip. */}
         <span
           style={{
             fontSize: 11.5,
@@ -287,6 +275,22 @@ function ZillaFlashCard({
           }}
         >
           {offer.marketLabel}
+        </span>
+
+        {/* Selection — the bet. Bumped to 15 px / 700 weight so it
+            anchors the card visually beneath the lighter context
+            above. Must always render in full per design ask. */}
+        <span
+          style={{
+            fontSize: 15,
+            fontWeight: 700,
+            color: "var(--fg)",
+            lineHeight: 1.25,
+            wordBreak: "break-word",
+            marginTop: 2,
+          }}
+        >
+          {offer.outcomeLabel}
         </span>
 
         {/* Price row. The boosted odds dominate visually; the
