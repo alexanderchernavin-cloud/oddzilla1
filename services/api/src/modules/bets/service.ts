@@ -746,18 +746,24 @@ export class BetsService {
       }
 
       // ── Resolve effective acceptance delay ───────────────────────────
-      // Two independent sources:
-      //   - users.bet_delay_seconds — per-user, applies to ALL bets
-      //   - riskzilla_live_delay_config — cascade override that only
-      //     contributes when at least one leg is on a LIVE match.
+      // The acceptance delay is a LIVE-only safeguard — prematch markets
+      // don't move fast enough to justify holding the placement, and the
+      // bet-delay worker's drift / suspended re-check would dead-end on
+      // odds that, by definition, can't have moved yet. Two sources, both
+      // gated on at least one live leg:
+      //   - users.bet_delay_seconds — per-user knob (admin sets it for
+      //     bettors that need extra scrutiny on live placements)
+      //   - riskzilla_live_delay_config — cascade override per
+      //     match / tournament / sport / global
       // Per-leg cascade: match > tournament > sport > global. Across
       // legs: MAX (worst-case window). Final delay = MAX(user, cascade).
-      // Pure-prematch placements bypass the cascade — the per-user value
-      // stands alone, preserving prior behaviour.
-      let liveCascadeDelay = 0;
+      // PURE-PREMATCH PLACEMENTS GET ZERO DELAY — even when the bettor's
+      // bet_delay_seconds is set, the per-user knob only kicks in once a
+      // live leg lands in the ticket.
       const liveLegs = req.selections
         .map((s) => marketByID.get(s.marketId)!)
         .filter((m) => m.matchStatus === "live");
+      let effectiveDelaySeconds = 0;
       if (liveLegs.length > 0) {
         const matchIds = Array.from(new Set(liveLegs.map((m) => m.matchId)));
         const tournamentIds = Array.from(
@@ -810,6 +816,7 @@ export class BetsService {
               break;
           }
         }
+        let liveCascadeDelay = 0;
         for (const leg of liveLegs) {
           const v =
             matchDelay.get(leg.matchId.toString()) ??
@@ -818,11 +825,8 @@ export class BetsService {
             globalDelay;
           if (v > liveCascadeDelay) liveCascadeDelay = v;
         }
+        effectiveDelaySeconds = Math.max(user.betDelaySeconds, liveCascadeDelay);
       }
-      const effectiveDelaySeconds = Math.max(
-        user.betDelaySeconds,
-        liveCascadeDelay,
-      );
 
       // ── Insert ticket ────────────────────────────────────────────────
       const now = new Date();
