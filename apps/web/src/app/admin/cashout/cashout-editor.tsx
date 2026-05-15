@@ -178,6 +178,8 @@ function ConfigTable({ entries }: { entries: CashoutConfigEntry[] }) {
   );
 }
 
+type LadderRow = { factor: string; deduction: string };
+
 function UpsertForm({ options }: { options: CashoutOptions }) {
   const router = useRouter();
   const [scope, setScope] = useState<Scope>("global");
@@ -187,9 +189,25 @@ function UpsertForm({ options }: { options: CashoutOptions }) {
   const [acceptDelaySec, setAcceptDelaySec] = useState("5");
   const [minOfferUsdt, setMinOfferUsdt] = useState("0.10");
   const [minChangePct, setMinChangePct] = useState("0.00");
-  const [ladderText, setLadderText] = useState("");
+  const [ladder, setLadder] = useState<LadderRow[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  function addLadderRow() {
+    setLadder((rows) => [...rows, { factor: "", deduction: "" }]);
+  }
+  function updateLadderRow(
+    idx: number,
+    key: "factor" | "deduction",
+    value: string,
+  ) {
+    setLadder((rows) =>
+      rows.map((r, i) => (i === idx ? { ...r, [key]: value } : r)),
+    );
+  }
+  function removeLadderRow(idx: number) {
+    setLadder((rows) => rows.filter((_, i) => i !== idx));
+  }
 
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -220,26 +238,41 @@ function UpsertForm({ options }: { options: CashoutOptions }) {
       return;
     }
 
-    let ladder: CashoutLadderStep[] | null = null;
-    if (ladderText.trim() !== "") {
-      try {
-        const parsed = JSON.parse(ladderText) as CashoutLadderStep[];
-        if (
-          !Array.isArray(parsed) ||
-          parsed.some(
-            (s) =>
-              typeof s.factor !== "number" || typeof s.deduction !== "number",
-          )
-        ) {
-          throw new Error("ladder must be array of {factor, deduction}");
+    let ladderWire: CashoutLadderStep[] | null = null;
+    const filled = ladder.filter(
+      (r) => r.factor.trim() !== "" || r.deduction.trim() !== "",
+    );
+    if (filled.length > 0) {
+      ladderWire = [];
+      for (let i = 0; i < filled.length; i++) {
+        const row = filled[i]!;
+        if (row.factor.trim() === "" || row.deduction.trim() === "") {
+          setMsg({
+            kind: "err",
+            text: `Ladder row ${i + 1}: fill in both fields or remove the row.`,
+          });
+          return;
         }
-        ladder = parsed;
-      } catch (err) {
-        setMsg({
-          kind: "err",
-          text: `Ladder JSON invalid: ${(err as Error).message}`,
+        const factorPct = Number(row.factor);
+        const deductionPct = Number(row.deduction);
+        if (!Number.isFinite(factorPct) || factorPct <= 0) {
+          setMsg({
+            kind: "err",
+            text: `Ladder row ${i + 1}: "At value" must be a positive %.`,
+          });
+          return;
+        }
+        if (!Number.isFinite(deductionPct) || deductionPct < 0) {
+          setMsg({
+            kind: "err",
+            text: `Ladder row ${i + 1}: "Deduction" must be 0% or higher.`,
+          });
+          return;
+        }
+        ladderWire.push({
+          factor: factorPct / 100,
+          deduction: 1 + deductionPct / 100,
         });
-        return;
       }
     }
 
@@ -252,7 +285,7 @@ function UpsertForm({ options }: { options: CashoutOptions }) {
           scopeRefId: scope === "global" ? null : refId,
           enabled,
           prematchFullPaybackSeconds: sec,
-          deductionLadder: ladder,
+          deductionLadder: ladderWire,
           minOfferMicro: minMicro,
           minValueChangeBp: changeBp,
           acceptanceDelaySeconds: acceptSec,
@@ -411,18 +444,69 @@ function UpsertForm({ options }: { options: CashoutOptions }) {
         />
       </label>
 
-      <label className="block">
-        <span className="text-xs text-[var(--color-fg-subtle)]">
-          Deduction ladder (JSON array; leave empty for pure simple cashout)
-        </span>
-        <textarea
-          value={ladderText}
-          onChange={(e) => setLadderText(e.target.value)}
-          rows={5}
-          placeholder='[{"factor":0.5,"deduction":1.025},{"factor":1,"deduction":1.005}]'
-          className="mt-1 w-full rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-3 py-2 font-mono text-xs outline-none focus:border-[var(--color-accent)]"
-        />
-      </label>
+      <fieldset className="space-y-2">
+        <legend className="text-xs text-[var(--color-fg-subtle)]">
+          Deduction ladder (leave empty for pure simple cashout)
+        </legend>
+        {ladder.length === 0 ? (
+          <p className="text-xs text-[var(--color-fg-muted)]">
+            No steps — offer equals simple cashout value.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {ladder.map((row, idx) => (
+              <div key={idx} className="flex items-end gap-2">
+                <label className="block flex-1">
+                  <span className="text-[10px] uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
+                    At value (% of stake)
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.01}
+                    value={row.factor}
+                    onChange={(e) =>
+                      updateLadderRow(idx, "factor", e.target.value)
+                    }
+                    placeholder="50"
+                    className="mt-1 w-full rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-3 py-2 font-mono outline-none focus:border-[var(--color-accent)]"
+                  />
+                </label>
+                <label className="block flex-1">
+                  <span className="text-[10px] uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
+                    Deduction (%)
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.01}
+                    value={row.deduction}
+                    onChange={(e) =>
+                      updateLadderRow(idx, "deduction", e.target.value)
+                    }
+                    placeholder="2.5"
+                    className="mt-1 w-full rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-3 py-2 font-mono outline-none focus:border-[var(--color-accent)]"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => removeLadderRow(idx)}
+                  className="rounded-[10px] border border-[var(--color-border-strong)] px-3 py-2 text-xs uppercase tracking-[0.15em] text-[var(--color-fg-muted)] hover:text-[var(--color-negative)]"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={addLadderRow}
+          className="text-xs uppercase tracking-[0.15em] text-[var(--color-accent)]"
+        >
+          + Add step
+        </button>
+      </fieldset>
 
       {msg ? (
         <p
