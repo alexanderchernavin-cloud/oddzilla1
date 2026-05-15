@@ -14,7 +14,6 @@
 // and a stale URL during a token rotation would be hard to debug.
 
 import {
-  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -22,6 +21,7 @@ import {
   type CSSProperties,
 } from "react";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
+import { useDocumentTheme } from "@/lib/use-theme";
 
 type Variant = "prematch-match" | "prematch-tournament" | "live-scoreboard";
 
@@ -30,6 +30,10 @@ interface DisirWidgetProps {
   // For prematch-match / live-scoreboard: numeric matches.id (string).
   // For prematch-tournament: numeric tournaments.id (string).
   id: string;
+  // When omitted, the widget tracks the storefront's current theme
+  // via <html data-theme> (see useDocumentTheme) and re-fetches the
+  // upstream URL whenever the user toggles between light and dark.
+  // Pass an explicit value to lock the widget to one theme.
   theme?: "dark" | "light";
   // Tab/timeframe — prematch-match only.
   tab?: "teams" | "players" | "tournament" | "stats" | "ranking";
@@ -81,9 +85,12 @@ function widgetPath(variant: Variant, id: string): string {
   }
 }
 
-function buildQuery(props: DisirWidgetProps): string {
+function buildQuery(
+  props: DisirWidgetProps,
+  effectiveTheme: "dark" | "light",
+): string {
   const qs = new URLSearchParams();
-  if (props.theme) qs.set("theme", props.theme);
+  qs.set("theme", effectiveTheme);
   if (props.language) qs.set("language", props.language);
   if (props.allowClose) qs.set("allowClose", "true");
   if (props.variant === "prematch-match") {
@@ -107,6 +114,12 @@ export function DisirWidget(props: DisirWidgetProps) {
     style,
   } = props;
 
+  // Follow the storefront theme unless the caller pinned one explicitly.
+  // The hook returns a fresh value whenever <html data-theme> changes,
+  // so toggling theme triggers a new querySig → re-fetch → new iframe URL.
+  const documentTheme = useDocumentTheme();
+  const effectiveTheme: "dark" | "light" = props.theme ?? documentTheme;
+
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -118,8 +131,8 @@ export function DisirWidget(props: DisirWidgetProps) {
 
   // Stable query string so the URL fetch effect only refires on real
   // dependency changes.
-  const querySig = useMemo(() => buildQuery(props), [
-    props.theme,
+  const querySig = useMemo(() => buildQuery(props, effectiveTheme), [
+    effectiveTheme,
     props.language,
     props.allowClose,
     props.tab,

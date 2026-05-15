@@ -106,12 +106,13 @@ export function MatchLiveMedia({
           <DisirWidget
             variant="live-scoreboard"
             id={matchId}
-            theme="dark"
             title={`Live stats — ${homeTeam} vs ${awayTeam}`}
             minHeight={200}
             // hideUntilData defaults off so Oddin's iframe renders its
             // own "Live stats not available" empty state when data
             // isn't ready — better UX than an invisible widget.
+            // theme prop omitted: DisirWidget tracks <html data-theme>
+            // and re-fetches the upstream URL when the user toggles.
           />
         </div>
       ) : null}
