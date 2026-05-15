@@ -8,21 +8,25 @@
 // (e.g. the Oddin Disir iframe, which carries the theme in its URL),
 // we observe the attribute on <html> and surface it as a hook value.
 //
-// SSR-safe: returns "dark" until the client hydrates, matching the
-// dark-by-default boot script in app/layout.tsx.
+// Polarity matches the CSS in globals.css and ThemeToggle's own
+// logic: the *light* theme is the default — the only signal for dark
+// is an explicit `data-theme="dark"` on <html>. A missing or
+// "light"-valued attribute both mean light. SSR returns "light" so
+// the first paint and the post-hydration value agree for the common
+// (untoggled) case.
 
 import { useEffect, useState } from "react";
 
 export type DocumentTheme = "dark" | "light";
 
 function readTheme(): DocumentTheme {
-  if (typeof document === "undefined") return "dark";
+  if (typeof document === "undefined") return "light";
   const v = document.documentElement.getAttribute("data-theme");
-  return v === "light" ? "light" : "dark";
+  return v === "dark" ? "dark" : "light";
 }
 
 export function useDocumentTheme(): DocumentTheme {
-  const [theme, setTheme] = useState<DocumentTheme>("dark");
+  const [theme, setTheme] = useState<DocumentTheme>("light");
 
   useEffect(() => {
     setTheme(readTheme());
