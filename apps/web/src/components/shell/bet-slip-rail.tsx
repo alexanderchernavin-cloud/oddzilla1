@@ -2577,67 +2577,104 @@ function HistoryTicketCard({
                 : isVoid
                   ? "VOID"
                   : null;
+            const marketLabel = m
+              ? m.marketName?.trim() || `Market #${m.providerMarketId}`
+              : null;
+            const outcomeLabel = m?.outcomeName?.trim() || s.outcomeId;
             const content = (
               <div
                 style={{
                   display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  fontSize: 12.5,
+                  flexDirection: "column",
+                  gap: 2,
                   overflow: "hidden",
                 }}
               >
-                {m ? <SportGlyph sport={m.sportSlug} size={11} /> : null}
-                <span
+                <div
                   style={{
-                    flex: 1,
-                    minWidth: 0,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    fontSize: 12.5,
                     overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                    color: resultColor,
                   }}
                 >
-                  {m ? (
-                    <>
-                      {m.homeTeam}{" "}
-                      <span style={{ color: "var(--fg-muted)" }}>vs</span>{" "}
-                      {m.awayTeam}
-                    </>
-                  ) : (
-                    "Match unavailable"
-                  )}
-                </span>
-                {tagLabel ? (
+                  {m ? <SportGlyph sport={m.sportSlug} size={11} /> : null}
                   <span
-                    className="mono"
                     style={{
-                      fontSize: 9.5,
-                      letterSpacing: "0.06em",
+                      flex: 1,
+                      minWidth: 0,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
                       color: resultColor,
-                      fontWeight: 600,
                     }}
                   >
-                    {tagLabel}
+                    {m ? (
+                      <>
+                        {m.homeTeam}{" "}
+                        <span style={{ color: "var(--fg-muted)" }}>vs</span>{" "}
+                        {m.awayTeam}
+                      </>
+                    ) : (
+                      "Match unavailable"
+                    )}
                   </span>
-                ) : null}
-                <span
-                  className="mono tnum"
-                  style={{
-                    fontSize: 11,
-                    color: "var(--fg-muted)",
-                    textDecoration: strikeOdds ? "line-through" : undefined,
-                  }}
-                >
-                  {oddsLabel}
-                </span>
-                {effectiveFactor ? (
+                  {tagLabel ? (
+                    <span
+                      className="mono"
+                      style={{
+                        fontSize: 9.5,
+                        letterSpacing: "0.06em",
+                        color: resultColor,
+                        fontWeight: 600,
+                      }}
+                    >
+                      {tagLabel}
+                    </span>
+                  ) : null}
                   <span
                     className="mono tnum"
-                    style={{ fontSize: 11, color: resultColor }}
+                    style={{
+                      fontSize: 11,
+                      color: "var(--fg-muted)",
+                      textDecoration: strikeOdds ? "line-through" : undefined,
+                    }}
                   >
-                    {effectiveFactor}
+                    {oddsLabel}
                   </span>
+                  {effectiveFactor ? (
+                    <span
+                      className="mono tnum"
+                      style={{ fontSize: 11, color: resultColor }}
+                    >
+                      {effectiveFactor}
+                    </span>
+                  ) : null}
+                </div>
+                {m ? (
+                  // Market + selection sub-line. Without this the leg row
+                  // shows the match teams and the placement odds but not
+                  // what was actually picked, which made the rail history
+                  // unreadable for anything other than match-winner singles.
+                  <div
+                    style={{
+                      paddingLeft: 19, // align under the team name (icon + gap)
+                      fontSize: 11,
+                      color: "var(--fg-muted)",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {marketLabel ? (
+                      <>
+                        {marketLabel}
+                        <span style={{ color: "var(--fg-subtle)" }}> · </span>
+                      </>
+                    ) : null}
+                    <span style={{ color: "var(--fg)" }}>{outcomeLabel}</span>
+                  </div>
                 ) : null}
               </div>
             );
@@ -2660,19 +2697,50 @@ function HistoryTicketCard({
           })}
         </div>
       ) : first?.market ? (
+        // Single-leg ticket: teams on the top line, market + selection
+        // on the sub-line below. The sub-line is what answers "what did
+        // I actually bet on?" — the team names alone don't.
         <div
           style={{
-            fontSize: 13,
-            fontWeight: 500,
-            letterSpacing: "-0.005em",
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
             overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
           }}
         >
-          {first.market.homeTeam}{" "}
-          <span style={{ color: "var(--fg-muted)" }}>vs</span>{" "}
-          {first.market.awayTeam}
+          <div
+            style={{
+              fontSize: 13,
+              fontWeight: 500,
+              letterSpacing: "-0.005em",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {first.market.homeTeam}{" "}
+            <span style={{ color: "var(--fg-muted)" }}>vs</span>{" "}
+            {first.market.awayTeam}
+          </div>
+          <div
+            style={{
+              fontSize: 11,
+              color: "var(--fg-muted)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {first.market.marketName?.trim() ? (
+              <>
+                {first.market.marketName}
+                <span style={{ color: "var(--fg-subtle)" }}> · </span>
+              </>
+            ) : null}
+            <span style={{ color: "var(--fg)" }}>
+              {first.market.outcomeName?.trim() || first.outcomeId}
+            </span>
+          </div>
         </div>
       ) : (
         <div style={{ fontSize: 13, color: "var(--fg-muted)" }}>

@@ -285,6 +285,14 @@ function TicketRow({
                 const outcomeLabel =
                   m?.outcomeName?.trim() ||
                   tBets("outcomeFallback", { id: s.outcomeId });
+                // Resolved market name from market_descriptions (server
+                // substitutes specifiers). Empty when the description row
+                // isn't in the table yet — fall back to the provider id
+                // so the user still sees *something* identifying the
+                // market type rather than just the outcome.
+                const marketLabel =
+                  m?.marketName?.trim() ||
+                  (m ? `Market #${m.providerMarketId}` : null);
                 const tagLabel = isWon
                   ? tTicket("won")
                   : isLost
@@ -349,9 +357,6 @@ function TicketRow({
                         }
                       >
                         {matchLabel}
-                        <span className="ml-2 text-xs text-[var(--color-fg-subtle)]">
-                          {outcomeLabel}
-                        </span>
                       </span>
                       {tagLabel ? (
                         <span
@@ -380,6 +385,25 @@ function TicketRow({
                           {effectiveFactor}
                         </span>
                       ) : null}
+                    </div>
+                    {/* Market + selection sub-line. Together they
+                        answer "what did I actually bet on?" — the
+                        match teams alone don't. Market name falls
+                        back to "Market #N" when the description row
+                        is missing; outcome name falls back to the raw
+                        outcome id via tBets("outcomeFallback"). */}
+                    <div className="truncate text-xs text-[var(--color-fg-muted)]">
+                      {marketLabel ? (
+                        <>
+                          {marketLabel}
+                          <span className="text-[var(--color-fg-subtle)]">
+                            {" · "}
+                          </span>
+                        </>
+                      ) : null}
+                      <span className="text-[var(--color-fg)]">
+                        {outcomeLabel}
+                      </span>
                     </div>
                     {showLegCurrent ? (
                       <div className="flex items-center justify-end gap-2 text-[11px]">
