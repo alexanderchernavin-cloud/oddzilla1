@@ -178,8 +178,25 @@ export async function emitNotification(
     .from(users)
     .where(inArray(users.id, idsToCheck));
   const aiSet = new Set(aiRows.filter((r) => r.isAi).map((r) => r.id));
-  if (opts.actorId && aiSet.has(opts.actorId)) return null;
-  if (aiSet.has(opts.userId)) return null;
+  if (opts.actorId && aiSet.has(opts.actorId)) {
+    app.log.warn(
+      { actorId: opts.actorId, userId: opts.userId, type: opts.type },
+      "notification emit dropped — actor flagged is_ai",
+    );
+    return null;
+  }
+  if (aiSet.has(opts.userId)) {
+    // Recipient is_ai. Expected for emits TO a seed bettor (harmless,
+    // no one reads them) — but if a real user is mis-flagged is_ai
+    // they silently receive zero notifications across all 11 types.
+    // Logging here surfaces that misclassification to ops without
+    // adding a cost to the hot path.
+    app.log.warn(
+      { userId: opts.userId, type: opts.type, actorId: opts.actorId ?? null },
+      "notification emit dropped — recipient flagged is_ai",
+    );
+    return null;
+  }
 
   // 3. Per-target rate cap (audit SEC-H3). Closes the amplification
   // path where an attacker uses /community/copy or
