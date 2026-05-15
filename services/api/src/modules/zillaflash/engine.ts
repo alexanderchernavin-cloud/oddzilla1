@@ -29,6 +29,7 @@ import {
   marketOutcomes,
   markets,
   matches,
+  outcomeDescriptions,
   sports,
   tournaments,
 } from "@oddzilla/db";
@@ -41,6 +42,10 @@ import {
   type ZillaFlashResponse,
   boostMarketKey,
 } from "@oddzilla/types";
+import {
+  renderOutcomeLabel,
+  substituteTemplate,
+} from "../../lib/market-naming.js";
 
 const POOL_REFRESH_MS = 30_000;
 const ROTATION_TICK_MS = 1_000;
@@ -198,10 +203,27 @@ async function pickReplacement(
   };
 }
 
+// Raw outcome row, name unresolved. Used at pick time (where we only
+// need active + price) and at hydration time (where the caller threads
+// the resolved label through renderOutcomeLabel below).
 interface MarketOutcomeRow {
   outcomeId: string;
-  name: string;
+  rawName: string;
   publishedOdds: number;
+}
+
+interface MatchMeta {
+  homeTeam: string;
+  awayTeam: string;
+  sportSlug: string;
+  sportName: string;
+  providerMarketId: number;
+  /** Specifier-substituted market name, ready to render (e.g. "Round 5 winner - map 1"). */
+  marketLabel: string;
+  /** Raw specifiers jsonb for downstream outcome-label rendering. */
+  specifiers: Record<string, string>;
+  /** Variant (the specifier called `variant`, if any) — feeds the outcome_descriptions lookup. */
+  variant: string;
 }
 
 async function loadMarketOutcomes(
@@ -221,20 +243,16 @@ async function loadMarketOutcomes(
     .filter((r) => r.active && r.publishedOdds !== null)
     .map((r) => ({
       outcomeId: r.outcomeId,
-      name: r.name,
+      rawName: r.name,
       publishedOdds: Number(r.publishedOdds),
     }));
 }
 
-interface MatchMeta {
-  homeTeam: string;
-  awayTeam: string;
-  sportSlug: string;
-  sportName: string;
-  providerMarketId: number;
-  marketLabel: string;
-}
-
+// Combined match + market lookup. Returns the resolved market label
+// (specifier-substituted), the specifiers needed for outcome
+// rendering, and the team names used as a fallback for positional
+// 1/2 outcomes. Locale is pinned to 'en' since ZillaFlash offers
+// don't differentiate today.
 async function loadMatchMeta(
   app: FastifyInstance,
   matchId: bigint,
@@ -247,6 +265,7 @@ async function loadMatchMeta(
       sportSlug: sports.slug,
       sportName: sports.name,
       providerMarketId: markets.providerMarketId,
+      specifiersJson: markets.specifiersJson,
     })
     .from(matches)
     .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
@@ -257,16 +276,30 @@ async function loadMatchMeta(
     .limit(1);
   if (!row) return null;
 
-  const [desc] = await app.db
-    .select({ nameTemplate: marketDescriptions.nameTemplate })
+  const specifiers = (row.specifiersJson ?? {}) as Record<string, string>;
+  const variant = typeof specifiers.variant === "string" ? specifiers.variant : "";
+
+  // Prefer the variant-specific description row, fall back to the
+  // empty-variant base — same precedence /catalog/matches/:id uses.
+  const descRows = await app.db
+    .select({
+      variant: marketDescriptions.variant,
+      nameTemplate: marketDescriptions.nameTemplate,
+    })
     .from(marketDescriptions)
     .where(
       and(
         eq(marketDescriptions.providerMarketId, row.providerMarketId),
         eq(marketDescriptions.language, "en"),
       ),
-    )
-    .limit(1);
+    );
+  const template =
+    descRows.find((d) => d.variant === variant)?.nameTemplate ??
+    descRows.find((d) => d.variant === "")?.nameTemplate ??
+    `Market #${row.providerMarketId}`;
+
+  const teams = { homeTeam: row.homeTeam, awayTeam: row.awayTeam };
+  const marketLabel = substituteTemplate(template, specifiers, teams, undefined, "en");
 
   return {
     homeTeam: row.homeTeam,
@@ -274,8 +307,72 @@ async function loadMatchMeta(
     sportSlug: row.sportSlug,
     sportName: row.sportName,
     providerMarketId: row.providerMarketId,
-    marketLabel: desc?.nameTemplate ?? `Market #${row.providerMarketId}`,
+    marketLabel,
+    specifiers,
+    variant,
   };
+}
+
+async function loadOutcomeDescriptions(
+  app: FastifyInstance,
+  meta: MatchMeta,
+): Promise<Map<string, string>> {
+  const rows = await app.db
+    .select({
+      variant: outcomeDescriptions.variant,
+      outcomeId: outcomeDescriptions.outcomeId,
+      nameTemplate: outcomeDescriptions.nameTemplate,
+    })
+    .from(outcomeDescriptions)
+    .where(
+      and(
+        eq(outcomeDescriptions.providerMarketId, meta.providerMarketId),
+        eq(outcomeDescriptions.language, "en"),
+      ),
+    );
+  // (variant, outcomeId) precedence: prefer the variant-specific row,
+  // fall back to the empty-variant base. Mirrors catalog resolution.
+  const map = new Map<string, string>();
+  for (const d of rows) {
+    if (d.variant === meta.variant) map.set(d.outcomeId, d.nameTemplate);
+  }
+  for (const d of rows) {
+    if (d.variant === "" && !map.has(d.outcomeId)) {
+      map.set(d.outcomeId, d.nameTemplate);
+    }
+  }
+  return map;
+}
+
+function resolveOutcomeLabel(
+  meta: MatchMeta,
+  outcomeId: string,
+  rawName: string,
+  template: string | null,
+): string {
+  // Resolution order, matching the storefront catalog:
+  //   1. market_outcomes.name (Oddin's pre-resolved label, when present)
+  //   2. outcome_descriptions.name_template, specifier-substituted via
+  //      renderOutcomeLabel (handles "home"/"away" → team name,
+  //      "draw" → "Draw", URN profile lookups, etc.)
+  //   3. Positional fallback for outcome ids "1"/"2"/"3" so Round /
+  //      Map-Winner outcomes don't ship with the raw id.
+  if (rawName && rawName.length > 0) return rawName;
+  if (template) {
+    const rendered = renderOutcomeLabel(
+      template,
+      meta.specifiers,
+      meta.homeTeam,
+      meta.awayTeam,
+      undefined,
+      "en",
+    );
+    if (rendered.length > 0) return rendered;
+  }
+  if (outcomeId === "1") return meta.homeTeam;
+  if (outcomeId === "2") return meta.awayTeam;
+  if (outcomeId === "3") return "Draw";
+  return outcomeId;
 }
 
 function fmtOdds(n: number): string {
@@ -315,6 +412,14 @@ async function hydrateOffer(
   // crossed-out "1.95 → 1.95".
   if (boostedOddsStr === originalOddsStr) return null;
 
+  // Resolve every outcome's display label through the same precedence
+  // the storefront uses: raw name → outcome_descriptions template
+  // substituted with this market's specifiers → positional fallback.
+  const outcomeTemplates = await loadOutcomeDescriptions(app, meta);
+  const labels = outcomes.map((o) =>
+    resolveOutcomeLabel(meta, o.outcomeId, o.rawName, outcomeTemplates.get(o.outcomeId) ?? null),
+  );
+
   const now = new Date();
 
   return {
@@ -329,12 +434,12 @@ async function hydrateOffer(
     providerMarketId: meta.providerMarketId,
     marketLabel: meta.marketLabel,
     outcomeId: slot.outcomeId,
-    outcomeLabel: outcomes[boostedIdx]!.name,
+    outcomeLabel: labels[boostedIdx]!,
     originalOdds: originalOddsStr,
     boostedOdds: boostedOddsStr,
     marketSnapshot: outcomes.map((o, i) => ({
       outcomeId: o.outcomeId,
-      outcomeLabel: o.name,
+      outcomeLabel: labels[i]!,
       originalOdds: fmtOdds(o.publishedOdds),
       boostedOdds: fmtOdds(adjusted.adjustedOdds[i]!),
     })),

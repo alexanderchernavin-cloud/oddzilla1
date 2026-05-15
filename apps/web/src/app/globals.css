@@ -562,19 +562,6 @@ body {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 }
-.oz-zillaflash-countdown {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  font-size: 11px;
-  letter-spacing: 0.02em;
-  color: var(--fg-dim);
-  background: var(--surface-2);
-}
-.oz-zillaflash-countdown[data-urgent="true"] {
-  color: var(--negative, #b91c1c);
-}
 @media (max-width: 1099px) {
   .oz-zillaflash-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
