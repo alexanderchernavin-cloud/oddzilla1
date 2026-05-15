@@ -29,7 +29,7 @@ const avatarStyle: CSSProperties = {
   fontSize: 12,
   fontWeight: 600,
   cursor: "pointer",
-  font: "inherit",
+  fontFamily: "inherit",
   padding: 0,
 };
 
