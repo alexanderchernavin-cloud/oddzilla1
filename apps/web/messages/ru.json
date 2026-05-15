@@ -202,7 +202,8 @@
     "aria": "Поставить на {team} в {market} с бустом {odds}",
     "expired": "Срок истёк — обновите",
     "boostedTagShort": "БУСТ",
-    "boostedTagLong": "ZillaFlash буст"
+    "boostedTagLong": "ZillaFlash буст",
+    "openMatch": "Открыть матч"
   },
   "sport": {
     "all": "Все",

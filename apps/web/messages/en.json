@@ -202,7 +202,8 @@
     "aria": "Place bet on {team} {market} at boosted {odds}",
     "expired": "Offer expired — refresh",
     "boostedTagShort": "BOOST",
-    "boostedTagLong": "ZillaFlash boost"
+    "boostedTagLong": "ZillaFlash boost",
+    "openMatch": "Open match"
   },
   "sport": {
     "all": "All",

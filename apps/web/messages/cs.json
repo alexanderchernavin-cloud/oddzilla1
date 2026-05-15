@@ -202,7 +202,8 @@
     "aria": "Vsadit na {team} na {market} se zvýšeným kurzem {odds}",
     "expired": "Nabídka vypršela — obnovit",
     "boostedTagShort": "BOOST",
-    "boostedTagLong": "ZillaFlash boost"
+    "boostedTagLong": "ZillaFlash boost",
+    "openMatch": "Otevřít zápas"
   },
   "sport": {
     "all": "Vše",

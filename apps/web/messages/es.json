@@ -202,7 +202,8 @@
     "aria": "Apostar a {team} en {market} con cuota mejorada {odds}",
     "expired": "Oferta expirada — actualizar",
     "boostedTagShort": "BOOST",
-    "boostedTagLong": "Mejora ZillaFlash"
+    "boostedTagLong": "Mejora ZillaFlash",
+    "openMatch": "Abrir partido"
   },
   "sport": {
     "all": "Todos",

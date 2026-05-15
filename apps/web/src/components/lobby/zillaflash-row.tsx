@@ -229,19 +229,27 @@ function ZillaFlashCard({
           <Link
             href={`/match/${offer.matchId}`}
             onClick={(e) => e.stopPropagation()}
-            aria-label={`Open ${offer.homeTeam} vs ${offer.awayTeam}`}
+            aria-label={t("openMatch")}
             style={{
-              color: "var(--fg-dim)",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              height: 22,
+              padding: "0 10px",
+              color: "var(--fg)",
               fontSize: 11,
+              fontWeight: 500,
               textDecoration: "none",
-              border: "1px solid var(--hairline)",
-              borderRadius: 4,
-              padding: "1px 6px",
+              border: "1px solid var(--border)",
+              background: "var(--surface-2)",
+              borderRadius: 999,
               flexShrink: 0,
-              lineHeight: 1.1,
+              lineHeight: 1,
+              whiteSpace: "nowrap",
             }}
           >
-            →
+            {t("openMatch")}
+            <span aria-hidden style={{ color: "var(--fg-dim)" }}>→</span>
           </Link>
         </div>
 

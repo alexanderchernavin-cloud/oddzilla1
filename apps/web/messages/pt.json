@@ -202,7 +202,8 @@
     "aria": "Apostar em {team} no {market} com cota turbinada {odds}",
     "expired": "Oferta expirada — atualizar",
     "boostedTagShort": "BOOST",
-    "boostedTagLong": "Boost ZillaFlash"
+    "boostedTagLong": "Boost ZillaFlash",
+    "openMatch": "Abrir partida"
   },
   "sport": {
     "all": "Todas",
