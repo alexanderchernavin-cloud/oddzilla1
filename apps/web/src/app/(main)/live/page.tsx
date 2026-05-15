@@ -6,6 +6,7 @@ import {
   type ListMatchEnriched,
 } from "@/components/match/match-list-tabs";
 import { SportGlyph } from "@/components/ui/sport-glyph";
+import { ZillaFlashRow } from "@/components/lobby/zillaflash-row";
 import { orderMatchesBySport, shortName } from "@/lib/sport-order";
 import { getTranslations } from "@/lib/i18n/server";
 
@@ -104,6 +105,12 @@ export default async function LivePage({ searchParams }: PageProps) {
           ))}
         </div>
       )}
+
+      {/* Live-only ZillaFlash boosts — the hook polls the same single
+          /catalog/zillaflash endpoint as the lobby, but we filter to
+          just the LIVE slots since prematch offers are out of context
+          on a page that's specifically a live-status listing. */}
+      <ZillaFlashRow kind="live" />
 
       {visible.length === 0 ? (
         <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>

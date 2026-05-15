@@ -24,19 +24,29 @@ import {
 import { useTranslations } from "@/lib/i18n";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 
-export function ZillaFlashRow() {
+// Lobby home renders everything; the dedicated /live + /upcoming
+// listing pages pass a kind filter so only the relevant offers show.
+// "all" mounts both kinds side-by-side in prematch-first order.
+export function ZillaFlashRow({
+  kind = "all",
+}: {
+  kind?: "prematch" | "live" | "all";
+} = {}) {
   const snapshot = useZillaFlash();
   const t = useTranslations("zillaflash");
 
   if (!snapshot.loaded) return null;
-  if (snapshot.prematch.length === 0 && snapshot.live.length === 0) return null;
 
-  // Render order: prematch first, then live — so the grid reads left
-  // → right as prematch | prematch | live | live on desktop.
-  const offers: ZillaFlashOffer[] = [
-    ...snapshot.prematch,
-    ...snapshot.live,
-  ];
+  // Pick the slice the caller asked for. Both lists are short (≤2 each)
+  // so filtering is free; the engine doesn't expose a kind-specific
+  // endpoint because polling one is the same cost as polling both and
+  // hits the same cache.
+  const offers: ZillaFlashOffer[] = (() => {
+    if (kind === "live") return snapshot.live;
+    if (kind === "prematch") return snapshot.prematch;
+    return [...snapshot.prematch, ...snapshot.live];
+  })();
+  if (offers.length === 0) return null;
 
   return (
     <section className="oz-zillaflash-row" aria-label="ZillaFlash">
