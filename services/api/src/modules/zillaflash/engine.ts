@@ -49,6 +49,11 @@ import {
 
 const POOL_REFRESH_MS = 30_000;
 const ROTATION_TICK_MS = 1_000;
+// Defensive guard. `substituteTemplate` leaves the literal `{key}`
+// string when a specifier the template referenced isn't present on
+// the market row; if anything slips through, hydrateOffer drops the
+// offer rather than ship the raw placeholder to the slip.
+const PLACEHOLDER_RE = /\{[a-z0-9_]+\}/i;
 // Tolerance for "did the user click on the same offer we have now"
 // at bet placement. Boosted odds drift sub-cent every second as the
 // underlying ticks; the slip's display is ≤2 decimals so 0.01 is
@@ -419,6 +424,28 @@ async function hydrateOffer(
   const labels = outcomes.map((o) =>
     resolveOutcomeLabel(meta, o.outcomeId, o.rawName, outcomeTemplates.get(o.outcomeId) ?? null),
   );
+
+  // Refuse to emit an offer whose label substitution didn't fully
+  // resolve. A `{key}` left in the market name or selection means a
+  // specifier the template referenced wasn't present on this market
+  // row — Oddin sometimes ships variant-encoded markets where the
+  // expected key is missing. Better to skip this slot (rotation will
+  // refill on the next tick) than to surface a literal "{map}" /
+  // "{way}" string to the bet slip.
+  if (
+    PLACEHOLDER_RE.test(meta.marketLabel) ||
+    labels.some((l) => PLACEHOLDER_RE.test(l))
+  ) {
+    app.log.warn(
+      {
+        marketId: slot.marketId.toString(),
+        providerMarketId: meta.providerMarketId,
+        marketLabel: meta.marketLabel,
+      },
+      "zillaflash.template_unresolved — dropping offer",
+    );
+    return null;
+  }
 
   const now = new Date();
 

@@ -189,7 +189,10 @@
     "ultimateTagline": "Outsider AKO",
     "aria": "Načíst {tier} AKO s celkovým kurzem {odds}",
     "kicker": "Připravené AKO",
-    "cycleNext": "Další: {tier}"
+    "cycleNext": "Další: {tier}",
+    "cyclePrev": "Předchozí: {tier}",
+    "cycleNextGeneric": "Další AKO",
+    "cyclePrevGeneric": "Předchozí AKO"
   },
   "zillaflash": {
     "kicker": "Časově omezený boost",

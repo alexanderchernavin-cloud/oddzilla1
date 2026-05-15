@@ -189,7 +189,10 @@
     "ultimateTagline": "Triple improbable",
     "aria": "Cargar triple {tier} con cuota combinada {odds}",
     "kicker": "Combos prearmados",
-    "cycleNext": "Siguiente: {tier}"
+    "cycleNext": "Siguiente: {tier}",
+    "cyclePrev": "Anterior: {tier}",
+    "cycleNextGeneric": "Siguiente combo",
+    "cyclePrevGeneric": "Combo anterior"
   },
   "zillaflash": {
     "kicker": "Bono por tiempo limitado",

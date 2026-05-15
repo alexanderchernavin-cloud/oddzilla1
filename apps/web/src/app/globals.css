@@ -573,11 +573,12 @@ body {
   }
 }
 
-/* ComboZilla carousel row. Always renders two slots in the DOM (both
-   tier cards). On desktop both are visible; on mobile slot B is
-   display:none and slot A occupies the full width. The cycle button
-   advances by 1 slot — paired desktop / mobile labels keep SSR markup
-   identical with CSS toggling which is visible. */
+/* ComboZilla carousel row. Two slots side-by-side on desktop; one
+   slot on mobile. Prev / next cycle buttons flank the cards and
+   collapse via visibility:hidden at the boundaries so the cards
+   don't jiggle. Desktop pages by 2 (the visible window size); mobile
+   pages by 1. SSR-safe: both desktop + mobile cycle buttons are in
+   the DOM and CSS picks the right one. */
 .oz-combozilla-row {
   display: flex;
   flex-direction: column;
@@ -588,11 +589,27 @@ body {
   align-items: center;
   gap: 12px;
 }
+.oz-combozilla-track-wrap {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: stretch;
+}
+.oz-combozilla-cycle-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+}
 .oz-combozilla-track {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
+/* On desktop slot-A renders the desktop card, mobile card stays hidden.
+   On mobile slot-A renders the mobile card, slot-B is hidden entirely. */
+.oz-combozilla-card-desktop { display: block; }
+.oz-combozilla-card-mobile { display: none; }
 .oz-cycle-desktop { display: inline-flex; }
 .oz-cycle-mobile { display: none; }
 @media (max-width: 1099px) {
@@ -600,6 +617,8 @@ body {
     grid-template-columns: minmax(0, 1fr);
   }
   .oz-combozilla-slot[data-slot="b"] { display: none; }
+  .oz-combozilla-card-desktop { display: none; }
+  .oz-combozilla-card-mobile { display: block; }
   .oz-cycle-desktop { display: none; }
   .oz-cycle-mobile { display: inline-flex; }
 }

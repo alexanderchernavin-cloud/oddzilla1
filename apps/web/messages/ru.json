@@ -189,7 +189,10 @@
     "ultimateTagline": "Тройка-аутсайдер",
     "aria": "Загрузить тройку {tier} с общим коэффициентом {odds}",
     "kicker": "Готовые экспрессы",
-    "cycleNext": "Далее: {tier}"
+    "cycleNext": "Далее: {tier}",
+    "cyclePrev": "Назад: {tier}",
+    "cycleNextGeneric": "Следующий экспресс",
+    "cyclePrevGeneric": "Предыдущий экспресс"
   },
   "zillaflash": {
     "kicker": "Буст на ограниченное время",

@@ -1,28 +1,30 @@
 // ComboZilla builder. Picks four ready-to-bet 3-fold parlays from the
-// live + upcoming pool, one per "tier" tag:
+// upcoming pool, one per "tier" tag. Per-leg / per-combo gates:
 //
-//   safe        legs <  1.50  →  combined [2.00, 3.00)
-//   challenging legs >= 1.50  →  combined [3.00, 5.00)
-//   risky       legs >  1.80  →  combined [5.00, 10.00)
-//   ultimate    legs >  2.00  →  combined [10.00, 100.00)
+//   safe        legs in [boostMin, 2.0)  →  combined [boostMin³, 5.00)
+//   challenging legs >= boostMin         →  combined [5.00, 10.00)
+//   risky       legs >  max(boostMin,1.8)→  combined [10.00, 20.00)
+//   ultimate    legs >  max(boostMin,2.0)→  combined [20.00, 100.00)
 //
-// Constraints (added with ComboZilla):
+// `boostMin` is the live Combi Boost minimum-odds gate
+// (`/catalog/combi-boost-config.minOdds`, default 1.5). Every leg in
+// every ComboZilla combo MUST clear this floor — otherwise the card
+// would be selling a discount the engine won't honour, since the
+// Combi Boost only applies to legs above the configured minOdds.
+//
+// Other hard constraints:
 //   - Every leg must come from a Tier 1-3 match (tournament.risk_tier
-//     in {1,2,3}). Anything unranked or higher-tier is filtered out
-//     before tier selection runs.
-//   - All three legs of any one combo must share the same sport. The
-//     selector iterates sports independently, so the safe combo for
-//     CS2 and the risky combo for Dota 2 are separate picks.
+//     in {1,2,3}); unranked / higher-tier matches are dropped first.
+//   - All three legs of any one combo must share the same sport.
 //
-// The per-leg odds gate is enforced first; surviving legs join the
-// tier's candidate pool. We then enumerate up to C(POOL_CAP,3) triples
-// per sport, try every qualifying side per match, and keep the combo
-// whose combined product is closest to the band target.
-//
-// Pure & deterministic: same input → same output. Runs server-side from
-// the home page render; no API call.
+// Surviving legs join the tier's candidate pool; we enumerate up to
+// C(POOL_CAP, 3) triples per sport and keep the combo whose combined
+// product is closest to the band target. Pure & deterministic: same
+// (matches, marketLabel, boostMinOdds) → same output. Runs server-
+// side from the home page render.
 
 import type { SlipSelection } from "@oddzilla/types";
+import { COMBI_BOOST_MIN_ODDS } from "@oddzilla/types/combi-boost";
 
 interface MatchInput {
   id: string;
@@ -68,32 +70,38 @@ interface TierBand {
   legAllowed: (oddsNum: number) => boolean;
 }
 
-const TIER_BANDS: Record<TierKey, TierBand> = {
-  safe: {
-    lo: 2.0,
-    hi: 3.0,
-    target: 2.5,
-    legAllowed: (o) => o > 1.0 && o < 1.5,
-  },
-  challenging: {
-    lo: 3.0,
-    hi: 5.0,
-    target: 4.0,
-    legAllowed: (o) => o >= 1.5,
-  },
-  risky: {
-    lo: 5.0,
-    hi: 10.0,
-    target: 7.0,
-    legAllowed: (o) => o > 1.8,
-  },
-  ultimate: {
-    lo: 10.0,
-    hi: 100.0,
-    target: 15.0,
-    legAllowed: (o) => o > 2.0,
-  },
-};
+function buildTierBands(boostMin: number): Record<TierKey, TierBand> {
+  // boostMin = 1.5 by default → minProduct = 3.375. Safe sits in the
+  // [3.4, 5.0) band so it still feels like a "favourites combo" given
+  // that floor; the remaining tiers shift up to make room.
+  const minProduct = boostMin ** 3;
+  return {
+    safe: {
+      lo: Math.max(3.0, minProduct),
+      hi: 5.0,
+      target: 4.0,
+      legAllowed: (o) => o >= boostMin && o < 2.0,
+    },
+    challenging: {
+      lo: 5.0,
+      hi: 10.0,
+      target: 7.0,
+      legAllowed: (o) => o >= boostMin,
+    },
+    risky: {
+      lo: 10.0,
+      hi: 20.0,
+      target: 14.0,
+      legAllowed: (o) => o > Math.max(boostMin, 1.8),
+    },
+    ultimate: {
+      lo: 20.0,
+      hi: 100.0,
+      target: 30.0,
+      legAllowed: (o) => o > Math.max(boostMin, 2.0),
+    },
+  };
+}
 
 // Cap the per-tier candidate pool. C(30,3) × 2-side picks = 32 480 ops
 // per tier × per sport — still trivial across 4 tiers × ~6 active sports.
@@ -258,10 +266,16 @@ function groupBySport(matches: MatchInput[]): SportBucket[] {
 export function buildThreeFoldSuggestions(
   matches: MatchInput[],
   marketLabel: string,
+  // Live Combi Boost minimum-odds gate. Pass the value from
+  // /catalog/combi-boost-config when the admin has tuned it; falls
+  // back to the static default (1.5) so unit tests + early bootstrap
+  // still produce output.
+  boostMinOdds: number = COMBI_BOOST_MIN_ODDS,
 ): ThreeFoldSuggestions {
   const eligible = dedupeMatches(matches).filter(isTier1to3);
   if (eligible.length < 3) return {};
 
+  const bands = buildTierBands(boostMinOdds);
   const sports = groupBySport(eligible);
   const out: ThreeFoldSuggestions = {};
   const usedMatchIds = new Set<string>();
@@ -277,7 +291,7 @@ export function buildThreeFoldSuggestions(
       const disjoint = sport.matches.filter((m) => !usedMatchIds.has(m.id));
       picked = pickForTierInSport(
         disjoint,
-        TIER_BANDS[tier],
+        bands[tier],
         marketLabel,
         sport.slug,
         sport.name,
@@ -287,7 +301,7 @@ export function buildThreeFoldSuggestions(
       // dropping the card. Same-sport invariant still holds.
       picked = pickForTierInSport(
         sport.matches,
-        TIER_BANDS[tier],
+        bands[tier],
         marketLabel,
         sport.slug,
         sport.name,

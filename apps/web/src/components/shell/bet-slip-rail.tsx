@@ -44,6 +44,20 @@ import type {
   WsTicketFrame,
 } from "@oddzilla/types";
 
+// Strip any `{specifier}` placeholders that didn't get resolved upstream.
+// Defensive against legacy localStorage entries (legs added before the
+// engine label-substitution fix landed) and against any future market
+// row whose specifiers don't fully populate the description template.
+// Doubled spaces and orphan dashes left behind by the strip are cleaned
+// up so the result reads naturally.
+function stripUnresolvedPlaceholders(s: string): string {
+  return s
+    .replace(/\{[a-z0-9_]+\}/gi, "")
+    .replace(/\s+-\s*$/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 // Default product margins for the client-side preview. The server is
 // authoritative — it loads bet_product_config and computes the effective
 // margin as `(1 + base) × (1 + per_leg)^N − 1`. These constants mirror
@@ -1411,7 +1425,7 @@ function SelectionCard({
             whiteSpace: "nowrap",
           }}
         >
-          {selection.marketLabel}
+          {stripUnresolvedPlaceholders(selection.marketLabel)}
         </span>
         {suspended && (
           <span
@@ -1466,7 +1480,7 @@ function SelectionCard({
             textDecoration: suspended ? "line-through" : undefined,
           }}
         >
-          {selection.outcomeLabel}
+          {stripUnresolvedPlaceholders(selection.outcomeLabel)}
         </div>
         <div
           className="mono tnum"

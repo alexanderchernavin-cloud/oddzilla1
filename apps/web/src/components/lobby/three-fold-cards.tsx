@@ -89,11 +89,18 @@ export function ThreeFoldCards({
 
   const ticks = useLiveOddsForMatches(matchIds);
 
-  // Carousel page index. Capped to the number of available tiers (when
-  // a tier had no qualifying combo, the index just wraps over the rest).
+  // First-visible tier index. Desktop renders [first, first+1]; mobile
+  // renders [first]. Pagination is by window: desktop jumps by 2,
+  // mobile jumps by 1, and we DON'T wrap — when the user is at the
+  // boundary (safest combo on the left, ultimate on the right) the
+  // corresponding direction button hides. The user has the tier name
+  // shown on the card itself, so the cycle buttons are icon-only.
   const N = visibleTiers.length;
-  const [index, setIndex] = useState(0);
-  const safeIndex = N === 0 ? 0 : index % N;
+  const [first, setFirst] = useState(0);
+  // Clamp the desktop view if the state was set via mobile navigation
+  // to an index that would put the second visible slot past the end.
+  const desktopFirst = Math.max(0, Math.min(first, N - 2));
+  const mobileFirst = Math.max(0, Math.min(first, N - 1));
 
   if (N === 0) return null;
 
@@ -115,14 +122,24 @@ export function ThreeFoldCards({
     slip.setOpen(true);
   };
 
-  const slotA = visibleTiers[safeIndex]!;
-  const slotB = visibleTiers[(safeIndex + 1) % N]!;
-  // Cycle button labels: on desktop the user is already seeing slotA + slotB,
-  // so the "next" card sliding in is at (index+2); on mobile they're seeing
-  // only slotA, so the "next" card is at (index+1). Render both labels and
-  // CSS-pick the right one — keeps SSR-consistent.
-  const nextDesktopTier = visibleTiers[(safeIndex + 2) % N]!;
-  const nextMobileTier = slotB;
+  // Tiers shown in each visible slot.
+  const slotA = visibleTiers[desktopFirst]!;
+  const slotB = visibleTiers[Math.min(desktopFirst + 1, N - 1)]!;
+  const mobileTier = visibleTiers[mobileFirst]!;
+
+  // Tiers the cycle buttons advertise. The icon on each button is the
+  // tier that would land in the leftmost slot after pressing — the
+  // "next page" preview. Buttons hide entirely (via visibility:hidden
+  // to preserve layout) when the page boundary is reached.
+  const desktopPrevTier = visibleTiers[Math.max(desktopFirst - 2, 0)] ?? null;
+  const desktopNextTier = visibleTiers[Math.min(desktopFirst + 2, N - 1)] ?? null;
+  const mobilePrevTier = visibleTiers[Math.max(mobileFirst - 1, 0)] ?? null;
+  const mobileNextTier = visibleTiers[Math.min(mobileFirst + 1, N - 1)] ?? null;
+
+  const canPrevDesktop = desktopFirst > 0;
+  const canNextDesktop = desktopFirst + 2 < N;
+  const canPrevMobile = mobileFirst > 0;
+  const canNextMobile = mobileFirst + 1 < N;
 
   const renderCard = (tier: TierMeta) => (
     <Card
@@ -162,71 +179,123 @@ export function ThreeFoldCards({
             ComboZilla
           </span>
         </div>
-        <div style={{ flex: 1 }} />
-        {N > 1 ? (
-          <>
-            <CycleButton
-              className="oz-cycle-desktop"
-              label={t("cycleNext", { tier: nextDesktopTier.label })}
-              accent={nextDesktopTier.accent}
-              Icon={nextDesktopTier.Icon}
-              onClick={() => setIndex((i) => (i + 1) % N)}
-            />
-            <CycleButton
-              className="oz-cycle-mobile"
-              label={t("cycleNext", { tier: nextMobileTier.label })}
-              accent={nextMobileTier.accent}
-              Icon={nextMobileTier.Icon}
-              onClick={() => setIndex((i) => (i + 1) % N)}
-            />
-          </>
-        ) : null}
       </header>
-      <div className="oz-combozilla-track">
-        <div className="oz-combozilla-slot" data-slot="a">
-          {renderCard(slotA)}
+      <div className="oz-combozilla-track-wrap">
+        <div className="oz-combozilla-cycle-slot" data-side="prev">
+          <CycleButton
+            className="oz-cycle-desktop"
+            direction="prev"
+            tier={desktopPrevTier}
+            visible={canPrevDesktop}
+            ariaLabel={
+              desktopPrevTier
+                ? t("cyclePrev", { tier: desktopPrevTier.label })
+                : t("cyclePrevGeneric")
+            }
+            onClick={() => setFirst((i) => Math.max(0, i - 2))}
+          />
+          <CycleButton
+            className="oz-cycle-mobile"
+            direction="prev"
+            tier={mobilePrevTier}
+            visible={canPrevMobile}
+            ariaLabel={
+              mobilePrevTier
+                ? t("cyclePrev", { tier: mobilePrevTier.label })
+                : t("cyclePrevGeneric")
+            }
+            onClick={() => setFirst((i) => Math.max(0, i - 1))}
+          />
         </div>
-        <div className="oz-combozilla-slot" data-slot="b">
-          {renderCard(slotB)}
+        <div className="oz-combozilla-track">
+          <div className="oz-combozilla-slot" data-slot="a">
+            {/* Desktop pulls from slotA; mobile pulls from mobileTier */}
+            <div className="oz-combozilla-card-desktop">{renderCard(slotA)}</div>
+            <div className="oz-combozilla-card-mobile">{renderCard(mobileTier)}</div>
+          </div>
+          <div className="oz-combozilla-slot" data-slot="b">
+            {renderCard(slotB)}
+          </div>
+        </div>
+        <div className="oz-combozilla-cycle-slot" data-side="next">
+          <CycleButton
+            className="oz-cycle-desktop"
+            direction="next"
+            tier={desktopNextTier}
+            visible={canNextDesktop}
+            ariaLabel={
+              desktopNextTier
+                ? t("cycleNext", { tier: desktopNextTier.label })
+                : t("cycleNextGeneric")
+            }
+            onClick={() => setFirst((i) => Math.min(N - 2, i + 2))}
+          />
+          <CycleButton
+            className="oz-cycle-mobile"
+            direction="next"
+            tier={mobileNextTier}
+            visible={canNextMobile}
+            ariaLabel={
+              mobileNextTier
+                ? t("cycleNext", { tier: mobileNextTier.label })
+                : t("cycleNextGeneric")
+            }
+            onClick={() => setFirst((i) => Math.min(N - 1, i + 1))}
+          />
         </div>
       </div>
     </section>
   );
 }
 
+// Icon-only carousel button. Renders the tier the user would land on
+// after pressing (so they get a visual hint of the discount /
+// risk-tier flavour without reading the word). Hidden via
+// `visibility: hidden` when there's nowhere to go — keeps the cards
+// from jumping sideways as the boundary toggles. The wrapping
+// .oz-combozilla-cycle-slot still reserves the gutter so the
+// carousel stays vertically aligned with the section title.
 function CycleButton({
   className,
-  label,
-  accent,
-  Icon,
+  direction,
+  tier,
+  visible,
+  ariaLabel,
   onClick,
 }: {
   className: string;
-  label: string;
-  accent: string;
-  Icon: (props: { size: number; color: string }) => JSX.Element;
+  direction: "prev" | "next";
+  tier: TierMeta | null;
+  visible: boolean;
+  ariaLabel: string;
   onClick: () => void;
 }) {
+  // tier is null when N < 2 in that direction — render an empty span
+  // so the slot still reserves space.
+  if (!tier) {
+    return <span className={className} aria-hidden style={{ width: 36 }} />;
+  }
   return (
     <button
       type="button"
       className={className}
       onClick={onClick}
+      aria-label={ariaLabel}
+      title={ariaLabel}
       style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 8,
-        height: 34,
-        padding: "0 14px",
+        width: 36,
+        height: 36,
         background: "var(--surface)",
         border: "1px solid var(--border)",
         borderRadius: 999,
-        cursor: "pointer",
+        cursor: visible ? "pointer" : "default",
         color: "var(--fg)",
-        fontFamily: "inherit",
-        fontSize: 12.5,
-        letterSpacing: "0.01em",
-        transition: "border-color 140ms var(--ease)",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 0,
+        visibility: visible ? "visible" : "hidden",
+        transition: "border-color 140ms var(--ease), transform 80ms var(--ease)",
       }}
       onMouseEnter={(e) => {
         (e.currentTarget as HTMLButtonElement).style.borderColor =
@@ -235,10 +304,9 @@ function CycleButton({
       onMouseLeave={(e) => {
         (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--border)";
       }}
+      data-direction={direction}
     >
-      <Icon size={14} color={accent} />
-      <span>{label}</span>
-      <span aria-hidden style={{ color: "var(--fg-muted)" }}>→</span>
+      <tier.Icon size={18} color={tier.accent} />
     </button>
   );
 }

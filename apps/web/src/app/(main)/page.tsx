@@ -30,6 +30,12 @@ interface CrossSportResponse {
   matches: ListMatchWithSport[];
 }
 
+interface CombiBoostConfigResponse {
+  enabled: boolean;
+  minOdds: number;
+  tiers: Array<{ minLegs: number; multiplier: number; label: string }>;
+}
+
 function enrich(m: ListMatchWithSport): ListMatchEnriched {
   return {
     ...m,
@@ -39,11 +45,20 @@ function enrich(m: ListMatchWithSport): ListMatchEnriched {
 }
 
 export default async function HomePage() {
-  const [sportsRes, liveCountsRes, liveRes, upcomingRes, t, tMatch] = await Promise.all([
+  const [
+    sportsRes,
+    liveCountsRes,
+    liveRes,
+    upcomingRes,
+    combiBoostRes,
+    t,
+    tMatch,
+  ] = await Promise.all([
     serverApi<SportsResponse>("/catalog/sports"),
     serverApi<Record<string, number>>("/catalog/live-counts"),
     serverApi<CrossSportResponse>("/catalog/matches?status=live&limit=120"),
     serverApi<CrossSportResponse>("/catalog/matches?status=upcoming&limit=60"),
+    serverApi<CombiBoostConfigResponse>("/catalog/combi-boost-config"),
     getTranslations("home"),
     getTranslations("match"),
   ]);
@@ -57,11 +72,14 @@ export default async function HomePage() {
   // bet-slip rail would re-render it on click).
   //
   // ComboZilla feeds on PREMATCH-only matches (the brief calls for two
-  // prematch combos in the carousel). Tier 1-3 filtering and same-sport
-  // grouping happens inside the builder.
+  // prematch combos in the carousel). Tier 1-3 filtering, same-sport
+  // grouping, and the per-leg Combi Boost minimum-odds gate all happen
+  // inside the builder; passing the live minOdds keeps the gate in
+  // sync with whatever the admin tuned the boost to.
   const threeFoldSuggestions = buildThreeFoldSuggestions(
     upcoming,
     tMatch("matchWinner"),
+    combiBoostRes?.minOdds ?? undefined,
   );
 
   return (
