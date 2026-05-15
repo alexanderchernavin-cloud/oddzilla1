@@ -14,6 +14,30 @@ export const HIDDEN_SPORT_SLUGS = new Set<string>([
   "ebasketballbots",
 ]);
 
+// Curated allowlist for the lobby chip row. The sidebar lists every
+// active sport; the lobby chip row stays tight on the headline titles
+// the storefront wants to feature up front. Order here defines render
+// order in the chip strip — pinned-first is intentional.
+export const LOBBY_CHIP_SPORT_SLUGS = [
+  "cs2",
+  "dota2",
+  "lol",
+  "valorant",
+  "cs2-duels",
+  "dota2-duels",
+  "efootball",
+] as const;
+
+export function filterSportsForLobbyChips<T extends { slug: string }>(
+  items: T[],
+): T[] {
+  const order = LOBBY_CHIP_SPORT_SLUGS as readonly string[];
+  const rank = new Map(order.map((s, i) => [s, i] as const));
+  return items
+    .filter((s) => rank.has(s.slug))
+    .sort((a, b) => rank.get(a.slug)! - rank.get(b.slug)!);
+}
+
 // Lower is more important. Returns TOP_SPORT_SLUGS.length for any slug
 // not in the pinned list — the sort then falls through to a secondary
 // criterion (usually `name.localeCompare`).
