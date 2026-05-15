@@ -131,6 +131,17 @@ export const I = {
       <rect x="14" y="14" width="7" height="7" />
     </Icon>
   ),
+  Rows1: (p: IconProps) => (
+    <Icon {...p}>
+      <rect x="3" y="5" width="18" height="14" rx="1" />
+    </Icon>
+  ),
+  Columns2: (p: IconProps) => (
+    <Icon {...p}>
+      <rect x="3" y="3" width="8" height="18" rx="1" />
+      <rect x="13" y="3" width="8" height="18" rx="1" />
+    </Icon>
+  ),
   Ticket: (p: IconProps) => (
     <Icon {...p}>
       <path d="M3 9a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4z" />
