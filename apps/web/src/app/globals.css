@@ -559,15 +559,20 @@ body {
 }
 .oz-zillaflash-grid {
   display: grid;
-  /* auto-fit so the row adapts to how many offers the caller showed:
-     home gets 4 columns (2 prematch + 2 live), the live + upcoming
-     listing pages get 2. Floor lowered to 200 px so two cards pack
-     side-by-side on tablet / narrow-desktop viewports rather than
-     stacking single-column with a lot of empty horizontal space —
-     the card body fits at 200 px min thanks to the compact padding
-     + break-word labels. Drops to 1 column only on phone widths. */
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  /* Fixed 2-column layout from desktop down through tablet. The home
+     page renders 4 cards → 2 × 2; live + upcoming render 2 cards →
+     one row of 2. Auto-fit was producing awkward 3 + 1 shapes on
+     mid-width desktops because the remaining horizontal headroom
+     made room for a third track but not a fourth. The product
+     surface is fixed at 4 cards max, so a static 2-col grid is the
+     right shape — drops to a single column only at phone widths. */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+@media (max-width: 520px) {
+  .oz-zillaflash-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* ComboZilla carousel row. Two slots side-by-side on desktop; one
