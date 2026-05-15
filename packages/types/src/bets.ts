@@ -155,6 +155,13 @@ export interface TicketSummary {
       homeTeam: string;
       awayTeam: string;
       sportSlug: string;
+      // Human-readable market name resolved on the server from
+      // `market_descriptions.name_template` with the market's specifiers
+      // substituted (e.g. "Match winner", "Total rounds 12.5 - map 1",
+      // "Team Astralis total kills 5.5"). Empty string when the
+      // upstream description row is missing — callers should fall back
+      // to "Market #<providerMarketId>" or just omit.
+      marketName: string;
       // Human-readable outcome name from `market_outcomes.name`
       // (Oddin's resolved label after specifier substitution, e.g.
       // "LargadosyPelados", "Over 1.5", "Map 1"). Empty string when

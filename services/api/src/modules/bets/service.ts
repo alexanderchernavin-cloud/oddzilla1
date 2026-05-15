@@ -27,6 +27,7 @@ import {
   wallets,
   walletLedger,
   markets,
+  marketDescriptions,
   marketOutcomes,
   matches,
   tickets,
@@ -69,6 +70,7 @@ import {
   getSharedObbClient,
   ObbError,
 } from "../../lib/obb-client.js";
+import { substituteTemplate } from "../../lib/market-naming.js";
 import {
   RiskzillaEngine,
   type RiskzillaIntent,
@@ -141,6 +143,44 @@ function selectSelectionRows(
       ),
     )
     .where(where);
+}
+
+// Batched lookup of market_description templates for the providerMarketIds
+// touched by a set of selection rows. Returns a map keyed by
+// `${providerMarketId}:${variant}` so the resolver can locale-prefer the
+// variant-specific row and fall back to the empty-variant template.
+//
+// Defaults to language='en' — bet routes don't carry a locale today, and
+// the catalog page already does the locale-prefer dance for /catalog/*.
+// The fallback "Market #N" is rendered client-side when the lookup misses
+// (rare — only happens for markets whose description Oddin hasn't shipped).
+async function loadMarketDescriptionMap(
+  db: DbClient | TxHandle,
+  rows: Array<{ providerMarketId: number | null }>,
+): Promise<Map<string, string>> {
+  const ids = new Set<number>();
+  for (const r of rows) {
+    if (r.providerMarketId !== null) ids.add(r.providerMarketId);
+  }
+  if (ids.size === 0) return new Map();
+  const descRows = await db
+    .select({
+      providerMarketId: marketDescriptions.providerMarketId,
+      variant: marketDescriptions.variant,
+      nameTemplate: marketDescriptions.nameTemplate,
+    })
+    .from(marketDescriptions)
+    .where(
+      and(
+        inArray(marketDescriptions.providerMarketId, Array.from(ids)),
+        eq(marketDescriptions.language, "en"),
+      ),
+    );
+  const map = new Map<string, string>();
+  for (const d of descRows) {
+    map.set(`${d.providerMarketId}:${d.variant ?? ""}`, d.nameTemplate);
+  }
+  return map;
 }
 
 interface PlaceContext {
@@ -1018,8 +1058,9 @@ export class BetsService {
       byTicket.set(r.sel.ticketId, list);
     }
 
+    const descMap = await loadMarketDescriptionMap(this.db, selRows);
     return ticketRows.map((t) =>
-      this.summaryFromRows(t, byTicket.get(t.id) ?? []),
+      this.summaryFromRows(t, byTicket.get(t.id) ?? [], descMap),
     );
   }
 
@@ -1047,7 +1088,8 @@ export class BetsService {
       eq(ticketSelections.ticketId, t.id),
     );
 
-    return this.summaryFromRows(t, selRows);
+    const descMap = await loadMarketDescriptionMap(db, selRows);
+    return this.summaryFromRows(t, selRows, descMap);
   }
 
   private summaryFromRows(
@@ -1072,6 +1114,7 @@ export class BetsService {
       outcomeActive: boolean | null;
       outcomeName: string | null;
     }>,
+    marketDescMap: Map<string, string>,
   ): TicketSummary {
     const ticketCurrency = (t.currency.trim() as Currency) ?? DEFAULT_CURRENCY;
     return {
@@ -1090,34 +1133,66 @@ export class BetsService {
       settledAt: t.settledAt?.toISOString() ?? null,
       acceptOddsChanges: t.acceptOddsChanges,
       betMeta: (t.betMeta ?? null) as TicketSummary["betMeta"],
-      selections: rows.map((r) => ({
-        marketId: r.sel.marketId.toString(),
-        outcomeId: r.sel.outcomeId,
-        oddsAtPlacement: r.sel.oddsAtPlacement,
-        probabilityAtPlacement: r.sel.probabilityAtPlacement ?? null,
-        result: r.sel.result,
-        voidFactor: r.sel.voidFactor,
-        market:
-          r.matchId !== null && r.providerMarketId !== null
-            ? {
-                providerMarketId: r.providerMarketId,
-                specifiers: (r.specifiersJson ?? {}) as Record<string, string>,
-                matchId: r.matchId.toString(),
-                homeTeam: r.homeTeam ?? "",
-                awayTeam: r.awayTeam ?? "",
-                sportSlug: r.sportSlug ?? "",
-                outcomeName: r.outcomeName ?? "",
-                matchStatus: r.matchStatus ?? "not_started",
-                currentOdds: r.currentOdds,
-                // markets.status=1 + market_outcomes.active=true is the
-                // exact gate POST /bets re-validates against; mirror it
-                // here so the UI can show "currently bettable" with the
-                // same definition.
-                currentlyActive:
-                  r.marketStatus === 1 && r.outcomeActive === true,
-              }
-            : undefined,
-      })),
+      selections: rows.map((r) => {
+        if (r.matchId === null || r.providerMarketId === null) {
+          return {
+            marketId: r.sel.marketId.toString(),
+            outcomeId: r.sel.outcomeId,
+            oddsAtPlacement: r.sel.oddsAtPlacement,
+            probabilityAtPlacement: r.sel.probabilityAtPlacement ?? null,
+            result: r.sel.result,
+            voidFactor: r.sel.voidFactor,
+            market: undefined,
+          };
+        }
+        const specs = (r.specifiersJson ?? {}) as Record<string, string>;
+        const variant = specs.variant ?? "";
+        // Locale-prefer the variant-specific template, fall back to the
+        // empty-variant template. Both with `language='en'` — bet
+        // routes don't pipe locale through today; pre-render here to
+        // keep the API surface flat. Localising the marketName is a
+        // follow-up (read locale from the route, plumb to the map
+        // loader, and prefer locale rows over `en`).
+        const template =
+          marketDescMap.get(`${r.providerMarketId}:${variant}`) ??
+          marketDescMap.get(`${r.providerMarketId}:`) ??
+          "";
+        const marketName = template
+          ? substituteTemplate(
+              template,
+              specs,
+              { homeTeam: r.homeTeam ?? "", awayTeam: r.awayTeam ?? "" },
+              undefined,
+              "en",
+            )
+          : "";
+        return {
+          marketId: r.sel.marketId.toString(),
+          outcomeId: r.sel.outcomeId,
+          oddsAtPlacement: r.sel.oddsAtPlacement,
+          probabilityAtPlacement: r.sel.probabilityAtPlacement ?? null,
+          result: r.sel.result,
+          voidFactor: r.sel.voidFactor,
+          market: {
+            providerMarketId: r.providerMarketId,
+            specifiers: specs,
+            matchId: r.matchId.toString(),
+            homeTeam: r.homeTeam ?? "",
+            awayTeam: r.awayTeam ?? "",
+            sportSlug: r.sportSlug ?? "",
+            marketName,
+            outcomeName: r.outcomeName ?? "",
+            matchStatus: r.matchStatus ?? "not_started",
+            currentOdds: r.currentOdds,
+            // markets.status=1 + market_outcomes.active=true is the
+            // exact gate POST /bets re-validates against; mirror it
+            // here so the UI can show "currently bettable" with the
+            // same definition.
+            currentlyActive:
+              r.marketStatus === 1 && r.outcomeActive === true,
+          },
+        };
+      }),
     };
   }
 }
