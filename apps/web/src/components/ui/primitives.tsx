@@ -252,6 +252,12 @@ export function OddButton({
   onClick,
   size = "md",
   locked = false,
+  // When true the button paints as a ZillaFlash boosted outcome:
+  // green border, soft green tint background, positive-coloured
+  // price. The match page sets this for any outcome with a current
+  // boost so the whole cell signals "great option" at a glance
+  // instead of relying on the small BOOST chip alone.
+  boosted = false,
   style,
 }: {
   price?: number | null;
@@ -261,6 +267,7 @@ export function OddButton({
   onClick?: (e: MouseEvent<HTMLButtonElement>) => void;
   size?: OddSize;
   locked?: boolean;
+  boosted?: boolean;
   style?: CSSProperties;
 }) {
   const H = { sm: 36, md: 44, lg: 52 }[size];
@@ -290,6 +297,12 @@ export function OddButton({
       }
     }
   }, [selected]);
+  // Boost styling only applies when the outcome is bettable AND not
+  // already in the slip — a selected boost still wears the accent
+  // background so the "in your slip" affordance reads, and a locked
+  // boost stays greyed out so a suspended outcome isn't masquerading
+  // as a great option.
+  const showBoost = boosted && !selected && !locked;
   return (
     <button
       ref={flashRef}
@@ -304,11 +317,25 @@ export function OddButton({
         gap: 2,
         height: H,
         padding: "0 12px",
-        background: selected ? "var(--accent)" : "var(--surface-2)",
+        background: selected
+          ? "var(--accent)"
+          : showBoost
+            ? "color-mix(in oklab, var(--positive, #16a34a) 12%, var(--surface-2))"
+            : "var(--surface-2)",
         color: selected ? "var(--accent-fg)" : "var(--fg)",
         border: "1px solid",
-        borderColor: selected ? "var(--accent)" : "var(--border)",
+        borderColor: selected
+          ? "var(--accent)"
+          : showBoost
+            ? "var(--positive, #16a34a)"
+            : "var(--border)",
         borderRadius: 8,
+        // Soft green ring on boosted outcomes — same shade as the
+        // border, but blurred out. Lifts the cell off the page without
+        // a heavy shadow.
+        boxShadow: showBoost
+          ? "0 0 0 1px color-mix(in oklab, var(--positive, #16a34a) 35%, transparent), 0 2px 10px color-mix(in oklab, var(--positive, #16a34a) 18%, transparent)"
+          : "none",
         cursor: locked ? "not-allowed" : "pointer",
         fontFamily: "inherit",
         fontSize: 13,
@@ -355,7 +382,12 @@ export function OddButton({
       >
         <span
           className="mono tnum"
-          style={{ fontSize: 14, fontWeight: 600, letterSpacing: "-0.01em" }}
+          style={{
+            fontSize: 14,
+            fontWeight: showBoost ? 700 : 600,
+            letterSpacing: "-0.01em",
+            color: showBoost ? "var(--positive, #16a34a)" : undefined,
+          }}
         >
           {locked || price == null ? "—" : price.toFixed(2)}
         </span>
