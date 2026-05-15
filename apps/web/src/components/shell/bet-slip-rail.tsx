@@ -63,6 +63,30 @@ function effectiveMarginBp(baseBp: number, perLegBp: number, n: number): number 
 const DRIFT_ERROR_MESSAGE = "The odds moved since you clicked. Try again.";
 const SUSPENDED_ERROR_MESSAGE = "This market is suspended. Try again in a moment.";
 
+// Live countdown to an absolute timestamp. Returns whole seconds remaining,
+// clamped at 0. Re-renders every second while > 0 and stops the interval
+// once the deadline passes (avoids needless re-renders for tickets that
+// have already promoted to accepted). Returns null when `iso` is falsy
+// so callers can branch without an extra guard.
+function useSecondsUntil(iso: string | null): number | null {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!iso) return;
+    const target = new Date(iso).getTime();
+    if (!Number.isFinite(target) || target <= Date.now()) return;
+    const id = window.setInterval(() => {
+      const t = Date.now();
+      setNow(t);
+      if (t >= target) window.clearInterval(id);
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [iso]);
+  if (!iso) return null;
+  const target = new Date(iso).getTime();
+  if (!Number.isFinite(target)) return null;
+  return Math.max(0, Math.ceil((target - now) / 1000));
+}
+
 type RailTab = "slip" | "history";
 
 interface BetSlipRailProps {
@@ -82,6 +106,14 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [placedTicketId, setPlacedTicketId] = useState<string | null>(null);
+  // Live-delay placements come back as `pending_delay` with a future
+  // `notBeforeTs`. Keep both so the success card can render a countdown
+  // instead of misleading the user with a green "Bet placed" check that
+  // implies the bet is already accepted.
+  const [placedTicketStatus, setPlacedTicketStatus] =
+    useState<TicketStatus | null>(null);
+  const [placedTicketNotBefore, setPlacedTicketNotBefore] =
+    useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<RailTab>("slip");
 
   // Drop the success view as soon as the user starts a new slip — otherwise
@@ -89,6 +121,8 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
   useEffect(() => {
     if (selections.length > 0 && placedTicketId) {
       setPlacedTicketId(null);
+      setPlacedTicketStatus(null);
+      setPlacedTicketNotBefore(null);
     }
   }, [selections.length, placedTicketId]);
 
@@ -465,36 +499,37 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
           return;
         }
       }
-      const res = await clientApi<{ ticket: { id: string; status: string } }>(
-        "/bets",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            stakeMicro,
-            idempotencyKey,
-            currency,
-            // Send explicit betType so the server knows to apply tiple/
-            // tippot/betbuilder pricing — without this, ≥2 legs default
-            // to "combo".
-            betType: effectiveMode,
-            selections: selections.map((s) => ({
-              marketId: s.marketId,
-              outcomeId: s.outcomeId,
-              odds: s.odds,
-            })),
-            ...(effectiveMode === "betbuilder" && builderQuote
-              ? {
-                  betBuilder: {
-                    sessionId: builderQuote.sessionId,
-                    expectedOddsX10000: builderQuote.oddsX10000,
-                    selectionIds: builderQuote.selectionIds,
-                  },
-                }
-              : null),
-          }),
-        },
-      );
+      const res = await clientApi<{
+        ticket: { id: string; status: TicketStatus; notBeforeTs: string | null };
+      }>("/bets", {
+        method: "POST",
+        body: JSON.stringify({
+          stakeMicro,
+          idempotencyKey,
+          currency,
+          // Send explicit betType so the server knows to apply tiple/
+          // tippot/betbuilder pricing — without this, ≥2 legs default
+          // to "combo".
+          betType: effectiveMode,
+          selections: selections.map((s) => ({
+            marketId: s.marketId,
+            outcomeId: s.outcomeId,
+            odds: s.odds,
+          })),
+          ...(effectiveMode === "betbuilder" && builderQuote
+            ? {
+                betBuilder: {
+                  sessionId: builderQuote.sessionId,
+                  expectedOddsX10000: builderQuote.oddsX10000,
+                  selectionIds: builderQuote.selectionIds,
+                },
+              }
+            : null),
+        }),
+      });
       setPlacedTicketId(res.ticket.id);
+      setPlacedTicketStatus(res.ticket.status);
+      setPlacedTicketNotBefore(res.ticket.notBeforeTs);
       // Optimistic balance deduct so the top-bar pill + any other
       // wallet consumers reflect the new available balance immediately.
       // For singles the server places one ticket per selection at
@@ -668,43 +703,17 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
         }}
       >
         {placedTicketId ? (
-          <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 10 }}>
-            <div
-              style={{
-                width: 36,
-                height: 36,
-                borderRadius: 999,
-                background: "color-mix(in oklab, var(--positive) 15%, transparent)",
-                color: "var(--positive)",
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              ✓
-            </div>
-            <div
-              className="display"
-              style={{ fontSize: 16, fontWeight: 500, letterSpacing: "-0.01em" }}
-            >
-              {t("betPlaced")}
-            </div>
-            <div style={{ fontSize: 12, color: "var(--fg-muted)" }}>
-              {t("ticket")}{" "}
-              <span className="mono">{placedTicketId.slice(0, 8)}…</span>
-            </div>
-            <Link
-              href="/bets"
-              style={{
-                fontSize: 13,
-                color: "var(--fg)",
-                textDecoration: "underline",
-                marginTop: 4,
-              }}
-            >
-              {t("viewMyBets")} →
-            </Link>
-          </div>
+          <PlacedTicketCard
+            ticketId={placedTicketId}
+            status={placedTicketStatus}
+            notBeforeTs={placedTicketNotBefore}
+            tBetPlaced={t("betPlaced")}
+            tBetQueued={t("betQueued")}
+            tAcceptingIn={(s: number) => t("acceptingIn", { seconds: s })}
+            tLiveDelayNote={t("liveDelayNote")}
+            tTicket={t("ticket")}
+            tViewMyBets={t("viewMyBets")}
+          />
         ) : selections.length === 0 ? (
           <div
             style={{
@@ -1824,6 +1833,84 @@ function resolveHistoryBadge(t: TicketSummary): {
   return { label: HISTORY_STATUS_LABEL[t.status], color: "var(--fg-muted)" };
 }
 
+// Success view for the slip body after a placement lands. Two visual
+// states: accepted bets get the green check + "Bet placed"; live-delay
+// placements get a clock + countdown so the user can see their bet is
+// being held in the per-match/sport/global acceptance window before it
+// counts. Without this, the green check made users think the delay
+// wasn't being applied even when it was.
+function PlacedTicketCard({
+  ticketId,
+  status,
+  notBeforeTs,
+  tBetPlaced,
+  tBetQueued,
+  tAcceptingIn,
+  tLiveDelayNote,
+  tTicket,
+  tViewMyBets,
+}: {
+  ticketId: string;
+  status: TicketStatus | null;
+  notBeforeTs: string | null;
+  tBetPlaced: string;
+  tBetQueued: string;
+  tAcceptingIn: (seconds: number) => string;
+  tLiveDelayNote: string;
+  tTicket: string;
+  tViewMyBets: string;
+}) {
+  const pending = status === "pending_delay";
+  const secondsLeft = useSecondsUntil(pending ? notBeforeTs : null);
+  const showingCountdown =
+    pending && secondsLeft !== null && secondsLeft > 0;
+  const accent = showingCountdown ? "var(--warning, var(--fg))" : "var(--positive)";
+  return (
+    <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 10 }}>
+      <div
+        style={{
+          width: 36,
+          height: 36,
+          borderRadius: 999,
+          background: `color-mix(in oklab, ${accent} 15%, transparent)`,
+          color: accent,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        {showingCountdown ? <I.Clock size={18} /> : "✓"}
+      </div>
+      <div
+        className="display"
+        style={{ fontSize: 16, fontWeight: 500, letterSpacing: "-0.01em" }}
+      >
+        {showingCountdown ? tBetQueued : tBetPlaced}
+      </div>
+      {showingCountdown ? (
+        <div style={{ fontSize: 12.5, color: "var(--fg)", lineHeight: 1.4 }}>
+          {tAcceptingIn(secondsLeft!)}
+          <span style={{ color: "var(--fg-muted)" }}> · {tLiveDelayNote}</span>
+        </div>
+      ) : null}
+      <div style={{ fontSize: 12, color: "var(--fg-muted)" }}>
+        {tTicket} <span className="mono">{ticketId.slice(0, 8)}…</span>
+      </div>
+      <Link
+        href="/bets"
+        style={{
+          fontSize: 13,
+          color: "var(--fg)",
+          textDecoration: "underline",
+          marginTop: 4,
+        }}
+      >
+        {tViewMyBets} →
+      </Link>
+    </div>
+  );
+}
+
 function HistoryPane({ highlightTicketId }: { highlightTicketId: string | null }) {
   const [tickets, setTickets] = useState<TicketSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1988,6 +2075,7 @@ function HistoryTicketCard({
   ticket: TicketSummary;
   highlight: boolean;
 }) {
+  const t = useTranslations("betSlip");
   const stake = fromMicro(BigInt(ticket.stakeMicro));
   const potential = fromMicro(BigInt(ticket.potentialPayoutMicro));
   const actual = ticket.actualPayoutMicro
@@ -2006,6 +2094,11 @@ function HistoryTicketCard({
         minute: "2-digit",
       })
     : ticket.placedAt;
+  // Live countdown for the live-delay acceptance window. Only ticks while
+  // the ticket is still `pending_delay`; once the WS frame promotes it to
+  // accepted, the badge flips and this collapses to null.
+  const pending = ticket.status === "pending_delay";
+  const secondsLeft = useSecondsUntil(pending ? ticket.notBeforeTs : null);
 
   return (
     <div
@@ -2050,11 +2143,33 @@ function HistoryTicketCard({
             textTransform: "uppercase",
             color: badge.color,
             fontWeight: 600,
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
           }}
         >
-          {badge.label}
+          {pending ? <I.Clock size={10} /> : null}
+          {pending && secondsLeft !== null && secondsLeft > 0
+            ? t("acceptingIn", { seconds: secondsLeft })
+            : badge.label}
         </span>
       </div>
+      {pending && secondsLeft !== null && secondsLeft > 0 ? (
+        // Sub-line below the header making it impossible to miss that the
+        // bet is being held for the live-bet acceptance delay configured
+        // in /admin/riskzilla/live-delay. Without this many users assumed
+        // no delay was being applied at all because "Pending" flashed past
+        // before they noticed.
+        <div
+          style={{
+            fontSize: 11,
+            color: "var(--fg-muted)",
+            lineHeight: 1.35,
+          }}
+        >
+          {t("liveDelayNote")}
+        </div>
+      ) : null}
       {legCount > 1 ? (
         // Combo / tiple / tippot / betbuilder — list every leg with
         // its odds + per-leg result colour + a result tag (WON / LOST
