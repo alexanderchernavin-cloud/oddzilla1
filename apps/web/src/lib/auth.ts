@@ -22,6 +22,7 @@ export interface SessionUser {
   kycStatus: "none" | "pending" | "approved" | "rejected";
   displayName: string | null;
   countryCode: string | null;
+  sportOrder: string[] | null;
 }
 
 /**

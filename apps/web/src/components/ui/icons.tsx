@@ -62,6 +62,11 @@ export const I = {
       <path d="m6 9 6 6 6-6" />
     </Icon>
   ),
+  ChevU: (p: IconProps) => (
+    <Icon {...p}>
+      <path d="m6 15 6-6 6 6" />
+    </Icon>
+  ),
   Plus: (p: IconProps) => (
     <Icon {...p}>
       <path d="M12 5v14M5 12h14" />

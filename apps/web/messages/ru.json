@@ -65,7 +65,12 @@
     "responsibleGambling": "Играйте ответственно.",
     "ageNotice": "18+ · BeGambleAware.org",
     "language": "Язык",
-    "languageSwitcher": "Сменить язык"
+    "languageSwitcher": "Сменить язык",
+    "customizeSports": "Настроить порядок видов спорта",
+    "doneCustomizing": "Готово",
+    "resetSports": "Сбросить",
+    "moveSportUp": "Поднять",
+    "moveSportDown": "Опустить"
   },
   "wallet": {
     "title": "Кошелёк",

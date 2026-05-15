@@ -79,6 +79,7 @@ interface PublicAuthResponse {
     kycStatus: "none" | "pending" | "approved" | "rejected";
     displayName: string | null;
     countryCode: string | null;
+    sportOrder: string[] | null;
   };
   accessTokenExpiresAt: string;
 }
@@ -171,6 +172,7 @@ function publicize(u: {
   kycStatus: "none" | "pending" | "approved" | "rejected";
   displayName: string | null;
   countryCode: string | null;
+  sportOrder: string[] | null;
 }) {
   return {
     id: u.id,
@@ -180,5 +182,6 @@ function publicize(u: {
     kycStatus: u.kycStatus,
     displayName: u.displayName,
     countryCode: u.countryCode,
+    sportOrder: u.sportOrder,
   };
 }

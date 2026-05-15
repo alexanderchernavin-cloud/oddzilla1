@@ -65,7 +65,12 @@
     "responsibleGambling": "Please bet responsibly.",
     "ageNotice": "18+ · BeGambleAware.org",
     "language": "Language",
-    "languageSwitcher": "Change language"
+    "languageSwitcher": "Change language",
+    "customizeSports": "Customize sport order",
+    "doneCustomizing": "Done",
+    "resetSports": "Reset",
+    "moveSportUp": "Move up",
+    "moveSportDown": "Move down"
   },
   "wallet": {
     "title": "Wallet",

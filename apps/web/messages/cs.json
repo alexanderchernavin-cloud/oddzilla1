@@ -65,7 +65,12 @@
     "responsibleGambling": "Sázejte s rozvahou.",
     "ageNotice": "18+ · BeGambleAware.org",
     "language": "Jazyk",
-    "languageSwitcher": "Změnit jazyk"
+    "languageSwitcher": "Změnit jazyk",
+    "customizeSports": "Upravit pořadí sportů",
+    "doneCustomizing": "Hotovo",
+    "resetSports": "Obnovit",
+    "moveSportUp": "Posunout nahoru",
+    "moveSportDown": "Posunout dolů"
   },
   "wallet": {
     "title": "Peněženka",

@@ -288,6 +288,13 @@
       "when": 1700000053000,
       "tag": "0053_accept_odds_changes",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1700000056000,
+      "tag": "0056_user_sport_order",
+      "breakpoints": true
     }
   ]
 }
