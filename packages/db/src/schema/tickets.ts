@@ -4,6 +4,7 @@ import {
   uuid,
   bigserial,
   bigint,
+  boolean,
   char,
   text,
   numeric,
@@ -40,6 +41,11 @@ export const tickets = pgTable(
     clientIp: inet(),
     userAgent: text(),
     betMeta: jsonb(),
+    // Migration 0053: bettor opt-in for the live-bet acceptance delay.
+    // When true, the bet-delay worker re-prices the ticket at the current
+    // odds instead of rejecting on odds_drift_exceeded. Single + combo
+    // only; ignored for tiple / tippot / betbuilder.
+    acceptOddsChanges: boolean().notNull().default(false),
   },
   (t) => [
     check("tickets_stake_pos", sql`${t.stakeMicro} > 0`),

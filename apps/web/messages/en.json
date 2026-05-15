@@ -123,6 +123,8 @@
     "betQueued": "Bet queued",
     "acceptingIn": "Accepting in {seconds}s",
     "liveDelayNote": "Held for live acceptance delay",
+    "acceptOddsChangesLabel": "Accept odds changes",
+    "acceptOddsChangesActive": "Auto-accept on odds change",
     "viewMyBets": "View my bets",
     "currency": "Currency",
     "switchToSingles": "Switch to Singles",

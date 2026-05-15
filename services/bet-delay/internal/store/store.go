@@ -24,12 +24,22 @@ func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 
 // PendingTicket is the minimal info needed to re-validate a ticket.
 type PendingTicket struct {
-	ID          string
-	UserID      string
-	Currency    string
-	BetType     string
-	StakeMicro  int64
-	NotBeforeTs time.Time
+	ID                  string
+	UserID              string
+	Currency            string
+	BetType             string
+	StakeMicro          int64
+	PotentialPayoutMicro int64
+	NotBeforeTs         time.Time
+	// Bettor opt-in (migration 0053). When true and the worker detects
+	// per-leg drift, accept the ticket at the latest published odds
+	// instead of rejecting. Single + combo only; the API gates this at
+	// placement time, so the worker can treat the column as authoritative.
+	AcceptOddsChanges bool
+	// Frozen bet_meta payload — needed at re-pricing time to preserve a
+	// combi-boost multiplier across the new-odds path. Null when no
+	// product-specific metadata was attached.
+	BetMetaJSON []byte
 }
 
 // ListReady returns ticket ids whose delay expired. Caller must lock each
@@ -37,7 +47,8 @@ type PendingTicket struct {
 // on them — prevents two workers from grabbing the same row.
 func (s *Store) ListReady(ctx context.Context, limit int) ([]PendingTicket, error) {
 	const q = `
-SELECT id, user_id, currency, bet_type::text, stake_micro, not_before_ts
+SELECT id, user_id, currency, bet_type::text, stake_micro, potential_payout_micro,
+       not_before_ts, accept_odds_changes, bet_meta
   FROM tickets
  WHERE status = 'pending_delay'
    AND not_before_ts <= NOW()
@@ -52,7 +63,11 @@ SELECT id, user_id, currency, bet_type::text, stake_micro, not_before_ts
 	out := make([]PendingTicket, 0, limit)
 	for rows.Next() {
 		var t PendingTicket
-		if err := rows.Scan(&t.ID, &t.UserID, &t.Currency, &t.BetType, &t.StakeMicro, &t.NotBeforeTs); err != nil {
+		if err := rows.Scan(
+			&t.ID, &t.UserID, &t.Currency, &t.BetType, &t.StakeMicro,
+			&t.PotentialPayoutMicro, &t.NotBeforeTs, &t.AcceptOddsChanges,
+			&t.BetMetaJSON,
+		); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -131,6 +146,67 @@ UPDATE tickets
  WHERE id = $1`, ticketID)
 	if err != nil {
 		return fmt.Errorf("accept ticket: %w", err)
+	}
+	return nil
+}
+
+// UpdatedLegOdds is one ticket_selections row whose odds_at_placement
+// needs to be rewritten to the latest published price. Caller picks them
+// out of the LoadSelections result.
+type UpdatedLegOdds struct {
+	MarketID  int64
+	OutcomeID string
+	NewOdds   string
+}
+
+// AcceptWithUpdatedOdds is the accept-odds-changes path. Rewrites each
+// ticket_selections.odds_at_placement to the supplied current published
+// price, updates tickets.potential_payout_micro to the recomputed value,
+// promotes the ticket to 'accepted', and adjusts the riskzilla bank
+// state's open_liability_micro by the (new - old) potential payout delta
+// so the cached counter stays consistent with the sum of open tickets.
+// Single + combo only — caller (the worker's evaluate) already gates by
+// bet_type.
+func AcceptWithUpdatedOdds(
+	ctx context.Context,
+	tx pgx.Tx,
+	ticketID string,
+	oldPayoutMicro int64,
+	newPayoutMicro int64,
+	legs []UpdatedLegOdds,
+) error {
+	for _, l := range legs {
+		if _, err := tx.Exec(ctx, `
+UPDATE ticket_selections
+   SET odds_at_placement = $3::numeric
+ WHERE ticket_id = $1
+   AND market_id = $2
+   AND outcome_id = $4`, ticketID, l.MarketID, l.NewOdds, l.OutcomeID); err != nil {
+			return fmt.Errorf("update leg odds: %w", err)
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE tickets
+   SET status                = 'accepted',
+       accepted_at            = NOW(),
+       potential_payout_micro = $2
+ WHERE id = $1`, ticketID, newPayoutMicro); err != nil {
+		return fmt.Errorf("accept ticket with new odds: %w", err)
+	}
+	// Keep the riskzilla bank state in sync. The placement path bumped
+	// open_liability_micro by oldPayoutMicro; settlement will decrement
+	// by the ticket's current potential_payout_micro (== newPayoutMicro)
+	// — so without this delta the counter would drift by
+	// (newPayoutMicro - oldPayoutMicro) until the next recompute. The
+	// table is a singleton (id=1) but we don't depend on the literal
+	// here in case the row layout changes.
+	delta := newPayoutMicro - oldPayoutMicro
+	if delta != 0 {
+		if _, err := tx.Exec(ctx, `
+UPDATE riskzilla_bank_state
+   SET open_liability_micro = open_liability_micro + $1`, delta); err != nil {
+			return fmt.Errorf("bank state delta: %w", err)
+		}
 	}
 	return nil
 }

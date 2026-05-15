@@ -123,6 +123,8 @@
     "betQueued": "Ставка в очереди",
     "acceptingIn": "Принимаем через {seconds} с",
     "liveDelayNote": "Удерживается для live‑задержки приёма",
+    "acceptOddsChangesLabel": "Принимать изменения коэффициентов",
+    "acceptOddsChangesActive": "Автоматически принимаем новые коэффициенты",
     "viewMyBets": "Перейти к моим ставкам",
     "currency": "Валюта",
     "switchToSingles": "Перейти к ординарам",
