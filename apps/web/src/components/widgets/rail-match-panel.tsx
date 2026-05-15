@@ -126,10 +126,11 @@ function RailMatchPanelInner({ active }: { active: ActiveMatch }) {
             <DisirWidget
               variant="prematch-match"
               id={active.matchId}
-              theme="dark"
               title={`Prematch insights — ${active.homeTeam} vs ${active.awayTeam}`}
               onAvailabilityChange={setInsightsAvailability}
               minHeight={280}
+              // theme prop omitted: DisirWidget tracks <html data-theme>
+              // and re-fetches the upstream URL when the user toggles.
             />
           </div>
         )}

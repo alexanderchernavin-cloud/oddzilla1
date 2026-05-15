@@ -81,7 +81,6 @@ export function MatchPrematchMobile({ matchId, sportSlug, homeTeam, awayTeam }: 
           <DisirWidget
             variant="prematch-match"
             id={matchId}
-            theme="dark"
             title={`Prematch insights — ${homeTeam} vs ${awayTeam}`}
             onAvailabilityChange={setAvailability}
             minHeight={420}
