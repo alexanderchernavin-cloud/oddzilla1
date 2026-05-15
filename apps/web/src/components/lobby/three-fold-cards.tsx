@@ -90,14 +90,18 @@ export function ThreeFoldCards({
   const ticks = useLiveOddsForMatches(matchIds);
 
   // First-visible tier index. Desktop renders [first, first+1]; mobile
-  // renders [first]. Pagination is by window: desktop jumps by 2,
-  // mobile jumps by 1, with wraparound — prev from the first page lands
-  // on the last page, next from the last page lands on the first. Both
-  // cycle buttons stay visible on every page (symmetric layout); for
-  // the common 2-page case (4 tiers / 2 visible per page on desktop)
-  // pressing either button is the same operation. Cycle buttons are
-  // icon-only — the icon is the tier that would land in the leftmost
-  // slot after pressing.
+  // renders [first]. Pagination differs per breakpoint:
+  //   - Desktop (2 cards per page): wraparound + symmetric. With the
+  //     per-sport cap the carousel is almost always exactly 2 pages,
+  //     so prev from page 0 lands on the last page and next from the
+  //     last page lands on page 0 — both buttons always visible, and
+  //     for the 2-page case they resolve to the same destination.
+  //   - Mobile (1 card per page): boundary semantics, no wraparound.
+  //     The prev button hides on the first page and the next button
+  //     hides on the last page — the icons therefore advertise
+  //     different tiers per side, matching the original behaviour.
+  // Cycle buttons are icon-only — the icon is the tier that would land
+  // in the leftmost slot after pressing.
   const N = visibleTiers.length;
   const [first, setFirst] = useState(0);
   // Clamp the desktop view if the state was set via mobile navigation
@@ -130,34 +134,30 @@ export function ThreeFoldCards({
   const slotB = visibleTiers[Math.min(desktopFirst + 1, N - 1)]!;
   const mobileTier = visibleTiers[mobileFirst]!;
 
-  // Where each cycle button would land. Wraparound semantics: at the
-  // start, prev → last page; at the end, next → first page. With the
-  // 2-page layout that ComboZilla normally renders this means both
-  // sides resolve to the same destination — that's what the user sees
-  // and what the symmetry asks for.
+  // Where each cycle button would land. Desktop uses wraparound so
+  // both buttons stay visible on every page; mobile uses bounded
+  // navigation so the prev / next icons differ (and one hides at the
+  // boundary).
   const desktopLastFirst = Math.max(0, N - 2);
-  const mobileLastFirst = Math.max(0, N - 1);
   const desktopPrevFirst =
     desktopFirst <= 0 ? desktopLastFirst : Math.max(0, desktopFirst - 2);
   const desktopNextFirst =
     desktopFirst >= desktopLastFirst ? 0 : Math.min(desktopFirst + 2, desktopLastFirst);
-  const mobilePrevFirst =
-    mobileFirst <= 0 ? mobileLastFirst : mobileFirst - 1;
-  const mobileNextFirst =
-    mobileFirst >= mobileLastFirst ? 0 : mobileFirst + 1;
+  const mobilePrevFirst = Math.max(mobileFirst - 1, 0);
+  const mobileNextFirst = Math.min(mobileFirst + 1, N - 1);
 
   const desktopPrevTier = visibleTiers[desktopPrevFirst] ?? null;
   const desktopNextTier = visibleTiers[desktopNextFirst] ?? null;
   const mobilePrevTier = visibleTiers[mobilePrevFirst] ?? null;
   const mobileNextTier = visibleTiers[mobileNextFirst] ?? null;
 
-  // Buttons are present whenever there's a second window to cycle to.
-  // For desktop that means N > 2 (otherwise both cards fit on one
-  // page); for mobile that means N > 1.
+  // Desktop buttons present whenever there's a second window to cycle
+  // to (N > 2). Mobile keeps the boundary behaviour — prev hidden at
+  // the first page, next hidden at the last page.
   const canPrevDesktop = N > 2;
   const canNextDesktop = N > 2;
-  const canPrevMobile = N > 1;
-  const canNextMobile = N > 1;
+  const canPrevMobile = mobileFirst > 0;
+  const canNextMobile = mobileFirst + 1 < N;
 
   const renderCard = (tier: TierMeta) => (
     <Card
@@ -278,11 +278,11 @@ export function ThreeFoldCards({
 // overridden and BOTH desktop + mobile buttons would render side by
 // side. The previous version had this bug.
 //
-// When `visible` is false (only one window's worth of tiers exists,
-// so there's nothing to cycle to) the button stays mounted but
-// hidden via visibility:hidden so the cards don't shift sideways.
-// With more than one page both buttons are always visible — pages
-// wrap, so prev/next always have a destination.
+// When `visible` is false the button stays mounted but hidden via
+// visibility:hidden so the cards don't shift sideways. On desktop
+// that only happens when N <= 2 (one window covers every tier); on
+// mobile it happens at the boundaries (prev hidden on the first
+// page, next hidden on the last), which is the original behaviour.
 function CycleButton({
   className,
   direction,
