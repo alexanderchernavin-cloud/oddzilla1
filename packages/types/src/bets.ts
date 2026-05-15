@@ -100,6 +100,16 @@ export interface PlaceBetRequest {
     /** Selection IDs as Oddin returned them (round-trip key). */
     selectionIds: string[];
   };
+  /**
+   * Bettor opt-in for the live-bet acceptance delay window
+   * (riskzilla_live_delay_config). When true, the bet-delay worker
+   * re-prices the ticket at the current odds instead of rejecting with
+   * `odds_drift_exceeded`. Single + combo only; the flag is ignored for
+   * tiple / tippot / betbuilder because those products freeze their
+   * pricing at placement on probabilities / session id, not the per-leg
+   * published price. Suspended / inactive checks still reject regardless.
+   */
+  acceptOddsChanges?: boolean;
 }
 
 export interface PlaceBetResponse {
@@ -119,6 +129,14 @@ export interface TicketSummary {
   placedAt: string;
   acceptedAt: string | null;
   settledAt: string | null;
+  /**
+   * Bettor opt-in for re-pricing during the live-bet acceptance delay
+   * window. Surfaced so the bet-history UI can flag tickets accepted at
+   * a different price than placed (the worker also overwrites
+   * `oddsAtPlacement` on each selection in that case, so the user can
+   * see the actual accepted leg odds inline).
+   */
+  acceptOddsChanges: boolean;
   // Frozen at placement for tiple/tippot — null for single/combo. Carries
   // the per-tier multiplier schedule for tippot so the UI can render the
   // payout table without recomputing.

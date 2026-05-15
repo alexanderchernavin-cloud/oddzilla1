@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -184,11 +185,16 @@ func (w *Worker) sweepLoop(ctx context.Context) {
 // it must still re-read stake + currency + not_before_ts.
 func (w *Worker) processOne(ctx context.Context, ticketID string) error {
 	const q = `
-SELECT id, user_id, currency, bet_type::text, stake_micro, not_before_ts
+SELECT id, user_id, currency, bet_type::text, stake_micro, potential_payout_micro,
+       not_before_ts, accept_odds_changes, bet_meta
   FROM tickets
  WHERE id = $1 AND status = 'pending_delay'`
 	var p store.PendingTicket
-	err := w.pool.QueryRow(ctx, q, ticketID).Scan(&p.ID, &p.UserID, &p.Currency, &p.BetType, &p.StakeMicro, &p.NotBeforeTs)
+	err := w.pool.QueryRow(ctx, q, ticketID).Scan(
+		&p.ID, &p.UserID, &p.Currency, &p.BetType, &p.StakeMicro,
+		&p.PotentialPayoutMicro, &p.NotBeforeTs, &p.AcceptOddsChanges,
+		&p.BetMetaJSON,
+	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil // already processed
@@ -226,70 +232,217 @@ func (w *Worker) processTicket(ctx context.Context, p store.PendingTicket) error
 		return err
 	}
 
-	reject, reason := w.evaluate(p.BetType, selections)
-	if reject {
-		if err := store.RejectAndRefund(ctx, tx, p.ID, p.UserID, p.Currency, reason, p.StakeMicro); err != nil {
+	decision := w.evaluate(p, selections)
+	switch decision.action {
+	case actionReject:
+		if err := store.RejectAndRefund(ctx, tx, p.ID, p.UserID, p.Currency, decision.reason, p.StakeMicro); err != nil {
 			return err
 		}
 		if err := tx.Commit(ctx); err != nil {
 			return fmt.Errorf("commit reject: %w", err)
 		}
 		atomic.AddInt64(&w.rejected, 1)
-		w.publishTicketEvent(ctx, p.UserID, p.ID, "rejected", &reason)
-		w.log.Info().Str("ticket", p.ID).Str("reason", reason).Msg("ticket rejected")
+		w.publishTicketEvent(ctx, p.UserID, p.ID, "rejected", &decision.reason)
+		w.log.Info().Str("ticket", p.ID).Str("reason", decision.reason).Msg("ticket rejected")
+		return nil
+
+	case actionAccept:
+		if err := store.Accept(ctx, tx, p.ID); err != nil {
+			return err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit accept: %w", err)
+		}
+		atomic.AddInt64(&w.promoted, 1)
+		w.publishTicketEvent(ctx, p.UserID, p.ID, "accepted", nil)
+		w.log.Info().Str("ticket", p.ID).Msg("ticket accepted")
+		return nil
+
+	case actionAcceptWithUpdatedOdds:
+		if err := store.AcceptWithUpdatedOdds(
+			ctx, tx, p.ID, p.PotentialPayoutMicro, decision.newPayoutMicro, decision.updatedLegs,
+		); err != nil {
+			return err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit accept-updated: %w", err)
+		}
+		atomic.AddInt64(&w.promoted, 1)
+		// Surfaces as a regular 'accepted' status in the WS frame — the
+		// updated leg odds + recomputed potential_payout_micro are
+		// visible in the next /bets fetch so the client picks them up
+		// without a separate frame type. Log distinctly for ops.
+		w.publishTicketEvent(ctx, p.UserID, p.ID, "accepted", nil)
+		w.log.Info().
+			Str("ticket", p.ID).
+			Int64("oldPayoutMicro", p.PotentialPayoutMicro).
+			Int64("newPayoutMicro", decision.newPayoutMicro).
+			Int("legsRepriced", len(decision.updatedLegs)).
+			Msg("ticket accepted at updated odds")
 		return nil
 	}
-
-	if err := store.Accept(ctx, tx, p.ID); err != nil {
-		return err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit accept: %w", err)
-	}
-	atomic.AddInt64(&w.promoted, 1)
-	w.publishTicketEvent(ctx, p.UserID, p.ID, "accepted", nil)
-	w.log.Info().Str("ticket", p.ID).Msg("ticket accepted")
 	return nil
 }
 
-// evaluate returns (rejectNeeded, reason). betType selects how strictly
-// per-leg odds drift is enforced: traditional combos / singles fail on
-// any leg whose published price moved beyond tolerance, while
-// "betbuilder" tickets only re-check market + outcome activity (Oddin's
-// OBB engine prices the session combined odds non-multiplicatively, so
-// per-leg drift is not a meaningful proxy for "ticket-odds drift" — see
-// docs/ODDIN.md). betbuilder placements are anchored on the OBB
-// SessionInfo result the API ran at submit time; the bet-delay window
-// just guards against a market going inactive after that.
-func (w *Worker) evaluate(betType string, selections []store.Selection) (bool, string) {
+type evalAction int
+
+const (
+	actionReject evalAction = iota
+	actionAccept
+	actionAcceptWithUpdatedOdds
+)
+
+type evalResult struct {
+	action          evalAction
+	reason          string
+	newPayoutMicro  int64
+	updatedLegs     []store.UpdatedLegOdds
+}
+
+// evaluate re-checks each leg of a pending ticket against the latest
+// published_odds + market.status + outcome.active. It either rejects,
+// accepts at the placement odds, or — when the bettor opted in via
+// `accept_odds_changes=true` and the only failure is per-leg drift —
+// signals an accept-with-updated-odds path so the worker rewrites the
+// leg prices + potential payout before flipping the ticket to accepted.
+//
+// Suspended / inactive / no-current-price checks reject regardless of
+// the flag; "accept any odds change" deliberately doesn't mean "accept
+// against a market that's no longer bettable".
+//
+// BetType behaviour:
+//   - "betbuilder": per-leg drift is intentionally not a meaningful gate
+//     (Oddin's OBB engine prices the combined session non-multiplicatively).
+//     Drift is skipped; status/activity still apply.
+//   - "tiple" / "tippot": price is anchored to the per-leg probability
+//     snapshot frozen on the ticket — re-multiplying current published
+//     odds wouldn't yield a meaningful new payout, so accept_odds_changes
+//     is ignored. Drift still gates rejection.
+//   - "single" / "combo": drift rejects unless accept_odds_changes is
+//     true, in which case we re-price.
+func (w *Worker) evaluate(p store.PendingTicket, selections []store.Selection) evalResult {
 	if len(selections) == 0 {
-		return true, "no_selections"
+		return evalResult{action: actionReject, reason: "no_selections"}
 	}
-	skipDrift := betType == "betbuilder"
+	skipDrift := p.BetType == "betbuilder"
+	canReprice := p.AcceptOddsChanges && (p.BetType == "single" || p.BetType == "combo")
+
+	type legCheck struct {
+		marketID  int64
+		outcomeID string
+		current   float64
+		currentS  string
+		drifted   bool
+	}
+	checks := make([]legCheck, 0, len(selections))
+	driftDetected := false
+
 	for _, s := range selections {
 		if s.MarketStatus != 1 {
-			return true, "market_suspended"
+			return evalResult{action: actionReject, reason: "market_suspended"}
 		}
 		if !s.OutcomeActive {
-			return true, "outcome_inactive"
+			return evalResult{action: actionReject, reason: "outcome_inactive"}
 		}
 		if s.CurrentPublished == nil || *s.CurrentPublished == "" {
-			return true, "no_current_price"
+			return evalResult{action: actionReject, reason: "no_current_price"}
 		}
 		placed, err1 := strconv.ParseFloat(s.OddsAtPlacement, 64)
 		current, err2 := strconv.ParseFloat(*s.CurrentPublished, 64)
-		if err1 != nil || err2 != nil || placed <= 0 {
-			return true, "odds_parse"
+		if err1 != nil || err2 != nil || placed <= 0 || current <= 0 {
+			return evalResult{action: actionReject, reason: "odds_parse"}
 		}
-		if skipDrift {
-			continue
+		drifted := false
+		if !skipDrift {
+			drift := math.Abs(current-placed) / placed
+			if drift > w.driftTolerance {
+				drifted = true
+				driftDetected = true
+				if !canReprice {
+					return evalResult{action: actionReject, reason: "odds_drift_exceeded"}
+				}
+			}
 		}
-		drift := math.Abs(current-placed) / placed
-		if drift > w.driftTolerance {
-			return true, "odds_drift_exceeded"
+		checks = append(checks, legCheck{
+			marketID:  s.MarketID,
+			outcomeID: s.OutcomeID,
+			current:   current,
+			currentS:  *s.CurrentPublished,
+			drifted:   drifted,
+		})
+	}
+
+	if !driftDetected {
+		return evalResult{action: actionAccept}
+	}
+
+	// Re-pricing path. Compute the new potential payout from the latest
+	// per-leg published prices, preserving any frozen combi-boost
+	// multiplier on bet_meta so re-priced combos respect the same
+	// promotion the bettor saw at placement.
+	productOdds := 1.0
+	updates := make([]store.UpdatedLegOdds, 0, len(checks))
+	for _, c := range checks {
+		productOdds *= c.current
+		if c.drifted {
+			updates = append(updates, store.UpdatedLegOdds{
+				MarketID:  c.marketID,
+				OutcomeID: c.outcomeID,
+				NewOdds:   c.currentS,
+			})
 		}
 	}
-	return false, ""
+	boost := extractBoostMultiplier(p.BetMetaJSON)
+	if boost > 1.0 {
+		productOdds *= boost
+	}
+	// floor(stakeMicro * decimalOdds). Match the API placement math
+	// (packages/types money.multiplyMicroByOdds) — bigint multiply by
+	// scaled decimal, floor-truncate. Cap at int64 to keep arithmetic
+	// safe; absurdly-high products would have been rejected at the API.
+	stake := big.NewInt(p.StakeMicro)
+	scaled := big.NewFloat(productOdds * 1e8)
+	scaledInt, _ := scaled.Int(nil)
+	tmp := new(big.Int).Mul(stake, scaledInt)
+	tmp.Div(tmp, big.NewInt(1e8))
+	if !tmp.IsInt64() {
+		// Shouldn't happen given the API gate; fail-closed to reject.
+		return evalResult{action: actionReject, reason: "odds_drift_exceeded"}
+	}
+	newPayout := tmp.Int64()
+	if newPayout <= 0 {
+		return evalResult{action: actionReject, reason: "odds_drift_exceeded"}
+	}
+	return evalResult{
+		action:         actionAcceptWithUpdatedOdds,
+		newPayoutMicro: newPayout,
+		updatedLegs:    updates,
+	}
+}
+
+// extractBoostMultiplier pulls the combi-boost multiplier out of
+// tickets.bet_meta when present. Returns 1.0 (no-op) on any parse failure
+// or absent product/multiplier — the API frozen this value at placement
+// so a malformed payload is a real bug; we just don't double-apply it.
+func extractBoostMultiplier(raw []byte) float64 {
+	if len(raw) == 0 {
+		return 1.0
+	}
+	var m struct {
+		Product         string `json:"product"`
+		BoostMultiplier string `json:"boostMultiplier"`
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return 1.0
+	}
+	if m.Product != "combo" || m.BoostMultiplier == "" {
+		return 1.0
+	}
+	v, err := strconv.ParseFloat(m.BoostMultiplier, 64)
+	if err != nil || v <= 0 {
+		return 1.0
+	}
+	return v
 }
 
 // publishTicketEvent is best-effort — pub/sub drops don't affect state.

@@ -123,6 +123,8 @@
     "betQueued": "Sázka ve frontě",
     "acceptingIn": "Přijmeme za {seconds} s",
     "liveDelayNote": "Pozdrženo kvůli live zpoždění přijetí",
+    "acceptOddsChangesLabel": "Přijmout změny kurzů",
+    "acceptOddsChangesActive": "Automatické přijetí při změně kurzu",
     "viewMyBets": "Zobrazit moje sázky",
     "currency": "Měna",
     "switchToSingles": "Přepnout na Sólo",

@@ -833,6 +833,17 @@ export class BetsService {
       const status = delayed ? ("pending_delay" as const) : ("accepted" as const);
       const acceptedAt = delayed ? null : now;
 
+      // Per-product gating for the accept-odds-changes flag. Only
+      // single + combo can be re-priced against the latest published
+      // price during the bet-delay window — tiple / tippot anchor on
+      // probabilities frozen at placement, and betbuilder pays at the
+      // OBB session odds (which already abstract over per-leg drift).
+      // Silently ignoring it for other products keeps the API contract
+      // tolerant while making the flag a no-op where it doesn't apply.
+      const acceptOddsChanges =
+        (req.acceptOddsChanges ?? false) &&
+        (betType === "single" || betType === "combo");
+
       const [inserted] = await tx
         .insert(tickets)
         .values({
@@ -849,6 +860,7 @@ export class BetsService {
           clientIp: ctx.ip,
           userAgent: ctx.userAgent,
           betMeta: betMeta as unknown as Record<string, unknown> | null,
+          acceptOddsChanges,
         })
         // Two concurrent placements with the same idempotencyKey both
         // pass the SELECT-then-INSERT check above; the unique
@@ -1072,6 +1084,7 @@ export class BetsService {
       placedAt: t.placedAt.toISOString(),
       acceptedAt: t.acceptedAt?.toISOString() ?? null,
       settledAt: t.settledAt?.toISOString() ?? null,
+      acceptOddsChanges: t.acceptOddsChanges,
       betMeta: (t.betMeta ?? null) as TicketSummary["betMeta"],
       selections: rows.map((r) => ({
         marketId: r.sel.marketId.toString(),

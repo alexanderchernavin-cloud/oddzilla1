@@ -123,6 +123,8 @@
     "betQueued": "Apuesta en cola",
     "acceptingIn": "Aceptando en {seconds} s",
     "liveDelayNote": "Retenida por la demora de aceptación en vivo",
+    "acceptOddsChangesLabel": "Aceptar cambios de cuotas",
+    "acceptOddsChangesActive": "Aceptación automática al cambiar la cuota",
     "viewMyBets": "Ver mis apuestas",
     "currency": "Moneda",
     "switchToSingles": "Cambiar a Simples",

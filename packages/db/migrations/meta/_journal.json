@@ -281,6 +281,13 @@
       "when": 1700000052000,
       "tag": "0052_riskzilla_live_bet_delay",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1700000053000,
+      "tag": "0053_accept_odds_changes",
+      "breakpoints": true
     }
   ]
 }

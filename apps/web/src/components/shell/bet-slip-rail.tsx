@@ -105,26 +105,89 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
   const [stakeInput, setStakeInput] = useState("10");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [placedTicketId, setPlacedTicketId] = useState<string | null>(null);
-  // Live-delay placements come back as `pending_delay` with a future
-  // `notBeforeTs`. Keep both so the success card can render a countdown
-  // instead of misleading the user with a green "Bet placed" check that
-  // implies the bet is already accepted.
-  const [placedTicketStatus, setPlacedTicketStatus] =
-    useState<TicketStatus | null>(null);
-  const [placedTicketNotBefore, setPlacedTicketNotBefore] =
-    useState<string | null>(null);
+  // The most recent placement. Lives across the bet-delay window so the
+  // slip can render the countdown / drift / suspended state inline and
+  // the post-acceptance success card. WS ticket frames mutate
+  // `placedTicket.status` in place — pending_delay → accepted clears the
+  // slip + switches to history, pending_delay → rejected keeps the slip
+  // populated so the bettor can re-place with the freshly-updated odds.
+  const [placedTicket, setPlacedTicket] = useState<TicketSummary | null>(null);
+  // Bettor opt-in for the live-bet acceptance delay window. Persisted in
+  // localStorage so the choice survives reloads. When true the API sets
+  // the same flag on the ticket; the bet-delay worker re-prices the
+  // ticket at the latest odds instead of rejecting on drift (single +
+  // combo only).
+  const [acceptOddsChanges, setAcceptOddsChangesState] = useState(false);
   const [activeTab, setActiveTab] = useState<RailTab>("slip");
 
-  // Drop the success view as soon as the user starts a new slip — otherwise
-  // the post-placement screen would shadow new picks indefinitely.
   useEffect(() => {
-    if (selections.length > 0 && placedTicketId) {
-      setPlacedTicketId(null);
-      setPlacedTicketStatus(null);
-      setPlacedTicketNotBefore(null);
+    try {
+      if (window.localStorage.getItem("oz.acceptOddsChanges") === "1") {
+        setAcceptOddsChangesState(true);
+      }
+    } catch {
+      // localStorage unavailable — default to false.
     }
-  }, [selections.length, placedTicketId]);
+  }, []);
+  const setAcceptOddsChanges = useCallback((v: boolean) => {
+    setAcceptOddsChangesState(v);
+    try {
+      window.localStorage.setItem("oz.acceptOddsChanges", v ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // Drop the post-placement view as soon as the user starts a new slip
+  // — otherwise the success / rejection card would shadow new picks
+  // indefinitely. Pending placements stay sticky so a user clicking
+  // around the site during the wait window still sees the countdown.
+  useEffect(() => {
+    if (
+      selections.length > 0 &&
+      placedTicket &&
+      placedTicket.status !== "pending_delay"
+    ) {
+      setPlacedTicket(null);
+    }
+  }, [selections.length, placedTicket]);
+
+  // Rail-level ticket-frame subscription. When the bet-delay worker
+  // resolves the ticket we either clear the slip + switch to history
+  // (accepted — the slip is done) or keep the slip populated (rejected
+  // — user can edit + retry). The HistoryPane has its own subscription
+  // for live list updates; the two run independently.
+  useTicketStream(
+    useCallback((frame) => {
+      setPlacedTicket((prev) => {
+        if (!prev || prev.id !== frame.ticketId) return prev;
+        if (frame.status === "accepted") {
+          slip.clear();
+          setActiveTab("history");
+          // Refresh wallets/server data so any debit/refund settles.
+          router.refresh();
+          // Drop the pending card — the new ticket lives in History now.
+          return null;
+        }
+        if (frame.status === "rejected") {
+          // Stake was refunded by the worker. Reconcile balances. Slip
+          // selections stay populated so the bettor can re-place with
+          // the latest pendingOdds (the WS odds ticks have been flowing
+          // into `s.pendingOdds` all along, so a one-click "Accept odds
+          // change" + Place bet is the typical retry path).
+          router.refresh();
+          return {
+            ...prev,
+            status: "rejected",
+            rejectReason: frame.rejectReason ?? "rejected",
+          };
+        }
+        // Other terminal statuses (settled / voided / cashed_out) can't
+        // reach a pending ticket, but pass them through for completeness.
+        return { ...prev, status: frame.status };
+      });
+    }, [slip, router]),
+  );
 
   // When a new selection is added (count goes up) while the user is on the
   // history tab, jump back to the slip so the freshly clicked pick is
@@ -468,7 +531,9 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
       return;
     }
     setError(null);
-    setPlacedTicketId(null);
+    // Clear any sticky post-placement card (e.g. a previous rejection
+    // banner) before the new POST lands.
+    setPlacedTicket(null);
 
     let stakeMicro: string;
     try {
@@ -499,9 +564,7 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
           return;
         }
       }
-      const res = await clientApi<{
-        ticket: { id: string; status: TicketStatus; notBeforeTs: string | null };
-      }>("/bets", {
+      const res = await clientApi<{ ticket: TicketSummary }>("/bets", {
         method: "POST",
         body: JSON.stringify({
           stakeMicro,
@@ -516,6 +579,10 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
             outcomeId: s.outcomeId,
             odds: s.odds,
           })),
+          // Bettor opt-in for the bet-delay window. Server gates the
+          // effect to single + combo; sending for other modes is a
+          // harmless no-op.
+          acceptOddsChanges,
           ...(effectiveMode === "betbuilder" && builderQuote
             ? {
                 betBuilder: {
@@ -527,9 +594,7 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
             : null),
         }),
       });
-      setPlacedTicketId(res.ticket.id);
-      setPlacedTicketStatus(res.ticket.status);
-      setPlacedTicketNotBefore(res.ticket.notBeforeTs);
+      setPlacedTicket(res.ticket);
       // Optimistic balance deduct so the top-bar pill + any other
       // wallet consumers reflect the new available balance immediately.
       // For singles the server places one ticket per selection at
@@ -545,11 +610,20 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
           ? BigInt(stakeMicro) * BigInt(selections.length)
           : BigInt(stakeMicro);
       optimisticDeductWallet(currency, totalDebitMicro);
-      slip.clear();
       router.refresh();
-      // Surface the new ticket in-rail by flipping to History — the slip
-      // body now also shows a placement-success card, but the user usually
-      // wants to watch their fresh ticket pick up status.
+      if (res.ticket.status === "pending_delay") {
+        // Live-bet acceptance delay is running. Keep the slip populated
+        // so the bettor can watch their legs tick (drift + suspended
+        // pills appear automatically via the existing pendingOdds /
+        // s.active wiring); stay on the slip tab so the countdown is
+        // visible right above the legs. The WS ticket-frame subscription
+        // up top transitions to history on `accepted` / surfaces the
+        // reject reason on `rejected`.
+        return;
+      }
+      // No delay — the bet was accepted at placement. Clear the slip
+      // and surface the new ticket in History.
+      slip.clear();
       setActiveTab("history");
     } catch (err) {
       setError(err instanceof ApiFetchError ? mapError(err) : "Placement failed.");
@@ -688,7 +762,7 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
       </div>
 
       {activeTab === "history" ? (
-        <HistoryPane highlightTicketId={placedTicketId} />
+        <HistoryPane highlightTicketId={placedTicket?.id ?? null} />
       ) : (
         <>
       <div
@@ -702,11 +776,14 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
           gap: 6,
         }}
       >
-        {placedTicketId ? (
+        {placedTicket && placedTicket.status === "accepted" ? (
+          // Accepted at placement (no live-delay window). The pending /
+          // rejected branches below render the slip + a banner instead;
+          // this is the immediate-acceptance success card.
           <PlacedTicketCard
-            ticketId={placedTicketId}
-            status={placedTicketStatus}
-            notBeforeTs={placedTicketNotBefore}
+            ticketId={placedTicket.id}
+            status={placedTicket.status}
+            notBeforeTs={placedTicket.notBeforeTs}
             tBetPlaced={t("betPlaced")}
             tBetQueued={t("betQueued")}
             tAcceptingIn={(s: number) => t("acceptingIn", { seconds: s })}
@@ -759,6 +836,19 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
           </div>
         ) : (
           <>
+            {placedTicket && placedTicket.status === "pending_delay" ? (
+              <PendingPlacementBanner
+                notBeforeTs={placedTicket.notBeforeTs}
+                acceptOddsChanges={placedTicket.acceptOddsChanges}
+                ticketId={placedTicket.id}
+                t={t}
+              />
+            ) : placedTicket && placedTicket.status === "rejected" ? (
+              <RejectedPlacementBanner
+                reason={placedTicket.rejectReason}
+                onDismiss={() => setPlacedTicket(null)}
+              />
+            ) : null}
             {selections.map((s) => (
               <SelectionCard
                 key={`${s.marketId}:${s.outcomeId}`}
@@ -770,7 +860,16 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
         )}
       </div>
 
-      {selections.length > 0 && !placedTicketId && (
+      {selections.length > 0 &&
+      placedTicket?.status === "pending_delay" ? (
+        // Pending — replace the form (Place button + stake input) with a
+        // status indicator. The bettor can't edit the slip while the
+        // worker is deciding; the WS frame will either accept (slip
+        // clears + history opens) or reject (slip stays + bettor edits
+        // and re-places).
+        <PendingPlacementFooter notBeforeTs={placedTicket.notBeforeTs} t={t} />
+      ) : selections.length > 0 &&
+        (!placedTicket || placedTicket.status === "rejected") && (
         <form
           onSubmit={onSubmit}
           style={{
@@ -1191,6 +1290,34 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
             </>
           )}
 
+          {/* Bettor opt-in for the live-bet acceptance delay window.
+              Hidden when nothing on the slip can trigger a delay
+              (effectiveMode is tiple/tippot/betbuilder — the server
+              ignores the flag for those, see services/api/src/modules/
+              bets/service.ts). Persisted in localStorage so the
+              preference survives reloads. */}
+          {(effectiveMode === "single" || effectiveMode === "combo") && (
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 12,
+                color: "var(--fg-muted)",
+                cursor: "pointer",
+                userSelect: "none",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={acceptOddsChanges}
+                onChange={(e) => setAcceptOddsChanges(e.currentTarget.checked)}
+                style={{ accentColor: "var(--fg)" }}
+              />
+              <span>{t("acceptOddsChangesLabel")}</span>
+            </label>
+          )}
+
           <div style={{ fontSize: 10, color: "var(--fg-dim)", textAlign: "center" }}>
             {t("oddsChanged")}
           </div>
@@ -1209,7 +1336,7 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
         — bet slip + Place button stay above the fold, match-specific
         content stacks below where it competes only with itself.
       */}
-      {activeTab === "slip" && !placedTicketId && <RailMatchPanel />}
+      {activeTab === "slip" && !placedTicket && <RailMatchPanel />}
     </aside>
   );
 }
@@ -1909,6 +2036,241 @@ function PlacedTicketCard({
       </Link>
     </div>
   );
+}
+
+// Header rendered above the slip selections while the bet-delay worker
+// is sitting on a freshly-placed ticket. The selection cards below this
+// banner keep their normal "drift / suspended" badges (driven by the
+// already-flowing live-odds + market-status WS ticks via slip.updateOdds
+// + slip.setMarketStatus), so the bettor sees the same per-leg state
+// the worker will evaluate against when it wakes up.
+function PendingPlacementBanner({
+  notBeforeTs,
+  acceptOddsChanges,
+  ticketId,
+  t,
+}: {
+  notBeforeTs: string | null;
+  acceptOddsChanges: boolean;
+  ticketId: string;
+  t: (key: string, vars?: Record<string, string | number>) => string;
+}) {
+  const secondsLeft = useSecondsUntil(notBeforeTs);
+  const counting = secondsLeft !== null && secondsLeft > 0;
+  return (
+    <div
+      role="status"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        padding: "10px 12px",
+        background: "color-mix(in oklab, var(--warning, var(--fg)) 7%, var(--surface))",
+        border:
+          "1px solid color-mix(in oklab, var(--warning, var(--fg-muted)) 35%, var(--border))",
+        borderRadius: 10,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+        }}
+      >
+        <I.Clock size={14} />
+        <span
+          className="display"
+          style={{ fontSize: 13.5, fontWeight: 500, letterSpacing: "-0.005em" }}
+        >
+          {counting ? t("betQueued") : t("betPlaced")}
+        </span>
+        {counting ? (
+          <span
+            className="mono tnum"
+            style={{
+              marginLeft: "auto",
+              fontSize: 11,
+              letterSpacing: "0.06em",
+              textTransform: "uppercase",
+              fontWeight: 600,
+            }}
+          >
+            {t("acceptingIn", { seconds: secondsLeft! })}
+          </span>
+        ) : null}
+      </div>
+      <div style={{ fontSize: 11.5, color: "var(--fg-muted)", lineHeight: 1.4 }}>
+        {t("liveDelayNote")}
+      </div>
+      {acceptOddsChanges ? (
+        <div
+          style={{
+            fontSize: 11,
+            color: "var(--fg-muted)",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          <span style={{ fontSize: 11, color: "var(--positive)" }}>✓</span>
+          {t("acceptOddsChangesActive")}
+        </div>
+      ) : null}
+      <div
+        style={{
+          fontSize: 10,
+          color: "var(--fg-dim)",
+          letterSpacing: "0.04em",
+        }}
+      >
+        {t("ticket")} <span className="mono">{ticketId.slice(0, 8)}…</span>
+      </div>
+    </div>
+  );
+}
+
+// Inline notice for the slip body when the bet-delay worker rejected the
+// pending ticket. The slip selections are still populated (and their
+// pendingOdds / s.active are already up-to-date from the WS ticks that
+// arrived during the wait), so a "Place bet again" path is one click +
+// the existing "Accept odds change" flow.
+function RejectedPlacementBanner({
+  reason,
+  onDismiss,
+}: {
+  reason: string | null;
+  onDismiss: () => void;
+}) {
+  return (
+    <div
+      role="alert"
+      style={{
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 8,
+        padding: "10px 12px",
+        background: "color-mix(in oklab, var(--negative) 6%, var(--surface))",
+        border:
+          "1px solid color-mix(in oklab, var(--negative) 30%, var(--border))",
+        borderRadius: 10,
+      }}
+    >
+      <span
+        aria-hidden="true"
+        style={{
+          flex: "0 0 auto",
+          width: 14,
+          height: 14,
+          borderRadius: 999,
+          background: "var(--negative)",
+          color: "var(--surface)",
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: 10,
+          fontWeight: 700,
+          lineHeight: 1,
+        }}
+      >
+        !
+      </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          className="display"
+          style={{
+            fontSize: 13,
+            fontWeight: 500,
+            letterSpacing: "-0.005em",
+            color: "var(--negative)",
+          }}
+        >
+          {humanReject(reason)}
+        </div>
+        <div style={{ fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.4 }}>
+          {rejectHint(reason)}
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onDismiss}
+        style={{
+          background: 0,
+          border: 0,
+          color: "var(--fg-dim)",
+          cursor: "pointer",
+          padding: 2,
+        }}
+        aria-label="Dismiss"
+      >
+        <I.Close size={12} />
+      </button>
+    </div>
+  );
+}
+
+// Footer rendered in place of the placement form while the bet-delay
+// worker is processing a ticket. Mirrors the form's vertical footprint
+// so the rail doesn't reflow when the bet first lands.
+function PendingPlacementFooter({
+  notBeforeTs,
+  t,
+}: {
+  notBeforeTs: string | null;
+  t: (key: string, vars?: Record<string, string | number>) => string;
+}) {
+  const secondsLeft = useSecondsUntil(notBeforeTs);
+  const counting = secondsLeft !== null && secondsLeft > 0;
+  return (
+    <div
+      style={{
+        padding: "10px 16px 14px",
+        borderTop: "1px solid var(--hairline)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 8,
+        color: "var(--fg-muted)",
+        fontSize: 12.5,
+      }}
+    >
+      <I.Clock size={14} />
+      <span className="mono tnum">
+        {counting ? t("acceptingIn", { seconds: secondsLeft! }) : t("betPlaced")}
+      </span>
+    </div>
+  );
+}
+
+// Map the worker's reject_reason enum into a short human line + a hint
+// for the bettor. Kept inline (not in i18n) for now — these are operator-
+// facing reasons surfaced rarely; the slip's existing drift / suspended
+// pills on the legs themselves are the primary signal.
+function humanReject(reason: string | null): string {
+  switch (reason) {
+    case "odds_drift_exceeded":
+      return "Odds changed during the delay";
+    case "market_suspended":
+      return "Market suspended during the delay";
+    case "outcome_inactive":
+      return "Outcome became inactive";
+    case "no_current_price":
+      return "No price available right now";
+    default:
+      return "Bet not accepted";
+  }
+}
+function rejectHint(reason: string | null): string {
+  switch (reason) {
+    case "odds_drift_exceeded":
+      return "Stake refunded. Review the updated price and place again, or tick “Accept odds changes” to auto-accept future drift.";
+    case "market_suspended":
+    case "outcome_inactive":
+    case "no_current_price":
+      return "Stake refunded. Wait for the market to reopen, or pick a different leg.";
+    default:
+      return "Stake refunded.";
+  }
 }
 
 function HistoryPane({ highlightTicketId }: { highlightTicketId: string | null }) {

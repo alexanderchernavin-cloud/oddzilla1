@@ -35,6 +35,12 @@ const placeBody = z.object({
       selectionIds: z.array(z.string().min(3).max(256)).min(1).max(20),
     })
     .optional(),
+  // Bettor opt-in for the live-bet acceptance delay window. When true,
+  // the bet-delay worker re-prices the ticket at the current odds
+  // instead of rejecting on drift. Server-side gating in service.place()
+  // restricts the effect to single + combo; the flag is accepted but
+  // ignored for other products so the client UX can stay product-agnostic.
+  acceptOddsChanges: z.boolean().optional(),
 });
 
 const listQuery = z.object({
