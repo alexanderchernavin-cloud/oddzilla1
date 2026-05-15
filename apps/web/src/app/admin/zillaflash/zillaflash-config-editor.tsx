@@ -8,34 +8,75 @@ export interface ZillaflashConfigDto {
   enabled: boolean;
   prematchTtlSeconds: number;
   liveTtlSeconds: number;
+  prematchKeyDeltaPct: number;
+  liveKeyDeltaPct: number;
+  prematchMinTier: number;
+  prematchMaxTier: number;
+  liveMinTier: number;
+  liveMaxTier: number;
   updatedAt: string;
   updatedBy: string | null;
 }
 
+interface KindDraft {
+  ttlSeconds: string;
+  keyDeltaPct: string;
+  minTier: string;
+  maxTier: string;
+}
+
 interface Draft {
   enabled: boolean;
-  prematchTtlSeconds: string;
-  liveTtlSeconds: string;
+  prematch: KindDraft;
+  live: KindDraft;
 }
 
 function toDraft(cfg: ZillaflashConfigDto): Draft {
   return {
     enabled: cfg.enabled,
-    prematchTtlSeconds: String(cfg.prematchTtlSeconds),
-    liveTtlSeconds: String(cfg.liveTtlSeconds),
+    prematch: {
+      ttlSeconds: String(cfg.prematchTtlSeconds),
+      keyDeltaPct: cfg.prematchKeyDeltaPct.toFixed(2),
+      minTier: String(cfg.prematchMinTier),
+      maxTier: String(cfg.prematchMaxTier),
+    },
+    live: {
+      ttlSeconds: String(cfg.liveTtlSeconds),
+      keyDeltaPct: cfg.liveKeyDeltaPct.toFixed(2),
+      minTier: String(cfg.liveMinTier),
+      maxTier: String(cfg.liveMaxTier),
+    },
   };
 }
 
-function validate(draft: Draft): string | null {
-  const p = Number.parseInt(draft.prematchTtlSeconds, 10);
-  const l = Number.parseInt(draft.liveTtlSeconds, 10);
-  if (!Number.isInteger(p) || p < 5 || p > 600) {
-    return "Prematch window must be an integer between 5 and 600 seconds.";
+function validateKind(label: string, k: KindDraft): string | null {
+  const ttl = Number.parseInt(k.ttlSeconds, 10);
+  if (!Number.isInteger(ttl) || ttl < 5 || ttl > 600) {
+    return `${label}: window must be an integer between 5 and 600 seconds.`;
   }
-  if (!Number.isInteger(l) || l < 5 || l > 600) {
-    return "Live window must be an integer between 5 and 600 seconds.";
+  const delta = Number.parseFloat(k.keyDeltaPct);
+  if (!Number.isFinite(delta) || delta < 0 || delta > 50) {
+    return `${label}: key delta must be between 0 and 50 percentage points.`;
+  }
+  const min = Number.parseInt(k.minTier, 10);
+  const max = Number.parseInt(k.maxTier, 10);
+  if (!Number.isInteger(min) || min < 1 || min > 32) {
+    return `${label}: min tier must be an integer between 1 and 32.`;
+  }
+  if (!Number.isInteger(max) || max < 1 || max > 32) {
+    return `${label}: max tier must be an integer between 1 and 32.`;
+  }
+  if (min > max) {
+    return `${label}: min tier must be ≤ max tier.`;
   }
   return null;
+}
+
+function validate(draft: Draft): string | null {
+  return (
+    validateKind("Prematch", draft.prematch) ??
+    validateKind("Live", draft.live)
+  );
 }
 
 export function ZillaflashConfigEditor({
@@ -49,10 +90,18 @@ export function ZillaflashConfigEditor({
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
-  const dirty =
-    draft.enabled !== initial.enabled ||
-    Number.parseInt(draft.prematchTtlSeconds, 10) !== initial.prematchTtlSeconds ||
-    Number.parseInt(draft.liveTtlSeconds, 10) !== initial.liveTtlSeconds;
+  const dirty = (() => {
+    if (draft.enabled !== initial.enabled) return true;
+    const fromInitial: Draft = toDraft(initial);
+    return JSON.stringify(draft) !== JSON.stringify(fromInitial);
+  })();
+
+  const updateKind = (
+    which: "prematch" | "live",
+    patch: Partial<KindDraft>,
+  ) => {
+    setDraft((prev) => ({ ...prev, [which]: { ...prev[which], ...patch } }));
+  };
 
   const onSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -70,8 +119,14 @@ export function ZillaflashConfigEditor({
             method: "PUT",
             body: JSON.stringify({
               enabled: draft.enabled,
-              prematchTtlSeconds: Number.parseInt(draft.prematchTtlSeconds, 10),
-              liveTtlSeconds: Number.parseInt(draft.liveTtlSeconds, 10),
+              prematchTtlSeconds: Number.parseInt(draft.prematch.ttlSeconds, 10),
+              liveTtlSeconds: Number.parseInt(draft.live.ttlSeconds, 10),
+              prematchKeyDeltaPct: Number.parseFloat(draft.prematch.keyDeltaPct),
+              liveKeyDeltaPct: Number.parseFloat(draft.live.keyDeltaPct),
+              prematchMinTier: Number.parseInt(draft.prematch.minTier, 10),
+              prematchMaxTier: Number.parseInt(draft.prematch.maxTier, 10),
+              liveMinTier: Number.parseInt(draft.live.minTier, 10),
+              liveMaxTier: Number.parseInt(draft.live.maxTier, 10),
             }),
           },
         );
@@ -98,64 +153,43 @@ export function ZillaflashConfigEditor({
         display: "flex",
         flexDirection: "column",
         gap: 20,
-        maxWidth: 560,
+        maxWidth: 720,
       }}
     >
       <Section title="Master switch">
-        <label style={{ display: "inline-flex", alignItems: "center", gap: 10, fontSize: 14 }}>
+        <label
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 10,
+            fontSize: 14,
+          }}
+        >
           <input
             type="checkbox"
             checked={draft.enabled}
             onChange={(e) => setDraft((p) => ({ ...p, enabled: e.target.checked }))}
           />
           <span>
-            <strong>Enabled.</strong> When off the engine clears every slot and the
-            storefront row + match-page chips disappear immediately.
+            <strong>Enabled.</strong> When off, the engine clears every slot and
+            the storefront row + match-page chips disappear immediately.
           </span>
         </label>
       </Section>
 
-      <Section title="Offer windows">
-        <p style={{ fontSize: 12.5, color: "var(--color-fg-muted)", marginBottom: 4 }}>
-          How long each offer is visible before rotation picks a fresh
-          fixture. Live needs to be short (the underlying odds move fast);
-          prematch can be longer.
-        </p>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-          <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 14 }}>
-            <span style={{ color: "var(--color-fg-muted)" }}>
-              Prematch window (seconds)
-            </span>
-            <input
-              type="number"
-              min="5"
-              max="600"
-              step="1"
-              value={draft.prematchTtlSeconds}
-              onChange={(e) =>
-                setDraft((p) => ({ ...p, prematchTtlSeconds: e.target.value }))
-              }
-              style={inputStyle}
-            />
-          </label>
-          <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 14 }}>
-            <span style={{ color: "var(--color-fg-muted)" }}>
-              Live window (seconds)
-            </span>
-            <input
-              type="number"
-              min="5"
-              max="600"
-              step="1"
-              value={draft.liveTtlSeconds}
-              onChange={(e) =>
-                setDraft((p) => ({ ...p, liveTtlSeconds: e.target.value }))
-              }
-              style={inputStyle}
-            />
-          </label>
-        </div>
-      </Section>
+      <KindSection
+        title="Prematch"
+        helper="Offers drawn from upcoming matches. A longer window suits the slower pace of prematch betting."
+        draft={draft.prematch}
+        onChange={(p) => updateKind("prematch", p)}
+      />
+
+      <KindSection
+        title="Live"
+        helper="Offers drawn from in-play matches. Keep the window short — live odds move fast, and the boost feels real only when it's a micro-moment."
+        draft={draft.live}
+        onChange={(p) => updateKind("live", p)}
+      />
 
       {error && (
         <div
@@ -210,6 +244,95 @@ export function ZillaflashConfigEditor({
         </span>
       </div>
     </form>
+  );
+}
+
+function KindSection({
+  title,
+  helper,
+  draft,
+  onChange,
+}: {
+  title: string;
+  helper: string;
+  draft: KindDraft;
+  onChange: (patch: Partial<KindDraft>) => void;
+}) {
+  return (
+    <Section title={title}>
+      <p style={{ fontSize: 12.5, color: "var(--color-fg-muted)", marginBottom: 4 }}>
+        {helper}
+      </p>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 14 }}>
+          <span style={{ color: "var(--color-fg-muted)" }}>
+            Window (seconds)
+          </span>
+          <input
+            type="number"
+            min="5"
+            max="600"
+            step="1"
+            value={draft.ttlSeconds}
+            onChange={(e) => onChange({ ttlSeconds: e.target.value })}
+            style={inputStyle}
+          />
+        </label>
+        <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 14 }}>
+          <span style={{ color: "var(--color-fg-muted)" }}>
+            Key delta (pp)
+          </span>
+          <input
+            type="number"
+            min="0"
+            max="50"
+            step="0.25"
+            value={draft.keyDeltaPct}
+            onChange={(e) => onChange({ keyDeltaPct: e.target.value })}
+            style={inputStyle}
+          />
+        </label>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 12 }}>
+        <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 14 }}>
+          <span style={{ color: "var(--color-fg-muted)" }}>Min tier</span>
+          <input
+            type="number"
+            min="1"
+            max="32"
+            step="1"
+            value={draft.minTier}
+            onChange={(e) => onChange({ minTier: e.target.value })}
+            style={inputStyle}
+          />
+        </label>
+        <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 14 }}>
+          <span style={{ color: "var(--color-fg-muted)" }}>Max tier</span>
+          <input
+            type="number"
+            min="1"
+            max="32"
+            step="1"
+            value={draft.maxTier}
+            onChange={(e) => onChange({ maxTier: e.target.value })}
+            style={inputStyle}
+          />
+        </label>
+      </div>
+      <p
+        style={{
+          fontSize: 11.5,
+          color: "var(--color-fg-muted)",
+          marginTop: 8,
+          lineHeight: 1.4,
+        }}
+      >
+        Tournament risk tier window (inclusive). 1–3 = flagship events only;
+        widen to draw boosts from a deeper bench. Key delta = percentage
+        points shaved off the published book key — 3 pp is the
+        product baseline.
+      </p>
+    </Section>
   );
 }
 

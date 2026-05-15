@@ -83,6 +83,12 @@ interface PoolCandidate {
   providerMarketId: number;
   sportId: number;
   status: "not_started" | "live";
+  // Tournament risk tier (1..32). Carried per-candidate so per-kind
+  // tier filtering happens at pick time using the live config row —
+  // the pool query stays kind-agnostic and just covers the broadest
+  // possible range, letting an admin tweak narrow the eligible set
+  // without re-querying.
+  riskTier: number;
 }
 
 // Module-scoped — there's one api process, so one engine instance.
@@ -104,13 +110,34 @@ let appRef: FastifyInstance | null = null;
 // Cached config snapshot. Default to the @oddzilla/types constants so
 // boot before the first DB load (and tests without a `zillaflash_config`
 // row) still produce coherent rotation behaviour.
+interface KindConfig {
+  ttlMs: number;
+  /** Netwinstable key delta in percentage points (0..50). */
+  keyDeltaPct: number;
+  /** Inclusive tournament risk-tier window. */
+  minTier: number;
+  maxTier: number;
+}
 interface ConfigSnapshot {
   enabled: boolean;
-  ttlMs: Record<ZillaFlashKind, number>;
+  byKind: Record<ZillaFlashKind, KindConfig>;
 }
 let configCache: ConfigSnapshot = {
   enabled: true,
-  ttlMs: { ...ZILLAFLASH_TTL_MS },
+  byKind: {
+    prematch: {
+      ttlMs: ZILLAFLASH_TTL_MS.prematch,
+      keyDeltaPct: ZILLAFLASH_KEY_DELTA_PCT,
+      minTier: 1,
+      maxTier: 3,
+    },
+    live: {
+      ttlMs: ZILLAFLASH_TTL_MS.live,
+      keyDeltaPct: ZILLAFLASH_KEY_DELTA_PCT,
+      minTier: 1,
+      maxTier: 3,
+    },
+  },
 };
 let configFetchedAt = 0;
 
@@ -125,9 +152,19 @@ async function loadConfig(app: FastifyInstance): Promise<ConfigSnapshot> {
     if (row) {
       configCache = {
         enabled: row.enabled,
-        ttlMs: {
-          prematch: row.prematchTtlSeconds * 1000,
-          live: row.liveTtlSeconds * 1000,
+        byKind: {
+          prematch: {
+            ttlMs: row.prematchTtlSeconds * 1000,
+            keyDeltaPct: Number(row.prematchKeyDeltaPct),
+            minTier: row.prematchMinTier,
+            maxTier: row.prematchMaxTier,
+          },
+          live: {
+            ttlMs: row.liveTtlSeconds * 1000,
+            keyDeltaPct: Number(row.liveKeyDeltaPct),
+            minTier: row.liveMinTier,
+            maxTier: row.liveMaxTier,
+          },
         },
       };
     }
@@ -150,11 +187,13 @@ function pickRandom<T>(arr: readonly T[]): T | null {
 }
 
 async function refreshPool(app: FastifyInstance): Promise<void> {
-  // Pool = every (match, top-market) pair for active Tier 1-3 fixtures
-  // whose match-status is `not_started` (→ prematch slots) or `live` (→
-  // live slots). The top-markets allowlist is the per-sport curated
-  // list in fe_market_display_order(scope='top') — if a sport has no
-  // top list configured, none of its matches show up here.
+  // Pool = every (match, top-market) pair for an active fixture whose
+  // tournament risk_tier sits in the full 1..32 range — the per-kind
+  // tier window from the admin config is applied at pick time so a
+  // config tweak doesn't force a pool refetch. The top-markets allowlist
+  // is the per-sport curated list in fe_market_display_order(scope='top');
+  // if a sport has no top list configured, none of its matches show up
+  // here.
   const rows = await app.db
     .select({
       matchId: matches.id,
@@ -162,6 +201,7 @@ async function refreshPool(app: FastifyInstance): Promise<void> {
       providerMarketId: markets.providerMarketId,
       sportId: sports.id,
       status: matches.status,
+      riskTier: tournaments.riskTier,
     })
     .from(matches)
     .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
@@ -179,9 +219,10 @@ async function refreshPool(app: FastifyInstance): Promise<void> {
     .where(
       and(
         gte(tournaments.riskTier, 1),
-        // riskTier <= 3 expressed via raw sql because drizzle's lte
-        // chain with gte is fine but explicit BETWEEN reads cleaner.
-        sql`${tournaments.riskTier} <= 3`,
+        // 32 is the riskzilla schema upper bound (CLAUDE.md). NULL
+        // risk_tier rows are excluded by gte() anyway — keep them out
+        // since they can't be quoted as a "tier window" anything.
+        sql`${tournaments.riskTier} <= 32`,
         eq(sports.active, true),
         inArray(matches.status, ["not_started", "live"]),
         eq(markets.status, 1),
@@ -194,12 +235,15 @@ async function refreshPool(app: FastifyInstance): Promise<void> {
     live: [],
   };
   for (const r of rows) {
+    // riskTier is non-null per the WHERE gte(>=1) above; assert for TS.
+    if (r.riskTier == null) continue;
     const candidate: PoolCandidate = {
       matchId: r.matchId,
       marketId: r.marketId,
       providerMarketId: r.providerMarketId,
       sportId: r.sportId,
       status: r.status as "not_started" | "live",
+      riskTier: r.riskTier,
     };
     if (r.status === "live") next.live.push(candidate);
     else if (r.status === "not_started") next.prematch.push(candidate);
@@ -215,9 +259,14 @@ function offerIsHydratable(slot: SlotState): boolean {
 async function pickReplacement(
   app: FastifyInstance,
   kind: ZillaFlashKind,
-  ttlMs: number,
+  cfg: KindConfig,
 ): Promise<SlotState | null> {
-  const pool = poolByKind[kind];
+  // Narrow to the per-kind tier window before sampling. The pool itself
+  // covers tiers 1..32 so we don't need to re-query when the admin
+  // adjusts the window — just re-filter on the next tick.
+  const pool = poolByKind[kind].filter(
+    (c) => c.riskTier >= cfg.minTier && c.riskTier <= cfg.maxTier,
+  );
   if (pool.length === 0) return null;
 
   // Avoid putting the same match in two slots of the same kind at once.
@@ -253,7 +302,7 @@ async function pickReplacement(
     marketId: candidate.marketId,
     outcomeId: chosenOutcome.outcomeId,
     startedAt: now,
-    expiresAt: new Date(now.getTime() + ttlMs),
+    expiresAt: new Date(now.getTime() + cfg.ttlMs),
   };
 }
 
@@ -438,6 +487,7 @@ function fmtOdds(n: number): string {
 async function hydrateOffer(
   app: FastifyInstance,
   slot: SlotState,
+  keyDeltaPct: number,
 ): Promise<ZillaFlashOffer | null> {
   const [meta, outcomes] = await Promise.all([
     loadMatchMeta(app, slot.matchId, slot.marketId),
@@ -448,11 +498,13 @@ async function hydrateOffer(
   const boostedOutcome = outcomes.find((o) => o.outcomeId === slot.outcomeId);
   if (!boostedOutcome || !(boostedOutcome.publishedOdds > 1)) return null;
 
-  // Apply Netwinstable −3pp on the full active outcome set so ratios
-  // stay consistent across the board (we surface the snapshot too, so
-  // a curious user can see every outcome's adjusted price).
+  // Apply Netwinstable per-kind key delta on the full active outcome
+  // set so ratios stay consistent across the board (we surface the
+  // snapshot too, so a curious user can see every outcome's adjusted
+  // price). Delta comes from the live config row — kind-specific so
+  // an operator can run a fatter prematch discount than live.
   const oddsArray = outcomes.map((o) => o.publishedOdds);
-  const adjusted = boostMarketKey(oddsArray, ZILLAFLASH_KEY_DELTA_PCT);
+  const adjusted = boostMarketKey(oddsArray, keyDeltaPct);
 
   const boostedIdx = outcomes.findIndex((o) => o.outcomeId === slot.outcomeId);
   if (boostedIdx < 0) return null;
@@ -551,12 +603,34 @@ async function rotate(app: FastifyInstance): Promise<void> {
   }
   for (const kind of ["prematch", "live"] as ZillaFlashKind[]) {
     const arr = slots[kind];
+    const kindCfg = cfg.byKind[kind];
+    // If the admin narrowed the tier window such that the current
+    // slot's match is no longer eligible, drop the slot now so the
+    // next pick can backfill from the new window. We approximate
+    // "no longer eligible" with the cached pool — a hard recompute
+    // would require re-querying the match, but a stale-by-a-tick
+    // result here is harmless.
+    for (let i = 0; i < arr.length; i++) {
+      const s = arr[i];
+      if (!s) continue;
+      const stillEligible = poolByKind[kind].some(
+        (c) =>
+          c.matchId === s.matchId &&
+          c.marketId === s.marketId &&
+          c.riskTier >= kindCfg.minTier &&
+          c.riskTier <= kindCfg.maxTier,
+      );
+      if (!stillEligible) {
+        offerById.delete(s.offerId);
+        arr[i] = null;
+      }
+    }
     for (let i = 0; i < arr.length; i++) {
       const s = arr[i];
       if (s && offerIsHydratable(s)) continue;
       if (s) offerById.delete(s.offerId);
       try {
-        const next = await pickReplacement(app, kind, cfg.ttlMs[kind]);
+        const next = await pickReplacement(app, kind, kindCfg);
         if (next) {
           arr[i] = next;
           offerById.set(next.offerId, next);
@@ -583,6 +657,7 @@ export async function getActiveOffers(
     await refreshPool(app);
   }
   await rotate(app);
+  const cfg = await loadConfig(app);
 
   const out: ZillaFlashResponse = {
     prematch: [],
@@ -590,9 +665,10 @@ export async function getActiveOffers(
     empty: true,
   };
   for (const kind of ["prematch", "live"] as ZillaFlashKind[]) {
+    const keyDeltaPct = cfg.byKind[kind].keyDeltaPct;
     for (const s of slots[kind]) {
       if (!s) continue;
-      const offer = await hydrateOffer(app, s);
+      const offer = await hydrateOffer(app, s, keyDeltaPct);
       if (offer) {
         out[kind].push(offer);
         out.empty = false;
@@ -648,7 +724,12 @@ export async function validateOfferForBet(
   ) {
     return { ok: false, reason: "zillaflash_outcome_changed" };
   }
-  const offer = await hydrateOffer(app, slot);
+  const cfg = await loadConfig(app);
+  const offer = await hydrateOffer(
+    app,
+    slot,
+    cfg.byKind[slot.kind].keyDeltaPct,
+  );
   if (!offer) return { ok: false, reason: "zillaflash_outcome_changed" };
   const quoted = Number.parseFloat(args.quotedOdds);
   const auth = Number.parseFloat(offer.boostedOdds);
