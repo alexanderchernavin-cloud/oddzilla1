@@ -5,8 +5,10 @@ import { MobileBetSlipBar } from "@/components/shell/mobile-bet-slip-bar";
 import { MobileDrawersProvider } from "@/components/shell/mobile-drawer-context";
 import { MobileShellOverlay } from "@/components/shell/mobile-shell-overlay";
 import { ShellContainer } from "@/components/shell/shell-container";
+import { SidePanels } from "@/components/shell/side-panels";
 import { TopBarSearch } from "@/components/shell/top-bar-search";
 import { MatchPageProvider } from "@/lib/match-page-context";
+import { SidePanelProvider } from "@/lib/side-panel";
 import { CombiBoostConfigProvider } from "@/lib/combi-boost-config";
 import { SportLogosProvider } from "@/lib/sport-logos";
 import { NotificationProvider } from "@/lib/notifications";
@@ -53,6 +55,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
   return (
     <MobileDrawersProvider>
       <MatchPageProvider>
+      <SidePanelProvider>
       <CombiBoostConfigProvider config={combiBoostConfig}>
       <SportLogosProvider
         entries={sports.map((s) => ({ slug: s.slug, logoUrl: s.logoUrl ?? null }))}
@@ -88,10 +91,16 @@ export default async function MainLayout({ children }: { children: React.ReactNo
         <MobileShellOverlay />
         <MobileBetSlipBar />
       </ShellContainer>
+      {/* Two iframes pinned to the empty bands flanking the centered
+          shell on ultra-wide viewports. Hidden via CSS below 2400px so
+          they never overlap the shell on a normal laptop / 1080p
+          monitor; at the threshold each band is ≥410px wide. */}
+      <SidePanels />
       </WalletProvider>
       </NotificationProvider>
       </SportLogosProvider>
       </CombiBoostConfigProvider>
+      </SidePanelProvider>
       </MatchPageProvider>
     </MobileDrawersProvider>
   );
