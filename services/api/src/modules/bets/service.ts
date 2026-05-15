@@ -187,6 +187,14 @@ interface PlaceContext {
   userId: string;
   ip: string | null;
   userAgent: string | null;
+  // Set by routes.ts when any leg came from a LIVE ZillaFlash offer
+  // (boosted odds + countdown). The service shaves 2 s off the
+  // effective live-bet acceptance delay for the entire ticket — the
+  // boost was offered as a deliberate operator perk, so we don't want
+  // the worker to also hold the placement at the full per-match
+  // delay. Prematch ZillaFlash legs don't trigger this — pure-prematch
+  // placements already get zero delay.
+  zillaFlashLiveBoost?: boolean;
 }
 
 export class BetsService {
@@ -866,6 +874,17 @@ export class BetsService {
           if (v > liveCascadeDelay) liveCascadeDelay = v;
         }
         effectiveDelaySeconds = Math.max(user.betDelaySeconds, liveCascadeDelay);
+        // ZillaFlash live boost: -2 s acceptance shave. Documented in
+        // PlaceContext.zillaFlashLiveBoost. Clamped at 0 so a 1 s
+        // per-match delay can't drop to negative and shortcut the
+        // worker's "drift check" path entirely; if you want zero, set
+        // the per-match override to ≤ 2 s explicitly.
+        if (ctx.zillaFlashLiveBoost) {
+          effectiveDelaySeconds = Math.max(
+            0,
+            effectiveDelaySeconds - 2,
+          );
+        }
       }
 
       // ── Insert ticket ────────────────────────────────────────────────

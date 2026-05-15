@@ -187,7 +187,19 @@
     "riskyTagline": "Push the price",
     "ultimateLabel": "Ultimate",
     "ultimateTagline": "Long-shot 3-fold",
-    "aria": "Load {tier} 3-fold at combined odds {odds}"
+    "aria": "Load {tier} 3-fold at combined odds {odds}",
+    "kicker": "Prebuilt combos",
+    "cycleNext": "Next: {tier}"
+  },
+  "zillaflash": {
+    "kicker": "Limited-time boost",
+    "subtitle": "Boosted odds, rotating live",
+    "kindPrematch": "Prematch",
+    "kindLive": "Live",
+    "aria": "Place bet on {team} {market} at boosted {odds}",
+    "expired": "Offer expired — refresh",
+    "boostedTagShort": "BOOST",
+    "boostedTagLong": "ZillaFlash boost"
   },
   "sport": {
     "all": "All",

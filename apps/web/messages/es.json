@@ -187,7 +187,19 @@
     "riskyTagline": "Sube la cuota",
     "ultimateLabel": "Extrema",
     "ultimateTagline": "Triple improbable",
-    "aria": "Cargar triple {tier} con cuota combinada {odds}"
+    "aria": "Cargar triple {tier} con cuota combinada {odds}",
+    "kicker": "Combos prearmados",
+    "cycleNext": "Siguiente: {tier}"
+  },
+  "zillaflash": {
+    "kicker": "Bono por tiempo limitado",
+    "subtitle": "Cuotas mejoradas, rotando en vivo",
+    "kindPrematch": "Pre-partido",
+    "kindLive": "En vivo",
+    "aria": "Apostar a {team} en {market} con cuota mejorada {odds}",
+    "expired": "Oferta expirada — actualizar",
+    "boostedTagShort": "BOOST",
+    "boostedTagLong": "Mejora ZillaFlash"
   },
   "sport": {
     "all": "Todos",

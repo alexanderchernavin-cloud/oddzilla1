@@ -540,6 +540,83 @@ body {
   gap: 12px;
 }
 
+/* ZillaFlash row — 4 boosted-odds cards (2 prematch + 2 live) above
+   the lobby's regular match listings. Desktop: 4 cards in one row.
+   Tablet / phone: 2 columns, then 1 column on the narrowest viewports.
+   Each card stamps its own countdown chip at the top so the cards stay
+   visually independent — they expire on different clocks (60 s for
+   prematch, 15 s for live) and updating one shouldn't visually disturb
+   the others. */
+.oz-zillaflash-row {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.oz-zillaflash-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.oz-zillaflash-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.oz-zillaflash-countdown {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--fg-dim);
+  background: var(--surface-2);
+}
+.oz-zillaflash-countdown[data-urgent="true"] {
+  color: var(--negative, #b91c1c);
+}
+@media (max-width: 1099px) {
+  .oz-zillaflash-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 560px) {
+  .oz-zillaflash-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ComboZilla carousel row. Always renders two slots in the DOM (both
+   tier cards). On desktop both are visible; on mobile slot B is
+   display:none and slot A occupies the full width. The cycle button
+   advances by 1 slot — paired desktop / mobile labels keep SSR markup
+   identical with CSS toggling which is visible. */
+.oz-combozilla-row {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.oz-combozilla-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.oz-combozilla-track {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.oz-cycle-desktop { display: inline-flex; }
+.oz-cycle-mobile { display: none; }
+@media (max-width: 1099px) {
+  .oz-combozilla-track {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .oz-combozilla-slot[data-slot="b"] { display: none; }
+  .oz-cycle-desktop { display: none; }
+  .oz-cycle-mobile { display: inline-flex; }
+}
+
 @media (max-width: 1099px) {
   .oz-shell {
     grid-template-columns: 240px 1fr;

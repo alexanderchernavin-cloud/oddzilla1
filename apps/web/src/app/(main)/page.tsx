@@ -8,6 +8,7 @@ import {
 import { SectionHeader } from "@/components/match/section-header";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { ThreeFoldCards } from "@/components/lobby/three-fold-cards";
+import { ZillaFlashRow } from "@/components/lobby/zillaflash-row";
 import { TodayLabel } from "@/components/lobby/today-label";
 import { buildThreeFoldSuggestions } from "@/lib/three-fold-builder";
 import {
@@ -54,8 +55,12 @@ export default async function HomePage() {
   // Pass the translated "Match winner" label so the SSR-embedded slip
   // leg doesn't carry literal English through to the client (where the
   // bet-slip rail would re-render it on click).
+  //
+  // ComboZilla feeds on PREMATCH-only matches (the brief calls for two
+  // prematch combos in the carousel). Tier 1-3 filtering and same-sport
+  // grouping happens inside the builder.
   const threeFoldSuggestions = buildThreeFoldSuggestions(
-    [...live, ...upcoming],
+    upcoming,
     tMatch("matchWinner"),
   );
 
@@ -81,6 +86,8 @@ export default async function HomePage() {
       </header>
 
       <ThreeFoldCards suggestions={threeFoldSuggestions} />
+
+      <ZillaFlashRow />
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
         {orderSportsForChips(sports).slice(0, 10).map((s) => (

@@ -64,6 +64,12 @@ export interface SlipSelection {
   marketLabel: string;       // human display: "Match Winner", "Map Winner — Map 1"
   outcomeLabel: string;      // e.g. team name or "Map 1 winner"
   sportSlug: string;
+  // Set when the leg was picked from a ZillaFlash boosted offer. The
+  // engine in services/api/src/modules/zillaflash re-validates the id +
+  // boosted price at POST /bets and shaves 2 s off the live-bet
+  // acceptance delay when the offer is a live one. Unknown / expired
+  // offer ids 400 the placement — the slip refreshes the price.
+  zillaFlashOfferId?: string;
 }
 
 export interface PlaceBetRequest {
@@ -86,6 +92,12 @@ export interface PlaceBetRequest {
     marketId: string;
     outcomeId: string;
     odds: string;            // decimal odds as displayed at click time
+    // Optional opt-in to the ZillaFlash boosted price for this leg.
+    // The server re-validates id + boosted odds (within the engine's
+    // ±0.01 tolerance) before debiting stake; mismatched → 400 and the
+    // client refreshes. Set automatically by the slip when the leg was
+    // added from a ZillaFlash card or chip — never plumbed by hand.
+    zillaFlashOfferId?: string;
   }>;
   /**
    * BetBuilder placement payload. Required when betType="betbuilder".

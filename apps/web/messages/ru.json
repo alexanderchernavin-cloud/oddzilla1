@@ -187,7 +187,19 @@
     "riskyTagline": "Выше коэффициент",
     "ultimateLabel": "Экстрим",
     "ultimateTagline": "Тройка-аутсайдер",
-    "aria": "Загрузить тройку {tier} с общим коэффициентом {odds}"
+    "aria": "Загрузить тройку {tier} с общим коэффициентом {odds}",
+    "kicker": "Готовые экспрессы",
+    "cycleNext": "Далее: {tier}"
+  },
+  "zillaflash": {
+    "kicker": "Буст на ограниченное время",
+    "subtitle": "Усиленные кэфы, ротация в реальном времени",
+    "kindPrematch": "До матча",
+    "kindLive": "Лайв",
+    "aria": "Поставить на {team} в {market} с бустом {odds}",
+    "expired": "Срок истёк — обновите",
+    "boostedTagShort": "БУСТ",
+    "boostedTagLong": "ZillaFlash буст"
   },
   "sport": {
     "all": "Все",
