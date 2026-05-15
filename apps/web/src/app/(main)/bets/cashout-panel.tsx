@@ -39,16 +39,17 @@ export function CashoutPanel({ ticket, onCashedOut }: Props) {
   const [acceptingDeadlineMs, setAcceptingDeadlineMs] = useState<number | null>(
     null,
   );
-  const [now, setNow] = useState(() => Date.now());
+  const [, setTick] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const cancelRef = useRef(false);
 
-  // Tick the clock once a second while the acceptance countdown is
-  // running, so the button label updates live.
+  // Tick frequently while the acceptance countdown is running so the
+  // button label stays close to wall-clock. remainingSec is computed
+  // from Date.now() inline below — this state just forces a re-render.
   useEffect(() => {
     if (acceptingDeadlineMs === null) return;
-    const t = setInterval(() => setNow(Date.now()), 1000);
+    const t = setInterval(() => setTick((n) => n + 1), 200);
     return () => clearInterval(t);
   }, [acceptingDeadlineMs]);
 
@@ -161,7 +162,7 @@ export function CashoutPanel({ ticket, onCashedOut }: Props) {
 
   const remainingSec =
     acceptingDeadlineMs !== null
-      ? Math.max(0, Math.ceil((acceptingDeadlineMs - now) / 1000))
+      ? Math.max(0, Math.ceil((acceptingDeadlineMs - Date.now()) / 1000))
       : 0;
 
   return (

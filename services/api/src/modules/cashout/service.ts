@@ -118,6 +118,14 @@ export class CashoutService {
       nowMs: Date.now(),
     });
 
+    // Acceptance delay only applies when at least one leg is in play.
+    // Prematch tickets cash out instantly — the bookmaker risk the
+    // delay protects against (live probability moving against us during
+    // the accept window) doesn't exist when no match has started yet.
+    const effectiveAcceptanceDelaySeconds = legsAllPrematch(legs)
+      ? 0
+      : config.acceptanceDelaySeconds;
+
     const baseQuote: CashoutQuote = {
       available: result.available,
       reason: result.reason,
@@ -130,7 +138,7 @@ export class CashoutService {
           ? result.deductionFactor.toFixed(4)
           : undefined,
       fullPayback: result.fullPayback,
-      acceptanceDelaySeconds: config.acceptanceDelaySeconds,
+      acceptanceDelaySeconds: effectiveAcceptanceDelaySeconds,
     };
 
     if (!result.available) {
@@ -221,8 +229,15 @@ export class CashoutService {
     const resolvedConfig = await this.resolveConfig(legs);
 
     // ── Phase 2: acceptance delay (no locks) ──────────────────────────
-    if (resolvedConfig.acceptanceDelaySeconds > 0) {
-      await sleep(resolvedConfig.acceptanceDelaySeconds * 1000);
+    // Skip the delay entirely when every leg is still prematch — see
+    // quote() for the rationale. Mirrors the gate the client receives
+    // via baseQuote.acceptanceDelaySeconds, so server-side enforcement
+    // stays consistent with what the user saw.
+    const liveAcceptanceDelaySeconds = legsAllPrematch(legs)
+      ? 0
+      : resolvedConfig.acceptanceDelaySeconds;
+    if (liveAcceptanceDelaySeconds > 0) {
+      await sleep(liveAcceptanceDelaySeconds * 1000);
     }
 
     // ── Phase 3: recompute + drift check ──────────────────────────────
@@ -557,6 +572,13 @@ function readLadder(raw: unknown): CashoutLadderStep[] | null {
     }
   }
   return parsed.length > 0 ? parsed : null;
+}
+
+function legsAllPrematch(
+  legs: Array<{ matchStatus: string | null }>,
+): boolean {
+  if (legs.length === 0) return false;
+  return legs.every((l) => l.matchStatus === "not_started");
 }
 
 function sleep(ms: number): Promise<void> {
