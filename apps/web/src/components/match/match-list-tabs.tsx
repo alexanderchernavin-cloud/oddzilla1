@@ -16,9 +16,10 @@ type ColCount = 1 | 2;
 
 // Persisted in localStorage so the bettor's column preference survives
 // navigation across the lobby / sport / live / upcoming pages. The CSS
-// gate (`@media min-width: 2560px`) hides the toggle and forces a
-// single column below QHD even when the saved value is "2", so a
-// returning user on a smaller monitor sees the layout they expect.
+// gate (`@media min-width: 2000px`) hides the toggle and forces a
+// single column on narrower viewports even when the saved value is
+// "2", so a returning user on a smaller monitor sees the layout they
+// expect.
 //
 // Key is namespaced per signed-in bettor so two accounts sharing the
 // same browser keep independent preferences — the user's "remembered
@@ -93,8 +94,9 @@ export function MatchListTabs({
   // re-runs when the signed-in user changes) so a login / logout
   // mid-session swaps the preference to the appropriate bettor's
   // saved value without a full page reload. SSR + initial paint show
-  // the single-column default; the QHD-only toggle means the brief
-  // flip on hydration is invisible to anyone below 2560px anyway.
+  // the single-column default; the wide-viewport-only toggle means
+  // the brief flip on hydration is invisible to anyone below 2000px
+  // anyway.
   const userId = useSessionUserId();
   const [cols, setCols] = useState<ColCount>(1);
   useEffect(() => {
@@ -155,11 +157,11 @@ export function MatchListTabs({
 }
 
 // Single / two-column toggle sitting on the right edge above the match
-// list. Hidden via CSS below 2400px (QHD-ish), where two cards per row
-// would each be under ~450px wide and the layout starts to fight the
-// scoreboard + odds buttons for space. The single-column flex stack
-// is the default everywhere; the [data-cols="2"] grid only kicks in
-// above the same breakpoint.
+// list. Hidden via CSS below 2000px (covers QHD-at-125 %-scaling and
+// up), where two cards per row would each be under ~450px wide and
+// the layout starts to fight the scoreboard + odds buttons for space.
+// The single-column flex stack is the default everywhere; the
+// [data-cols="2"] grid only kicks in above the same breakpoint.
 function ColsToggle({
   cols,
   onChange,

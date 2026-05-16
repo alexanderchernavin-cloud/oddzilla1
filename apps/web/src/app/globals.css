@@ -1026,11 +1026,14 @@ body {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
-   Match-list column toggle — QHD+ viewports only.
-   Below 2560px (QHD width) the toggle is hidden and the grid falls
-   back to its default flex column layout regardless of the saved
-   preference, because two cards per row would each be < ~450px and
-   the scoreboard + Match Winner column start to fight for space.
+   Match-list column toggle — wide-viewport feature.
+   Threshold is min-width: 2000px in CSS pixels. The first cut at
+   2560px (raw QHD width) excluded most real QHD setups because
+   Windows defaults to 125 % display scaling on QHD displays, which
+   reports ~2048 CSS px instead of 2560. 2000 catches QHD-at-100 %
+   AND QHD-at-125 %, plus 4K at typical 150 % (=2560 css). FHD
+   (1920 css) still falls under the gate so the toggle stays hidden
+   on the typical 1080p monitor.
    The [data-cols="2"] grid rule is scoped inside the same media
    query so a persisted "2" silently degrades to one column on a
    smaller monitor without needing JS to clamp the state.
@@ -1075,7 +1078,7 @@ body {
   color: var(--accent-fg);
 }
 
-@media (min-width: 2560px) {
+@media (min-width: 2000px) {
   .oz-match-list-cols {
     display: inline-flex;
   }
