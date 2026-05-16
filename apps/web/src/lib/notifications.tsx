@@ -28,7 +28,11 @@ import type {
   NotificationType,
   MarkReadResponse,
 } from "@oddzilla/types";
-import { fromMicroMoney } from "@oddzilla/types";
+// Subpath import — webpack rejects @oddzilla/types root-path runtime
+// imports (the barrel index.ts re-exports .js paths that the bundler
+// can't resolve). See user memory note on @oddzilla/types subpath
+// imports + the pattern used elsewhere in apps/web/.
+import { fromMicroMoney } from "@oddzilla/types/money";
 import { clientApi } from "./api-client";
 
 // 60s background refresh when the tab is visible. Tight enough to
