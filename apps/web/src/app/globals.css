@@ -929,13 +929,13 @@ body {
 .oz-match-row {
   display: flex;
   align-items: stretch;
-  gap: 8px;
+  gap: 4px;
   min-width: 0;
 }
 
 .oz-match-side-btn {
   display: none;
-  width: 32px;
+  width: 20px;
   align-self: stretch;
   background: var(--surface-2);
   border: 1px solid var(--border);
@@ -1022,6 +1022,34 @@ body {
   }
   .oz-side-panel[data-open="true"] {
     display: flex;
+  }
+  /* Pull the row outward by (button width + row gap) on each side so
+     the side buttons sit in the page-padding gutter between the main
+     column and the sidebar / rail, instead of stealing horizontal
+     space from the card itself. Each page wraps the content in a
+     32px horizontal padding, leaving ~8px of clearance between the
+     button outer edge and the column boundary. */
+  .oz-match-row {
+    margin-inline: -24px;
+  }
+  /* Two-column grid: each card gets a single outer button. The inner
+     button (right-of-left-column, left-of-right-column) is hidden so
+     the column-gap stays clean, and only the outer side of the row
+     extends into the page-padding gutter. A left-column match that
+     opens its side panel goes to the LEFT band; a right-column match
+     to the RIGHT band — matching the user's "left to left, right to
+     right" mental model. */
+  .oz-match-list-grid[data-cols="2"] > .oz-match-row:nth-child(odd) {
+    margin-inline: -24px 0;
+  }
+  .oz-match-list-grid[data-cols="2"] > .oz-match-row:nth-child(odd) .oz-match-side-btn[data-side="right"] {
+    display: none;
+  }
+  .oz-match-list-grid[data-cols="2"] > .oz-match-row:nth-child(even) {
+    margin-inline: 0 -24px;
+  }
+  .oz-match-list-grid[data-cols="2"] > .oz-match-row:nth-child(even) .oz-match-side-btn[data-side="left"] {
+    display: none;
   }
 }
 
