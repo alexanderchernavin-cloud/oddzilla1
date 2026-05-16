@@ -5,6 +5,7 @@ import "./globals.css";
 import { BetSlipProvider } from "@/lib/bet-slip";
 import { I18nProvider } from "@/lib/i18n";
 import { getServerMessages } from "@/lib/i18n/server";
+import { ChunkErrorHandler } from "@/components/shell/chunk-error-handler";
 
 const geist = Geist({
   subsets: ["latin"],
@@ -98,6 +99,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <script nonce={nonce} dangerouslySetInnerHTML={{ __html: themeBootScript }} />
       </head>
       <body>
+        <ChunkErrorHandler />
         <I18nProvider locale={locale} messages={messages}>
           <BetSlipProvider>{children}</BetSlipProvider>
         </I18nProvider>
