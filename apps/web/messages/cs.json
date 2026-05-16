@@ -117,6 +117,7 @@
     "placing": "Sázím…",
     "clearSlip": "Smazat tiket",
     "removeLeg": "Odstranit sázku",
+    "open": "Otevřít",
     "openMatch": "Otevřít zápas",
     "legs": "{count, plural, one {# sázka} few {# sázky} other {# sázek}}",
     "minStake": "Minimální vklad {amount} {currency}",
