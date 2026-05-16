@@ -82,23 +82,31 @@ const SUSPENDED_ERROR_MESSAGE = "This market is suspended. Try again in a moment
 // once the deadline passes (avoids needless re-renders for tickets that
 // have already promoted to accepted). Returns null when `iso` is falsy
 // so callers can branch without an extra guard.
+//
+// Implementation note: `Date.now()` is read fresh on every render — the
+// state value is just a tick counter that forces re-render once per
+// second. The earlier shape cached `now` at mount time, which produced
+// a wildly wrong initial value when the host component was mounted long
+// before the timestamp arrived (slip rail mounted at page load, user
+// composes their slip for ~20 s, clicks Place bet → first render of
+// the countdown saw target − mount_time and showed "24 s" before the
+// interval ticked it down to the real "5 s" left).
 function useSecondsUntil(iso: string | null): number | null {
-  const [now, setNow] = useState(() => Date.now());
+  const [, setTick] = useState(0);
   useEffect(() => {
     if (!iso) return;
     const target = new Date(iso).getTime();
     if (!Number.isFinite(target) || target <= Date.now()) return;
     const id = window.setInterval(() => {
-      const t = Date.now();
-      setNow(t);
-      if (t >= target) window.clearInterval(id);
+      setTick((n) => n + 1);
+      if (Date.now() >= target) window.clearInterval(id);
     }, 1000);
     return () => window.clearInterval(id);
   }, [iso]);
   if (!iso) return null;
   const target = new Date(iso).getTime();
   if (!Number.isFinite(target)) return null;
-  return Math.max(0, Math.ceil((target - now) / 1000));
+  return Math.max(0, Math.ceil((target - Date.now()) / 1000));
 }
 
 type RailTab = "slip" | "history";
