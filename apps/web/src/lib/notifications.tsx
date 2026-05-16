@@ -28,6 +28,7 @@ import type {
   NotificationType,
   MarkReadResponse,
 } from "@oddzilla/types";
+import { fromMicroMoney } from "@oddzilla/types";
 import { clientApi } from "./api-client";
 
 // 60s background refresh when the tab is visible. Tight enough to
@@ -201,7 +202,8 @@ export type NotificationCategory =
   | "New Followers"
   | "Community Highlights"
   | "Competition Updates"
-  | "Achievements & Rewards";
+  | "Achievements & Rewards"
+  | "Bet Settlements";
 
 export interface NotificationDisplay {
   iconKey:
@@ -337,7 +339,71 @@ export const NOTIFICATION_DISPLAY: Record<NotificationType, NotificationDisplay>
     context: () => null,
     category: "Achievements & Rewards",
   },
+  bet_won: {
+    iconKey: "Trophy",
+    color: "#10B981",
+    headline: (i) => {
+      const payout = formatMicroMoney(i.payload.actualPayoutMicro);
+      const currency = (i.payload.currency as string | undefined) ?? "";
+      return `You won ${payout}${currency ? ` ${currency}` : ""}`;
+    },
+    context: (i) => settlementContext(i.payload),
+    category: "Bet Settlements",
+  },
+  bet_cashed_out: {
+    iconKey: "Ticket",
+    color: "#06B6D4",
+    headline: (i) => {
+      const payout = formatMicroMoney(i.payload.actualPayoutMicro);
+      const currency = (i.payload.currency as string | undefined) ?? "";
+      return `Cashed out ${payout}${currency ? ` ${currency}` : ""}`;
+    },
+    context: (i) => settlementContext(i.payload),
+    category: "Bet Settlements",
+  },
 };
+
+// Shared formatter for bet_won + bet_cashed_out. Mirrors the server-
+// side render.ts logic — micro strings parsed as BigInt to avoid the
+// 2^53 precision loss on combo payouts.
+function formatMicroMoney(raw: unknown): string {
+  if (typeof raw !== "string") return "?";
+  try {
+    return fromMicroMoney(BigInt(raw), { decimals: 2 });
+  } catch {
+    return raw;
+  }
+}
+
+// Secondary line for settlement notifications: "3-leg combo from a
+// 25 USDC stake" / "Single bet from 10 OZ". Bet type + leg count is
+// the disambiguator when a user has several tickets in flight.
+function settlementContext(payload: Record<string, unknown>): string | null {
+  const numLegs = typeof payload.numLegs === "number" ? payload.numLegs : 1;
+  const betType =
+    typeof payload.betType === "string" ? payload.betType : "single";
+  const currency =
+    typeof payload.currency === "string" ? payload.currency : "";
+  const stake = formatMicroMoney(payload.stakeMicro);
+  const noun =
+    numLegs > 1 ? `${numLegs}-leg ${prettyBetType(betType)}` : "single bet";
+  return `${noun} · ${stake}${currency ? ` ${currency}` : ""} stake`;
+}
+
+function prettyBetType(betType: string): string {
+  switch (betType) {
+    case "combo":
+      return "combo";
+    case "tiple":
+      return "Tiple";
+    case "tippot":
+      return "Tippot";
+    case "betbuilder":
+      return "Bet Builder";
+    default:
+      return "bet";
+  }
+}
 
 // Coarse "X minutes ago" for the panel timestamp.
 export function formatRelativeTime(iso: string): string {

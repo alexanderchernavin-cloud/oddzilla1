@@ -596,7 +596,7 @@ func (s *Settler) maybeSettleTicket(ctx context.Context, tx pgx.Tx, ticketID, so
 	// missed NOTIFY; only a hard SQL error here (FK violation, etc.)
 	// would prevent the row from ever landing, and we log it.
 	if payout > t.StakeMicro {
-		if err := store.EnqueueBetWonPush(ctx, tx, t.UserID, store.BetWonPushPayload{
+		betWonPayload := store.BetWonPushPayload{
 			Kind:                 "bet_won",
 			TicketID:             t.ID,
 			BetType:              t.BetType,
@@ -605,9 +605,19 @@ func (s *Settler) maybeSettleTicket(ctx context.Context, tx pgx.Tx, ticketID, so
 			ActualPayoutMicro:    strconv.FormatInt(payout, 10),
 			PotentialPayoutMicro: strconv.FormatInt(t.PotentialPayoutMicro, 10),
 			NumLegs:              len(selections),
-		}); err != nil {
+		}
+		if err := store.EnqueueBetWonPush(ctx, tx, t.UserID, betWonPayload); err != nil {
 			s.log.Warn().Err(err).Str("ticket", t.ID).
 				Msg("enqueue push notification failed; continuing")
+		}
+		// In-app bell (web parity with mobile push). Same tx so an
+		// aborted settle can't leave a phantom bell entry. Same
+		// best-effort posture — a bell write failure must not unwind
+		// the wallet credit. Migration 0059 added the bet_won enum
+		// value; this is its only Go-side writer.
+		if err := store.EnqueueBetWonBellNotification(ctx, tx, t.UserID, betWonPayload); err != nil {
+			s.log.Warn().Err(err).Str("ticket", t.ID).
+				Msg("enqueue bet_won bell notification failed; continuing")
 		}
 	}
 

@@ -21,8 +21,9 @@ const DEFAULT_PREFS: PreferencesResponse = {
     newFollowers: true,
     competitionUpdates: false,
     competitionUpdatesManuallySet: false,
-    communityHighlights: false,
+    communityHighlights: true,
     achievementsRewards: true,
+    betSettlements: true,
   },
   privacy: {
     sharePublicly: true,
