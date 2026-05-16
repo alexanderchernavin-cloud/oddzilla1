@@ -9,7 +9,11 @@ export interface MarketEntry {
   label: string;
 }
 
-type Scope = "match" | "map" | "top";
+// `match`, `top`, or `map_<N>` — the scope string the API stores
+// verbatim in fe_market_display_order.scope. The editor itself is
+// scope-agnostic; the only place scope semantics matter here is the
+// empty-state copy below, which differs for the curated `top` tab.
+type Scope = string;
 
 export function MarketOrderEditor({
   sportId,

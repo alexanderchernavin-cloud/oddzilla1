@@ -6,33 +6,49 @@ import {
   type MarketEntry,
 } from "./market-order-editor";
 
-const SCOPES = ["match", "map", "top"] as const;
-type Scope = (typeof SCOPES)[number];
-
 interface DetailResponse {
   sport: { id: number; slug: string; name: string };
-  scope: Scope;
+  scope: string;
+  maxMapNumber: number;
   ordered: Array<MarketEntry & { displayOrder: number }>;
   unranked: MarketEntry[];
 }
 
-const SCOPE_LABELS: Record<Scope, string> = {
-  match: "Match",
-  map: "Map",
-  top: "Top",
-};
+const MAP_SCOPE_RE = /^map_([1-9][0-9]*)$/;
 
-const SCOPE_HINTS: Record<Scope, string> = {
-  match:
-    "Order the markets that appear on the Match tab — i.e. those without a `map` specifier.",
-  map:
-    "One ordering shared across every Map N tab on the match page. Pool is markets that carry a `map` specifier.",
-  top:
-    "Curated highlights tab. Empty by default; markets you add render on the storefront's Top tab and inline on match cards.",
-};
+function isValidScope(s: string): boolean {
+  return s === "match" || s === "top" || MAP_SCOPE_RE.test(s);
+}
 
-function isScope(s: string): s is Scope {
-  return (SCOPES as readonly string[]).includes(s);
+function mapScopeIndex(s: string): number | null {
+  const m = s.match(MAP_SCOPE_RE);
+  return m ? Number(m[1]) : null;
+}
+
+function scopeLabel(s: string): string {
+  if (s === "match") return "Match";
+  if (s === "top") return "Top";
+  const n = mapScopeIndex(s);
+  return n != null ? `Map ${n}` : s;
+}
+
+function scopeHint(s: string): string {
+  if (s === "match")
+    return "Order the markets that appear on the Match tab — i.e. those without a `map` specifier.";
+  if (s === "top")
+    return "Curated highlights tab. Empty by default; markets you add render on the storefront's Top tab and inline on match cards.";
+  const n = mapScopeIndex(s);
+  if (n != null) {
+    return `Order the markets that appear on the Map ${n} tab — markets carrying \`map=${n}\`. Independent from every other Map N list.`;
+  }
+  return "";
+}
+
+function buildScopes(maxMapNumber: number): string[] {
+  const out: string[] = ["match"];
+  for (let n = 1; n <= maxMapNumber; n++) out.push(`map_${n}`);
+  out.push("top");
+  return out;
 }
 
 export default async function ScopeEditorPage({
@@ -41,12 +57,14 @@ export default async function ScopeEditorPage({
   params: Promise<{ sportId: string; scope: string }>;
 }) {
   const { sportId, scope } = await params;
-  if (!isScope(scope)) notFound();
+  if (!isValidScope(scope)) notFound();
 
   const data = await serverApi<DetailResponse>(
     `/admin/fe-settings/markets-order/${sportId}/${scope}`,
   );
   if (!data) notFound();
+
+  const scopes = buildScopes(data.maxMapNumber);
 
   return (
     <div>
@@ -61,8 +79,8 @@ export default async function ScopeEditorPage({
         {data.sport.slug}
       </p>
 
-      <nav className="mt-6 inline-flex rounded-md border border-[var(--color-border)] bg-[var(--color-bg-elevated)] p-1 text-xs">
-        {SCOPES.map((s) => {
+      <nav className="mt-6 inline-flex flex-wrap rounded-md border border-[var(--color-border)] bg-[var(--color-bg-elevated)] p-1 text-xs">
+        {scopes.map((s) => {
           const active = s === data.scope;
           return (
             <Link
@@ -75,14 +93,14 @@ export default async function ScopeEditorPage({
                   : "text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]")
               }
             >
-              {SCOPE_LABELS[s]}
+              {scopeLabel(s)}
             </Link>
           );
         })}
       </nav>
 
       <p className="mt-3 text-sm text-[var(--color-fg-muted)]">
-        {SCOPE_HINTS[data.scope]}
+        {scopeHint(data.scope)}
       </p>
 
       <MarketOrderEditor
