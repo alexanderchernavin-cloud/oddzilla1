@@ -59,6 +59,7 @@ import devicesRoutes from "./modules/devices/routes.js";
 import liveChatRoutes from "./modules/live-chat/routes.js";
 import { startMatchWatcher } from "./modules/live-chat/match-watcher.js";
 import riskzillaRoutes from "./modules/admin/riskzilla/routes.js";
+import { startPushOutboxWorker, type PushWorkerHandle } from "./modules/push/worker.js";
 import { ApiError } from "./lib/errors.js";
 
 const env = loadEnv();
@@ -270,6 +271,19 @@ if (process.env.LIVE_CHAT_WATCHER_DISABLED !== "1") {
   matchWatcherHandle = await startMatchWatcher(app, { redisUrl: env.REDIS_URL });
 }
 
+// Push-notification outbox drainer. Subscribes via postgres LISTEN to
+// the `push_outbox` channel (fired by services/settlement on winning
+// ticket commits) and dispatches via Firebase Admin SDK. When
+// FIREBASE_SERVICE_ACCOUNT_PATH / GOOGLE_APPLICATION_CREDENTIALS is
+// unset the worker still runs but marks rows with last_error=
+// 'firebase_disabled' so the table doesn't grow unbounded. Set
+// PUSH_OUTBOX_WORKER_DISABLED=1 to skip entirely (for future
+// multi-instance deploys where only one container should drain).
+let pushWorkerHandle: PushWorkerHandle | null = null;
+if (process.env.PUSH_OUTBOX_WORKER_DISABLED !== "1") {
+  pushWorkerHandle = await startPushOutboxWorker(app);
+}
+
 // ─── Boot ───────────────────────────────────────────────────────────────────
 
 app
@@ -302,6 +316,13 @@ async function shutdown() {
       await matchWatcherHandle.close();
     } catch (err) {
       app.log.warn({ err: (err as Error).message }, "watcher shutdown error");
+    }
+  }
+  if (pushWorkerHandle) {
+    try {
+      await pushWorkerHandle.close();
+    } catch (err) {
+      app.log.warn({ err: (err as Error).message }, "push worker shutdown error");
     }
   }
   await app.close();

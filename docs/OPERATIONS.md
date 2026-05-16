@@ -186,7 +186,7 @@ gracefully:
 
 | Service | Required | Optional → effect when absent |
 | --- | --- | --- |
-| api | DATABASE_URL, REDIS_URL, JWT_SECRET, REFRESH_COOKIE_SECRET, SIGNER_SOCKET_PATH | signer unreachable → `/wallet/deposit-addresses` returns 500 with `SignerUnavailableError` |
+| api | DATABASE_URL, REDIS_URL, JWT_SECRET, REFRESH_COOKIE_SECRET, SIGNER_SOCKET_PATH | signer unreachable → `/wallet/deposit-addresses` returns 500 with `SignerUnavailableError`. FIREBASE_SERVICE_ACCOUNT_PATH unset OR target file missing → push-outbox worker still drains the queue but marks every row `sent_at=NOW(), last_error='firebase_disabled'`; no FCM notifications go out until credentials are mounted. |
 | signer | HD_MASTER_MNEMONIC | n/a — only this service reads the mnemonic |
 | feed-ingester | DATABASE_URL, REDIS_URL | ODDIN_TOKEN+ODDIN_CUSTOMER_ID absent → idle, health-only |
 | settlement | DATABASE_URL, REDIS_URL | ODDIN_TOKEN+ODDIN_CUSTOMER_ID absent → idle, health-only |
@@ -686,6 +686,80 @@ address derivation) — that's the only process that has it. Notes:
    service — deposit/withdrawal scanners pause; nothing else is
    affected).
 5. Permanent fix: upgrade Hetzner plan.
+
+## FCM push notifications
+
+Server-side is live as of migration `0058_push_notifications_outbox`.
+When a winning ticket settles, `services/settlement` (Go) inserts a
+`bet_won` row into `push_notifications_outbox` inside the same tx as
+`SettleTicket`, then fires `NOTIFY push_outbox`. The api service's
+`startPushOutboxWorker` LISTENs on the channel + sweeps every 30 s,
+joins to `user_devices`, and dispatches via Firebase Admin SDK
+`sendEachForMulticast`. Dead FCM tokens get soft-revoked on the device
+row; transient failures bump `attempts` until `MAX_ATTEMPTS=5`.
+
+**Activation** (operator one-time, takes ~5 min once a Firebase project
+exists):
+
+1. Firebase Console → Project settings → Service accounts → **Generate
+   new private key**. Download the JSON.
+2. On the box:
+   ```sh
+   sudo install -d -m 750 -o team -g team /srv/oddzilla-firebase
+   sudo install -m 600 -o 1000 -g 1000 service-account.json \
+     /srv/oddzilla-firebase/service-account.json
+   ```
+   uid 1000 = the api container's `node` user. `chmod 600` keeps the
+   credential from sysadmin scripts that might scan world-readable
+   files for secrets.
+3. `make recreate api`. Logs should show `push: outbox worker started
+   firebase=enabled`. From this point every winning settle pushes.
+
+**Operator surface — queue depth + diagnostics:**
+
+```sql
+-- Pending rows: should normally trend to zero. A growing number
+-- with last_error NULL = api is down or the worker died; growing
+-- with last_error set = transient Firebase failures, look at the
+-- error column to triage.
+SELECT COUNT(*) AS pending
+  FROM push_notifications_outbox
+ WHERE sent_at IS NULL;
+
+-- Recent dispatches grouped by outcome.
+SELECT date_trunc('hour', sent_at) AS h,
+       last_error,
+       COUNT(*) AS n
+  FROM push_notifications_outbox
+ WHERE sent_at >= now() - interval '24 hours'
+ GROUP BY 1, 2
+ ORDER BY 1 DESC, n DESC;
+```
+
+`last_error` values you might see:
+- `NULL` — dispatched cleanly.
+- `firebase_disabled` — credentials weren't mounted; activation step
+  pending. Reset to NULL after activating if you want history clean,
+  or leave for the audit trail.
+- `no_devices` — user has no live `user_devices` rows. Expected for
+  users who haven't installed the mobile app or revoked all tokens.
+- `all_tokens_dead` — every device token returned a permanent FCM
+  error in one dispatch; the worker soft-revoked them.
+- `max_attempts:<msg>` — five transient failures in a row, gave up.
+  Usually points to a Firebase project / network misconfig.
+
+**Disabling the worker** (debug only):
+```
+PUSH_OUTBOX_WORKER_DISABLED=1
+```
+Settlement keeps writing outbox rows; the api just doesn't dispatch.
+Use to bisect "is the push pipeline cause of X" — but remember to
+flip back on, otherwise the table grows.
+
+**Client-side wiring** (separate manual step) lives in
+[`apps/mobile-android/.../fcm/README.md`](../apps/mobile-android/app/src/main/java/cc/oddzilla/app/fcm/README.md)
+— `~15 minutes of work after a Firebase project exists`. Server side
+keeps draining (graceful-idle) until then.
 
 ## OZ demo currency backfill
 

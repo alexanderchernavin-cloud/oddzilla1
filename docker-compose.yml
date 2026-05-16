@@ -282,6 +282,16 @@ services:
       # in .env so the compose-level bind sources move with it.
       DEPLOY_STATE_DIR: /srv/deploy-state
       DEPLOY_GIT_DIR: /srv/repo-git
+      # FCM push-notification credential path inside the container.
+      # The api looks for `service-account.json` inside the mounted
+      # /run/firebase directory; when the file is absent the push-outbox
+      # worker (services/api/src/modules/push) logs `firebase: disabled`
+      # and marks rows with last_error=firebase_disabled instead of
+      # dispatching. To activate, drop the Firebase Admin SDK service
+      # account JSON at FIREBASE_SERVICE_ACCOUNT_HOST on the host
+      # (default /srv/oddzilla-firebase/service-account.json — see
+      # apps/mobile-android/.../fcm/README.md) and `make recreate api`.
+      FIREBASE_SERVICE_ACCOUNT_PATH: ${FIREBASE_SERVICE_ACCOUNT_PATH:-/run/firebase/service-account.json}
     volumes:
       # Read-write because Unix socket clients need to write to the socket
       # file to send requests. cap_drop + the API's existing isolation are
@@ -297,6 +307,15 @@ services:
       # checkout root.
       - ${DEPLOY_STATE_HOST:-/home/team/oddzilla/.deploy}:/srv/deploy-state:ro
       - ${DEPLOY_GIT_HOST:-/home/team/oddzilla/.git}:/srv/repo-git:ro
+      # Firebase Admin SDK service-account dir for FCM push.
+      # Mount the directory (not the file) so a missing host file
+      # does NOT abort `docker compose up` — Docker auto-creates the
+      # source dir if absent, the api boots with the worker in
+      # graceful-idle mode, and the operator can later drop
+      # `service-account.json` into FIREBASE_SERVICE_ACCOUNT_HOST and
+      # `make recreate api` to activate. Read-only since the api
+      # never writes credentials.
+      - ${FIREBASE_SERVICE_ACCOUNT_HOST:-/srv/oddzilla-firebase}:/run/firebase:ro
     depends_on:
       postgres:
         condition: service_healthy

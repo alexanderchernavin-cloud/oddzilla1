@@ -2,7 +2,16 @@
 
 The mobile push pipeline ships in two halves.
 
-**Server-side is live and waiting for tokens** (migration `0045_user_devices` + `POST /devices/register` in `services/api/src/modules/devices/routes.ts`). Tokens land in the `user_devices` table; `DevicesRepository` on the mobile side talks to the endpoint.
+**Server-side is live and waiting on credentials**:
+- Migration `0058_push_notifications_outbox` adds the durable outbox table.
+- `services/settlement` enqueues a `bet_won` row inside the same tx that flips a winning ticket to `settled`, then fires `NOTIFY push_outbox`.
+- `services/api` runs `startPushOutboxWorker` (see [`services/api/src/modules/push/`](../../../../../../../services/api/src/modules/push/)) — it LISTENs on the channel + sweeps every 30 s, dispatches via Firebase Admin SDK, soft-revokes dead tokens, and bumps `attempts` / `last_error` on transient failures.
+- Without a Firebase service-account JSON mounted, the worker runs in graceful-idle: rows are marked sent with `last_error='firebase_disabled'` so the queue drains and the table size stays bounded.
+
+**Server activation** — once a Firebase project exists:
+1. Firebase Console → Project settings → Service accounts → **Generate new private key**.
+2. On the box: `sudo install -m 600 -o 1000 -g 1000 service-account.json /srv/oddzilla-firebase/service-account.json`. UID 1000 is the api container's node user. The compose mount uses the directory `/srv/oddzilla-firebase` (not the file), so a missing file doesn't abort `docker compose up` — Docker auto-creates the dir and the worker just stays in idle mode.
+3. `make recreate api` to pick up the mount. Logs should show `push: outbox worker started firebase=enabled`.
 
 **Client-side FCM is intentionally not wired up by default** because the Google Services Gradle plugin fails the build when `google-services.json` is missing. Follow the steps below once you create a Firebase project — the entire client integration is ~15 minutes of work.
 
@@ -62,6 +71,8 @@ Add the service declaration to `app/src/main/AndroidManifest.xml` inside `<appli
     </intent-filter>
 </service>
 ```
+
+The `oddzilla-default` notification channel id used in the server-side render path (`services/api/src/modules/push/worker.ts`) matches the one `FcmService.ensureChannel()` creates — no extra coordination needed.
 
 ## 4. Wire token registration on app launch
 
@@ -135,23 +146,38 @@ LaunchedEffect(Unit) {
 
 ---
 
-## Server-side (Firebase Admin SDK on the api)
+## Server-side reference (already wired)
 
-The api currently writes to `user_devices` but doesn't send pushes. To enable sending:
+The api side of this pipeline is fully implemented; the table below lists where each piece lives so you can adjust or extend without hunting.
 
-1. Generate a service account JSON in Firebase Console → Project settings → Service accounts → Generate new private key
-2. Drop it on the box at `/srv/oddzilla-firebase/service-account.json` (mode 600, owned by the api container's UID)
-3. Mount it into the api container in `docker-compose.yml`:
-   ```yaml
-   api:
-     volumes:
-       - /srv/oddzilla-firebase/service-account.json:/run/firebase/service-account.json:ro
-     environment:
-       GOOGLE_APPLICATION_CREDENTIALS: /run/firebase/service-account.json
-   ```
-4. `pnpm --filter @oddzilla/api add firebase-admin` and write a small `services/api/src/lib/push.ts` wrapper around `admin.messaging().sendEachForMulticast()`
-5. Call the wrapper from the settlement service (when `tickets.status` flips to `settled` / `voided` / `cashed_out`) and from the api's bet-placement path (acceptance acknowledgement)
+| Concern | Location |
+| --- | --- |
+| Outbox schema + migration | [`packages/db/migrations/0058_push_notifications_outbox.sql`](../../../../../../../packages/db/migrations/0058_push_notifications_outbox.sql) |
+| Drizzle schema | [`packages/db/src/schema/push-notifications.ts`](../../../../../../../packages/db/src/schema/push-notifications.ts) |
+| Producer (settlement, Go) | [`services/settlement/internal/store/push.go`](../../../../../../../services/settlement/internal/store/push.go) + call site in `services/settlement/internal/settler/settler.go` `maybeSettleTicket` |
+| Firebase Admin SDK init | [`services/api/src/modules/push/firebase.ts`](../../../../../../../services/api/src/modules/push/firebase.ts) |
+| Render outbox payload → FCM message | [`services/api/src/modules/push/render.ts`](../../../../../../../services/api/src/modules/push/render.ts) |
+| LISTEN + sweep + dispatch worker | [`services/api/src/modules/push/worker.ts`](../../../../../../../services/api/src/modules/push/worker.ts) |
+| Worker boot + shutdown wiring | [`services/api/src/server.ts`](../../../../../../../services/api/src/server.ts) (`startPushOutboxWorker`) |
+| Compose mount + env | `api` service in [`docker-compose.yml`](../../../../../../../docker-compose.yml) (`FIREBASE_SERVICE_ACCOUNT_PATH` + the `/run/firebase` bind) |
 
-Decision points to make then: which events trigger pushes (settlement always; cashout offer always; copy-bet inspiration only when the originator has the `bet_inspired` notification preference set to true), how to render rich notifications with deep links, and whether to batch high-volume operators with FCM topic subscriptions instead of per-token sends.
+Future event kinds (`cashout_offered`, `bet_inspired`, …) plug into the same outbox by:
+1. Producer writes a row with a new `kind` + JSONB payload.
+2. Add a renderer branch in `services/api/src/modules/push/render.ts`.
+3. Add a branch in `worker.ts` `processRow` if the new kind needs a non-default code path; the default falls through to `unsupported_kind:<kind>` so unknown rows never silently retain.
 
-This is genuinely a separate session of work — the scaffolding above is set up so that's all you need to do, no bigger refactors.
+Operator surface for an audit:
+
+```sql
+-- Pending rows: should normally trend toward zero.
+SELECT COUNT(*) FROM push_notifications_outbox WHERE sent_at IS NULL;
+
+-- Rows that gave up (max_attempts) or that the worker dropped for
+-- diagnostic reasons (firebase_disabled, no_devices, all_tokens_dead).
+SELECT kind, last_error, COUNT(*) AS n
+  FROM push_notifications_outbox
+ WHERE sent_at IS NOT NULL AND last_error IS NOT NULL
+ GROUP BY 1, 2 ORDER BY n DESC LIMIT 20;
+```
+
+Pruning is a future-me problem — the table grows ~1 row per winning ticket. At a rough 50 wins/match × 100 matches/day = 5 000 rows/day, a year is under 2M rows. When that becomes uncomfortable, add a daily `DELETE FROM push_notifications_outbox WHERE sent_at < now() - interval '30 days'` cron.

@@ -302,6 +302,13 @@
       "when": 1700000057000,
       "tag": "0057_fe_market_order_per_map",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1700000058000,
+      "tag": "0058_push_notifications_outbox",
+      "breakpoints": true
     }
   ]
 }
