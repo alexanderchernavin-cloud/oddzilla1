@@ -138,7 +138,7 @@ log "git worktree is still at ${FROM_SHA:0:12} — run 'git -C ${REPO_ROOT} rese
 # Run smoke after the rollback so we know whether the prior version
 # is healthy. A rollback that doesn't pass smoke is a serious incident
 # (the previous deploy WAS healthy when it landed); surface it loud.
-if "${SCRIPT_DIR}/smoke.sh"; then
+if bash "${SCRIPT_DIR}/smoke.sh"; then
   log "rollback verified healthy"
 else
   err "rollback completed but smoke is failing — investigate immediately"

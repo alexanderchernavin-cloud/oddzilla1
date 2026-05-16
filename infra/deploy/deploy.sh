@@ -43,7 +43,7 @@ log "deploying ${CURRENT_SHA} → ${TARGET_SHA}"
 # `a` is no longer reachable from HEAD as long as the object exists,
 # but we want to be safe.
 CHANGED_FILES="$(git -C "${REPO_ROOT}" diff --name-only "${CURRENT_SHA}..${TARGET_SHA}")"
-SERVICES="$(printf '%s\n' "${CHANGED_FILES}" | "${SCRIPT_DIR}/detect-services.sh")"
+SERVICES="$(printf '%s\n' "${CHANGED_FILES}" | bash "${SCRIPT_DIR}/detect-services.sh")"
 
 # Migration detection: any new file under packages/db/migrations/
 # matching the standard 4-digit prefix. Renames / deletes also touch
@@ -70,7 +70,7 @@ deploy_run git -C "${REPO_ROOT}" reset --hard "${TARGET_SHA}"
 # ── 3. Pre-migration backup (only if there's something to migrate) ──
 if [ "${MIGRATIONS_PENDING}" -gt 0 ]; then
   log "running pre-deploy pg snapshot"
-  deploy_run "${SCRIPT_DIR}/dump-db.sh" "${TARGET_SHA}"
+  deploy_run bash "${SCRIPT_DIR}/dump-db.sh" "${TARGET_SHA}"
 fi
 
 # ── 4. Migrations ───────────────────────────────────────────────────
@@ -104,7 +104,7 @@ if [ -n "${SERVICES}" ]; then
 
   log "tagging :${TARGET_SHA:0:12} on built images"
   # shellcheck disable=SC2086
-  deploy_run "${SCRIPT_DIR}/tag-images.sh" "${TARGET_SHA}" ${SERVICES}
+  deploy_run bash "${SCRIPT_DIR}/tag-images.sh" "${TARGET_SHA}" ${SERVICES}
 fi
 
 # ── 6. Recreate non-web services ────────────────────────────────────
@@ -139,7 +139,7 @@ printf '%s\n' "${TARGET_SHA}" | deploy_write_atomic "${DEPLOY_LAST_SHA_FILE}"
 deploy_log_event deploy "${TARGET_SHA}" "${SERVICES:--}" "migrations=${MIGRATIONS_PENDING}"
 
 # ── 10. Smoke ───────────────────────────────────────────────────────
-if "${SCRIPT_DIR}/smoke.sh"; then
+if bash "${SCRIPT_DIR}/smoke.sh"; then
   log "deploy ${TARGET_SHA:0:12} complete"
 else
   deploy_log_event smoke_fail "${TARGET_SHA}" "${SERVICES:--}"

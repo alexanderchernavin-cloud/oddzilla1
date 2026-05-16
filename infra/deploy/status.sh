@@ -31,7 +31,7 @@ echo "commits to deploy:"
 git -C "${REPO_ROOT}" log --oneline "${CURRENT_SHA}..${TARGET_SHA}"
 
 CHANGED_FILES="$(git -C "${REPO_ROOT}" diff --name-only "${CURRENT_SHA}..${TARGET_SHA}")"
-SERVICES="$(printf '%s\n' "${CHANGED_FILES}" | "${SCRIPT_DIR}/detect-services.sh")"
+SERVICES="$(printf '%s\n' "${CHANGED_FILES}" | bash "${SCRIPT_DIR}/detect-services.sh")"
 MIGRATION_FILES="$(printf '%s\n' "${CHANGED_FILES}" | grep -E '^packages/db/migrations/[0-9].*\.sql$' || true)"
 
 echo
