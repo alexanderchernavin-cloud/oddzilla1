@@ -340,36 +340,33 @@ function SportsSection({
   const tShell = useTranslations("shell");
   const [editing, setEditing] = useState(false);
 
-  // Local working copy of the user's order during an edit session.
-  // Re-derived from props whenever the prop changes (e.g. after the
-  // server confirms a save and Next.js re-fetches /auth/me).
-  const [orderedSports, setOrderedSports] = useState<SportItem[]>(() =>
-    orderSportsForSidebar(sports, userSportOrder),
+  // Local override of the user's saved slug order. Initialized from
+  // the server prop, and updated optimistically when the user arrows
+  // / resets. Stays sticky across the edit-mode toggle so pressing
+  // Save doesn't visually revert. An earlier shape had `editing` in
+  // a resync useEffect's deps — when Save flipped editing to false,
+  // the effect re-ran and overwrote local state with the (still-stale,
+  // since the page hadn't re-fetched /auth/me) prop. The cleaner model
+  // here is "localOrder is the source of truth for what we render;
+  // the prop just seeds it and reseeds when the prop genuinely
+  // changes (e.g. another tab edited)".
+  const [localOrder, setLocalOrder] = useState<string[] | null>(
+    userSportOrder,
   );
 
-  // When the input sports list or the saved order prop changes (e.g.
-  // sport added/removed by an admin, or another tab edited the order),
-  // resync — but only when we are NOT in the middle of an edit, so a
-  // background refresh doesn't yank reordered rows out from under the
-  // user.
   useEffect(() => {
-    if (editing) return;
-    setOrderedSports(orderSportsForSidebar(sports, userSportOrder));
-  }, [sports, userSportOrder, editing]);
+    setLocalOrder(userSportOrder);
+  }, [userSportOrder]);
 
-  // Stable derived value for the non-editing render. Recomputing on
-  // every render is cheap (≤40 sports today) but useMemo keeps the
-  // reference stable for any downstream memoised children.
-  const renderList = useMemo(() => {
-    return editing
-      ? orderedSports
-      : orderSportsForSidebar(sports, userSportOrder);
-  }, [editing, orderedSports, sports, userSportOrder]);
+  const renderList = useMemo(
+    () => orderSportsForSidebar(sports, localOrder),
+    [sports, localOrder],
+  );
 
-  function persist(next: SportItem[]) {
+  function persist(next: string[] | null) {
     clientApi("/users/me/sport-order", {
       method: "PUT",
-      body: JSON.stringify({ order: next.map((s) => s.slug) }),
+      body: JSON.stringify({ order: next }),
     }).catch(() => {
       // Persistence failure is non-fatal — the local order still works
       // for this session. Errors surface in the network log; we don't
@@ -380,19 +377,17 @@ function SportsSection({
 
   function move(index: number, dir: -1 | 1) {
     const swapWith = index + dir;
-    if (swapWith < 0 || swapWith >= orderedSports.length) return;
-    const next = orderedSports.slice();
+    if (swapWith < 0 || swapWith >= renderList.length) return;
+    const next = renderList.slice();
     [next[index], next[swapWith]] = [next[swapWith]!, next[index]!];
-    setOrderedSports(next);
-    persist(next);
+    const slugs = next.map((s) => s.slug);
+    setLocalOrder(slugs);
+    persist(slugs);
   }
 
   function reset() {
-    setOrderedSports(orderSportsForSidebar(sports, null));
-    clientApi("/users/me/sport-order", {
-      method: "PUT",
-      body: JSON.stringify({ order: null }),
-    }).catch(() => undefined);
+    setLocalOrder(null);
+    persist(null);
   }
 
   const trailing = signedIn ? (
@@ -423,8 +418,8 @@ function SportsSection({
           type="button"
           onClick={() => setEditing(false)}
           className="mono"
-          title={tShell("doneCustomizing")}
-          aria-label={tShell("doneCustomizing")}
+          title={tShell("saveSportOrder")}
+          aria-label={tShell("saveSportOrder")}
           style={{
             background: "var(--fg)",
             color: "var(--bg)",
@@ -438,7 +433,7 @@ function SportsSection({
             cursor: "pointer",
           }}
         >
-          {tShell("doneCustomizing")}
+          {tShell("saveSportOrder")}
         </button>
       </div>
     ) : (
@@ -531,6 +526,14 @@ function SportsSection({
 // navigates — instead it carries a pair of up/down arrow buttons that
 // the user clicks to reorder. Disabled state matches the row's
 // position in the list (top row can't move up, etc.).
+//
+// Layout note: in edit mode the row extends 8 px past the section's
+// right padding (negative marginRight) so the up/down stack can use
+// the sidebar's right gutter. The slight misalignment with the
+// non-edit rows above/below is intentional and only visible while
+// editing — it buys the sport-name column ~20 px of width, which is
+// enough to keep "League of Legends" / "Counter-Strike 2 Duels"
+// from truncating.
 function SportEditRow({
   sport,
   canMoveUp,
@@ -553,8 +556,9 @@ function SportEditRow({
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 12,
-        padding: "8px 6px 8px 10px",
+        gap: 8,
+        padding: "8px 0 8px 10px",
+        marginRight: -8,
         borderRadius: 8,
         background: "transparent",
         color: "var(--fg-muted)",
@@ -565,6 +569,7 @@ function SportEditRow({
       <span
         style={{
           flex: 1,
+          minWidth: 0,
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
@@ -572,26 +577,28 @@ function SportEditRow({
       >
         {sport.name}
       </span>
-      <button
-        type="button"
-        onClick={onMoveUp}
-        disabled={!canMoveUp}
-        title={upLabel}
-        aria-label={`${upLabel}: ${sport.name}`}
-        style={moveBtnStyle(canMoveUp)}
-      >
-        <I.ChevU size={14} />
-      </button>
-      <button
-        type="button"
-        onClick={onMoveDown}
-        disabled={!canMoveDown}
-        title={downLabel}
-        aria-label={`${downLabel}: ${sport.name}`}
-        style={moveBtnStyle(canMoveDown)}
-      >
-        <I.ChevD size={14} />
-      </button>
+      <div style={{ display: "inline-flex", gap: 2, flexShrink: 0 }}>
+        <button
+          type="button"
+          onClick={onMoveUp}
+          disabled={!canMoveUp}
+          title={upLabel}
+          aria-label={`${upLabel}: ${sport.name}`}
+          style={moveBtnStyle(canMoveUp)}
+        >
+          <I.ChevU size={12} />
+        </button>
+        <button
+          type="button"
+          onClick={onMoveDown}
+          disabled={!canMoveDown}
+          title={downLabel}
+          aria-label={`${downLabel}: ${sport.name}`}
+          style={moveBtnStyle(canMoveDown)}
+        >
+          <I.ChevD size={12} />
+        </button>
+      </div>
     </div>
   );
 }
@@ -599,12 +606,14 @@ function SportEditRow({
 function moveBtnStyle(enabled: boolean): React.CSSProperties {
   return {
     background: "transparent",
-    border: "1px solid var(--hairline)",
+    border: 0,
     color: enabled ? "var(--fg-muted)" : "var(--fg-dim)",
-    padding: 2,
+    width: 18,
+    height: 22,
+    padding: 0,
     borderRadius: 4,
     cursor: enabled ? "pointer" : "not-allowed",
-    opacity: enabled ? 1 : 0.4,
+    opacity: enabled ? 1 : 0.35,
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",

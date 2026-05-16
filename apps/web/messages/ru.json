@@ -67,7 +67,7 @@
     "language": "Язык",
     "languageSwitcher": "Сменить язык",
     "customizeSports": "Настроить порядок видов спорта",
-    "doneCustomizing": "Готово",
+    "saveSportOrder": "Сохранить",
     "resetSports": "Сбросить",
     "moveSportUp": "Поднять",
     "moveSportDown": "Опустить"

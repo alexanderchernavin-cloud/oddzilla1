@@ -67,7 +67,7 @@
     "language": "Jazyk",
     "languageSwitcher": "Změnit jazyk",
     "customizeSports": "Upravit pořadí sportů",
-    "doneCustomizing": "Hotovo",
+    "saveSportOrder": "Uložit",
     "resetSports": "Obnovit",
     "moveSportUp": "Posunout nahoru",
     "moveSportDown": "Posunout dolů"

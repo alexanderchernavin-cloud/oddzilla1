@@ -67,7 +67,7 @@
     "language": "Idioma",
     "languageSwitcher": "Cambiar idioma",
     "customizeSports": "Personalizar orden de deportes",
-    "doneCustomizing": "Listo",
+    "saveSportOrder": "Guardar",
     "resetSports": "Restablecer",
     "moveSportUp": "Subir",
     "moveSportDown": "Bajar"
