@@ -602,6 +602,11 @@ export const userPreferences = pgTable("user_preferences", {
   prefCompetitionUpdatesSet: boolean().notNull().default(false),
   prefCommunityHighlights: boolean().notNull().default(true),
   prefAchievementsRewards: boolean().notNull().default(true),
+  // Gates `bet_won` and `bet_cashed_out` (in-app bell only; FCM
+  // mobile push uses its own outbox-side dispatch). Defaults TRUE
+  // because settlement is a wallet-affecting event most users want
+  // surfaced — see 0059_notif_bet_settlements.sql.
+  prefBetSettlements: boolean().notNull().default(true),
   // V1 save-only — public profile + search will start consulting
   // these in V2 (PRD: V2 enforcement).
   privacyShowWinLossRecord: boolean().notNull().default(true),

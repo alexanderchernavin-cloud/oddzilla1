@@ -749,7 +749,11 @@ export type NotificationType =
   | "challenge_completed"
   | "achievement_unlocked"
   | "level_up"
-  | "loot_acquired";
+  | "loot_acquired"
+  // Bet settlement (in-app bell). FCM mobile push uses its own
+  // outbox path (push_notifications_outbox). See migration 0059.
+  | "bet_won"
+  | "bet_cashed_out";
 
 // Per-type payload schemas. Stored in user_notifications.payload as
 // JSONB; the FE renderer reads them by type. Keep these tight — they
@@ -844,6 +848,32 @@ export interface LootAcquiredPayload {
   rarity: string;
 }
 
+// Bet settlement payloads. Money fields are decimal strings (e.g.
+// "1250000" for 1.25 in display units at 6 micros/unit) so JSON
+// doesn't lose precision past 2^53 on high-stake combo payouts —
+// same convention as BetWonPushPayload in services/api/src/modules/
+// push/render.ts. The renderer reads `currency` to pick a formatter.
+export interface BetWonPayload {
+  ticketId: string;
+  betType: string;
+  currency: string;
+  stakeMicro: string;
+  actualPayoutMicro: string;
+  numLegs: number;
+}
+
+export interface BetCashedOutPayload {
+  ticketId: string;
+  betType: string;
+  currency: string;
+  stakeMicro: string;
+  // The payout the user accepted from the cashout offer. Identical
+  // shape to BetWonPayload.actualPayoutMicro so the renderer can
+  // share most of its formatting logic.
+  actualPayoutMicro: string;
+  numLegs: number;
+}
+
 export type NotificationPayload =
   | PickCopiedPayload
   | BetInspiredPayload
@@ -855,7 +885,9 @@ export type NotificationPayload =
   | ChallengeCompletedPayload
   | AchievementUnlockedPayload
   | LevelUpPayload
-  | LootAcquiredPayload;
+  | LootAcquiredPayload
+  | BetWonPayload
+  | BetCashedOutPayload;
 
 // One row in the GET /community/notifications response. The
 // discriminated payload field is typed loosely (Record) at the
@@ -899,6 +931,9 @@ export interface NotificationPreferences {
   competitionUpdatesManuallySet: boolean;
   communityHighlights: boolean;
   achievementsRewards: boolean;
+  // In-app bell coverage for bet_won + bet_cashed_out. Default TRUE
+  // — see migration 0059_notif_bet_settlements.sql.
+  betSettlements: boolean;
 }
 
 export interface PrivacyPreferences {

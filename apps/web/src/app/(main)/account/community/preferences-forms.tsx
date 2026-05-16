@@ -148,6 +148,12 @@ function NotificationSettingsForm({ initial }: { initial: PreferencesResponse })
         checked={prefs.achievementsRewards}
         onChange={(v) => void patch("achievementsRewards", v)}
       />
+      <ToggleRow
+        label="Bet Settlements"
+        description="When your bet wins or you cash out"
+        checked={prefs.betSettlements}
+        onChange={(v) => void patch("betSettlements", v)}
+      />
       {message ? (
         <p
           role="status"

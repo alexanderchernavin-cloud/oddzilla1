@@ -152,8 +152,11 @@ export const competitionMatchStatusEnum = pgEnum("competition_match_status", [
 
 // 0044_community_notifications.sql — panel-displayable notification
 // types across three categories (social / competition / gamification).
-// Bet settlement is intentionally absent: the sportsbook owns that
-// channel, not Community (PRD: Background → Scope note).
+// 0058 (FCM mobile push) and 0059 (in-app bell) walked back the
+// migration 0044 scope note: the bell now carries bet settlement
+// signals for web parity with what mobile gets. Only positive
+// outcomes (`bet_won`, `bet_cashed_out`) are scoped in for V1;
+// `bet_lost` is intentionally deferred.
 // Listed up-front for every PRD type so the FE renderer never sees an
 // unknown value; types with no current trigger source (`new_follower`,
 // `community_digest`) light up when their source feature ships.
@@ -169,4 +172,6 @@ export const notificationTypeEnum = pgEnum("notification_type", [
   "achievement_unlocked",
   "level_up",
   "loot_acquired",
+  "bet_won",
+  "bet_cashed_out",
 ]);
