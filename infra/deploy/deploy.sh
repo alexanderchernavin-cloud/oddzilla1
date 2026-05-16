@@ -52,11 +52,13 @@ SERVICES="$(printf '%s\n' "${CHANGED_FILES}" | bash "${SCRIPT_DIR}/detect-servic
 MIGRATIONS_PENDING="$(printf '%s\n' "${CHANGED_FILES}" | grep -cE '^packages/db/migrations/[0-9].*\.sql$' || true)"
 
 # Caddy is a config-restart only (no Dockerfile build); strip it from
-# the build list and handle it separately at recreate time.
+# the build list and handle it separately at recreate time. Use awk
+# (not grep -v) so a "no caddy in the list" case doesn't trip the
+# pipefail-set -e combo when the filter matches zero lines.
 NEED_CADDY_RELOAD=0
-if printf '%s\n' "${SERVICES}" | tr ' ' '\n' | grep -qx caddy; then
+if printf '%s\n' "${SERVICES}" | tr ' ' '\n' | awk '$0 == "caddy" { found=1 } END { exit !found }'; then
   NEED_CADDY_RELOAD=1
-  SERVICES="$(printf '%s\n' "${SERVICES}" | tr ' ' '\n' | grep -vx caddy | tr '\n' ' ' | sed 's/ $//')"
+  SERVICES="$(printf '%s\n' "${SERVICES}" | tr ' ' '\n' | awk '$0 != "caddy" && NF' | tr '\n' ' ' | sed 's/ $//')"
 fi
 
 log "changed services:    ${SERVICES:-<none>}"
@@ -108,7 +110,10 @@ if [ -n "${SERVICES}" ]; then
 fi
 
 # ── 6. Recreate non-web services ────────────────────────────────────
-NON_WEB="$(printf '%s\n' "${SERVICES}" | tr ' ' '\n' | grep -v '^web' | tr '\n' ' ' | sed 's/ $//')"
+# awk filter instead of `grep -v '^web'` so a list of only web1
+# (which matches the prefix and produces zero output lines) doesn't
+# trip pipefail+set -e. Same pattern below for the web1 detection.
+NON_WEB="$(printf '%s\n' "${SERVICES}" | tr ' ' '\n' | awk '$1 != "" && $1 !~ /^web/' | tr '\n' ' ' | sed 's/ $//')"
 if [ -n "${NON_WEB}" ]; then
   log "recreating: ${NON_WEB}"
   # shellcheck disable=SC2086
@@ -116,7 +121,7 @@ if [ -n "${NON_WEB}" ]; then
 fi
 
 # ── 7. Rolling recreate of web replicas ─────────────────────────────
-if printf '%s\n' "${SERVICES}" | tr ' ' '\n' | grep -qx web1; then
+if printf '%s\n' "${SERVICES}" | tr ' ' '\n' | awk '$0 == "web1" { found=1 } END { exit !found }'; then
   log "rolling-recreating web1 → web2 → web3"
   deploy_run make -C "${REPO_ROOT}" recreate-web
 fi

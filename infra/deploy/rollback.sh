@@ -109,15 +109,16 @@ for svc in ${SERVICES}; do
   sudo -n docker tag "${image_name}:${target}" "${image_name}:latest"
 done
 
-# Recreate non-web first, then roll web.
-NON_WEB="$(echo "${SERVICES}" | tr ' ' '\n' | grep -v '^web' | tr '\n' ' ' | sed 's/ $//')"
+# Recreate non-web first, then roll web. awk (not grep -v) so a
+# web-only service list doesn't trip pipefail+set -e on zero matches.
+NON_WEB="$(echo "${SERVICES}" | tr ' ' '\n' | awk '$1 != "" && $1 !~ /^web/' | tr '\n' ' ' | sed 's/ $//')"
 if [ -n "${NON_WEB}" ]; then
   log "recreating: ${NON_WEB}"
   # shellcheck disable=SC2086
   "${COMPOSE[@]}" up -d --no-deps --force-recreate ${NON_WEB}
 fi
 
-if echo "${SERVICES}" | tr ' ' '\n' | grep -qx web1; then
+if echo "${SERVICES}" | tr ' ' '\n' | awk '$0 == "web1" { found=1 } END { exit !found }'; then
   log "rolling-recreating web1 → web2 → web3"
   make -C "${REPO_ROOT}" recreate-web
 fi
