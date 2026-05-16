@@ -457,54 +457,59 @@ ssh team@178.104.174.24 'set -a; . /home/team/oddzilla/.env; set +a; sudo -n doc
 For the production server, after a `git push` to main:
 
 ```bash
-# 1. Fast-forward the worktree on the box.
-ssh team@178.104.174.24 "cd /home/team/oddzilla && \
-  git fetch origin main && git reset --hard origin/main"
-
-# 2. Run migrations FIRST (drizzle migrations are safe under the
-#    running images — every column added so far has been nullable).
-#    DATABASE_URL points at host `postgres` for in-container access;
-#    swap it to 127.0.0.1 because the migrate runner is on the host.
-ssh team@178.104.174.24 "set -a; . /home/team/oddzilla/.env; set +a; \
-  export DATABASE_URL=\$(echo \"\$DATABASE_URL\" | sed 's|@postgres:|@127.0.0.1:|'); \
-  pnpm --filter @oddzilla/db db:migrate"
-
-# 3. Build ONLY the services this PR changed, ONE AT A TIME, then
-#    recreate just those. NEVER run `docker compose build` (no
-#    service argument) on this box.
-#    The web image is shared across three replicas — build it once
-#    against `web1` and the other two pick it up at recreate time.
-for svc in api web1 feed-ingester; do
-  ssh team@178.104.174.24 "cd /home/team/oddzilla && \
-    sudo -n docker compose -f docker-compose.yml --profile scaled build $svc"
-done
-ssh team@178.104.174.24 "cd /home/team/oddzilla && \
-  sudo -n docker compose -f docker-compose.yml --profile scaled up -d \
-  --no-deps --force-recreate api feed-ingester"
-# Roll web1 → web2 → web3 serially so traffic stays on the other two
-# replicas while each one cycles (zero-downtime). Wait for healthcheck
-# to pass before moving on.
-ssh team@178.104.174.24 "cd /home/team/oddzilla && make recreate-web"
+ssh team@178.104.174.24 "cd /home/team/oddzilla && make deploy"
 ```
 
-> **DO NOT run `docker compose build` without a service argument on
-> this box.** The box is now CPX31 (8 GB) so a bare parallel build
-> *might* not OOM the way the 4 GB CPX22 did on 2026-05-06 (see
-> `project_build_oom_incident`), but we have not retested. Parallel
-> builds across the full service set still produce sustained CPU +
-> disk pressure that can drop ws-gateway / feed-ingester to
-> millisecond responsiveness during the build. The serial
-> per-service form below is the proven path; stick to it.
->
+That's it. The `make deploy` target ([`infra/deploy/deploy.sh`](./infra/deploy/deploy.sh))
+does fetch → diff → pre-deploy `pg_dump` (if any migration is pending)
+→ `pnpm db:migrate` → parallel-build the changed services → SHA-tag
+each built image → `--no-deps --force-recreate` non-web → rolling
+recreate web1→web2→web3 → smoke test the storefront + API.
+
+Companion targets:
+
+```bash
+make deploy-status   # dry-run: show what 'make deploy' would deploy
+make rollback        # docker tag previous-sha → :latest + recreate
+```
+
+Rollback is image-only — DB migrations are not auto-reverted. Our
+convention is forward-only nullable-additive, so the previous code
+version reads a newer schema cleanly. If a migration was destructive,
+restore from `.deploy/backups/<sha>.sql.gz` manually before rollback.
+
+State the deploy keeps under `/home/team/oddzilla/.deploy/`:
+
+| File | Purpose |
+| --- | --- |
+| `last-sha` | Atomically-written marker of the last successful deploy. `deploy-status` diffs from here. |
+| `log` | Append-only newline log of every `deploy` / `rollback` / `smoke_fail` event with timestamp, SHA, and services touched. `tail -f` during incidents. |
+| `images/<svc>` | Per-service stack of the last 3 SHAs ever built. Source of truth for rollback. |
+| `backups/<sha>.sql.gz` | Pre-deploy `pg_dump` taken right before a migration runs. Last 10 retained. |
+
+Concurrency: `flock` on `/var/lock/oddzilla-deploy.lock` — two
+operators running `make deploy` at the same time get a clean "another
+deploy is in progress" error instead of a race.
+
+The serial-build constraint that used to live in this section is
+gone. CPX31 (8 GB) handles parallel builds; if a future regression
+OOMs again, set `DEPLOY_BUILD_PARALLEL_CAP=2` in the deploy shell
+(maps to `COMPOSE_PARALLEL_LIMIT`) and re-run.
+
 > Migration → build → recreate is the right order. The new column
 > appears before the new code reads it; running images can ignore
-> a nullable column they don't know about. Use `--no-deps` so
-> dependency services (postgres, redis, caddy, …) keep running
-> across the rollout.
+> a nullable column they don't know about. The deploy script enforces
+> this order — don't run `pnpm db:migrate` or `docker compose build`
+> by hand on the box unless you have a reason that doesn't fit
+> `make deploy`.
 >
-> SSH+`sg docker` is also a trap (`$`-escaping, see the
+> `--no-deps` keeps postgres / redis / caddy untouched across each
+> service recreate. Bouncing them would needlessly drop active WS
+> connections + reset the postgres connection pool.
+>
+> SSH+`sg docker` is a trap (`$`-escaping, see the
 > `project_ssh_dollar_escaping` memory) — `sudo -n docker compose`
-> is the safe form.
+> is the safe form. Every script under `infra/deploy/` uses it.
 
 ## Handoff notes for the next session
 
