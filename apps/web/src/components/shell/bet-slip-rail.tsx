@@ -1459,16 +1459,24 @@ function SelectionCard({
         <Link
           href={`/match/${selection.matchId}`}
           onClick={() => closeMobileDrawers()}
+          className="mono"
           style={{
             display: "inline-flex",
             alignItems: "center",
+            gap: 3,
             color: "var(--fg-dim)",
-            padding: 2,
+            padding: "2px 2px 2px 4px",
+            fontSize: 10,
+            fontWeight: 500,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
             textDecoration: "none",
+            lineHeight: 1,
           }}
           aria-label={t("openMatch")}
           title={t("openMatch")}
         >
+          {t("open")}
           <I.Chev size={12} />
         </Link>
         <button
