@@ -185,26 +185,49 @@ function loadFromStorage(): SlipState {
 
 export function BetSlipProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<SlipState>(() => emptyState());
+  // Gates the writer effect so we don't echo the synthetic empty
+  // initial state to localStorage. Without this guard a freshly-mounted
+  // provider (e.g. an iframe opening in a side panel) writes its empty
+  // selections set to localStorage before its load effect rehydrates,
+  // fires a `storage` event in every other same-origin document, and
+  // the parent shell's BetSlipProvider — seeing a non-matching incoming
+  // payload — clears its own slip until the iframe's second write
+  // restores it. Net effect: the parent's slip rail flickers blank for
+  // a frame every time a panel opens.
+  const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     setState(loadFromStorage());
+    setHydrated(true);
   }, []);
 
   useEffect(() => {
+    if (!hydrated) return;
     try {
-      window.localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({
-          selections: state.selections,
-          mode: state.mode,
-          currency: state.currency,
-          betbuilderMatchId: state.betbuilderMatchId,
-        }),
-      );
+      const next = JSON.stringify({
+        selections: state.selections,
+        mode: state.mode,
+        currency: state.currency,
+        betbuilderMatchId: state.betbuilderMatchId,
+      });
+      // Skip the write — and the resulting cross-document storage
+      // event — when the value already in localStorage matches. Two
+      // BetSlipProviders running in parallel (parent + iframe) would
+      // otherwise echo each other indefinitely on every state change,
+      // and any tiny serialisation difference would surface as a
+      // re-render in the other documents.
+      if (window.localStorage.getItem(STORAGE_KEY) === next) return;
+      window.localStorage.setItem(STORAGE_KEY, next);
     } catch {
       // localStorage quota/disabled — slip just won't persist.
     }
-  }, [state.selections, state.mode, state.currency, state.betbuilderMatchId]);
+  }, [
+    hydrated,
+    state.selections,
+    state.mode,
+    state.currency,
+    state.betbuilderMatchId,
+  ]);
 
   // Cross-document sync: the ultra-wide side-panel iframes
   // (apps/web/src/components/shell/side-panels.tsx) each mount their own
