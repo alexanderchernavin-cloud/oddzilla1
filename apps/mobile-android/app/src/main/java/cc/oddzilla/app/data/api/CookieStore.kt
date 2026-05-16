@@ -108,11 +108,17 @@ class PersistentCookieJar(private val context: Context) : CookieJar {
         persist()
     }
 
+    // Cookie names mirror the api: services/api/src/lib/cookies.ts sets
+    // `oddzilla_access` + `oddzilla_refresh`. The earlier shape probed
+    // `accessToken` / `refreshToken` and never matched, so
+    // PushBootstrap.registerPushIfLoggedIn silently early-returned on
+    // every page load and no device ever registered. Keep these in
+    // sync if the server-side constants ever change.
     fun hasAccessCookie(): Boolean =
-        store.values.any { it.name == "accessToken" && it.expiresAt > System.currentTimeMillis() }
+        store.values.any { it.name == "oddzilla_access" && it.expiresAt > System.currentTimeMillis() }
 
     fun hasRefreshCookie(): Boolean =
-        store.values.any { it.name == "refreshToken" && it.expiresAt > System.currentTimeMillis() }
+        store.values.any { it.name == "oddzilla_refresh" && it.expiresAt > System.currentTimeMillis() }
 
     private fun Cookie.cacheKey(): String = "$domain|$path|$name"
 
