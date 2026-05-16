@@ -34,7 +34,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import cc.oddzilla.app.BuildConfig
 import cc.oddzilla.app.data.api.PersistentCookieJar
+import cc.oddzilla.app.data.repo.DevicesRepository
+import cc.oddzilla.app.fcm.registerPushIfLoggedIn
+import cc.oddzilla.app.fcm.unregisterPush
 import cc.oddzilla.app.ui.theme.OzTheme
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import okhttp3.Cookie
 import okhttp3.HttpUrl.Companion.toHttpUrl
 
@@ -67,6 +74,7 @@ private const val TARGET_URL = "https://$TARGET_HOST/"
 @Composable
 fun WebViewHost(
     cookieJar: PersistentCookieJar,
+    devicesRepository: DevicesRepository,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -101,6 +109,7 @@ fun WebViewHost(
                 createConfiguredWebView(
                     ctx = ctx,
                     cookieJar = cookieJar,
+                    devicesRepository = devicesRepository,
                     onLoadingChanged = { loading = it },
                 ).also { web ->
                     webViewRef = web
@@ -135,8 +144,17 @@ fun WebViewHost(
 private fun createConfiguredWebView(
     ctx: Context,
     cookieJar: PersistentCookieJar,
+    devicesRepository: DevicesRepository,
     onLoadingChanged: (Boolean) -> Unit,
 ): WebView {
+    // Login-state transition tracking. Each onPageFinished compares
+    // wasLoggedIn (the previous snapshot) against the current jar
+    // state and fires register/unregister on the transition edges.
+    // false-initial means a fresh launch with cookies already on disk
+    // still fires register exactly once — the first onPageFinished
+    // observes a logged-in state and acts as a transition.
+    val pushScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    var wasLoggedIn = false
     // Global cookie acceptance + per-WebView third-party cookies. Disir
     // widgets and Twitch / YouTube embeds load inside iframes from
     // *.oddin.gg / twitch.tv / youtube-nocookie.com — those are
@@ -185,8 +203,21 @@ private fun createConfiguredWebView(
         override fun onPageFinished(view: WebView?, url: String?) {
             onLoadingChanged(false)
             // Mirror cookies into the OkHttp jar so DevicesRepository
-            // (FCM register, scaffolded in fcm/) sees the same session.
+            // (FCM register) sees the same session as the WebView.
             mirrorCookiesToOkHttp(cookieJar)
+            // FCM token register/unregister on auth-state transitions.
+            // No-op when google-services.json is absent (PushBootstrap
+            // reads BuildConfig.FIREBASE_ENABLED).
+            val isLoggedIn = cookieJar.hasRefreshCookie()
+            when {
+                !wasLoggedIn && isLoggedIn -> pushScope.launch {
+                    registerPushIfLoggedIn(cookieJar, devicesRepository)
+                }
+                wasLoggedIn && !isLoggedIn -> pushScope.launch {
+                    unregisterPush(devicesRepository)
+                }
+            }
+            wasLoggedIn = isLoggedIn
         }
 
         override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
