@@ -56,6 +56,7 @@ export interface PublicUser {
   status: "active" | "blocked" | "pending_kyc";
   kycStatus: "none" | "pending" | "approved" | "rejected";
   displayName: string | null;
+  nickname: string | null;
   countryCode: string | null;
   sportOrder: string[] | null;
   createdAt: Date;
@@ -542,6 +543,7 @@ function publicUser(row: typeof users.$inferSelect): PublicUser {
     status: row.status,
     kycStatus: row.kycStatus,
     displayName: row.displayName,
+    nickname: row.nickname,
     countryCode: row.countryCode,
     sportOrder: row.sportOrder ?? null,
     createdAt: row.createdAt,

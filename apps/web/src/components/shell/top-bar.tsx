@@ -9,7 +9,12 @@ import { UserControls } from "./user-controls";
 
 interface TopBarProps {
   signedIn: boolean;
-  user?: { email: string; displayName: string | null; role: string };
+  user?: {
+    email: string;
+    displayName: string | null;
+    nickname: string | null;
+    role: string;
+  };
 }
 
 const iconBtn = {
