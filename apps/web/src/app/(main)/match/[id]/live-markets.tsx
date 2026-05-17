@@ -24,6 +24,7 @@ import {
   ZillaTipsProvider,
   type TipContext,
 } from "@/components/match/zillatips-widget";
+import { useMarketTabChangeTracker } from "@/lib/zillapass-track";
 
 export interface MarketOutcome {
   outcomeId: string;
@@ -315,6 +316,15 @@ export function LiveMarkets({
   }, [initialGroups, ticks, marketStatusTicks]);
 
   const [scope, setScope] = useState<string>("all");
+  const trackTabChange = useMarketTabChangeTracker();
+  // Wraps setScope so a click that actually changes the active tab
+  // fires a ZillaPass nudge. Re-clicks on the active tab are no-ops
+  // (state hasn't changed, no track call).
+  function chooseScope(next: string) {
+    if (next === scope) return;
+    setScope(next);
+    trackTabChange();
+  }
   const hasAnyMarket = mergedGroups.some((g) => g.markets.length > 0);
   // BetBuilder availability — probe runs once on mount, hides when the
   // sport / fixture isn't OBB-eligible. We use it both to gate the
@@ -410,14 +420,14 @@ export function LiveMarkets({
         >
           {renderableGroups.length > 1 && (
             <>
-              <ScopeTab active={scope === "all"} onClick={() => setScope("all")}>
+              <ScopeTab active={scope === "all"} onClick={() => chooseScope("all")}>
                 {tSport("all")}
               </ScopeTab>
               {renderableGroups.map((g) => (
                 <ScopeTab
                   key={g.id}
                   active={scope === g.id}
-                  onClick={() => setScope(g.id)}
+                  onClick={() => chooseScope(g.id)}
                 >
                   {scopeLabel(g)}
                 </ScopeTab>

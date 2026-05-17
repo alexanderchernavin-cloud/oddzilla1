@@ -393,15 +393,30 @@ body {
 }
 .oz-shell-search > * {
   width: 100%;
-  max-width: 460px;
+  /* Widened to fit the search input + the ZillaPass chip side-by-side
+     while keeping the row right-anchored against the rail edge. */
+  max-width: 620px;
   pointer-events: auto;
+}
+/* Row layout inside the shell-search slot: search flex-grows to fill
+   the row width, ZillaPass chip sits to its right at a fixed footprint
+   so the search width adjusts as ZillaPass shows / hides. */
+.oz-shell-search-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+.oz-shell-search-row > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 @media (max-width: 1099px) {
   .oz-shell-search {
     padding: 18px 16px 0;
     margin-bottom: -54px;
   }
-  .oz-shell-search > * { max-width: 340px; }
+  .oz-shell-search > * { max-width: 500px; }
 }
 @media (max-width: 719px) {
   /* Mobile reverts to a normal row above the page content — the
@@ -418,6 +433,10 @@ body {
     padding: 10px 12px 0 !important;
   }
   .oz-shell-search > * { max-width: none; }
+  /* The chip would crowd a 360-px row; hide it and rely on the
+     profile dropdown link to reach the full ZillaPass page on
+     phones. */
+  .oz-shell-search-row > .oz-zillapass-chip { display: none; }
 }
 
 /* Twin top-right user-controls cluster (theme / bell / wallet / avatar).

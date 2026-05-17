@@ -69,6 +69,7 @@ import {
 import { isUniqueViolation } from "../../lib/pg-errors.js";
 import { resolveOptionalAvatarUrl } from "./avatar-url.js";
 import { emitNotification } from "./notifications.js";
+import { nudgeProfileComplete } from "../zillapass/writer.js";
 import {
   publicAuthorClause,
   PUBLIC_AUTHOR_SQL,
@@ -846,6 +847,11 @@ SELECT
           .where(eq(users.id, u.id))
           .returning({ id: users.id });
         if (!updated) throw new NotFoundError();
+        // Nudge ZillaPass — if the user now has a nickname AND an
+        // avatar equipped, the `profile_complete` task flips done.
+        // Best-effort; the writer logs and swallows failures so the
+        // user-visible patch never breaks on engagement-engine errors.
+        await nudgeProfileComplete(app, u.id);
         const me = await loadCommunityMe(app, u.id);
         if (!me) throw new NotFoundError();
         return me;

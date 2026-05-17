@@ -7,6 +7,7 @@ import { MobileShellOverlay } from "@/components/shell/mobile-shell-overlay";
 import { ShellContainer } from "@/components/shell/shell-container";
 import { SidePanels } from "@/components/shell/side-panels";
 import { TopBarSearch } from "@/components/shell/top-bar-search";
+import { ZillapassIndicator } from "@/components/shell/zillapass-indicator";
 import { MatchPageProvider } from "@/lib/match-page-context";
 import { SidePanelProvider } from "@/lib/side-panel";
 import { CombiBoostConfigProvider } from "@/lib/combi-boost-config";
@@ -85,7 +86,10 @@ export default async function MainLayout({ children }: { children: React.ReactNo
         <main className="oz-main">
           <div className="oz-main-inner">
             <div className="oz-shell-search">
-              <TopBarSearch />
+              <div className="oz-shell-search-row">
+                <TopBarSearch />
+                <ZillapassIndicator />
+              </div>
             </div>
             {children}
           </div>

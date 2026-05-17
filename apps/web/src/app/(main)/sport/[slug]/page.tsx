@@ -10,6 +10,7 @@ import { SportGlyph } from "@/components/ui/sport-glyph";
 import { I } from "@/components/ui/icons";
 import { shortName } from "@/lib/sport-order";
 import { getTranslations } from "@/lib/i18n/server";
+import { SportViewTracker } from "@/lib/zillapass-track";
 
 interface SportResponse {
   sport: { id: number; slug: string; name: string };
@@ -77,6 +78,7 @@ export default async function SportPage({
         maxWidth: 1100,
       }}
     >
+      <SportViewTracker sportSlug={slug} />
       <header
         style={{
           display: "flex",

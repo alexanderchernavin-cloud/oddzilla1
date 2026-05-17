@@ -154,6 +154,9 @@ export function UserMenu({
           <MenuItem href="/bets" icon={<I.Ticket size={14} />} onClick={() => setOpen(false)}>
             {tShell("myBets")}
           </MenuItem>
+          <MenuItem href="/zillapass" icon={<I.Sparkles size={14} />} onClick={() => setOpen(false)}>
+            ZillaPass
+          </MenuItem>
           <MenuItem href="/wallet" icon={<I.Wallet size={14} />} onClick={() => setOpen(false)}>
             {tShell("wallet")}
           </MenuItem>

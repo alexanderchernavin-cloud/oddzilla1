@@ -11,6 +11,7 @@ import { BetsService } from "./service.js";
 import { NotFoundError } from "../../lib/errors.js";
 import { validateOfferForBet } from "../zillaflash/engine.js";
 import { BadRequestError } from "../../lib/errors.js";
+import { nudgeBetPlaced } from "../zillapass/writer.js";
 
 const placeBody = z.object({
   stakeMicro: z.string().regex(/^\d+$/, "stake must be a positive integer string"),
@@ -105,6 +106,10 @@ export default async function betsRoutes(app: FastifyInstance) {
       userAgent: request.headers["user-agent"] ?? null,
       zillaFlashLiveBoost,
     });
+    // Best-effort engagement nudge — bumps the right `bets_prematch`
+    // or `bets_live` ZillaPass task based on the ticket's leg
+    // statuses. Errors are caught + logged inside the writer.
+    await nudgeBetPlaced(app, u.id, ticket.id);
     return { ticket };
   });
 
