@@ -686,6 +686,14 @@ export default async function catalogRoutes(app: FastifyInstance) {
   // key on success).
   app.get("/catalog/sports", async () => {
     return cached(app.redis, SPORTS_CACHE_KEY, SPORTS_CACHE_TTL_SECONDS, async () => {
+      // Drops sports with zero currently-bookable matches. A sport
+      // with no live or upcoming matches (within the 6-h time gate
+      // `hasActiveMarket` enforces) shouldn't take up real estate in
+      // the sidebar — there's nothing to bet on. 60-s SPORTS_CACHE
+      // TTL means a sport reappears within a minute of its first
+      // match flipping to bookable. Mirrors the join chain in
+      // /catalog/live-counts: sports → categories → tournaments →
+      // matches → markets, with the same hidden-tournament gate.
       const rows = await app.db
         .select({
           id: sports.id,
@@ -697,7 +705,29 @@ export default async function catalogRoutes(app: FastifyInstance) {
           brandColor: sports.brandColor,
         })
         .from(sports)
-        .where(eq(sports.active, true))
+        .where(
+          and(
+            eq(sports.active, true),
+            sql`EXISTS (
+              SELECT 1
+                FROM categories c
+                JOIN tournaments t ON t.category_id = c.id
+                                  AND t.name NOT IN ('Integration testing')
+                JOIN matches m ON m.tournament_id = t.id
+               WHERE c.sport_id = ${sports.id}
+                 AND (
+                   m.status = 'live'
+                   OR (m.status = 'not_started'
+                       AND m.scheduled_at > NOW() - INTERVAL '6 hours')
+                 )
+                 AND EXISTS (
+                   SELECT 1 FROM markets mk
+                    WHERE mk.match_id = m.id
+                      AND mk.status = 1
+                 )
+            )`,
+          ),
+        )
         .orderBy(sports.slug);
       return { sports: rows };
     });
