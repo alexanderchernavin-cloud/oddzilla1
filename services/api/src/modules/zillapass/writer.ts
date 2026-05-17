@@ -356,6 +356,15 @@ async function incrementByPredicate(
   const tasks = await activeTasksByPredicate(app, predicateKey);
   if (tasks.length === 0) return;
   const now = new Date();
+  // Pre-converted ISO string for embedding inside `sql\`\`` template
+  // fragments: drizzle's typed builders bind JS Date → ISO TIMESTAMPTZ
+  // correctly, but Date objects embedded in sql template literals get
+  // bound via the driver's default toString() (the human-readable
+  // "Sun May 17 2026 21:56:24 GMT+0000 (Coordinated Universal Time)"
+  // form), which postgres rejects as TIMESTAMPTZ. We pre-convert and
+  // add an explicit ::timestamptz cast so the value is unambiguously
+  // a timestamp.
+  const nowIso = now.toISOString();
   for (const task of tasks) {
     const period = periodStartKey(task.period, now);
     await app.db
@@ -384,7 +393,7 @@ async function incrementByPredicate(
           completedAt: sql`COALESCE(
             ${zillapassUserProgress.completedAt},
             CASE WHEN LEAST(${zillapassUserProgress.currentCount} + ${delta}, ${task.targetCount}) >= ${task.targetCount}
-                 THEN ${now}
+                 THEN ${nowIso}::timestamptz
                  ELSE NULL
             END
           )`,
@@ -421,6 +430,9 @@ async function upsertProgress(
   args: { nextCount: number; nextState: Record<string, unknown> | null },
 ): Promise<void> {
   const now = new Date();
+  // See incrementByPredicate for why ${now} inside a sql template gets
+  // bound as Date.toString() and breaks the cast — same workaround.
+  const nowIso = now.toISOString();
   const period = periodStartKey(task.period, now);
   const reachedTarget = args.nextCount >= task.targetCount;
   // Insert if missing; otherwise update. completedAt is set to NOW()
@@ -452,7 +464,7 @@ async function upsertProgress(
             ? args.nextState
             : zillapassUserProgress.progressState,
         completedAt: reachedTarget
-          ? sql`COALESCE(${zillapassUserProgress.completedAt}, ${now})`
+          ? sql`COALESCE(${zillapassUserProgress.completedAt}, ${nowIso}::timestamptz)`
           : zillapassUserProgress.completedAt,
         updatedAt: now,
       },
