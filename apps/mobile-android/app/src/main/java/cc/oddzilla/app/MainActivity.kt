@@ -3,6 +3,7 @@ package cc.oddzilla.app
 import android.Manifest
 import android.os.Build
 import android.os.Bundle
+import android.webkit.CookieManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -76,5 +77,17 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // WebView's CookieManager writes to its SQLite store
+        // asynchronously. When the user backgrounds the app and
+        // Android later kills the process under memory pressure, any
+        // un-flushed cookies (including a freshly-issued
+        // oddzilla_refresh after login) are lost on the I/O queue —
+        // the next cold start then sees no auth and forces a re-login.
+        // Flushing on every Activity ON_STOP closes that window.
+        CookieManager.getInstance().flush()
     }
 }

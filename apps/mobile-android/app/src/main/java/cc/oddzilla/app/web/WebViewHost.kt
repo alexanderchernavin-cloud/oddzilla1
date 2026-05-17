@@ -134,8 +134,13 @@ fun WebViewHost(
         onDispose {
             // Persist cookies one more time on dispose. Android's
             // CookieManager is durable on its own, but the OkHttp jar
-            // mirror needs an explicit nudge.
+            // mirror needs an explicit nudge, AND CookieManager's
+            // SQLite writes are async — without an explicit flush()
+            // a hard process kill before the next housekeeping pass
+            // can leave the just-set login cookies on the I/O queue
+            // and the next launch boots to the login screen.
             mirrorCookiesToOkHttp(cookieJar)
+            CookieManager.getInstance().flush()
         }
     }
 }
@@ -205,6 +210,12 @@ private fun createConfiguredWebView(
             // Mirror cookies into the OkHttp jar so DevicesRepository
             // (FCM register) sees the same session as the WebView.
             mirrorCookiesToOkHttp(cookieJar)
+            // Push WebView's in-memory cookie cache to disk. Without
+            // this an app process kill can lose the freshly-set
+            // oddzilla_refresh / oddzilla_access pair and the next
+            // launch shows the login screen even though the user
+            // never logged out.
+            CookieManager.getInstance().flush()
             // FCM token register/unregister on auth-state transitions.
             // No-op when google-services.json is absent (PushBootstrap
             // reads BuildConfig.FIREBASE_ENABLED).

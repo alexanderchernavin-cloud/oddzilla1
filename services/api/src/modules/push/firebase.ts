@@ -15,7 +15,7 @@
 // imported in environments where firebase-admin isn't installed (e.g.
 // the ws-gateway) without pulling the SDK in transitively.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import type { App } from "firebase-admin/app";
 import type { Messaging } from "firebase-admin/messaging";
 
@@ -31,8 +31,20 @@ function credentialPath(): string | null {
   return null;
 }
 
+// "Enabled" means the credential is configured AND the file is
+// actually on disk. Earlier this only checked the env var, which
+// produced a misleading `firebase=enabled` boot log when the path
+// was set but the file was never dropped into the bind mount. The
+// worker then committed every push with last_error=firebase_init_failed.
+// Logging the resolved state at boot avoids that silent failure mode.
 export function isFirebaseEnabled(): boolean {
-  return credentialPath() !== null;
+  const path = credentialPath();
+  if (!path) return false;
+  return existsSync(path);
+}
+
+export function firebaseCredentialPath(): string | null {
+  return credentialPath();
 }
 
 export function firebaseInitError(): string | null {

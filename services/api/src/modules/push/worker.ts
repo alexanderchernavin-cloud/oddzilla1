@@ -26,7 +26,12 @@
 // just restarts and future settlements push for real.
 
 import type { FastifyInstance } from "fastify";
-import { getMessaging, isFirebaseEnabled, firebaseInitError } from "./firebase.js";
+import {
+  firebaseCredentialPath,
+  firebaseInitError,
+  getMessaging,
+  isFirebaseEnabled,
+} from "./firebase.js";
 import { renderBetWon, type BetWonPayload } from "./render.js";
 
 const NOTIFY_CHANNEL = "push_outbox";
@@ -263,9 +268,20 @@ export async function startPushOutboxWorker(app: FastifyInstance): Promise<PushW
   // gets serviced as soon as we boot.
   triggerDrain();
 
+  // Boot diagnostic: report the resolved Firebase state so a missing
+  // service-account JSON is obvious from the very first log line, not
+  // buried in per-row outbox last_error values after pushes start failing.
+  const credPath = firebaseCredentialPath();
+  const fbEnabled = isFirebaseEnabled();
+  const fbState =
+    credPath == null
+      ? "disabled (no credential env)"
+      : fbEnabled
+        ? "enabled"
+        : `unusable (path=${credPath}, file missing — drop the Firebase Admin SDK service-account JSON there)`;
   app.log.info(
     {
-      firebase: isFirebaseEnabled() ? "enabled" : "disabled",
+      firebase: fbState,
       sweepMs: SWEEP_INTERVAL_MS,
       batch: DRAIN_BATCH,
     },
