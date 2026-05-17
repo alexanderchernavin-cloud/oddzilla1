@@ -220,7 +220,14 @@ export default async function zillapassUserRoutes(app: FastifyInstance) {
     }),
     z.object({
       event: z.literal("match_view"),
-      matchId: z.string().uuid(),
+      // matches.id is a bigserial (Postgres bigint) serialised to a
+      // numeric string by /catalog/matches/:id and the storefront's
+      // match links. Originally accepted as `.uuid()` here, which
+      // rejected every legitimate match-view POST with a silent 400.
+      // Accept up to 32 digits — way past bigint's 19-digit cap; the
+      // upper bound just stops a hostile client from filing a 10 MB
+      // string at the JSON parser.
+      matchId: z.string().regex(/^\d{1,32}$/),
       sportSlug: z
         .string()
         .min(1)
