@@ -8,34 +8,48 @@
 // only POSTs twice. Dedup resets on full page reload, which is fine —
 // the server-side reducer is idempotent (it stores a set; re-adding
 // the same slug doesn't grow the count).
+//
+// Each successful POST returns the FRESH /zillapass/me shape inline.
+// The tracker hands it to the shared ZillapassProvider via setData()
+// so the top-bar chip flips its progress bar in the same tick — no
+// 30 s wait for the background poll.
 
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
+import type { ZillapassMeResponse } from "@oddzilla/types";
 import { clientApi } from "@/lib/api-client";
 import { useSessionUserId } from "@/lib/session-user";
+import { useZillapass } from "@/lib/zillapass";
 
 const sent = new Set<string>();
 
-async function track(payload: Record<string, unknown>): Promise<void> {
+async function track(
+  payload: Record<string, unknown>,
+): Promise<ZillapassMeResponse | null> {
   try {
-    await clientApi("/zillapass/track", {
+    return await clientApi<ZillapassMeResponse>("/zillapass/track", {
       method: "POST",
       body: JSON.stringify(payload),
     });
   } catch {
     // Best-effort — engagement nudge should never surface as a UI
     // error. The server-side writer also swallows + logs.
+    return null;
   }
 }
 
 export function SportViewTracker({ sportSlug }: { sportSlug: string }) {
   const userId = useSessionUserId();
+  const { setData } = useZillapass();
   useEffect(() => {
     if (!userId) return;
     const key = `sport:${sportSlug}`;
     if (sent.has(key)) return;
     sent.add(key);
-    void track({ event: "sport_view", sportSlug });
-  }, [userId, sportSlug]);
+    void (async () => {
+      const next = await track({ event: "sport_view", sportSlug });
+      if (next) setData(next);
+    })();
+  }, [userId, sportSlug, setData]);
   return null;
 }
 
@@ -47,13 +61,17 @@ export function MatchViewTracker({
   sportSlug: string;
 }) {
   const userId = useSessionUserId();
+  const { setData } = useZillapass();
   useEffect(() => {
     if (!userId) return;
     const key = `match:${matchId}`;
     if (sent.has(key)) return;
     sent.add(key);
-    void track({ event: "match_view", matchId, sportSlug });
-  }, [userId, matchId, sportSlug]);
+    void (async () => {
+      const next = await track({ event: "match_view", matchId, sportSlug });
+      if (next) setData(next);
+    })();
+  }, [userId, matchId, sportSlug, setData]);
   return null;
 }
 
@@ -65,8 +83,12 @@ export function MatchViewTracker({
 // auth, no point making the request).
 export function useMarketTabChangeTracker(): () => void {
   const userId = useSessionUserId();
-  return () => {
+  const { setData } = useZillapass();
+  return useCallback(() => {
     if (!userId) return;
-    void track({ event: "market_tab_change" });
-  };
+    void (async () => {
+      const next = await track({ event: "market_tab_change" });
+      if (next) setData(next);
+    })();
+  }, [userId, setData]);
 }

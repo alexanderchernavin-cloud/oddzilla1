@@ -34,6 +34,7 @@ import { SportGlyph } from "@/components/ui/sport-glyph";
 import { useMobileDrawers } from "./mobile-drawer-context";
 import { UserControls } from "./user-controls";
 import { useWallets } from "@/lib/wallets";
+import { useZillapass } from "@/lib/zillapass";
 import { useTranslations } from "@/lib/i18n";
 import { RailMatchPanel } from "@/components/widgets/rail-match-panel";
 import type {
@@ -128,6 +129,7 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
   const { closeAll } = useMobileDrawers();
   const router = useRouter();
   const { optimisticDeduct: optimisticDeductWallet } = useWallets();
+  const { refresh: refreshZillapass } = useZillapass();
   const t = useTranslations("betSlip");
   const [stakeInput, setStakeInput] = useState("10");
   const [submitting, setSubmitting] = useState(false);
@@ -691,6 +693,12 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
           ? BigInt(stakeMicro) * BigInt(selections.length)
           : BigInt(stakeMicro);
       optimisticDeductWallet(currency, totalDebitMicro);
+      // Pull fresh ZillaPass state so the chip flips bets_prematch /
+      // bets_live progress without waiting for the 30 s background poll.
+      // Fire-and-forget; the writer's already committed in the API
+      // and any transient error here just defers visibility until
+      // the next poll.
+      void refreshZillapass();
       router.refresh();
       if (res.ticket.status === "pending_delay") {
         // Live-bet acceptance delay is running. Keep the slip populated

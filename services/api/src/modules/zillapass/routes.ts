@@ -51,141 +51,152 @@ function periodStart(
   return "2026-01-01";
 }
 
+// Builds the `/zillapass/me`-shaped response for a user. Extracted so
+// /zillapass/track can return the same shape inline after a nudge,
+// saving the chip a second roundtrip and letting the UI flip the
+// progress bar within the same render tick.
+async function buildMeResponse(
+  app: FastifyInstance,
+  userId: string,
+): Promise<ZillapassMeResponse> {
+  const now = new Date();
+  const todayUtc = now.toISOString().slice(0, 10);
+
+  // ── Stage advancement check (cross-day) ──────────────────────────────
+  // If the user stamped completion on a prior UTC day, advance them
+  // to the next set now and clear the stamp. State row is upserted
+  // so it materialises lazily on the first advancement. Pre-stage
+  // users (no row) skip this entirely — they start at set 1.
+  const [stateBefore] = await app.db
+    .select()
+    .from(zillapassUserState)
+    .where(eq(zillapassUserState.userId, userId))
+    .limit(1);
+
+  let currentSetNumber = stateBefore?.currentSetNumber ?? 1;
+  if (
+    stateBefore?.lastSetCompletedDate &&
+    stateBefore.lastSetCompletedDate < todayUtc
+  ) {
+    currentSetNumber = stateBefore.currentSetNumber + 1;
+    await app.db
+      .update(zillapassUserState)
+      .set({
+        currentSetNumber,
+        lastSetCompletedDate: null,
+        updatedAt: now,
+      })
+      .where(eq(zillapassUserState.userId, userId));
+  }
+
+  // Active task catalog filtered to the user's current set.
+  const tasks = await app.db
+    .select()
+    .from(zillapassTasks)
+    .where(
+      and(
+        eq(zillapassTasks.active, true),
+        eq(zillapassTasks.setNumber, currentSetNumber),
+      ),
+    )
+    .orderBy(asc(zillapassTasks.sortOrder), asc(zillapassTasks.id));
+
+  // Bundle the per-(user, task, period_start) progress lookups into
+  // one IN-list query. Each task pulls its own period anchor; the
+  // composite IN over (task_id, period_start) is fine here because
+  // active task counts stay tiny.
+  let progressRows: Array<{
+    taskId: number;
+    periodStart: string;
+    currentCount: number;
+    completedAt: Date | null;
+  }> = [];
+  if (tasks.length > 0) {
+    const taskIds = tasks.map((t) => t.id);
+    const fetched = await app.db
+      .select({
+        taskId: zillapassUserProgress.taskId,
+        periodStart: zillapassUserProgress.periodStart,
+        currentCount: zillapassUserProgress.currentCount,
+        completedAt: zillapassUserProgress.completedAt,
+      })
+      .from(zillapassUserProgress)
+      .where(
+        and(
+          eq(zillapassUserProgress.userId, userId),
+          inArray(zillapassUserProgress.taskId, taskIds),
+        ),
+      );
+    progressRows = fetched;
+  }
+
+  const progressByTask = new Map<string, (typeof progressRows)[number]>();
+  for (const p of progressRows) {
+    progressByTask.set(`${p.taskId}:${p.periodStart}`, p);
+  }
+
+  const activeTasks: ZillapassActiveTaskDto[] = tasks.map((t) => {
+    const key = `${t.id}:${periodStart(t.period, now)}`;
+    const p = progressByTask.get(key);
+    return {
+      id: t.id,
+      slug: t.slug,
+      title: t.title,
+      description: t.description,
+      targetCount: t.targetCount,
+      currentCount: p?.currentCount ?? 0,
+      period: t.period,
+      rewardKind: t.rewardKind,
+      rewardPayload: t.rewardPayload,
+      sortOrder: t.sortOrder,
+      completedAt: p?.completedAt ? p.completedAt.toISOString() : null,
+    };
+  });
+
+  const completedTasks = activeTasks.filter((t) => t.completedAt !== null)
+    .length;
+
+  // Build the response state from the pre-advancement row + the
+  // (possibly bumped) currentSetNumber. Avoids a second SELECT; we
+  // already know the final advanced state from the path above.
+  // Defaults mirror the column defaults so a fresh user sees a
+  // consistent shape.
+  const advanced =
+    stateBefore?.lastSetCompletedDate !== undefined &&
+    stateBefore?.lastSetCompletedDate !== null &&
+    stateBefore.lastSetCompletedDate < todayUtc;
+  const state: ZillapassUserStateDto = stateBefore
+    ? {
+        level: stateBefore.level,
+        xp: stateBefore.xp,
+        activeStreakDays: stateBefore.activeStreakDays,
+        lastActiveDate: stateBefore.lastActiveDate ?? null,
+        currentSetNumber,
+        lastSetCompletedDate: advanced
+          ? null
+          : stateBefore.lastSetCompletedDate ?? null,
+      }
+    : {
+        level: 1,
+        xp: 0,
+        activeStreakDays: 0,
+        lastActiveDate: null,
+        currentSetNumber: 1,
+        lastSetCompletedDate: null,
+      };
+
+  return {
+    totalActiveTasks: activeTasks.length,
+    completedTasks,
+    tasks: activeTasks,
+    state,
+  };
+}
+
 export default async function zillapassUserRoutes(app: FastifyInstance) {
   app.get("/zillapass/me", async (request): Promise<ZillapassMeResponse> => {
     const user = request.requireAuth();
-    const now = new Date();
-    const todayUtc = now.toISOString().slice(0, 10);
-
-    // ── Stage advancement check (cross-day) ──────────────────────────────
-    // If the user stamped completion on a prior UTC day, advance them
-    // to the next set now and clear the stamp. State row is upserted
-    // so it materialises lazily on the first advancement. Pre-stage
-    // users (no row) skip this entirely — they start at set 1.
-    const [stateBefore] = await app.db
-      .select()
-      .from(zillapassUserState)
-      .where(eq(zillapassUserState.userId, user.id))
-      .limit(1);
-
-    let currentSetNumber = stateBefore?.currentSetNumber ?? 1;
-    if (
-      stateBefore?.lastSetCompletedDate &&
-      stateBefore.lastSetCompletedDate < todayUtc
-    ) {
-      currentSetNumber = stateBefore.currentSetNumber + 1;
-      await app.db
-        .update(zillapassUserState)
-        .set({
-          currentSetNumber,
-          lastSetCompletedDate: null,
-          updatedAt: now,
-        })
-        .where(eq(zillapassUserState.userId, user.id));
-    }
-
-    // Active task catalog filtered to the user's current set.
-    const tasks = await app.db
-      .select()
-      .from(zillapassTasks)
-      .where(
-        and(
-          eq(zillapassTasks.active, true),
-          eq(zillapassTasks.setNumber, currentSetNumber),
-        ),
-      )
-      .orderBy(asc(zillapassTasks.sortOrder), asc(zillapassTasks.id));
-
-    // Bundle the per-(user, task, period_start) progress lookups into
-    // one IN-list query. Each task pulls its own period anchor; the
-    // composite IN over (task_id, period_start) is fine here because
-    // active task counts stay tiny.
-    let progressRows: Array<{
-      taskId: number;
-      periodStart: string;
-      currentCount: number;
-      completedAt: Date | null;
-    }> = [];
-    if (tasks.length > 0) {
-      const taskIds = tasks.map((t) => t.id);
-      const fetched = await app.db
-        .select({
-          taskId: zillapassUserProgress.taskId,
-          periodStart: zillapassUserProgress.periodStart,
-          currentCount: zillapassUserProgress.currentCount,
-          completedAt: zillapassUserProgress.completedAt,
-        })
-        .from(zillapassUserProgress)
-        .where(
-          and(
-            eq(zillapassUserProgress.userId, user.id),
-            inArray(zillapassUserProgress.taskId, taskIds),
-          ),
-        );
-      progressRows = fetched;
-    }
-
-    const progressByTask = new Map<string, (typeof progressRows)[number]>();
-    for (const p of progressRows) {
-      progressByTask.set(`${p.taskId}:${p.periodStart}`, p);
-    }
-
-    const activeTasks: ZillapassActiveTaskDto[] = tasks.map((t) => {
-      const key = `${t.id}:${periodStart(t.period, now)}`;
-      const p = progressByTask.get(key);
-      return {
-        id: t.id,
-        slug: t.slug,
-        title: t.title,
-        description: t.description,
-        targetCount: t.targetCount,
-        currentCount: p?.currentCount ?? 0,
-        period: t.period,
-        rewardKind: t.rewardKind,
-        rewardPayload: t.rewardPayload,
-        sortOrder: t.sortOrder,
-        completedAt: p?.completedAt ? p.completedAt.toISOString() : null,
-      };
-    });
-
-    const completedTasks = activeTasks.filter((t) => t.completedAt !== null)
-      .length;
-
-    // Build the response state from the pre-advancement row + the
-    // (possibly bumped) currentSetNumber. Avoids a second SELECT; we
-    // already know the final advanced state from the path above.
-    // Defaults mirror the column defaults so a fresh user sees a
-    // consistent shape.
-    const advanced =
-      stateBefore?.lastSetCompletedDate !== undefined &&
-      stateBefore?.lastSetCompletedDate !== null &&
-      stateBefore.lastSetCompletedDate < todayUtc;
-    const state: ZillapassUserStateDto = stateBefore
-      ? {
-          level: stateBefore.level,
-          xp: stateBefore.xp,
-          activeStreakDays: stateBefore.activeStreakDays,
-          lastActiveDate: stateBefore.lastActiveDate ?? null,
-          currentSetNumber,
-          lastSetCompletedDate: advanced
-            ? null
-            : stateBefore.lastSetCompletedDate ?? null,
-        }
-      : {
-          level: 1,
-          xp: 0,
-          activeStreakDays: 0,
-          lastActiveDate: null,
-          currentSetNumber: 1,
-          lastSetCompletedDate: null,
-        };
-
-    return {
-      totalActiveTasks: activeTasks.length,
-      completedTasks,
-      tasks: activeTasks,
-      state,
-    };
+    return buildMeResponse(app, user.id);
   });
 
   // ─── Event tracking ──────────────────────────────────────────────────────
@@ -224,7 +235,10 @@ export default async function zillapassUserRoutes(app: FastifyInstance) {
     }),
   ]);
 
-  app.post("/zillapass/track", async (request, reply) => {
+  // Returns the FRESH /zillapass/me-shaped state inline. Lets the
+  // chip flip its progress bar in one round-trip — no second fetch,
+  // no race between writer commit and a follow-up read.
+  app.post("/zillapass/track", async (request): Promise<ZillapassMeResponse> => {
     const user = request.requireAuth();
     const body = trackBody.parse(request.body);
     if (body.event === "sport_view") {
@@ -234,7 +248,6 @@ export default async function zillapassUserRoutes(app: FastifyInstance) {
     } else {
       await nudgeMarketTabChange(app, user.id);
     }
-    reply.code(204);
-    return null;
+    return buildMeResponse(app, user.id);
   });
 }
