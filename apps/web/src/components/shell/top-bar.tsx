@@ -6,7 +6,6 @@ import { Wordmark } from "@/components/ui/monogram";
 import { useTranslations } from "@/lib/i18n";
 import { useMobileDrawers } from "./mobile-drawer-context";
 import { UserControls } from "./user-controls";
-import { ZillapassIndicator } from "./zillapass-indicator";
 
 interface TopBarProps {
   signedIn: boolean;
@@ -86,17 +85,6 @@ export function TopBar({ signedIn, user }: TopBarProps) {
       >
         <Wordmark size={60} priority />
       </Link>
-
-      {/*
-        Mobile-only ZillaPass chip. The default-variant chip lives
-        in the shell-search row beside the search input on tablet +
-        desktop, where there's a 460-px-wide slot for it. On a 360-
-        414 px phone that row has no room — the search input fills
-        the line — so the compact variant slots into the topbar's
-        empty mid-band (between the wordmark and the wallet pill)
-        and the default variant hides on mobile via CSS.
-      */}
-      <ZillapassIndicator variant="compact" />
 
       <div style={{ flex: 1 }} />
 

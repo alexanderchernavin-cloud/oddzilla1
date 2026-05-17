@@ -411,14 +411,6 @@ body {
   flex: 1 1 auto;
   min-width: 0;
 }
-/* Compact ZillaPass chip lives in the topbar header so the empty
-   band between the wordmark and the wallet pill on mobile picks it
-   up. Hidden on tablet + desktop, where the default-variant chip in
-   the shell-search row carries the same function. */
-.oz-zillapass-chip-compact { display: none; }
-@media (max-width: 719px) {
-  .oz-zillapass-chip-compact { display: inline-flex; }
-}
 @media (max-width: 1099px) {
   .oz-shell-search {
     padding: 18px 16px 0;
@@ -441,10 +433,34 @@ body {
     padding: 10px 12px 0 !important;
   }
   .oz-shell-search > * { max-width: none; }
-  /* The chip would crowd a 360-px row; hide it and rely on the
-     profile dropdown link to reach the full ZillaPass page on
-     phones. */
-  .oz-shell-search-row > .oz-zillapass-chip { display: none; }
+  /* On mobile the search input and the ZillaPass chip share the row.
+     Give ZillaPass slightly more than half (3fr) and the search
+     slightly less (2fr) so the chip's "ZillaPass X/Y" + progress bar
+     stays readable on a 360-px viewport; the search input still fits
+     "Search..." placeholder without truncation at this ratio. */
+  .oz-shell-search-row {
+    gap: 8px;
+  }
+  .oz-shell-search-row > :first-child {
+    flex: 2 1 0;
+    min-width: 0;
+  }
+  .oz-shell-search-row > .oz-zillapass-chip {
+    flex: 3 1 0;
+    min-width: 0;
+  }
+  /* The button inside the chip already has width: 100% so it fills
+     the flex slot, but its inline minWidth: 132 would force the
+     wrapper wider than its share on the narrowest phones. Override
+     down so the row stays within the viewport. */
+  .oz-zillapass-chip-button {
+    min-width: 0 !important;
+  }
+  /* Drop the "ZillaPass" word label so the chip's icon + count +
+     progress bar fit in its ~60 % slot without truncation. */
+  .oz-zillapass-chip-label {
+    display: none;
+  }
 }
 
 /* Twin top-right user-controls cluster (theme / bell / wallet / avatar).
