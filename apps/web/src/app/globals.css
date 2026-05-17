@@ -411,6 +411,12 @@ body {
   flex: 1 1 auto;
   min-width: 0;
 }
+/* ZillaPass chip label swaps copy by breakpoint: full "ZillaPass
+   tasks" on tablet + desktop, short "Tasks" on mobile so the chip
+   fits in its ~60 % share of the shell-search row. The mobile rule
+   in the @media (max-width: 719px) block below flips this pair. */
+.oz-zillapass-chip-label-mobile { display: none; }
+.oz-zillapass-chip-label-wide { display: inline; }
 @media (max-width: 1099px) {
   .oz-shell-search {
     padding: 18px 16px 0;
@@ -456,11 +462,9 @@ body {
   .oz-zillapass-chip-button {
     min-width: 0 !important;
   }
-  /* Drop the "ZillaPass" word label so the chip's icon + count +
-     progress bar fit in its ~60 % slot without truncation. */
-  .oz-zillapass-chip-label {
-    display: none;
-  }
+  /* Swap chip label: full "ZillaPass tasks" out, short "Tasks" in. */
+  .oz-zillapass-chip-label-wide { display: none; }
+  .oz-zillapass-chip-label-mobile { display: inline; }
 }
 
 /* Twin top-right user-controls cluster (theme / bell / wallet / avatar).

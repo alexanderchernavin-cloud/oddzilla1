@@ -103,14 +103,20 @@ export function ZillapassIndicator() {
           }}
         >
           <I.Sparkles size={14} />
-          {/* "ZillaPass" word label hides on mobile (≤719 px) so the
-              chip fits in its ~60 % share of the shell-search row
-              without truncating the count or the progress bar. */}
+          {/* Label swaps with viewport: short "Tasks" on mobile (≤719
+              px) so it fits in the chip's ~60 % share of the shell-
+              search row; full "ZillaPass tasks" everywhere wider. */}
           <span
-            className="mono oz-zillapass-chip-label"
+            className="mono oz-zillapass-chip-label-wide"
             style={{ letterSpacing: "0.02em" }}
           >
-            ZillaPass
+            ZillaPass tasks
+          </span>
+          <span
+            className="mono oz-zillapass-chip-label-mobile"
+            style={{ letterSpacing: "0.02em" }}
+          >
+            Tasks
           </span>
         </span>
         <span
