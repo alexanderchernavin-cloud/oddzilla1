@@ -28,6 +28,7 @@ import type {
 } from "@oddzilla/types";
 import { BadRequestError, NotFoundError } from "../../lib/errors.js";
 import { resolveAvatarUrl } from "./avatar-url.js";
+import { nudgeProfileComplete } from "../zillapass/writer.js";
 
 const SLUG_RE = /^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$/;
 const UUID_RE =
@@ -166,6 +167,12 @@ export default async function communityAvatarRoutes(app: FastifyInstance) {
           avatarTemplateId: users.avatarTemplateId,
         });
       if (!updated) throw new NotFoundError();
+
+      // Nudge ZillaPass — if the user now has both nickname AND
+      // avatar set, the `profile_complete` task flips done. Best-
+      // effort; the writer logs and swallows failures so the user-
+      // visible PUT never breaks on engagement-engine errors.
+      await nudgeProfileComplete(app, u.id);
 
       // Resolve the avatar URL for the new equip in a second roundtrip
       // — small enough to be free, keeps the response self-contained.

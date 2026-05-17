@@ -5,6 +5,7 @@ import { serverApi } from "@/lib/server-fetch";
 import { UserEditForm } from "./user-edit-form";
 import { DeleteUserButton } from "./delete-user-button";
 import { AdjustBalanceForm } from "./adjust-balance-form";
+import { ZillapassStageForm } from "./zillapass-stage-form";
 
 interface DetailResponse {
   user: {
@@ -38,6 +39,10 @@ interface DetailResponse {
     placedAt: string;
     settledAt: string | null;
   }>;
+  zillapass: {
+    currentSetNumber: number;
+    lastSetCompletedDate: string | null;
+  };
 }
 
 export default async function UserDetailPage({
@@ -49,7 +54,7 @@ export default async function UserDetailPage({
   const data = await serverApi<DetailResponse>(`/admin/users/${id}`);
   if (!data) notFound();
 
-  const { user, stats, recentTickets } = data;
+  const { user, stats, recentTickets, zillapass } = data;
   const netLifetime = BigInt(stats.totalStakeMicro) - BigInt(stats.totalPayoutMicro);
 
   const backHref = user.role === "user" ? "/admin/users" : "/admin/admins";
@@ -98,6 +103,18 @@ export default async function UserDetailPage({
         </h2>
         <div className="mt-4 card p-6">
           <AdjustBalanceForm userId={user.id} email={user.email} />
+        </div>
+      </section>
+
+      <section className="mt-10">
+        <h2 className="text-sm uppercase tracking-[0.18em] text-[var(--color-fg-subtle)]">
+          ZillaPass stage
+        </h2>
+        <div className="mt-4 card p-6">
+          <ZillapassStageForm
+            userId={user.id}
+            initial={zillapass}
+          />
         </div>
       </section>
 

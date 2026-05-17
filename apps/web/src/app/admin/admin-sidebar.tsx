@@ -105,6 +105,12 @@ const SECTIONS: Section[] = [
         matchPrefix: "/admin/combi-boost",
       },
       {
+        href: "/admin/zillapass",
+        label: "ZillaPass",
+        Icon: I.Sparkles,
+        matchPrefix: "/admin/zillapass",
+      },
+      {
         href: "/admin/avatars",
         label: "Avatars",
         Icon: I.User,

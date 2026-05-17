@@ -17,6 +17,7 @@ import {
   deposits,
   withdrawals,
   adminAuditLog,
+  zillapassUserState,
 } from "@oddzilla/db";
 import { hashPassword } from "@oddzilla/auth";
 import { randomUUID } from "node:crypto";
@@ -215,6 +216,17 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
       .orderBy(desc(tickets.placedAt))
       .limit(20);
 
+    // ZillaPass stage. NULL row = user hasn't yet triggered any nudge
+    // that would materialise it; defaults to set 1, no stamp.
+    const [zillapass] = await app.db
+      .select({
+        currentSetNumber: zillapassUserState.currentSetNumber,
+        lastSetCompletedDate: zillapassUserState.lastSetCompletedDate,
+      })
+      .from(zillapassUserState)
+      .where(eq(zillapassUserState.userId, params.id))
+      .limit(1);
+
     return {
       user: {
         id: user.id,
@@ -247,6 +259,10 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
         placedAt: t.placedAt.toISOString(),
         settledAt: t.settledAt?.toISOString() ?? null,
       })),
+      zillapass: {
+        currentSetNumber: zillapass?.currentSetNumber ?? 1,
+        lastSetCompletedDate: zillapass?.lastSetCompletedDate ?? null,
+      },
     };
   });
 
@@ -608,5 +624,89 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
     });
 
     return { ok: true, adjustmentId };
+  });
+
+  // ─── ZillaPass stage override ────────────────────────────────────────────
+  //
+  // Debug-only knob. Lets an admin set the user's `current_set_number`
+  // (e.g. reset to 1, or skip ahead to test set N tasks) and/or the
+  // `last_set_completed_date` stamp. The reader applies normal
+  // advancement rules on the user's next /zillapass/me read — so
+  // setting stamp=yesterday is the cleanest way to push someone into
+  // the next set on their next open.
+  //
+  // Audit-logged. No row-level guards beyond `role='admin'` because
+  // ZillaPass state is non-monetary and the operation is reversible.
+  const stageBody = z.object({
+    currentSetNumber: z.number().int().min(1).max(10_000),
+    // YYYY-MM-DD or null. `undefined` leaves the existing value
+    // untouched; explicit null clears it; a date string stamps it.
+    lastSetCompletedDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .nullable()
+      .optional(),
+  });
+
+  app.put("/admin/users/:id/zillapass-stage", async (request) => {
+    const admin = request.requireRole("admin");
+    const params = z.object({ id: z.string().uuid() }).parse(request.params);
+    const body = stageBody.parse(request.body);
+
+    const [target] = await app.db
+      .select({ id: users.id, email: users.email })
+      .from(users)
+      .where(eq(users.id, params.id))
+      .limit(1);
+    if (!target) throw new NotFoundError("user_not_found", "user_not_found");
+
+    const [before] = await app.db
+      .select({
+        currentSetNumber: zillapassUserState.currentSetNumber,
+        lastSetCompletedDate: zillapassUserState.lastSetCompletedDate,
+      })
+      .from(zillapassUserState)
+      .where(eq(zillapassUserState.userId, params.id))
+      .limit(1);
+
+    const now = new Date();
+    const after = {
+      currentSetNumber: body.currentSetNumber,
+      lastSetCompletedDate:
+        body.lastSetCompletedDate === undefined
+          ? before?.lastSetCompletedDate ?? null
+          : body.lastSetCompletedDate,
+    };
+
+    await app.db.transaction(async (tx) => {
+      await tx
+        .insert(zillapassUserState)
+        .values({
+          userId: params.id,
+          currentSetNumber: after.currentSetNumber,
+          lastSetCompletedDate: after.lastSetCompletedDate,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: zillapassUserState.userId,
+          set: {
+            currentSetNumber: after.currentSetNumber,
+            lastSetCompletedDate: after.lastSetCompletedDate,
+            updatedAt: now,
+          },
+        });
+
+      await tx.insert(adminAuditLog).values({
+        actorUserId: admin.id,
+        action: "zillapass.stage.override",
+        targetType: "user",
+        targetId: params.id,
+        beforeJson: before ?? null,
+        afterJson: { ...after, targetEmail: target.email },
+        ipInet: request.ip ?? null,
+      });
+    });
+
+    return after;
   });
 }

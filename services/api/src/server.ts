@@ -59,6 +59,8 @@ import devicesRoutes from "./modules/devices/routes.js";
 import liveChatRoutes from "./modules/live-chat/routes.js";
 import { startMatchWatcher } from "./modules/live-chat/match-watcher.js";
 import riskzillaRoutes from "./modules/admin/riskzilla/routes.js";
+import zillapassUserRoutes from "./modules/zillapass/routes.js";
+import adminZillapassRoutes from "./modules/admin/zillapass.js";
 import { startPushOutboxWorker, type PushWorkerHandle } from "./modules/push/worker.js";
 import { ApiError } from "./lib/errors.js";
 
@@ -256,6 +258,8 @@ await app.register(zillaflashRoutes);
 await app.register(devicesRoutes);
 await app.register(liveChatRoutes);
 await app.register(riskzillaRoutes);
+await app.register(zillapassUserRoutes);
+await app.register(adminZillapassRoutes);
 
 app.get("/", async () => ({ service: "oddzilla-api", status: "ok" }));
 

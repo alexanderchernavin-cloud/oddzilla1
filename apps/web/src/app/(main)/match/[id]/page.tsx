@@ -16,6 +16,7 @@ import { ZillaFactsCards } from "@/components/match/zillafacts-cards";
 import { MatchPageRegistrar } from "@/lib/match-page-context";
 import { type LiveScore } from "@/lib/live-score";
 import { getSessionUser } from "@/lib/auth";
+import { MatchViewTracker } from "@/lib/zillapass-track";
 
 interface MatchResponse {
   match: {
@@ -78,6 +79,7 @@ export default async function MatchPage({
         maxWidth: 1000,
       }}
     >
+      <MatchViewTracker matchId={match.id} sportSlug={match.sport.slug} />
       <Link
         href={`/sport/${match.sport.slug}`}
         style={{
