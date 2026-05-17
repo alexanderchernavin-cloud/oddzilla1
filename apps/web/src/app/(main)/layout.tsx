@@ -15,6 +15,7 @@ import { SportLogosProvider } from "@/lib/sport-logos";
 import { NotificationProvider } from "@/lib/notifications";
 import { SessionUserProvider } from "@/lib/session-user";
 import { WalletProvider } from "@/lib/wallets";
+import { ZillapassProvider } from "@/lib/zillapass";
 import { getSessionUser } from "@/lib/auth";
 import { serverApi } from "@/lib/server-fetch";
 import {
@@ -65,6 +66,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
       >
       <NotificationProvider enabled={Boolean(user)}>
       <WalletProvider signedIn={Boolean(user)}>
+      <ZillapassProvider>
       <ShellContainer>
         <TopBar
           signedIn={Boolean(user)}
@@ -103,6 +105,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
           they never overlap the shell on a normal laptop / 1080p
           monitor; at the threshold each band is ≥410px wide. */}
       <SidePanels />
+      </ZillapassProvider>
       </WalletProvider>
       </NotificationProvider>
       </SportLogosProvider>

@@ -4,60 +4,23 @@
 // section. Renders only for signed-in users; anonymous viewers see
 // nothing (the parent row collapses to just the search bar).
 //
-// Polls /zillapass/me every 30 s while mounted so a completed task
-// shows up without a manual refresh. The full /zillapass page reuses
-// the same hook for its initial data.
+// State + polling lives in `lib/zillapass.tsx` via ZillapassProvider.
+// The chip subscribes to that context; the tracker hooks push fresh
+// state into the context after every nudge so the bar flips without
+// waiting for the 30 s background poll.
 
 import Link from "next/link";
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { I } from "@/components/ui/icons";
-import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { useSessionUserId } from "@/lib/session-user";
-import type {
-  ZillapassActiveTaskDto,
-  ZillapassMeResponse,
-} from "@oddzilla/types";
-
-const POLL_MS = 30_000;
+import { useZillapass } from "@/lib/zillapass";
+import type { ZillapassActiveTaskDto, ZillapassMeResponse } from "@oddzilla/types";
 
 export function ZillapassIndicator() {
   const userId = useSessionUserId();
-  const [data, setData] = useState<ZillapassMeResponse | null>(null);
+  const { data } = useZillapass();
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
-
-  const fetchOnce = useCallback(async () => {
-    try {
-      const res = await clientApi<ZillapassMeResponse>("/zillapass/me");
-      setData(res);
-    } catch (e) {
-      // 401 on first paint is normal (cookies still propagating);
-      // anything else is a transient miss — silently retry next tick.
-      if (e instanceof ApiFetchError && e.status === 401) return;
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!userId) {
-      setData(null);
-      return;
-    }
-    let cancelled = false;
-    void fetchOnce();
-    const t = window.setInterval(() => {
-      if (!cancelled) void fetchOnce();
-    }, POLL_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(t);
-    };
-  }, [userId, fetchOnce]);
 
   useEffect(() => {
     if (!open) return;

@@ -1,41 +1,28 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect } from "react";
 import { I } from "@/components/ui/icons";
-import { clientApi, ApiFetchError } from "@/lib/api-client";
+import { useZillapass } from "@/lib/zillapass";
 import type {
   ZillapassActiveTaskDto,
   ZillapassMeResponse,
 } from "@oddzilla/types";
-
-const POLL_MS = 30_000;
 
 export function ZillapassPageView({
   initial,
 }: {
   initial: ZillapassMeResponse | null;
 }) {
-  const [data, setData] = useState<ZillapassMeResponse | null>(initial);
-
-  const refresh = useCallback(async () => {
-    try {
-      const res = await clientApi<ZillapassMeResponse>("/zillapass/me");
-      setData(res);
-    } catch (e) {
-      if (e instanceof ApiFetchError && e.status === 401) return;
-    }
-  }, []);
-
+  // Consume the shared context so the page updates in lockstep with
+  // the chip whenever a tracker fires. The SSR-provided `initial`
+  // seeds the first paint until the provider's own fetch lands.
+  const { data: ctxData, setData } = useZillapass();
   useEffect(() => {
-    let cancelled = false;
-    const t = window.setInterval(() => {
-      if (!cancelled) void refresh();
-    }, POLL_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(t);
-    };
-  }, [refresh]);
+    if (initial && ctxData === null) setData(initial);
+    // Only seed once on mount; subsequent context updates win.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const data = ctxData ?? initial;
 
   const state = data?.state ?? {
     level: 1,
