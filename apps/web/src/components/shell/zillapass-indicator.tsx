@@ -110,7 +110,7 @@ export function ZillapassIndicator() {
             className="mono oz-zillapass-chip-label-wide"
             style={{ letterSpacing: "0.02em" }}
           >
-            ZillaPass tasks
+            ZillaPass Tasks
           </span>
           <span
             className="mono oz-zillapass-chip-label-mobile"
