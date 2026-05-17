@@ -13,6 +13,7 @@
 // no PII, no auth-sensitive fields.
 
 import { fromMicroMoney } from "@oddzilla/types";
+import type { SelectionLabel } from "./labels.js";
 
 export interface BetWonPayload {
   kind: "bet_won";
@@ -31,25 +32,51 @@ export interface RenderedPush {
   data: Record<string, string>;
 }
 
-export function renderBetWon(p: BetWonPayload): RenderedPush {
+// Push body shape, by leg count:
+//   single (1 leg):  "<home> vs <away> — <outcome>"
+//   multi  (≥2):     "<N>-leg <type> · <home> vs <away> (+N-1 more)"
+//   no-labels:       "<stake> → <payout> <currency>" fallback (e.g. the
+//                    description tables had no row, or the SQL probe
+//                    silently failed — the user still gets the win
+//                    signal in the title).
+export function renderBetWon(
+  p: BetWonPayload,
+  labels: SelectionLabel[],
+): RenderedPush {
   const payout = formatMoney(p.actualPayoutMicro, p.currency);
   const stake = formatMoney(p.stakeMicro, p.currency);
-  // Body is the user-facing summary. Single legs say "your bet"; combos
-  // include the leg count so the user can tell at a glance which ticket
-  // landed when several are in flight.
-  const noun = p.numLegs > 1 ? `${p.numLegs}-leg ${legNoun(p.betType)}` : "bet";
-  const body = `${payout} ${p.currency} from your ${stake} ${p.currency} ${noun}.`;
-  return {
-    title: "You won!",
-    body,
-    data: {
-      kind: p.kind,
-      deepLink: "bets",
-      ticketId: p.ticketId,
-      currency: p.currency,
-      actualPayoutMicro: p.actualPayoutMicro,
-    },
+  const title = `You won ${payout} ${p.currency}!`;
+  const data: Record<string, string> = {
+    kind: p.kind,
+    deepLink: "bets",
+    ticketId: p.ticketId,
+    currency: p.currency,
+    actualPayoutMicro: p.actualPayoutMicro,
   };
+
+  let body: string;
+  if (p.numLegs <= 1 && labels.length >= 1) {
+    const l = labels[0]!;
+    body = `${l.homeTeam} vs ${l.awayTeam} — ${l.outcomeName}`;
+    data.matchLabel = `${l.homeTeam} vs ${l.awayTeam}`;
+    data.outcomeLabel = l.outcomeName;
+  } else if (p.numLegs > 1 && labels.length >= 1) {
+    const first = labels[0]!;
+    const remaining = Math.max(0, p.numLegs - 1);
+    body =
+      remaining > 0
+        ? `${p.numLegs}-leg ${legNoun(p.betType)} · ${first.homeTeam} vs ${first.awayTeam} (+${remaining} more)`
+        : `${p.numLegs}-leg ${legNoun(p.betType)} · ${first.homeTeam} vs ${first.awayTeam}`;
+    data.matchLabel = `${first.homeTeam} vs ${first.awayTeam}`;
+    data.outcomeLabel = first.outcomeName;
+  } else {
+    // Label lookup empty — preserve the previous fallback shape so the
+    // bettor still gets a money + bet-type summary.
+    const noun = p.numLegs > 1 ? `${p.numLegs}-leg ${legNoun(p.betType)}` : "bet";
+    body = `${payout} ${p.currency} from your ${stake} ${p.currency} ${noun}.`;
+  }
+
+  return { title, body, data };
 }
 
 function legNoun(betType: string): string {

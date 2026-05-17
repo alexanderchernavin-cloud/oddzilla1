@@ -32,6 +32,7 @@ import {
   getMessaging,
   isFirebaseEnabled,
 } from "./firebase.js";
+import { loadTicketLabels } from "./labels.js";
 import { renderBetWon, type BetWonPayload } from "./render.js";
 
 const NOTIFY_CHANNEL = "push_outbox";
@@ -147,7 +148,18 @@ export async function startPushOutboxWorker(app: FastifyInstance): Promise<PushW
       return;
     }
 
-    const rendered = renderBetWon(row.payload);
+    // Fetch human-readable labels (home/away teams, market name, outcome
+    // name) so the push body can read "<home> vs <away> — <outcome>"
+    // instead of a raw stake/payout line. Best-effort: an empty array
+    // makes renderBetWon fall back to the money-only summary.
+    const labels = await loadTicketLabels(sql, row.payload.ticketId).catch(
+      (err) => {
+        app.log.debug({ err: (err as Error).message, ticket: row.ticket_id },
+          "push: label lookup failed; rendering without labels");
+        return [];
+      },
+    );
+    const rendered = renderBetWon(row.payload, labels);
     const tokens = devices.map((d) => d.token);
     const response = await messaging.sendEachForMulticast({
       tokens,
