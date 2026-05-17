@@ -411,6 +411,14 @@ body {
   flex: 1 1 auto;
   min-width: 0;
 }
+/* Compact ZillaPass chip lives in the topbar header so the empty
+   band between the wordmark and the wallet pill on mobile picks it
+   up. Hidden on tablet + desktop, where the default-variant chip in
+   the shell-search row carries the same function. */
+.oz-zillapass-chip-compact { display: none; }
+@media (max-width: 719px) {
+  .oz-zillapass-chip-compact { display: inline-flex; }
+}
 @media (max-width: 1099px) {
   .oz-shell-search {
     padding: 18px 16px 0;

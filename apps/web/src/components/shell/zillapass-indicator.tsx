@@ -1,8 +1,17 @@
 "use client";
 
-// Compact ZillaPass progress chip + popover for the storefront top
-// section. Renders only for signed-in users; anonymous viewers see
-// nothing (the parent row collapses to just the search bar).
+// ZillaPass progress chip + popover for the storefront top section.
+// Renders only for signed-in users; anonymous viewers see nothing
+// (the parent row collapses to just the search bar / topbar).
+//
+// Two variants — default (full, ~132 px wide) and compact (icon +
+// "X/Y", ~60 px). The shell mounts the default variant in the
+// shell-search row for tablet + desktop, and the compact variant
+// in the topbar header for mobile — the shell-search row on a
+// 360-px phone has no room for the search input + a 132-px chip
+// side-by-side, but the topbar's hamburger-to-wallet middle band
+// has room for the smaller form. CSS gates which variant
+// participates in layout per breakpoint.
 //
 // State + polling lives in `lib/zillapass.tsx` via ZillapassProvider.
 // The chip subscribes to that context; the tracker hooks push fresh
@@ -16,11 +25,18 @@ import { useSessionUserId } from "@/lib/session-user";
 import { useZillapass } from "@/lib/zillapass";
 import type { ZillapassActiveTaskDto, ZillapassMeResponse } from "@oddzilla/types";
 
-export function ZillapassIndicator() {
+interface ZillapassIndicatorProps {
+  variant?: "default" | "compact";
+}
+
+export function ZillapassIndicator({
+  variant = "default",
+}: ZillapassIndicatorProps = {}) {
   const userId = useSessionUserId();
   const { data } = useZillapass();
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const isCompact = variant === "compact";
 
   useEffect(() => {
     if (!open) return;
@@ -62,62 +78,102 @@ export function ZillapassIndicator() {
     <div
       ref={wrapperRef}
       style={{ position: "relative", flexShrink: 0 }}
-      className="oz-zillapass-chip"
+      className={
+        isCompact ? "oz-zillapass-chip-compact" : "oz-zillapass-chip"
+      }
     >
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        title="ZillaPass progress"
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 10,
-          height: 36,
-          padding: "0 12px",
-          background: "var(--surface)",
-          border: "1px solid var(--border)",
-          borderRadius: 999,
-          cursor: "pointer",
-          color: "var(--fg)",
-          fontFamily: "inherit",
-          fontSize: 12,
-          fontWeight: 600,
-          minWidth: 132,
-        }}
-      >
-        <span
+      {isCompact ? (
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          aria-label={`ZillaPass progress: ${completed} of ${total}`}
+          title="ZillaPass progress"
           style={{
             display: "inline-flex",
             alignItems: "center",
             gap: 6,
-            color: "var(--fg-muted)",
-          }}
-        >
-          <I.Sparkles size={14} />
-          <span className="mono" style={{ letterSpacing: "0.02em" }}>
-            ZillaPass
-          </span>
-        </span>
-        <span
-          className="mono"
-          style={{
+            height: 32,
+            padding: "0 10px",
+            background: "var(--surface)",
+            border: "1px solid var(--border)",
+            borderRadius: 999,
+            cursor: "pointer",
             color: "var(--fg)",
-            fontVariantNumeric: "tabular-nums",
-            minWidth: 30,
-            textAlign: "right",
+            fontFamily: "inherit",
+            fontSize: 12,
+            fontWeight: 600,
           }}
         >
-          {completed}/{total}
-        </span>
-        <ProgressBar pct={pct} width={42} />
-      </button>
+          <I.Sparkles size={12} />
+          <span
+            className="mono"
+            style={{
+              color: "var(--fg)",
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {completed}/{total}
+          </span>
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          title="ZillaPass progress"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 10,
+            height: 36,
+            padding: "0 12px",
+            background: "var(--surface)",
+            border: "1px solid var(--border)",
+            borderRadius: 999,
+            cursor: "pointer",
+            color: "var(--fg)",
+            fontFamily: "inherit",
+            fontSize: 12,
+            fontWeight: 600,
+            minWidth: 132,
+          }}
+        >
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              color: "var(--fg-muted)",
+            }}
+          >
+            <I.Sparkles size={14} />
+            <span className="mono" style={{ letterSpacing: "0.02em" }}>
+              ZillaPass
+            </span>
+          </span>
+          <span
+            className="mono"
+            style={{
+              color: "var(--fg)",
+              fontVariantNumeric: "tabular-nums",
+              minWidth: 30,
+              textAlign: "right",
+            }}
+          >
+            {completed}/{total}
+          </span>
+          <ProgressBar pct={pct} width={42} />
+        </button>
+      )}
 
       {open ? (
         <Popover
           data={data}
           onClose={() => setOpen(false)}
+          variant={variant}
         />
       ) : null}
     </div>
@@ -155,21 +211,41 @@ function ProgressBar({ pct, width }: { pct: number; width: number }) {
 function Popover({
   data,
   onClose,
+  variant,
 }: {
   data: ZillapassMeResponse | null;
   onClose: () => void;
+  variant: "default" | "compact";
 }) {
   const tasks = data?.tasks ?? [];
+  // Compact-variant chip sits in the middle of the mobile topbar
+  // (between the wordmark and the wallet pill), so anchoring the
+  // popover to the chip's right edge would push it off the left side
+  // of the viewport. Pin it to the viewport's right edge under the
+  // topbar instead. Default-variant chip in the shell-search row
+  // keeps the original anchor.
+  const positionStyle =
+    variant === "compact"
+      ? ({
+          position: "fixed" as const,
+          top: 90,
+          right: 12,
+          width: "calc(100vw - 24px)",
+          maxWidth: 340,
+        } as const)
+      : ({
+          position: "absolute" as const,
+          top: 44,
+          right: 0,
+          width: 340,
+          maxWidth: "calc(100vw - 32px)",
+        } as const);
   return (
     <div
       role="dialog"
       aria-label="ZillaPass tasks"
       style={{
-        position: "absolute",
-        top: 44,
-        right: 0,
-        width: 340,
-        maxWidth: "calc(100vw - 32px)",
+        ...positionStyle,
         padding: 12,
         background: "var(--surface)",
         border: "1px solid var(--border)",
