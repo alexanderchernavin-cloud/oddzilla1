@@ -25,7 +25,12 @@ import { UserMenu } from "./user-menu";
 // orchestration to keep in sync.
 interface UserControlsProps {
   signedIn: boolean;
-  user?: { email: string; displayName: string | null; role: string };
+  user?: {
+    email: string;
+    displayName: string | null;
+    nickname: string | null;
+    role: string;
+  };
   variant: "topbar" | "rail";
 }
 

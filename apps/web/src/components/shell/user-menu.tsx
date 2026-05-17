@@ -37,7 +37,7 @@ export function UserMenu({
   user,
   isAdmin,
 }: {
-  user: { email: string; displayName: string | null };
+  user: { email: string; displayName: string | null; nickname: string | null };
   isAdmin: boolean;
 }) {
   const router = useRouter();
@@ -151,6 +151,15 @@ export function UserMenu({
             </div>
           </div>
 
+          {user.nickname ? (
+            <MenuItem
+              href={`/u/${encodeURIComponent(user.nickname)}`}
+              icon={<I.User size={14} />}
+              onClick={() => setOpen(false)}
+            >
+              Public profile
+            </MenuItem>
+          ) : null}
           <MenuItem href="/bets" icon={<I.Ticket size={14} />} onClick={() => setOpen(false)}>
             {tShell("myBets")}
           </MenuItem>

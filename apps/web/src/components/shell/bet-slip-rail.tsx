@@ -113,7 +113,12 @@ type RailTab = "slip" | "history";
 
 interface BetSlipRailProps {
   signedIn: boolean;
-  user?: { email: string; displayName: string | null; role: string };
+  user?: {
+    email: string;
+    displayName: string | null;
+    nickname: string | null;
+    role: string;
+  };
 }
 
 export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
