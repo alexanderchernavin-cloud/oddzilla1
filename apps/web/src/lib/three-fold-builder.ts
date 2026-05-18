@@ -183,7 +183,11 @@ function dedupeMatches(matches: MatchInput[]): MatchInput[] {
   return out;
 }
 
-function qualifyForTier(matches: MatchInput[], band: TierBand, marketLabel: string): QualMatch[] {
+function qualifyForLegs(
+  matches: MatchInput[],
+  legFilter: (oddsNum: number) => boolean,
+  marketLabel: string,
+): QualMatch[] {
   const out: QualMatch[] = [];
   for (const m of matches) {
     const sides: QualSide[] = [];
@@ -192,7 +196,7 @@ function qualifyForTier(matches: MatchInput[], band: TierBand, marketLabel: stri
       if (!leg) continue;
       const oddsNum = Number.parseFloat(leg.odds);
       if (!Number.isFinite(oddsNum)) continue;
-      if (!band.legAllowed(oddsNum)) continue;
+      if (!legFilter(oddsNum)) continue;
       sides.push({ selection: leg, oddsNum });
     }
     if (sides.length > 0) out.push({ matchId: m.id, sides });
@@ -211,14 +215,23 @@ interface PickedTriple {
   sportName: string;
 }
 
+interface PickOptions {
+  /** When true, accept combos whose product falls outside [band.lo, band.hi). */
+  ignoreBand?: boolean;
+  /** Optional override of the tier's per-leg odds filter. */
+  legFilter?: (oddsNum: number) => boolean;
+}
+
 function pickForTierInSport(
   matchesForSport: MatchInput[],
   band: TierBand,
   marketLabel: string,
   sportSlug: string,
   sportName: string,
+  opts: PickOptions = {},
 ): PickedTriple | null {
-  const qualifying = qualifyForTier(matchesForSport, band, marketLabel);
+  const legFilter = opts.legFilter ?? band.legAllowed;
+  const qualifying = qualifyForLegs(matchesForSport, legFilter, marketLabel);
   if (qualifying.length < 3) return null;
 
   const targetPerLeg = Math.cbrt(
@@ -245,7 +258,12 @@ function pickForTierInSport(
           for (const sb of b.sides) {
             for (const sc of c.sides) {
               const product = sa.oddsNum * sb.oddsNum * sc.oddsNum;
-              if (product < band.lo || product >= band.hi) continue;
+              if (
+                !opts.ignoreBand &&
+                (product < band.lo || product >= band.hi)
+              ) {
+                continue;
+              }
               const delta = Math.abs(product - band.target);
               if (delta < bestDelta) {
                 bestDelta = delta;
@@ -313,38 +331,59 @@ export function buildThreeFoldSuggestions(
   // whole carousel.
   const cardsBySport = new Map<string, number>();
 
-  // Per-tier loop, per-sport inner loop. The first sport whose pool can
-  // satisfy this tier wins it. Used match IDs are tracked across tiers
-  // so the four cards don't reuse the same fixture; if a sport can't
-  // provide three disjoint matches we fall through to its full pool.
+  // Per-tier loop with layered fallback. Each tier tries to land a
+  // combo through progressively-looser passes; if a tier comes up
+  // empty after all four it just stays absent (rare — usually the
+  // upcoming pool is dense enough that the floor pass succeeds).
+  //
+  // Passes, in order of strictness:
+  //   1. strict band + tier leg filter, disjoint pool
+  //   2. strict band + tier leg filter, full sport pool (allows reuse)
+  //   3. ignore band, tier leg filter, full sport pool — "closest combo"
+  //      whose legs still pass the tier's odds shape
+  //   4. ignore band, FLOOR-only leg filter (o ≥ boostMin), full sport
+  //      pool — "any 3-fold that qualifies for combi-boost"
+  //
+  // Without the relaxed passes Risky / Ultimate often went unfilled
+  // because the pool just didn't contain 3 same-sport matches with
+  // legs in the strict band. The relaxed passes ensure the carousel
+  // shows all 4 cards (and the user can see Risky / Ultimate switchers)
+  // whenever the pool has at least 3 same-sport tier-1-3 matches with
+  // boost-eligible legs.
+  const floorLegFilter = (o: number) => o >= boostMinOdds;
   for (const tier of TIER_ORDER) {
     let picked: PickedTriple | null = null;
-    for (const sport of sports) {
-      // Per-sport card cap. CS2 / Dota 2 / LoL bypass the cap; every
-      // other slug gets at most one card across the four tier slots.
-      const cardsForSport = cardsBySport.get(sport.slug) ?? 0;
-      if (cardsForSport >= 1 && !MULTI_CARD_SPORT_SLUGS.has(sport.slug)) {
-        continue;
+    const passes: Array<{
+      use: (sport: SportBucket) => MatchInput[];
+      opts: PickOptions;
+    }> = [
+      {
+        use: (s) => s.matches.filter((m) => !usedMatchIds.has(m.id)),
+        opts: {},
+      },
+      { use: (s) => s.matches, opts: {} },
+      { use: (s) => s.matches, opts: { ignoreBand: true } },
+      {
+        use: (s) => s.matches,
+        opts: { ignoreBand: true, legFilter: floorLegFilter },
+      },
+    ];
+    for (const pass of passes) {
+      for (const sport of sports) {
+        const cardsForSport = cardsBySport.get(sport.slug) ?? 0;
+        if (cardsForSport >= 1 && !MULTI_CARD_SPORT_SLUGS.has(sport.slug)) {
+          continue;
+        }
+        picked = pickForTierInSport(
+          pass.use(sport),
+          bands[tier],
+          marketLabel,
+          sport.slug,
+          sport.name,
+          pass.opts,
+        );
+        if (picked) break;
       }
-      // First pass: disjoint pool (no match already used by another tier).
-      const disjoint = sport.matches.filter((m) => !usedMatchIds.has(m.id));
-      picked = pickForTierInSport(
-        disjoint,
-        bands[tier],
-        marketLabel,
-        sport.slug,
-        sport.name,
-      );
-      if (picked) break;
-      // Fall back to the full sport pool, allowing reuse rather than
-      // dropping the card. Same-sport invariant still holds.
-      picked = pickForTierInSport(
-        sport.matches,
-        bands[tier],
-        marketLabel,
-        sport.slug,
-        sport.name,
-      );
       if (picked) break;
     }
     if (!picked) continue;
