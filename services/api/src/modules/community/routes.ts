@@ -173,8 +173,16 @@ const BEST_WINS_WINDOW = sql`now() - interval '7 days'`;
 // Both values are bigint literals — never coerce to Number, the
 // rest of the codebase treats _micro as bigint end-to-end.
 const BIG_WIN_PROFIT_MICRO: Record<Currency, bigint> = {
-  USDC: 500_000_000n, // 500 USDC ≈ €500 (PRD spec).
-  OZ: 500_000_000n,   // 500 OZ — half the signup bonus. Tune later.
+  // PRD's flat €500 is the long-term target. Dropped to $50 for now
+  // because real USDC stakes are sub-$1 and the original floor produced
+  // zero qualifying wins in any 7-day window — tune back up as
+  // real-money activity grows.
+  USDC: 50_000_000n,
+  // 25 OZ ≈ "1-2 Big Wins per week" given current stake distribution
+  // (max OZ profit was 61 in the audit week, 4 wins ≥10 OZ). Without
+  // this drop the section is permanently empty. Re-tune once stakes
+  // climb past the ~10 OZ median.
+  OZ: 25_000_000n,
 };
 
 // Recent tab freshness window. Per the Community Wall spec
