@@ -718,10 +718,12 @@ export async function validateOfferForBet(
   if (slot.expiresAt.getTime() <= Date.now()) {
     return { ok: false, reason: "zillaflash_offer_expired" };
   }
-  if (
-    slot.marketId.toString() !== args.marketId ||
-    slot.outcomeId !== args.outcomeId
-  ) {
+  // The slot is bound to a (match, market) pair — but every outcome
+  // on that market is part of the offer (each surfaced with its own
+  // Netwinstable-boosted odds in the marketSnapshot). Accept any
+  // outcome present in the snapshot; the per-outcome price check
+  // below catches stale clicks.
+  if (slot.marketId.toString() !== args.marketId) {
     return { ok: false, reason: "zillaflash_outcome_changed" };
   }
   const cfg = await loadConfig(app);
@@ -731,8 +733,14 @@ export async function validateOfferForBet(
     cfg.byKind[slot.kind].keyDeltaPct,
   );
   if (!offer) return { ok: false, reason: "zillaflash_outcome_changed" };
+  const snap = offer.marketSnapshot.find(
+    (s) => s.outcomeId === args.outcomeId,
+  );
+  if (!snap) {
+    return { ok: false, reason: "zillaflash_outcome_changed" };
+  }
   const quoted = Number.parseFloat(args.quotedOdds);
-  const auth = Number.parseFloat(offer.boostedOdds);
+  const auth = Number.parseFloat(snap.boostedOdds);
   if (!Number.isFinite(quoted) || !Number.isFinite(auth)) {
     return { ok: false, reason: "zillaflash_odds_drift" };
   }
@@ -740,12 +748,12 @@ export async function validateOfferForBet(
     return {
       ok: false,
       reason: "zillaflash_odds_drift",
-      authoritativeOdds: offer.boostedOdds,
+      authoritativeOdds: snap.boostedOdds,
     };
   }
   return {
     ok: true,
-    authoritativeOdds: offer.boostedOdds,
+    authoritativeOdds: snap.boostedOdds,
     authoritativeOddsNum: auth,
     kind: slot.kind,
   };

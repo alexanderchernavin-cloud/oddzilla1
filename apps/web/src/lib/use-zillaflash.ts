@@ -115,15 +115,37 @@ export function offersForMatch(
   return out;
 }
 
-// Build a per-(marketId, outcomeId) lookup. The match page needs O(1)
-// "is this outcome currently boosted" checks while rendering the
-// market grid.
+// Boost entry for a specific outcome of a market. Backs the match-page
+// per-outcome cell highlight: each cell needs the offer's id +
+// countdown (from `offer`) AND its own boosted/original odds (from
+// the marketSnapshot row for THAT outcomeId). The pre-restructure
+// version of this map keyed by the offer's "chosen" outcomeId alone
+// — now every outcome in the market gets an entry so all selections
+// of a boosted market render with the discount.
+export interface OutcomeBoostEntry {
+  offer: ZillaFlashOffer;
+  outcomeLabel: string;
+  originalOdds: string;
+  boostedOdds: string;
+}
+
+// Build a per-(marketId, outcomeId) lookup covering EVERY outcome on
+// each boosted market. The match page renders the BOOST chip + cell
+// highlight on every entry; click-handlers carry the offer id +
+// per-outcome boosted price into the slip.
 export function indexOffers(
   offers: readonly ZillaFlashOffer[],
-): Map<string, ZillaFlashOffer> {
-  const map = new Map<string, ZillaFlashOffer>();
+): Map<string, OutcomeBoostEntry> {
+  const map = new Map<string, OutcomeBoostEntry>();
   for (const o of offers) {
-    map.set(`${o.marketId}:${o.outcomeId}`, o);
+    for (const snap of o.marketSnapshot) {
+      map.set(`${o.marketId}:${snap.outcomeId}`, {
+        offer: o,
+        outcomeLabel: snap.outcomeLabel,
+        originalOdds: snap.originalOdds,
+        boostedOdds: snap.boostedOdds,
+      });
+    }
   }
   return map;
 }
