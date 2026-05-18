@@ -3,17 +3,16 @@
 // Lobby ZillaFlash row. Renders the 4 active boosted offers (2 prematch
 // + 2 live) as a grid with a top-edge progress bar per card. The bar
 // shrinks from full width to zero as the offer's TTL elapses and
-// transitions colour green → amber → red across the run. Click adds
-// the boosted leg to the bet slip; the server re-validates the offer
-// id + boosted odds before debiting stake so a stale click 400s and
-// the slip refreshes.
+// transitions colour green → amber → red across the run.
 //
-// Cards stay populated even when the underlying odds move between
-// polls — the boostedOdds string is regenerated server-side every 2 s
-// and the price chip flashes via useOddsFlash on every tick.
+// Each card lists EVERY outcome on the boosted market with its own
+// crossed-out original + green boosted price; clicking any row adds
+// THAT outcome to the slip with the matching boost. The server
+// re-validates the offer id + boosted odds before debiting stake
+// so a stale click 400s and the slip refreshes.
 
-import type { CSSProperties } from "react";
-import { useRef } from "react";
+import type { CSSProperties, MouseEvent } from "react";
+import { useMemo, useRef } from "react";
 import Link from "next/link";
 import { useBetSlip } from "@/lib/bet-slip";
 import { useOddsFlash } from "@/lib/use-odds-flash";
@@ -157,22 +156,32 @@ function ZillaFlashCard({
 }) {
   const slip = useBetSlip();
   const t = useTranslations("zillaflash");
-  const oddsRef = useRef<HTMLSpanElement | null>(null);
-  const boostedNum = Number.parseFloat(offer.boostedOdds);
-  useOddsFlash(Number.isFinite(boostedNum) ? boostedNum : null, oddsRef);
 
-  const handle = () => {
+  // Pre-sort outcomes by ascending boosted odds so favourites lead
+  // the list. Stable order across re-renders keeps the rows from
+  // jumping as live odds tick.
+  const outcomes = useMemo(() => {
+    return [...offer.marketSnapshot].sort((a, b) => {
+      const ao = Number.parseFloat(a.boostedOdds);
+      const bo = Number.parseFloat(b.boostedOdds);
+      if (!Number.isFinite(ao)) return 1;
+      if (!Number.isFinite(bo)) return -1;
+      return ao - bo;
+    });
+  }, [offer.marketSnapshot]);
+
+  const handleOutcome = (entry: ZillaFlashOffer["marketSnapshot"][number]) => {
     slip.clear();
     slip.setMode("single");
     slip.add({
       matchId: offer.matchId,
       marketId: offer.marketId,
-      outcomeId: offer.outcomeId,
-      odds: offer.boostedOdds,
+      outcomeId: entry.outcomeId,
+      odds: entry.boostedOdds,
       homeTeam: offer.homeTeam,
       awayTeam: offer.awayTeam,
       marketLabel: offer.marketLabel,
-      outcomeLabel: offer.outcomeLabel,
+      outcomeLabel: entry.outcomeLabel,
       sportSlug: offer.sportSlug,
       active: true,
       zillaFlashOfferId: offer.id,
@@ -193,26 +202,10 @@ function ZillaFlashCard({
   return (
     <div className="oz-zillaflash-card" style={cardStyle}>
       <ProgressBar offer={offer} nowMs={nowMs} />
-      <button
-        type="button"
-        onClick={handle}
-        aria-label={t("aria", {
-          team: offer.outcomeLabel,
-          market: offer.marketLabel,
-          odds: offer.boostedOdds,
-        })}
+      <div
         style={{
-          background: "transparent",
-          border: 0,
-          // Padding + gap tightened so two cards pack side-by-side
-          // at ~410 px container width without feeling cramped, and
-          // single-column cards on phone widths don't waste vertical
-          // space.
           padding: "8px 10px 10px",
-          textAlign: "left",
-          cursor: "pointer",
           color: "var(--fg)",
-          fontFamily: "inherit",
           display: "flex",
           flexDirection: "column",
           gap: 5,
@@ -242,7 +235,6 @@ function ZillaFlashCard({
           <span style={{ flex: 1 }} />
           <Link
             href={`/match/${offer.matchId}`}
-            onClick={(e) => e.stopPropagation()}
             aria-label={t("openMatch")}
             style={{
               display: "inline-flex",
@@ -267,10 +259,7 @@ function ZillaFlashCard({
           </Link>
         </div>
 
-        {/* Body order: teams (bold, the fixture identity) → market
-            name (muted, what kind of bet) → selection + price on one
-            row (left: bold selection, right: crossed + boosted
-            tucked together so the discount reads as one chunk). */}
+        {/* Fixture identity */}
         <span
           style={{
             fontSize: 13,
@@ -283,6 +272,7 @@ function ZillaFlashCard({
           {offer.homeTeam} · {offer.awayTeam}
         </span>
 
+        {/* Market name */}
         <span
           style={{
             fontSize: 11.5,
@@ -294,61 +284,124 @@ function ZillaFlashCard({
           {offer.marketLabel}
         </span>
 
-        {/* Selection + price on a single row. Selection takes flex:1
-            on the left; crossed-out original and boosted chip share
-            a tight gap on the right so they read as one discount
-            block instead of two scattered numbers. */}
+        {/* Every outcome on the market — each is its own clickable row.
+            Picking any row adds that exact outcome to the slip with
+            its boosted price. Rows pre-sorted by boosted odds asc so
+            favourites lead. */}
         <div
           style={{
             display: "flex",
-            alignItems: "center",
-            gap: 10,
+            flexDirection: "column",
+            gap: 4,
             marginTop: 2,
             minWidth: 0,
           }}
         >
-          <span
-            style={{
-              flex: 1,
-              minWidth: 0,
-              fontSize: 14.5,
-              fontWeight: 700,
-              color: "var(--fg)",
-              lineHeight: 1.25,
-              wordBreak: "break-word",
-            }}
-          >
-            {offer.outcomeLabel}
-          </span>
-          <span
-            className="mono tnum"
-            style={{
-              fontSize: 12,
-              color: "var(--fg-dim)",
-              textDecoration: "line-through",
-              flexShrink: 0,
-            }}
-          >
-            {offer.originalOdds}
-          </span>
-          <span
-            ref={oddsRef}
-            className="mono tnum"
-            style={{
-              fontSize: 15,
-              fontWeight: 700,
-              color: "var(--positive, #16a34a)",
-              background: "var(--surface-2)",
-              border: "1px solid var(--border)",
-              borderRadius: 8,
-              padding: "3px 10px",
-              flexShrink: 0,
-            }}
-          >
-            {offer.boostedOdds}
-          </span>
+          {outcomes.map((o) => (
+            <OutcomeRow
+              key={o.outcomeId}
+              entry={o}
+              onPick={(e) => {
+                e.preventDefault();
+                handleOutcome(o);
+              }}
+              ariaLabel={t("aria", {
+                team: o.outcomeLabel,
+                market: offer.marketLabel,
+                odds: o.boostedOdds,
+              })}
+            />
+          ))}
         </div>
-      </button>
+      </div>
     </div>
+  );
+}
+
+function OutcomeRow({
+  entry,
+  onPick,
+  ariaLabel,
+}: {
+  entry: ZillaFlashOffer["marketSnapshot"][number];
+  onPick: (e: MouseEvent<HTMLButtonElement>) => void;
+  ariaLabel: string;
+}) {
+  const oddsRef = useRef<HTMLSpanElement | null>(null);
+  const boostedNum = Number.parseFloat(entry.boostedOdds);
+  useOddsFlash(Number.isFinite(boostedNum) ? boostedNum : null, oddsRef);
+  return (
+    <button
+      type="button"
+      onClick={onPick}
+      aria-label={ariaLabel}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        minWidth: 0,
+        padding: "4px 6px 4px 8px",
+        background: "var(--surface-2)",
+        border: "1px solid var(--border)",
+        borderRadius: 8,
+        cursor: "pointer",
+        color: "var(--fg)",
+        fontFamily: "inherit",
+        textAlign: "left",
+        transition: "border-color 140ms var(--ease), background 140ms var(--ease)",
+      }}
+      onMouseEnter={(e) => {
+        (e.currentTarget as HTMLButtonElement).style.borderColor =
+          "var(--positive, #16a34a)";
+      }}
+      onMouseLeave={(e) => {
+        (e.currentTarget as HTMLButtonElement).style.borderColor =
+          "var(--border)";
+      }}
+    >
+      <span
+        style={{
+          flex: 1,
+          minWidth: 0,
+          fontSize: 13,
+          fontWeight: 600,
+          color: "var(--fg)",
+          lineHeight: 1.2,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+        title={entry.outcomeLabel}
+      >
+        {entry.outcomeLabel}
+      </span>
+      <span
+        className="mono tnum"
+        style={{
+          fontSize: 11.5,
+          color: "var(--fg-dim)",
+          textDecoration: "line-through",
+          flexShrink: 0,
+        }}
+      >
+        {entry.originalOdds}
+      </span>
+      <span
+        ref={oddsRef}
+        className="mono tnum"
+        style={{
+          fontSize: 13.5,
+          fontWeight: 700,
+          color: "var(--positive, #16a34a)",
+          background: "var(--bg)",
+          border: "1px solid var(--border)",
+          borderRadius: 6,
+          padding: "2px 8px",
+          flexShrink: 0,
+        }}
+      >
+        {entry.boostedOdds}
+      </span>
+    </button>
   );
 }
