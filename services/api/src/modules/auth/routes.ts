@@ -12,6 +12,7 @@ import {
   REFRESH_COOKIE,
 } from "../../lib/cookies.js";
 import { UnauthorizedError } from "../../lib/errors.js";
+import { accountNamespaceFromRequest } from "../../lib/account-namespace.js";
 
 const writeRateLimit = {
   rateLimit: { max: 10, timeWindow: "1 minute" },
@@ -88,6 +89,14 @@ export default async function authRoutes(app: FastifyInstance) {
   const svc = new AuthService(app.db, app.auth, app.jwtKey, app.redis);
 
   app.post("/auth/signup", { config: writeRateLimit }, async (request, reply): Promise<PublicAuthResponse> => {
+    // Public signup is bettor-namespace only. Admin / support rows are
+    // created exclusively through /admin/users with audit logging. A
+    // POST to /auth/signup on the admin subdomain would otherwise
+    // silently create a bettor row that the admin host can't even
+    // authenticate against.
+    if (accountNamespaceFromRequest(request) !== "bettor") {
+      throw new UnauthorizedError("signup_disabled_here", "signup_disabled_here");
+    }
     const body = signupBody.parse(request.body);
     const ctx = {
       ip: request.ip ?? null,
@@ -116,7 +125,10 @@ export default async function authRoutes(app: FastifyInstance) {
       userAgent: request.headers["user-agent"] ?? null,
       deviceId: body.deviceId ?? null,
     };
-    const { user, tokens } = await svc.login(body.email, body.password, ctx);
+    // Bettor login on oddzilla.cc, admin login on sadmin.oddzilla.cc.
+    // Same email can back a row in each namespace since migration 0065.
+    const namespace = accountNamespaceFromRequest(request);
+    const { user, tokens } = await svc.login(body.email, body.password, ctx, namespace);
     setAccessCookie(reply, tokens.accessToken, app.auth);
     setRefreshCookie(reply, tokens.refreshTokenRaw, app.auth);
     return {

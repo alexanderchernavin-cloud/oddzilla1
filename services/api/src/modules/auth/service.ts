@@ -1,13 +1,17 @@
 // Auth business logic. Kept separate from routes so it's trivially
 // unit-testable and so session rotation is a single call site.
 
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and, inArray, isNull } from "drizzle-orm";
 import type { Redis } from "ioredis";
 import type { DbClient } from "@oddzilla/db";
 import { users, sessions, wallets, walletLedger } from "@oddzilla/db";
 import { SIGNUP_BONUS_OZ_MICRO } from "@oddzilla/types";
 import { randomUUID } from "node:crypto";
 import { SESSION_STATUS_KEY } from "../../plugins/auth.js";
+import {
+  type AccountNamespace,
+  rolesForNamespace,
+} from "../../lib/account-namespace.js";
 
 // A Drizzle transaction handle has the same query API as the root client
 // (`.insert`, `.update`, `.select`, etc.). We extract the callback's first
@@ -159,10 +163,17 @@ export class AuthService {
   private static readonly RELEASE_LOCK_LUA = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
 
   async signup(input: CreateUserInput): Promise<{ user: PublicUser; tokens: IssuedTokens }> {
+    // Public signup is bettor-namespace only. Admin / support rows are
+    // created exclusively through the audit-logged /admin/users flow.
     const existing = await this.db
       .select({ id: users.id })
       .from(users)
-      .where(eq(users.email, input.email.toLowerCase()))
+      .where(
+        and(
+          eq(users.email, input.email.toLowerCase()),
+          inArray(users.role, [...rolesForNamespace("bettor")]),
+        ),
+      )
       .limit(1);
     if (existing.length > 0) throw new ConflictError("email_in_use", "email_in_use");
 
@@ -231,6 +242,7 @@ export class AuthService {
     email: string,
     password: string,
     ctx: { ip: string | null; userAgent: string | null; deviceId: string | null },
+    namespace: AccountNamespace,
   ): Promise<{ user: PublicUser; tokens: IssuedTokens }> {
     const lowerEmail = email.toLowerCase();
     // Per-account rate limit on top of the per-IP @fastify/rate-limit
@@ -239,17 +251,31 @@ export class AuthService {
     // single email at LOGIN_FAIL_THRESHOLD failures inside the window.
     // Counter increments BEFORE we know whether the email is registered,
     // so the response shape doesn't leak account existence.
-    if (await this.isLoginRateLimited(lowerEmail)) {
+    //
+    // Rate-limit bucket is keyed by `(email, namespace)` so a brute-force
+    // run against the bettor account doesn't lock the admin account
+    // sharing the email, and vice versa.
+    if (await this.isLoginRateLimited(lowerEmail, namespace)) {
       // Equalise timing so the lockout response isn't visibly faster
       // than a successful argon2 verify.
       await verifyDummyPassword(password);
       throw new UnauthorizedError("too_many_login_attempts", "too_many_login_attempts");
     }
 
+    // Filter by the role-derived namespace so logging into sadmin only
+    // sees admin/support rows and logging into the storefront only sees
+    // bettor rows. Without this an admin row matching the email would
+    // authenticate on the storefront subdomain and vice versa, which
+    // breaks the host-implies-namespace contract the new model relies on.
     const [user] = await this.db
       .select()
       .from(users)
-      .where(eq(users.email, lowerEmail))
+      .where(
+        and(
+          eq(users.email, lowerEmail),
+          inArray(users.role, [...rolesForNamespace(namespace)]),
+        ),
+      )
       .limit(1);
     if (!user) {
       // Equalise wall-clock time so an attacker can't tell registered
@@ -257,13 +283,13 @@ export class AuthService {
       // this branch a missing-user request returns in ~1 ms while a found
       // user spends ~50 ms inside argon2.verify.
       await verifyDummyPassword(password);
-      await this.recordLoginFailure(lowerEmail);
+      await this.recordLoginFailure(lowerEmail, namespace);
       throw new UnauthorizedError("invalid_credentials", "invalid_credentials");
     }
 
     const ok = await verifyPassword(user.passwordHash, password);
     if (!ok) {
-      await this.recordLoginFailure(lowerEmail);
+      await this.recordLoginFailure(lowerEmail, namespace);
       throw new UnauthorizedError("invalid_credentials", "invalid_credentials");
     }
 
@@ -273,7 +299,7 @@ export class AuthService {
 
     // Success — clear the failure counter so prior typos don't lock out
     // this user later.
-    await this.clearLoginFailures(lowerEmail);
+    await this.clearLoginFailures(lowerEmail, namespace);
 
     await this.db
       .update(users)
@@ -288,12 +314,15 @@ export class AuthService {
   // api restarts (the in-memory @fastify/rate-limit state doesn't).
   private static readonly LOGIN_FAIL_THRESHOLD = 10;
   private static readonly LOGIN_FAIL_WINDOW_SECONDS = 15 * 60;
-  private loginFailKey(emailLower: string): string {
-    return `auth:login_fail:${emailLower}`;
+  private loginFailKey(emailLower: string, ns: AccountNamespace): string {
+    return `auth:login_fail:${ns}:${emailLower}`;
   }
-  private async isLoginRateLimited(emailLower: string): Promise<boolean> {
+  private async isLoginRateLimited(
+    emailLower: string,
+    ns: AccountNamespace,
+  ): Promise<boolean> {
     try {
-      const raw = await this.redis.get(this.loginFailKey(emailLower));
+      const raw = await this.redis.get(this.loginFailKey(emailLower, ns));
       return Boolean(raw) && Number(raw) > AuthService.LOGIN_FAIL_THRESHOLD;
     } catch {
       // Redis blip — fail open. Better one extra attempt than locking
@@ -301,9 +330,12 @@ export class AuthService {
       return false;
     }
   }
-  private async recordLoginFailure(emailLower: string): Promise<void> {
+  private async recordLoginFailure(
+    emailLower: string,
+    ns: AccountNamespace,
+  ): Promise<void> {
     try {
-      const key = this.loginFailKey(emailLower);
+      const key = this.loginFailKey(emailLower, ns);
       const count = await this.redis.incr(key);
       if (count === 1) {
         await this.redis.expire(key, AuthService.LOGIN_FAIL_WINDOW_SECONDS);
@@ -312,9 +344,12 @@ export class AuthService {
       // ignore — telemetry only
     }
   }
-  private async clearLoginFailures(emailLower: string): Promise<void> {
+  private async clearLoginFailures(
+    emailLower: string,
+    ns: AccountNamespace,
+  ): Promise<void> {
     try {
-      await this.redis.del(this.loginFailKey(emailLower));
+      await this.redis.del(this.loginFailKey(emailLower, ns));
     } catch {
       // ignore
     }

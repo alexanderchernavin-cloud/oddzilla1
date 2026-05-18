@@ -10,6 +10,7 @@ import {
   boolean,
   numeric,
   index,
+  uniqueIndex,
   check,
   customType,
 } from "drizzle-orm/pg-core";
@@ -25,7 +26,12 @@ export const users = pgTable(
   "users",
   {
     id: uuid().primaryKey().defaultRandom(),
-    email: citext().notNull().unique(),
+    // Email is no longer GLOBALLY unique — see migration 0065. Two
+    // partial unique indexes below scope uniqueness per role-namespace
+    // (`role='user'` = bettor; `role IN ('admin','support')` = admin),
+    // so one email can own a bettor row AND an admin row. The auth
+    // layer filters by namespace based on the request host.
+    email: citext().notNull(),
     passwordHash: text().notNull(),
     status: userStatusEnum().notNull().default("active"),
     role: userRoleEnum().notNull().default("user"),
@@ -62,6 +68,15 @@ export const users = pgTable(
   (t) => [
     index("users_status_idx").on(t.status),
     index("users_role_idx").on(t.role).where(sql`${t.role} <> 'user'`),
+    // Per-namespace email uniqueness (migration 0065). Splits the
+    // global UNIQUE(email) the table launched with so the same email
+    // can own one bettor row AND one admin row.
+    uniqueIndex("users_email_bettor_uniq")
+      .on(t.email)
+      .where(sql`${t.role} = 'user'`),
+    uniqueIndex("users_email_admin_uniq")
+      .on(t.email)
+      .where(sql`${t.role} IN ('admin', 'support')`),
     check("users_global_limit_nonneg", sql`${t.globalLimitMicro} >= 0`),
     check("users_bet_delay_range", sql`${t.betDelaySeconds} >= 0 AND ${t.betDelaySeconds} <= 300`),
     check(
