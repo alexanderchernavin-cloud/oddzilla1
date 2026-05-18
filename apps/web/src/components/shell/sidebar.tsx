@@ -148,7 +148,7 @@ export function Sidebar({
         icon={<I.Live size={15} />}
         active={isActive("/live")}
         label={tShell("live")}
-        tag={totalLive > 0 ? String(totalLive) : undefined}
+        liveCount={totalLive}
       />
       <Item
         href="/upcoming"
@@ -487,7 +487,7 @@ function SportsSection({
               icon={<SportGlyph sport={s.slug} size={16} />}
               active={sportActive && activeTournamentId == null}
               label={s.name}
-              tag={liveCounts[s.slug] ? String(liveCounts[s.slug]) : undefined}
+              liveCount={liveCounts[s.slug] ?? 0}
             />
             {expanded && tournaments && tournaments.length > 0 && (
               <div
@@ -782,13 +782,16 @@ function Item({
   label,
   active,
   tag,
+  liveCount,
 }: {
   href: string;
   icon: ReactNode;
   label: string;
   active?: boolean;
   tag?: string;
+  liveCount?: number;
 }) {
+  const hasLive = (liveCount ?? 0) > 0;
   return (
     <Link
       href={href}
@@ -812,7 +815,24 @@ function Item({
     >
       {icon}
       <span style={{ flex: 1 }}>{label}</span>
-      {tag != null && (
+      {hasLive && (
+        <span
+          className="mono tnum"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
+            fontSize: 10.5,
+            color: "var(--live)",
+            fontWeight: 600,
+          }}
+          title={`${liveCount} live now`}
+        >
+          <LiveDot size={6} />
+          {liveCount}
+        </span>
+      )}
+      {!hasLive && tag != null && (
         <span
           className="mono tnum"
           style={{
