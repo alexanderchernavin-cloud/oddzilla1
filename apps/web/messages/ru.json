@@ -172,12 +172,7 @@
   },
   "home": {
     "lobby": "Лобби",
-    "inPlay": "Идут сейчас",
-    "nextUpToday": "Сегодня в эфире",
     "upcoming": "Скоро",
-    "liveKicker": "Live",
-    "nextKicker": "Далее",
-    "upcomingKicker": "Скоро",
     "empty": "Расписания нет. Загляните на страницы видов спорта."
   },
   "lobby": {
