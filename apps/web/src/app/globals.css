@@ -371,17 +371,49 @@ body {
 }
 
 /* Clickable one-word section header at the top of the lobby —
-   "Live N" → /live, "Pre-match N" → /upcoming. Keeps the visual
-   weight of the previous SectionHeader title + count pair, but
-   communicates clickability via hover underline + focus ring. */
+   "Live N" → /live, "Pre-match N" → /upcoming. Icon + label + count
+   pill. Live picks up the live red on the dot and the count badge;
+   prematch stays neutral. Hover underline + focus ring signal that
+   the whole thing is clickable. */
 .oz-lobby-tab-link {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
   gap: 10px;
   color: var(--fg);
   text-decoration: none;
   cursor: pointer;
-  border-radius: 4px;
+  padding: 2px 0;
+  border-radius: 6px;
+}
+.oz-lobby-tab-link-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+.oz-lobby-tab-link-label {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  line-height: 1.1;
+}
+.oz-lobby-tab-link-count {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  line-height: 1.2;
+  background: transparent;
+}
+.oz-lobby-tab-link[data-kind="live"] .oz-lobby-tab-link-count {
+  color: var(--live);
+  border-color: var(--live);
 }
 .oz-lobby-tab-link:hover .oz-lobby-tab-link-label {
   text-decoration: underline;
@@ -391,6 +423,19 @@ body {
 .oz-lobby-tab-link:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 4px;
+}
+
+/* First-section header row inside MatchListTabs — hosts the group
+   label on the left and the wide-viewport cols toggle on the right
+   so the toggle doesn't claim a separate line above the labels. The
+   toggle itself is display:none below 2000px (see .oz-match-list-cols
+   below), in which case the row just contains the label. */
+.oz-match-list-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
 }
 
 /* Shell-level global search, rendered by the (main) layout at the top

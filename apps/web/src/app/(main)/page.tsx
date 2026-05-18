@@ -6,6 +6,8 @@ import {
   type ListMatchEnriched,
 } from "@/components/match/match-list-tabs";
 import { SportGlyph } from "@/components/ui/sport-glyph";
+import { LiveDot } from "@/components/ui/primitives";
+import { I } from "@/components/ui/icons";
 import { ThreeFoldCards } from "@/components/lobby/three-fold-cards";
 import { ZillaFlashRow } from "@/components/lobby/zillaflash-row";
 import { TodayLabel } from "@/components/lobby/today-label";
@@ -155,7 +157,7 @@ export default async function HomePage() {
                         <div
                           style={{
                             display: "flex",
-                            alignItems: "baseline",
+                            alignItems: "center",
                             gap: 28,
                             flexWrap: "wrap",
                           }}
@@ -164,11 +166,13 @@ export default async function HomePage() {
                             href="/live"
                             label={tMatch("live")}
                             count={live.length}
+                            kind="live"
                           />
                           <LobbyTabLink
                             href="/upcoming"
                             label={tMatch("prematch")}
                             count={upcoming.length}
+                            kind="prematch"
                           />
                         </div>
                       ),
@@ -188,6 +192,7 @@ export default async function HomePage() {
                     href="/upcoming"
                     label={tMatch("prematch")}
                     count={upcoming.length}
+                    kind="prematch"
                   />
                 ),
                 matches: upcomingShown,
@@ -206,37 +211,28 @@ export default async function HomePage() {
 }
 
 // One-word clickable section label used at the top of the lobby —
-// renders the section title + count and navigates to the dedicated
-// live/upcoming page. Hover styling lives in globals.css so the link
-// gets a real :hover state instead of an inline-style fallback.
+// renders an icon + section title + count pill and navigates to the
+// dedicated live/upcoming page. The kind drives icon choice (red
+// pulsing dot for live, neutral clock outline for prematch) and the
+// count pill's accent. Hover + focus styling lives in globals.css.
 function LobbyTabLink({
   href,
   label,
   count,
+  kind,
 }: {
   href: string;
   label: string;
   count: number;
+  kind: "live" | "prematch";
 }) {
   return (
-    <Link href={href} className="oz-lobby-tab-link">
-      <h2
-        className="oz-lobby-tab-link-label"
-        style={{
-          margin: 0,
-          fontSize: 22,
-          fontWeight: 500,
-          letterSpacing: "-0.015em",
-        }}
-      >
-        {label}
-      </h2>
-      <span
-        className="mono tnum"
-        style={{ fontSize: 12, color: "var(--fg-muted)" }}
-      >
-        {count}
+    <Link href={href} className="oz-lobby-tab-link" data-kind={kind}>
+      <span className="oz-lobby-tab-link-icon" aria-hidden>
+        {kind === "live" ? <LiveDot size={9} /> : <I.Clock size={18} />}
       </span>
+      <h2 className="oz-lobby-tab-link-label">{label}</h2>
+      <span className="oz-lobby-tab-link-count mono tnum">{count}</span>
     </Link>
   );
 }
