@@ -139,10 +139,28 @@ export function MatchListTabs({
     );
   }
 
+  // First non-null section label hosts the cols toggle in the same row
+  // — keeps the wide-viewport cols-toggle from claiming its own line
+  // above the headers. When no group has a label we fall back to the
+  // pre-refactor standalone position so the toggle still surfaces.
+  const firstLabelIdx = groups
+    ? groups.findIndex((g) => g.label != null)
+    : -1;
+
   const body = groups
-    ? groups.map((g) => (
-        <section key={g.key} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {g.label}
+    ? groups.map((g, idx) => (
+        <section
+          key={g.key}
+          style={{ display: "flex", flexDirection: "column", gap: 12 }}
+        >
+          {idx === firstLabelIdx ? (
+            <div className="oz-match-list-section-head">
+              <div style={{ minWidth: 0, flex: 1 }}>{g.label}</div>
+              <ColsToggle cols={cols} onChange={changeCols} />
+            </div>
+          ) : (
+            g.label
+          )}
           {renderCards(g.matches)}
         </section>
       ))
@@ -150,7 +168,9 @@ export function MatchListTabs({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <ColsToggle cols={cols} onChange={changeCols} />
+      {(!groups || firstLabelIdx === -1) && (
+        <ColsToggle cols={cols} onChange={changeCols} />
+      )}
       {body}
     </div>
   );
