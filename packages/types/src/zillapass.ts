@@ -20,6 +20,11 @@ export interface ZillapassTaskDto {
   setNumber: number;
   rewardKind: string | null;
   rewardPayload: unknown | null;
+  // Path-relative deep-link the storefront renders as a CTA on the
+  // task card. NULL means no destination (incidental tasks like
+  // market-tab-change have no natural target page).
+  ctaHref: string | null;
+  ctaLabel: string | null;
   active: boolean;
   sortOrder: number;
   createdAt: string;
@@ -38,6 +43,8 @@ export interface ZillapassActiveTaskDto {
   period: ZillapassPeriod;
   rewardKind: string | null;
   rewardPayload: unknown | null;
+  ctaHref: string | null;
+  ctaLabel: string | null;
   sortOrder: number;
   completedAt: string | null;
 }
