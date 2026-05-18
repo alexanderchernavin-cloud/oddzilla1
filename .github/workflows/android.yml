@@ -12,12 +12,20 @@ name: android
 #     does locally). Mandatory + minSupportedVersionCode are inputs.
 #
 # Required secrets (set in repo Settings → Secrets and variables):
-#   ANDROID_KEYSTORE_BASE64   base64 of keystore.jks
-#   ANDROID_KEYSTORE_PASSWORD storePassword
-#   ANDROID_KEY_ALIAS         keyAlias
-#   ANDROID_KEY_PASSWORD      keyPassword
-#   DEPLOY_SSH_KEY            private SSH key authorised on team@178.104.174.24
-#   DEPLOY_SSH_KNOWN_HOSTS    output of `ssh-keyscan 178.104.174.24`
+#   ANDROID_KEYSTORE_BASE64           base64 of keystore.jks
+#   ANDROID_KEYSTORE_PASSWORD         storePassword
+#   ANDROID_KEY_ALIAS                 keyAlias
+#   ANDROID_KEY_PASSWORD              keyPassword
+#   ANDROID_GOOGLE_SERVICES_JSON_BASE64
+#                                     base64 of apps/mobile-android/app/
+#                                     google-services.json — enables FCM
+#                                     (BuildConfig.FIREBASE_ENABLED=true).
+#                                     Optional: if absent the build still
+#                                     succeeds, the conditional plugin in
+#                                     app/build.gradle.kts skips, and the
+#                                     APK ships without push.
+#   DEPLOY_SSH_KEY                    private SSH key authorised on team@178.104.174.24
+#   DEPLOY_SSH_KNOWN_HOSTS            output of `ssh-keyscan 178.104.174.24`
 
 on:
   push:
@@ -101,6 +109,30 @@ jobs:
           VERSION_CODE=$(awk -F'=' '/^versionCode=/{print $2}' version.properties | tr -d '[:space:]')
           echo "name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
           echo "code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+
+      - name: Materialize google-services.json
+        # google-services.json is gitignored — drop it onto the runner
+        # from a base64 secret. When the secret is unset (forks, fresh
+        # checkouts) the conditional Google Services plugin in
+        # app/build.gradle.kts skips and BuildConfig.FIREBASE_ENABLED=false;
+        # the APK still builds, just without FCM. Same tr -d whitespace
+        # decode dance as the keystore step above so Windows-side
+        # `gh secret set` CRLFs don't break GNU base64.
+        env:
+          GS_B64: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GS_B64:-}" ]; then
+            echo "ANDROID_GOOGLE_SERVICES_JSON_BASE64 unset — building without FCM"
+            exit 0
+          fi
+          printf '%s' "$GS_B64" | tr -d '[:space:]' | base64 -d > app/google-services.json
+          size=$(stat -c%s app/google-services.json)
+          echo "Decoded google-services.json: $size bytes"
+          if [ "$size" -lt 200 ]; then
+            echo "::error::google-services.json decoded to <200 bytes; secret is empty or corrupt"
+            exit 1
+          fi
 
       - name: Restore release keystore
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.release }}

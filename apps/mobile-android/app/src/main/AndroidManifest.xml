@@ -60,5 +60,21 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- FCM message handler. Receives push payloads built by
+             services/api's push-outbox worker. The intent-filter is
+             how FirebaseMessaging dispatches incoming RemoteMessage
+             objects to onMessageReceived. Declared even when
+             google-services.json is absent — the service simply never
+             receives a callback because FirebaseInitProvider didn't
+             run. Removing it would require a manifest conditional
+             which Gradle doesn't support. -->
+        <service
+            android:name=".fcm.FcmService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

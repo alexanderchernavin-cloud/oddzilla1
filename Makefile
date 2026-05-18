@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 COMPOSE := docker compose
 
-.PHONY: help up down logs weblogs ps restart build recreate recreate-web migrate seed psql redis-cli fmt lint test typecheck clean nuke
+.PHONY: help up down logs weblogs ps restart build recreate recreate-web migrate seed psql redis-cli fmt lint test typecheck clean nuke deploy deploy-status rollback
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -29,9 +29,7 @@ restart: ## Restart all services
 build: ## Rebuild one service image: make build SVC=api
 	@if [ -z "$(SVC)" ]; then \
 		echo "ERROR: Specify a service: make build SVC=api"; \
-		echo "Bare 'docker compose build' OOMs the 4 GB CPX22 (see project_build_oom_incident memory)."; \
-		echo "Loop services serially:"; \
-		echo "  for s in api web feed-ingester; do make build SVC=\$$s; done"; \
+		echo "For a full deploy, use 'make deploy' (parallel builds + migrations + smoke)."; \
 		exit 1; \
 	fi
 	$(COMPOSE) -f docker-compose.yml build $(SVC)
@@ -94,3 +92,22 @@ clean: ## Remove build artifacts (keeps docker volumes)
 
 nuke: ## Full reset — stops stack AND removes volumes (DESTROYS database)
 	$(COMPOSE) down -v
+
+# ── Production deploy ──────────────────────────────────────────────
+# These targets are intended to be invoked on the production box
+# (`team@178.104.174.24:/home/team/oddzilla`). They wrap the scripts
+# under infra/deploy/ which do the actual orchestration (lock, diff,
+# pre-deploy backup, build, recreate, smoke, log).
+#
+# Running them locally is harmless (status is read-only; deploy will
+# bail out without docker/sudo) but the smoke + recreate steps only
+# make sense on the server.
+
+deploy: ## Run a full deploy: fetch → diff → backup → migrate → build → recreate → smoke
+	@bash infra/deploy/deploy.sh
+
+deploy-status: ## Show what 'make deploy' would do (no side effects)
+	@bash infra/deploy/status.sh
+
+rollback: ## Roll containers back to the previous deploy (does NOT revert migrations)
+	@bash infra/deploy/rollback.sh

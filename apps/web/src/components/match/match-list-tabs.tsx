@@ -1,14 +1,34 @@
 "use client";
 
-import { useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { MatchRow, type ListMatch } from "./match-row";
+import { I } from "@/components/ui/icons";
 import {
   useLiveOddsForMatches,
   useLiveScoresForMatches,
   type LiveOddsTick,
 } from "@/lib/use-live-odds";
+import { useSessionUserId } from "@/lib/session-user";
 import { useViewerCountsForMatches } from "@/lib/use-viewer-counts";
 import type { LiveScore } from "@/lib/live-score";
+
+type ColCount = 1 | 2;
+
+// Persisted in localStorage so the bettor's column preference survives
+// navigation across the lobby / sport / live / upcoming pages. The CSS
+// gate (`@media min-width: 2000px`) hides the toggle and forces a
+// single column on narrower viewports even when the saved value is
+// "2", so a returning user on a smaller monitor sees the layout they
+// expect.
+//
+// Key is namespaced per signed-in bettor so two accounts sharing the
+// same browser keep independent preferences — the user's "remembered
+// per bettor" requirement. Anonymous viewers fall back to a single
+// shared key.
+const COLS_STORAGE_PREFIX = "oz:match-list-cols";
+function colsStorageKey(userId: string | null): string {
+  return userId ? `${COLS_STORAGE_PREFIX}:${userId}` : COLS_STORAGE_PREFIX;
+}
 
 // A list match enriched server-side with the per-row metadata MatchRow
 // needs. Functions can't cross the server/client boundary, so the
@@ -70,6 +90,34 @@ export function MatchListTabs({
     return map;
   }, [merged, matches]);
 
+  // Per-bettor column preference. Reading runs in an effect (and
+  // re-runs when the signed-in user changes) so a login / logout
+  // mid-session swaps the preference to the appropriate bettor's
+  // saved value without a full page reload. SSR + initial paint show
+  // the single-column default; the wide-viewport-only toggle means
+  // the brief flip on hydration is invisible to anyone below 2000px
+  // anyway.
+  const userId = useSessionUserId();
+  const [cols, setCols] = useState<ColCount>(1);
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(colsStorageKey(userId));
+      setCols(saved === "2" ? 2 : 1);
+    } catch {
+      // localStorage can throw under privacy / quota errors; fall
+      // through to the single-column default in that case.
+      setCols(1);
+    }
+  }, [userId]);
+  function changeCols(c: ColCount) {
+    setCols(c);
+    try {
+      window.localStorage.setItem(colsStorageKey(userId), String(c));
+    } catch {
+      // see note above
+    }
+  }
+
   function renderRow(m: ListMatchEnriched) {
     const live = mergedById?.get(m.id) ?? m;
     return (
@@ -83,16 +131,70 @@ export function MatchListTabs({
     );
   }
 
+  function renderCards(list: ListMatchEnriched[]) {
+    return (
+      <div className="oz-match-list-grid" data-cols={cols}>
+        {list.map(renderRow)}
+      </div>
+    );
+  }
+
   const body = groups
     ? groups.map((g) => (
         <section key={g.key} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {g.label}
-          {g.matches.map(renderRow)}
+          {renderCards(g.matches)}
         </section>
       ))
-    : merged.map(renderRow);
+    : renderCards(merged);
 
-  return <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>{body}</div>;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <ColsToggle cols={cols} onChange={changeCols} />
+      {body}
+    </div>
+  );
+}
+
+// Single / two-column toggle sitting on the right edge above the match
+// list. Hidden via CSS below 2000px (covers QHD-at-125 %-scaling and
+// up), where two cards per row would each be under ~450px wide and
+// the layout starts to fight the scoreboard + odds buttons for space.
+// The single-column flex stack is the default everywhere; the
+// [data-cols="2"] grid only kicks in above the same breakpoint.
+function ColsToggle({
+  cols,
+  onChange,
+}: {
+  cols: ColCount;
+  onChange: (c: ColCount) => void;
+}) {
+  return (
+    <div className="oz-match-list-cols" role="group" aria-label="Match list columns">
+      <button
+        type="button"
+        className="oz-match-cols-btn"
+        data-active={cols === 1 ? "true" : "false"}
+        aria-pressed={cols === 1}
+        aria-label="Single column"
+        title="Single column"
+        onClick={() => onChange(1)}
+      >
+        <I.Rows1 size={14} />
+      </button>
+      <button
+        type="button"
+        className="oz-match-cols-btn"
+        data-active={cols === 2 ? "true" : "false"}
+        aria-pressed={cols === 2}
+        aria-label="Two columns"
+        title="Two columns"
+        onClick={() => onChange(2)}
+      >
+        <I.Columns2 size={14} />
+      </button>
+    </div>
+  );
 }
 
 // Overlay live odds AND live scoreboard onto a server-rendered match.

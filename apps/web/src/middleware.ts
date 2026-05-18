@@ -58,7 +58,7 @@ function resolveRequestId(req: NextRequest): string {
 // returned by /widgets/*). `img-src https:` accommodates Oddin's CDN
 // for team logos. `style-src 'unsafe-inline'` stays — JSX `style={…}`
 // props throughout the codebase rely on it.
-function buildCsp(nonce: string): string {
+function buildCsp(nonce: string, frameAncestors: "none" | "self"): string {
   // connect-src enumerates the explicit fetch / WebSocket destinations the
   // storefront actually uses:
   //   - 'self' for /api/*, /ws (Caddy proxies same-origin)
@@ -72,6 +72,11 @@ function buildCsp(nonce: string): string {
   // Locked tighter than `https: wss:` per Sec S5 — without an enumerated
   // list, an injected script (CSP-unblocked via nonce reuse) could
   // exfiltrate to any HTTPS origin.
+  //
+  // `frame-ancestors` is per-route — every page defaults to `'none'` so a
+  // hostile site can't iframe the storefront, but the shell-less
+  // `/embed/match/[id]` route runs at `'self'` because it ships inside
+  // the side-panel iframes mounted by the (main) layout (same-origin).
   const wsOrigins =
     "wss://oddzilla.cc wss://*.oddzilla.cc wss://localhost:* ws://localhost:*";
   const apiOrigins =
@@ -84,7 +89,7 @@ function buildCsp(nonce: string): string {
     "font-src 'self' data:",
     `connect-src 'self' ${apiOrigins} ${wsOrigins} https://cdn.oddin.gg`,
     "frame-src 'self' https://player.twitch.tv https://www.twitch.tv https://www.youtube.com https://www.youtube-nocookie.com https://player.kick.com https://video.gjirafa.com https://*.oddin.gg",
-    "frame-ancestors 'none'",
+    `frame-ancestors '${frameAncestors}'`,
     "base-uri 'self'",
     "form-action 'self'",
     "object-src 'none'",
@@ -92,12 +97,22 @@ function buildCsp(nonce: string): string {
   ].join("; ");
 }
 
+function resolveFrameAncestors(pathname: string): "none" | "self" {
+  // The side-panel iframes mount `/embed/match/[id]` from the same origin
+  // (see components/shell/side-panels.tsx). Without `'self'` here the
+  // browser refuses to render the iframe even though it's same-origin.
+  return pathname.startsWith("/embed/") ? "self" : "none";
+}
+
 function applyCsp(req: NextRequest, response: NextResponse, nonce: string): void {
   // Pass the nonce into the rendered request via a custom header so the
   // root layout can attach it to its inline script. Next.js's RSC pipeline
   // exposes request headers to Server Components via `headers()`.
   req.headers.set("x-csp-nonce", nonce);
-  response.headers.set("Content-Security-Policy", buildCsp(nonce));
+  response.headers.set(
+    "Content-Security-Policy",
+    buildCsp(nonce, resolveFrameAncestors(req.nextUrl.pathname)),
+  );
 }
 
 function applyRequestId(req: NextRequest, response: NextResponse, requestId: string): void {

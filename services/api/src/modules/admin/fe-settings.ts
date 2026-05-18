@@ -1,14 +1,16 @@
 // /admin/fe-settings endpoints. Storefront-display knobs that don't fit
 // into odds/cashout/bet-product config (which all carry money math).
 //
-// Currently: per-sport per-scope ordering of market types. Three scopes:
-//   match — markets without a `map` specifier (the Match tab on /match/:id
-//           and the match-cards Match-tab inline odds).
-//   map   — markets with a `map` specifier; one ordering shared across
-//           every map_N tab.
-//   top   — curated highlights tab. Empty by default. Rendered as a "Top"
-//           scope tab on /match/:id AND inline on match cards when the
-//           list is in Top mode.
+// Currently: per-sport per-scope ordering of market types. Scopes:
+//   match     — markets without a `map` specifier (the Match tab on
+//               /match/:id and the match-cards Match-tab inline odds).
+//   top       — curated highlights tab. Empty by default. Rendered as a
+//               "Top" scope tab on /match/:id AND inline on match cards
+//               when the list is in Top mode.
+//   map_<N>   — markets carrying `map=<N>`. One independently configurable
+//               list per map tab (Map 1 / Map 2 / Map 3 / …). Replaces the
+//               pre-0057 shared `map` scope; existing rows were backfilled
+//               to map_1..map_5 by the migration.
 //
 // Read by /catalog/matches/:id (match-detail page) and the catalog list
 // endpoints when ?tab=top — no in-memory cache. The table is small.
@@ -25,12 +27,19 @@ import {
   matches,
   markets,
   marketDescriptions,
-  FE_MARKET_SCOPES,
+  isMarketScope,
+  isMapScope,
+  mapScopeNumber,
   type FeMarketScope,
 } from "@oddzilla/db";
 import { BadRequestError, NotFoundError } from "../../lib/errors.js";
 
-const scopeEnum = z.enum(FE_MARKET_SCOPES as unknown as [FeMarketScope, ...FeMarketScope[]]);
+// match | top | map_<N> where N is a positive integer (no leading zeros).
+// Matches the DB CHECK and the storefront's MarketScope.id encoding.
+const scopeSchema = z
+  .string()
+  .refine(isMarketScope, { message: "invalid_scope" })
+  .transform((s) => s as FeMarketScope);
 
 const reorderBody = z.object({
   // Ordered list — index 0 renders first. Each provider_market_id appears
@@ -53,7 +62,10 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
   // ── Sport list with per-scope row counts ────────────────────────────
   // Used by the FE Settings landing screen as a sport picker. Counts are
   // per scope so the admin can see at a glance which sports + scopes have
-  // overrides applied.
+  // overrides applied. Also exposes `maxMapNumber` per sport (the largest
+  // `map` specifier observed on the sport's markets) so the picker can
+  // render the right number of Map N columns dynamically — sports that
+  // never go past Map 3 don't render Map 4/5 chips.
   app.get("/admin/fe-settings/markets-order", async (request) => {
     request.requireRole("admin");
 
@@ -72,13 +84,35 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
       .from(feMarketDisplayOrder)
       .groupBy(feMarketDisplayOrder.sportId, feMarketDisplayOrder.scope);
 
-    type ScopeCounts = Record<FeMarketScope, number>;
-    const empty = (): ScopeCounts => ({ match: 0, map: 0, top: 0 });
-    const bySport = new Map<number, ScopeCounts>();
+    // Largest map specifier value seen per sport. The cast filters out any
+    // non-numeric `map` values (none today, but defensive against future
+    // specifier shapes). LIMIT via MAX so the planner can index-only scan.
+    const maxMapRows = await app.db
+      .select({
+        sportId: categories.sportId,
+        maxMap: sql<string | null>`MAX((${markets.specifiersJson}->>'map')::int)`,
+      })
+      .from(markets)
+      .innerJoin(matches, eq(matches.id, markets.matchId))
+      .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
+      .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+      .where(sql`(${markets.specifiersJson} ? 'map') AND (${markets.specifiersJson}->>'map') ~ '^[0-9]+$'`)
+      .groupBy(categories.sportId);
+
+    const maxMapBySport = new Map<number, number>();
+    for (const r of maxMapRows) {
+      const n = r.maxMap == null ? 0 : Number(r.maxMap);
+      if (Number.isFinite(n) && n > 0) maxMapBySport.set(r.sportId, n);
+    }
+
+    // Counts come back as a flat scope -> count dict. Keys are exactly the
+    // scope values stored in the DB (match | top | map_<N>) so the UI can
+    // index in directly without re-deriving them.
+    const countsBySport = new Map<number, Record<string, number>>();
     for (const c of counts) {
-      const cur = bySport.get(c.sportId) ?? empty();
-      cur[c.scope as FeMarketScope] = Number(c.configured);
-      bySport.set(c.sportId, cur);
+      const cur = countsBySport.get(c.sportId) ?? {};
+      cur[c.scope] = Number(c.configured);
+      countsBySport.set(c.sportId, cur);
     }
 
     return {
@@ -86,24 +120,30 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
         id: s.id,
         slug: s.slug,
         name: s.name,
-        configured: bySport.get(s.id) ?? empty(),
+        // BO5 is the deepest format on the supported sports; the migration
+        // backfilled map_1..map_5 for every legacy `map` row, so admins
+        // always see at least 5 map columns. Discovery can lift the
+        // ceiling higher for any sport that actually carries map > 5.
+        maxMapNumber: Math.max(5, maxMapBySport.get(s.id) ?? 0),
+        configured: countsBySport.get(s.id) ?? {},
       })),
     };
   });
 
   // ── Detail: ordered + unranked markets for one (sport, scope) ───────
   // The "available" pool depends on the scope:
-  //   match — distinct provider_market_id values seen on this sport's
-  //           markets WITHOUT a `map` specifier.
-  //   map   — distinct provider_market_id seen WITH a `map` specifier.
-  //   top   — union of both pools (admin can curate from any market type).
+  //   match    — distinct provider_market_id values seen on this sport's
+  //              markets WITHOUT a `map` specifier.
+  //   map_<N>  — distinct provider_market_id seen WITH `map=<N>` exactly.
+  //   top      — union of every market on this sport (admin can curate
+  //              from any market type, regardless of scope).
   // Markets with no description fall back to "Market #N".
   app.get("/admin/fe-settings/markets-order/:sportId/:scope", async (request) => {
     request.requireRole("admin");
     const params = z
       .object({
         sportId: z.coerce.number().int().positive(),
-        scope: scopeEnum,
+        scope: scopeSchema,
       })
       .parse(request.params);
 
@@ -114,14 +154,42 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
       .limit(1);
     if (!sport) throw new NotFoundError("sport_not_found", "sport_not_found");
 
-    // jsonb `?` is the "key-exists" operator. Test against the raw column
-    // because Drizzle's pgcore doesn't expose it directly.
-    const matchScopeFilter = sql`NOT (${markets.specifiersJson} ? 'map')`;
-    const mapScopeFilter = sql`(${markets.specifiersJson} ? 'map')`;
+    // Largest `map` specifier seen on this sport's markets. Drives the
+    // nav strip in the editor page so the admin can hop between sibling
+    // Map N tabs without going back to the sport picker. Floor of 5 mirrors
+    // the migration's backfill ceiling.
+    const [maxMapRow] = await app.db
+      .select({
+        maxMap: sql<string | null>`MAX((${markets.specifiersJson}->>'map')::int)`,
+      })
+      .from(markets)
+      .innerJoin(matches, eq(matches.id, markets.matchId))
+      .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
+      .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+      .where(
+        and(
+          eq(categories.sportId, params.sportId),
+          sql`(${markets.specifiersJson} ? 'map') AND (${markets.specifiersJson}->>'map') ~ '^[0-9]+$'`,
+        ),
+      );
+    const observedMaxMap = maxMapRow?.maxMap ? Number(maxMapRow.maxMap) : 0;
+    const maxMapNumber = Math.max(
+      5,
+      Number.isFinite(observedMaxMap) ? observedMaxMap : 0,
+    );
 
-    let scopeFilter = matchScopeFilter;
-    if (params.scope === "map") scopeFilter = mapScopeFilter;
-    else if (params.scope === "top") scopeFilter = sql`TRUE`;
+    // jsonb `?` is the "key-exists" operator. Test against the raw column
+    // because Drizzle's pgcore doesn't expose it directly. For map_<N>
+    // we additionally pin the value with `->>'map' = '<N>'` (the cast
+    // would also work but text compare avoids a parser hop).
+    let scopeFilter = sql`NOT (${markets.specifiersJson} ? 'map')`;
+    if (params.scope === "top") {
+      scopeFilter = sql`TRUE`;
+    } else if (isMapScope(params.scope)) {
+      const n = mapScopeNumber(params.scope);
+      // n is non-null because isMapScope already matched the regex.
+      scopeFilter = sql`(${markets.specifiersJson}->>'map') = ${String(n)}`;
+    }
 
     const seenMarketRows = await app.db
       .selectDistinct({ providerMarketId: markets.providerMarketId })
@@ -198,6 +266,7 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
     return {
       sport,
       scope: params.scope,
+      maxMapNumber,
       ordered,
       unranked,
     };
@@ -212,7 +281,7 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
     const params = z
       .object({
         sportId: z.coerce.number().int().positive(),
-        scope: scopeEnum,
+        scope: scopeSchema,
       })
       .parse(request.params);
     const body = reorderBody.parse(request.body);
@@ -303,7 +372,7 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
     const params = z
       .object({
         sportId: z.coerce.number().int().positive(),
-        scope: scopeEnum,
+        scope: scopeSchema,
       })
       .parse(request.params);
 

@@ -1,6 +1,7 @@
 export * from "./users.js";
 export * from "./sessions.js";
 export * from "./devices.js";
+export * from "./push-notifications.js";
 export * from "./wallet.js";
 export * from "./deposits.js";
 export * from "./catalog.js";
@@ -22,4 +23,5 @@ export * from "./avatars.js";
 export * from "./riskzilla.js";
 export * from "./live-chat.js";
 export * from "./zillaflash.js";
+export * from "./zillapass.js";
 export * from "../enums.js";

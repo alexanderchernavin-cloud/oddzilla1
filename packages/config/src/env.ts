@@ -98,6 +98,17 @@ const EnvSchema = z.object({
   // unavailable" rather than crashing — same graceful-idle pattern
   // Disir / OBB use.
   METRICS_COLLECTOR_URL: z.string().url().default("http://metrics-collector:9090"),
+
+  // Firebase Admin SDK service-account JSON path (services/api → FCM
+  // push-notification worker). Empty / unset → push-outbox worker runs
+  // in graceful-idle mode, marking pending rows with
+  // `last_error=firebase_disabled` so the queue drains. The SDK also
+  // honours GOOGLE_APPLICATION_CREDENTIALS — set either to activate.
+  // See apps/mobile-android/.../fcm/README.md for setup steps.
+  FIREBASE_SERVICE_ACCOUNT_PATH: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.string().min(3).optional(),
+  ),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

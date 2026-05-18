@@ -393,15 +393,36 @@ body {
 }
 .oz-shell-search > * {
   width: 100%;
-  max-width: 460px;
+  /* Widened to fit the search input + the ZillaPass chip side-by-side
+     while keeping the row right-anchored against the rail edge. */
+  max-width: 620px;
   pointer-events: auto;
 }
+/* Row layout inside the shell-search slot: search flex-grows to fill
+   the row width, ZillaPass chip sits to its right at a fixed footprint
+   so the search width adjusts as ZillaPass shows / hides. */
+.oz-shell-search-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+.oz-shell-search-row > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* ZillaPass chip label swaps copy by breakpoint: full "ZillaPass
+   tasks" on tablet + desktop, short "Tasks" on mobile so the chip
+   fits in its ~60 % share of the shell-search row. The mobile rule
+   in the @media (max-width: 719px) block below flips this pair. */
+.oz-zillapass-chip-label-mobile { display: none; }
+.oz-zillapass-chip-label-wide { display: inline; }
 @media (max-width: 1099px) {
   .oz-shell-search {
     padding: 18px 16px 0;
     margin-bottom: -54px;
   }
-  .oz-shell-search > * { max-width: 340px; }
+  .oz-shell-search > * { max-width: 500px; }
 }
 @media (max-width: 719px) {
   /* Mobile reverts to a normal row above the page content — the
@@ -418,6 +439,32 @@ body {
     padding: 10px 12px 0 !important;
   }
   .oz-shell-search > * { max-width: none; }
+  /* On mobile the search input and the ZillaPass chip share the row.
+     Give ZillaPass slightly more than half (3fr) and the search
+     slightly less (2fr) so the chip's "ZillaPass X/Y" + progress bar
+     stays readable on a 360-px viewport; the search input still fits
+     "Search..." placeholder without truncation at this ratio. */
+  .oz-shell-search-row {
+    gap: 8px;
+  }
+  .oz-shell-search-row > :first-child {
+    flex: 2 1 0;
+    min-width: 0;
+  }
+  .oz-shell-search-row > .oz-zillapass-chip {
+    flex: 3 1 0;
+    min-width: 0;
+  }
+  /* The button inside the chip already has width: 100% so it fills
+     the flex slot, but its inline minWidth: 132 would force the
+     wrapper wider than its share on the narrowest phones. Override
+     down so the row stays within the viewport. */
+  .oz-zillapass-chip-button {
+    min-width: 0 !important;
+  }
+  /* Swap chip label: full "ZillaPass tasks" out, short "Tasks" in. */
+  .oz-zillapass-chip-label-wide { display: none; }
+  .oz-zillapass-chip-label-mobile { display: inline; }
 }
 
 /* Twin top-right user-controls cluster (theme / bell / wallet / avatar).
@@ -929,13 +976,13 @@ body {
 .oz-match-row {
   display: flex;
   align-items: stretch;
-  gap: 8px;
+  gap: 4px;
   min-width: 0;
 }
 
 .oz-match-side-btn {
   display: none;
-  width: 32px;
+  width: 20px;
   align-self: stretch;
   background: var(--surface-2);
   border: 1px solid var(--border);
@@ -1022,6 +1069,99 @@ body {
   }
   .oz-side-panel[data-open="true"] {
     display: flex;
+  }
+  /* Pull the row outward by (button width + row gap) on each side so
+     the side buttons sit in the page-padding gutter between the main
+     column and the sidebar / rail, instead of stealing horizontal
+     space from the card itself. Each page wraps the content in a
+     32px horizontal padding, leaving ~8px of clearance between the
+     button outer edge and the column boundary. */
+  .oz-match-row {
+    margin-inline: -24px;
+  }
+  /* Two-column grid: each card gets a single outer button. The inner
+     button (right-of-left-column, left-of-right-column) is hidden so
+     the column-gap stays clean, and only the outer side of the row
+     extends into the page-padding gutter. A left-column match that
+     opens its side panel goes to the LEFT band; a right-column match
+     to the RIGHT band — matching the user's "left to left, right to
+     right" mental model. */
+  .oz-match-list-grid[data-cols="2"] > .oz-match-row:nth-child(odd) {
+    margin-inline: -24px 0;
+  }
+  .oz-match-list-grid[data-cols="2"] > .oz-match-row:nth-child(odd) .oz-match-side-btn[data-side="right"] {
+    display: none;
+  }
+  .oz-match-list-grid[data-cols="2"] > .oz-match-row:nth-child(even) {
+    margin-inline: 0 -24px;
+  }
+  .oz-match-list-grid[data-cols="2"] > .oz-match-row:nth-child(even) .oz-match-side-btn[data-side="left"] {
+    display: none;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Match-list column toggle — wide-viewport feature.
+   Threshold is min-width: 2000px in CSS pixels. The first cut at
+   2560px (raw QHD width) excluded most real QHD setups because
+   Windows defaults to 125 % display scaling on QHD displays, which
+   reports ~2048 CSS px instead of 2560. 2000 catches QHD-at-100 %
+   AND QHD-at-125 %, plus 4K at typical 150 % (=2560 css). FHD
+   (1920 css) still falls under the gate so the toggle stays hidden
+   on the typical 1080p monitor.
+   The [data-cols="2"] grid rule is scoped inside the same media
+   query so a persisted "2" silently degrades to one column on a
+   smaller monitor without needing JS to clamp the state.
+   ───────────────────────────────────────────────────────────────────────── */
+.oz-match-list-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.oz-match-list-cols {
+  display: none;
+  align-self: flex-end;
+  gap: 2px;
+  padding: 3px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm, 8px);
+}
+
+.oz-match-cols-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: background-color 140ms var(--ease), color 140ms var(--ease);
+}
+.oz-match-cols-btn:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+.oz-match-cols-btn[data-active="true"] {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+@media (min-width: 2000px) {
+  .oz-match-list-cols {
+    display: inline-flex;
+  }
+  .oz-match-list-grid[data-cols="2"] {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 12px;
+    row-gap: 12px;
   }
 }
 

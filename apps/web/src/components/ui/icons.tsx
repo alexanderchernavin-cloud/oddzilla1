@@ -62,6 +62,11 @@ export const I = {
       <path d="m6 9 6 6 6-6" />
     </Icon>
   ),
+  ChevU: (p: IconProps) => (
+    <Icon {...p}>
+      <path d="m6 15 6-6 6 6" />
+    </Icon>
+  ),
   Plus: (p: IconProps) => (
     <Icon {...p}>
       <path d="M12 5v14M5 12h14" />
@@ -131,6 +136,17 @@ export const I = {
       <rect x="14" y="14" width="7" height="7" />
     </Icon>
   ),
+  Rows1: (p: IconProps) => (
+    <Icon {...p}>
+      <rect x="3" y="5" width="18" height="14" rx="1" />
+    </Icon>
+  ),
+  Columns2: (p: IconProps) => (
+    <Icon {...p}>
+      <rect x="3" y="3" width="8" height="18" rx="1" />
+      <rect x="13" y="3" width="8" height="18" rx="1" />
+    </Icon>
+  ),
   Ticket: (p: IconProps) => (
     <Icon {...p}>
       <path d="M3 9a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4z" />
@@ -190,6 +206,13 @@ export const I = {
       <circle cx="12" cy="12" r="9" />
       <path d="M3 12h18" />
       <path d="M12 3a13.5 13.5 0 0 1 0 18M12 3a13.5 13.5 0 0 0 0 18" />
+    </Icon>
+  ),
+  Rocket: (p: IconProps) => (
+    <Icon {...p}>
+      <path d="M14 4c4 0 7 3 7 7-1.5.5-3 1-4 1.5l-4.5 4.5c-.5 1-1 2.5-1.5 4-3-1-4-2-4-4 1.5-.5 3-1 4-1.5l4.5-4.5c.5-1 1-2.5 1.5-4Z" />
+      <path d="M9 15a4 4 0 0 0-4 4c.5 1 2 1.5 4 1 .5-2 1-3.5 1-4Z" />
+      <circle cx="15" cy="9" r="1.4" />
     </Icon>
   ),
 };

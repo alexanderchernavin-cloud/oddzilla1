@@ -65,7 +65,12 @@
     "responsibleGambling": "Aposte com responsabilidade.",
     "ageNotice": "18+ · BeGambleAware.org",
     "language": "Idioma",
-    "languageSwitcher": "Mudar idioma"
+    "languageSwitcher": "Mudar idioma",
+    "customizeSports": "Personalizar ordem dos esportes",
+    "saveSportOrder": "Salvar",
+    "resetSports": "Redefinir",
+    "moveSportUp": "Mover para cima",
+    "moveSportDown": "Mover para baixo"
   },
   "wallet": {
     "title": "Carteira",
@@ -112,6 +117,7 @@
     "placing": "Apostando…",
     "clearSlip": "Limpar boletim",
     "removeLeg": "Remover seleção",
+    "open": "Abrir",
     "openMatch": "Abrir partida",
     "legs": "{count, plural, one {# seleção} other {# seleções}}",
     "minStake": "Aposta mínima {amount} {currency}",

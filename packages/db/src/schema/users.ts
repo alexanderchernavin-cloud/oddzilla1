@@ -50,6 +50,11 @@ export const users = pgTable(
     // through avatar_templates.created_by → users.id. Drizzle doesn't
     // need the relation declared at the column level for query joins.
     avatarTemplateId: uuid(),
+    // Sidebar sport ordering preference (migration 0056). NULL = render
+    // the default order (TOP_SPORT_SLUGS pinned + alphabetical fallback);
+    // non-null = user-saved slug order, with any sports missing from
+    // the array appended in default order on the client.
+    sportOrder: text("sport_order").array(),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     lastLoginAt: timestamp({ withTimezone: true }),
@@ -74,6 +79,10 @@ export const users = pgTable(
     check(
       "users_risk_score_range",
       sql`${t.riskScore} >= 0.01 AND ${t.riskScore} <= 10`,
+    ),
+    check(
+      "users_sport_order_len",
+      sql`${t.sportOrder} IS NULL OR array_length(${t.sportOrder}, 1) <= 100`,
     ),
   ],
 );

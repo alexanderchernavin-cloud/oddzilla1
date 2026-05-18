@@ -327,6 +327,16 @@ func (s *Settler) applyMarketSettle(ctx context.Context, eventURN string, ts int
 	for _, tid := range settledTickets {
 		s.publishTicketEvent(ctx, tid, "settled", "")
 	}
+	// Wake the api push-notification worker so it drains any winning-ticket
+	// rows we just committed (migration 0057). Cheap NOTIFY: the worker
+	// no-ops if no pending rows match. Best-effort — a missed notify is
+	// caught by the worker's 30 s sweep. Gated on len(settled) > 0 so we
+	// don't wake the worker for pure replays.
+	if len(settledTickets) > 0 {
+		if err := store.NotifyPushOutbox(ctx, s.store.Pool()); err != nil {
+			s.log.Debug().Err(err).Msg("notify push outbox failed; sweep will catch up")
+		}
+	}
 	return nil
 }
 
@@ -571,6 +581,44 @@ func (s *Settler) maybeSettleTicket(ctx context.Context, tx pgx.Tx, ticketID, so
 
 	if err := store.SettleTicket(ctx, tx, t, payout, ledgerType, sourceTag); err != nil {
 		return false, err
+	}
+
+	// Push-notification intent for winning tickets. Migration 0057 outbox
+	// pattern: row committed atomically with the settle; api worker drains
+	// it via LISTEN/NOTIFY (s.notifyPushOutbox after the chunk tx commits)
+	// and dispatches via Firebase Admin SDK. Apply-once via the
+	// (kind, ticket_id) unique partial index — settlement replay is a
+	// no-op. Win is `payout > stake` so half-wins push (wallet went up)
+	// and full-loss / void / half-lost don't.
+	//
+	// Best-effort inside the settle tx — a push-outbox failure must NOT
+	// unwind the wallet credit. The 30 s api-side sweep recovers any
+	// missed NOTIFY; only a hard SQL error here (FK violation, etc.)
+	// would prevent the row from ever landing, and we log it.
+	if payout > t.StakeMicro {
+		betWonPayload := store.BetWonPushPayload{
+			Kind:                 "bet_won",
+			TicketID:             t.ID,
+			BetType:              t.BetType,
+			Currency:             t.Currency,
+			StakeMicro:           strconv.FormatInt(t.StakeMicro, 10),
+			ActualPayoutMicro:    strconv.FormatInt(payout, 10),
+			PotentialPayoutMicro: strconv.FormatInt(t.PotentialPayoutMicro, 10),
+			NumLegs:              len(selections),
+		}
+		if err := store.EnqueueBetWonPush(ctx, tx, t.UserID, betWonPayload); err != nil {
+			s.log.Warn().Err(err).Str("ticket", t.ID).
+				Msg("enqueue push notification failed; continuing")
+		}
+		// In-app bell (web parity with mobile push). Same tx so an
+		// aborted settle can't leave a phantom bell entry. Same
+		// best-effort posture — a bell write failure must not unwind
+		// the wallet credit. Migration 0059 added the bet_won enum
+		// value; this is its only Go-side writer.
+		if err := store.EnqueueBetWonBellNotification(ctx, tx, t.UserID, betWonPayload); err != nil {
+			s.log.Warn().Err(err).Str("ticket", t.ID).
+				Msg("enqueue bet_won bell notification failed; continuing")
+		}
 	}
 
 	// RiskZilla bank update (migration 0037). Decrements open_liability

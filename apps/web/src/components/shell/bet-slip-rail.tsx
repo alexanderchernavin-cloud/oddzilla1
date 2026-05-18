@@ -34,6 +34,7 @@ import { SportGlyph } from "@/components/ui/sport-glyph";
 import { useMobileDrawers } from "./mobile-drawer-context";
 import { UserControls } from "./user-controls";
 import { useWallets } from "@/lib/wallets";
+import { useZillapass } from "@/lib/zillapass";
 import { useTranslations } from "@/lib/i18n";
 import { RailMatchPanel } from "@/components/widgets/rail-match-panel";
 import type {
@@ -82,30 +83,43 @@ const SUSPENDED_ERROR_MESSAGE = "This market is suspended. Try again in a moment
 // once the deadline passes (avoids needless re-renders for tickets that
 // have already promoted to accepted). Returns null when `iso` is falsy
 // so callers can branch without an extra guard.
+//
+// Implementation note: `Date.now()` is read fresh on every render — the
+// state value is just a tick counter that forces re-render once per
+// second. The earlier shape cached `now` at mount time, which produced
+// a wildly wrong initial value when the host component was mounted long
+// before the timestamp arrived (slip rail mounted at page load, user
+// composes their slip for ~20 s, clicks Place bet → first render of
+// the countdown saw target − mount_time and showed "24 s" before the
+// interval ticked it down to the real "5 s" left).
 function useSecondsUntil(iso: string | null): number | null {
-  const [now, setNow] = useState(() => Date.now());
+  const [, setTick] = useState(0);
   useEffect(() => {
     if (!iso) return;
     const target = new Date(iso).getTime();
     if (!Number.isFinite(target) || target <= Date.now()) return;
     const id = window.setInterval(() => {
-      const t = Date.now();
-      setNow(t);
-      if (t >= target) window.clearInterval(id);
+      setTick((n) => n + 1);
+      if (Date.now() >= target) window.clearInterval(id);
     }, 1000);
     return () => window.clearInterval(id);
   }, [iso]);
   if (!iso) return null;
   const target = new Date(iso).getTime();
   if (!Number.isFinite(target)) return null;
-  return Math.max(0, Math.ceil((target - now) / 1000));
+  return Math.max(0, Math.ceil((target - Date.now()) / 1000));
 }
 
 type RailTab = "slip" | "history";
 
 interface BetSlipRailProps {
   signedIn: boolean;
-  user?: { email: string; displayName: string | null; role: string };
+  user?: {
+    email: string;
+    displayName: string | null;
+    nickname: string | null;
+    role: string;
+  };
 }
 
 export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
@@ -115,6 +129,7 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
   const { closeAll } = useMobileDrawers();
   const router = useRouter();
   const { optimisticDeduct: optimisticDeductWallet } = useWallets();
+  const { refresh: refreshZillapass } = useZillapass();
   const t = useTranslations("betSlip");
   const [stakeInput, setStakeInput] = useState("10");
   const [submitting, setSubmitting] = useState(false);
@@ -152,19 +167,52 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
     }
   }, []);
 
-  // Drop the post-placement view as soon as the user starts a new slip
-  // — otherwise the success / rejection card would shadow new picks
-  // indefinitely. Pending placements stay sticky so a user clicking
-  // around the site during the wait window still sees the countdown.
+  // Drop placed-ticket tracking as soon as the user starts editing the
+  // slip again. We compare the current slip composition against the
+  // snapshot taken at placement time — equal-slip clicks (WS odds /
+  // probability ticks rewriting individual rows in place) leave the
+  // banner / countdown alone; a real add / remove / clear / mode-change
+  // drops tracking. This is also the bug fix for Android WebView: when
+  // a missed WS frame leaves the slip in pending_delay limbo, the user
+  // simply taps a new leg or hits Clear slip and the rail unsticks.
+  const slipKey = useMemo(
+    () => selections.map((s) => `${s.marketId}:${s.outcomeId}`).join("|"),
+    [selections],
+  );
+  const placedSlipKey = useRef<string | null>(null);
   useEffect(() => {
-    if (
-      selections.length > 0 &&
-      placedTicket &&
-      placedTicket.status !== "pending_delay"
-    ) {
+    if (!placedTicket) return;
+    if (placedSlipKey.current === null) return;
+    if (slipKey !== placedSlipKey.current) {
       setPlacedTicket(null);
     }
-  }, [selections.length, placedTicket]);
+  }, [slipKey, placedTicket]);
+
+  // Belt-and-suspenders fallback for missed WS frames (Android WebView,
+  // flaky cellular, server restart during the delay): if we're still in
+  // pending_delay 15 seconds past notBeforeTs, force-drop tracking. The
+  // bet itself is unaffected — the bet-delay worker keeps its decision
+  // on the server, the next router.refresh() / history-pane subscription
+  // reconciles. This unblocks the slip so the user can place a new bet
+  // even when the live-update channel is silent.
+  useEffect(() => {
+    if (!placedTicket || placedTicket.status !== "pending_delay") return;
+    const target =
+      placedTicket.notBeforeTs != null
+        ? new Date(placedTicket.notBeforeTs).getTime() + 15_000
+        : Date.now() + 30_000;
+    const delay = Math.max(0, target - Date.now());
+    if (delay === 0) {
+      router.refresh();
+      setPlacedTicket(null);
+      return;
+    }
+    const id = window.setTimeout(() => {
+      router.refresh();
+      setPlacedTicket(null);
+    }, delay);
+    return () => window.clearTimeout(id);
+  }, [placedTicket, router]);
 
   // Rail-level ticket-frame subscription. When the bet-delay worker
   // resolves the ticket we either clear the slip + switch to history
@@ -321,6 +369,15 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
   // an explicit "Accept odds change" step. Clicking it copies pending
   // → odds and the button reverts to Place bet.
   const hasPendingOdds = selections.some((s) => s.pendingOdds != null);
+
+  // Live-delay countdown surfaced ON the Place bet button (no separate
+  // banner / footer — slip stays untouched until acceptance). Disables
+  // re-submit while the previous placement is still being decided.
+  const pendingPlacement =
+    placedTicket?.status === "pending_delay" ? placedTicket : null;
+  const pendingSecondsLeft = useSecondsUntil(
+    pendingPlacement?.notBeforeTs ?? null,
+  );
 
   // Effective product mode. Single is forced when there's only one
   // selection regardless of last-stored mode. tiple/tippot need ≥2.
@@ -615,6 +672,12 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
         }),
       });
       setPlacedTicket(res.ticket);
+      // Snapshot the slip composition at placement time so the
+      // pending-tracking useEffect above can detect when the user
+      // has moved on to a different draft and silently drop tracking.
+      placedSlipKey.current = selections
+        .map((s) => `${s.marketId}:${s.outcomeId}`)
+        .join("|");
       // Optimistic balance deduct so the top-bar pill + any other
       // wallet consumers reflect the new available balance immediately.
       // For singles the server places one ticket per selection at
@@ -630,6 +693,12 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
           ? BigInt(stakeMicro) * BigInt(selections.length)
           : BigInt(stakeMicro);
       optimisticDeductWallet(currency, totalDebitMicro);
+      // Pull fresh ZillaPass state so the chip flips bets_prematch /
+      // bets_live progress without waiting for the 30 s background poll.
+      // Fire-and-forget; the writer's already committed in the API
+      // and any transient error here just defers visibility until
+      // the next poll.
+      void refreshZillapass();
       router.refresh();
       if (res.ticket.status === "pending_delay") {
         // Live-bet acceptance delay is running. Keep the slip populated
@@ -796,22 +865,7 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
           gap: 6,
         }}
       >
-        {placedTicket && placedTicket.status === "accepted" ? (
-          // Accepted at placement (no live-delay window). The pending /
-          // rejected branches below render the slip + a banner instead;
-          // this is the immediate-acceptance success card.
-          <PlacedTicketCard
-            ticketId={placedTicket.id}
-            status={placedTicket.status}
-            notBeforeTs={placedTicket.notBeforeTs}
-            tBetPlaced={t("betPlaced")}
-            tBetQueued={t("betQueued")}
-            tAcceptingIn={(s: number) => t("acceptingIn", { seconds: s })}
-            tLiveDelayNote={t("liveDelayNote")}
-            tTicket={t("ticket")}
-            tViewMyBets={t("viewMyBets")}
-          />
-        ) : selections.length === 0 ? (
+        {selections.length === 0 ? (
           <div
             style={{
               display: "flex",
@@ -856,14 +910,11 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
           </div>
         ) : (
           <>
-            {placedTicket && placedTicket.status === "pending_delay" ? (
-              <PendingPlacementBanner
-                notBeforeTs={placedTicket.notBeforeTs}
-                acceptOddsChanges={placedTicket.acceptOddsChanges}
-                ticketId={placedTicket.id}
-                t={t}
-              />
-            ) : placedTicket && placedTicket.status === "rejected" ? (
+            {placedTicket && placedTicket.status === "rejected" ? (
+              // Pending → rejected: keep the slip populated so the bettor
+              // can re-place with the freshly-flowing live odds in one
+              // click. Pending-delay countdown lives on the Place bet
+              // button instead of as a header banner — slip stays clean.
               <RejectedPlacementBanner
                 reason={placedTicket.rejectReason}
                 onDismiss={() => setPlacedTicket(null)}
@@ -880,16 +931,7 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
         )}
       </div>
 
-      {selections.length > 0 &&
-      placedTicket?.status === "pending_delay" ? (
-        // Pending — replace the form (Place button + stake input) with a
-        // status indicator. The bettor can't edit the slip while the
-        // worker is deciding; the WS frame will either accept (slip
-        // clears + history opens) or reject (slip stays + bettor edits
-        // and re-places).
-        <PendingPlacementFooter notBeforeTs={placedTicket.notBeforeTs} t={t} />
-      ) : selections.length > 0 &&
-        (!placedTicket || placedTicket.status === "rejected") && (
+      {selections.length > 0 && (
         <form
           onSubmit={onSubmit}
           style={{
@@ -1292,14 +1334,19 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
               <Button
                 variant="primary"
                 size="lg"
-                type={hasPendingOdds ? "button" : "submit"}
+                type={
+                  pendingPlacement || hasPendingOdds ? "button" : "submit"
+                }
                 onClick={
-                  hasPendingOdds
-                    ? () => slip.acceptPendingOdds()
-                    : undefined
+                  pendingPlacement
+                    ? undefined
+                    : hasPendingOdds
+                      ? () => slip.acceptPendingOdds()
+                      : undefined
                 }
                 disabled={
                   submitting ||
+                  pendingPlacement != null ||
                   builderNeedsLegs ||
                   builderQuoteMissing ||
                   (isBetBuilderMode && !!builderError) ||
@@ -1307,11 +1354,15 @@ export function BetSlipRail({ signedIn, user }: BetSlipRailProps) {
                 }
                 style={{ width: "100%" }}
               >
-                {submitting
-                  ? t("placing")
-                  : hasPendingOdds
-                    ? t("accept")
-                    : t("placeBet")}
+                {pendingPlacement
+                  ? pendingSecondsLeft != null && pendingSecondsLeft > 0
+                    ? t("acceptingIn", { seconds: pendingSecondsLeft })
+                    : t("placing")
+                  : submitting
+                    ? t("placing")
+                    : hasPendingOdds
+                      ? t("accept")
+                      : t("placeBet")}
               </Button>
             </>
           )}
@@ -1459,16 +1510,24 @@ function SelectionCard({
         <Link
           href={`/match/${selection.matchId}`}
           onClick={() => closeMobileDrawers()}
+          className="mono"
           style={{
             display: "inline-flex",
             alignItems: "center",
+            gap: 3,
             color: "var(--fg-dim)",
-            padding: 2,
+            padding: "2px 2px 2px 4px",
+            fontSize: 10,
+            fontWeight: 500,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
             textDecoration: "none",
+            lineHeight: 1,
           }}
           aria-label={t("openMatch")}
           title={t("openMatch")}
         >
+          {t("open")}
           <I.Chev size={12} />
         </Link>
         <button

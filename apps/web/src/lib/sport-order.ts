@@ -72,6 +72,39 @@ export function orderSportsForChips<T extends { slug: string; name: string }>(
   });
 }
 
+// Order a list of `{slug, name, ...}` rows using the bettor's
+// customised sport-order preference. Sports present in `userOrder` are
+// placed first in the user's chosen sequence; anything missing
+// (newly-added sport, slug typo in the saved array, etc.) falls back
+// to the default ordering and is appended after. Hidden bot slugs are
+// dropped, matching `orderSportsForChips`.
+//
+// `userOrder = null` short-circuits to the default order so callers
+// can pass the user prop through unconditionally.
+export function orderSportsForSidebar<
+  T extends { slug: string; name: string },
+>(items: T[], userOrder: string[] | null): T[] {
+  const visible = items.filter((s) => !HIDDEN_SPORT_SLUGS.has(s.slug));
+  if (!userOrder || userOrder.length === 0) {
+    return orderSportsForChips(visible);
+  }
+  const bySlug = new Map(visible.map((s) => [s.slug, s] as const));
+  const placed = new Set<string>();
+  const head: T[] = [];
+  for (const slug of userOrder) {
+    if (placed.has(slug)) continue;
+    const hit = bySlug.get(slug);
+    if (hit) {
+      head.push(hit);
+      placed.add(slug);
+    }
+  }
+  const tail = orderSportsForChips(
+    visible.filter((s) => !placed.has(s.slug)),
+  );
+  return [...head, ...tail];
+}
+
 // Order a list of match rows (carrying a `sport.slug` + `sport.name`)
 // by their sport's rank, then alphabetical within the non-pinned tail.
 // Stable on equal ranks so callers can pre-sort by a secondary key

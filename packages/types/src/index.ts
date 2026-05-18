@@ -17,3 +17,4 @@ export * from "./zillafacts.js";
 export * from "./live-chat.js";
 export * from "./netwinstable.js";
 export * from "./zillaflash.js";
+export * from "./zillapass.js";

@@ -63,75 +63,104 @@ explicitly.
 
 ## Daily deploy
 
-After pushing to `main`. Build only what changed, ONE service at a time —
-`docker compose build` (no service arg) parallel-builds every service and
-OOMs the 4 GB CPX22 (see `project_build_oom_incident`; the site went dark
-~30 min on 2026-05-06 until a Hetzner power cycle). The `make build` /
-`make recreate` targets enforce this — they refuse without `SVC=name`.
-
-The storefront runs three Next.js replicas (`web1`, `web2`, `web3`)
-behind Caddy's `lb_policy least_conn` upstream group. `web1` always
-runs; `web2` + `web3` are gated on the `scaled` Compose profile, so
-every production command below carries `--profile scaled`. Local dev
-omits the flag and runs the single `web1` replica.
-
 ```bash
-# 1. Fast-forward the worktree on the box.
-ssh team@178.104.174.24 "cd /home/team/oddzilla && \
-  git fetch origin main && git reset --hard origin/main"
-
-# 2. (If migrations shipped — see next block.) Run them BEFORE recreating.
-
-# 3. Build the changed services serially. Three web replicas all share
-#    the same image, so build the web image once via `web1`; web2 + web3
-#    pick it up at recreate time.
-for svc in api web1 feed-ingester; do  # <-- only the services this PR touched
-  ssh team@178.104.174.24 "cd /home/team/oddzilla && make build SVC=$svc"
-done
-
-# 4. Recreate. For non-web services use the existing pattern. For web,
-#    use the rolling helper so traffic stays on the other two replicas
-#    while each one cycles — zero downtime.
-ssh team@178.104.174.24 "cd /home/team/oddzilla && \
-  sudo -n docker compose -f docker-compose.yml --profile scaled up -d \
-  --no-deps --force-recreate api feed-ingester"
-ssh team@178.104.174.24 "cd /home/team/oddzilla && make recreate-web"
+ssh team@178.104.174.24 "cd /home/team/oddzilla && make deploy"
 ```
 
-> **Never run `docker compose build` without a service argument on this
-> box.** The `make build` target now refuses bare invocations; `sudo -n
-> docker compose build api` (or the `make build SVC=api` shortcut) is the
-> safe form.
+That's the whole deploy. The target wraps
+[`infra/deploy/deploy.sh`](../infra/deploy/deploy.sh), which does:
+
+1. `flock` `/var/lock/oddzilla-deploy.lock` so two operators can't deploy at once.
+2. `git fetch origin main`.
+3. Compute the file diff between the last-deployed SHA (stored at
+   `.deploy/last-sha`) and `origin/main`.
+4. Map changed files → affected services via
+   [`infra/deploy/detect-services.sh`](../infra/deploy/detect-services.sh).
+5. `git reset --hard origin/main`.
+6. If the diff includes any `packages/db/migrations/*.sql`: take a pre-deploy
+   `pg_dump` to `.deploy/backups/<sha>.sql.gz` (keep last 10).
+7. Apply migrations via `pnpm --filter @oddzilla/db db:migrate` with the
+   `DATABASE_URL` rewritten from `@postgres:` to `@127.0.0.1:` for host-side
+   resolution.
+8. **Parallel-build** the changed services via `docker compose build` with all
+   service names in one invocation. If a future regression OOMs again (it has
+   not since the CPX31 upgrade), set `DEPLOY_BUILD_PARALLEL_CAP=2` (maps to
+   `COMPOSE_PARALLEL_LIMIT`) and re-run.
+9. Tag each built image with the deploying SHA via
+   [`infra/deploy/tag-images.sh`](../infra/deploy/tag-images.sh) — and prune
+   anything beyond the most-recent 3 SHAs so disk usage stays bounded.
+10. `docker compose up -d --no-deps --force-recreate` the non-web services.
+11. `make recreate-web` rolls `web1 → web2 → web3` serially, waiting for each
+    healthcheck before the next.
+12. If `Caddyfile` changed: `caddy reload` inside the running container (no
+    rebuild needed — caddy is an upstream image).
+13. Write the new SHA to `.deploy/last-sha` and log the event to `.deploy/log`.
+14. Run the smoke test: 4 endpoints across web SSR + api via Caddy, plus a
+    `401` check on `/api/auth/me` to catch auth-plugin breakage.
+
+Dry-run + rollback:
+
+```bash
+make deploy-status   # show commits + services + migrations, no side effects
+make rollback        # retag previous SHA → :latest + recreate touched services
+```
+
+What rollback does NOT do:
+
+- Revert migrations. Convention is forward-only nullable-additive, so the
+  previous code reads the newer schema cleanly. If a migration was
+  destructive, restore from `.deploy/backups/<sha>.sql.gz` manually before
+  rollback.
+- Move the git worktree. Source stays at the failed-deploy SHA. Run
+  `git -C /home/team/oddzilla reset --hard <previous-sha>` after the rollback
+  if you want code to match the containers.
+
+What can still go wrong, and the failure mode:
+
+| Failure | Effect on state |
+| --- | --- |
+| `git fetch` fails | Nothing recreated, `last-sha` unchanged, safe to retry. |
+| `pg_dump` fails before migrate | Migration NOT applied, deploy halts, `last-sha` unchanged. |
+| `db:migrate` fails | Containers not yet recreated. Pre-deploy snapshot exists at `.deploy/backups/<sha>.sql.gz`. Fix forward (write a corrective migration) or restore. |
+| `docker compose build` fails | No image tagged, no recreate, `last-sha` unchanged. Investigate the build log. |
+| `force-recreate` fails for one service | Earlier services already recreated on the new image; `last-sha` not yet updated. Resolve and re-run — `make deploy` is idempotent against partial state because Compose treats an already-current container as a no-op. |
+| Smoke fails | `last-sha` IS updated (containers are running the new code) and `smoke_fail` is appended to the log. Either `make rollback` or fix forward. |
+
+> **Never run `docker compose build` or `pnpm db:migrate` by hand on the
+> box** unless you have a reason that doesn't fit `make deploy`. The script
+> is the only place where build → recreate ordering, image tagging, and the
+> deploy log stay coherent.
 
 > **Never recreate all three web replicas in parallel.** A flat
 > `docker compose up -d --force-recreate web1 web2 web3` takes them down
-> together and surfaces a ~10 s 502 wall to users. `make recreate-web`
-> cycles them serially and waits for each healthcheck to pass before
-> moving on.
+> together and surfaces a ~10 s 502 wall to users. `make recreate-web` (used
+> internally by `make deploy`) cycles them serially.
 
-> **Never recreate only `web1` when the scaled profile is up either.**
-> A `docker compose up -d --force-recreate web1` leaves `web2` and
-> `web3` running on the previous image; Caddy's `lb_policy least_conn`
-> distributes traffic across all three, so users see a ~2/3 chance of
-> stale HTML per request. Symptom: the page chunk hash differs between
-> `oddzilla.cc/<page>` (mix of new + old) and an in-container
-> `curl http://web1:3000/<page>` (always new). Use `make recreate-web`
-> so all three cycle.
+> **Never recreate only `web1` when the scaled profile is up.** A `docker
+> compose up -d --force-recreate web1` leaves `web2` and `web3` running on
+> the previous image; Caddy's `lb_policy least_conn` distributes across all
+> three, so users see a ~2/3 chance of stale HTML per request. `make deploy`
+> always goes through `recreate-web` for any web-touching deploy.
 
-Migrations are additive — only run when you've shipped one:
+State the deploy keeps under `/home/team/oddzilla/.deploy/`:
 
-```bash
-ssh team@178.104.174.24 "cd /home/team/oddzilla && \
-  PGUSER=\$(grep ^POSTGRES_USER= .env | cut -d= -f2) \
-  PGPASS=\$(grep ^POSTGRES_PASSWORD= .env | cut -d= -f2) \
-  PGDB=\$(grep ^POSTGRES_DB= .env | cut -d= -f2) \
-  DATABASE_URL=\"postgres://\${PGUSER}:\${PGPASS}@127.0.0.1:5432/\${PGDB}?sslmode=disable\" \
-  pnpm --filter @oddzilla/db db:migrate"
+```
+.deploy/
+├── last-sha            # marker of the last successful deploy
+├── log                 # newline-delimited event log (deploy / rollback / smoke_fail)
+├── images/             # one file per service, stack of recent SHAs (most-recent-first)
+│   ├── api
+│   ├── web1
+│   └── feed-ingester
+└── backups/            # pre-deploy pg_dumps (only when migrations shipped)
+    ├── 0cb113d…sql.gz
+    └── …
 ```
 
-For tighter loops, GitHub Actions can ssh + pull + compose on merge to
+For tighter loops, GitHub Actions can ssh + run `make deploy` on merge to
 `main` (workflow at [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml)
-— not yet added; add when there's a second collaborator).
+— not yet added; add when the deploy cadence justifies the extra moving
+piece).
 
 ## Environment variables
 
@@ -157,7 +186,7 @@ gracefully:
 
 | Service | Required | Optional → effect when absent |
 | --- | --- | --- |
-| api | DATABASE_URL, REDIS_URL, JWT_SECRET, REFRESH_COOKIE_SECRET, SIGNER_SOCKET_PATH | signer unreachable → `/wallet/deposit-addresses` returns 500 with `SignerUnavailableError` |
+| api | DATABASE_URL, REDIS_URL, JWT_SECRET, REFRESH_COOKIE_SECRET, SIGNER_SOCKET_PATH | signer unreachable → `/wallet/deposit-addresses` returns 500 with `SignerUnavailableError`. FIREBASE_SERVICE_ACCOUNT_PATH unset OR target file missing → push-outbox worker still drains the queue but marks every row `sent_at=NOW(), last_error='firebase_disabled'`; no FCM notifications go out until credentials are mounted. |
 | signer | HD_MASTER_MNEMONIC | n/a — only this service reads the mnemonic |
 | feed-ingester | DATABASE_URL, REDIS_URL | ODDIN_TOKEN+ODDIN_CUSTOMER_ID absent → idle, health-only |
 | settlement | DATABASE_URL, REDIS_URL | ODDIN_TOKEN+ODDIN_CUSTOMER_ID absent → idle, health-only |
@@ -657,6 +686,80 @@ address derivation) — that's the only process that has it. Notes:
    service — deposit/withdrawal scanners pause; nothing else is
    affected).
 5. Permanent fix: upgrade Hetzner plan.
+
+## FCM push notifications
+
+Server-side is live as of migration `0058_push_notifications_outbox`.
+When a winning ticket settles, `services/settlement` (Go) inserts a
+`bet_won` row into `push_notifications_outbox` inside the same tx as
+`SettleTicket`, then fires `NOTIFY push_outbox`. The api service's
+`startPushOutboxWorker` LISTENs on the channel + sweeps every 30 s,
+joins to `user_devices`, and dispatches via Firebase Admin SDK
+`sendEachForMulticast`. Dead FCM tokens get soft-revoked on the device
+row; transient failures bump `attempts` until `MAX_ATTEMPTS=5`.
+
+**Activation** (operator one-time, takes ~5 min once a Firebase project
+exists):
+
+1. Firebase Console → Project settings → Service accounts → **Generate
+   new private key**. Download the JSON.
+2. On the box:
+   ```sh
+   sudo install -d -m 750 -o team -g team /srv/oddzilla-firebase
+   sudo install -m 600 -o 1000 -g 1000 service-account.json \
+     /srv/oddzilla-firebase/service-account.json
+   ```
+   uid 1000 = the api container's `node` user. `chmod 600` keeps the
+   credential from sysadmin scripts that might scan world-readable
+   files for secrets.
+3. `make recreate api`. Logs should show `push: outbox worker started
+   firebase=enabled`. From this point every winning settle pushes.
+
+**Operator surface — queue depth + diagnostics:**
+
+```sql
+-- Pending rows: should normally trend to zero. A growing number
+-- with last_error NULL = api is down or the worker died; growing
+-- with last_error set = transient Firebase failures, look at the
+-- error column to triage.
+SELECT COUNT(*) AS pending
+  FROM push_notifications_outbox
+ WHERE sent_at IS NULL;
+
+-- Recent dispatches grouped by outcome.
+SELECT date_trunc('hour', sent_at) AS h,
+       last_error,
+       COUNT(*) AS n
+  FROM push_notifications_outbox
+ WHERE sent_at >= now() - interval '24 hours'
+ GROUP BY 1, 2
+ ORDER BY 1 DESC, n DESC;
+```
+
+`last_error` values you might see:
+- `NULL` — dispatched cleanly.
+- `firebase_disabled` — credentials weren't mounted; activation step
+  pending. Reset to NULL after activating if you want history clean,
+  or leave for the audit trail.
+- `no_devices` — user has no live `user_devices` rows. Expected for
+  users who haven't installed the mobile app or revoked all tokens.
+- `all_tokens_dead` — every device token returned a permanent FCM
+  error in one dispatch; the worker soft-revoked them.
+- `max_attempts:<msg>` — five transient failures in a row, gave up.
+  Usually points to a Firebase project / network misconfig.
+
+**Disabling the worker** (debug only):
+```
+PUSH_OUTBOX_WORKER_DISABLED=1
+```
+Settlement keeps writing outbox rows; the api just doesn't dispatch.
+Use to bisect "is the push pipeline cause of X" — but remember to
+flip back on, otherwise the table grows.
+
+**Client-side wiring** (separate manual step) lives in
+[`apps/mobile-android/.../fcm/README.md`](../apps/mobile-android/app/src/main/java/cc/oddzilla/app/fcm/README.md)
+— `~15 minutes of work after a Firebase project exists`. Server side
+keeps draining (graceful-idle) until then.
 
 ## OZ demo currency backfill
 

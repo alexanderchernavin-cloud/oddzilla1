@@ -40,6 +40,7 @@ import adminFeSettingsRoutes from "./modules/admin/fe-settings.js";
 import adminCompetitorsRoutes from "./modules/admin/competitors.js";
 import adminTournamentsRoutes from "./modules/admin/tournaments.js";
 import adminMonitoringRoutes, { startMonitoringSampler } from "./modules/admin/monitoring.js";
+import adminDeployRoutes from "./modules/admin/deploy.js";
 import communityRoutes from "./modules/community/routes.js";
 import communityAvatarRoutes from "./modules/community/avatars.js";
 import communityAnalysesRoutes from "./modules/community/analyses.js";
@@ -58,6 +59,9 @@ import devicesRoutes from "./modules/devices/routes.js";
 import liveChatRoutes from "./modules/live-chat/routes.js";
 import { startMatchWatcher } from "./modules/live-chat/match-watcher.js";
 import riskzillaRoutes from "./modules/admin/riskzilla/routes.js";
+import zillapassUserRoutes from "./modules/zillapass/routes.js";
+import adminZillapassRoutes from "./modules/admin/zillapass.js";
+import { startPushOutboxWorker, type PushWorkerHandle } from "./modules/push/worker.js";
 import { ApiError } from "./lib/errors.js";
 
 const env = loadEnv();
@@ -237,6 +241,7 @@ await app.register(adminFeSettingsRoutes);
 await app.register(adminCompetitorsRoutes);
 await app.register(adminTournamentsRoutes);
 await app.register(adminMonitoringRoutes);
+await app.register(adminDeployRoutes);
 await app.register(communityRoutes);
 await app.register(communityAvatarRoutes);
 await app.register(communityAnalysesRoutes);
@@ -253,6 +258,8 @@ await app.register(zillaflashRoutes);
 await app.register(devicesRoutes);
 await app.register(liveChatRoutes);
 await app.register(riskzillaRoutes);
+await app.register(zillapassUserRoutes);
+await app.register(adminZillapassRoutes);
 
 app.get("/", async () => ({ service: "oddzilla-api", status: "ok" }));
 
@@ -266,6 +273,19 @@ app.get("/", async () => ({ service: "oddzilla-api", status: "ok" }));
 let matchWatcherHandle: { close: () => Promise<void> } | null = null;
 if (process.env.LIVE_CHAT_WATCHER_DISABLED !== "1") {
   matchWatcherHandle = await startMatchWatcher(app, { redisUrl: env.REDIS_URL });
+}
+
+// Push-notification outbox drainer. Subscribes via postgres LISTEN to
+// the `push_outbox` channel (fired by services/settlement on winning
+// ticket commits) and dispatches via Firebase Admin SDK. When
+// FIREBASE_SERVICE_ACCOUNT_PATH / GOOGLE_APPLICATION_CREDENTIALS is
+// unset the worker still runs but marks rows with last_error=
+// 'firebase_disabled' so the table doesn't grow unbounded. Set
+// PUSH_OUTBOX_WORKER_DISABLED=1 to skip entirely (for future
+// multi-instance deploys where only one container should drain).
+let pushWorkerHandle: PushWorkerHandle | null = null;
+if (process.env.PUSH_OUTBOX_WORKER_DISABLED !== "1") {
+  pushWorkerHandle = await startPushOutboxWorker(app);
 }
 
 // ─── Boot ───────────────────────────────────────────────────────────────────
@@ -300,6 +320,13 @@ async function shutdown() {
       await matchWatcherHandle.close();
     } catch (err) {
       app.log.warn({ err: (err as Error).message }, "watcher shutdown error");
+    }
+  }
+  if (pushWorkerHandle) {
+    try {
+      await pushWorkerHandle.close();
+    } catch (err) {
+      app.log.warn({ err: (err as Error).message }, "push worker shutdown error");
     }
   }
   await app.close();

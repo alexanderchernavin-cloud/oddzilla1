@@ -21,7 +21,9 @@ export interface SessionUser {
   status: "active" | "blocked" | "pending_kyc";
   kycStatus: "none" | "pending" | "approved" | "rejected";
   displayName: string | null;
+  nickname: string | null;
   countryCode: string | null;
+  sportOrder: string[] | null;
 }
 
 /**

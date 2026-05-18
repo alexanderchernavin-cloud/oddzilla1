@@ -1,10 +1,3 @@
-// FcmService.kt — MOVE TO src/main/java/cc/oddzilla/app/fcm/FcmService.kt
-// (drop the .example suffix) once a Firebase project is wired up.
-// See app/src/main/java/cc/oddzilla/app/fcm/README.md for the full
-// 5-step setup; the file lives as .example until then so the build
-// doesn't depend on Firebase deps that aren't yet on the classpath.
-
-/*
 package cc.oddzilla.app.fcm
 
 import android.app.NotificationChannel
@@ -22,16 +15,30 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
+// FCM message handler. Registered in AndroidManifest.xml under
+// <application>. Receives push payloads built by services/api's
+// push-outbox worker (services/api/src/modules/push/render.ts) — the
+// channel id below must match the worker's android.notification.channelId.
+//
+// Lifecycle notes:
+//   • onNewToken fires when FCM rotates the token (app reinstall,
+//     data clear, vendor rotation). We re-register so user_devices
+//     points at the live token. Best-effort — failures retry on the
+//     next foreground via PushBootstrap.registerPushIfLoggedIn().
+//
+//   • onMessageReceived is invoked when the app is foregrounded OR
+//     when the inbound message has BOTH `notification` AND `data`
+//     blocks (which our server-side dispatch always sends; see
+//     services/api/src/modules/push/worker.ts). For purely
+//     `notification`-only payloads with the app backgrounded, FCM
+//     auto-posts the tray notification and this method is NOT called.
+
 class FcmService : FirebaseMessagingService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val channelId = "oddzilla-default"
 
     override fun onNewToken(token: String) {
-        // Register the new token with the API. The endpoint is
-        // idempotent and revokes the same token on any other user
-        // (defends against hand-me-down phones). Failures retry on
-        // next app foreground via DevicesRepository.register().
         val deps = (application as OddzillaApp).deps
         scope.launch {
             runCatching { deps.devicesRepository.register(token) }
@@ -41,7 +48,7 @@ class FcmService : FirebaseMessagingService() {
     override fun onMessageReceived(message: RemoteMessage) {
         val title = message.notification?.title ?: message.data["title"] ?: "Oddzilla"
         val body = message.notification?.body ?: message.data["body"] ?: return
-        val deepLink = message.data["deepLink"]   // e.g. "match/12345" or "bets"
+        val deepLink = message.data["deepLink"]
         ensureChannel()
         val notification = NotificationCompat.Builder(this, channelId)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
@@ -50,6 +57,9 @@ class FcmService : FirebaseMessagingService() {
             .setAutoCancel(true)
             .build()
         val nm = ContextCompat.getSystemService(this, NotificationManager::class.java)
+        // Tag-by-deepLink so repeat pushes for the same target collapse
+        // instead of stacking (e.g. two wins on the same ticket via a
+        // re-settle generation would otherwise post twice).
         nm?.notify(deepLink?.hashCode() ?: 0, notification)
     }
 
@@ -67,4 +77,3 @@ class FcmService : FirebaseMessagingService() {
         nm.createNotificationChannel(channel)
     }
 }
-*/

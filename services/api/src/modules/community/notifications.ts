@@ -66,6 +66,8 @@ const TYPE_TO_PREF: Record<NotificationType, keyof typeof DEFAULT_PREFS> = {
   achievement_unlocked: "prefAchievementsRewards",
   level_up: "prefAchievementsRewards",
   loot_acquired: "prefAchievementsRewards",
+  bet_won: "prefBetSettlements",
+  bet_cashed_out: "prefBetSettlements",
 };
 
 // Defaults must mirror the column defaults in the migration. A
@@ -78,6 +80,7 @@ const DEFAULT_PREFS = {
   prefCompetitionUpdatesSet: false,
   prefCommunityHighlights: true,
   prefAchievementsRewards: true,
+  prefBetSettlements: true,
   privacyShowWinLossRecord: true,
   privacyAllowProfileDiscovery: true,
 } as const;
@@ -123,6 +126,7 @@ type CachedPrefs = {
   prefCompetitionUpdatesSet: boolean;
   prefCommunityHighlights: boolean;
   prefAchievementsRewards: boolean;
+  prefBetSettlements: boolean;
   privacyShowWinLossRecord: boolean;
   privacyAllowProfileDiscovery: boolean;
 };
@@ -248,6 +252,7 @@ export async function emitNotification(
         prefCompetitionUpdatesSet: userPreferences.prefCompetitionUpdatesSet,
         prefCommunityHighlights: userPreferences.prefCommunityHighlights,
         prefAchievementsRewards: userPreferences.prefAchievementsRewards,
+        prefBetSettlements: userPreferences.prefBetSettlements,
         privacyShowWinLossRecord: userPreferences.privacyShowWinLossRecord,
         privacyAllowProfileDiscovery:
           userPreferences.privacyAllowProfileDiscovery,
@@ -373,6 +378,7 @@ const prefsBody = z
         competitionUpdates: z.boolean().optional(),
         communityHighlights: z.boolean().optional(),
         achievementsRewards: z.boolean().optional(),
+        betSettlements: z.boolean().optional(),
       })
       .strict()
       .optional(),
@@ -414,6 +420,7 @@ async function loadPreferences(
       competitionUpdatesManuallySet: prefs.prefCompetitionUpdatesSet,
       communityHighlights: prefs.prefCommunityHighlights,
       achievementsRewards: prefs.prefAchievementsRewards,
+      betSettlements: prefs.prefBetSettlements,
     },
     privacy: {
       sharePublicly: u.ticketsPublic,
@@ -624,6 +631,8 @@ export default async function communityNotificationsRoutes(
           prefPatch.prefCommunityHighlights = n.communityHighlights;
         if (n.achievementsRewards !== undefined)
           prefPatch.prefAchievementsRewards = n.achievementsRewards;
+        if (n.betSettlements !== undefined)
+          prefPatch.prefBetSettlements = n.betSettlements;
       }
       if (body.privacy) {
         if (body.privacy.showWinLossRecord !== undefined)

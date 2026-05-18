@@ -2,14 +2,20 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useState, useTransition, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  useTransition,
+  type ReactNode,
+} from "react";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { Wordmark } from "@/components/ui/monogram";
 import { I } from "@/components/ui/icons";
 import { LiveDot } from "@/components/ui/primitives";
 import { TierMark, isFeaturedTier } from "@/components/ui/tier-mark";
 import { clientApi } from "@/lib/api-client";
-import { orderSportsForChips } from "@/lib/sport-order";
+import { orderSportsForSidebar } from "@/lib/sport-order";
 import { useTranslations } from "@/lib/i18n";
 import { ThemeToggle } from "./theme-toggle";
 
@@ -42,9 +48,19 @@ interface SidebarProps {
   liveCounts: Record<string, number>;
   signedIn: boolean;
   isAdmin: boolean;
+  // Bettor's persisted sport order from /auth/me. NULL = render the
+  // default (TOP_SPORT_SLUGS pinned + alphabetical) order. Signed-out
+  // users always get NULL here.
+  userSportOrder: string[] | null;
 }
 
-export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps) {
+export function Sidebar({
+  sports,
+  liveCounts,
+  signedIn,
+  isAdmin,
+  userSportOrder,
+}: SidebarProps) {
   const pathname = usePathname() ?? "/";
   const searchParams = useSearchParams();
   const tShell = useTranslations("shell");
@@ -153,49 +169,16 @@ export function Sidebar({ sports, liveCounts, signedIn, isAdmin }: SidebarProps)
         label={tShell("community")}
       />
 
-      <SectionLabel>{tShell("sports")}</SectionLabel>
-      {orderSports(sports).map((s) => {
-        const sportActive = isActive(`/sport/${s.slug}`);
-        const expanded = sportActive && s.slug === activeSportSlug;
-        const tournaments = tournamentsBySport[s.slug];
-        return (
-          <div key={s.slug}>
-            <Item
-              href={`/sport/${s.slug}`}
-              icon={<SportGlyph sport={s.slug} size={16} />}
-              active={sportActive && activeTournamentId == null}
-              label={s.name}
-              tag={liveCounts[s.slug] ? String(liveCounts[s.slug]) : undefined}
-            />
-            {expanded && tournaments && tournaments.length > 0 && (
-              <div
-                style={{
-                  marginLeft: 22,
-                  paddingLeft: 10,
-                  borderLeft: "1px solid var(--hairline)",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 2,
-                  marginTop: 2,
-                  marginBottom: 4,
-                }}
-              >
-                {tournaments.map((t) => {
-                  const active = activeTournamentId === String(t.id);
-                  return (
-                    <TournamentItem
-                      key={t.id}
-                      sportSlug={s.slug}
-                      tournament={t}
-                      active={active}
-                    />
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        );
-      })}
+      <SportsSection
+        sports={sports}
+        liveCounts={liveCounts}
+        userSportOrder={userSportOrder}
+        signedIn={signedIn}
+        activeSportSlug={activeSportSlug}
+        activeTournamentId={activeTournamentId}
+        isActive={isActive}
+        tournamentsBySport={tournamentsBySport}
+      />
 
       <SectionLabel>{tShell("account")}</SectionLabel>
       {signedIn ? (
@@ -299,18 +282,20 @@ function extractSportSlug(pathname: string): string | null {
   return m && m[1] ? m[1] : null;
 }
 
-// Sidebar sport ordering: flagship esports pinned on top, everything
-// else alphabetical below. The shared helper from lib/sport-order
-// also filters out the bot leagues defensively.
-function orderSports(sports: SportItem[]): SportItem[] {
-  return orderSportsForChips(sports);
-}
-
-function SectionLabel({ children }: { children: ReactNode }) {
+function SectionLabel({
+  children,
+  trailing,
+}: {
+  children: ReactNode;
+  trailing?: ReactNode;
+}) {
   return (
     <div
       className="mono"
       style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
         padding: "14px 10px 6px",
         fontSize: 10,
         letterSpacing: "0.14em",
@@ -319,9 +304,320 @@ function SectionLabel({ children }: { children: ReactNode }) {
         fontWeight: 600,
       }}
     >
-      {children}
+      <span style={{ flex: 1 }}>{children}</span>
+      {trailing}
     </div>
   );
+}
+
+// Sports section with built-in customisation mode. Signed-in bettors
+// can toggle edit mode via a gear icon in the section label, reorder
+// each sport with up/down buttons, and reset to defaults. Order is
+// persisted server-side via PUT /users/me/sport-order; the response
+// shape is ignored — the source of truth during the editing session is
+// the local `order` state, and the next page render re-hydrates from
+// /auth/me. Signed-out users see the section without the gear (no
+// preference to save against).
+function SportsSection({
+  sports,
+  liveCounts,
+  userSportOrder,
+  signedIn,
+  activeSportSlug,
+  activeTournamentId,
+  isActive,
+  tournamentsBySport,
+}: {
+  sports: SportItem[];
+  liveCounts: Record<string, number>;
+  userSportOrder: string[] | null;
+  signedIn: boolean;
+  activeSportSlug: string | null;
+  activeTournamentId: string | null;
+  isActive: (href: string) => boolean;
+  tournamentsBySport: Record<string, Tournament[]>;
+}) {
+  const tShell = useTranslations("shell");
+  const [editing, setEditing] = useState(false);
+
+  // Local override of the user's saved slug order. Initialized from
+  // the server prop, and updated optimistically when the user arrows
+  // / resets. Stays sticky across the edit-mode toggle so pressing
+  // Save doesn't visually revert. An earlier shape had `editing` in
+  // a resync useEffect's deps — when Save flipped editing to false,
+  // the effect re-ran and overwrote local state with the (still-stale,
+  // since the page hadn't re-fetched /auth/me) prop. The cleaner model
+  // here is "localOrder is the source of truth for what we render;
+  // the prop just seeds it and reseeds when the prop genuinely
+  // changes (e.g. another tab edited)".
+  const [localOrder, setLocalOrder] = useState<string[] | null>(
+    userSportOrder,
+  );
+
+  useEffect(() => {
+    setLocalOrder(userSportOrder);
+  }, [userSportOrder]);
+
+  const renderList = useMemo(
+    () => orderSportsForSidebar(sports, localOrder),
+    [sports, localOrder],
+  );
+
+  function persist(next: string[] | null) {
+    clientApi("/users/me/sport-order", {
+      method: "PUT",
+      body: JSON.stringify({ order: next }),
+    }).catch(() => {
+      // Persistence failure is non-fatal — the local order still works
+      // for this session. Errors surface in the network log; we don't
+      // toast because the user's mental model is "I clicked an arrow",
+      // not "I issued a network request".
+    });
+  }
+
+  function move(index: number, dir: -1 | 1) {
+    const swapWith = index + dir;
+    if (swapWith < 0 || swapWith >= renderList.length) return;
+    const next = renderList.slice();
+    [next[index], next[swapWith]] = [next[swapWith]!, next[index]!];
+    const slugs = next.map((s) => s.slug);
+    setLocalOrder(slugs);
+    persist(slugs);
+  }
+
+  function reset() {
+    setLocalOrder(null);
+    persist(null);
+  }
+
+  const trailing = signedIn ? (
+    editing ? (
+      <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+        <button
+          type="button"
+          onClick={reset}
+          className="mono"
+          title={tShell("resetSports")}
+          aria-label={tShell("resetSports")}
+          style={{
+            background: "transparent",
+            border: 0,
+            color: "var(--fg-muted)",
+            fontSize: 10,
+            letterSpacing: "0.14em",
+            textTransform: "uppercase",
+            fontWeight: 600,
+            padding: "2px 6px",
+            borderRadius: 4,
+            cursor: "pointer",
+          }}
+        >
+          {tShell("resetSports")}
+        </button>
+        <button
+          type="button"
+          onClick={() => setEditing(false)}
+          className="mono"
+          title={tShell("saveSportOrder")}
+          aria-label={tShell("saveSportOrder")}
+          style={{
+            background: "var(--fg)",
+            color: "var(--bg)",
+            border: 0,
+            fontSize: 10,
+            letterSpacing: "0.14em",
+            textTransform: "uppercase",
+            fontWeight: 600,
+            padding: "2px 8px",
+            borderRadius: 4,
+            cursor: "pointer",
+          }}
+        >
+          {tShell("saveSportOrder")}
+        </button>
+      </div>
+    ) : (
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        title={tShell("customizeSports")}
+        aria-label={tShell("customizeSports")}
+        style={{
+          background: "transparent",
+          border: 0,
+          color: "var(--fg-dim)",
+          padding: 2,
+          borderRadius: 4,
+          cursor: "pointer",
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <I.Gear size={12} />
+      </button>
+    )
+  ) : null;
+
+  return (
+    <>
+      <SectionLabel trailing={trailing}>{tShell("sports")}</SectionLabel>
+      {renderList.map((s, idx) => {
+        if (editing) {
+          return (
+            <SportEditRow
+              key={s.slug}
+              sport={s}
+              canMoveUp={idx > 0}
+              canMoveDown={idx < renderList.length - 1}
+              onMoveUp={() => move(idx, -1)}
+              onMoveDown={() => move(idx, 1)}
+              upLabel={tShell("moveSportUp")}
+              downLabel={tShell("moveSportDown")}
+            />
+          );
+        }
+        const sportActive = isActive(`/sport/${s.slug}`);
+        const expanded = sportActive && s.slug === activeSportSlug;
+        const tournaments = tournamentsBySport[s.slug];
+        return (
+          <div key={s.slug}>
+            <Item
+              href={`/sport/${s.slug}`}
+              icon={<SportGlyph sport={s.slug} size={16} />}
+              active={sportActive && activeTournamentId == null}
+              label={s.name}
+              tag={liveCounts[s.slug] ? String(liveCounts[s.slug]) : undefined}
+            />
+            {expanded && tournaments && tournaments.length > 0 && (
+              <div
+                style={{
+                  marginLeft: 22,
+                  paddingLeft: 10,
+                  borderLeft: "1px solid var(--hairline)",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 2,
+                  marginTop: 2,
+                  marginBottom: 4,
+                }}
+              >
+                {tournaments.map((t) => {
+                  const active = activeTournamentId === String(t.id);
+                  return (
+                    <TournamentItem
+                      key={t.id}
+                      sportSlug={s.slug}
+                      tournament={t}
+                      active={active}
+                    />
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+// One sport row in customisation mode. The full row no longer
+// navigates — instead it carries a pair of up/down arrow buttons that
+// the user clicks to reorder. Disabled state matches the row's
+// position in the list (top row can't move up, etc.).
+//
+// Layout note: in edit mode the row extends 8 px past the section's
+// right padding (negative marginRight) so the up/down stack can use
+// the sidebar's right gutter. The slight misalignment with the
+// non-edit rows above/below is intentional and only visible while
+// editing — it buys the sport-name column ~20 px of width, which is
+// enough to keep "League of Legends" / "Counter-Strike 2 Duels"
+// from truncating.
+function SportEditRow({
+  sport,
+  canMoveUp,
+  canMoveDown,
+  onMoveUp,
+  onMoveDown,
+  upLabel,
+  downLabel,
+}: {
+  sport: SportItem;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  upLabel: string;
+  downLabel: string;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "8px 0 8px 10px",
+        marginRight: -8,
+        borderRadius: 8,
+        background: "transparent",
+        color: "var(--fg-muted)",
+        fontSize: 13,
+      }}
+    >
+      <SportGlyph sport={sport.slug} size={16} />
+      <span
+        style={{
+          flex: 1,
+          minWidth: 0,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {sport.name}
+      </span>
+      <div style={{ display: "inline-flex", gap: 2, flexShrink: 0 }}>
+        <button
+          type="button"
+          onClick={onMoveUp}
+          disabled={!canMoveUp}
+          title={upLabel}
+          aria-label={`${upLabel}: ${sport.name}`}
+          style={moveBtnStyle(canMoveUp)}
+        >
+          <I.ChevU size={12} />
+        </button>
+        <button
+          type="button"
+          onClick={onMoveDown}
+          disabled={!canMoveDown}
+          title={downLabel}
+          aria-label={`${downLabel}: ${sport.name}`}
+          style={moveBtnStyle(canMoveDown)}
+        >
+          <I.ChevD size={12} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function moveBtnStyle(enabled: boolean): React.CSSProperties {
+  return {
+    background: "transparent",
+    border: 0,
+    color: enabled ? "var(--fg-muted)" : "var(--fg-dim)",
+    width: 18,
+    height: 22,
+    padding: 0,
+    borderRadius: 4,
+    cursor: enabled ? "pointer" : "not-allowed",
+    opacity: enabled ? 1 : 0.35,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+  };
 }
 
 function TournamentItem({

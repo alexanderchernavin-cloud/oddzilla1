@@ -7,6 +7,21 @@ plugins {
     alias(libs.plugins.kotlinSerialization)
 }
 
+// FCM activation gate. The Google Services Gradle plugin parses
+// google-services.json and generates the string resources Firebase's
+// auto-init reads at runtime. The plugin fails the build when the
+// JSON is missing, so we only apply it when the file is present —
+// fresh checkouts (no Firebase project yet) still build cleanly; a
+// drop-in of google-services.json at apps/mobile-android/app/
+// (gitignored per the root .gitignore) flips real FCM dispatch on
+// without any further code edits. Runtime branches in
+// cc.oddzilla.app.fcm.PushBootstrap gate on BuildConfig.FIREBASE_ENABLED.
+val googleServicesJson = file("google-services.json")
+val firebaseEnabled = googleServicesJson.exists()
+if (firebaseEnabled) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 // --- Version stamping ----------------------------------------------------
 // Source of truth lives in ../version.properties so the release script
 // can bump it without touching gradle files.
@@ -48,6 +63,12 @@ android {
         buildConfigField("String", "WS_URL", "\"wss://oddzilla.cc/ws\"")
         buildConfigField("String", "VERSION_MANIFEST_URL", "\"https://oddzilla.cc/app/version.json\"")
         buildConfigField("String", "ORIGIN_HEADER", "\"https://oddzilla.cc\"")
+        // Set at configuration time from the google-services.json
+        // presence check above. Read at runtime by PushBootstrap to
+        // skip every Firebase call cleanly when the SDK wasn't
+        // initialized — calling FirebaseMessaging.getInstance() without
+        // initialization throws IllegalStateException.
+        buildConfigField("boolean", "FIREBASE_ENABLED", "$firebaseEnabled")
     }
 
     signingConfigs {
@@ -137,6 +158,16 @@ dependencies {
     implementation(libs.retrofit.kotlinx.serialization)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.coroutines.play.services)
+
+    // Firebase Cloud Messaging. Pulled in unconditionally so the
+    // dependency graph is stable; the Google Services Gradle plugin
+    // (applied above only when google-services.json is present)
+    // generates the resources the SDK reads at runtime auto-init.
+    // Without the JSON the FirebaseInitProvider silently no-ops and
+    // PushBootstrap takes the BuildConfig.FIREBASE_ENABLED=false path.
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging.ktx)
 
     implementation(libs.coil.compose)
 

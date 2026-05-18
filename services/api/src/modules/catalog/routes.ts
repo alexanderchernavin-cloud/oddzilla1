@@ -686,6 +686,14 @@ export default async function catalogRoutes(app: FastifyInstance) {
   // key on success).
   app.get("/catalog/sports", async () => {
     return cached(app.redis, SPORTS_CACHE_KEY, SPORTS_CACHE_TTL_SECONDS, async () => {
+      // Drops sports with zero currently-bookable matches. A sport
+      // with no live or upcoming matches (within the 6-h time gate
+      // `hasActiveMarket` enforces) shouldn't take up real estate in
+      // the sidebar — there's nothing to bet on. 60-s SPORTS_CACHE
+      // TTL means a sport reappears within a minute of its first
+      // match flipping to bookable. Mirrors the join chain in
+      // /catalog/live-counts: sports → categories → tournaments →
+      // matches → markets, with the same hidden-tournament gate.
       const rows = await app.db
         .select({
           id: sports.id,
@@ -697,7 +705,29 @@ export default async function catalogRoutes(app: FastifyInstance) {
           brandColor: sports.brandColor,
         })
         .from(sports)
-        .where(eq(sports.active, true))
+        .where(
+          and(
+            eq(sports.active, true),
+            sql`EXISTS (
+              SELECT 1
+                FROM categories c
+                JOIN tournaments t ON t.category_id = c.id
+                                  AND t.name NOT IN ('Integration testing')
+                JOIN matches m ON m.tournament_id = t.id
+               WHERE c.sport_id = ${sports.id}
+                 AND (
+                   m.status = 'live'
+                   OR (m.status = 'not_started'
+                       AND m.scheduled_at > NOW() - INTERVAL '6 hours')
+                 )
+                 AND EXISTS (
+                   SELECT 1 FROM markets mk
+                    WHERE mk.match_id = m.id
+                      AND mk.status = 1
+                 )
+            )`,
+          ),
+        )
         .orderBy(sports.slug);
       return { sports: rows };
     });
@@ -1260,13 +1290,10 @@ export default async function catalogRoutes(app: FastifyInstance) {
     }
     const groups = Array.from(scopeMap.values()).sort((a, b) => a.order - b.order);
 
-    // Per-scope admin ordering. Three scopes live in fe_market_display_order:
-    //   match — markets without a `map` specifier (the Match scope group)
-    //   map   — markets with a `map` specifier; one ordering shared across
-    //           every Map N group (Map 1, Map 2, …)
-    //   top   — curated highlights, surfaced as a synthetic "Top" tab; a
-    //           market id only appears here if the admin added it. The
-    //           materialised group is built below by filtering marketList.
+    // Per-scope admin ordering. Scope values live directly in
+    // fe_market_display_order and are addressed the same way the
+    // storefront tabs are: `match`, `top`, or `map_<N>`. Each Map N tab
+    // gets its own independently configurable list (migration 0057).
     const orderRows = await app.db
       .select({
         scope: feMarketDisplayOrder.scope,
@@ -1276,15 +1303,16 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .from(feMarketDisplayOrder)
       .where(eq(feMarketDisplayOrder.sportId, match.sportId));
 
-    const orderByScope: Record<"match" | "map" | "top", Map<number, number>> = {
-      match: new Map(),
-      map: new Map(),
-      top: new Map(),
-    };
+    const orderByScope = new Map<string, Map<number, number>>();
     for (const r of orderRows) {
-      const bucket = orderByScope[r.scope as keyof typeof orderByScope];
-      if (bucket) bucket.set(r.providerMarketId, r.displayOrder);
+      let bucket = orderByScope.get(r.scope);
+      if (!bucket) {
+        bucket = new Map<number, number>();
+        orderByScope.set(r.scope, bucket);
+      }
+      bucket.set(r.providerMarketId, r.displayOrder);
     }
+    const EMPTY_ORDER = new Map<number, number>();
 
     function sortKey(orderMap: Map<number, number>, m: MarketRow): [number, number, number] {
       const admin = orderMap.get(m.providerMarketId);
@@ -1306,10 +1334,10 @@ export default async function catalogRoutes(app: FastifyInstance) {
       });
     }
     for (const g of groups) {
-      // Map groups (id=`map_N`) read the shared `map` ordering;
-      // the Match group reads `match`.
-      const orderMap =
-        g.id.startsWith("map_") ? orderByScope.map : orderByScope.match;
+      // Group id is the same string we store in fe_market_display_order
+      // (match / map_<N>), so a single Map.get covers both Match and
+      // every Map N tab. Missing rows = default order.
+      const orderMap = orderByScope.get(g.id) ?? EMPTY_ORDER;
       applySort(orderMap, g.markets);
     }
 
@@ -1320,14 +1348,15 @@ export default async function catalogRoutes(app: FastifyInstance) {
     // copy) so the Top tab doesn't double up on totals/handicaps that
     // exist for both Match and Map 1. Insertion order matches the admin
     // configuration.
-    if (orderByScope.top.size > 0) {
+    const topOrder = orderByScope.get("top");
+    if (topOrder && topOrder.size > 0) {
       const topGroup = {
         id: "top",
         label: "Top",
         order: -1, // render before Match in the scope-tabs strip
         markets: [] as MarketRow[],
       };
-      const topIds = Array.from(orderByScope.top.entries()).sort(
+      const topIds = Array.from(topOrder.entries()).sort(
         (a, b) => a[1] - b[1],
       );
       for (const [providerMarketId] of topIds) {

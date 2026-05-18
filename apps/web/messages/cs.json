@@ -65,7 +65,12 @@
     "responsibleGambling": "Sázejte s rozvahou.",
     "ageNotice": "18+ · BeGambleAware.org",
     "language": "Jazyk",
-    "languageSwitcher": "Změnit jazyk"
+    "languageSwitcher": "Změnit jazyk",
+    "customizeSports": "Upravit pořadí sportů",
+    "saveSportOrder": "Uložit",
+    "resetSports": "Obnovit",
+    "moveSportUp": "Posunout nahoru",
+    "moveSportDown": "Posunout dolů"
   },
   "wallet": {
     "title": "Peněženka",
@@ -112,6 +117,7 @@
     "placing": "Sázím…",
     "clearSlip": "Smazat tiket",
     "removeLeg": "Odstranit sázku",
+    "open": "Otevřít",
     "openMatch": "Otevřít zápas",
     "legs": "{count, plural, one {# sázka} few {# sázky} other {# sázek}}",
     "minStake": "Minimální vklad {amount} {currency}",

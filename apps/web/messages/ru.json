@@ -65,7 +65,12 @@
     "responsibleGambling": "Играйте ответственно.",
     "ageNotice": "18+ · BeGambleAware.org",
     "language": "Язык",
-    "languageSwitcher": "Сменить язык"
+    "languageSwitcher": "Сменить язык",
+    "customizeSports": "Настроить порядок видов спорта",
+    "saveSportOrder": "Сохранить",
+    "resetSports": "Сбросить",
+    "moveSportUp": "Поднять",
+    "moveSportDown": "Опустить"
   },
   "wallet": {
     "title": "Кошелёк",
@@ -112,6 +117,7 @@
     "placing": "Принимаем…",
     "clearSlip": "Очистить купон",
     "removeLeg": "Убрать исход",
+    "open": "Открыть",
     "openMatch": "Открыть матч",
     "legs": "{count, plural, one {# исход} few {# исхода} many {# исходов} other {# исхода}}",
     "minStake": "Минимальная ставка {amount} {currency}",

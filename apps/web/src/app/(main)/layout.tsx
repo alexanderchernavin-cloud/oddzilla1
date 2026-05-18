@@ -7,12 +7,15 @@ import { MobileShellOverlay } from "@/components/shell/mobile-shell-overlay";
 import { ShellContainer } from "@/components/shell/shell-container";
 import { SidePanels } from "@/components/shell/side-panels";
 import { TopBarSearch } from "@/components/shell/top-bar-search";
+import { ZillapassIndicator } from "@/components/shell/zillapass-indicator";
 import { MatchPageProvider } from "@/lib/match-page-context";
 import { SidePanelProvider } from "@/lib/side-panel";
 import { CombiBoostConfigProvider } from "@/lib/combi-boost-config";
 import { SportLogosProvider } from "@/lib/sport-logos";
 import { NotificationProvider } from "@/lib/notifications";
+import { SessionUserProvider } from "@/lib/session-user";
 import { WalletProvider } from "@/lib/wallets";
+import { ZillapassProvider } from "@/lib/zillapass";
 import { getSessionUser } from "@/lib/auth";
 import { serverApi } from "@/lib/server-fetch";
 import {
@@ -54,6 +57,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
 
   return (
     <MobileDrawersProvider>
+      <SessionUserProvider userId={user?.id ?? null}>
       <MatchPageProvider>
       <SidePanelProvider>
       <CombiBoostConfigProvider config={combiBoostConfig}>
@@ -62,6 +66,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
       >
       <NotificationProvider enabled={Boolean(user)}>
       <WalletProvider signedIn={Boolean(user)}>
+      <ZillapassProvider>
       <ShellContainer>
         <TopBar
           signedIn={Boolean(user)}
@@ -72,6 +77,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
           liveCounts={liveCounts}
           signedIn={Boolean(user)}
           isAdmin={user?.role === "admin"}
+          userSportOrder={user?.sportOrder ?? null}
         />
         {/*
           The main cell spans 1fr so the shell fills any viewport, but the
@@ -82,7 +88,10 @@ export default async function MainLayout({ children }: { children: React.ReactNo
         <main className="oz-main">
           <div className="oz-main-inner">
             <div className="oz-shell-search">
-              <TopBarSearch />
+              <div className="oz-shell-search-row">
+                <TopBarSearch />
+                <ZillapassIndicator />
+              </div>
             </div>
             {children}
           </div>
@@ -96,12 +105,14 @@ export default async function MainLayout({ children }: { children: React.ReactNo
           they never overlap the shell on a normal laptop / 1080p
           monitor; at the threshold each band is ≥410px wide. */}
       <SidePanels />
+      </ZillapassProvider>
       </WalletProvider>
       </NotificationProvider>
       </SportLogosProvider>
       </CombiBoostConfigProvider>
       </SidePanelProvider>
       </MatchPageProvider>
+      </SessionUserProvider>
     </MobileDrawersProvider>
   );
 }

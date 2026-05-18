@@ -29,6 +29,23 @@ const passwordBody = z.object({
   newPassword: z.string().min(8).max(256),
 });
 
+// Per-bettor sidebar sport ordering (migration 0056). Slugs match what
+// /catalog/sports surfaces — same shape used everywhere else for sport
+// identifiers, hence the regex. Cap mirrors the DB-level CHECK so a
+// pathological client never inflates the column.
+const sportOrderBody = z.object({
+  order: z
+    .array(
+      z
+        .string()
+        .min(1)
+        .max(64)
+        .regex(/^[a-z0-9-]+$/),
+    )
+    .max(100)
+    .nullable(),
+});
+
 // Tight per-user rate limit on the password endpoint. verifyPassword is
 // intentionally ~50ms per call; without a limit a stolen-cookie attacker
 // can brute-force `currentPassword` while also turning the endpoint into
@@ -119,6 +136,30 @@ export default async function usersRoutes(app: FastifyInstance) {
       return { ok: true };
     },
   );
+
+  // PUT /users/me/sport-order
+  //
+  // Persists the bettor's sidebar sport ordering. Body `{ order: null }`
+  // (or no order key) clears the preference back to the default sort
+  // — same effect as the "Reset" button in the sidebar edit mode.
+  // Duplicate slugs are deduped server-side; the client renderer is
+  // also defensive, but this keeps the row clean for later inspection.
+  app.put("/users/me/sport-order", async (request) => {
+    const u = request.requireAuth();
+    const body = sportOrderBody.parse(request.body);
+
+    const normalized: string[] | null = body.order
+      ? Array.from(new Set(body.order))
+      : null;
+
+    const [updated] = await app.db
+      .update(users)
+      .set({ sportOrder: normalized, updatedAt: new Date() })
+      .where(eq(users.id, u.id))
+      .returning();
+    if (!updated) throw new NotFoundError();
+    return { user: publicize(updated) };
+  });
 }
 
 function publicize(u: typeof users.$inferSelect) {
@@ -130,5 +171,6 @@ function publicize(u: typeof users.$inferSelect) {
     kycStatus: u.kycStatus,
     displayName: u.displayName,
     countryCode: u.countryCode,
+    sportOrder: u.sportOrder ?? null,
   };
 }

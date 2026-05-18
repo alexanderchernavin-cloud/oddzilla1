@@ -17,6 +17,11 @@ WORKDIR /app/services/api
 RUN pnpm build
 
 FROM base AS runner
+# `git` is needed by the admin/deploy module to enumerate commits +
+# diff between the deployed SHA and origin/main for the /admin/deploy
+# page. Read-only, runs against a bind-mounted .git/ dir on the box
+# (no network access from this process). Adds ~5 MiB to the image.
+RUN apk add --no-cache git
 ENV NODE_ENV=production
 COPY --from=builder /app /app
 WORKDIR /app/services/api
