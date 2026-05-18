@@ -491,6 +491,16 @@ body {
     margin-bottom: -54px;
   }
   .oz-shell-search > * { max-width: 500px; }
+  /* Below 1100 px the row is capped at 500 px and the search shares it
+     with the ZillaPass chip. The full "ZillaPass Tasks" label crowds
+     the search placeholder into the chip's edge, so swap to the short
+     "Tasks" form here too (mobile already does this at <= 719 px). */
+  .oz-zillapass-chip-label-wide { display: none; }
+  .oz-zillapass-chip-label-mobile { display: inline; }
+  /* Let the chip give up a few pixels if the row still doesn't fit —
+     the inline minWidth: 132 on the button is the visual floor. */
+  .oz-zillapass-chip { min-width: 0; }
+  .oz-zillapass-chip-button { min-width: 132px; }
 }
 @media (max-width: 719px) {
   /* Mobile reverts to a normal row above the page content — the
