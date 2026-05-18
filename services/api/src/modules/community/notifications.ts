@@ -68,6 +68,11 @@ const TYPE_TO_PREF: Record<NotificationType, keyof typeof DEFAULT_PREFS> = {
   loot_acquired: "prefAchievementsRewards",
   bet_won: "prefBetSettlements",
   bet_cashed_out: "prefBetSettlements",
+  // Global Big Win fan-out rides on Community Highlights — same
+  // category as community_digest / analysis_shared. A user who
+  // silenced highlights for the weekly digest also silences this
+  // event-driven version, which is the right default.
+  big_win_landed: "prefCommunityHighlights",
 };
 
 // Defaults must mirror the column defaults in the migration. A
