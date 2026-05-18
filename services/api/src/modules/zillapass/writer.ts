@@ -201,13 +201,21 @@ export async function nudgeBetPlaced(
       .innerJoin(matches, eq(matches.id, markets.matchId))
       .where(eq(ticketSelections.ticketId, ticketId));
     const row = rows[0];
-    if (!row || row.legCount === 0) return;
+    if (!row) return;
+    // Postgres COUNT(*) returns BIGINT, which postgres-js surfaces as a
+    // string by default — `row.legCount === 1` would compare "1" !== 1
+    // and short-circuit the function, silently dropping every bet-
+    // placement nudge. Coerce both counters to number before any
+    // arithmetic / equality check.
+    const legCount = Number(row.legCount);
+    const liveCount = Number(row.liveCount);
+    if (!Number.isFinite(legCount) || legCount === 0) return;
     // Singles only — a single bet has exactly one leg by construction.
     // 1-leg ⟺ betType='single' (combo / tiple / tippot / betbuilder
     // all enforce min-2-legs at placement time).
-    if (row.legCount !== 1) return;
+    if (legCount !== 1) return;
 
-    const predicateKey = row.liveCount > 0 ? "bets_live" : "bets_prematch";
+    const predicateKey = liveCount > 0 ? "bets_live" : "bets_prematch";
     await incrementByPredicate(app, userId, predicateKey, 1);
     await maybeStampSetCompletion(app, userId);
   } catch (err) {
