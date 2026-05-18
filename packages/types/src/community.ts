@@ -753,7 +753,12 @@ export type NotificationType =
   // Bet settlement (in-app bell). FCM mobile push uses its own
   // outbox path (push_notifications_outbox). See migration 0059.
   | "bet_won"
-  | "bet_cashed_out";
+  | "bet_cashed_out"
+  // Global Big Win fan-out. Fires to every non-bettor authenticated
+  // user when a community ticket clears the per-currency Big Win
+  // profit floor. Rides on the same pref_community_highlights toggle
+  // as community_digest + analysis_shared. See migration 0067.
+  | "big_win_landed";
 
 // Per-type payload schemas. Stored in user_notifications.payload as
 // JSONB; the FE renderer reads them by type. Keep these tight — they
@@ -874,6 +879,26 @@ export interface BetCashedOutPayload {
   numLegs: number;
 }
 
+// Global Big Win fan-out payload. Recipient is anyone OTHER than the
+// bettor; the bettor's own win lands as `bet_won` instead. Money
+// fields are decimal strings (micro units) for the same JSON-precision
+// reason BetWonPayload uses strings. Lockstep with the Go writer in
+// services/settlement/internal/store/big_win.go.
+//
+// `actorNickname` follows the same shape as other actor-driven types
+// (pick_copied, bet_inspired) so the notification panel renders the
+// bettor in bold via the existing `item.actorNickname` path — no
+// renderer branching needed. The Go writer skips fan-out entirely
+// when the bettor's nickname is NULL or `tickets_public` is FALSE,
+// so this is always a non-empty string in production rows.
+export interface BigWinLandedPayload {
+  ticketId: string;
+  actorNickname: string;
+  currency: string;
+  stakeMicro: string;
+  actualPayoutMicro: string;
+}
+
 export type NotificationPayload =
   | PickCopiedPayload
   | BetInspiredPayload
@@ -887,7 +912,8 @@ export type NotificationPayload =
   | LevelUpPayload
   | LootAcquiredPayload
   | BetWonPayload
-  | BetCashedOutPayload;
+  | BetCashedOutPayload
+  | BigWinLandedPayload;
 
 // One row in the GET /community/notifications response. The
 // discriminated payload field is typed loosely (Record) at the

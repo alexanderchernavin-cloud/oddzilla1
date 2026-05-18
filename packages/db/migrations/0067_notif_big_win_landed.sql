@@ -1,0 +1,37 @@
+-- 0067_notif_big_win_landed.sql
+--
+-- Surfaces a fan-out "Big Win landed" bell when any bettor wins big.
+-- Goal: social-proof FOMO — when someone clears the Big Win profit
+-- floor, every other authenticated bettor sees a row in their panel
+-- nudging them toward the Big Wins tab + Apply Same Play.
+--
+-- Why a separate notification_type and not reuse `community_digest`:
+--   • Digest is opt-in weekly batch; Big Win is event-driven, fires
+--     in near real-time after settle. Different cadence, different
+--     pref-gating semantics, different copy. Sharing the enum value
+--     would force the renderer into payload-sniffing.
+--
+-- Pref gating: rides on the existing `pref_community_highlights`
+-- column (same category as analysis_shared + community_digest). No
+-- new pref. Keeping it on Community Highlights means a user who
+-- silenced that channel for the digest also silences the Big Win
+-- fan-out — desirable, since both are "what the community is doing
+-- right now" signals.
+--
+-- Fan-out site: services/settlement (Go) inside SettleTicket tx —
+-- mirrors the bet_won bell pattern from 0059. One INSERT … SELECT
+-- writes one row per non-AI, non-bettor user with the pref ON, with
+-- a NOT EXISTS gate that enforces the 1-hour per-recipient cool-down.
+-- Hits user_notifications_group_idx (user_id, type, group_key,
+-- created_at) for the cool-down probe; no new index needed.
+--
+-- Floor (canonical source: BIG_WIN_PROFIT_MICRO in
+-- services/api/src/modules/community/routes.ts) intentionally matches
+-- the Big Wins feed floor for V1, so the notification fires when the
+-- bettor's win also clears the feed gate. PRD §"Volume reality check"
+-- expects us to retune the notification floor up as activity grows —
+-- a code-side constant in big_win.go, not a SQL/config knob.
+
+-- Postgres requires ALTER TYPE ... ADD VALUE to run outside an
+-- explicit BEGIN/COMMIT; same shape as 0059.
+ALTER TYPE notification_type ADD VALUE IF NOT EXISTS 'big_win_landed';

@@ -619,6 +619,26 @@ func (s *Settler) maybeSettleTicket(ctx context.Context, tx pgx.Tx, ticketID, so
 			s.log.Warn().Err(err).Str("ticket", t.ID).
 				Msg("enqueue bet_won bell notification failed; continuing")
 		}
+		// Global Big Win fan-out. Fires only when profit clears the
+		// per-currency floor (matches the storefront Big Wins feed
+		// gate in V1). Writes one notification row per non-AI, non-
+		// bettor user with pref_community_highlights ON, gated by a
+		// 1-hour per-recipient cool-down. Skips entirely when the
+		// bettor isn't publicly visible — see EnqueueBigWinFanout.
+		// Migration 0067 added the big_win_landed enum value.
+		profit := payout - t.StakeMicro
+		if profit >= store.BigWinFloorMicro(t.Currency) {
+			if err := store.EnqueueBigWinFanout(ctx, tx, store.BigWinFanoutArgs{
+				BettorUserID:      t.UserID,
+				TicketID:          t.ID,
+				Currency:          t.Currency,
+				StakeMicro:        strconv.FormatInt(t.StakeMicro, 10),
+				ActualPayoutMicro: strconv.FormatInt(payout, 10),
+			}); err != nil {
+				s.log.Warn().Err(err).Str("ticket", t.ID).
+					Msg("enqueue big_win fanout failed; continuing")
+			}
+		}
 	}
 
 	// RiskZilla bank update (migration 0037). Decrements open_liability

@@ -365,7 +365,40 @@ export const NOTIFICATION_DISPLAY: Record<NotificationType, NotificationDisplay>
     context: (i) => settlementContext(i.payload),
     category: "Bet Settlements",
   },
+  big_win_landed: {
+    iconKey: "Trophy",
+    // Gold/accent — mirrors the Big Win badge tone on the storefront
+    // cards. Not the green of bet_won (own win) so the panel
+    // visually distinguishes "your win" from "someone else's win".
+    color: "#F59E0B",
+    // `actorNickname` is rendered in bold by the panel; this
+    // headline picks up immediately after it ("Carlos just won
+    // +61 OZ"). Profit = payout − stake; we compute it client-side
+    // rather than denormalise so the payload stays compact.
+    headline: (i) => {
+      const profit = formatProfit(i.payload.stakeMicro, i.payload.actualPayoutMicro);
+      const currency = (i.payload.currency as string | undefined) ?? "";
+      return `just won +${profit}${currency ? ` ${currency}` : ""}`;
+    },
+    context: () => "Apply same play",
+    category: "Community Highlights",
+  },
 };
+
+// Big-Win profit formatter. Computes payout − stake on micro strings
+// (BigInt) to dodge the 2^53 precision ceiling, then formats via the
+// same fromMicroMoney path as the rest of the panel. Returns "?" on
+// either input missing — keeps the panel renderable even when a
+// future migration changes the payload shape.
+function formatProfit(stakeRaw: unknown, payoutRaw: unknown): string {
+  if (typeof stakeRaw !== "string" || typeof payoutRaw !== "string") return "?";
+  try {
+    const profit = BigInt(payoutRaw) - BigInt(stakeRaw);
+    return fromMicroMoney(profit, { decimals: 2 });
+  } catch {
+    return "?";
+  }
+}
 
 // Shared formatter for bet_won + bet_cashed_out. Mirrors the server-
 // side render.ts logic — micro strings parsed as BigInt to avoid the

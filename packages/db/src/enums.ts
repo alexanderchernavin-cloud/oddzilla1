@@ -174,4 +174,8 @@ export const notificationTypeEnum = pgEnum("notification_type", [
   "loot_acquired",
   "bet_won",
   "bet_cashed_out",
+  // Global Big Win fan-out (migration 0067). Fires to every non-bettor
+  // authenticated user when a community ticket clears the per-currency
+  // profit floor. Pref-gated via prefCommunityHighlights.
+  "big_win_landed",
 ]);
