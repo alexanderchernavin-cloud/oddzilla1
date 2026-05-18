@@ -148,6 +148,8 @@ async function buildMeResponse(
       period: t.period,
       rewardKind: t.rewardKind,
       rewardPayload: t.rewardPayload,
+      ctaHref: t.ctaHref,
+      ctaLabel: t.ctaLabel,
       sortOrder: t.sortOrder,
       completedAt: p?.completedAt ? p.completedAt.toISOString() : null,
     };

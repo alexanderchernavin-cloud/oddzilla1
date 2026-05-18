@@ -76,6 +76,8 @@ function CreateForm({
   const [setNumber, setSetNumber] = useState("1");
   const [rewardKind, setRewardKind] = useState("");
   const [rewardPayload, setRewardPayload] = useState("");
+  const [ctaHref, setCtaHref] = useState("");
+  const [ctaLabel, setCtaLabel] = useState("");
   const [sortOrder, setSortOrder] = useState("0");
   const [active, setActive] = useState(true);
 
@@ -104,6 +106,11 @@ function CreateForm({
       setErr("Set number must be a positive integer.");
       return;
     }
+    const ctaHrefTrimmed = ctaHref.trim();
+    if (ctaHrefTrimmed && !/^\/[^\s]*$/.test(ctaHrefTrimmed)) {
+      setErr("CTA link must be a path starting with `/` (e.g. /account/community).");
+      return;
+    }
     let parsedPayload: unknown = null;
     if (rewardPayload.trim().length > 0) {
       try {
@@ -130,6 +137,8 @@ function CreateForm({
               setNumber: setN,
               rewardKind: rewardKind.trim() || null,
               rewardPayload: parsedPayload,
+              ctaHref: ctaHrefTrimmed || null,
+              ctaLabel: ctaLabel.trim() || null,
               sortOrder: sortN || 0,
               active,
             }),
@@ -143,6 +152,8 @@ function CreateForm({
         setPredicateKey("");
         setRewardKind("");
         setRewardPayload("");
+        setCtaHref("");
+        setCtaLabel("");
       } catch (e) {
         setErr(e instanceof ApiFetchError ? e.message : "Create failed");
       }
@@ -196,6 +207,18 @@ function CreateForm({
           value={rewardPayload}
           onChange={setRewardPayload}
           placeholder='{"feature":"cashout"}'
+        />
+        <TextField
+          label="CTA link (path)"
+          value={ctaHref}
+          onChange={setCtaHref}
+          placeholder="/account/community"
+        />
+        <TextField
+          label="CTA label"
+          value={ctaLabel}
+          onChange={setCtaLabel}
+          placeholder="Open profile"
         />
         <NumberField
           label="Sort order"
@@ -252,6 +275,8 @@ function TaskRow({
       ? ""
       : JSON.stringify(task.rewardPayload),
   );
+  const [ctaHref, setCtaHref] = useState(task.ctaHref ?? "");
+  const [ctaLabel, setCtaLabel] = useState(task.ctaLabel ?? "");
   const [sortOrder, setSortOrder] = useState(String(task.sortOrder));
   const [active, setActive] = useState(task.active);
 
@@ -274,6 +299,11 @@ function TaskRow({
     }
     if (!Number.isInteger(setN) || setN < 1) {
       setErr("Set number must be a positive integer.");
+      return;
+    }
+    const ctaHrefTrimmed = ctaHref.trim();
+    if (ctaHrefTrimmed && !/^\/[^\s]*$/.test(ctaHrefTrimmed)) {
+      setErr("CTA link must be a path starting with `/` (e.g. /account/community).");
       return;
     }
     let parsedPayload: unknown = null;
@@ -301,6 +331,8 @@ function TaskRow({
               setNumber: setN,
               rewardKind: rewardKind.trim() || null,
               rewardPayload: parsedPayload,
+              ctaHref: ctaHrefTrimmed || null,
+              ctaLabel: ctaLabel.trim() || null,
               sortOrder: sortN || 0,
               active,
             }),
@@ -377,6 +409,18 @@ function TaskRow({
           label="Reward payload (JSON)"
           value={rewardPayload}
           onChange={setRewardPayload}
+        />
+        <TextField
+          label="CTA link (path)"
+          value={ctaHref}
+          onChange={setCtaHref}
+          placeholder="/account/community"
+        />
+        <TextField
+          label="CTA label"
+          value={ctaLabel}
+          onChange={setCtaLabel}
+          placeholder="Open profile"
         />
         <NumberField
           label="Sort order"

@@ -29,6 +29,16 @@ const slugSchema = z
   .max(60)
   .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "slug_invalid");
 
+// Intra-app deep link rendered on the task card. Path-relative so we
+// don't accidentally render an off-domain anchor an admin pasted by
+// mistake; the storefront treats anything not starting with `/` as
+// untrusted and skips the CTA. Empty string from a cleared admin
+// input field coerces to null below.
+const ctaHrefSchema = z
+  .string()
+  .max(500)
+  .regex(/^\/[^\s]*$/, "cta_href must be a path starting with `/`");
+
 const createBody = z.object({
   slug: slugSchema,
   title: z.string().min(1).max(120),
@@ -41,6 +51,8 @@ const createBody = z.object({
   setNumber: z.number().int().min(1).max(10_000).default(1),
   rewardKind: z.string().max(40).optional().nullable(),
   rewardPayload: z.unknown().optional().nullable(),
+  ctaHref: ctaHrefSchema.optional().nullable(),
+  ctaLabel: z.string().max(40).optional().nullable(),
   active: z.boolean().default(true),
   sortOrder: z.number().int().min(0).max(10_000).default(0),
 });
@@ -64,6 +76,8 @@ function toDto(row: ZillapassTask): ZillapassTaskDto {
     setNumber: row.setNumber,
     rewardKind: row.rewardKind,
     rewardPayload: row.rewardPayload,
+    ctaHref: row.ctaHref,
+    ctaLabel: row.ctaLabel,
     active: row.active,
     sortOrder: row.sortOrder,
     createdAt: row.createdAt.toISOString(),
@@ -98,6 +112,8 @@ export default async function adminZillapassRoutes(app: FastifyInstance) {
           setNumber: body.setNumber,
           rewardKind: body.rewardKind ?? null,
           rewardPayload: body.rewardPayload ?? null,
+          ctaHref: body.ctaHref ?? null,
+          ctaLabel: body.ctaLabel ?? null,
           active: body.active,
           sortOrder: body.sortOrder,
           createdBy: admin.id,
@@ -146,6 +162,8 @@ export default async function adminZillapassRoutes(app: FastifyInstance) {
     if (body.setNumber !== undefined) update.setNumber = body.setNumber;
     if (body.rewardKind !== undefined) update.rewardKind = body.rewardKind;
     if (body.rewardPayload !== undefined) update.rewardPayload = body.rewardPayload;
+    if (body.ctaHref !== undefined) update.ctaHref = body.ctaHref;
+    if (body.ctaLabel !== undefined) update.ctaLabel = body.ctaLabel;
     if (body.active !== undefined) update.active = body.active;
     if (body.sortOrder !== undefined) update.sortOrder = body.sortOrder;
 

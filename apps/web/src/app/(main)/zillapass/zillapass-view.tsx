@@ -1,12 +1,22 @@
 "use client";
 
 import { useEffect } from "react";
+import Link from "next/link";
 import { I } from "@/components/ui/icons";
 import { useZillapass } from "@/lib/zillapass";
 import type {
   ZillapassActiveTaskDto,
   ZillapassMeResponse,
 } from "@oddzilla/types";
+
+// Defence-in-depth: the admin POST/PATCH validator already enforces a
+// leading slash on cta_href, but seeded rows + future migrations bypass
+// that validator. Treat anything that isn't a same-origin path as
+// untrusted and skip the CTA — never render an off-domain anchor from
+// a database value.
+function isSafeCtaHref(href: string | null | undefined): href is string {
+  return typeof href === "string" && /^\/[^\s]*$/.test(href);
+}
 
 export function ZillapassPageView({
   initial,
@@ -17,10 +27,12 @@ export function ZillapassPageView({
   // the chip whenever a tracker fires. The SSR-provided `initial`
   // seeds the first paint until the provider's own fetch lands.
   const { data: ctxData, setData } = useZillapass();
+  // Only seed once on mount; subsequent context updates win. Intentional
+  // empty deps. The repo's ESLint config doesn't load react-hooks rules,
+  // so no exhaustive-deps suppression is needed (and a stale disable
+  // comment referencing the unknown rule fails `pnpm lint`).
   useEffect(() => {
     if (initial && ctxData === null) setData(initial);
-    // Only seed once on mount; subsequent context updates win.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const data = ctxData ?? initial;
 
@@ -179,6 +191,7 @@ function FullTaskCard({ task }: { task: ZillapassActiveTaskDto }) {
       ? 0
       : Math.min(1, task.currentCount / task.targetCount);
   const done = task.completedAt !== null;
+  const ctaHref = isSafeCtaHref(task.ctaHref) ? task.ctaHref : null;
 
   return (
     <div
@@ -270,6 +283,30 @@ function FullTaskCard({ task }: { task: ZillapassActiveTaskDto }) {
           </span>
         ) : null}
       </div>
+
+      {ctaHref ? (
+        <Link
+          href={ctaHref}
+          style={{
+            marginTop: 6,
+            alignSelf: "flex-start",
+            padding: "8px 12px",
+            fontSize: 12,
+            fontWeight: 600,
+            color: done ? "var(--fg-muted)" : "var(--fg)",
+            background: "var(--surface-2)",
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            textDecoration: "none",
+            opacity: done ? 0.7 : 1,
+          }}
+        >
+          {task.ctaLabel ?? "Open"}
+          <span aria-hidden style={{ marginLeft: 6 }}>
+            →
+          </span>
+        </Link>
+      ) : null}
     </div>
   );
 }

@@ -49,6 +49,13 @@ export const zillapassTasks = pgTable(
     setNumber: integer("set_number").notNull().default(1),
     rewardKind: text("reward_kind"),
     rewardPayload: jsonb("reward_payload"),
+    // Optional intra-app deep-link the storefront renders as a CTA on
+    // the task card. Path-relative (starts with `/`), not a full URL —
+    // see migration 0066. Lets admins point a task at the surface where
+    // its predicate fires (e.g. `profile_complete` → /account/community)
+    // without coupling the renderer to predicate vocabulary.
+    ctaHref: text("cta_href"),
+    ctaLabel: text("cta_label"),
     active: boolean().notNull().default(true),
     sortOrder: integer("sort_order").notNull().default(0),
     createdBy: uuid("created_by").references(() => users.id, {
