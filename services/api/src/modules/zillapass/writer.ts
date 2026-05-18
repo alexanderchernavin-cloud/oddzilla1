@@ -15,9 +15,13 @@ import {
   zillapassUserProgress,
   zillapassUserState,
   users,
+  tickets,
   ticketSelections,
   markets,
   matches,
+  tournaments,
+  categories,
+  sports,
   type ZillapassTask,
 } from "@oddzilla/db";
 
@@ -168,19 +172,35 @@ export async function nudgeMatchViewed(
   }
 }
 
-// ─── bets_prematch / bets_live ──────────────────────────────────────────────
+// ─── bets_prematch / bets_live / bets_sport_<slug> / bets_product_<kind> ────
 //
 // Fires from the bet placement route AFTER the placement transaction
-// commits. SINGLES-ONLY: combos / tiples / tippots / betbuilder all
-// require ≥ 2 legs by construction, so `legCount === 1` is the
-// equivalent gate. Looks up the (single) leg's match status to decide
-// which of the two predicates fires:
-//   - leg's match is `live`     → `bets_live`
-//   - leg's match is anything else (effectively `not_started`,
-//     since the placement service rejects everything other than
-//     not_started + live upstream) → `bets_prematch`
-// The two predicates are mutually exclusive so one single-bet
-// placement bumps exactly one task. Combos no-op here.
+// commits. One DB round-trip pulls the ticket's bet_type, every leg's
+// match status, and every leg's sport slug. From that we fan out:
+//
+//   bets_prematch / bets_live  — singles only (legCount === 1, which
+//                                ⟺ bet_type='single'). Picks live
+//                                when the single leg's match is `live`,
+//                                prematch otherwise. Mutually exclusive
+//                                so one placement bumps exactly one.
+//
+//   bets_sport_<slug>          — fires when EVERY leg's sport is the
+//                                same slug. Singles trivially qualify;
+//                                a pure-CS2 5-fold combo bumps
+//                                `bets_sport_cs2` by 1. Mixed-sport
+//                                multibets fire no sport task — the
+//                                user has a clear path to progress
+//                                (place a pure-sport bet next time).
+//                                BetBuilder is bound to one match by
+//                                construction so it qualifies as
+//                                pure-sport for the match's sport.
+//
+//   bets_product_<kind>        — keyed on the ticket's bet_type:
+//                                'combo' / 'tiple' / 'tippot'. Singles
+//                                + betbuilder are ignored here; set 4
+//                                seeds tasks only for the three
+//                                multi-leg products the user picks
+//                                explicitly in the slip.
 
 export async function nudgeBetPlaced(
   app: FastifyInstance,
@@ -188,35 +208,69 @@ export async function nudgeBetPlaced(
   ticketId: string,
 ): Promise<void> {
   try {
-    const rows = await app.db
+    const [ticket] = await app.db
+      .select({ betType: tickets.betType })
+      .from(tickets)
+      .where(eq(tickets.id, ticketId))
+      .limit(1);
+    if (!ticket) return;
+
+    const legs = await app.db
       .select({
-        liveCount:
-          sql<number>`COUNT(*) FILTER (WHERE ${matches.status} = 'live')`.as(
-            "live_count",
-          ),
-        legCount: sql<number>`COUNT(*)`.as("leg_count"),
+        matchStatus: matches.status,
+        sportSlug: sports.slug,
       })
       .from(ticketSelections)
       .innerJoin(markets, eq(markets.id, ticketSelections.marketId))
       .innerJoin(matches, eq(matches.id, markets.matchId))
+      .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
+      .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+      .innerJoin(sports, eq(sports.id, categories.sportId))
       .where(eq(ticketSelections.ticketId, ticketId));
-    const row = rows[0];
-    if (!row) return;
-    // Postgres COUNT(*) returns BIGINT, which postgres-js surfaces as a
-    // string by default — `row.legCount === 1` would compare "1" !== 1
-    // and short-circuit the function, silently dropping every bet-
-    // placement nudge. Coerce both counters to number before any
-    // arithmetic / equality check.
-    const legCount = Number(row.legCount);
-    const liveCount = Number(row.liveCount);
-    if (!Number.isFinite(legCount) || legCount === 0) return;
-    // Singles only — a single bet has exactly one leg by construction.
-    // 1-leg ⟺ betType='single' (combo / tiple / tippot / betbuilder
-    // all enforce min-2-legs at placement time).
-    if (legCount !== 1) return;
+    const firstLeg = legs[0];
+    if (!firstLeg) return;
 
-    const predicateKey = liveCount > 0 ? "bets_live" : "bets_prematch";
-    await incrementByPredicate(app, userId, predicateKey, 1);
+    // Singles vs everything else: singles bump prematch/live, every
+    // other product (combo / tiple / tippot / betbuilder) skips that
+    // path and lands in product / sport dispatch below. 1-leg
+    // ⟺ bet_type='single' since combo / tiple / tippot / betbuilder
+    // all enforce min-2-legs at placement time.
+    if (legs.length === 1) {
+      const predicateKey =
+        firstLeg.matchStatus === "live" ? "bets_live" : "bets_prematch";
+      await incrementByPredicate(app, userId, predicateKey, 1);
+    }
+
+    // Sport task: every leg must share the same sport slug. Mixed-sport
+    // multibets bump no sport task. Singles trivially qualify with
+    // their one leg's sport.
+    const firstSport = firstLeg.sportSlug;
+    const allSameSport = legs.every((l) => l.sportSlug === firstSport);
+    if (allSameSport && firstSport) {
+      await incrementByPredicate(
+        app,
+        userId,
+        `bets_sport_${firstSport}`,
+        1,
+      );
+    }
+
+    // Product task: keyed off the ticket's bet_type. Singles +
+    // betbuilder don't have tasks in set 4 — only combo / tiple /
+    // tippot do, so we only fire when bet_type matches one of them.
+    if (
+      ticket.betType === "combo" ||
+      ticket.betType === "tiple" ||
+      ticket.betType === "tippot"
+    ) {
+      await incrementByPredicate(
+        app,
+        userId,
+        `bets_product_${ticket.betType}`,
+        1,
+      );
+    }
+
     await maybeStampSetCompletion(app, userId);
   } catch (err) {
     app.log.warn(
