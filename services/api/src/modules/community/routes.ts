@@ -756,6 +756,7 @@ SELECT
    AND m.id <> ${orig.matchId}
    AND m.status = 'not_started'
    AND m.scheduled_at > now()
+   AND m.scheduled_at < now() + interval '7 days'
  ORDER BY m.scheduled_at ASC
  LIMIT 30
 `);

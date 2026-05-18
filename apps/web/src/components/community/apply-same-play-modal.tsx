@@ -222,7 +222,6 @@ function Body({
               result={result}
               stakeMode={stakeMode}
               minOddsNum={Number.isFinite(minOddsNum) ? minOddsNum : 0}
-              onAdded={onClose}
             />
           ))}
         </ul>
@@ -396,7 +395,6 @@ interface RowProps {
   result: SamePlayScoreResult;
   stakeMode: ApplySamePlayStakeMode;
   minOddsNum: number;
-  onAdded: () => void;
 }
 
 function CandidateRow({
@@ -405,10 +403,15 @@ function CandidateRow({
   result,
   stakeMode,
   minOddsNum,
-  onAdded,
 }: RowProps) {
   const slip = useBetSlip();
   const [showBreakdown, setShowBreakdown] = useState(false);
+  // Track whether this row was added by the user in *this* modal session.
+  // Distinguishes "Added ✓" (just-clicked confirmation) from the
+  // "Already in slip" pre-existing state. If the user clears the slip
+  // externally, the inSlip derivation below flips back to false and the
+  // CTA reverts to "Apply" per PRD §"Added confirmation state".
+  const [justAdded, setJustAdded] = useState(false);
 
   const candOdds = parseFloat(candidate.currentOdds);
   // Banner priority: Suspended > Below floor > Kickoff imminent
@@ -421,7 +424,21 @@ function CandidateRow({
     candidate.hoursToKickoff <= 2 &&
     candidate.hoursToKickoff > 0;
 
-  const disabled = candidate.suspended || belowFloor;
+  // Per PRD §"Edge cases": disable when this exact (market, outcome)
+  // is already in the slip — regardless of whether it landed there via
+  // this row, a prior row in this session, or before the modal opened.
+  // `slip.has` is reactive (BetSlipProvider re-renders consumers on
+  // change), so clearing the slip flips this back to false and the
+  // button reverts.
+  const inSlip = slip.has(candidate.marketId, originator.play.outcomeId);
+  const blockedByRow = candidate.suspended || belowFloor;
+  const disabled = blockedByRow || inSlip;
+
+  // Reset the just-added confirmation if the slip is cleared externally,
+  // so the next click renders "Apply" not "Added ✓".
+  useEffect(() => {
+    if (!inSlip && justAdded) setJustAdded(false);
+  }, [inSlip, justAdded]);
 
   const adaptedStake = adaptStake(
     originator.stakeMicro,
@@ -430,7 +447,7 @@ function CandidateRow({
     stakeMode,
   );
 
-  function onCopy() {
+  function onApply() {
     if (disabled) return;
     slip.add({
       matchId: candidate.matchId,
@@ -444,8 +461,10 @@ function CandidateRow({
       sportSlug: candidate.sportSlug,
     });
     slip.setMode("single");
-    slip.setOpen(true);
-    onAdded();
+    setJustAdded(true);
+    // Don't auto-close the modal — per PRD the user can keep adding
+    // candidates, and the row's "Added ✓" state is the confirmation.
+    // Modal closes via Esc / Close button / click outside.
   }
 
   const borderClass = candidate.suspended
@@ -487,15 +506,17 @@ function CandidateRow({
           <button
             type="button"
             disabled={disabled}
-            onClick={onCopy}
+            onClick={onApply}
             className={
               "mt-2 rounded-full border px-3 py-1 text-[11px] uppercase tracking-[0.15em] transition " +
-              (disabled
-                ? "cursor-not-allowed border-[var(--color-border-strong)] text-[var(--color-fg-subtle)]"
-                : "border-[var(--color-accent)] text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10")
+              (inSlip
+                ? "cursor-not-allowed border-[var(--color-positive)] text-[var(--color-positive)]"
+                : blockedByRow
+                  ? "cursor-not-allowed border-[var(--color-border-strong)] text-[var(--color-fg-subtle)]"
+                  : "border-[var(--color-accent)] text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10")
             }
           >
-            Apply
+            {inSlip ? (justAdded ? "Added ✓" : "Already in slip") : "Apply"}
           </button>
         </div>
       </div>
