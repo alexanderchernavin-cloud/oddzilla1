@@ -719,7 +719,10 @@ function RowOddBtn({
     cursor: locked ? "not-allowed" : "pointer",
     fontFamily: "inherit",
     transition: "all 140ms var(--ease)",
-    opacity: locked ? 0.5 : 1,
+    // Bumped from 0.5 → 0.65 so the price digits stay legible while
+    // the cell still reads as "can't bet". 0.5 washed the dark text
+    // into a faded gray that was hard to read on light theme.
+    opacity: locked ? 0.65 : 1,
   };
   // .oz-row-odd flips justify-content to center on mobile (the row it
   // sits in is already aligned with the team's name, so the "1"/"2"
@@ -750,8 +753,15 @@ function RowOddBtn({
         className="mono tnum"
         style={{
           fontSize: 12.5,
-          fontWeight: 600,
+          // 700 so the digit punches through every state — selection
+          // accent flip, odds-change flash, and locked dim all leave
+          // the price strongly readable.
+          fontWeight: 700,
           letterSpacing: "-0.01em",
+          // Pin per-state colour so the inherited `color` on the
+          // button (which transitions over 140 ms on selection
+          // swap) never washes the digit out mid-flip.
+          color: selected ? "var(--accent-fg)" : "var(--fg)",
         }}
       >
         {locked || price == null ? "—" : price.toFixed(2)}

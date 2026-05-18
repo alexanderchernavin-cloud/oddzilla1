@@ -340,7 +340,12 @@ export function OddButton({
         fontFamily: "inherit",
         fontSize: 13,
         transition: "all 140ms var(--ease)",
-        opacity: locked ? 0.5 : 1,
+        // Locked-state opacity. Bumped from 0.5 → 0.65 so the digits
+        // stay legible while the rest of the cell still reads as
+        // "can't bet right now". 0.5 dropped the dark text to a near-
+        // washed-out gray on the light theme; 0.65 keeps it grey but
+        // still strong enough to scan.
+        opacity: locked ? 0.65 : 1,
         textAlign: "left",
         position: "relative",
         ...style,
@@ -350,8 +355,11 @@ export function OddButton({
         <span
           style={{
             fontSize: 11,
+            // Locked labels stay readable too — fg-muted is grey
+            // enough that 0.65 opacity above doesn't push them into
+            // unreadable territory.
             color: selected
-              ? "color-mix(in oklab, var(--accent-fg) 70%, transparent)"
+              ? "color-mix(in oklab, var(--accent-fg) 75%, transparent)"
               : "var(--fg-muted)",
             lineHeight: 1,
             marginBottom: 2,
@@ -384,9 +392,20 @@ export function OddButton({
           className="mono tnum"
           style={{
             fontSize: 14,
-            fontWeight: showBoost ? 700 : 600,
+            // Always 700 so the digits stay punchy through every
+            // state transition — selection accent flip, boost
+            // green tint, odds-change flash, and locked dim all
+            // keep the price legible at a glance.
+            fontWeight: 700,
             letterSpacing: "-0.01em",
-            color: showBoost ? "var(--positive, #16a34a)" : undefined,
+            // Pin the colour explicitly per state so the inherited
+            // `color` on the button (which is animated by the CSS
+            // transition on selection swap) never blends through.
+            color: showBoost
+              ? "var(--positive, #16a34a)"
+              : selected
+                ? "var(--accent-fg)"
+                : "var(--fg)",
           }}
         >
           {locked || price == null ? "—" : price.toFixed(2)}

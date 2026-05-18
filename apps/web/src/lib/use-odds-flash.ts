@@ -14,10 +14,11 @@ import { useEffect, useRef, type RefObject } from "react";
 // highlight. The hook is agnostic to what the number means — the caller
 // decides which DOM element gets tinted by passing its ref.
 //
-// 10s total: holds a soft tint for ~1s for instant readability, then
-// fades to transparent over the remaining 9s. Long enough that a glance
-// at the page surfaces "what just moved", short enough not to bleed
-// into the next batch of ticks.
+// 2.5 s total: holds a clearly-visible tint for ~0.5 s then fades.
+// The previous 10 s window left the cell in a long low-contrast tail
+// where the background was mostly-transparent — odds digits looked
+// washed out mid-fade. Keeping the entire animation under three
+// seconds means the cell never sits in that dim middle for long.
 export function useValueFlash(
   value: number | null,
   ref: RefObject<HTMLElement | null>,
@@ -39,10 +40,13 @@ export function useValueFlash(
     if (typeof el.animate !== "function") return; // no Web Animations API
 
     const dir = value > prev ? "up" : "down";
+    // Slightly stronger tint than before (32 % vs 22 %) so the flash
+    // is clearly seen during its short window. Both up and down keep
+    // mid-readable contrast against fg text on either theme.
     const tint =
       dir === "up"
-        ? "color-mix(in oklab, var(--positive) 22%, transparent)"
-        : "color-mix(in oklab, var(--negative) 22%, transparent)";
+        ? "color-mix(in oklab, var(--positive) 32%, transparent)"
+        : "color-mix(in oklab, var(--negative) 32%, transparent)";
 
     // Cancel any in-flight flash so the newest direction wins instead
     // of stacking on top of a fading old one.
@@ -53,17 +57,18 @@ export function useValueFlash(
       }
     }
 
-    // Hold the tint for ~1s, then fade to transparent over the next 9s.
-    // `easing: "ease-out"` shapes the fade so most of the colour is
-    // gone in the first few seconds — the lingering tail is just a
-    // gentle reminder.
+    // Hold the tint for ~0.5 s then fade to transparent over 2 s.
+    // Total = 2.5 s. The previous 10 s window left the cell in a long
+    // low-contrast tail; the digit text looked washed out for most of
+    // the animation. Keeping it under three seconds means the cell
+    // doesn't sit in the mid-fade twilight for long.
     const anim = el.animate(
       [
         { backgroundColor: tint, offset: 0 },
-        { backgroundColor: tint, offset: 0.1 },
+        { backgroundColor: tint, offset: 0.2 },
         { backgroundColor: "transparent", offset: 1 },
       ],
-      { duration: 10000, easing: "ease-out", fill: "none" },
+      { duration: 2500, easing: "ease-out", fill: "none" },
     );
     (anim as Animation & { id?: string }).id = "oz-value-flash";
   }, [value, ref]);
