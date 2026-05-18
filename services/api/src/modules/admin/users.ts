@@ -366,10 +366,19 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
     const body = createBody.parse(request.body);
 
     const email = body.email.toLowerCase();
+    // Email uniqueness is per-namespace since migration 0065. Check
+    // against the namespace this admin is creating a user IN — a row
+    // being created as `role='user'` only conflicts with existing
+    // bettors; an admin/support row only conflicts with other admins.
+    // The same email may legitimately exist on the other side.
+    const dupNamespaceRoles =
+      body.role === "user"
+        ? (["user"] as const)
+        : (["admin", "support"] as const);
     const [dup] = await app.db
       .select({ id: users.id })
       .from(users)
-      .where(eq(users.email, email))
+      .where(and(eq(users.email, email), inArray(users.role, [...dupNamespaceRoles])))
       .limit(1);
     if (dup) throw new ConflictError("email_in_use", "email_in_use");
 
