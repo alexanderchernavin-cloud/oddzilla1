@@ -10,6 +10,7 @@ import { ThemeToggle } from "@/components/shell/theme-toggle";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 
 const STORAGE_KEY = "oz:admin-sidebar-collapsed";
+const STORAGE_KEY_FOLDED = "oz:admin-sidebar-folded-v1";
 const W_OPEN = 240;
 const W_COLLAPSED = 56;
 
@@ -140,12 +141,38 @@ function readCollapsed(): boolean {
   }
 }
 
+function readFolded(): Record<string, boolean> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY_FOLDED);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const out: Record<string, boolean> = {};
+      for (const [k, v] of Object.entries(parsed)) {
+        if (typeof v === "boolean") out[k] = v;
+      }
+      return out;
+    }
+    return {};
+  } catch {
+    return {};
+  }
+}
+
 function isActive(pathname: string, item: Item): boolean {
   if (pathname === item.href) return true;
   if (item.matchPrefix && pathname.startsWith(item.matchPrefix + "/")) return true;
   // Edge case: dashboard ("/admin") shouldn't activate for any nested
   // admin path. Other items with no matchPrefix just rely on exact match.
   return false;
+}
+
+function sectionSlug(label: string): string {
+  return label
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
 }
 
 export function AdminSidebar() {
@@ -156,6 +183,11 @@ export function AdminSidebar() {
   // useState false but with no transition so the snap is invisible".
   const [hydrated, setHydrated] = useState(false);
 
+  // Per-section fold state keyed by section.label. Default empty map =
+  // every section expanded. Persisted in localStorage so a user who
+  // hides sections they don't use doesn't see them re-expand on reload.
+  const [folded, setFolded] = useState<Record<string, boolean>>({});
+
   // Runtime badge counts. Poll every 60s while the admin shell is
   // mounted so a new wrong-token / unattributed alert shows up without
   // a manual refresh. One key today; the map shape leaves room for a
@@ -164,6 +196,7 @@ export function AdminSidebar() {
 
   useEffect(() => {
     setCollapsed(readCollapsed());
+    setFolded(readFolded());
     setHydrated(true);
   }, []);
 
@@ -198,6 +231,20 @@ export function AdminSidebar() {
         window.localStorage.setItem(STORAGE_KEY, next ? "1" : "0");
       } catch {
         // storage disabled — collapse state just won't persist
+      }
+      return next;
+    });
+  };
+
+  const toggleSection = (label: string) => {
+    setFolded((prev) => {
+      const next = { ...prev, [label]: !prev[label] };
+      // Drop false entries so the stored blob stays small + clean.
+      if (!next[label]) delete next[label];
+      try {
+        window.localStorage.setItem(STORAGE_KEY_FOLDED, JSON.stringify(next));
+      } catch {
+        // storage disabled — fold state just won't persist
       }
       return next;
     });
@@ -251,6 +298,8 @@ export function AdminSidebar() {
             collapsed={collapsed}
             pathname={pathname}
             badges={badges}
+            folded={Boolean(folded[section.label])}
+            onToggleFold={() => toggleSection(section.label)}
           />
         ))}
       </nav>
@@ -331,39 +380,124 @@ function SidebarSection({
   collapsed,
   pathname,
   badges,
+  folded,
+  onToggleFold,
 }: {
   section: Section;
   collapsed: boolean;
   pathname: string;
   badges: Record<string, number>;
+  folded: boolean;
+  onToggleFold: () => void;
 }) {
+  // Fold only applies when the sidebar is in expanded mode — the
+  // icon-only sidebar drops section headers entirely, so hiding items
+  // there would leave a section invisible with no way back.
+  const itemsHidden = !collapsed && folded;
+  const containsActive = section.items.some((it) => isActive(pathname, it));
+  // Bubble up the badge total from a folded section so an alert (e.g.
+  // wrong-token deposits) doesn't get hidden behind the fold.
+  const folderBadgeTotal = itemsHidden
+    ? section.items.reduce(
+        (acc, it) => acc + (it.badgeKey ? badges[it.badgeKey] ?? 0 : 0),
+        0,
+      )
+    : 0;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
       {!collapsed && (
-        <div
+        <button
+          type="button"
+          onClick={onToggleFold}
+          aria-expanded={!folded}
+          aria-controls={`adminsec-${sectionSlug(section.label)}`}
           className="mono"
           style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+            width: "100%",
+            padding: "4px 10px 6px",
+            background: "transparent",
+            border: 0,
+            cursor: "pointer",
+            fontFamily: "inherit",
             fontSize: 10,
             letterSpacing: "0.14em",
             textTransform: "uppercase",
-            color: "var(--color-fg-subtle, var(--fg-dim))",
-            padding: "4px 10px 6px",
+            color:
+              folded && containsActive
+                ? "var(--color-fg-muted, var(--fg-muted))"
+                : "var(--color-fg-subtle, var(--fg-dim))",
+            textAlign: "left",
           }}
         >
-          {section.label}
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+            {section.label}
+          </span>
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            {folderBadgeTotal > 0 ? (
+              <span
+                aria-label={`${folderBadgeTotal} alert${folderBadgeTotal === 1 ? "" : "s"}`}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  minWidth: 16,
+                  height: 16,
+                  padding: "0 4px",
+                  borderRadius: 8,
+                  background: "var(--color-negative, #c1342f)",
+                  color: "white",
+                  fontSize: 9,
+                  fontWeight: 700,
+                  lineHeight: 1,
+                  letterSpacing: 0,
+                }}
+              >
+                {folderBadgeTotal}
+              </span>
+            ) : null}
+            <span
+              aria-hidden
+              style={{
+                display: "inline-flex",
+                transform: folded ? "rotate(-90deg)" : "none",
+                transition: "transform 140ms var(--ease, ease)",
+                opacity: 0.7,
+              }}
+            >
+              <I.ChevD size={12} />
+            </span>
+          </span>
+        </button>
+      )}
+      {!itemsHidden && (
+        <div
+          id={`adminsec-${sectionSlug(section.label)}`}
+          style={{ display: "flex", flexDirection: "column", gap: 2 }}
+        >
+          {section.items.map((item) => (
+            <SidebarLink
+              key={item.href}
+              href={item.href}
+              label={item.label}
+              Icon={item.Icon}
+              collapsed={collapsed}
+              active={isActive(pathname, item)}
+              badge={item.badgeKey ? badges[item.badgeKey] : undefined}
+            />
+          ))}
         </div>
       )}
-      {section.items.map((item) => (
-        <SidebarLink
-          key={item.href}
-          href={item.href}
-          label={item.label}
-          Icon={item.Icon}
-          collapsed={collapsed}
-          active={isActive(pathname, item)}
-          badge={item.badgeKey ? badges[item.badgeKey] : undefined}
-        />
-      ))}
     </div>
   );
 }

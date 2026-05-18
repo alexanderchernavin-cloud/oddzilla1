@@ -172,12 +172,7 @@
   },
   "home": {
     "lobby": "Lobby",
-    "inPlay": "In play",
-    "nextUpToday": "Next up today",
     "upcoming": "Upcoming",
-    "liveKicker": "Live",
-    "nextKicker": "Next",
-    "upcomingKicker": "Upcoming",
     "empty": "Nothing scheduled. Check individual sport pages for the full slate."
   },
   "lobby": {

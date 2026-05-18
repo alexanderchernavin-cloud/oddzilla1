@@ -172,12 +172,7 @@
   },
   "home": {
     "lobby": "Lobby",
-    "inPlay": "Právě hraje",
-    "nextUpToday": "Dnes na řadě",
     "upcoming": "Nadcházející",
-    "liveKicker": "Živě",
-    "nextKicker": "Další",
-    "upcomingKicker": "Nadcházející",
     "empty": "Žádné naplánované zápasy. Podívejte se na jednotlivé sporty pro celý program."
   },
   "lobby": {

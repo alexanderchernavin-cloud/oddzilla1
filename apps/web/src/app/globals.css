@@ -370,6 +370,29 @@ body {
   .oz-lobby-search { flex: 0 1 auto; }
 }
 
+/* Clickable one-word section header at the top of the lobby —
+   "Live N" → /live, "Pre-match N" → /upcoming. Keeps the visual
+   weight of the previous SectionHeader title + count pair, but
+   communicates clickability via hover underline + focus ring. */
+.oz-lobby-tab-link {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  color: var(--fg);
+  text-decoration: none;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.oz-lobby-tab-link:hover .oz-lobby-tab-link-label {
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  text-decoration-thickness: 1.5px;
+}
+.oz-lobby-tab-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
 /* Shell-level global search, rendered by the (main) layout at the top
    of `.oz-main-inner`. Sticky so it stays reachable as the page
    scrolls. On tablet + desktop the wrapper has zero effective vertical

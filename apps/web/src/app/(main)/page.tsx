@@ -5,7 +5,6 @@ import {
   MatchListTabs,
   type ListMatchEnriched,
 } from "@/components/match/match-list-tabs";
-import { SectionHeader } from "@/components/match/section-header";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { ThreeFoldCards } from "@/components/lobby/three-fold-cards";
 import { ZillaFlashRow } from "@/components/lobby/zillaflash-row";
@@ -143,11 +142,12 @@ export default async function HomePage() {
         const liveEnriched = live.map(enrich);
         const upcomingShown = upcoming.slice(0, 20).map(enrich);
         const merged = [...liveEnriched, ...upcomingShown];
+        const hasLive = liveEnriched.length > 0;
         return (
           <MatchListTabs
             matches={merged}
             groups={[
-              ...(liveEnriched.length > 0
+              ...(hasLive
                 ? [
                     {
                       key: "live",
@@ -160,14 +160,14 @@ export default async function HomePage() {
                             flexWrap: "wrap",
                           }}
                         >
-                          <SectionHeader
-                            kicker={t("liveKicker")}
-                            title={t("inPlay")}
+                          <LobbyTabLink
+                            href="/live"
+                            label={tMatch("live")}
                             count={live.length}
                           />
-                          <SectionHeader
-                            kicker={t("nextKicker")}
-                            title={t("upcoming")}
+                          <LobbyTabLink
+                            href="/upcoming"
+                            label={tMatch("prematch")}
                             count={upcoming.length}
                           />
                         </div>
@@ -178,10 +178,15 @@ export default async function HomePage() {
                 : []),
               {
                 key: "upcoming",
-                label: (
-                  <SectionHeader
-                    kicker={t("upcomingKicker")}
-                    title={t("nextUpToday")}
+                // When live matches exist the top tabs already label
+                // both sections — render the prematch cards directly
+                // below the live cards with no second header. When the
+                // page is prematch-only, promote the Pre-match tab to
+                // the top so the user still gets a clickable label.
+                label: hasLive ? null : (
+                  <LobbyTabLink
+                    href="/upcoming"
+                    label={tMatch("prematch")}
                     count={upcoming.length}
                   />
                 ),
@@ -197,6 +202,42 @@ export default async function HomePage() {
         </p>
       ) : null}
     </div>
+  );
+}
+
+// One-word clickable section label used at the top of the lobby —
+// renders the section title + count and navigates to the dedicated
+// live/upcoming page. Hover styling lives in globals.css so the link
+// gets a real :hover state instead of an inline-style fallback.
+function LobbyTabLink({
+  href,
+  label,
+  count,
+}: {
+  href: string;
+  label: string;
+  count: number;
+}) {
+  return (
+    <Link href={href} className="oz-lobby-tab-link">
+      <h2
+        className="oz-lobby-tab-link-label"
+        style={{
+          margin: 0,
+          fontSize: 22,
+          fontWeight: 500,
+          letterSpacing: "-0.015em",
+        }}
+      >
+        {label}
+      </h2>
+      <span
+        className="mono tnum"
+        style={{ fontSize: 12, color: "var(--fg-muted)" }}
+      >
+        {count}
+      </span>
+    </Link>
   );
 }
 
