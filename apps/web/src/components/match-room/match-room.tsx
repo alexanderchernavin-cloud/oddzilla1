@@ -12,8 +12,10 @@
 //   - Reactions render as named chips, not emoji glyphs, per CLAUDE.md
 //     invariant 8
 //
-// Style notes: Tailwind utilities only. Premium-quiet palette matches
-// the rest of the app (slate background, amber accent, red live dot).
+// Style notes: Tailwind utilities only. Themed against the site's
+// design tokens (`var(--color-*)` from apps/web/src/app/globals.css),
+// so the chat blends into both light and dark themes instead of
+// staying dark-slate while the rest of the app is editorial cream.
 
 import {
   useEffect,
@@ -63,21 +65,21 @@ export function MatchRoom({ matchId, viewer }: MatchRoomProps) {
 
   if (room.load.kind === "loading") {
     return (
-      <div className="rounded-lg border border-slate-700 bg-slate-900/40 p-6 text-sm text-slate-400">
+      <div className="rounded-[10px] border border-[var(--color-border)] bg-[var(--color-surface)] p-6 text-sm text-[var(--color-fg-muted)]">
         Loading match room…
       </div>
     );
   }
   if (room.load.kind === "error") {
     return (
-      <div className="rounded-lg border border-red-900 bg-red-950/30 p-6 text-sm text-red-300">
+      <div className="rounded-[10px] border border-[var(--color-negative)]/40 bg-[var(--color-negative)]/10 p-6 text-sm text-[var(--color-negative)]">
         Couldn&rsquo;t load match room: {room.load.message}
       </div>
     );
   }
 
   return (
-    <div className="flex h-[600px] flex-col overflow-hidden rounded-lg border border-slate-700 bg-slate-900/40 text-sm text-slate-100">
+    <div className="flex h-[600px] flex-col overflow-hidden rounded-[10px] border border-[var(--color-border)] bg-[var(--color-surface)] text-sm text-[var(--color-fg)]">
       <MatchHeaderBar match={room.match} viewerCount={room.viewerCount} />
       <BetPinCard betPin={room.betPin} match={room.match} />
       <CrowdPicksRow
@@ -124,19 +126,19 @@ function MatchHeaderBar({
             : "—";
   const isLive = match?.status === "live";
   return (
-    <div className="flex items-center justify-between border-b border-slate-800 bg-slate-900/70 px-4 py-3">
+    <div className="flex items-center justify-between border-b border-[var(--color-hairline)] bg-[var(--color-surface-2)] px-4 py-3">
       <div className="flex items-center gap-3">
         <span
           className={
             isLive
-              ? "inline-flex h-2 w-2 rounded-full bg-red-500"
-              : "inline-flex h-2 w-2 rounded-full bg-slate-500"
+              ? "inline-flex h-2 w-2 rounded-full bg-[var(--color-live)]"
+              : "inline-flex h-2 w-2 rounded-full bg-[var(--color-fg-dim)]"
           }
         />
         <span className="font-semibold tracking-wide">{status}</span>
-        <span className="font-mono text-base text-slate-100">{score}</span>
+        <span className="font-mono text-base text-[var(--color-fg)]">{score}</span>
         {match?.clock ? (
-          <span className="font-mono text-xs text-slate-400">{match.clock}</span>
+          <span className="font-mono text-xs text-[var(--color-fg-muted)]">{match.clock}</span>
         ) : null}
       </div>
       <ViewerPill count={viewerCount} />
@@ -146,8 +148,8 @@ function MatchHeaderBar({
 
 function ViewerPill({ count }: { count: number }) {
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-700 px-2.5 py-1 text-xs text-slate-300">
-      <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-border)] px-2.5 py-1 text-xs text-[var(--color-fg-muted)]">
+      <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-fg-dim)]" />
       {count.toLocaleString()} watching
     </span>
   );
@@ -197,12 +199,10 @@ function BetPinCard({
   const liveStatus = deriveLiveStatus(betPin, match);
   const dot =
     betPin.status === "won" || liveStatus === "winning"
-      ? "bg-emerald-500"
+      ? "bg-[var(--color-positive)]"
       : betPin.status === "lost" || liveStatus === "at_risk"
-        ? "bg-red-500"
-        : liveStatus === "level"
-          ? "bg-amber-400"
-          : "bg-amber-400";
+        ? "bg-[var(--color-negative)]"
+        : "bg-[var(--color-fg-dim)]";
   const badge =
     betPin.status === "won"
       ? "Won"
@@ -221,23 +221,23 @@ function BetPinCard({
                   : null;
   const badgeStyle =
     liveStatus === "winning" || betPin.status === "won"
-      ? "bg-emerald-500/15 text-emerald-300"
+      ? "bg-[var(--color-positive)]/15 text-[var(--color-positive)]"
       : liveStatus === "at_risk" || betPin.status === "lost"
-        ? "bg-red-500/15 text-red-300"
-        : "bg-amber-500/15 text-amber-300";
+        ? "bg-[var(--color-negative)]/15 text-[var(--color-negative)]"
+        : "bg-[var(--color-bg-elevated)] text-[var(--color-fg-muted)] border border-[var(--color-border)]";
   const odds = (betPin.oddsX10000 / 10_000).toFixed(2);
   return (
-    <div className="border-b border-slate-800 bg-slate-900/50 px-4 py-2.5 text-xs">
+    <div className="border-b border-[var(--color-hairline)] bg-[var(--color-bg-elevated)] px-4 py-2.5 text-xs">
       <div className="flex items-center justify-between">
-        <span className="flex items-center gap-2 text-slate-300">
+        <span className="flex items-center gap-2 text-[var(--color-fg-muted)]">
           <span className={`h-2 w-2 rounded-full ${dot}`} />
-          <span className="uppercase tracking-wide text-slate-400">
+          <span className="uppercase tracking-wide text-[var(--color-fg-dim)]">
             Your pick
           </span>
-          <span className="font-medium text-slate-100">
+          <span className="font-medium text-[var(--color-fg)]">
             {betPin.outcomeLabel}
           </span>
-          <span className="font-mono text-slate-300">@ {odds}</span>
+          <span className="font-mono text-[var(--color-fg-muted)]">@ {odds}</span>
           {badge ? (
             <span
               className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${badgeStyle}`}
@@ -246,7 +246,7 @@ function BetPinCard({
             </span>
           ) : null}
         </span>
-        <span className="font-mono text-slate-200">
+        <span className="font-mono text-[var(--color-fg)]">
           {formatMicroAmount(betPin.potentialWinMicro)} {betPin.currency}
         </span>
       </div>
@@ -290,8 +290,8 @@ function CrowdPicksRow({
   // Pre-vote: blurred row with three buttons + prompt.
   if (!myPick || !crowdPicks) {
     return (
-      <div className="border-b border-slate-800 bg-slate-900/30 px-4 py-2.5">
-        <div className="mb-1.5 text-xs text-slate-400">
+      <div className="border-b border-[var(--color-hairline)] bg-[var(--color-surface)] px-4 py-2.5">
+        <div className="mb-1.5 text-xs text-[var(--color-fg-muted)]">
           {canVote
             ? "Pick the winner to see the room"
             : "Sign in to see who the room is backing"}
@@ -303,13 +303,13 @@ function CrowdPicksRow({
               type="button"
               disabled={!canVote || submitting !== null}
               onClick={() => handleVote(p)}
-              className="rounded border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors hover:bg-slate-800 disabled:opacity-50"
+              className="rounded border border-[var(--color-border)] bg-[var(--color-bg-elevated)] px-3 py-1.5 text-xs font-medium text-[var(--color-fg)] transition-colors hover:bg-[var(--color-surface-2)] disabled:opacity-50"
             >
               {submitting === p ? "…" : PICK_LABEL[p]}
             </button>
           ))}
         </div>
-        {err ? <div className="mt-1.5 text-xs text-red-400">{err}</div> : null}
+        {err ? <div className="mt-1.5 text-xs text-[var(--color-negative)]">{err}</div> : null}
       </div>
     );
   }
@@ -322,12 +322,12 @@ function CrowdPicksRow({
     away: Math.round((crowdPicks.away / total) * 100),
   };
   return (
-    <div className="border-b border-slate-800 bg-slate-900/30 px-4 py-2.5">
-      <div className="mb-1.5 flex items-center justify-between text-xs text-slate-400">
+    <div className="border-b border-[var(--color-hairline)] bg-[var(--color-surface)] px-4 py-2.5">
+      <div className="mb-1.5 flex items-center justify-between text-xs text-[var(--color-fg-muted)]">
         <span>
           Crowd picks · {crowdPicks.totalVotes.toLocaleString()} votes
         </span>
-        <span className="text-slate-500">
+        <span className="text-[var(--color-fg-dim)]">
           You picked {PICK_LABEL[myPick]}
         </span>
       </div>
@@ -357,17 +357,17 @@ function PickBar({
   return (
     <div className="flex items-center gap-2">
       <span
-        className={`w-12 text-xs ${highlighted ? "font-medium text-amber-400" : "text-slate-300"}`}
+        className={`w-12 text-xs ${highlighted ? "font-medium text-[var(--color-fg)]" : "text-[var(--color-fg-muted)]"}`}
       >
         {label}
       </span>
-      <div className="relative h-2 flex-1 overflow-hidden rounded bg-slate-800">
+      <div className="relative h-2 flex-1 overflow-hidden rounded bg-[var(--color-bg-elevated)]">
         <div
-          className={`absolute inset-y-0 left-0 transition-[width] duration-500 ${highlighted ? "bg-amber-400" : "bg-slate-500"}`}
+          className={`absolute inset-y-0 left-0 transition-[width] duration-500 ${highlighted ? "bg-[var(--color-accent)]" : "bg-[var(--color-fg-dim)]"}`}
           style={{ width: `${percent}%` }}
         />
       </div>
-      <span className="w-9 text-right font-mono text-xs text-slate-400">
+      <span className="w-9 text-right font-mono text-xs text-[var(--color-fg-muted)]">
         {percent}%
       </span>
     </div>
@@ -435,7 +435,7 @@ function MessageList({
         className="absolute inset-0 overflow-y-auto px-4 py-3"
       >
         {messages.length === 0 ? (
-          <div className="text-xs text-slate-500">
+          <div className="text-xs text-[var(--color-fg-dim)]">
             No messages yet. Be the first to say something.
           </div>
         ) : (
@@ -453,7 +453,7 @@ function MessageList({
         <button
           type="button"
           onClick={jump}
-          className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-amber-500 bg-amber-400/90 px-3 py-1 text-xs font-medium text-slate-900 shadow"
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 py-1 text-xs font-medium text-[var(--color-accent-fg)] shadow-[var(--shadow-md)]"
         >
           {unread} new {unread === 1 ? "message" : "messages"} ↓
         </button>
@@ -465,22 +465,22 @@ function MessageList({
 function MessageRow({ message }: { message: LiveChatMessage }) {
   if (message.kind === "system") {
     return (
-      <div className="flex items-center gap-2 rounded border border-amber-700/40 bg-amber-950/30 px-3 py-1.5 text-xs">
-        <span className="rounded bg-amber-500/20 px-1.5 py-0.5 font-medium uppercase tracking-wide text-amber-300">
+      <div className="flex items-center gap-2 rounded border border-[var(--color-border)] bg-[var(--color-bg-elevated)] px-3 py-1.5 text-xs">
+        <span className="rounded bg-[var(--color-surface-2)] px-1.5 py-0.5 font-medium uppercase tracking-wide text-[var(--color-fg-muted)]">
           {message.systemKind.replace("_", " ")}
         </span>
-        <span className="text-amber-100">{message.text}</span>
+        <span className="text-[var(--color-fg)]">{message.text}</span>
       </div>
     );
   }
   return (
     <div className="flex items-start gap-2">
-      <span className="mt-0.5 inline-flex h-7 w-7 flex-none items-center justify-center rounded-full bg-slate-700 text-[10px] font-semibold text-slate-100">
+      <span className="mt-0.5 inline-flex h-7 w-7 flex-none items-center justify-center rounded-full border border-[var(--color-border)] bg-[var(--color-bg-elevated)] text-[10px] font-semibold text-[var(--color-fg)]">
         {message.avatarInitials}
       </span>
       <div className="min-w-0 flex-1">
-        <div className="text-xs text-slate-400">{message.nickname}</div>
-        <div className="break-words text-sm text-slate-100">{message.text}</div>
+        <div className="text-xs text-[var(--color-fg-muted)]">{message.nickname}</div>
+        <div className="break-words text-sm text-[var(--color-fg)]">{message.text}</div>
       </div>
     </div>
   );
@@ -498,7 +498,7 @@ function BurstOverlay({ bursts }: { bursts: ReactionBurst[] }) {
       {visible.map((b) => (
         <span
           key={b.id}
-          className="animate-pulse rounded-full border border-amber-500 bg-slate-900/90 px-2.5 py-1 text-[11px] font-medium text-amber-300 shadow"
+          className="animate-pulse rounded-full border border-[var(--color-accent)] bg-[var(--color-bg-card)] px-2.5 py-1 text-[11px] font-medium text-[var(--color-fg)] shadow-[var(--shadow-md)]"
         >
           {b.nickname}: {REACTION_LABEL[b.reaction]}
         </span>
@@ -526,7 +526,11 @@ function ReactionBar({
     setBusy(null);
   };
   return (
-    <div className="flex items-center gap-1.5 border-t border-slate-800 bg-slate-900/40 px-4 py-2">
+    // Equal-width 6-column grid (was a flex row with horizontal padding
+    // that overflowed the 340px rail and clipped the "100" chip on the
+    // right). Each button now claims `1fr` of the row, so the labels
+    // fit no matter how narrow the panel gets.
+    <div className="grid grid-cols-6 gap-1 border-t border-[var(--color-hairline)] bg-[var(--color-surface)] px-3 py-2">
       {REACTION_KINDS.map((r) => (
         <button
           key={r}
@@ -534,7 +538,7 @@ function ReactionBar({
           disabled={disabled || busy !== null}
           onClick={() => handle(r)}
           title={r}
-          className="rounded border border-slate-700 bg-slate-800/40 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-300 transition-colors hover:bg-slate-800 disabled:opacity-40"
+          className="min-w-0 truncate rounded border border-[var(--color-border)] bg-[var(--color-bg-elevated)] px-1 py-1 text-[10px] font-semibold uppercase tracking-tight text-[var(--color-fg-muted)] transition-colors hover:bg-[var(--color-surface-2)] hover:text-[var(--color-fg)] disabled:opacity-40"
         >
           {REACTION_LABEL[r]}
         </button>
@@ -575,7 +579,7 @@ function MessageInputBar({
   };
 
   return (
-    <div className="border-t border-slate-800 bg-slate-900/40 px-4 py-2.5">
+    <div className="border-t border-[var(--color-hairline)] bg-[var(--color-surface)] px-4 py-2.5">
       <div className="flex items-center gap-2">
         <input
           type="text"
@@ -590,27 +594,27 @@ function MessageInputBar({
           }}
           placeholder={disabled ? "Reconnecting…" : "Say something"}
           maxLength={MESSAGE_LIMIT + 40}
-          className={`flex-1 rounded border bg-slate-950/50 px-3 py-1.5 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 ${tooLong ? "border-red-500 focus:ring-red-500" : "border-slate-700 focus:ring-amber-400"}`}
+          className={`min-w-0 flex-1 rounded border bg-[var(--color-bg-elevated)] px-3 py-1.5 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:outline-none focus:ring-1 ${tooLong ? "border-[var(--color-negative)] focus:ring-[var(--color-negative)]" : "border-[var(--color-border)] focus:ring-[var(--color-accent)]"}`}
         />
         <button
           type="button"
           onClick={() => void submit()}
           disabled={!canSend}
-          className="rounded bg-amber-400 px-3 py-1.5 text-xs font-semibold text-slate-900 transition-colors hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded bg-[var(--color-accent)] px-3 py-1.5 text-xs font-semibold text-[var(--color-accent-fg)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {busy ? "…" : "Send"}
         </button>
       </div>
       <div className="mt-1 flex items-center justify-between text-[11px]">
-        <span className={err ? "text-red-400" : "text-slate-500"}>
+        <span className={err ? "text-[var(--color-negative)]" : "text-[var(--color-fg-dim)]"}>
           {err ?? ""}
         </span>
         {showCounter ? (
           <span
             className={
               tooLong
-                ? "font-mono text-red-400"
-                : "font-mono text-slate-400"
+                ? "font-mono text-[var(--color-negative)]"
+                : "font-mono text-[var(--color-fg-muted)]"
             }
           >
             {remaining}
@@ -625,7 +629,7 @@ function MessageInputBar({
 
 function ReconnectBanner() {
   return (
-    <div className="border-t border-amber-700/40 bg-amber-950/30 px-4 py-1.5 text-center text-xs text-amber-200">
+    <div className="border-t border-[var(--color-hairline)] bg-[var(--color-bg-elevated)] px-4 py-1.5 text-center text-xs text-[var(--color-fg-muted)]">
       Reconnecting…
     </div>
   );
