@@ -27,10 +27,12 @@ export function ZillapassPageView({
   // the chip whenever a tracker fires. The SSR-provided `initial`
   // seeds the first paint until the provider's own fetch lands.
   const { data: ctxData, setData } = useZillapass();
+  // Only seed once on mount; subsequent context updates win. Intentional
+  // empty deps. The repo's ESLint config doesn't load react-hooks rules,
+  // so no exhaustive-deps suppression is needed (and a stale disable
+  // comment referencing the unknown rule fails `pnpm lint`).
   useEffect(() => {
     if (initial && ctxData === null) setData(initial);
-    // Only seed once on mount; subsequent context updates win.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const data = ctxData ?? initial;
 
