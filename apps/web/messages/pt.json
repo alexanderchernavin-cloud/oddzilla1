@@ -172,12 +172,7 @@
   },
   "home": {
     "lobby": "Lobby",
-    "inPlay": "Em jogo",
-    "nextUpToday": "Próximas de hoje",
     "upcoming": "Próximas",
-    "liveKicker": "Ao vivo",
-    "nextKicker": "Próxima",
-    "upcomingKicker": "Próximas",
     "empty": "Nada agendado. Confira as páginas de cada esporte para a programação completa."
   },
   "lobby": {
