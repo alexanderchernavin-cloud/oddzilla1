@@ -11,8 +11,9 @@
 # need a postgresql-client install on the host.
 #
 # Retention here is independent of /var/backups/oddzilla — keep the
-# last 10 pre-deploy snapshots, which covers a typical rollback window
-# of a couple weeks at our merge cadence.
+# last 2 pre-deploy snapshots. The /var/backups/oddzilla cron is the
+# durable history line; this dir only needs to support "roll back the
+# deploy I just did" without the per-dump ~3 GB starving the disk.
 
 set -euo pipefail
 
@@ -26,7 +27,7 @@ if [ "$#" -lt 1 ]; then
 fi
 
 SHA="$1"
-RETENTION="${PRE_DEPLOY_BACKUP_RETENTION:-10}"
+RETENTION="${PRE_DEPLOY_BACKUP_RETENTION:-2}"
 ENV_FILE="${ENV_FILE:-${REPO_ROOT}/.env}"
 
 deploy_ensure_dirs

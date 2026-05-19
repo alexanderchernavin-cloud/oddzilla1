@@ -157,11 +157,26 @@ function ZillaFlashCard({
   const slip = useBetSlip();
   const t = useTranslations("zillaflash");
 
-  // Pre-sort outcomes by ascending boosted odds so favourites lead
-  // the list. Stable order across re-renders keeps the rows from
-  // jumping as live odds tick.
+  // Sort outcomes for display. Three-way markets render 1 / X / 2
+  // (home / draw / away) — Oddin assigns outcome id "3" to the draw,
+  // so it slots between "1" and "2" via weight 1.5. Mirrors the
+  // catalog-side ordering applied by outcomeSortWeight() in
+  // services/api/src/lib/market-naming.ts. Non-canonical outcome
+  // ids (URNs, "over"/"under", …) fall back to ascending boosted
+  // odds so favourites lead.
   const outcomes = useMemo(() => {
+    const weight = (id: string): number | null => {
+      const n = Number.parseInt(id, 10);
+      if (!Number.isFinite(n) || String(n) !== id) return null;
+      if (n === 3) return 1.5;
+      return n;
+    };
     return [...offer.marketSnapshot].sort((a, b) => {
+      const aw = weight(a.outcomeId);
+      const bw = weight(b.outcomeId);
+      if (aw != null && bw != null) return aw - bw;
+      if (aw != null) return -1;
+      if (bw != null) return 1;
       const ao = Number.parseFloat(a.boostedOdds);
       const bo = Number.parseFloat(b.boostedOdds);
       if (!Number.isFinite(ao)) return 1;
