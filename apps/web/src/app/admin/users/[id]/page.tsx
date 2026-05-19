@@ -12,10 +12,28 @@ interface OddsAdjustmentSummary {
   counts: { sport: number; tournament: number; match: number };
 }
 
+interface PromoVisibilitySummaryKind {
+  global: { visible: boolean } | null;
+  counts: { sport: number; tournament: number; match: number };
+}
+
+interface PromoVisibilitySummary {
+  zillaflash: PromoVisibilitySummaryKind;
+  combi_boost: PromoVisibilitySummaryKind;
+}
+
 function formatBpPct(bp: number): string {
   if (bp === 0) return "0.00%";
   const sign = bp > 0 ? "+" : "−";
   return `${sign}${(Math.abs(bp) / 100).toFixed(2)}%`;
+}
+
+function summarisePromoKind(s: PromoVisibilitySummaryKind): string {
+  const total = s.counts.sport + s.counts.tournament + s.counts.match;
+  if (!s.global && total === 0) return "default on";
+  const globalLabel = s.global ? (s.global.visible ? "On" : "Off") : "default on";
+  if (total === 0) return globalLabel;
+  return `${globalLabel} · ${total} override${total === 1 ? "" : "s"}`;
 }
 
 interface DetailResponse {
@@ -62,9 +80,10 @@ export default async function UserDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const [data, oddsAdjustment] = await Promise.all([
+  const [data, oddsAdjustment, promoVisibility] = await Promise.all([
     serverApi<DetailResponse>(`/admin/users/${id}`),
     serverApi<OddsAdjustmentSummary>(`/admin/users/${id}/odds-adjustment`),
+    serverApi<PromoVisibilitySummary>(`/admin/users/${id}/promo-visibility`),
   ]);
   if (!data) notFound();
 
@@ -153,6 +172,36 @@ export default async function UserDetailPage({
           </div>
           <Link
             href={`/admin/users/${user.id}/odds-adjustment`}
+            className="text-xs uppercase tracking-[0.15em] underline-offset-2 hover:underline"
+            style={{ color: "var(--color-fg)" }}
+          >
+            Manage cascade &rarr;
+          </Link>
+        </div>
+      </section>
+
+      <section className="mt-10">
+        <h2 className="text-sm uppercase tracking-[0.18em] text-[var(--color-fg-subtle)]">
+          Promo visibility
+        </h2>
+        <div className="mt-4 card p-6 flex items-center justify-between gap-6 flex-wrap">
+          <div className="min-w-0">
+            <p className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
+              ZillaFlash &amp; CombiBoost per bettor
+            </p>
+            <div className="mt-2 grid gap-1 text-sm" style={{ gridTemplateColumns: "auto auto" }}>
+              <span style={{ color: "var(--color-fg-muted)" }}>ZillaFlash:</span>
+              <span style={{ fontVariantNumeric: "tabular-nums" }}>
+                {promoVisibility ? summarisePromoKind(promoVisibility.zillaflash) : "—"}
+              </span>
+              <span style={{ color: "var(--color-fg-muted)" }}>CombiBoost:</span>
+              <span style={{ fontVariantNumeric: "tabular-nums" }}>
+                {promoVisibility ? summarisePromoKind(promoVisibility.combi_boost) : "—"}
+              </span>
+            </div>
+          </div>
+          <Link
+            href={`/admin/users/${user.id}/promo-visibility`}
             className="text-xs uppercase tracking-[0.15em] underline-offset-2 hover:underline"
             style={{ color: "var(--color-fg)" }}
           >

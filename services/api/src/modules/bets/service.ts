@@ -83,6 +83,10 @@ import {
   resolveBettorAdjustmentBp,
   applyBettorAdjustment,
 } from "../../lib/bettor-odds-adjustment.js";
+import {
+  loadPromoVisibilityCascades,
+  resolveVisible,
+} from "../../lib/bettor-promo-visibility.js";
 
 // Internal sentinel: thrown from inside the placement tx when
 // RiskZilla rejects the bet. The tx rolls back on throw; we catch in
@@ -732,6 +736,30 @@ export class BetsService {
             liveConfig,
           );
           combiMultiplier = boost.multiplier;
+          // Per-bettor visibility (migration 0071). If the bettor has
+          // combi_boost hidden on ANY leg's match / tournament / sport,
+          // strip the multiplier — they're not allowed this promo on
+          // this combo. Cheap check: cascade load is one indexed query,
+          // and `cascades.empty` short-circuits to no work for users
+          // without any rules.
+          if (combiMultiplier > 1.0) {
+            const promoCascades = await loadPromoVisibilityCascades(tx, ctx.userId);
+            if (!promoCascades.combi_boost.empty) {
+              for (const sel of req.selections) {
+                const m = marketByID.get(sel.marketId);
+                if (!m) continue;
+                const visible = resolveVisible(promoCascades, "combi_boost", {
+                  matchId: m.matchId,
+                  tournamentId: m.tournamentId,
+                  sportId: m.sportId,
+                });
+                if (!visible) {
+                  combiMultiplier = 1.0;
+                  break;
+                }
+              }
+            }
+          }
           if (combiMultiplier > 1.0) {
             const meta: ComboMeta = {
               product: "combo",

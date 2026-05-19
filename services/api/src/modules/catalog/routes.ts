@@ -33,6 +33,10 @@ import {
 import { NotFoundError } from "../../lib/errors.js";
 import { cached } from "../../lib/cache.js";
 import {
+  loadPromoVisibilityCascades,
+  resolveVisible,
+} from "../../lib/bettor-promo-visibility.js";
+import {
   substituteTemplate,
   renderOutcomeLabel,
   deriveScope,
@@ -755,7 +759,19 @@ export default async function catalogRoutes(app: FastifyInstance) {
   });
 
   // ── Combi Boost config (read-only, live-tunable in /admin) ───────────
-  app.get("/catalog/combi-boost-config", async () => {
+  app.get("/catalog/combi-boost-config", async (request) => {
+    // Per-bettor visibility (migration 0071). When the authed user has a
+    // global combi_boost = false override, return `enabled=false` so the
+    // storefront stops rendering the multiplier strip. Per-sport / per-
+    // tournament / per-match overrides apply at placement only — the
+    // list endpoint can't enumerate every (matchA, matchB, ...) combo a
+    // bettor might build, so the bet-side resolver does the final say.
+    if (request.user) {
+      const cascades = await loadPromoVisibilityCascades(app.db, request.user.id);
+      if (!resolveVisible(cascades, "combi_boost")) {
+        return { enabled: false, minOdds: 1.5, tiers: [] };
+      }
+    }
     const [row] = await app.db
       .select()
       .from(combiBoostConfig)
