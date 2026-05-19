@@ -42,16 +42,29 @@ import { WebSocketServer, WebSocket } from "ws";
 import { parse as parseCookies } from "cookie";
 import { Redis } from "ioredis";
 import pino from "pino";
+import postgres from "postgres";
 import { loadEnv, loadAuthEnv, corsOrigins } from "@oddzilla/config";
 import {
   secretKey,
   verifyAccessToken,
   type AccessTokenClaims,
 } from "@oddzilla/auth/jwt";
+import {
+  loadCascade,
+  resolveBp,
+  applyAdjustment,
+  EMPTY_CASCADE,
+  type BettorAdjustmentCascade,
+} from "./bettor-adjustment.js";
 
 const ACCESS_COOKIE = "oddzilla_access";
 const PUB_CHANNEL_PREFIX = "odds:match:";
 const USER_CHANNEL_PREFIX = "user:";
+// Admin mutation channel. The api process publishes the userId here on
+// every PUT/DELETE under /admin/users/:userId/odds-adjustment/*; the
+// gateway drops that user's cached cascade on receipt. Single channel
+// per gateway (not pattern-matched) so the Redis subscriber stays cheap.
+const ADJUSTMENT_INVALIDATE_CHANNEL = "bettor_adjustment_invalidated";
 const REQUEST_ID_HEADER = "x-request-id";
 // Inbound IDs are echoed verbatim only when they match this shape.
 // Anything else is treated as missing — same defense-in-depth as the
@@ -144,6 +157,22 @@ function normalizeOrigin(origin: string): string {
 const sub = new Redis(env.REDIS_URL, { lazyConnect: false });
 const ctl = new Redis(env.REDIS_URL, { lazyConnect: false });
 
+// Postgres pool used only for loading a connecting user's odds-adjustment
+// cascade. The query is one indexed lookup per authed upgrade; the cache
+// holds the result for the lifetime of the connection (or until an admin
+// mutation invalidates it via the pub/sub channel below). Capped at 4
+// connections — odds-adjustment hot paths don't need more, and ws-gateway
+// shouldn't compete with the api process for the main pool.
+const pg = postgres(env.DATABASE_URL, { max: 4, prepare: false });
+
+// In-memory cascade cache keyed by userId. Loaded once per authed
+// connection and shared across all sockets that user opens (multi-tab).
+// Invalidated by:
+//   1. Admin write → Redis publish on ADJUSTMENT_INVALIDATE_CHANNEL
+//   2. Last socket for the user disconnects → entry dropped (keeps the
+//      memory bounded; next login re-loads)
+const cascadeCache = new Map<string, BettorAdjustmentCascade>();
+
 // Track the subscribe-side connection so /healthz can fail when it goes
 // down — without this, the control client stays green while user/odds
 // frames silently stop being delivered and Compose keeps the container
@@ -152,6 +181,15 @@ let subReady = false;
 sub.on("ready", () => {
   subReady = true;
   log.info("sub redis ready");
+  // (Re-)subscribe to the global invalidation channel on every (re)ready.
+  // Independent of per-user / per-match channels — those are managed by
+  // refcount; this one is permanent.
+  sub.subscribe(ADJUSTMENT_INVALIDATE_CHANNEL).catch((err: Error) => {
+    log.warn(
+      { err: err.message, channel: ADJUSTMENT_INVALIDATE_CHANNEL },
+      "redis subscribe invalidation channel failed",
+    );
+  });
 });
 sub.on("end", () => {
   subReady = false;
@@ -332,6 +370,11 @@ wss.on("connection", (ws: WebSocket, _req: IncomingMessage, claims: AccessTokenC
   if (claims) {
     addUserSocket(state);
     incrementUserRef(claims.sub);
+    // Cascade load is best-effort: a DB hiccup just leaves the user
+    // with the empty cascade (raw odds — same as a user with no rule).
+    // Slightly stale through an admin write that races the load, but
+    // the invalidation channel resolves that within milliseconds.
+    void loadCascadeForUser(claims.sub);
   }
   send(ws, {
     type: "hello",
@@ -529,9 +572,28 @@ function decrementUserRef(userId: string) {
     sub.unsubscribe(USER_CHANNEL_PREFIX + userId).catch((err: Error) => {
       log.debug({ err: err.message, userId }, "redis unsubscribe user failed");
     });
+    // Last socket for this user gone → drop the cascade entry. Next
+    // login re-loads from PG. Keeps the cache bounded by live audience,
+    // not by lifetime customer count.
+    cascadeCache.delete(userId);
     return;
   }
   userRefs.set(userId, current - 1);
+}
+
+// Best-effort cascade load. Concurrent connections for the same user
+// race here, but loadCascade is idempotent and the Map.set is atomic;
+// worst case we run the SELECT twice. The cache key uses the canonical
+// userId string — same value the invalidation channel publishes.
+async function loadCascadeForUser(userId: string): Promise<void> {
+  try {
+    const cascade = await loadCascade(pg, userId);
+    cascadeCache.set(userId, cascade);
+  } catch (err) {
+    log.warn({ err: (err as Error).message, userId }, "cascade load failed");
+    // Don't insert an empty cascade on error — the resolver already
+    // falls back to "no rule" when the cache is missing.
+  }
 }
 
 function incrementChatMatchRef(matchId: string) {
@@ -610,6 +672,19 @@ function broadcastViewerCount(matchId: string) {
 
 // Single subscriber; dispatch to interested clients.
 sub.on("message", (channel: string, payload: string) => {
+  if (channel === ADJUSTMENT_INVALIDATE_CHANNEL) {
+    // payload = userId. Drop the cached cascade so the next odds frame
+    // for that user reloads from PG. Re-load is lazy: the next time
+    // the user receives a tick after a fresh load completes, the new
+    // bp takes effect. In the gap (microseconds) the user briefly
+    // sees the pre-mutation price — acceptable since placement always
+    // re-validates against the current cascade in the tx.
+    cascadeCache.delete(payload);
+    // Eagerly refresh if this user is still connected — keeps the
+    // common case (admin mutation while user is online) hot.
+    if (userSockets.has(payload)) void loadCascadeForUser(payload);
+    return;
+  }
   if (channel.startsWith(CHAT_CHANNEL_PREFIX)) {
     const matchId = channel.slice(CHAT_CHANNEL_PREFIX.length);
     dispatchChat(matchId, payload);
@@ -627,13 +702,88 @@ sub.on("message", (channel: string, payload: string) => {
   }
 });
 
+// Minimal shape we read off the odds payload to resolve cascade per
+// subscriber. odds-publisher's OutboundPayload carries every field we
+// need (sportId / tournamentId / matchId / publishedOdds / probability)
+// after the wire-format extension; older field omissions degrade
+// gracefully (resolver gates on bp=0 → fast path).
+interface OddsFrame {
+  type: string;
+  matchId: string;
+  marketId: string;
+  outcomeId: string;
+  publishedOdds: string;
+  probability?: string;
+  sportId?: number;
+  tournamentId?: number;
+}
+
 function dispatchOdds(matchId: string, payload: string) {
   const subs = matchSubscribers.get(matchId);
   if (!subs) return;
+
+  // Parse once per frame, only when at least one subscriber is authed
+  // AND has a cached cascade. The very common case (anonymous / no
+  // bettor rules) skips the parse entirely.
+  let frame: OddsFrame | null = null;
+  let frameInvalid = false;
+  // Cache rewritten payloads per bp value so two subscribers with the
+  // same bp share the JSON-stringify work. Keyed by integer bp.
+  let rewriteCache: Map<number, string> | null = null;
+
   for (const client of subs) {
     if (client.socket.readyState !== WebSocket.OPEN) continue;
+    const userId = client.userId;
+    let outbound = payload;
+
+    if (userId !== null) {
+      const cascade = cascadeCache.get(userId);
+      if (cascade && !cascade.empty) {
+        if (frame === null && !frameInvalid) {
+          try {
+            frame = JSON.parse(payload) as OddsFrame;
+          } catch {
+            frameInvalid = true;
+          }
+        }
+        if (
+          frame &&
+          frame.sportId !== undefined &&
+          frame.tournamentId !== undefined
+        ) {
+          const bp = resolveBp(
+            cascade,
+            frame.matchId,
+            frame.tournamentId,
+            frame.sportId,
+          );
+          if (bp !== 0) {
+            if (rewriteCache === null) rewriteCache = new Map();
+            let rewritten = rewriteCache.get(bp);
+            if (rewritten === undefined) {
+              const adjusted = applyAdjustment(
+                frame.publishedOdds,
+                frame.probability ?? null,
+                bp,
+              );
+              if (adjusted !== frame.publishedOdds) {
+                rewritten = JSON.stringify({
+                  ...frame,
+                  publishedOdds: adjusted,
+                });
+              } else {
+                rewritten = payload;
+              }
+              rewriteCache.set(bp, rewritten);
+            }
+            outbound = rewritten;
+          }
+        }
+      }
+    }
+
     try {
-      client.socket.send(payload);
+      client.socket.send(outbound);
     } catch (err) {
       log.debug({ err: (err as Error).message }, "send failed");
     }
@@ -719,6 +869,8 @@ function shutdown(signal: string) {
   http.close();
   sub.disconnect();
   ctl.disconnect();
+  cascadeCache.clear();
+  void pg.end({ timeout: 5 });
   setTimeout(() => process.exit(0), 100);
 }
 process.on("SIGTERM", () => shutdown("SIGTERM"));

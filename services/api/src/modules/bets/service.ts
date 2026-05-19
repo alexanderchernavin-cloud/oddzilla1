@@ -78,6 +78,11 @@ import {
   type RiskzillaRejected,
   type MatchContext as RiskzillaMatchContext,
 } from "../../lib/riskzilla/engine.js";
+import {
+  loadBettorAdjustmentCascade,
+  resolveBettorAdjustmentBp,
+  applyBettorAdjustment,
+} from "../../lib/bettor-odds-adjustment.js";
 
 // Internal sentinel: thrown from inside the placement tx when
 // RiskZilla rejects the bet. The tx rolls back on throw; we catch in
@@ -413,6 +418,18 @@ export class BetsService {
         throw new BadRequestError("too_many_legs", "too_many_legs");
       }
 
+      // ── Per-bettor odds adjustment ───────────────────────────────────
+      // Loaded once for the placement; the cascade resolves per leg using
+      // (matchId, tournamentId, sportId) — same shape the catalog
+      // endpoints used to render the slip's captured price. Adjustment
+      // is meaningless for tiple / tippot (probability-based pricing)
+      // and BetBuilder (OBB session combined), so we apply it only to
+      // singles + traditional combos.
+      const bettorCascade =
+        !isProductBet && !isBetBuilder
+          ? await loadBettorAdjustmentCascade(tx, ctx.userId)
+          : null;
+
       let productOdds = 1;
       const seenMatchIds = new Set<string>();
       let betBuilderMatchId: string | null = null;
@@ -480,7 +497,29 @@ export class BetsService {
           // session-odds change because OBB's pricing model is
           // non-multiplicative (Oddin docs §1.1). Server re-validates
           // the whole session via SessionInfo below.
-          const drift = Math.abs(currentOdds - submittedOdds) / submittedOdds;
+          //
+          // For singles + traditional combos the drift is computed
+          // against the bettor's *adjusted* current odds — the same
+          // shape the slip captured at click time. Without this the
+          // catalog's adjusted display and the server's drift gate
+          // disagree, and every adjusted bettor sees odds_drift_exceeded
+          // on placement.
+          let driftReference = currentOdds;
+          if (bettorCascade && !bettorCascade.empty) {
+            const bp = resolveBettorAdjustmentBp(bettorCascade, {
+              matchId: market.matchId,
+              tournamentId: market.tournamentId,
+              sportId: market.sportId,
+            });
+            const adj = applyBettorAdjustment(
+              outcome.publishedOdds,
+              outcome.probability,
+              bp,
+            );
+            const parsed = adj != null ? Number(adj) : NaN;
+            if (Number.isFinite(parsed) && parsed > 0) driftReference = parsed;
+          }
+          const drift = Math.abs(driftReference - submittedOdds) / submittedOdds;
           if (drift > tolerance) {
             throw new BadRequestError("odds_drift_exceeded", "odds_drift_exceeded");
           }

@@ -232,7 +232,19 @@ func (w *Worker) processTicket(ctx context.Context, p store.PendingTicket) error
 		return err
 	}
 
-	decision := w.evaluate(p, selections)
+	// Per-bettor odds adjustment cascade. Meaningless for tiple / tippot
+	// (probability-anchored pricing) and betbuilder (OBB session combined
+	// odds); for those products we skip the load and the resolver returns
+	// the empty-cascade sentinel.
+	var bettorAdj *store.BettorAdjustment
+	if p.BetType == "single" || p.BetType == "combo" {
+		bettorAdj, err = store.LoadBettorAdjustment(ctx, tx, p.UserID)
+		if err != nil {
+			return fmt.Errorf("load bettor adjustment: %w", err)
+		}
+	}
+
+	decision := w.evaluate(p, selections, bettorAdj)
 	switch decision.action {
 	case actionReject:
 		if err := store.RejectAndRefund(ctx, tx, p.ID, p.UserID, p.Currency, decision.reason, p.StakeMicro); err != nil {
@@ -320,7 +332,7 @@ type evalResult struct {
 //     is ignored. Drift still gates rejection.
 //   - "single" / "combo": drift rejects unless accept_odds_changes is
 //     true, in which case we re-price.
-func (w *Worker) evaluate(p store.PendingTicket, selections []store.Selection) evalResult {
+func (w *Worker) evaluate(p store.PendingTicket, selections []store.Selection, bettorAdj *store.BettorAdjustment) evalResult {
 	if len(selections) == 0 {
 		return evalResult{action: actionReject, reason: "no_selections"}
 	}
@@ -348,9 +360,25 @@ func (w *Worker) evaluate(p store.PendingTicket, selections []store.Selection) e
 			return evalResult{action: actionReject, reason: "no_current_price"}
 		}
 		placed, err1 := strconv.ParseFloat(s.OddsAtPlacement, 64)
-		current, err2 := strconv.ParseFloat(*s.CurrentPublished, 64)
-		if err1 != nil || err2 != nil || placed <= 0 || current <= 0 {
+		currentRaw, err2 := strconv.ParseFloat(*s.CurrentPublished, 64)
+		if err1 != nil || err2 != nil || placed <= 0 || currentRaw <= 0 {
 			return evalResult{action: actionReject, reason: "odds_parse"}
+		}
+		// The leg's frozen odds_at_placement is already the bettor's
+		// *adjusted* price (placement applies the cascade on the way in).
+		// To compare like-for-like we must adjust the current published
+		// price the same way before measuring drift OR re-pricing on the
+		// accept_odds_changes path. Mirror the TS applyBettorAdjustment
+		// floor and fair-odds ceiling.
+		current := currentRaw
+		currentS := *s.CurrentPublished
+		if !bettorAdj.Empty() {
+			bp := bettorAdj.Resolve(s.MatchID, s.TournamentID, s.SportID)
+			if bp != 0 {
+				adj := applyBettorAdjustment(currentRaw, s.Probability, bp)
+				current = adj
+				currentS = formatOddsFloor2(adj)
+			}
 		}
 		drifted := false
 		if !skipDrift {
@@ -367,7 +395,7 @@ func (w *Worker) evaluate(p store.PendingTicket, selections []store.Selection) e
 			marketID:  s.MarketID,
 			outcomeID: s.OutcomeID,
 			current:   current,
-			currentS:  *s.CurrentPublished,
+			currentS:  currentS,
 			drifted:   drifted,
 		})
 	}

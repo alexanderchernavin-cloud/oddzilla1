@@ -38,11 +38,19 @@ const (
 )
 
 // OutboundPayload is what ws-gateway subscribers see. Kept small.
+//
+// `SportID` + `TournamentID` are carried so per-bettor odds adjustment can
+// resolve the cascade (match > tournament > sport > global) in ws-gateway
+// without a separate DB lookup per match. The fields are additive — older
+// consumers (e.g. the storefront's `use-live-odds` hook) ignore unknown
+// keys.
 type OutboundPayload struct {
 	Type             string    `json:"type"` // always "odds"
 	MatchID          int64     `json:"matchId,string"`
 	MarketID         int64     `json:"marketId,string"`
 	ProviderMarketID int       `json:"providerMarketId"`
+	SportID          int       `json:"sportId"`
+	TournamentID     int       `json:"tournamentId"`
 	Specifiers       string    `json:"specifiers"` // canonical k=v|k=v
 	OutcomeID        string    `json:"outcomeId"`
 	PublishedOdds    string    `json:"publishedOdds"` // decimal string
@@ -126,6 +134,8 @@ func (p *Publisher) processOne(ctx context.Context, ev bus.Event) error {
 		MatchID:          info.MatchID,
 		MarketID:         info.MarketID,
 		ProviderMarketID: info.ProviderMarketID,
+		SportID:          info.SportID,
+		TournamentID:     info.TournamentID,
 		Specifiers:       ev.SpecifiersCanonical,
 		OutcomeID:        ev.OutcomeID,
 		PublishedOdds:    published,
