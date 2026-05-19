@@ -39,6 +39,13 @@ import {
   outcomeSortWeight,
   type OutcomeProfiles,
 } from "../../lib/market-naming.js";
+import {
+  loadBettorAdjustmentCascade,
+  resolveBettorAdjustmentBp,
+  applyBettorAdjustment,
+  EMPTY_CASCADE,
+  type BettorAdjustmentCascade,
+} from "../../lib/bettor-odds-adjustment.js";
 
 // Mirror of the storefront's i18n config — kept tiny + duplicated here
 // so the API doesn't import the web bundle. If we ship a new locale
@@ -460,10 +467,21 @@ async function loadTopMarketIdsBySport(
 // by matchId. Designed for inline use on match list cards: one market
 // per match, two outcomes preferred (so the card layout stays a clean
 // 2-column row of price buttons).
+// `formatPrice` is the per-outcome odds renderer. The default mirrors
+// the historical behaviour (formatOdds() → 2-decimal floor truncate).
+// Authed callers with a non-empty bettor cascade swap in a closure that
+// applies the cascade per match before formatting.
+type OutcomeFormatter = (
+  raw: string | null,
+  probability: string | null,
+  matchId: bigint,
+) => string | null;
+
 async function loadTopMarketsForMatches(
   db: FastifyInstance["db"],
   matchSports: Array<{ matchId: bigint; sportId: number }>,
   topIdsBySport: Map<number, number[]>,
+  formatPrice: OutcomeFormatter = (raw) => formatOdds(raw),
 ): Promise<Map<string, InlineTopMarket>> {
   const out = new Map<string, InlineTopMarket>();
   if (matchSports.length === 0) return out;
@@ -563,6 +581,7 @@ async function loadTopMarketsForMatches(
       if (bw != null) return 1;
       return 0;
     });
+    const mkeyBig = BigInt(mkey);
     out.set(mkey, {
       marketId: pick.marketId.toString(),
       providerMarketId: pick.providerMarketId,
@@ -570,7 +589,9 @@ async function loadTopMarketsForMatches(
       outcomes: pick.outcomes.map((o) => ({
         outcomeId: o.outcomeId,
         name: o.name,
-        publishedOdds: o.active ? formatOdds(o.publishedOdds) : null,
+        publishedOdds: o.active
+          ? formatPrice(o.publishedOdds, o.probability, mkeyBig)
+          : null,
         probability: o.probability ?? null,
       })),
     });
@@ -866,6 +887,34 @@ export default async function catalogRoutes(app: FastifyInstance) {
       rows.map((r) => r.matchId),
     );
 
+    // Per-bettor odds adjustment. Anonymous requests skip the lookup
+    // (EMPTY_CASCADE makes resolveBettorAdjustmentBp a no-op short-
+    // circuit), so the public-feed path stays unchanged.
+    const cascade = request.user
+      ? await loadBettorAdjustmentCascade(app.db, request.user.id)
+      : EMPTY_CASCADE;
+    const bpByMatch = new Map<string, number>();
+    if (!cascade.empty) {
+      for (const r of rows) {
+        bpByMatch.set(
+          r.matchId.toString(),
+          resolveBettorAdjustmentBp(cascade, {
+            matchId: r.matchId,
+            tournamentId: r.tournamentId,
+            sportId: sport.id,
+          }),
+        );
+      }
+    }
+    const formatForMatch = (
+      raw: string | null,
+      probability: string | null,
+      matchId: bigint,
+    ): string | null => {
+      const bp = bpByMatch.get(matchId.toString()) ?? 0;
+      return applyBettorAdjustment(raw, probability, bp);
+    };
+
     // Inline Top market per card (when admin configured the Top scope
      // for this sport). Returned alongside matchWinner so the storefront
      // can show either depending on which list-page tab is active.
@@ -874,6 +923,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
       app.db,
       rows.map((r) => ({ matchId: r.matchId, sportId: sport.id })),
       topIdsBySport,
+      formatForMatch,
     );
 
     return {
@@ -887,6 +937,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
       matches: rows.map((r) => {
         const o = oddsByMatch.get(r.matchId.toString());
         const top = topMarkets.get(r.matchId.toString()) ?? null;
+        const bp = bpByMatch.get(r.matchId.toString()) ?? 0;
         return {
           id: r.matchId.toString(),
           providerUrn: r.providerUrn,
@@ -910,12 +961,12 @@ export default async function catalogRoutes(app: FastifyInstance) {
                 marketId: o.homeMarketId,
                 home: {
                   outcomeId: o.homeOutcomeId,
-                  price: formatOdds(o.homePrice),
+                  price: applyBettorAdjustment(o.homePrice, o.homeProbability, bp),
                   probability: o.homeProbability,
                 },
                 away: {
                   outcomeId: o.awayOutcomeId,
-                  price: formatOdds(o.awayPrice),
+                  price: applyBettorAdjustment(o.awayPrice, o.awayProbability, bp),
                   probability: o.awayProbability,
                 },
                 // Present only when the match-winner market is 3-way
@@ -925,7 +976,11 @@ export default async function catalogRoutes(app: FastifyInstance) {
                 draw: o.drawOutcomeId
                   ? {
                       outcomeId: o.drawOutcomeId,
-                      price: formatOdds(o.drawPrice),
+                      price: applyBettorAdjustment(
+                        o.drawPrice,
+                        o.drawProbability,
+                        bp,
+                      ),
                       probability: o.drawProbability,
                     }
                   : null,
@@ -982,6 +1037,19 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .where(eq(matches.id, params.id))
       .limit(1);
     if (!match) throw new NotFoundError("match_not_found", "match_not_found");
+
+    // Per-bettor adjustment for this match. Resolved once and used by
+    // both the full markets render path below and the related-tab
+    // helpers downstream. Anonymous requests short-circuit on the
+    // EMPTY_CASCADE sentinel.
+    const cascade = request.user
+      ? await loadBettorAdjustmentCascade(app.db, request.user.id)
+      : EMPTY_CASCADE;
+    const matchBp = resolveBettorAdjustmentBp(cascade, {
+      matchId: match.id,
+      tournamentId: match.tournamentId,
+      sportId: match.sportId,
+    });
 
     // Phantom-live trip wire. Oddin's integration broker sometimes leaves
     // a match flagged `live` for hours (or, in extreme cases, years) after
@@ -1255,7 +1323,11 @@ export default async function catalogRoutes(app: FastifyInstance) {
           outcomeId: r.outcomeId,
           name: resolvedName,
           rawName: r.outcomeName ?? "",
-          publishedOdds: formatOdds(r.publishedOdds),
+          publishedOdds: applyBettorAdjustment(
+            r.publishedOdds,
+            r.probability,
+            matchBp,
+          ),
           probability: r.probability ?? null,
           active: r.active ?? false,
         });
@@ -1470,6 +1542,33 @@ export default async function catalogRoutes(app: FastifyInstance) {
       rows.map((r) => r.matchId),
     );
 
+    // Per-bettor adjustment, cross-sport flavour. Mirrors /catalog/sports/:slug
+    // but every row has its own sportId.
+    const cascade = request.user
+      ? await loadBettorAdjustmentCascade(app.db, request.user.id)
+      : EMPTY_CASCADE;
+    const bpByMatch = new Map<string, number>();
+    if (!cascade.empty) {
+      for (const r of rows) {
+        bpByMatch.set(
+          r.matchId.toString(),
+          resolveBettorAdjustmentBp(cascade, {
+            matchId: r.matchId,
+            tournamentId: r.tournamentId,
+            sportId: r.sportId,
+          }),
+        );
+      }
+    }
+    const formatForMatch = (
+      raw: string | null,
+      probability: string | null,
+      matchId: bigint,
+    ): string | null => {
+      const bp = bpByMatch.get(matchId.toString()) ?? 0;
+      return applyBettorAdjustment(raw, probability, bp);
+    };
+
     // Inline Top markets per card. We fetch the curated id list per
     // sport once (typically a handful of distinct sports in any list
     // response), then resolve the first available Top market per match.
@@ -1479,6 +1578,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
       app.db,
       rows.map((r) => ({ matchId: r.matchId, sportId: r.sportId })),
       topIdsBySport,
+      formatForMatch,
     );
     const topConfiguredSports: Record<string, boolean> = {};
     for (const r of rows) {
@@ -1492,6 +1592,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
       matches: rows.map((r) => {
         const o = oddsByMatch.get(r.matchId.toString());
         const top = topMarkets.get(r.matchId.toString()) ?? null;
+        const bp = bpByMatch.get(r.matchId.toString()) ?? 0;
         return {
           id: r.matchId.toString(),
           providerUrn: r.providerUrn,
@@ -1516,12 +1617,12 @@ export default async function catalogRoutes(app: FastifyInstance) {
                 marketId: o.homeMarketId,
                 home: {
                   outcomeId: o.homeOutcomeId,
-                  price: formatOdds(o.homePrice),
+                  price: applyBettorAdjustment(o.homePrice, o.homeProbability, bp),
                   probability: o.homeProbability,
                 },
                 away: {
                   outcomeId: o.awayOutcomeId,
-                  price: formatOdds(o.awayPrice),
+                  price: applyBettorAdjustment(o.awayPrice, o.awayProbability, bp),
                   probability: o.awayProbability,
                 },
                 // Present only when the match-winner market is 3-way
@@ -1531,7 +1632,11 @@ export default async function catalogRoutes(app: FastifyInstance) {
                 draw: o.drawOutcomeId
                   ? {
                       outcomeId: o.drawOutcomeId,
-                      price: formatOdds(o.drawPrice),
+                      price: applyBettorAdjustment(
+                        o.drawPrice,
+                        o.drawProbability,
+                        bp,
+                      ),
                       probability: o.drawProbability,
                     }
                   : null,

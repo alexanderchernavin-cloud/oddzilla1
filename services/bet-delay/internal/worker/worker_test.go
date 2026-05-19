@@ -92,7 +92,7 @@ func TestEvaluate(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			res := w.evaluate(makePending("combo", false, 1, 1), tc.selections)
+			res := w.evaluate(makePending("combo", false, 1, 1), tc.selections, nil)
 			if res.action != tc.actionWant {
 				t.Fatalf("action: got %v want %v (reason %q)", res.action, tc.actionWant, res.reason)
 			}
@@ -117,7 +117,7 @@ func TestEvaluateBetBuilderSkipsPerLegDrift(t *testing.T) {
 		{MarketStatus: 1, OutcomeActive: true, CurrentPublished: strPtr("3.0"), OddsAtPlacement: "2.0"},
 		{MarketStatus: 1, OutcomeActive: true, CurrentPublished: strPtr("4.5"), OddsAtPlacement: "3.0"},
 	}
-	res := w.evaluate(makePending("betbuilder", false, 1, 1), sels)
+	res := w.evaluate(makePending("betbuilder", false, 1, 1), sels, nil)
 	if res.action != actionAccept {
 		t.Fatalf("betbuilder must skip drift; got action=%v reason=%q", res.action, res.reason)
 	}
@@ -133,7 +133,7 @@ func TestEvaluateBetBuilderStillEnforcesActivity(t *testing.T) {
 		// Outcome flipped inactive after submit.
 		{MarketStatus: 1, OutcomeActive: false, CurrentPublished: strPtr("3.0"), OddsAtPlacement: "3.0"},
 	}
-	res := w.evaluate(makePending("betbuilder", false, 1, 1), sels)
+	res := w.evaluate(makePending("betbuilder", false, 1, 1), sels, nil)
 	if res.action != actionReject || res.reason != "outcome_inactive" {
 		t.Fatalf("expected outcome_inactive reject, got action=%v reason=%q", res.action, res.reason)
 	}
@@ -148,7 +148,7 @@ func TestEvaluateAcceptOddsChangesSingleReprices(t *testing.T) {
 		{MarketID: 100, OutcomeID: "1", MarketStatus: 1, OutcomeActive: true, CurrentPublished: strPtr("2.10"), OddsAtPlacement: "1.85"},
 	}
 	// stake 10_000_000 (10 USDC), placement payout = 10_000_000 * 1.85 = 18_500_000.
-	res := w.evaluate(makePending("single", true, 10_000_000, 18_500_000), sels)
+	res := w.evaluate(makePending("single", true, 10_000_000, 18_500_000), sels, nil)
 	if res.action != actionAcceptWithUpdatedOdds {
 		t.Fatalf("expected actionAcceptWithUpdatedOdds, got %v reason=%q", res.action, res.reason)
 	}
@@ -174,7 +174,7 @@ func TestEvaluateAcceptOddsChangesComboPartialDrift(t *testing.T) {
 		{MarketID: 200, OutcomeID: "2", MarketStatus: 1, OutcomeActive: true, CurrentPublished: strPtr("2.10"), OddsAtPlacement: "1.85"},
 	}
 	// stake 10_000_000, placement payout = 10_000_000 * 2.00 * 1.85 = 37_000_000.
-	res := w.evaluate(makePending("combo", true, 10_000_000, 37_000_000), sels)
+	res := w.evaluate(makePending("combo", true, 10_000_000, 37_000_000), sels, nil)
 	if res.action != actionAcceptWithUpdatedOdds {
 		t.Fatalf("expected actionAcceptWithUpdatedOdds, got %v reason=%q", res.action, res.reason)
 	}
@@ -195,7 +195,7 @@ func TestEvaluateAcceptOddsChangesStillRejectsSuspended(t *testing.T) {
 	sels := []store.Selection{
 		{MarketID: 100, OutcomeID: "1", MarketStatus: -1, OutcomeActive: true, CurrentPublished: strPtr("2.10"), OddsAtPlacement: "1.85"},
 	}
-	res := w.evaluate(makePending("single", true, 10_000_000, 18_500_000), sels)
+	res := w.evaluate(makePending("single", true, 10_000_000, 18_500_000), sels, nil)
 	if res.action != actionReject || res.reason != "market_suspended" {
 		t.Fatalf("expected market_suspended reject, got action=%v reason=%q", res.action, res.reason)
 	}
@@ -209,7 +209,7 @@ func TestEvaluateAcceptOddsChangesIgnoredForTiple(t *testing.T) {
 	sels := []store.Selection{
 		{MarketID: 100, OutcomeID: "1", MarketStatus: 1, OutcomeActive: true, CurrentPublished: strPtr("2.10"), OddsAtPlacement: "1.85"},
 	}
-	res := w.evaluate(makePending("tiple", true, 10_000_000, 18_500_000), sels)
+	res := w.evaluate(makePending("tiple", true, 10_000_000, 18_500_000), sels, nil)
 	if res.action != actionReject || res.reason != "odds_drift_exceeded" {
 		t.Fatalf("tiple must keep rejecting on drift, got action=%v reason=%q", res.action, res.reason)
 	}
@@ -225,7 +225,7 @@ func TestEvaluateAcceptOddsChangesPreservesCombiBoost(t *testing.T) {
 	}
 	p := makePending("combo", true, 10_000_000, 0)
 	p.BetMetaJSON = []byte(`{"product":"combo","boostMultiplier":"1.10"}`)
-	res := w.evaluate(p, sels)
+	res := w.evaluate(p, sels, nil)
 	if res.action != actionAcceptWithUpdatedOdds {
 		t.Fatalf("expected actionAcceptWithUpdatedOdds, got %v reason=%q", res.action, res.reason)
 	}

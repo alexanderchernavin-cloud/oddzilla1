@@ -77,13 +77,26 @@ SELECT id, user_id, currency, bet_type::text, stake_micro, potential_payout_micr
 
 // Selection is one row from ticket_selections + the current published
 // odds + market status at re-validation time.
+//
+// The (MatchID, TournamentID, SportID, Probability) tuple is filled
+// even when the worker doesn't actively use bettor adjustment — they're
+// load-bearing for re-resolving the bettor cascade per leg without a
+// second round-trip, and the join is the same join market lookups have
+// always made anyway.
 type Selection struct {
-	MarketID          int64
-	OutcomeID         string
-	OddsAtPlacement   string
-	CurrentPublished  *string // nil = no price available right now
-	OutcomeActive     bool
-	MarketStatus      int16
+	MarketID         int64
+	OutcomeID        string
+	OddsAtPlacement  string
+	CurrentPublished *string // nil = no price available right now
+	OutcomeActive    bool
+	MarketStatus     int16
+	MatchID          int64
+	TournamentID     int32
+	SportID          int32
+	// Outcome probability — used by the bettor-adjustment fair-odds
+	// clamp. Nil for legacy markets that don't ship one (OBB, very old
+	// rows); apply path degrades gracefully.
+	Probability *string
 }
 
 // LoadSelections runs under the ticket's SELECT FOR UPDATE lock.
@@ -94,9 +107,16 @@ SELECT ts.market_id,
        ts.odds_at_placement::text,
        mo.published_odds::text,
        mo.active,
-       m.status
+       mk.status,
+       mt.id,
+       t.id,
+       c.sport_id,
+       mo.probability::text
   FROM ticket_selections ts
-  JOIN markets m          ON m.id = ts.market_id
+  JOIN markets         mk ON mk.id = ts.market_id
+  JOIN matches         mt ON mt.id = mk.match_id
+  JOIN tournaments     t  ON t.id  = mt.tournament_id
+  JOIN categories      c  ON c.id  = t.category_id
   LEFT JOIN market_outcomes mo
          ON mo.market_id = ts.market_id AND mo.outcome_id = ts.outcome_id
  WHERE ts.ticket_id = $1`
@@ -109,12 +129,103 @@ SELECT ts.market_id,
 	out := make([]Selection, 0, 4)
 	for rows.Next() {
 		var s Selection
-		var published *string
-		if err := rows.Scan(&s.MarketID, &s.OutcomeID, &s.OddsAtPlacement, &published, &s.OutcomeActive, &s.MarketStatus); err != nil {
+		var published, probability *string
+		if err := rows.Scan(
+			&s.MarketID, &s.OutcomeID, &s.OddsAtPlacement,
+			&published, &s.OutcomeActive, &s.MarketStatus,
+			&s.MatchID, &s.TournamentID, &s.SportID,
+			&probability,
+		); err != nil {
 			return nil, err
 		}
 		s.CurrentPublished = published
+		s.Probability = probability
 		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// BettorAdjustment is the per-user cascade snapshot loaded once per
+// worker tick. Empty when the bettor has zero rows — every Resolve()
+// call short-circuits to bp=0 in that case.
+type BettorAdjustment struct {
+	GlobalBp     *int
+	BySport      map[int32]int
+	ByTournament map[int32]int
+	ByMatch      map[int64]int
+}
+
+func (b *BettorAdjustment) Empty() bool {
+	return b == nil ||
+		(b.GlobalBp == nil &&
+			len(b.BySport) == 0 &&
+			len(b.ByTournament) == 0 &&
+			len(b.ByMatch) == 0)
+}
+
+// Resolve walks match > tournament > sport > global in that order and
+// returns the first matching bp. Returns 0 when no rule applies.
+func (b *BettorAdjustment) Resolve(matchID int64, tournamentID, sportID int32) int {
+	if b.Empty() {
+		return 0
+	}
+	if v, ok := b.ByMatch[matchID]; ok {
+		return v
+	}
+	if v, ok := b.ByTournament[tournamentID]; ok {
+		return v
+	}
+	if v, ok := b.BySport[sportID]; ok {
+		return v
+	}
+	if b.GlobalBp != nil {
+		return *b.GlobalBp
+	}
+	return 0
+}
+
+// LoadBettorAdjustment fetches every override row for the given user.
+// Runs in the same tx as the ticket lock so a concurrent admin write
+// after the lock is acquired doesn't change the cascade mid-evaluation.
+func LoadBettorAdjustment(ctx context.Context, tx pgx.Tx, userID string) (*BettorAdjustment, error) {
+	rows, err := tx.Query(ctx, `
+SELECT scope::text, sport_id, tournament_id, match_id, adjustment_bp
+  FROM bettor_odds_adjustment_config
+ WHERE user_id = $1`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("load bettor adjustment: %w", err)
+	}
+	defer rows.Close()
+	out := &BettorAdjustment{
+		BySport:      map[int32]int{},
+		ByTournament: map[int32]int{},
+		ByMatch:      map[int64]int{},
+	}
+	for rows.Next() {
+		var scope string
+		var sportID, tournamentID *int32
+		var matchID *int64
+		var bp int
+		if err := rows.Scan(&scope, &sportID, &tournamentID, &matchID, &bp); err != nil {
+			return nil, err
+		}
+		switch scope {
+		case "global":
+			v := bp
+			out.GlobalBp = &v
+		case "sport":
+			if sportID != nil {
+				out.BySport[*sportID] = bp
+			}
+		case "tournament":
+			if tournamentID != nil {
+				out.ByTournament[*tournamentID] = bp
+			}
+		case "match":
+			if matchID != nil {
+				out.ByMatch[*matchID] = bp
+			}
+		}
 	}
 	return out, rows.Err()
 }

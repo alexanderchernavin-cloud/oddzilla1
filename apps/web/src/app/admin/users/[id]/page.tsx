@@ -7,6 +7,17 @@ import { DeleteUserButton } from "./delete-user-button";
 import { AdjustBalanceForm } from "./adjust-balance-form";
 import { ZillapassStageForm } from "./zillapass-stage-form";
 
+interface OddsAdjustmentSummary {
+  global: { adjustmentBp: number } | null;
+  counts: { sport: number; tournament: number; match: number };
+}
+
+function formatBpPct(bp: number): string {
+  if (bp === 0) return "0.00%";
+  const sign = bp > 0 ? "+" : "−";
+  return `${sign}${(Math.abs(bp) / 100).toFixed(2)}%`;
+}
+
 interface DetailResponse {
   user: {
     id: string;
@@ -51,7 +62,10 @@ export default async function UserDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const data = await serverApi<DetailResponse>(`/admin/users/${id}`);
+  const [data, oddsAdjustment] = await Promise.all([
+    serverApi<DetailResponse>(`/admin/users/${id}`),
+    serverApi<OddsAdjustmentSummary>(`/admin/users/${id}/odds-adjustment`),
+  ]);
   if (!data) notFound();
 
   const { user, stats, recentTickets, zillapass } = data;
@@ -103,6 +117,47 @@ export default async function UserDetailPage({
         </h2>
         <div className="mt-4 card p-6">
           <AdjustBalanceForm userId={user.id} email={user.email} />
+        </div>
+      </section>
+
+      <section className="mt-10">
+        <h2 className="text-sm uppercase tracking-[0.18em] text-[var(--color-fg-subtle)]">
+          Odds adjustment
+        </h2>
+        <div className="mt-4 card p-6 flex items-center justify-between gap-6 flex-wrap">
+          <div className="min-w-0">
+            <p className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
+              Global default for this bettor
+            </p>
+            <p
+              className="mt-2 font-mono text-2xl"
+              style={{
+                color:
+                  oddsAdjustment?.global && oddsAdjustment.global.adjustmentBp !== 0
+                    ? "var(--color-fg)"
+                    : "var(--color-fg-muted)",
+              }}
+            >
+              {oddsAdjustment?.global
+                ? formatBpPct(oddsAdjustment.global.adjustmentBp)
+                : "no rule"}
+            </p>
+            <p className="mt-2 text-xs text-[var(--color-fg-muted)]">
+              Per-scope overrides:{" "}
+              <span style={{ fontVariantNumeric: "tabular-nums" }}>
+                {oddsAdjustment?.counts.sport ?? 0} sport ·{" "}
+                {oddsAdjustment?.counts.tournament ?? 0} tournament ·{" "}
+                {oddsAdjustment?.counts.match ?? 0} match
+              </span>
+            </p>
+          </div>
+          <Link
+            href={`/admin/users/${user.id}/odds-adjustment`}
+            className="text-xs uppercase tracking-[0.15em] underline-offset-2 hover:underline"
+            style={{ color: "var(--color-fg)" }}
+          >
+            Manage cascade &rarr;
+          </Link>
         </div>
       </section>
 
