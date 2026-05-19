@@ -1,4 +1,4 @@
--- 0068_bettor_odds_adjustment.sql
+-- 0070_bettor_odds_adjustment.sql
 --
 -- Per-bettor odds adjustment with cascade overrides.
 --

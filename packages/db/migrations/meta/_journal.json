@@ -309,13 +309,6 @@
       "when": 1700000058000,
       "tag": "0058_push_notifications_outbox",
       "breakpoints": true
-    },
-    {
-      "idx": 44,
-      "version": "7",
-      "when": 1700000068000,
-      "tag": "0068_bettor_odds_adjustment",
-      "breakpoints": true
     }
   ]
 }

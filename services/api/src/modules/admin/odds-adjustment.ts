@@ -1,7 +1,7 @@
 // /admin/users/:userId/odds-adjustment — per-bettor odds adjustment
 // editor.
 //
-// Cascade at catalog read / placement time (see migration 0068):
+// Cascade at catalog read / placement time (see migration 0070):
 //   match > tournament > sport > global (per user)
 // First non-NULL override wins. Without any row the bettor sees the
 // standard published_odds.

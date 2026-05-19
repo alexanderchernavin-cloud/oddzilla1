@@ -1,9 +1,9 @@
-// Per-bettor odds adjustment with cascade overrides (migration 0068).
+// Per-bettor odds adjustment with cascade overrides (migration 0070).
 //
 // One row per (user, scope, ref). The cascade at catalog read / bet
 // placement time resolves match > tournament > sport > global, first
 // non-NULL wins. Without any row the bettor sees the standard
-// published_odds. See migration 0068_bettor_odds_adjustment.sql for the
+// published_odds. See migration 0070_bettor_odds_adjustment.sql for the
 // math and bp-range rationale.
 
 import { sql } from "drizzle-orm";

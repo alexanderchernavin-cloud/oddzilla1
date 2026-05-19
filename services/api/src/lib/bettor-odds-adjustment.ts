@@ -1,6 +1,6 @@
 // Per-bettor odds adjustment — cascade resolver + apply helpers.
 //
-// Design follows migration 0068_bettor_odds_adjustment.sql:
+// Design follows migration 0070_bettor_odds_adjustment.sql:
 //
 //   - One row per (user, scope, ref). Cascade order at the read site is
 //     match > tournament > sport > global; first non-NULL override wins.
