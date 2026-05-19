@@ -63,13 +63,22 @@ log "dumping pg to ${DUMP}"
 # the host shell environment. The dump streams over the docker exec
 # pipe straight into gzip on the host so the postgres container never
 # writes the dump to its own (mem-limited) filesystem.
+#
+# `gzip -1` instead of `-9` because the previous setting put gzip on a
+# single host core and pg_dump blocked on Client/ClientWrite — backups
+# of the 13 GB raw dump (mostly `odds_history_default`) took ~13 min on
+# CPX31. `-1` is ~5x faster (gzip drains pg_dump at line rate) and the
+# output is only ~10% larger (3.4 GB → ~3.8 GB), well within the 2-file
+# rotation retention. The dump is a defensive snapshot before
+# migrations, not long-term storage — favouring time-to-recover over
+# disk efficiency is the right trade.
 sudo -n docker exec -e PGPASSWORD="${POSTGRES_PASSWORD}" \
   oddzilla-postgres-1 \
   pg_dump \
     --host=127.0.0.1 --port=5432 \
     --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" \
     --no-owner --clean --if-exists \
-  | gzip -9 > "${DUMP}"
+  | gzip -1 > "${DUMP}"
 
 unset POSTGRES_PASSWORD
 
