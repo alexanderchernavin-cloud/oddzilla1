@@ -6,12 +6,18 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { eq, inArray } from "drizzle-orm";
 import { SUPPORTED_CURRENCIES } from "@oddzilla/types";
+import { markets, matches, tournaments, categories } from "@oddzilla/db";
 import { BetsService } from "./service.js";
 import { NotFoundError } from "../../lib/errors.js";
 import { validateOfferForBet } from "../zillaflash/engine.js";
 import { BadRequestError } from "../../lib/errors.js";
 import { nudgeBetPlaced } from "../zillapass/writer.js";
+import {
+  loadPromoVisibilityCascades,
+  resolveVisible,
+} from "../../lib/bettor-promo-visibility.js";
 
 const placeBody = z.object({
   stakeMicro: z.string().regex(/^\d+$/, "stake must be a positive integer string"),
@@ -78,6 +84,7 @@ export default async function betsRoutes(app: FastifyInstance) {
     // -2 s live delay shave: we surface a `hasLiveZillaFlash` flag the
     // service uses to subtract from the computed effective delay.
     let zillaFlashLiveBoost = false;
+    const zillaFlashMarketIds: bigint[] = [];
     for (const s of body.selections) {
       if (!s.zillaFlashOfferId) continue;
       const v = await validateOfferForBet(app, {
@@ -98,6 +105,54 @@ export default async function betsRoutes(app: FastifyInstance) {
       // Lock in the engine's authoritative odds for downstream math.
       s.odds = v.authoritativeOdds!;
       if (v.kind === "live") zillaFlashLiveBoost = true;
+      zillaFlashMarketIds.push(BigInt(s.marketId));
+    }
+
+    // Per-bettor promo visibility cascade (migration 0071). If the
+    // bettor has zillaflash hidden for any of these offers' matches /
+    // tournaments / sports, reject placement rather than let them
+    // claim a promo they can't see. Defense in depth — the storefront
+    // already filters /catalog/zillaflash per the same cascade, but a
+    // stale client or a direct API call must also bounce.
+    if (zillaFlashMarketIds.length > 0) {
+      const cascades = await loadPromoVisibilityCascades(app.db, u.id);
+      if (!cascades.zillaflash.empty) {
+        // Resolve each leg's market → match → tournament → sport so
+        // the cascade can resolve. One round-trip for the whole bet.
+        const metaRows = await app.db
+          .select({
+            marketId: markets.id,
+            matchId: matches.id,
+            tournamentId: tournaments.id,
+            sportId: categories.sportId,
+          })
+          .from(markets)
+          .innerJoin(matches, eq(matches.id, markets.matchId))
+          .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
+          .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+          .where(inArray(markets.id, zillaFlashMarketIds));
+        const metaByMarket = new Map(
+          metaRows.map((r) => [
+            r.marketId.toString(),
+            { matchId: r.matchId, tournamentId: r.tournamentId, sportId: r.sportId },
+          ]),
+        );
+        for (const marketIdBig of zillaFlashMarketIds) {
+          const meta = metaByMarket.get(marketIdBig.toString());
+          if (!meta) continue; // already-rejected upstream by validateOfferForBet
+          const visible = resolveVisible(cascades, "zillaflash", {
+            matchId: meta.matchId,
+            tournamentId: meta.tournamentId,
+            sportId: meta.sportId,
+          });
+          if (!visible) {
+            throw new BadRequestError(
+              "zillaflash_offer_unavailable",
+              "zillaflash_offer_unavailable",
+            );
+          }
+        }
+      }
     }
 
     const ticket = await svc.place(body, {
