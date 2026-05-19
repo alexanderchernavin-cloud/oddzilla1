@@ -1,0 +1,23 @@
+title = "oddzilla1 gitleaks config"
+
+# Inherit gitleaks' default ruleset (https://github.com/gitleaks/gitleaks/blob/master/config/gitleaks.toml).
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known false positives in the oddzilla1 tree."
+
+paths = [
+  # Template file. By policy every value is a placeholder (`change-me`,
+  # empty string, etc.) — gitleaks' generic-api-key rule trips on variable
+  # names like `DISIR_BRAND_TOKEN=` even when the value is empty. Real-secret
+  # commits to this file are caught in PR review.
+  '''\.env\.example$''',
+]
+
+regexes = [
+  # localStorage namespace keys (e.g. `oddzilla.betslip.v2`), not API keys.
+  # Gitleaks captures just the value, not the assignment, so we match the
+  # literal namespace prefix.
+  '''oddzilla\.betslip\.v\d+''',
+]
