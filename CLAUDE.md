@@ -170,6 +170,21 @@ These rules are load-bearing. Breaking them causes money or data loss.
 8. **No emojis anywhere — UI text, logs, commit messages, code comments.**
    User requirement.
 
+9. **`markets.status` terminal codes (`-3` settled / `-4` cancelled) are
+   sticky.** Once the settlement service flips a row to `-3` or `-4`, no
+   subsequent `odds_change` from feed-ingester may revert it. Oddin's
+   recovery snapshots replay older market state (a product=1 prematch
+   snapshot received after an in-band `bet_settlement` will carry the
+   same market with `status="1"` and an older `timestamp`); without this
+   guard, settled markets get resurrected in the catalog with
+   `market_outcomes.result` already decided — bettable at stale odds
+   with a known winner. Enforced via the `CASE WHEN markets.status IN
+   (-3,-4) THEN markets.status ELSE EXCLUDED.status END` branch on the
+   `ON CONFLICT` clause in both [`UpsertMarket`](./services/feed-ingester/internal/store/markets.go)
+   and `UpsertMarketsBulk`. Rollbacks (`rollback_bet_settlement`) go
+   through `settlement`'s direct `SetMarketStatus` UPDATE (not the
+   feed-ingester upsert path), so they correctly re-activate the row.
+
 ## Where things live
 
 | Concern | Path |

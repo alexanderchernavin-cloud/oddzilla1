@@ -41,6 +41,22 @@ type OutcomeUpsert struct {
 // returning the id. The unique key is (match_id, provider_market_id,
 // specifiers_hash). We do NOT overwrite specifiers_json on update — the
 // canonical form is fixed by the key, so changing it would be a bug.
+//
+// Terminal-status guard (status IN (-3, -4)): once a market has been
+// settled or cancelled by the settlement service, subsequent odds_change
+// messages must NEVER revive it. Oddin's recovery snapshots replay older
+// market state — e.g. a product=1 prematch snapshot received after an
+// in-band bet_settlement will carry the same market with status="1" and
+// an older `timestamp`, and overwriting the settled status leaves the
+// row open in the catalog with `outcomes.result` already decided
+// (exploitable: place a bet at stale odds knowing the result). The
+// settlement service owns -3/-4; we COALESCE here so its writes win
+// regardless of message order. Both the status flip AND the
+// last_oddin_ts bump are gated — if the market is terminal we keep both
+// values stable so a future fresh row never inherits a bogus newer ts
+// from a stale snapshot. RETURNING id stays valid because the row is
+// guaranteed to exist (either freshly inserted or pre-existing on the
+// conflict path).
 func UpsertMarket(ctx context.Context, db pgxRunner, m MarketUpsert) (int64, error) {
 	specBytes, err := json.Marshal(m.SpecifiersJSON)
 	if err != nil {
@@ -50,9 +66,9 @@ func UpsertMarket(ctx context.Context, db pgxRunner, m MarketUpsert) (int64, err
 INSERT INTO markets (match_id, provider_market_id, specifiers_json, specifiers_hash, status, last_oddin_ts, updated_at)
 VALUES ($1, $2, $3::jsonb, $4, $5, $6, NOW())
 ON CONFLICT (match_id, provider_market_id, specifiers_hash) DO UPDATE
-   SET status        = EXCLUDED.status,
-       last_oddin_ts = GREATEST(markets.last_oddin_ts, EXCLUDED.last_oddin_ts),
-       updated_at    = NOW()
+   SET status        = CASE WHEN markets.status IN (-3, -4) THEN markets.status ELSE EXCLUDED.status END,
+       last_oddin_ts = CASE WHEN markets.status IN (-3, -4) THEN markets.last_oddin_ts ELSE GREATEST(markets.last_oddin_ts, EXCLUDED.last_oddin_ts) END,
+       updated_at    = CASE WHEN markets.status IN (-3, -4) THEN markets.updated_at ELSE NOW() END
 RETURNING id
 `
 	var id int64
@@ -272,9 +288,9 @@ ins AS (
   SELECT $1, inp.pmid, inp.spec::jsonb, inp.hash, inp.status, inp.lts, NOW()
     FROM inp
   ON CONFLICT (match_id, provider_market_id, specifiers_hash) DO UPDATE
-     SET status        = EXCLUDED.status,
-         last_oddin_ts = GREATEST(markets.last_oddin_ts, EXCLUDED.last_oddin_ts),
-         updated_at    = NOW()
+     SET status        = CASE WHEN markets.status IN (-3, -4) THEN markets.status        ELSE EXCLUDED.status END,
+         last_oddin_ts = CASE WHEN markets.status IN (-3, -4) THEN markets.last_oddin_ts ELSE GREATEST(markets.last_oddin_ts, EXCLUDED.last_oddin_ts) END,
+         updated_at    = CASE WHEN markets.status IN (-3, -4) THEN markets.updated_at    ELSE NOW() END
   RETURNING id, provider_market_id, specifiers_hash, status
 )
 SELECT ins.id,
