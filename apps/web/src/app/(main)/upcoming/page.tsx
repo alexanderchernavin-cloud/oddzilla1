@@ -5,6 +5,7 @@ import {
   type ListMatchEnriched,
 } from "@/components/match/match-list-tabs";
 import { I } from "@/components/ui/icons";
+import { TodayLabel } from "@/components/lobby/today-label";
 import { ZillaFlashRow } from "@/components/lobby/zillaflash-row";
 import { shortName } from "@/lib/sport-order";
 import { getTranslations } from "@/lib/i18n/server";
@@ -45,6 +46,15 @@ export default async function UpcomingPage() {
         padding: "28px 32px 60px",
       }}
     >
+      {/* TODAY kicker absorbs the `.oz-shell-search` collapsed row
+          (margin-bottom: -58px) so the next sibling doesn't flow up
+          into the search bar. Same pattern the lobby home page uses. */}
+      <header className="oz-lobby-header">
+        <div className="oz-lobby-header-content">
+          <TodayLabel />
+        </div>
+      </header>
+
       {/* Prematch-only ZillaFlash boosts. Same engine, kind-filtered. */}
       <ZillaFlashRow kind="prematch" />
 

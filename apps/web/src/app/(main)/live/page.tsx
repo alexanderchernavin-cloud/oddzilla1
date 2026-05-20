@@ -7,6 +7,7 @@ import {
 } from "@/components/match/match-list-tabs";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { LiveDot } from "@/components/ui/primitives";
+import { TodayLabel } from "@/components/lobby/today-label";
 import { ZillaFlashRow } from "@/components/lobby/zillaflash-row";
 import { orderMatchesBySport, shortName } from "@/lib/sport-order";
 import { getTranslations } from "@/lib/i18n/server";
@@ -71,6 +72,16 @@ export default async function LivePage({ searchParams }: PageProps) {
         padding: "28px 32px 60px",
       }}
     >
+      {/* TODAY kicker absorbs the `.oz-shell-search` collapsed row
+          (margin-bottom: -58px) so the next sibling — the chips row
+          or the section-head — doesn't flow up into the search bar.
+          Same pattern the lobby home page uses. */}
+      <header className="oz-lobby-header">
+        <div className="oz-lobby-header-content">
+          <TodayLabel />
+        </div>
+      </header>
+
       {chipSports.length > 1 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
           <Chip href="/live" label={tSport("all")} count={ordered.length} active={!selectedSport} />
