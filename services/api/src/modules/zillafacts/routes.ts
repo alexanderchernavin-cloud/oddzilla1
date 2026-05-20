@@ -1358,11 +1358,14 @@ interface ConditionalPattern {
   ) => { applicable: boolean; conditionText: string };
   historical: (m: PastMatch) => boolean;
   outcome: (m: PastMatch) => "won" | "lost" | "void" | null;
-  target: (role: ZillaFactRole) => {
+  target: (
+    role: ZillaFactRole,
+    bestOf: number | null,
+  ) => {
     providerMarketId: number;
     outcomeId: string;
     specifierMatch?: (specs: Record<string, string>) => boolean;
-  };
+  } | null;
   formatFact: (
     teamName: string,
     streak: number,
@@ -1696,7 +1699,10 @@ const CONDITIONAL_PATTERNS: ConditionalPattern[] = [
     formatFact: (team, streak, cond) =>
       `${cond}, ${team} have come back to win the match in their last ${streak} starts`,
   },
-  // 12. Won Map 1 → match goes the distance (2-1 in BO3)
+  // 12. Won Map 1 → match goes the distance (2-1 in BO3, 3-2 in BO5).
+  // Targets the "Number of maps Over (bestOf - 0.5)" market — the
+  // semantically correct binding. Format-agnostic outcome predicate:
+  // the series went the distance iff the winner won by exactly one map.
   {
     id: "won_m1_to_decider",
     current: (ls, role) => {
@@ -1705,15 +1711,21 @@ const CONDITIONAL_PATTERNS: ConditionalPattern[] = [
     },
     historical: (m) => wonMap(findPeriod(m.liveScore, 1), m.teamRole),
     outcome: (m) => {
-      // "Went to decider" = at least 3 maps were played (BO3 split or BO5+).
-      const p3 = findPeriod(m.liveScore, 3);
-      return periodIsComplete(p3) ? "won" : "lost";
+      const ls = m.liveScore;
+      if (ls?.home == null || ls?.away == null) return null;
+      const winnerMaps = Math.max(ls.home, ls.away);
+      const loserMaps = Math.min(ls.home, ls.away);
+      return winnerMaps - loserMaps === 1 ? "won" : "lost";
     },
-    // No exact "match goes to decider" market we can target reliably —
-    // skip target check on this one by pointing at Match Winner; the
-    // pattern still produces interesting commentary but only when
-    // Match Winner is offered.
-    target: (role) => ({ providerMarketId: 1, outcomeId: role === "home" ? "1" : "2" }),
+    target: (_role, bestOf) => {
+      if (bestOf == null || bestOf < 3) return null;
+      const threshold = (bestOf - 0.5).toFixed(1);
+      return {
+        providerMarketId: 3,
+        outcomeId: "5",
+        specifierMatch: (specs) => specs.threshold === threshold,
+      };
+    },
     formatFact: (team, streak, _cond) =>
       `${possessive(team)} last ${streak} starts after winning Map 1 went to a deciding map`,
   },
@@ -4026,7 +4038,8 @@ async function loadConditionalFacts(
       const sampleSize = streak;
 
       // Resolve target market on the current match.
-      const tgt = pattern.target(team.role);
+      const tgt = pattern.target(team.role, meta.bestOf);
+      if (!tgt) continue;
       const market = currentMarkets.find(
         (m) =>
           m.providerMarketId === tgt.providerMarketId &&
