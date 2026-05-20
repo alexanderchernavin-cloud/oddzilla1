@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { serverApi } from "@/lib/server-fetch";
 import { type ListMatch } from "@/components/match/match-row";
 import {
@@ -5,9 +6,10 @@ import {
   type ListMatchEnriched,
 } from "@/components/match/match-list-tabs";
 import { I } from "@/components/ui/icons";
+import { SportGlyph } from "@/components/ui/sport-glyph";
 import { TodayLabel } from "@/components/lobby/today-label";
 import { ZillaFlashRow } from "@/components/lobby/zillaflash-row";
-import { shortName } from "@/lib/sport-order";
+import { orderMatchesBySport, shortName } from "@/lib/sport-order";
 import { getTranslations } from "@/lib/i18n/server";
 
 interface ListMatchWithSport extends ListMatch {
@@ -26,7 +28,16 @@ function enrich(m: ListMatchWithSport): ListMatchEnriched {
   };
 }
 
-export default async function UpcomingPage() {
+interface PageProps {
+  searchParams?: Promise<{ sport?: string | string[] }>;
+}
+
+export default async function UpcomingPage({ searchParams }: PageProps) {
+  const resolved = (await searchParams) ?? {};
+  const rawSport = resolved.sport;
+  const selectedSport =
+    typeof rawSport === "string" && rawSport.length > 0 ? rawSport : null;
+
   const [data, tMatch, tSport] = await Promise.all([
     serverApi<Response>("/catalog/matches?status=upcoming&limit=120"),
     // Use the "match" namespace so the heading reads "Pre-match" —
@@ -35,7 +46,27 @@ export default async function UpcomingPage() {
     getTranslations("match"),
     getTranslations("sport"),
   ]);
-  const matches = data?.matches ?? [];
+  const ordered = orderMatchesBySport(data?.matches ?? []);
+
+  // Preserve insertion order from `ordered` so chips inherit the
+  // CS2 -> Dota 2 -> LoL -> Valorant -> alphabetical ordering for free.
+  // Mirrors /live page's chipMap exactly — same shape, same URLs except
+  // /upcoming instead of /live.
+  const chipMap = new Map<string, { name: string; count: number }>();
+  for (const m of ordered) {
+    const existing = chipMap.get(m.sport.slug);
+    if (existing) existing.count += 1;
+    else chipMap.set(m.sport.slug, { name: m.sport.name, count: 1 });
+  }
+  const chipSports = Array.from(chipMap.entries()).map(([slug, v]) => ({
+    slug,
+    name: v.name,
+    count: v.count,
+  }));
+
+  const visible = selectedSport
+    ? ordered.filter((m) => m.sport.slug === selectedSport)
+    : ordered;
 
   return (
     <div
@@ -58,7 +89,31 @@ export default async function UpcomingPage() {
       {/* Prematch-only ZillaFlash boosts. Same engine, kind-filtered. */}
       <ZillaFlashRow kind="prematch" />
 
-      {matches.length === 0 ? (
+      {/* Sport-filter chips sit right above the match list — that's
+          the slate they filter. ZillaFlash above isn't filtered by
+          these chips (it rotates its own slot selection). */}
+      {chipSports.length > 1 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          <Chip
+            href="/upcoming"
+            label={tSport("all")}
+            count={ordered.length}
+            active={!selectedSport}
+          />
+          {chipSports.map((s) => (
+            <Chip
+              key={s.slug}
+              href={`/upcoming?sport=${s.slug}`}
+              label={s.name}
+              count={s.count}
+              active={selectedSport === s.slug}
+              sportSlug={s.slug}
+            />
+          ))}
+        </div>
+      )}
+
+      {visible.length === 0 ? (
         <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
           {tSport("noMatches")}
         </p>
@@ -66,12 +121,12 @@ export default async function UpcomingPage() {
         // Page heading sits ON the MatchListTabs section-head row so it
         // shares a line with the cols toggle (same pattern /live uses).
         <MatchListTabs
-          matches={matches.map(enrich)}
+          matches={visible.map(enrich)}
           groups={[
             {
               key: "upcoming",
-              label: <UpcomingPageHeading label={tMatch("prematch")} count={matches.length} />,
-              matches: matches.map(enrich),
+              label: <UpcomingPageHeading label={tMatch("prematch")} count={visible.length} />,
+              matches: visible.map(enrich),
             },
           ]}
         />
@@ -129,3 +184,54 @@ function UpcomingPageHeading({ label, count }: { label: string; count: number })
   );
 }
 
+// Sport-filter chip. Mirrors the /live page's Chip component byte for
+// byte so the two pages render identical filter rows — same height,
+// same icon size, same active-state styling.
+function Chip({
+  href,
+  label,
+  count,
+  active,
+  sportSlug,
+}: {
+  href: string;
+  label: string;
+  count: number;
+  active: boolean;
+  sportSlug?: string;
+}) {
+  return (
+    <Link
+      href={href}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 8,
+        height: 34,
+        padding: "0 14px",
+        background: active ? "var(--fg)" : "var(--surface)",
+        border: `1px solid ${active ? "var(--fg)" : "var(--border)"}`,
+        borderRadius: 999,
+        textDecoration: "none",
+        color: active ? "var(--bg)" : "var(--fg)",
+        fontSize: 12.5,
+        transition: "background 140ms var(--ease), color 140ms var(--ease)",
+      }}
+    >
+      {sportSlug ? <SportGlyph sport={sportSlug} size={14} /> : null}
+      {label}
+      {count > 0 ? (
+        <span
+          className="mono tnum"
+          style={{
+            fontSize: 10.5,
+            color: active ? "var(--bg)" : "var(--fg-dim)",
+            opacity: active ? 0.75 : 1,
+          }}
+        >
+          {count}
+        </span>
+      ) : null}
+    </Link>
+  );
+}
