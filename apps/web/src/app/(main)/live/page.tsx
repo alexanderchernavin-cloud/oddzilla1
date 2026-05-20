@@ -82,6 +82,17 @@ export default async function LivePage({ searchParams }: PageProps) {
         </div>
       </header>
 
+      {/* Live-only ZillaFlash boosts — the hook polls the same single
+          /catalog/zillaflash endpoint as the lobby, but we filter to
+          just the LIVE slots since prematch offers are out of context
+          on a page that's specifically a live-status listing. */}
+      <ZillaFlashRow kind="live" />
+
+      {/* Sport-filter chips sit right above the match list — that's the
+          slate they filter, and putting them adjacent to it makes the
+          relationship obvious. The ZillaFlash promo above isn't filtered
+          by these chips (it rotates its own slot selection), so chips
+          would be misleading sitting on top of it. */}
       {chipSports.length > 1 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
           <Chip href="/live" label={tSport("all")} count={ordered.length} active={!selectedSport} />
@@ -97,12 +108,6 @@ export default async function LivePage({ searchParams }: PageProps) {
           ))}
         </div>
       )}
-
-      {/* Live-only ZillaFlash boosts — the hook polls the same single
-          /catalog/zillaflash endpoint as the lobby, but we filter to
-          just the LIVE slots since prematch offers are out of context
-          on a page that's specifically a live-status listing. */}
-      <ZillaFlashRow kind="live" />
 
       {visible.length === 0 ? (
         <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
