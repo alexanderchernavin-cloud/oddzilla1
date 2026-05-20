@@ -478,6 +478,15 @@ export class BetsService {
         if (!outcome.active) {
           throw new BadRequestError("outcome_not_active", "outcome_not_active");
         }
+        // Second-layer guard for the markets.status sticky-terminal
+        // invariant (CLAUDE.md #9). The feed-ingester upsert preserves
+        // -3/-4 against stale recovery odds_change, but if it ever
+        // regresses we still won't accept a bet on an outcome whose
+        // result is already known — that would be money handed out at
+        // stale odds with a known winner.
+        if (outcome.result !== null) {
+          throw new BadRequestError("outcome_already_settled", "outcome_already_settled");
+        }
         if (!outcome.publishedOdds) {
           throw new BadRequestError("outcome_no_price", "outcome_no_price");
         }

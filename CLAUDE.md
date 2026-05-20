@@ -184,6 +184,12 @@ These rules are load-bearing. Breaking them causes money or data loss.
    and `UpsertMarketsBulk`. Rollbacks (`rollback_bet_settlement`) go
    through `settlement`'s direct `SetMarketStatus` UPDATE (not the
    feed-ingester upsert path), so they correctly re-activate the row.
+   Second-layer guard: bet placement
+   ([`services/api/src/modules/bets/service.ts`](./services/api/src/modules/bets/service.ts))
+   additionally rejects any leg with `market_outcomes.result IS NOT NULL`
+   (`outcome_already_settled`), so a future desync between `markets.status`
+   and `outcomes.result` can't be exploited to place at stale odds with
+   a known winner.
 
 ## Where things live
 
