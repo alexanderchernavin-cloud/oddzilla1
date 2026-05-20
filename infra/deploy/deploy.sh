@@ -129,10 +129,20 @@ fi
 # ── 8. Caddy reload (config-only change, no Dockerfile build) ──────
 if [ "${NEED_CADDY_RELOAD}" -eq 1 ]; then
   log "reloading caddy config"
-  # `docker exec caddy reload` validates the file before reloading
-  # and emits the parse error to stderr; a bad Caddyfile leaves the
-  # current config running unchanged.
-  deploy_run sudo -n docker exec oddzilla-caddy-1 caddy reload --config /etc/caddy/Caddyfile
+  # The Caddyfile has `admin off`, so `caddy reload` (which uses the
+  # admin API on localhost:2019) can't talk to the running process —
+  # the call exits non-zero with "connection refused". Two-step
+  # alternative that preserves the "bad config doesn't break the
+  # running server" property the original reload gave us:
+  #   1. `caddy validate` against the on-disk file. If the file is
+  #      malformed, set -e aborts the script before we touch the
+  #      container, and the running caddy keeps serving.
+  #   2. `docker compose restart caddy` picks up the validated file
+  #      on next start. Brief downtime (~2-3 s) for in-flight
+  #      requests; the smoke step below catches any post-restart
+  #      problem.
+  deploy_run sudo -n docker exec oddzilla-caddy-1 caddy validate --config /etc/caddy/Caddyfile
+  deploy_run "${COMPOSE[@]}" restart caddy
 fi
 
 # ── 9. Record success BEFORE smoke ──────────────────────────────────
