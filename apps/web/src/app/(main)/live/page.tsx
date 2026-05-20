@@ -6,6 +6,7 @@ import {
   type ListMatchEnriched,
 } from "@/components/match/match-list-tabs";
 import { SportGlyph } from "@/components/ui/sport-glyph";
+import { LiveDot } from "@/components/ui/primitives";
 import { ZillaFlashRow } from "@/components/lobby/zillaflash-row";
 import { orderMatchesBySport, shortName } from "@/lib/sport-order";
 import { getTranslations } from "@/lib/i18n/server";
@@ -70,26 +71,6 @@ export default async function LivePage({ searchParams }: PageProps) {
         padding: "28px 32px 60px",
       }}
     >
-      <header style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
-        <h1
-          className="display"
-          style={{
-            margin: 0,
-            fontSize: 32,
-            fontWeight: 500,
-            letterSpacing: "-0.02em",
-          }}
-        >
-          {tCommon("live")}
-        </h1>
-        <div
-          className="mono tnum"
-          style={{ fontSize: 12, color: "var(--fg-muted)" }}
-        >
-          {visible.length}
-        </div>
-      </header>
-
       {chipSports.length > 1 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
           <Chip href="/live" label={tSport("all")} count={ordered.length} active={!selectedSport} />
@@ -117,9 +98,71 @@ export default async function LivePage({ searchParams }: PageProps) {
           {tSport("noMatches")}
         </p>
       ) : (
-        <MatchListTabs matches={visible.map(enrich)} />
+        // Page heading lives ON the match-list section-head row so it
+        // shares a line with the cols toggle. MatchListTabs renders the
+        // first labeled group's label on the left and the toggle on the
+        // right via `.oz-match-list-section-head` (justify: space-between).
+        <MatchListTabs
+          matches={visible.map(enrich)}
+          groups={[
+            {
+              key: "live",
+              label: <LivePageHeading label={tCommon("live")} count={visible.length} />,
+              matches: visible.map(enrich),
+            },
+          ]}
+        />
       )}
     </div>
+  );
+}
+
+// Page heading rendered inline with the MatchListTabs cols toggle on the
+// section-head row. Visual mirror of the home lobby's LobbyTabLink — same
+// 22-px label, same live-red count pill — but as plain text since we're
+// already on /live (no navigation target).
+function LivePageHeading({ label, count }: { label: string; count: number }) {
+  return (
+    <h1
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 10,
+        margin: 0,
+        fontSize: 22,
+        fontWeight: 500,
+        letterSpacing: "-0.015em",
+        lineHeight: 1.1,
+      }}
+    >
+      <span
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          color: "var(--fg-muted)",
+        }}
+        aria-hidden
+      >
+        <LiveDot size={9} />
+      </span>
+      {label}
+      <span
+        className="mono tnum"
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          fontSize: 11,
+          fontWeight: 600,
+          color: "var(--live)",
+          border: "1px solid var(--live)",
+          borderRadius: 999,
+          padding: "2px 8px",
+          lineHeight: 1.2,
+        }}
+      >
+        {count}
+      </span>
+    </h1>
   );
 }
 
