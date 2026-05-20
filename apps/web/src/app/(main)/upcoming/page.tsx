@@ -4,6 +4,7 @@ import {
   MatchListTabs,
   type ListMatchEnriched,
 } from "@/components/match/match-list-tabs";
+import { I } from "@/components/ui/icons";
 import { ZillaFlashRow } from "@/components/lobby/zillaflash-row";
 import { shortName } from "@/lib/sport-order";
 import { getTranslations } from "@/lib/i18n/server";
@@ -25,9 +26,12 @@ function enrich(m: ListMatchWithSport): ListMatchEnriched {
 }
 
 export default async function UpcomingPage() {
-  const [data, t, tSport] = await Promise.all([
+  const [data, tMatch, tSport] = await Promise.all([
     serverApi<Response>("/catalog/matches?status=upcoming&limit=120"),
-    getTranslations("shell"),
+    // Use the "match" namespace so the heading reads "Pre-match" —
+    // same label the lobby's LobbyTabLink uses for the prematch tab.
+    // The page route stays /upcoming for link/bookmark stability.
+    getTranslations("match"),
     getTranslations("sport"),
   ]);
   const matches = data?.matches ?? [];
@@ -41,26 +45,6 @@ export default async function UpcomingPage() {
         padding: "28px 32px 60px",
       }}
     >
-      <header style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
-        <h1
-          className="display"
-          style={{
-            margin: 0,
-            fontSize: 32,
-            fontWeight: 500,
-            letterSpacing: "-0.02em",
-          }}
-        >
-          {t("upcoming")}
-        </h1>
-        <div
-          className="mono tnum"
-          style={{ fontSize: 12, color: "var(--fg-muted)" }}
-        >
-          {matches.length}
-        </div>
-      </header>
-
       {/* Prematch-only ZillaFlash boosts. Same engine, kind-filtered. */}
       <ZillaFlashRow kind="prematch" />
 
@@ -69,9 +53,69 @@ export default async function UpcomingPage() {
           {tSport("noMatches")}
         </p>
       ) : (
-        <MatchListTabs matches={matches.map(enrich)} />
+        // Page heading sits ON the MatchListTabs section-head row so it
+        // shares a line with the cols toggle (same pattern /live uses).
+        <MatchListTabs
+          matches={matches.map(enrich)}
+          groups={[
+            {
+              key: "upcoming",
+              label: <UpcomingPageHeading label={tMatch("prematch")} count={matches.length} />,
+              matches: matches.map(enrich),
+            },
+          ]}
+        />
       )}
     </div>
+  );
+}
+
+// Page heading rendered inline with the MatchListTabs cols toggle on the
+// section-head row. Visual mirror of the home lobby's LobbyTabLink for
+// prematch (Clock icon, neutral count pill) — but as plain text since
+// we're already on /upcoming (no navigation target).
+function UpcomingPageHeading({ label, count }: { label: string; count: number }) {
+  return (
+    <h1
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 10,
+        margin: 0,
+        fontSize: 22,
+        fontWeight: 500,
+        letterSpacing: "-0.015em",
+        lineHeight: 1.1,
+      }}
+    >
+      <span
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          color: "var(--fg-muted)",
+        }}
+        aria-hidden
+      >
+        <I.Clock size={18} />
+      </span>
+      {label}
+      <span
+        className="mono tnum"
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          fontSize: 11,
+          fontWeight: 600,
+          color: "var(--fg-muted)",
+          border: "1px solid var(--border)",
+          borderRadius: 999,
+          padding: "2px 8px",
+          lineHeight: 1.2,
+        }}
+      >
+        {count}
+      </span>
+    </h1>
   );
 }
 

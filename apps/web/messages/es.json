@@ -50,7 +50,7 @@
     "accountMenu": "Menú de cuenta de {name}",
     "lobby": "Lobby",
     "live": "En vivo",
-    "upcoming": "Próximos",
+    "upcoming": "Previa",
     "community": "Comunidad",
     "sports": "Deportes",
     "account": "Cuenta",
@@ -172,7 +172,7 @@
   },
   "home": {
     "lobby": "Lobby",
-    "upcoming": "Próximos",
+    "upcoming": "Previa",
     "empty": "Nada en agenda. Mira las páginas de cada deporte para el programa completo."
   },
   "lobby": {
@@ -210,7 +210,7 @@
   "sport": {
     "all": "Todos",
     "live": "En vivo",
-    "upcoming": "Próximos",
+    "upcoming": "Previa",
     "topTournaments": "Torneos destacados",
     "filterTournament": "Torneo: {name}",
     "filterTeam": "Equipo: {name}",

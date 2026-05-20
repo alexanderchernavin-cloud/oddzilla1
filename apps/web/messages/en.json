@@ -50,7 +50,7 @@
     "accountMenu": "Account menu for {name}",
     "lobby": "Lobby",
     "live": "Live",
-    "upcoming": "Upcoming",
+    "upcoming": "Pre-match",
     "community": "Community",
     "sports": "Sports",
     "account": "Account",
@@ -172,7 +172,7 @@
   },
   "home": {
     "lobby": "Lobby",
-    "upcoming": "Upcoming",
+    "upcoming": "Pre-match",
     "empty": "Nothing scheduled. Check individual sport pages for the full slate."
   },
   "lobby": {
@@ -210,7 +210,7 @@
   "sport": {
     "all": "All",
     "live": "Live",
-    "upcoming": "Upcoming",
+    "upcoming": "Pre-match",
     "topTournaments": "Top tournaments",
     "filterTournament": "Tournament: {name}",
     "filterTeam": "Team: {name}",

@@ -50,7 +50,7 @@
     "accountMenu": "Menu účtu pro {name}",
     "lobby": "Lobby",
     "live": "Živě",
-    "upcoming": "Nadcházející",
+    "upcoming": "Předzápas",
     "community": "Komunita",
     "sports": "Sporty",
     "account": "Účet",
@@ -172,7 +172,7 @@
   },
   "home": {
     "lobby": "Lobby",
-    "upcoming": "Nadcházející",
+    "upcoming": "Předzápas",
     "empty": "Žádné naplánované zápasy. Podívejte se na jednotlivé sporty pro celý program."
   },
   "lobby": {
@@ -210,7 +210,7 @@
   "sport": {
     "all": "Vše",
     "live": "Živě",
-    "upcoming": "Nadcházející",
+    "upcoming": "Předzápas",
     "topTournaments": "Top turnaje",
     "filterTournament": "Turnaj: {name}",
     "filterTeam": "Tým: {name}",
