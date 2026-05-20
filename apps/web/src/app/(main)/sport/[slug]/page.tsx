@@ -126,9 +126,16 @@ export default async function SportPage({
           >
             {data.sport.name}
           </h1>
-        </div>
-        <div className="mono tnum" style={{ fontSize: 12, color: "var(--fg-muted)" }}>
-          {data.matches.length} {data.matches.length === 1 ? "match" : "matches"}
+          {/* Match count sits under the title (left side) — the right
+              edge of this header is reserved for the sticky ZillaPass
+              chip in `.oz-shell-search`, which uses a negative bottom
+              margin to overlap into this row. */}
+          <div
+            className="mono tnum"
+            style={{ fontSize: 12, color: "var(--fg-muted)", marginTop: 4 }}
+          >
+            {data.matches.length} {data.matches.length === 1 ? "match" : "matches"}
+          </div>
         </div>
       </header>
 
