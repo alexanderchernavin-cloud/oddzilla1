@@ -179,7 +179,7 @@ func (r *Resolver) ResolveMatch(ctx context.Context, reqCtx MatchContext, rawPay
 	// Enqueue for admin review so an operator can rename or re-categorise
 	// any auto-created entity. raw_payload is jsonb, so we wrap the raw
 	// XML body inside a JSON envelope rather than dumping it directly.
-	matchReview, _ := json.Marshal(map[string]any{
+	matchReview, err := json.Marshal(map[string]any{
 		"provider_urn":   reqCtx.MatchURN,
 		"tournament_urn": merged.TournamentURN,
 		"home_team":      merged.HomeTeam,
@@ -187,7 +187,10 @@ func (r *Resolver) ResolveMatch(ctx context.Context, reqCtx MatchContext, rawPay
 		"scheduled_at":   nullableTimeISO(merged.ScheduledAt),
 		"raw_preview":    truncate(string(rawPayload), 1024),
 	})
-	if err := store.EnqueueReview(ctx, r.st.Pool(), store.ReviewEntry{
+	if err != nil {
+		r.log.Warn().Err(err).Str("match_urn", reqCtx.MatchURN).
+			Msg("match review marshal failed; skipping enqueue")
+	} else if err := store.EnqueueReview(ctx, r.st.Pool(), store.ReviewEntry{
 		EntityType:      "match",
 		Provider:        "oddin",
 		ProviderURN:     reqCtx.MatchURN,
@@ -447,7 +450,7 @@ func (r *Resolver) resolveTournament(
 		// real mapping review, so wire the enqueue now. Synthetic URN
 		// keeps the review_queue unique key stable without colliding
 		// with provider-supplied URNs.
-		catPayload, _ := json.Marshal(map[string]any{
+		catPayload, err := json.Marshal(map[string]any{
 			"sport_id":  sportID,
 			"slug":      "auto",
 			"name":      "Auto-mapped",
@@ -455,7 +458,10 @@ func (r *Resolver) resolveTournament(
 			"synthetic": true,
 		})
 		catURN := fmt.Sprintf("local:category:auto-sport-%d", sportID)
-		if err := store.EnqueueReview(ctx, r.st.Pool(), store.ReviewEntry{
+		if err != nil {
+			r.log.Warn().Err(err).Int("sport_id", sportID).
+				Msg("category review marshal failed; skipping enqueue")
+		} else if err := store.EnqueueReview(ctx, r.st.Pool(), store.ReviewEntry{
 			EntityType:      "category",
 			Provider:        "oddin",
 			ProviderURN:     catURN,
@@ -476,14 +482,17 @@ func (r *Resolver) resolveTournament(
 	// on the next fixture_change or catch it in the offline backfill.
 	r.refreshTournamentMetadata(ctx, tid, tURN)
 
-	payload, _ := json.Marshal(map[string]any{
+	payload, err := json.Marshal(map[string]any{
 		"provider_urn": tURN,
 		"category_id":  categoryID,
 		"sport_id":     sportID,
 		"name":         tournamentName,
 		"raw_preview":  truncate(string(rawPayload), 1024),
 	})
-	if err := store.EnqueueReview(ctx, r.st.Pool(), store.ReviewEntry{
+	if err != nil {
+		r.log.Warn().Err(err).Str("tournament_urn", tURN).
+			Msg("tournament review marshal failed; skipping enqueue")
+	} else if err := store.EnqueueReview(ctx, r.st.Pool(), store.ReviewEntry{
 		EntityType:      "tournament",
 		Provider:        "oddin",
 		ProviderURN:     tURN,
@@ -564,13 +573,16 @@ func (r *Resolver) resolveCompetitor(
 		if reviewURN == "" {
 			reviewURN = fmt.Sprintf("local:competitor:sport-%d:%s", sportID, slug)
 		}
-		payload, _ := json.Marshal(map[string]any{
+		payload, err := json.Marshal(map[string]any{
 			"sport_id":     sportID,
 			"provider_urn": nullableString(urn),
 			"slug":         slug,
 			"name":         trimmed,
 		})
-		if err := store.EnqueueReview(ctx, r.st.Pool(), store.ReviewEntry{
+		if err != nil {
+			r.log.Warn().Err(err).Int("competitor_id", id).
+				Msg("competitor review marshal failed; skipping enqueue")
+		} else if err := store.EnqueueReview(ctx, r.st.Pool(), store.ReviewEntry{
 			EntityType:      "competitor",
 			Provider:        "oddin",
 			ProviderURN:     reviewURN,
@@ -621,18 +633,23 @@ func (r *Resolver) resolveSport(ctx context.Context, fs oddinxml.FixtureSport) (
 		}
 	}
 
-	payload, _ := json.Marshal(map[string]any{
+	payload, err := json.Marshal(map[string]any{
 		"provider_urn": fs.ID,
 		"name":         name,
 		"abbreviation": fs.Abbr,
 	})
-	_ = store.EnqueueReview(ctx, r.st.Pool(), store.ReviewEntry{
-		EntityType:      "sport",
-		Provider:        "oddin",
-		ProviderURN:     fs.ID,
-		RawPayload:      payload,
-		CreatedEntityID: fmt.Sprintf("%d", id),
-	})
+	if err != nil {
+		r.log.Warn().Err(err).Str("sport_urn", fs.ID).
+			Msg("sport review marshal failed; skipping enqueue")
+	} else {
+		_ = store.EnqueueReview(ctx, r.st.Pool(), store.ReviewEntry{
+			EntityType:      "sport",
+			Provider:        "oddin",
+			ProviderURN:     fs.ID,
+			RawPayload:      payload,
+			CreatedEntityID: fmt.Sprintf("%d", id),
+		})
+	}
 	return id, nil
 }
 

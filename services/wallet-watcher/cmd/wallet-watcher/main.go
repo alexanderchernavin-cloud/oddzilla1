@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"os/signal"
@@ -101,7 +102,9 @@ func main() {
 	defer func() {
 		shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutCancel()
-		_ = healthSrv.Shutdown(shutCtx)
+		if err := healthSrv.Shutdown(shutCtx); err != nil {
+			logger.Warn().Err(err).Msg("health server shutdown failed")
+		}
 	}()
 
 	sigCh := make(chan os.Signal, 1)
@@ -166,7 +169,7 @@ func startHealth(port string, pool *pgxpool.Pool, p *deposits.Processor, h *chai
 	}
 	go func() {
 		log.Info().Str("port", port).Msg("health server listening")
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error().Err(err).Msg("health server")
 		}
 	}()

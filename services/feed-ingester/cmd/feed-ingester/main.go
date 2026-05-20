@@ -154,7 +154,9 @@ func main() {
 	defer func() {
 		shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutCancel()
-		_ = healthSrv.Shutdown(shutCtx)
+		if err := healthSrv.Shutdown(shutCtx); err != nil {
+			logger.Warn().Err(err).Msg("health server shutdown failed")
+		}
 	}()
 
 	// ── Feed message cleanup (always on) ───────────────────────────────
@@ -707,7 +709,7 @@ func startHealth(port string, pool *pgxpool.Pool, rdb *redis.Client, log zerolog
 	}
 	go func() {
 		log.Info().Str("port", port).Msg("health server listening")
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error().Err(err).Msg("health server")
 		}
 	}()

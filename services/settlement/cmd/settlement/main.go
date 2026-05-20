@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -32,8 +33,6 @@ import (
 	"github.com/oddzilla/settlement/internal/oddinrest"
 	"github.com/oddzilla/settlement/internal/settler"
 	"github.com/oddzilla/settlement/internal/store"
-
-	"math/rand"
 )
 
 func main() {
@@ -209,7 +208,7 @@ func startHealth(port string, pool *pgxpool.Pool, rdb *redis.Client, stt *settle
 	}
 	go func() {
 		log.Info().Str("port", port).Msg("health server listening")
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error().Err(err).Msg("health server")
 		}
 	}()

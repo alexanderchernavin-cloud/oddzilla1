@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"syscall"
 	"time"
 
@@ -83,7 +84,7 @@ func main() {
 		_ = os.Unsetenv("HD_MASTER_MNEMONIC")
 	}
 
-	if err := os.MkdirAll(parentDir(socketPath), 0o750); err != nil {
+	if err := os.MkdirAll(path.Dir(socketPath), 0o750); err != nil {
 		log.Fatal().Err(err).Str("path", socketPath).Msg("mkdir socket parent")
 	}
 	if err := os.Remove(socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -143,17 +144,12 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = httpSrv.Shutdown(ctx)
-	_ = healthSrv.Shutdown(ctx)
-}
-
-func parentDir(p string) string {
-	for i := len(p) - 1; i >= 0; i-- {
-		if p[i] == '/' {
-			return p[:i]
-		}
+	if err := httpSrv.Shutdown(ctx); err != nil {
+		log.Warn().Err(err).Msg("signer server shutdown failed")
 	}
-	return "."
+	if err := healthSrv.Shutdown(ctx); err != nil {
+		log.Warn().Err(err).Msg("health server shutdown failed")
+	}
 }
 
 // runHealthcheck dials the signer's own /healthz endpoint and returns

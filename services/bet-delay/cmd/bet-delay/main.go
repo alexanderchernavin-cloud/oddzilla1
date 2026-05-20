@@ -116,7 +116,7 @@ func startHealth(port string, pool *pgxpool.Pool, rdb *redis.Client, w *worker.W
 	}
 	go func() {
 		log.Info().Str("port", port).Msg("health server listening")
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error().Err(err).Msg("health server")
 		}
 	}()

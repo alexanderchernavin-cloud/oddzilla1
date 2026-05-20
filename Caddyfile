@@ -72,11 +72,9 @@
 # Caddy intentionally does NOT set CSP for the web origin; the API origin
 # uses @fastify/helmet's strict default-src 'none' policy on /api/*.
 
-# ── Public frontend ──────────────────────────────────────────────────────────
-{$FRONTEND_HOST} {
-	encode zstd gzip
-	import security_headers
-
+# Reverse-proxy snippet for the api container. Used by both host blocks —
+# extracted so the two never drift apart.
+(api_proxy) {
 	handle_path /api/* {
 		# Cap request bodies at the edge — Fastify's per-route default is
 		# 1 MiB but slow uploaders still tie up api memory while the body
@@ -102,17 +100,27 @@
 			header_up X-Forwarded-For {remote_host}
 		}
 	}
+}
 
+# WebSocket upgrade snippet for ws-gateway. Match /ws exactly, not /ws* —
+# the glob also matches /wsanything, /wsedmin, etc. ws-gateway 404s those
+# paths anyway, but a tighter matcher keeps the routing surface honest.
+(ws_proxy) {
 	@websocket {
 		header Connection *Upgrade*
 		header Upgrade    websocket
 	}
-	# Match /ws exactly, not /ws* — the glob also matches /wsanything,
-	# /wsedmin, etc. ws-gateway 404s those paths anyway, but a tighter
-	# matcher keeps the routing surface honest.
 	handle /ws {
 		reverse_proxy ws-gateway:3002
 	}
+}
+
+# ── Public frontend ──────────────────────────────────────────────────────────
+{$FRONTEND_HOST} {
+	encode zstd gzip
+	import security_headers
+	import api_proxy
+	import ws_proxy
 
 	# Android APK distribution. The mobile app polls /app/version.json
 	# on launch, compares versionCode against BuildConfig.VERSION_CODE,
@@ -158,45 +166,10 @@ s.oddzilla.cc {
 {$ADMIN_HOST} {
 	encode zstd gzip
 	import security_headers
+	import api_proxy
+	import ws_proxy
 
 	redir / /admin 302
-
-	handle_path /api/* {
-		# Cap request bodies at the edge — Fastify's per-route default is
-		# 1 MiB but slow uploaders still tie up api memory while the body
-		# streams in. Matches the largest legitimate admin payload (the
-		# 500-entry bulk-logos PUT at ~2 KiB each).
-		request_body {
-			max_size 1MB
-		}
-		# Belt + suspenders against browser/proxy caching of authenticated
-		# JSON. Fastify routes don't set Cache-Control by default, so a
-		# misbehaving CDN or caching proxy could stash a /me / /wallet
-		# response and leak it to the next user behind the same NAT. Edge
-		# header forces no-store on every API response regardless.
-		header Cache-Control "no-store"
-		# Strip Fastify's X-Powered-By if any handler ever forgets to
-		# disable it — small attack-surface reduction (server identity).
-		header -X-Powered-By
-		reverse_proxy api:3001 {
-			# Overwrite (not append) X-Forwarded-For so an attacker can't
-			# spoof their inbound IP. {remote_host} is the actual
-			# connecting client; combined with `trustProxy: 1` on the
-			# Fastify side this pins request.ip to the real client.
-			header_up X-Forwarded-For {remote_host}
-		}
-	}
-
-	@websocket {
-		header Connection *Upgrade*
-		header Upgrade    websocket
-	}
-	# Match /ws exactly, not /ws* — the glob also matches /wsanything,
-	# /wsedmin, etc. ws-gateway 404s those paths anyway, but a tighter
-	# matcher keeps the routing surface honest.
-	handle /ws {
-		reverse_proxy ws-gateway:3002
-	}
 
 	handle {
 		import web_upstream

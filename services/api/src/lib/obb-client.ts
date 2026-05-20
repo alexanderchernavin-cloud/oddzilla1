@@ -122,7 +122,16 @@ export interface ObbConfig {
   host: string; // e.g. "api-obb.integration.oddin.gg:443"
   tls: boolean;
   token: string;
-  /** Per-RPC deadline in ms. Defaults to 5 s — Oddin docs cap rate at 100 RPS. */
+  /**
+   * Per-RPC deadline in ms. Defaults to 5 s — Oddin docs cap rate at 100 RPS.
+   *
+   * NOTE: not yet wired into the gRPC call — proto-loader's signature would
+   * force an `as any` dance to thread `options.deadline`. We rely on gRPC
+   * keepalive + the OBB caller's outer request timeout (Fastify 30 s) for
+   * now. If OBB latency becomes a problem the cleanest fix is a wrapping
+   * AbortController + setTimeout pair.
+   * Reference: https://grpc.github.io/grpc/node/grpc.Client.html
+   */
   deadlineMs?: number;
 }
 
@@ -164,8 +173,6 @@ export function createObbClient(cfg: ObbConfig | null): ObbClient | null {
     "grpc.keepalive_timeout_ms": 10_000,
     "grpc.keepalive_permit_without_calls": 1,
   });
-
-  const deadlineMs = cfg.deadlineMs ?? 5_000;
 
   function withDeadline(): Metadata {
     // Empty metadata; the deadline is set at call site via `options` we
@@ -230,13 +237,6 @@ export function createObbClient(cfg: ObbConfig | null): ObbClient | null {
       stub.close();
     },
   };
-  // deadlineMs threading via per-call options would require an internal
-  // proto-loader signature dance; we avoid the `as any` and rely on
-  // gRPC keepalive + caller timeouts for now. If OBB latency becomes a
-  // problem the cleanest fix is a wrapping AbortController + setTimeout
-  // pair — out of scope for the integration patch.
-  // Reference: https://grpc.github.io/grpc/node/grpc.Client.html
-  void deadlineMs;
 }
 
 export class ObbError extends Error {

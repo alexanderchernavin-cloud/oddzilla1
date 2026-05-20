@@ -91,6 +91,13 @@ func (s *Server) handleDerive(w http.ResponseWriter, r *http.Request) {
 		address, err = root.EthereumAddress(req.UserIndex)
 	case "TRC20":
 		address, err = root.TronAddress(req.UserIndex)
+	default:
+		// derive.PathFor above already gates req.Network to {ERC20, TRC20}, so
+		// this branch is unreachable today. It exists as a defensive guard:
+		// if PathFor learns a new network and this switch isn't updated, we
+		// fail loudly here instead of silently returning an empty address.
+		writeErr(w, http.StatusBadRequest, "invalid_network", "unsupported network for address derivation")
+		return
 	}
 	if err != nil {
 		s.log.Error().Err(err).Str("network", req.Network).Uint32("idx", req.UserIndex).Msg("derive failed")

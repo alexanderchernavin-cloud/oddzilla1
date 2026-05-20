@@ -89,7 +89,13 @@ func (c *Client) InitiateRecovery(ctx context.Context, productName string, after
 		return fmt.Errorf("oddinrest: post: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
+	body, readErr := io.ReadAll(resp.Body)
+	// Preserve any partial bytes io.ReadAll handed back, but substitute a
+	// diagnostic stub when the read failed on the first byte — otherwise
+	// callers that stringify HTTPError see the status with no clue why.
+	if readErr != nil && len(body) == 0 {
+		body = []byte(fmt.Sprintf("(body read failed: %v)", readErr))
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return &HTTPError{Status: resp.StatusCode, Body: body, URL: u}
 	}
