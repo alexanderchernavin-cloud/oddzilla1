@@ -40,8 +40,8 @@ export default async function EmailsPage({
   searchParams: Promise<{ filter?: string; q?: string }>;
 }) {
   const params = await searchParams;
-  const filter = ["inbox", "unread", "archived", "all"].includes(params.filter ?? "")
-    ? (params.filter as "inbox" | "unread" | "archived" | "all")
+  const filter = ["inbox", "unread", "sent", "archived", "all"].includes(params.filter ?? "")
+    ? (params.filter as "inbox" | "unread" | "sent" | "archived" | "all")
     : "inbox";
   const q = params.q?.trim() ?? "";
 
@@ -76,6 +76,10 @@ export default async function EmailsPage({
         initialFilter={filter}
         initialQuery={q}
       />
+      {/*
+        Note: filter prop typing is widened to include "sent" — the
+        EmailsClient is the source of truth for which tabs exist.
+      */}
     </div>
   );
 }
