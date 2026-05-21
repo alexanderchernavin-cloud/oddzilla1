@@ -112,9 +112,20 @@ deploy_record_image() {
     # duplicates after a forced re-deploy of the same commit.
     existing="$(grep -vFx "${sha}" "${file}" || true)"
   fi
+  # IMPORTANT: the conditional below must NOT be `[ -n "$x" ] && printf …`.
+  # With `set -e + pipefail`, that pattern returns 1 when `$x` is empty
+  # (the `[` fails, `&&` short-circuits, the compound exits 1), and
+  # pipefail propagates that as the pipeline exit — aborting the deploy
+  # the FIRST time a service is recorded (no prior entries → empty
+  # `existing`). Use an explicit `if` so the empty-existing branch is
+  # a no-op with exit 0, not a "failed compound". Caught after
+  # mail-receiver was added in PR #433 — the FIRST deploy of any new
+  # service hit this.
   {
     printf '%s\n' "${sha}"
-    [ -n "${existing}" ] && printf '%s\n' "${existing}"
+    if [ -n "${existing}" ]; then
+      printf '%s\n' "${existing}"
+    fi
   } | head -n "${IMAGE_RETENTION}" | deploy_write_atomic "${file}"
 }
 
