@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { serverApi } from "@/lib/server-fetch";
+import { getSessionUser } from "@/lib/auth";
 import { type ListMatch } from "@/components/match/match-row";
 import {
   MatchListTabs,
@@ -38,15 +39,22 @@ export default async function UpcomingPage({ searchParams }: PageProps) {
   const selectedSport =
     typeof rawSport === "string" && rawSport.length > 0 ? rawSport : null;
 
-  const [data, tMatch, tSport] = await Promise.all([
+  const [data, user, tMatch, tSport] = await Promise.all([
     serverApi<Response>("/catalog/matches?status=upcoming&limit=120"),
+    // See live/page.tsx for why we re-fetch the session user — we
+    // need the bettor's hidden_sports (migration 0072) to filter the
+    // match list and Next.js doesn't share layout results with pages.
+    getSessionUser(),
     // Use the "match" namespace so the heading reads "Pre-match" —
     // same label the lobby's LobbyTabLink uses for the prematch tab.
     // The page route stays /upcoming for link/bookmark stability.
     getTranslations("match"),
     getTranslations("sport"),
   ]);
-  const ordered = orderMatchesBySport(data?.matches ?? []);
+  const ordered = orderMatchesBySport(
+    data?.matches ?? [],
+    user?.hiddenSports ?? null,
+  );
 
   // Preserve insertion order from `ordered` so chips inherit the
   // CS2 -> Dota 2 -> LoL -> Valorant -> alphabetical ordering for free.

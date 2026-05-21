@@ -215,4 +215,17 @@ export const I = {
       <circle cx="15" cy="9" r="1.4" />
     </Icon>
   ),
+  Eye: (p: IconProps) => (
+    <Icon {...p}>
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+      <circle cx="12" cy="12" r="3" />
+    </Icon>
+  ),
+  EyeOff: (p: IconProps) => (
+    <Icon {...p}>
+      <path d="M9.9 5.1A10.4 10.4 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.3 4.3M6.7 6.7A17 17 0 0 0 2 12s3.5 7 10 7c2 0 3.8-.6 5.3-1.5" />
+      <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+      <path d="m3 3 18 18" />
+    </Icon>
+  ),
 };

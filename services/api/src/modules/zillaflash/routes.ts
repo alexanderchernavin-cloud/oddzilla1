@@ -4,22 +4,29 @@
 // startZillaFlashRotation); this handler just snapshots current state.
 //
 // Anonymous tolerated — no auth required. When the request IS authed,
-// we additionally filter offers against the bettor's promo-visibility
-// cascade (migration 0071) so VIPs / sharps the operator has tagged
-// hidden don't see ZillaFlash on the storefront. Anonymous browsers
-// keep seeing the full offer set. Cache-Control: no-store because the
-// payload changes every second AND now varies per user.
+// we additionally filter offers in two ways:
+//   1. against the bettor's promo-visibility cascade (migration 0071)
+//      so VIPs / sharps the operator has tagged hidden don't see
+//      ZillaFlash on the storefront;
+//   2. against the bettor's hidden_sports preference (migration 0072)
+//      so a sport the user has hidden in the sidebar drops out of the
+//      ZillaFlash row too — same surface, same hide intent.
+// Anonymous browsers keep seeing the full offer set. Cache-Control:
+// no-store because the payload changes every second AND varies per
+// user.
 //
 // Filter strategy: at most 4 offers per response × one (matchId →
-// sportId, tournamentId) lookup. Trivial overhead and only fires when
-// the user has at least one zillaflash override row.
+// sportId, sportSlug, tournamentId) lookup. Trivial overhead and the
+// metadata join already happens whenever either filter is active.
 
 import type { FastifyInstance } from "fastify";
 import { eq, inArray } from "drizzle-orm";
 import {
   matches,
+  sports,
   tournaments,
   categories,
+  users,
 } from "@oddzilla/db";
 import type { ZillaFlashOffer } from "@oddzilla/types";
 import {
@@ -35,12 +42,23 @@ export default async function zillaflashRoutes(app: FastifyInstance) {
 
     // Anonymous → public payload unchanged.
     if (!request.user) return response;
-    const cascades = await loadPromoVisibilityCascades(app.db, request.user.id);
-    if (cascades.zillaflash.empty) return response;
+    const [cascades, [userRow]] = await Promise.all([
+      loadPromoVisibilityCascades(app.db, request.user.id),
+      app.db
+        .select({ hiddenSports: users.hiddenSports })
+        .from(users)
+        .where(eq(users.id, request.user.id))
+        .limit(1),
+    ]);
+    const hiddenSet = new Set(userRow?.hiddenSports ?? []);
+    // Fast path: nothing to filter for this bettor — visibility
+    // cascade is empty AND no hidden sports — return the public
+    // payload unchanged. Saves a metadata round-trip for the long
+    // tail of users who never opened the customisation panel.
+    if (cascades.zillaflash.empty && hiddenSet.size === 0) return response;
 
-    // Lookup each visible match's (sportId, tournamentId) so the
-    // cascade can resolve sport / tournament / match overrides. One
-    // round-trip for the whole response.
+    // Lookup each offer's (sportSlug, sportId, tournamentId) so both
+    // filters resolve from a single round-trip per request.
     const allOffers = [...response.prematch, ...response.live];
     if (allOffers.length === 0) return response;
     const matchIds = Array.from(
@@ -51,18 +69,26 @@ export default async function zillaflashRoutes(app: FastifyInstance) {
         id: matches.id,
         tournamentId: tournaments.id,
         sportId: categories.sportId,
+        sportSlug: sports.slug,
       })
       .from(matches)
       .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
       .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+      .innerJoin(sports, eq(sports.id, categories.sportId))
       .where(inArray(matches.id, matchIds));
     const metaByMatch = new Map(
-      metaRows.map((r) => [r.id.toString(), { sportId: r.sportId, tournamentId: r.tournamentId }]),
+      metaRows.map((r) => [
+        r.id.toString(),
+        { sportId: r.sportId, sportSlug: r.sportSlug, tournamentId: r.tournamentId },
+      ]),
     );
 
     const isVisible = (o: ZillaFlashOffer): boolean => {
       const meta = metaByMatch.get(o.matchId);
       if (!meta) return true; // safe default — match metadata missing, don't hide
+      // Bettor's hidden_sports first — same intent as filtering the
+      // match out of /upcoming etc.
+      if (hiddenSet.has(meta.sportSlug)) return false;
       return resolveVisible(cascades, "zillaflash", {
         matchId: BigInt(o.matchId),
         tournamentId: meta.tournamentId,

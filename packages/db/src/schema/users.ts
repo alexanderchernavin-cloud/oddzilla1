@@ -61,6 +61,13 @@ export const users = pgTable(
     // non-null = user-saved slug order, with any sports missing from
     // the array appended in default order on the client.
     sportOrder: text("sport_order").array(),
+    // Per-bettor hidden-sports preference (migration 0072). NULL or
+    // empty array = no sports hidden; non-null = slugs that should be
+    // filtered out of every storefront surface (sidebar, match lists,
+    // ZillaFlash, CombiBoost suggestions). Companion to sportOrder;
+    // hidden slugs still surface in the sidebar's edit mode so the
+    // bettor can unhide them.
+    hiddenSports: text("hidden_sports").array(),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     lastLoginAt: timestamp({ withTimezone: true }),
@@ -98,6 +105,10 @@ export const users = pgTable(
     check(
       "users_sport_order_len",
       sql`${t.sportOrder} IS NULL OR array_length(${t.sportOrder}, 1) <= 100`,
+    ),
+    check(
+      "users_hidden_sports_len",
+      sql`${t.hiddenSports} IS NULL OR array_length(${t.hiddenSports}, 1) <= 100`,
     ),
   ],
 );

@@ -72,6 +72,15 @@ export function orderSportsForChips<T extends { slug: string; name: string }>(
   });
 }
 
+// Build a normalised Set of slugs the bettor has hidden (migration
+// 0072). Accepts null / empty / unset for callers that pass the user
+// prop straight through. Never includes globally-hidden bot slugs
+// because those are filtered out unconditionally elsewhere.
+export function hiddenSportsSet(userHidden: string[] | null | undefined): Set<string> {
+  if (!userHidden || userHidden.length === 0) return new Set();
+  return new Set(userHidden);
+}
+
 // Order a list of `{slug, name, ...}` rows using the bettor's
 // customised sport-order preference. Sports present in `userOrder` are
 // placed first in the user's chosen sequence; anything missing
@@ -81,10 +90,22 @@ export function orderSportsForChips<T extends { slug: string; name: string }>(
 //
 // `userOrder = null` short-circuits to the default order so callers
 // can pass the user prop through unconditionally.
+//
+// `userHidden` slugs are dropped entirely from the returned list. The
+// sidebar's edit mode uses `partitionSportsForEdit` instead so the
+// bettor can still see + un-hide them; everywhere else the hidden set
+// is filtered out by this helper.
 export function orderSportsForSidebar<
   T extends { slug: string; name: string },
->(items: T[], userOrder: string[] | null): T[] {
-  const visible = items.filter((s) => !HIDDEN_SPORT_SLUGS.has(s.slug));
+>(
+  items: T[],
+  userOrder: string[] | null,
+  userHidden: string[] | null = null,
+): T[] {
+  const hidden = hiddenSportsSet(userHidden);
+  const visible = items.filter(
+    (s) => !HIDDEN_SPORT_SLUGS.has(s.slug) && !hidden.has(s.slug),
+  );
   if (!userOrder || userOrder.length === 0) {
     return orderSportsForChips(visible);
   }
@@ -105,14 +126,47 @@ export function orderSportsForSidebar<
   return [...head, ...tail];
 }
 
+// Sidebar edit-mode layout: returns two ordered lists — visible sports
+// in the bettor's chosen order, followed by hidden sports (so the
+// bettor can un-hide them). Both lists strip the global bot slugs.
+// Within the hidden bucket we sort the default way (pinned-first then
+// alphabetical) so the bettor isn't asked to remember the order they
+// hid things in.
+export function partitionSportsForEdit<
+  T extends { slug: string; name: string },
+>(
+  items: T[],
+  userOrder: string[] | null,
+  userHidden: string[] | null,
+): { visible: T[]; hidden: T[] } {
+  const hidden = hiddenSportsSet(userHidden);
+  const notHidden = items.filter(
+    (s) => !HIDDEN_SPORT_SLUGS.has(s.slug) && !hidden.has(s.slug),
+  );
+  const isHidden = items.filter(
+    (s) => !HIDDEN_SPORT_SLUGS.has(s.slug) && hidden.has(s.slug),
+  );
+  // Re-use the same ordering machinery as the live sidebar so the
+  // edit-mode arrangement matches what the user sees outside edit
+  // mode (minus the hidden tail).
+  const orderedVisible = orderSportsForSidebar(notHidden, userOrder, null);
+  const orderedHidden = orderSportsForChips(isHidden);
+  return { visible: orderedVisible, hidden: orderedHidden };
+}
+
 // Order a list of match rows (carrying a `sport.slug` + `sport.name`)
 // by their sport's rank, then alphabetical within the non-pinned tail.
 // Stable on equal ranks so callers can pre-sort by a secondary key
 // (e.g. scheduled_at) and have it preserved within each sport group.
+// Hidden sports (global bot slugs + the bettor's hidden_sports) are
+// dropped — callers don't need to filter separately.
 export function orderMatchesBySport<
   T extends { sport: { slug: string; name: string } },
->(items: T[]): T[] {
-  const visible = items.filter((m) => !HIDDEN_SPORT_SLUGS.has(m.sport.slug));
+>(items: T[], userHidden: string[] | null = null): T[] {
+  const hidden = hiddenSportsSet(userHidden);
+  const visible = items.filter(
+    (m) => !HIDDEN_SPORT_SLUGS.has(m.sport.slug) && !hidden.has(m.sport.slug),
+  );
   return [...visible].sort((a, b) => {
     const ra = sportRank(a.sport.slug);
     const rb = sportRank(b.sport.slug);

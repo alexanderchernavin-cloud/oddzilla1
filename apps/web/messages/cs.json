@@ -70,7 +70,10 @@
     "saveSportOrder": "Uložit",
     "resetSports": "Obnovit",
     "moveSportUp": "Posunout nahoru",
-    "moveSportDown": "Posunout dolů"
+    "moveSportDown": "Posunout dolů",
+    "hideSport": "Skrýt",
+    "showSport": "Zobrazit",
+    "hiddenSportsHeader": "Skryté"
   },
   "wallet": {
     "title": "Peněženka",

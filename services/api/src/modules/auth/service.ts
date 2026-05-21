@@ -63,6 +63,7 @@ export interface PublicUser {
   nickname: string | null;
   countryCode: string | null;
   sportOrder: string[] | null;
+  hiddenSports: string[] | null;
   createdAt: Date;
 }
 
@@ -581,6 +582,7 @@ function publicUser(row: typeof users.$inferSelect): PublicUser {
     nickname: row.nickname,
     countryCode: row.countryCode,
     sportOrder: row.sportOrder ?? null,
+    hiddenSports: row.hiddenSports ?? null,
     createdAt: row.createdAt,
   };
 }

@@ -70,7 +70,10 @@
     "saveSportOrder": "Salvar",
     "resetSports": "Redefinir",
     "moveSportUp": "Mover para cima",
-    "moveSportDown": "Mover para baixo"
+    "moveSportDown": "Mover para baixo",
+    "hideSport": "Ocultar",
+    "showSport": "Mostrar",
+    "hiddenSportsHeader": "Ocultos"
   },
   "wallet": {
     "title": "Carteira",

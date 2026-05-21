@@ -46,6 +46,23 @@ const sportOrderBody = z.object({
     .nullable(),
 });
 
+// Per-bettor hidden-sports preference (migration 0072). Same slug shape
+// + cap as sportOrder. `hidden: null` (or no `hidden` key on the body
+// in a future extension) clears the preference — same effect the user
+// gets by un-hiding every sport in the sidebar UI.
+const hiddenSportsBody = z.object({
+  hidden: z
+    .array(
+      z
+        .string()
+        .min(1)
+        .max(64)
+        .regex(/^[a-z0-9-]+$/),
+    )
+    .max(100)
+    .nullable(),
+});
+
 // Tight per-user rate limit on the password endpoint. verifyPassword is
 // intentionally ~50ms per call; without a limit a stolen-cookie attacker
 // can brute-force `currentPassword` while also turning the endpoint into
@@ -160,6 +177,33 @@ export default async function usersRoutes(app: FastifyInstance) {
     if (!updated) throw new NotFoundError();
     return { user: publicize(updated) };
   });
+
+  // PUT /users/me/hidden-sports
+  //
+  // Persists the bettor's hidden-sport set (migration 0072). Body
+  // `{ hidden: null }` clears the preference back to the default
+  // (nothing hidden) — same effect as un-hiding every sport in the
+  // sidebar edit mode. Duplicates deduped server-side; an empty
+  // array round-trips as null so the column stays clean for later
+  // inspection.
+  app.put("/users/me/hidden-sports", async (request) => {
+    const u = request.requireAuth();
+    const body = hiddenSportsBody.parse(request.body);
+
+    const deduped = body.hidden
+      ? Array.from(new Set(body.hidden))
+      : null;
+    const normalized: string[] | null =
+      deduped && deduped.length > 0 ? deduped : null;
+
+    const [updated] = await app.db
+      .update(users)
+      .set({ hiddenSports: normalized, updatedAt: new Date() })
+      .where(eq(users.id, u.id))
+      .returning();
+    if (!updated) throw new NotFoundError();
+    return { user: publicize(updated) };
+  });
 }
 
 function publicize(u: typeof users.$inferSelect) {
@@ -172,5 +216,6 @@ function publicize(u: typeof users.$inferSelect) {
     displayName: u.displayName,
     countryCode: u.countryCode,
     sportOrder: u.sportOrder ?? null,
+    hiddenSports: u.hiddenSports ?? null,
   };
 }

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { serverApi } from "@/lib/server-fetch";
+import { getSessionUser } from "@/lib/auth";
 import { type ListMatch } from "@/components/match/match-row";
 import {
   MatchListTabs,
@@ -38,12 +39,23 @@ export default async function LivePage({ searchParams }: PageProps) {
   const selectedSport =
     typeof rawSport === "string" && rawSport.length > 0 ? rawSport : null;
 
-  const [data, tCommon, tSport] = await Promise.all([
+  const [data, user, tCommon, tSport] = await Promise.all([
     serverApi<Response>("/catalog/matches?status=live&limit=120"),
+    // /auth/me is small + already in the SSR fan-out for the layout;
+    // we call it again here so the page picks up the bettor's
+    // hidden_sports (migration 0072) and can filter the match list
+    // accordingly. There is no Next.js-supported way to share the
+    // layout's getSessionUser() result with a nested page, hence the
+    // second call. Cost is one cookie-forwarded fetch to api:3001
+    // resolved in parallel with /catalog/matches.
+    getSessionUser(),
     getTranslations("common"),
     getTranslations("sport"),
   ]);
-  const ordered = orderMatchesBySport(data?.matches ?? []);
+  const ordered = orderMatchesBySport(
+    data?.matches ?? [],
+    user?.hiddenSports ?? null,
+  );
 
   // Preserve insertion order from `ordered` so chips inherit the
   // CS2 -> Dota 2 -> LoL -> Valorant -> alphabetical ordering for free.

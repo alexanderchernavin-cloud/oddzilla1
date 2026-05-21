@@ -70,7 +70,10 @@
     "saveSportOrder": "Сохранить",
     "resetSports": "Сбросить",
     "moveSportUp": "Поднять",
-    "moveSportDown": "Опустить"
+    "moveSportDown": "Опустить",
+    "hideSport": "Скрыть",
+    "showSport": "Показать",
+    "hiddenSportsHeader": "Скрытые"
   },
   "wallet": {
     "title": "Кошелёк",
