@@ -24,6 +24,7 @@ export interface SessionUser {
   nickname: string | null;
   countryCode: string | null;
   sportOrder: string[] | null;
+  hiddenSports: string[] | null;
 }
 
 /**

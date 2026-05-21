@@ -78,6 +78,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
           signedIn={Boolean(user)}
           isAdmin={user?.role === "admin"}
           userSportOrder={user?.sportOrder ?? null}
+          userHiddenSports={user?.hiddenSports ?? null}
         />
         {/*
           The main cell spans 1fr so the shell fills any viewport, but the

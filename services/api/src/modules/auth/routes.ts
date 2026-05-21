@@ -81,6 +81,7 @@ interface PublicAuthResponse {
     displayName: string | null;
     countryCode: string | null;
     sportOrder: string[] | null;
+    hiddenSports: string[] | null;
   };
   accessTokenExpiresAt: string;
 }
@@ -186,6 +187,7 @@ function publicize(u: {
   nickname: string | null;
   countryCode: string | null;
   sportOrder: string[] | null;
+  hiddenSports: string[] | null;
 }) {
   return {
     id: u.id,
@@ -197,5 +199,6 @@ function publicize(u: {
     nickname: u.nickname,
     countryCode: u.countryCode,
     sportOrder: u.sportOrder,
+    hiddenSports: u.hiddenSports,
   };
 }

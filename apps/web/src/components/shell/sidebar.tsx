@@ -15,7 +15,10 @@ import { I } from "@/components/ui/icons";
 import { LiveDot } from "@/components/ui/primitives";
 import { TierMark, isFeaturedTier } from "@/components/ui/tier-mark";
 import { clientApi } from "@/lib/api-client";
-import { orderSportsForSidebar } from "@/lib/sport-order";
+import {
+  orderSportsForSidebar,
+  partitionSportsForEdit,
+} from "@/lib/sport-order";
 import { useTranslations } from "@/lib/i18n";
 import { ThemeToggle } from "./theme-toggle";
 
@@ -52,6 +55,11 @@ interface SidebarProps {
   // default (TOP_SPORT_SLUGS pinned + alphabetical) order. Signed-out
   // users always get NULL here.
   userSportOrder: string[] | null;
+  // Bettor's persisted hidden-sport set from /auth/me (migration 0072).
+  // NULL = nothing hidden. Hidden slugs are filtered out of the live
+  // sidebar render and surfaced under a "Hidden" header in edit mode
+  // so the bettor can un-hide them.
+  userHiddenSports: string[] | null;
 }
 
 export function Sidebar({
@@ -60,6 +68,7 @@ export function Sidebar({
   signedIn,
   isAdmin,
   userSportOrder,
+  userHiddenSports,
 }: SidebarProps) {
   const pathname = usePathname() ?? "/";
   const searchParams = useSearchParams();
@@ -68,7 +77,14 @@ export function Sidebar({
     if (href === "/") return pathname === "/";
     return pathname === href || pathname.startsWith(href + "/");
   };
-  const totalLive = Object.values(liveCounts).reduce((a, n) => a + n, 0);
+  // Sum live counts EXCLUDING the bettor's hidden sports — the /live
+  // page filters those rows out, so the Live entry's badge would
+  // mislead the user otherwise ("5 live!" but the page renders 0).
+  const hiddenSet = new Set(userHiddenSports ?? []);
+  const totalLive = Object.entries(liveCounts).reduce(
+    (a, [slug, n]) => (hiddenSet.has(slug) ? a : a + n),
+    0,
+  );
 
   const activeSportSlug = extractSportSlug(pathname);
   const activeTournamentId = searchParams?.get("tournament") ?? null;
@@ -173,6 +189,7 @@ export function Sidebar({
         sports={sports}
         liveCounts={liveCounts}
         userSportOrder={userSportOrder}
+        userHiddenSports={userHiddenSports}
         signedIn={signedIn}
         activeSportSlug={activeSportSlug}
         activeTournamentId={activeTournamentId}
@@ -312,16 +329,28 @@ function SectionLabel({
 
 // Sports section with built-in customisation mode. Signed-in bettors
 // can toggle edit mode via a gear icon in the section label, reorder
-// each sport with up/down buttons, and reset to defaults. Order is
-// persisted server-side via PUT /users/me/sport-order; the response
-// shape is ignored — the source of truth during the editing session is
-// the local `order` state, and the next page render re-hydrates from
-// /auth/me. Signed-out users see the section without the gear (no
-// preference to save against).
+// each sport with up/down buttons, hide sports they don't care about,
+// and reset to defaults. Order + hidden set are persisted server-side
+// via PUT /users/me/sport-order + PUT /users/me/hidden-sports; the
+// response shape is ignored — the source of truth during the editing
+// session is the local state, and the next page render re-hydrates
+// from /auth/me. Signed-out users see the section without the gear
+// (no preference to save against).
+//
+// Layout outside edit mode: visible sports only, in the user's chosen
+// order. Hidden sports + their live counts disappear entirely so the
+// sidebar drawer stays short.
+//
+// Layout inside edit mode: visible sports first (in user order), then
+// a "Hidden" header, then the hidden sports as un-hide-able rows. The
+// up/down arrows only operate within the visible bucket — hiding a
+// sport moves it under the header (and a future un-hide pops it back
+// into the visible tail).
 function SportsSection({
   sports,
   liveCounts,
   userSportOrder,
+  userHiddenSports,
   signedIn,
   activeSportSlug,
   activeTournamentId,
@@ -331,6 +360,7 @@ function SportsSection({
   sports: SportItem[];
   liveCounts: Record<string, number>;
   userSportOrder: string[] | null;
+  userHiddenSports: string[] | null;
   signedIn: boolean;
   activeSportSlug: string | null;
   activeTournamentId: string | null;
@@ -340,30 +370,44 @@ function SportsSection({
   const tShell = useTranslations("shell");
   const [editing, setEditing] = useState(false);
 
-  // Local override of the user's saved slug order. Initialized from
-  // the server prop, and updated optimistically when the user arrows
-  // / resets. Stays sticky across the edit-mode toggle so pressing
-  // Save doesn't visually revert. An earlier shape had `editing` in
-  // a resync useEffect's deps — when Save flipped editing to false,
-  // the effect re-ran and overwrote local state with the (still-stale,
-  // since the page hadn't re-fetched /auth/me) prop. The cleaner model
-  // here is "localOrder is the source of truth for what we render;
-  // the prop just seeds it and reseeds when the prop genuinely
-  // changes (e.g. another tab edited)".
+  // Local override of the user's saved order + hidden set. Initialized
+  // from the server props, and updated optimistically when the user
+  // clicks arrow / hide / show / reset. Stays sticky across edit-mode
+  // toggle so pressing Save doesn't visually revert. The earlier
+  // pattern (with `editing` in the resync deps) overwrote local state
+  // with the still-stale prop on Save; the cleaner model is
+  // "localXxx is the source of truth for what we render; the prop
+  // seeds it and reseeds only when the prop genuinely changes (e.g.
+  // another tab edited)".
   const [localOrder, setLocalOrder] = useState<string[] | null>(
     userSportOrder,
+  );
+  const [localHidden, setLocalHidden] = useState<string[] | null>(
+    userHiddenSports,
   );
 
   useEffect(() => {
     setLocalOrder(userSportOrder);
   }, [userSportOrder]);
 
+  useEffect(() => {
+    setLocalHidden(userHiddenSports);
+  }, [userHiddenSports]);
+
+  // Outside edit mode: the live sidebar list, hidden sports filtered
+  // out so they don't take up screen real estate. Inside edit mode we
+  // render `partitioned.visible` + a header + `partitioned.hidden`
+  // instead so the bettor can still see them to un-hide.
   const renderList = useMemo(
-    () => orderSportsForSidebar(sports, localOrder),
-    [sports, localOrder],
+    () => orderSportsForSidebar(sports, localOrder, localHidden),
+    [sports, localOrder, localHidden],
+  );
+  const partitioned = useMemo(
+    () => partitionSportsForEdit(sports, localOrder, localHidden),
+    [sports, localOrder, localHidden],
   );
 
-  function persist(next: string[] | null) {
+  function persistOrder(next: string[] | null) {
     clientApi("/users/me/sport-order", {
       method: "PUT",
       body: JSON.stringify({ order: next }),
@@ -375,19 +419,58 @@ function SportsSection({
     });
   }
 
+  function persistHidden(next: string[] | null) {
+    clientApi("/users/me/hidden-sports", {
+      method: "PUT",
+      body: JSON.stringify({ hidden: next }),
+    }).catch(() => {
+      // Non-fatal; same rationale as persistOrder.
+    });
+  }
+
+  // Move applies only inside the visible bucket. We re-derive the
+  // new slug order by reading `partitioned.visible` (the bucket the
+  // arrows are visible against), swapping the two indices, and
+  // emitting the resulting slug list as the new order. Hidden sports
+  // are not included in `sport_order` because their position is
+  // already fully determined by the hidden bucket.
   function move(index: number, dir: -1 | 1) {
     const swapWith = index + dir;
-    if (swapWith < 0 || swapWith >= renderList.length) return;
-    const next = renderList.slice();
+    if (swapWith < 0 || swapWith >= partitioned.visible.length) return;
+    const next = partitioned.visible.slice();
     [next[index], next[swapWith]] = [next[swapWith]!, next[index]!];
     const slugs = next.map((s) => s.slug);
     setLocalOrder(slugs);
-    persist(slugs);
+    persistOrder(slugs);
   }
 
+  function hide(slug: string) {
+    const set = new Set(localHidden ?? []);
+    set.add(slug);
+    const next = Array.from(set);
+    setLocalHidden(next);
+    persistHidden(next);
+  }
+
+  function show(slug: string) {
+    if (!localHidden || localHidden.length === 0) return;
+    const next = localHidden.filter((s) => s !== slug);
+    const normalised = next.length === 0 ? null : next;
+    setLocalHidden(normalised);
+    persistHidden(normalised);
+  }
+
+  // Reset clears BOTH preferences — the user's mental model for the
+  // "Reset" button is "put everything back to defaults", which means
+  // showing every sport in the default pinned-first / alphabetical
+  // order. Two independent persists so a network failure on one
+  // doesn't roll the other back; the local state already reflects
+  // the new default optimistically.
   function reset() {
     setLocalOrder(null);
-    persist(null);
+    setLocalHidden(null);
+    persistOrder(null);
+    persistHidden(null);
   }
 
   const trailing = signedIn ? (
@@ -459,24 +542,55 @@ function SportsSection({
     )
   ) : null;
 
+  if (editing) {
+    return (
+      <>
+        <SectionLabel trailing={trailing}>{tShell("sports")}</SectionLabel>
+        {partitioned.visible.map((s, idx) => (
+          <SportEditRow
+            key={s.slug}
+            sport={s}
+            canMoveUp={idx > 0}
+            canMoveDown={idx < partitioned.visible.length - 1}
+            onMoveUp={() => move(idx, -1)}
+            onMoveDown={() => move(idx, 1)}
+            onHide={() => hide(s.slug)}
+            hidden={false}
+            upLabel={tShell("moveSportUp")}
+            downLabel={tShell("moveSportDown")}
+            hideLabel={tShell("hideSport")}
+            showLabel={tShell("showSport")}
+          />
+        ))}
+        {partitioned.hidden.length > 0 && (
+          <>
+            <HiddenSportsHeader label={tShell("hiddenSportsHeader")} />
+            {partitioned.hidden.map((s) => (
+              <SportEditRow
+                key={s.slug}
+                sport={s}
+                canMoveUp={false}
+                canMoveDown={false}
+                onMoveUp={() => {}}
+                onMoveDown={() => {}}
+                onHide={() => show(s.slug)}
+                hidden
+                upLabel={tShell("moveSportUp")}
+                downLabel={tShell("moveSportDown")}
+                hideLabel={tShell("hideSport")}
+                showLabel={tShell("showSport")}
+              />
+            ))}
+          </>
+        )}
+      </>
+    );
+  }
+
   return (
     <>
       <SectionLabel trailing={trailing}>{tShell("sports")}</SectionLabel>
-      {renderList.map((s, idx) => {
-        if (editing) {
-          return (
-            <SportEditRow
-              key={s.slug}
-              sport={s}
-              canMoveUp={idx > 0}
-              canMoveDown={idx < renderList.length - 1}
-              onMoveUp={() => move(idx, -1)}
-              onMoveDown={() => move(idx, 1)}
-              upLabel={tShell("moveSportUp")}
-              downLabel={tShell("moveSportDown")}
-            />
-          );
-        }
+      {renderList.map((s) => {
         const sportActive = isActive(`/sport/${s.slug}`);
         const expanded = sportActive && s.slug === activeSportSlug;
         const tournaments = tournamentsBySport[s.slug];
@@ -522,13 +636,37 @@ function SportsSection({
   );
 }
 
-// One sport row in customisation mode. The full row no longer
-// navigates — instead it carries a pair of up/down arrow buttons that
-// the user clicks to reorder. Disabled state matches the row's
-// position in the list (top row can't move up, etc.).
+// Sub-header that introduces the hidden-sport bucket in edit mode.
+// Visually quieter than the main "SPORTS" label so the bettor's eye
+// rests on the visible bucket first; same mono treatment for shape
+// consistency. Renders nothing when there are no hidden sports —
+// caller gates this.
+function HiddenSportsHeader({ label }: { label: string }) {
+  return (
+    <div
+      className="mono"
+      style={{
+        padding: "12px 10px 4px",
+        fontSize: 10,
+        letterSpacing: "0.14em",
+        textTransform: "uppercase",
+        color: "var(--fg-dim)",
+        fontWeight: 600,
+      }}
+    >
+      {label}
+    </div>
+  );
+}
+
+// One sport row in customisation mode. Carries up/down arrow buttons
+// the user clicks to reorder, plus a hide/show toggle (eye icon).
+// Disabled state matches the row's position in the list (top row
+// can't move up, etc.); when `hidden=true` the arrows render as
+// hidden placeholders since hidden sports don't have an order.
 //
 // Layout note: in edit mode the row extends 8 px past the section's
-// right padding (negative marginRight) so the up/down stack can use
+// right padding (negative marginRight) so the button stack can use
 // the sidebar's right gutter. The slight misalignment with the
 // non-edit rows above/below is intentional and only visible while
 // editing — it buys the sport-name column ~20 px of width, which is
@@ -540,17 +678,30 @@ function SportEditRow({
   canMoveDown,
   onMoveUp,
   onMoveDown,
+  onHide,
+  hidden,
   upLabel,
   downLabel,
+  hideLabel,
+  showLabel,
 }: {
   sport: SportItem;
   canMoveUp: boolean;
   canMoveDown: boolean;
   onMoveUp: () => void;
   onMoveDown: () => void;
+  // Toggle: when hidden=false this hides the sport; when hidden=true
+  // it un-hides. One callback because the surface is symmetric and
+  // the parent always knows the current state from the bucket the
+  // row was rendered in.
+  onHide: () => void;
+  hidden: boolean;
   upLabel: string;
   downLabel: string;
+  hideLabel: string;
+  showLabel: string;
 }) {
+  const toggleLabel = hidden ? showLabel : hideLabel;
   return (
     <div
       style={{
@@ -561,8 +712,9 @@ function SportEditRow({
         marginRight: -8,
         borderRadius: 8,
         background: "transparent",
-        color: "var(--fg-muted)",
+        color: hidden ? "var(--fg-dim)" : "var(--fg-muted)",
         fontSize: 13,
+        opacity: hidden ? 0.75 : 1,
       }}
     >
       <SportGlyph sport={sport.slug} size={16} />
@@ -578,25 +730,38 @@ function SportEditRow({
         {sport.name}
       </span>
       <div style={{ display: "inline-flex", gap: 2, flexShrink: 0 }}>
+        {!hidden && (
+          <>
+            <button
+              type="button"
+              onClick={onMoveUp}
+              disabled={!canMoveUp}
+              title={upLabel}
+              aria-label={`${upLabel}: ${sport.name}`}
+              style={moveBtnStyle(canMoveUp)}
+            >
+              <I.ChevU size={12} />
+            </button>
+            <button
+              type="button"
+              onClick={onMoveDown}
+              disabled={!canMoveDown}
+              title={downLabel}
+              aria-label={`${downLabel}: ${sport.name}`}
+              style={moveBtnStyle(canMoveDown)}
+            >
+              <I.ChevD size={12} />
+            </button>
+          </>
+        )}
         <button
           type="button"
-          onClick={onMoveUp}
-          disabled={!canMoveUp}
-          title={upLabel}
-          aria-label={`${upLabel}: ${sport.name}`}
-          style={moveBtnStyle(canMoveUp)}
+          onClick={onHide}
+          title={toggleLabel}
+          aria-label={`${toggleLabel}: ${sport.name}`}
+          style={moveBtnStyle(true)}
         >
-          <I.ChevU size={12} />
-        </button>
-        <button
-          type="button"
-          onClick={onMoveDown}
-          disabled={!canMoveDown}
-          title={downLabel}
-          aria-label={`${downLabel}: ${sport.name}`}
-          style={moveBtnStyle(canMoveDown)}
-        >
-          <I.ChevD size={12} />
+          {hidden ? <I.EyeOff size={12} /> : <I.Eye size={12} />}
         </button>
       </div>
     </div>
