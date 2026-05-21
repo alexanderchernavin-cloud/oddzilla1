@@ -214,11 +214,18 @@ func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 		if msg.SportEventStatus.Status != nil {
 			newStatus := oddinxml.MapMatchStatusCode(*msg.SportEventStatus.Status)
 			if newStatus != "" {
-				if uerr := store.UpdateMatchStatus(ctx, d.Store.Pool(), matchID, newStatus); uerr != nil {
+				changed, uerr := store.UpdateMatchStatus(ctx, d.Store.Pool(), matchID, newStatus)
+				if uerr != nil {
 					d.Log.Warn().Err(uerr).Int64("match_id", matchID).
 						Str("status", newStatus).
 						Int("oddin_code", *msg.SportEventStatus.Status).
 						Msg("odds_change: status update failed; continuing")
+				} else if changed {
+					if perr := d.Bus.PublishMatchStatus(ctx, matchID, newStatus, msg.Timestamp); perr != nil {
+						d.Log.Debug().Err(perr).
+							Int64("match", matchID).Str("status", newStatus).
+							Msg("publish match status failed")
+					}
 				}
 			}
 		}
@@ -408,9 +415,16 @@ func handleFixtureChange(ctx context.Context, d Deps, body []byte) error {
 	// 3 (CANCELLED) is the only fixture_change value that mutates status
 	// directly via this handler.
 	if newStatus != "" {
-		if err := store.UpdateMatchStatus(ctx, d.Store.Pool(), matchID, newStatus); err != nil {
-			d.Log.Warn().Err(err).Int64("match_id", matchID).
+		changed, uerr := store.UpdateMatchStatus(ctx, d.Store.Pool(), matchID, newStatus)
+		if uerr != nil {
+			d.Log.Warn().Err(uerr).Int64("match_id", matchID).
 				Str("status", newStatus).Msg("update match status failed")
+		} else if changed {
+			if perr := d.Bus.PublishMatchStatus(ctx, matchID, newStatus, msg.Timestamp); perr != nil {
+				d.Log.Debug().Err(perr).
+					Int64("match", matchID).Str("status", newStatus).
+					Msg("publish match status failed")
+			}
 		}
 	}
 
@@ -479,8 +493,9 @@ func handleMatchStatusChange(ctx context.Context, d Deps, body []byte) error {
 			Int("oddin_code", msg.Status).
 			Msg("match_status_change: unknown status code; row left as-is")
 	} else {
-		if err := store.UpdateMatchStatus(ctx, d.Store.Pool(), matchID, newStatus); err != nil {
-			d.Log.Warn().Err(err).Int64("match_id", matchID).
+		changed, uerr := store.UpdateMatchStatus(ctx, d.Store.Pool(), matchID, newStatus)
+		if uerr != nil {
+			d.Log.Warn().Err(uerr).Int64("match_id", matchID).
 				Str("status", newStatus).Int("oddin_code", msg.Status).
 				Msg("match_status_change: status update failed")
 		} else {
@@ -489,7 +504,15 @@ func handleMatchStatusChange(ctx context.Context, d Deps, body []byte) error {
 				Int64("match_id", matchID).
 				Str("status", newStatus).
 				Int("oddin_code", msg.Status).
+				Bool("changed", changed).
 				Msg("match_status_change: status applied")
+			if changed {
+				if perr := d.Bus.PublishMatchStatus(ctx, matchID, newStatus, msg.Timestamp); perr != nil {
+					d.Log.Debug().Err(perr).
+						Int64("match", matchID).Str("status", newStatus).
+						Msg("publish match status failed")
+				}
+			}
 		}
 	}
 

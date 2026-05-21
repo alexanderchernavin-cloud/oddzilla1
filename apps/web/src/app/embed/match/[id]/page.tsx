@@ -14,17 +14,15 @@
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { serverApi } from "@/lib/server-fetch";
-import { getTranslations } from "@/lib/i18n/server";
-import { LocalDateTime } from "@/components/match/local-datetime";
 import {
   LiveMarkets,
   type MarketGroup,
   type MarketSnapshot,
 } from "@/app/(main)/match/[id]/live-markets";
 import { LiveScoreboard } from "@/app/(main)/match/[id]/live-scoreboard";
-import { Pill, LiveDot } from "@/components/ui/primitives";
 import { TierMark } from "@/components/ui/tier-mark";
 import { type MatchStream } from "@/components/match/match-streams";
+import { MatchHeaderStatusPill } from "@/components/match/header-status-pill";
 import { MatchLiveMedia } from "@/components/widgets/match-live-media";
 import { ZillaFactsCards } from "@/components/match/zillafacts-cards";
 import { type LiveScore } from "@/lib/live-score";
@@ -62,13 +60,7 @@ export default async function EmbedMatchPage({
   const { match, markets: _markets, marketGroups } = data;
   const streams = match.streams ?? [];
   const parentHost = await resolveEmbedHost();
-  const isLive = match.status === "live";
   const initialLiveScore = match.liveScore ?? null;
-
-  const [tMatch, tHome] = await Promise.all([
-    getTranslations("match"),
-    getTranslations("home"),
-  ]);
 
   return (
     <div className="oz-embed-root">
@@ -89,17 +81,11 @@ export default async function EmbedMatchPage({
               flexWrap: "wrap",
             }}
           >
-            {isLive ? (
-              <Pill tone="live">
-                <LiveDot size={6} /> {tMatch("live")}
-              </Pill>
-            ) : (
-              <Pill>
-                {tHome("upcoming")}
-                {" · "}
-                <LocalDateTime iso={match.scheduledAt} mode="match-detail" />
-              </Pill>
-            )}
+            <MatchHeaderStatusPill
+              matchId={String(match.id)}
+              initialStatus={match.status}
+              scheduledAt={match.scheduledAt}
+            />
             <span
               className="mono"
               style={{
@@ -126,7 +112,7 @@ export default async function EmbedMatchPage({
             awayLogoUrl={match.awayLogoUrl ?? null}
             bestOf={match.bestOf}
             initialLiveScore={initialLiveScore}
-            isLive={isLive}
+            initialStatus={match.status}
             sportSlug={match.sport.slug}
           />
         </div>
@@ -138,7 +124,7 @@ export default async function EmbedMatchPage({
           awayTeam={match.awayTeam}
           streams={streams}
           parentHost={parentHost}
-          isLive={isLive}
+          initialStatus={match.status}
         />
 
         <ZillaFactsCards

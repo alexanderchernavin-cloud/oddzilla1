@@ -159,6 +159,41 @@ func (b *Bus) PublishMarketStatus(ctx context.Context, matchID, marketID int64, 
 	return nil
 }
 
+// PublishMatchStatus broadcasts a match-level lifecycle transition on the
+// match's odds channel so the storefront can drop a stale LIVE pill the
+// moment Oddin reports the match closed (or cancelled / not_started →
+// live). Without this frame the rendered match.status stays frozen at
+// whatever SSR captured — odds and per-market status ticks keep flowing
+// but the top-level lifecycle indicator only refreshes on a hard
+// reload. Best-effort: pub/sub drops are tolerable, the source of truth
+// remains matches.status in pg.
+//
+// `status` is the normalized string ('not_started' / 'live' / 'closed'
+// / 'cancelled' / 'suspended') already written to matches.status — the
+// frontend renders directly off it.
+func (b *Bus) PublishMatchStatus(ctx context.Context, matchID int64, status string, oddinTs int64) error {
+	envelope := struct {
+		Type    string `json:"type"`
+		MatchID string `json:"matchId"`
+		Status  string `json:"status"`
+		Ts      int64  `json:"ts"`
+	}{
+		Type:    "matchStatus",
+		MatchID: strconv.FormatInt(matchID, 10),
+		Status:  status,
+		Ts:      oddinTs,
+	}
+	encoded, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("marshal match status envelope: %w", err)
+	}
+	channel := "odds:match:" + strconv.FormatInt(matchID, 10)
+	if err := b.rdb.Publish(ctx, channel, encoded).Err(); err != nil {
+		return fmt.Errorf("publish %s: %w", channel, err)
+	}
+	return nil
+}
+
 func (b *Bus) PublishLiveScore(ctx context.Context, matchID int64, payload []byte) error {
 	if len(payload) == 0 {
 		return nil

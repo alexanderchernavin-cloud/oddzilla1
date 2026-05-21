@@ -19,8 +19,11 @@ import {
   MatchStreams,
   type MatchStream,
 } from "@/components/match/match-streams";
+import { useLiveMatchStatus } from "@/lib/use-live-odds";
 import { DisirWidget } from "./disir-widget";
 import { supportsLiveWidget } from "./supported-sports";
+
+type MatchStatus = "not_started" | "live" | "closed" | "cancelled" | "suspended";
 
 interface Props {
   matchId: string;
@@ -29,7 +32,7 @@ interface Props {
   awayTeam: string;
   streams: MatchStream[];
   parentHost: string | null;
-  isLive: boolean;
+  initialStatus: MatchStatus;
 }
 
 type MobileTab = "stream" | "stats";
@@ -41,8 +44,13 @@ export function MatchLiveMedia({
   awayTeam,
   streams,
   parentHost,
-  isLive,
+  initialStatus,
 }: Props) {
+  // Subscribe to live lifecycle ticks so the live-stats widget hides
+  // the moment the match finishes — otherwise the iframe stays mounted
+  // showing its final state until the bettor reloads.
+  const liveStatus = useLiveMatchStatus(matchId);
+  const isLive = (liveStatus?.status ?? initialStatus) === "live";
   const [mobileTab, setMobileTab] = useState<MobileTab>(streams.length > 0 ? "stream" : "stats");
 
   // If a sport doesn't support live widgets at all, skip the whole

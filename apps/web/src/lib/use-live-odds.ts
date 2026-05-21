@@ -54,6 +54,23 @@ export interface LiveMarketStatusTick {
   ts: string; // ISO
 }
 
+// Match-level lifecycle tick. Published by feed-ingester whenever
+// matches.status transitions (every odds_change ships <sport_event_status>
+// — `not_started → live → closed/cancelled`) and by settlement when
+// the all-markets-terminal predicate flips a match closed (Oddin
+// sometimes drops the final `<sport_event_status status="4">` once
+// the last market settles). The storefront uses this to drop the
+// LIVE pill the moment a match finishes — without it, match.status
+// stays frozen at whatever SSR captured and the indicator only
+// refreshes on a hard reload.
+//
+// `status` mirrors the normalized `matches.status` enum:
+//   'not_started' | 'live' | 'closed' | 'cancelled' | 'suspended'
+export interface LiveMatchStatusTick {
+  status: "not_started" | "live" | "closed" | "cancelled" | "suspended";
+  ts: string; // ISO
+}
+
 export interface TicketFrame {
   type: "ticket";
   ticketId: string;
@@ -92,6 +109,16 @@ interface SharedConnection {
       onStatus: (matchId: string, tick: LiveMarketStatusTick) => void;
     }
   >;
+  // Match-level lifecycle listeners. Same shared socket / same
+  // odds:match:{id} Redis channel — the gateway forwards every
+  // matchStatus frame verbatim and we dispatch by JSON `type`.
+  matchStatusListeners: Map<
+    string,
+    {
+      matchIds: Set<string>;
+      onStatus: (matchId: string, tick: LiveMatchStatusTick) => void;
+    }
+  >;
   scoreListeners: Map<
     string,
     { matchIds: Set<string>; onScore: (matchId: string, score: LiveScore) => void }
@@ -127,6 +154,7 @@ export function getShared(): SharedConnection {
       chatSubscriptionCounts: new Map(),
       listeners: new Map(),
       marketStatusListeners: new Map(),
+      matchStatusListeners: new Map(),
       scoreListeners: new Map(),
       chatListeners: new Map(),
       ticketListeners: new Set(),
@@ -201,10 +229,12 @@ function ensureConnected(conn: SharedConnection) {
         ts?: string | number;
         liveScore?: LiveScore;
         ticketId?: string;
-        // `status` is overloaded: ticket frames carry TicketFrame["status"]
-        // (string), marketStatus frames carry a numeric `markets.status`.
-        // Narrowed at the dispatch site.
-        status?: TicketFrame["status"] | number;
+        // `status` is overloaded across frame kinds:
+        //   - ticket frames:    TicketFrame["status"] (string)
+        //   - marketStatus:     number (markets.status smallint)
+        //   - matchStatus:      LiveMatchStatusTick["status"] (string)
+        // Narrowed at the dispatch site by frame `type`.
+        status?: TicketFrame["status"] | LiveMatchStatusTick["status"] | number;
         rejectReason?: string | null;
         actualPayoutMicro?: string | null;
       };
@@ -237,6 +267,31 @@ function ensureConnected(conn: SharedConnection) {
         const tsStr = typeof ts === "number" ? new Date(ts).toISOString() : ts;
         const tick: LiveMarketStatusTick = { marketId, status, ts: tsStr };
         for (const { matchIds, onStatus } of conn.marketStatusListeners.values()) {
+          if (matchIds.has(matchId)) onStatus(matchId, tick);
+        }
+        return;
+      }
+      if (payload.type === "matchStatus") {
+        const { matchId, status, ts } = payload;
+        if (!matchId || typeof status !== "string" || ts == null) return;
+        // Tight allow-list for the rendered status enum — anything off
+        // the list is dropped rather than poisoning React state with an
+        // unknown string we don't have UI for.
+        if (
+          status !== "not_started" &&
+          status !== "live" &&
+          status !== "closed" &&
+          status !== "cancelled" &&
+          status !== "suspended"
+        ) {
+          return;
+        }
+        const tsStr = typeof ts === "number" ? new Date(ts).toISOString() : ts;
+        const tick: LiveMatchStatusTick = {
+          status,
+          ts: tsStr,
+        };
+        for (const { matchIds, onStatus } of conn.matchStatusListeners.values()) {
           if (matchIds.has(matchId)) onStatus(matchId, tick);
         }
         return;
@@ -506,6 +561,88 @@ export function useLiveMarketStatusForMatches(
 
     return () => {
       conn.marketStatusListeners.delete(id);
+      for (const m of matchIdSet) bumpSubscription(conn, m, -1);
+    };
+  }, [key]);
+
+  return statuses;
+}
+
+// Live match-level lifecycle for one match. Returns `null` until the
+// first `matchStatus` frame lands; callers fall back to the SSR
+// snapshot's `match.status`. The hook subscribes on the same shared
+// connection so a component using `useLiveOdds` and
+// `useLiveMatchStatus` for the same match is one physical
+// subscription.
+export function useLiveMatchStatus(
+  matchId: string | null,
+): LiveMatchStatusTick | null {
+  const [tick, setTick] = useState<LiveMatchStatusTick | null>(null);
+
+  useEffect(() => {
+    if (!matchId) return;
+    const conn = getShared();
+
+    const id = crypto.randomUUID();
+    conn.matchStatusListeners.set(id, {
+      matchIds: new Set([matchId]),
+      onStatus: (_mid, fresh) => {
+        setTick((prev) => {
+          // Drop out-of-order frames so a late-arriving live tick can't
+          // overwrite a fresher closed tick.
+          if (prev && new Date(prev.ts) > new Date(fresh.ts)) return prev;
+          return fresh;
+        });
+      },
+    });
+    bumpSubscription(conn, matchId, 1);
+    ensureConnected(conn);
+
+    return () => {
+      conn.matchStatusListeners.delete(id);
+      bumpSubscription(conn, matchId, -1);
+    };
+  }, [matchId]);
+
+  return tick;
+}
+
+// Multi-match variant of useLiveMatchStatus — list pages (lobby,
+// /live, /upcoming, /sport/[slug]) use this to drop the LIVE pill on
+// any visible match the moment Oddin reports it closed. Keyed by
+// matchId; entries appear only after a tick arrives, so consumers
+// should default to the SSR-baked status for matches that haven't
+// transitioned during the page's lifetime.
+export function useLiveMatchStatusForMatches(
+  matchIds: readonly string[],
+): Record<string, LiveMatchStatusTick> {
+  const [statuses, setStatuses] = useState<Record<string, LiveMatchStatusTick>>(
+    {},
+  );
+
+  const key = [...matchIds].sort().join(",");
+
+  useEffect(() => {
+    if (key === "") return;
+    const conn = getShared();
+    const matchIdSet = new Set(key.split(","));
+
+    const id = crypto.randomUUID();
+    conn.matchStatusListeners.set(id, {
+      matchIds: matchIdSet,
+      onStatus: (mid, fresh) => {
+        setStatuses((prev) => {
+          const existing = prev[mid];
+          if (existing && new Date(existing.ts) > new Date(fresh.ts)) return prev;
+          return { ...prev, [mid]: fresh };
+        });
+      },
+    });
+    for (const m of matchIdSet) bumpSubscription(conn, m, 1);
+    ensureConnected(conn);
+
+    return () => {
+      conn.matchStatusListeners.delete(id);
       for (const m of matchIdSet) bumpSubscription(conn, m, -1);
     };
   }, [key]);

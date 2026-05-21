@@ -9,7 +9,7 @@
 
 import { useMemo, useRef } from "react";
 import { LiveDot, TeamMark } from "@/components/ui/primitives";
-import { useLiveScore } from "@/lib/use-live-odds";
+import { useLiveScore, useLiveMatchStatus } from "@/lib/use-live-odds";
 import { useValueFlash } from "@/lib/use-odds-flash";
 import {
   mapCellValue,
@@ -17,6 +17,8 @@ import {
   type LiveScorePeriod,
   type LiveScoreScoreboard,
 } from "@/lib/live-score";
+
+type MatchStatus = "not_started" | "live" | "closed" | "cancelled" | "suspended";
 
 export function LiveScoreboard({
   matchId,
@@ -26,7 +28,7 @@ export function LiveScoreboard({
   awayLogoUrl,
   bestOf,
   initialLiveScore,
-  isLive,
+  initialStatus,
   sportSlug,
 }: {
   matchId: string;
@@ -36,7 +38,7 @@ export function LiveScoreboard({
   awayLogoUrl: string | null;
   bestOf: number | null;
   initialLiveScore: LiveScore | null;
-  isLive: boolean;
+  initialStatus: MatchStatus;
   sportSlug: string;
 }) {
   // Live score wins over SSR baseline as soon as the first frame lands.
@@ -44,6 +46,12 @@ export function LiveScoreboard({
   // input below (currentMap, periods, scoreboard, series totals).
   const liveOverride = useLiveScore(matchId);
   const liveScore = liveOverride ?? initialLiveScore;
+  // Lifecycle status also overlays SSR — once the backend flips the
+  // match to closed/cancelled, the scoreboard drops its current-map
+  // highlight even before the bettor refreshes. Without this the row
+  // headers keep marking the (now-final) map as the live one.
+  const liveStatus = useLiveMatchStatus(matchId);
+  const isLive = (liveStatus?.status ?? initialStatus) === "live";
 
   const homeSeries = liveScore?.home ?? 0;
   const awaySeries = liveScore?.away ?? 0;

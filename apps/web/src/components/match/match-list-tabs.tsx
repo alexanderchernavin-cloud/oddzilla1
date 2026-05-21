@@ -6,7 +6,9 @@ import { I } from "@/components/ui/icons";
 import {
   useLiveOddsForMatches,
   useLiveScoresForMatches,
+  useLiveMatchStatusForMatches,
   type LiveOddsTick,
+  type LiveMatchStatusTick,
 } from "@/lib/use-live-odds";
 import { useSessionUserId } from "@/lib/session-user";
 import { useViewerCountsForMatches } from "@/lib/use-viewer-counts";
@@ -55,33 +57,44 @@ export function MatchListTabs({
   const matchIds = useMemo(() => matches.map((m) => m.id), [matches]);
   const ticks = useLiveOddsForMatches(matchIds);
   const scores = useLiveScoresForMatches(matchIds);
+  // Match-level lifecycle ticks — fan-out on the same odds:match:{id}
+  // channel as ticks/scores, so this is zero additional subscriptions
+  // when the per-row odds + scoreboard subscription is already up.
+  // Used to drop the LIVE pill the moment Oddin reports the match
+  // closed; without it the row stays at "live" until a hard refresh.
+  const matchStatuses = useLiveMatchStatusForMatches(matchIds);
   // Match-room viewer counts for the "N watching" pill. REST poll
   // every 30s; the hook is keyed by the sorted matchIds so navigating
   // between list pages doesn't re-fetch unnecessarily.
   const viewerCounts = useViewerCountsForMatches(matchIds);
 
-  // Merge live ticks AND scoreboards into the SSR snapshot. Each row's
-  // match-winner outcomes inherit the latest publishedOdds / probability
-  // / active flag, and the per-row mini scoreboard (series + per-map
-  // cells) tracks every <sport_event_status> update without a page
-  // reload — so the row stays current as the game progresses.
+  // Merge live ticks AND scoreboards AND status into the SSR snapshot.
+  // Each row's match-winner outcomes inherit the latest publishedOdds
+  // / probability / active flag, the per-row mini scoreboard (series
+  // + per-map cells) tracks every <sport_event_status> update, and
+  // the match.status field flips on lifecycle transitions — all
+  // without a page reload, so the row stays current as the game
+  // progresses (and drops the LIVE pill the moment it ends).
   //
-  // SSR + initial client paint: ticks and scores arrive via useEffect →
-  // WebSocket, so on the first render they are empty objects. In that
-  // state mergeMatchWithLive(m, {}, {}) returns m by referential identity
-  // and the lookup Map's lookups all resolve to the original input. The
-  // hasLiveData gate skips the 180-iteration map + Map allocation for
-  // the no-data case — measurable v8 GC pressure on the SSR process at
-  // 250+ concurrent storefront requests (see docs/LOADTEST.md notes).
+  // SSR + initial client paint: ticks / scores / statuses arrive via
+  // useEffect → WebSocket, so on the first render they are empty
+  // objects. In that state mergeMatchWithLive(m, {}, {}, {}) returns m
+  // by referential identity and the lookup Map's lookups all resolve
+  // to the original input. The hasLiveData gate skips the 180-iteration
+  // map + Map allocation for the no-data case — measurable v8 GC
+  // pressure on the SSR process at 250+ concurrent storefront
+  // requests (see docs/LOADTEST.md notes).
   const hasLiveData =
-    Object.keys(ticks).length > 0 || Object.keys(scores).length > 0;
+    Object.keys(ticks).length > 0 ||
+    Object.keys(scores).length > 0 ||
+    Object.keys(matchStatuses).length > 0;
 
   const merged = useMemo(
     () =>
       hasLiveData
-        ? matches.map((m) => mergeMatchWithLive(m, ticks, scores))
+        ? matches.map((m) => mergeMatchWithLive(m, ticks, scores, matchStatuses))
         : matches,
-    [matches, ticks, scores, hasLiveData],
+    [matches, ticks, scores, matchStatuses, hasLiveData],
   );
   const mergedById = useMemo(() => {
     if (merged === matches) return null;
@@ -217,18 +230,25 @@ function ColsToggle({
   );
 }
 
-// Overlay live odds AND live scoreboard onto a server-rendered match.
-// Returns a new object only when something actually changed, so React's
-// referential equality short-circuits unaffected rows. `active=false`
-// ticks null out the price — MatchRow already locks the inline button
-// when price is null, which is the same affordance LiveMarkets uses on
-// the detail page.
+// Overlay live odds AND live scoreboard AND match-level lifecycle
+// status onto a server-rendered match. Returns a new object only when
+// something actually changed, so React's referential equality
+// short-circuits unaffected rows. `active=false` ticks null out the
+// price — MatchRow already locks the inline button when price is
+// null, which is the same affordance LiveMarkets uses on the detail
+// page.
 function mergeMatchWithLive(
   m: ListMatchEnriched,
   ticks: Record<string, LiveOddsTick>,
   scores: Record<string, LiveScore>,
+  statuses: Record<string, LiveMatchStatusTick>,
 ): ListMatchEnriched {
   let next = m;
+
+  const statusTick = statuses[m.id];
+  if (statusTick && statusTick.status !== m.status) {
+    next = { ...next, status: statusTick.status };
+  }
 
   const liveScore = scores[m.id];
   if (liveScore && liveScore !== m.liveScore) {
