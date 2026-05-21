@@ -109,6 +109,49 @@ const EnvSchema = z.object({
     (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
     z.string().min(3).optional(),
   ),
+
+  // Transactional email (services/api → email-outbox worker). When
+  // EMAIL_PROVIDER_TOKEN is empty the worker drains rows with
+  // `last_error=email_disabled` — graceful-idle, same shape as
+  // FIREBASE_SERVICE_ACCOUNT_PATH above. The provider is selected at
+  // boot; switching providers is one env-var change + restart.
+  // `smtp` is the bring-your-own-relay escape hatch; the others are
+  // direct HTTPS API clients.
+  EMAIL_PROVIDER: z.enum(["resend", "sendgrid", "ses", "smtp"]).default("resend"),
+  EMAIL_PROVIDER_TOKEN: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.string().min(4).optional(),
+  ),
+  // Second credential — used by `ses` (AWS secret key) and ignored by
+  // the others. Kept generic so a future provider with two-field auth
+  // doesn't need a schema change.
+  EMAIL_PROVIDER_SECRET: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.string().min(4).optional(),
+  ),
+  EMAIL_FROM: z.string().email().default("noreply@oddzilla.cc"),
+  // Empty folds to undefined; the worker substitutes EMAIL_FROM at
+  // send time, so reply-to defaults to the from-address when unset.
+  EMAIL_REPLY_TO: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.string().email().optional(),
+  ),
+  // Storefront URL embedded into verify/reset email links. Empty falls
+  // back to https://${FRONTEND_HOST}; setting this explicitly is the
+  // escape hatch for reverse-proxy / locale-prefix setups where the
+  // simple https://host derivation isn't right.
+  EMAIL_PUBLIC_BASE_URL: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.string().url().optional(),
+  ),
+  // Caddy host the worker uses to construct the fallback public base
+  // URL above. Required by Caddy itself so this is never empty in
+  // practice, but kept optional here to match the existing schema's
+  // permissive shape for unrelated services that only need DATABASE_URL.
+  FRONTEND_HOST: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.string().min(3).optional(),
+  ),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

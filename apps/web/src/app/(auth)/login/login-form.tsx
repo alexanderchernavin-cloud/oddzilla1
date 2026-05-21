@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { Button } from "@/components/ui/primitives";
@@ -76,6 +77,18 @@ export function LoginForm({ next }: { next: string }) {
         value={password}
         onChange={(e) => setPassword(e.target.value)}
       />
+      <div style={{ textAlign: "right", marginTop: -4 }}>
+        <Link
+          href="/forgot-password"
+          style={{
+            fontSize: 12,
+            color: "var(--fg-muted)",
+            textDecoration: "underline",
+          }}
+        >
+          {t("forgotPassword")}
+        </Link>
+      </div>
       {error && (
         <p
           role="alert"

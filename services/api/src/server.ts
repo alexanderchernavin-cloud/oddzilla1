@@ -64,6 +64,7 @@ import riskzillaRoutes from "./modules/admin/riskzilla/routes.js";
 import zillapassUserRoutes from "./modules/zillapass/routes.js";
 import adminZillapassRoutes from "./modules/admin/zillapass.js";
 import { startPushOutboxWorker, type PushWorkerHandle } from "./modules/push/worker.js";
+import { startEmailOutboxWorker, type EmailWorkerHandle } from "./modules/email/worker.js";
 import { ApiError } from "./lib/errors.js";
 
 const env = loadEnv();
@@ -292,6 +293,19 @@ if (process.env.PUSH_OUTBOX_WORKER_DISABLED !== "1") {
   pushWorkerHandle = await startPushOutboxWorker(app);
 }
 
+// Email-outbox drainer. Mirrors the push worker pattern: LISTEN on the
+// `email_outbox` channel (fired by signup / forgot-password route
+// handlers + any future email-emitting code), drain via Resend HTTP API.
+// When EMAIL_PROVIDER_TOKEN is unset the worker still runs but marks
+// every pending row with last_error='email_disabled' so the queue
+// drains and the table size stays bounded. Set
+// EMAIL_OUTBOX_WORKER_DISABLED=1 to skip entirely (for future
+// multi-instance deploys where only one container should drain).
+let emailWorkerHandle: EmailWorkerHandle | null = null;
+if (process.env.EMAIL_OUTBOX_WORKER_DISABLED !== "1") {
+  emailWorkerHandle = await startEmailOutboxWorker(app);
+}
+
 // ─── Boot ───────────────────────────────────────────────────────────────────
 
 app
@@ -331,6 +345,13 @@ async function shutdown() {
       await pushWorkerHandle.close();
     } catch (err) {
       app.log.warn({ err: (err as Error).message }, "push worker shutdown error");
+    }
+  }
+  if (emailWorkerHandle) {
+    try {
+      await emailWorkerHandle.close();
+    } catch (err) {
+      app.log.warn({ err: (err as Error).message }, "email worker shutdown error");
     }
   }
   await app.close();

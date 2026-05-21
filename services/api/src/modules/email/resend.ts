@@ -1,0 +1,91 @@
+// Resend HTTP client. https://resend.com/docs/api-reference/emails/send-email
+//
+// Why a hand-rolled fetch and not the `resend` npm package: their SDK
+// pulls in `react` / `react-dom` peers for React Email rendering even
+// when we render templates ourselves. The HTTP surface is one POST
+// with a simple JSON body — coding it directly keeps the dependency
+// graph small and the failure modes obvious.
+//
+// Resend's response shape on success is `{id: "..."}`; on failure it's
+// `{name: "...", message: "..."}` with the HTTP status carrying the
+// category. 4xx errors are permanent (bad recipient, malformed body);
+// 5xx errors are transient and worth retrying. We throw on both — the
+// outbox worker's MAX_ATTEMPTS cap handles the "give up" path.
+
+import type { EmailClient, SendEmailInput } from "./client.js";
+
+const RESEND_ENDPOINT = "https://api.resend.com/emails";
+// Resend's documented timeout is generous; cap ours so a hung connection
+// doesn't pin the outbox worker. The worker processes rows serially
+// anyway — a 15 s ceiling is the right knob.
+const SEND_TIMEOUT_MS = 15_000;
+
+interface ResendSuccess {
+  id: string;
+}
+
+interface ResendError {
+  name?: string;
+  message?: string;
+  statusCode?: number;
+}
+
+export function createResendClient(apiKey: string): EmailClient {
+  return {
+    name: "resend",
+    async send(input: SendEmailInput): Promise<void> {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), SEND_TIMEOUT_MS);
+      let res: Response;
+      try {
+        res = await fetch(RESEND_ENDPOINT, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${apiKey}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            from: input.from,
+            to: input.to,
+            subject: input.subject,
+            html: input.html,
+            text: input.text,
+            reply_to: input.replyTo ?? input.from,
+          }),
+          signal: ac.signal,
+        });
+      } catch (err) {
+        // AbortError on timeout; TypeError on DNS/connect. Both are
+        // transient — let the worker count attempts.
+        throw new Error(`resend_network: ${(err as Error).message}`);
+      } finally {
+        clearTimeout(timer);
+      }
+
+      if (res.ok) {
+        // Parse to surface the message id in the worker log line,
+        // but treat a 2xx as success even if parse fails — Resend has
+        // returned a 200 with an empty body during incidents.
+        try {
+          const ok = (await res.json()) as ResendSuccess;
+          if (ok?.id) {
+            return;
+          }
+        } catch {
+          // empty body on 2xx — count as success
+        }
+        return;
+      }
+
+      // Non-2xx. Try to read the structured body; fall back to status.
+      let detail = `status=${res.status}`;
+      try {
+        const body = (await res.json()) as ResendError;
+        if (body?.message) detail = `${detail} ${body.name ?? "error"}: ${body.message}`;
+      } catch {
+        // ignore parse failures
+      }
+      throw new Error(`resend_send_failed: ${detail}`);
+    },
+  };
+}

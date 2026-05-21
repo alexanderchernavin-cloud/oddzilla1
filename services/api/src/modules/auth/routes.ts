@@ -71,6 +71,22 @@ const loginBody = z.object({
   deviceId: z.string().max(64).optional(),
 });
 
+const verifyEmailBody = z.object({
+  // Tokens are 32 random bytes → 43 base64url chars. Allow up to 128
+  // to keep the schema permissive for any future widening of the token
+  // size without breaking inflight requests.
+  token: z.string().min(16).max(128),
+});
+
+const forgotPasswordBody = z.object({
+  email: z.string().email().max(320),
+});
+
+const resetPasswordBody = z.object({
+  token: z.string().min(16).max(128),
+  newPassword: z.string().min(8).max(256),
+});
+
 interface PublicAuthResponse {
   user: {
     id: string;
@@ -79,9 +95,11 @@ interface PublicAuthResponse {
     status: "active" | "blocked" | "pending_kyc";
     kycStatus: "none" | "pending" | "approved" | "rejected";
     displayName: string | null;
+    nickname: string | null;
     countryCode: string | null;
     sportOrder: string[] | null;
     hiddenSports: string[] | null;
+    emailVerifiedAt: string | null;
   };
   accessTokenExpiresAt: string;
 }
@@ -175,6 +193,73 @@ export default async function authRoutes(app: FastifyInstance) {
     if (!user) throw new UnauthorizedError();
     return { user: publicize(user) };
   });
+
+  // ── Email verification ─────────────────────────────────────────────────
+  // Consumed by the verify-email link in the signup confirmation
+  // email. No auth required: the token itself is the credential. The
+  // route handler returns the updated user so the storefront can
+  // hide the unverified-banner immediately on success.
+  app.post("/auth/verify-email", { config: writeRateLimit }, async (request) => {
+    const body = verifyEmailBody.parse(request.body);
+    const user = await svc.consumeEmailVerificationToken(body.token);
+    return { user: publicize(user) };
+  });
+
+  // Resend the verify-email link. Auth-required so we know which
+  // user to email; idempotent against re-verified users (returns
+  // success without sending). The dedup_key on the outbox row makes
+  // a rapid double-click harmless at the SQL layer too.
+  app.post(
+    "/auth/resend-verification",
+    {
+      // Tighter limit than the global writeRateLimit because each
+      // call enqueues an email; 3/min/IP is plenty for legitimate
+      // "I didn't get it" retries without enabling email-bomb abuse.
+      config: { rateLimit: { max: 3, timeWindow: "1 minute" } },
+    },
+    async (request) => {
+      const u = request.requireAuth();
+      const { enqueued } = await svc.resendVerificationEmail(u.id);
+      return { ok: true, enqueued };
+    },
+  );
+
+  // ── Password reset ────────────────────────────────────────────────────
+  // Always returns 200 to prevent account enumeration. The actual
+  // enqueue is namespace-scoped via the request host so a forgot
+  // request from the storefront doesn't accidentally trigger a reset
+  // for the admin row that shares the same email (post-migration 0065).
+  app.post(
+    "/auth/forgot-password",
+    { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } },
+    async (request) => {
+      const body = forgotPasswordBody.parse(request.body);
+      const namespace = accountNamespaceFromRequest(request);
+      await svc.requestPasswordReset(body.email, namespace, request.ip ?? null);
+      return { ok: true };
+    },
+  );
+
+  // Consume a password-reset token. On success: every session for
+  // the user is revoked (the user re-authenticates on next visit)
+  // and the access JWTs of every device are invalidated through the
+  // Redis revoke cache. We don't auto-issue tokens here — forcing a
+  // fresh login keeps the reset flow conceptually simple.
+  app.post(
+    "/auth/reset-password",
+    { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const body = resetPasswordBody.parse(request.body);
+      await svc.consumePasswordResetToken(body.token, body.newPassword);
+      // Defensive cookie clear in case the user is currently logged
+      // in on this device — the next request would otherwise hit a
+      // revoked session and 401, which is harmless but ugly. Clearing
+      // here forces the storefront to render the logged-out shell
+      // immediately.
+      clearAuthCookies(reply, app.auth);
+      return { ok: true };
+    },
+  );
 }
 
 function publicize(u: {
@@ -188,6 +273,7 @@ function publicize(u: {
   countryCode: string | null;
   sportOrder: string[] | null;
   hiddenSports: string[] | null;
+  emailVerifiedAt: Date | null;
 }) {
   return {
     id: u.id,
@@ -200,5 +286,6 @@ function publicize(u: {
     countryCode: u.countryCode,
     sportOrder: u.sportOrder,
     hiddenSports: u.hiddenSports,
+    emailVerifiedAt: u.emailVerifiedAt ? u.emailVerifiedAt.toISOString() : null,
   };
 }
