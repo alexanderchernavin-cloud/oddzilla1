@@ -25,6 +25,12 @@ export default fp<{ allowedOrigins: string[] }>(async (app, opts) => {
   app.addHook("preHandler", async (request) => {
     if (!UNSAFE_METHODS.has(request.method)) return;
 
+    // Webhooks are server-to-server with their own per-route secret
+    // auth (path-secret or signature). They legitimately lack Origin
+    // headers and would always 403 here. Each webhook is responsible
+    // for its own auth check; the route mount path acts as the gate.
+    if (request.url.startsWith("/webhooks/")) return;
+
     const origin = headerString(request.headers.origin);
     const referer = headerString(request.headers.referer);
 

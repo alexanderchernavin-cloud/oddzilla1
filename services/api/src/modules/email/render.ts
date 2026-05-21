@@ -93,6 +93,58 @@ export function renderVerifyEmail(p: VerifyEmailPayload): RenderedEmail {
   return { subject, html, text };
 }
 
+export interface AdminMessagePayload {
+  subject: string;
+  textBody: string;
+  htmlBody: string | null;
+}
+
+/** Admin-authored message render. Bodies arrive already-composed; this
+ * just wraps the text body in a minimal brand-consistent HTML shell
+ * (or passes through caller-supplied HTML) and returns the same shape
+ * as the templated kinds. */
+export function renderAdminMessage(p: AdminMessagePayload): RenderedEmail {
+  const subject = p.subject || `${BRAND} message`;
+  const text = p.textBody.trim();
+  if (p.htmlBody && p.htmlBody.trim().length > 0) {
+    return { subject, html: p.htmlBody, text: text || stripHtml(p.htmlBody) };
+  }
+  // Convert plain text → minimal HTML. Each blank-line-separated chunk
+  // becomes a paragraph; URLs left as-is (autoslinking is a footgun
+  // for transactional mail).
+  const escaped = escapeHtml(text);
+  const paragraphs = escaped
+    .split(/\n{2,}/)
+    .map((p) => `<p style="${S.paragraph}">${p.replace(/\n/g, "<br>")}</p>`)
+    .join("");
+  const html = `<!doctype html>
+<html><head><meta charset="utf-8"><title>${escapeHtml(subject)}</title></head>
+<body style="${S.body}">
+<div style="${S.container}">
+${paragraphs}
+</div>
+</body></html>`;
+  return { subject, html, text };
+}
+
+function stripHtml(html: string): string {
+  // Best-effort plain-text fallback when the caller supplies HTML
+  // without a text counterpart. Inbox preview clients render this.
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|h[1-6]|li)>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 export function renderPasswordReset(p: PasswordResetPayload): RenderedEmail {
   const subject = `Reset your ${BRAND} password`;
   const greeting = salutation(p.displayName);

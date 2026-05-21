@@ -20,6 +20,18 @@ export interface SendEmailInput {
   text: string;
   from: string;
   replyTo?: string;
+  /** Optional In-Reply-To header for threading. Resend doesn't honour
+   * a caller-supplied Message-ID (theirs always wins), but it will
+   * pass In-Reply-To through, so the recipient's mail client groups
+   * the message into the right conversation locally. */
+  inReplyTo?: string;
+}
+
+export interface SendEmailResult {
+  /** Provider-internal id (Resend's email id, etc.). Stored in
+   * email_outbox.provider_message_id for debugging visibility. NOT the
+   * SMTP Message-ID — providers generally don't expose that. */
+  providerMessageId: string | null;
 }
 
 export interface EmailClient {
@@ -27,7 +39,7 @@ export interface EmailClient {
    * retries; returns normally on success. Permanently bad recipients
    * (bounced, blocked) are also a throw — the worker counts attempts
    * and force-marks rows sent after MAX_ATTEMPTS. */
-  send(input: SendEmailInput): Promise<void>;
+  send(input: SendEmailInput): Promise<SendEmailResult>;
   /** Human-readable provider name, used in log lines. */
   readonly name: string;
 }

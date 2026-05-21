@@ -152,6 +152,19 @@ const EnvSchema = z.object({
     (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
     z.string().min(3).optional(),
   ),
+
+  // SendGrid Inbound Parse webhook secret (migration 0074). The
+  // inbound-mail webhook lives at /webhooks/sendgrid-inbound/<secret>;
+  // anyone who knows the URL can post fake inbound mail, so the secret
+  // path component is the auth gate. When unset, the webhook returns
+  // 503 inbound_disabled — the operator hasn't completed SendGrid
+  // setup yet.
+  //
+  // Generate with: openssl rand -hex 24
+  SENDGRID_INBOUND_SECRET: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.string().min(16).optional(),
+  ),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

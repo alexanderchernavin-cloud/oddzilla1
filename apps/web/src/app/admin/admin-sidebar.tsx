@@ -24,8 +24,8 @@ interface Item {
   matchPrefix?: string;
   // Key identifying a runtime badge count source. The sidebar polls
   // the matching count and renders a numeric pill on the link.
-  // Currently only "deposits-alerts" is wired.
-  badgeKey?: "deposits-alerts";
+  // Currently "deposits-alerts" + "emails-unread" are wired.
+  badgeKey?: "deposits-alerts" | "emails-unread";
 }
 
 interface Section {
@@ -77,6 +77,13 @@ const SECTIONS: Section[] = [
         badgeKey: "deposits-alerts",
       },
       { href: "/admin/withdrawals", label: "Withdrawals", Icon: I.Wallet, matchPrefix: "/admin/withdrawals" },
+      {
+        href: "/admin/emails",
+        label: "Emails",
+        Icon: I.Bell,
+        matchPrefix: "/admin/emails",
+        badgeKey: "emails-unread",
+      },
       { href: "/admin/audit", label: "Audit", Icon: I.Clock, matchPrefix: "/admin/audit" },
       { href: "/admin/feed", label: "Feed", Icon: I.Live, matchPrefix: "/admin/feed" },
       {
@@ -204,11 +211,23 @@ export function AdminSidebar() {
     let cancelled = false;
     async function refresh() {
       try {
-        const data = await clientApi<{ total: number }>(
-          "/admin/deposits/alert-counts",
-        );
+        const [deposits, emails] = await Promise.all([
+          clientApi<{ total: number }>("/admin/deposits/alert-counts").catch(
+            () => ({ total: 0 }),
+          ),
+          clientApi<{ unread: number; threads: number }>(
+            "/admin/emails/unread-count",
+          ).catch(() => ({ unread: 0, threads: 0 })),
+        ]);
         if (!cancelled) {
-          setBadges((prev) => ({ ...prev, "deposits-alerts": data.total }));
+          setBadges((prev) => ({
+            ...prev,
+            "deposits-alerts": deposits.total,
+            // Show the thread count, not the message count — the sidebar
+            // badge is "how many conversations need attention", which is
+            // more actionable than a message tally.
+            "emails-unread": emails.threads,
+          }));
         }
       } catch (e) {
         // 401/403 (not yet authed) is normal on first paint; anything
