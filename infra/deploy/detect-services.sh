@@ -30,7 +30,7 @@ declare -A SEEN
 
 # Order all services see in compose so the output is stable + tests
 # can do exact-string assertions.
-ORDER=(api ws-gateway web1 signer feed-ingester odds-publisher settlement bet-delay wallet-watcher metrics-collector caddy)
+ORDER=(api ws-gateway web1 signer feed-ingester odds-publisher settlement bet-delay wallet-watcher metrics-collector mail-receiver caddy)
 
 mark() {
   for s in "$@"; do
@@ -39,7 +39,7 @@ mark() {
 }
 
 mark_all_built_services() {
-  mark api ws-gateway web1 signer feed-ingester odds-publisher settlement bet-delay wallet-watcher metrics-collector
+  mark api ws-gateway web1 signer feed-ingester odds-publisher settlement bet-delay wallet-watcher metrics-collector mail-receiver
 }
 
 while IFS= read -r path; do
@@ -65,6 +65,8 @@ while IFS= read -r path; do
       mark signer ;;
     services/metrics-collector/*)
       mark metrics-collector ;;
+    services/mail-receiver/*)
+      mark mail-receiver ;;
     packages/auth/*)
       mark api ws-gateway web1 ;;
     packages/types/*)
