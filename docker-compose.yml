@@ -505,6 +505,47 @@ services:
       # -healthcheck self-probe that dials its own /healthz and exits 0/1.
       test: ["CMD", "/metrics-collector", "-healthcheck"]
 
+  mail-receiver:
+    # Inbound SMTP receiver. Accepts mail addressed to oddzilla.cc on
+    # port 25 (mapped to container :2525 so the runtime user stays
+    # nobody / UID 65534, no NET_BIND_SERVICE needed) and forwards each
+    # message to the api's /webhooks/sendgrid-inbound endpoint shaped
+    # like a SendGrid Inbound Parse POST. Outbound mail stays at Resend;
+    # this container never sends.
+    #
+    # Why self-hosted: SendGrid (Twilio) rejected the operator's signup
+    # citing regional service requirements (2026-05-21). Self-hosting on
+    # the Hetzner box gives us a region/industry-neutral inbound path
+    # that no third party can ban.
+    build:
+      context: ./services/mail-receiver
+      dockerfile: Dockerfile
+    user: "65534:65534"
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 64m
+    cpus: 0.25
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    read_only: true
+    environment:
+      SERVICE_NAME: mail-receiver
+      MAIL_RECEIVER_LISTEN: ":2525"
+      MAIL_RECEIVER_DOMAIN: ${FRONTEND_HOST}
+      MAIL_WEBHOOK_URL: http://api:3001/webhooks/sendgrid-inbound
+      SENDGRID_INBOUND_SECRET: ${SENDGRID_INBOUND_SECRET}
+    # Bind host port 25 → container 2525. The host port is what the
+    # public MX record resolves to; the container's bind stays
+    # non-privileged. 0.0.0.0:25 exposes on the public interface so
+    # external mail servers can reach us.
+    ports:
+      - "25:2525"
+    depends_on:
+      api:
+        condition: service_healthy
+
 volumes:
   postgres-data:
   redis-data:
