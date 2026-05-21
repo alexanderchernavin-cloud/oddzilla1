@@ -36,7 +36,10 @@ const writeRateLimit = {
 const listQuery = z.object({
   cursor: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
-  filter: z.enum(["inbox", "archived", "unread", "all"]).default("inbox"),
+  // `sent` = threads with at least one outbound message (admin
+  // composed or admin replied). Ordered by last_outbound_at so the
+  // Sent view reads chronologically from the operator's perspective.
+  filter: z.enum(["inbox", "archived", "unread", "sent", "all"]).default("inbox"),
   q: z.string().trim().max(200).optional(),
 });
 
@@ -119,6 +122,14 @@ export default async function adminEmailRoutes(app: FastifyInstance) {
                AND ${emailInbound.readAt} IS NULL
           )`,
         );
+      } else if (q.filter === "sent") {
+        // Threads we've sent at least one message into. Includes both
+        // admin-initiated conversations (compose) and threads we've
+        // replied to. Archived threads are excluded by default —
+        // operators looking at Sent want what they actually shipped,
+        // not what they handled and filed away.
+        filters.push(sql`${emailThreads.archivedAt} IS NULL`);
+        filters.push(sql`${emailThreads.outboundCount} > 0`);
       }
       if (q.q) {
         const pattern = `%${q.q.replace(/[%_]/g, (m) => `\\${m}`)}%`;
@@ -173,11 +184,24 @@ export default async function adminEmailRoutes(app: FastifyInstance) {
            WHERE thread_id = t.id AND read_at IS NULL
         ) unread ON true
         LEFT JOIN LATERAL (
-          SELECT COALESCE(NULLIF(LEFT(text_body, 240), ''), LEFT(subject, 240)) AS body
-            FROM email_inbound
-           WHERE thread_id = t.id
-           ORDER BY received_at DESC
-           LIMIT 1
+          -- Preview is the most recent message of either direction.
+          -- Threads where admin composed but the user hasn't replied
+          -- yet would otherwise show no preview at all; union both
+          -- sides so the Sent view + brand-new outbound threads
+          -- still display useful text.
+          SELECT body FROM (
+            SELECT received_at AS ts,
+                   COALESCE(NULLIF(LEFT(text_body, 240), ''), LEFT(subject, 240)) AS body
+              FROM email_inbound
+             WHERE thread_id = t.id
+            UNION ALL
+            SELECT COALESCE(sent_at, enqueued_at) AS ts,
+                   COALESCE(NULLIF(LEFT(text_body, 240), ''), LEFT(subject, 240)) AS body
+              FROM email_outbox
+             WHERE thread_id = t.id
+          ) m
+          ORDER BY ts DESC NULLS LAST
+          LIMIT 1
         ) preview ON true
         WHERE ${whereClause}
         ORDER BY activity_ts DESC, t.id DESC

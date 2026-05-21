@@ -24,9 +24,10 @@ interface ListResponse {
   nextCursor: string | null;
 }
 
-const FILTERS: Array<{ key: "inbox" | "unread" | "archived" | "all"; label: string }> = [
+const FILTERS: Array<{ key: "inbox" | "unread" | "sent" | "archived" | "all"; label: string }> = [
   { key: "inbox", label: "Inbox" },
   { key: "unread", label: "Unread" },
+  { key: "sent", label: "Sent" },
   { key: "archived", label: "Archived" },
   { key: "all", label: "All" },
 ];
@@ -39,7 +40,7 @@ export function EmailsClient({
 }: {
   initialThreads: ThreadSummary[];
   initialCursor: string | null;
-  initialFilter: "inbox" | "unread" | "archived" | "all";
+  initialFilter: "inbox" | "unread" | "sent" | "archived" | "all";
   initialQuery: string;
 }) {
   const router = useRouter();
@@ -67,7 +68,7 @@ export function EmailsClient({
     [router, params, initialFilter],
   );
 
-  const setFilter = (next: "inbox" | "unread" | "archived" | "all") => {
+  const setFilter = (next: "inbox" | "unread" | "sent" | "archived" | "all") => {
     const sp = new URLSearchParams();
     sp.set("filter", next);
     if (search.trim()) sp.set("q", search.trim());
@@ -126,8 +127,18 @@ export function EmailsClient({
 
       {threads.length === 0 ? (
         <p className="mt-8 text-sm text-[var(--color-fg-muted)]">
-          Nothing here. The inbox fills as users reply to messages or write to{" "}
-          <code>support@oddzilla.cc</code>.
+          {initialFilter === "sent" ? (
+            <>No sent messages yet. Use <strong>New email</strong> to start a conversation.</>
+          ) : initialFilter === "unread" ? (
+            <>Inbox zero. No unread threads.</>
+          ) : initialFilter === "archived" ? (
+            <>No archived threads.</>
+          ) : (
+            <>
+              Nothing here. The inbox fills as users reply to messages or write to{" "}
+              <code>support@oddzilla.cc</code>.
+            </>
+          )}
         </p>
       ) : (
         <div className="mt-4 overflow-hidden rounded-[14px] border border-[var(--color-border)] bg-[var(--color-bg-card)]">
