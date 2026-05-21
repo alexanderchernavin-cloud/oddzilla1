@@ -145,20 +145,20 @@ services:
     logging: *default-logging
     mem_limit: 320m
     cpus: 0.5
+    # Pin to redis user (UID 999 inside redis:7-alpine) from the very
+    # first exec. Side-steps the entrypoint's "run as root, chown,
+    # then setpriv-to-redis" startup path entirely. We had a 2026-05-21
+    # outage where cap_drop ALL stripped CAP_DAC_OVERRIDE; the
+    # root-stage entrypoint then could not enter the existing
+    # mode-700 appendonlydir owned by redis, and the container went
+    # into a crashloop. Running as redis from the start means there's
+    # no root stage to need DAC_OVERRIDE, and the chown step is moot
+    # (data dir is already redis-owned from previous runs).
+    user: "999:999"
     security_opt:
       - "no-new-privileges:true"
     cap_drop:
       - ALL
-    # The redis-alpine entrypoint uses setpriv to drop from root to
-    # the `redis` user. With cap_drop:ALL + no-new-privileges, setpriv
-    # fails on Docker Desktop ≥ 29 with "setresuid: Operation not
-    # permitted" and the container crashloops before redis starts.
-    # SETUID/SETGID are the minimum two capabilities the entrypoint
-    # needs; no-new-privileges still blocks privilege escalation
-    # post-exec, so the security posture is unchanged in practice.
-    cap_add:
-      - SETUID
-      - SETGID
     command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
     volumes:
       - redis-data:/data
