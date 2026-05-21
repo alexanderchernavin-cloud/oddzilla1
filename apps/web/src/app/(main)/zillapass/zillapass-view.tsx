@@ -79,7 +79,7 @@ export function ZillapassPageView({
         <KpiCard label="XP" value={state.xp} mono />
         <KpiCard label="Streak (days)" value={state.activeStreakDays} />
         <KpiCard
-          label="Tasks today"
+          label="Tasks"
           value={`${completed}/${total}`}
           mono
         />
@@ -252,27 +252,20 @@ function FullTaskCard({ task }: { task: ZillapassActiveTaskDto }) {
 
       <FullBar pct={pct} />
 
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 8,
-          marginTop: 2,
-        }}
-      >
-        <span
-          className="mono"
+      {/* Period chip dropped post-migration 0073 — every task is
+          non-resetting now, so "daily" / "weekly" / "season" no longer
+          carries useful UX signal. Reward label still surfaces when an
+          admin sets one. */}
+      {task.rewardKind ? (
+        <div
           style={{
-            fontSize: 10,
-            letterSpacing: "0.12em",
-            textTransform: "uppercase",
-            color: "var(--fg-muted)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "flex-end",
+            gap: 8,
+            marginTop: 2,
           }}
         >
-          {task.period}
-        </span>
-        {task.rewardKind ? (
           <span
             style={{
               fontSize: 11,
@@ -281,8 +274,8 @@ function FullTaskCard({ task }: { task: ZillapassActiveTaskDto }) {
           >
             Reward: {task.rewardKind}
           </span>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
 
       {ctaHref ? (
         <Link

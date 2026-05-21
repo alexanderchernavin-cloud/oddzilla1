@@ -45,7 +45,10 @@ const createBody = z.object({
   description: z.string().max(500).optional().nullable(),
   targetCount: z.number().int().min(1).max(1_000_000),
   predicateKey: z.string().min(1).max(80),
-  period: periodSchema.default("daily"),
+  // Defaults to 'season' (migration 0073) so admin-created tasks land
+  // in the no-reset bucket. Admins can still explicitly pick 'daily' /
+  // 'weekly' via the editor if they want reset semantics back.
+  period: periodSchema.default("season"),
   // Stage the task belongs to. Users only see tasks where setNumber
   // matches their current_set_number. Defaults to 1 (day-1 stage).
   setNumber: z.number().int().min(1).max(10_000).default(1),

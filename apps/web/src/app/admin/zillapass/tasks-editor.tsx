@@ -72,7 +72,10 @@ function CreateForm({
   const [description, setDescription] = useState("");
   const [targetCount, setTargetCount] = useState("3");
   const [predicateKey, setPredicateKey] = useState("");
-  const [period, setPeriod] = useState<ZillapassPeriod>("daily");
+  // Defaults to 'season' (migration 0073) so admin-created tasks land
+  // in the no-reset bucket. Pick 'daily' / 'weekly' explicitly only if
+  // you want reset semantics for the new task.
+  const [period, setPeriod] = useState<ZillapassPeriod>("season");
   const [setNumber, setSetNumber] = useState("1");
   const [rewardKind, setRewardKind] = useState("");
   const [rewardPayload, setRewardPayload] = useState("");
