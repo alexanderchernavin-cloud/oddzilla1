@@ -22,6 +22,8 @@ import {
   type ReactNode,
 } from "react";
 
+import { useLiveMatchStatus } from "./use-live-odds";
+
 export interface ActiveMatch {
   matchId: string;
   sportSlug: string;
@@ -75,6 +77,13 @@ export function MatchPageRegistrar(props: ActiveMatch) {
   // the render queue and the rest of the shell (sidebar links, top
   // bar) stops processing clicks.
   const set = ctx?.set;
+  // Overlay live lifecycle ticks on the SSR-baked status. When a
+  // match closes mid-session the rail's match panel (RailMatchPanel)
+  // gates Analyses/Chat visibility off this value — without the
+  // overlay the rail keeps Chat live and Analyses hidden until the
+  // bettor reloads.
+  const liveStatus = useLiveMatchStatus(props.matchId);
+  const effectiveStatus = liveStatus?.status ?? props.matchStatus;
   useEffect(() => {
     if (!set) return;
     set({
@@ -83,7 +92,7 @@ export function MatchPageRegistrar(props: ActiveMatch) {
       sportName: props.sportName,
       homeTeam: props.homeTeam,
       awayTeam: props.awayTeam,
-      matchStatus: props.matchStatus,
+      matchStatus: effectiveStatus,
       viewerId: props.viewerId,
       loggedIn: props.loggedIn,
     });
@@ -97,7 +106,7 @@ export function MatchPageRegistrar(props: ActiveMatch) {
     props.sportName,
     props.homeTeam,
     props.awayTeam,
-    props.matchStatus,
+    effectiveStatus,
     props.viewerId,
     props.loggedIn,
   ]);

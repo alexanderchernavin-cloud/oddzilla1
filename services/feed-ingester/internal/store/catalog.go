@@ -249,21 +249,24 @@ RETURNING id`
 
 // UpdateMatchStatus updates matches.status with a forward-only guard:
 // once a match is in a terminal state ('closed' or 'cancelled'), any
-// non-idempotent transition is rejected at the SQL level. Re-applying
-// the same terminal status is a no-op. Transitions to 'not_started'
-// are also rejected so a stray score-correction or rollback message
-// can never regress a live/closed match back to pre-game.
+// non-idempotent transition is rejected at the SQL level. Transitions
+// to 'not_started' are also rejected so a stray score-correction or
+// rollback message can never regress a live/closed match back to
+// pre-game. Idempotent re-applies (same → same) are also skipped — the
+// returned `changed` flag tells the caller whether a real transition
+// occurred, so a `matchStatus` WS frame is only emitted on actual
+// state changes.
 //
 // Callers (any AMQP handler that wants to flip lifecycle status):
 //   - fixture_change with change_type=CANCELLED
 //   - match_status_change (when Oddin's broker emits one)
 //   - odds_change with terminal <sport_event_status status="3|4|5|9"/>
 //
-// Returns nil even when the guard skips the update — callers don't
-// need to distinguish "already terminal" from "applied". When Oddin
-// never sends a terminal signal at all (the integration broker
-// sometimes drops the final `<sport_event_status>` once the last
-// market settles), settlement.MarkMatchClosedIfAllMarketsTerminal
+// Returns (false, nil) when the guard or the same-status filter skips
+// the update; callers don't need to distinguish those from "applied".
+// When Oddin never sends a terminal signal at all (the integration
+// broker sometimes drops the final `<sport_event_status>` once the
+// last market settles), settlement.MarkMatchClosedIfAllMarketsTerminal
 // flips the match closed once every market reaches a terminal state.
 //
 // ZillaTips: when the new status is 'live' and the match has not yet
@@ -274,44 +277,54 @@ RETURNING id`
 // in handleOddsChange — so the snapshot captures the final pre-game
 // price, not the first live tick. The IS NULL guards keep the path
 // idempotent under recovery replay and concurrent flips.
-func UpdateMatchStatus(ctx context.Context, db pgxRunner, matchID int64, status string) error {
+func UpdateMatchStatus(ctx context.Context, db pgxRunner, matchID int64, status string) (bool, error) {
 	if status == "live" {
-		_, err := db.Exec(ctx, `
+		// Two-CTE shape: the first CTE flips matches.status (only on a
+		// genuine non-terminal-non-live transition); the second fans out
+		// the prematch_odds snapshot for each outcome. Trailing SELECT
+		// reports whether the first CTE matched a row — that's the
+		// signal the caller uses to decide whether to publish a
+		// matchStatus WS frame.
+		var changed bool
+		if err := db.QueryRow(ctx, `
 WITH upd AS (
   UPDATE matches
      SET status = 'live'::match_status,
          live_started_at = COALESCE(live_started_at, NOW()),
          updated_at = NOW()
    WHERE id = $1
-     AND status::text NOT IN ('closed','cancelled')
+     AND status::text NOT IN ('closed','cancelled','live')
    RETURNING id
+), backfill AS (
+  UPDATE market_outcomes mo
+     SET prematch_odds = mo.published_odds
+    FROM markets m
+    JOIN upd ON upd.id = m.match_id
+   WHERE m.id = mo.market_id
+     AND mo.prematch_odds IS NULL
+     AND mo.published_odds IS NOT NULL
+  RETURNING 1
 )
-UPDATE market_outcomes mo
-   SET prematch_odds = mo.published_odds
-  FROM markets m
-  JOIN upd ON upd.id = m.match_id
- WHERE m.id = mo.market_id
-   AND mo.prematch_odds IS NULL
-   AND mo.published_odds IS NOT NULL`,
+SELECT EXISTS (SELECT 1 FROM upd)`,
 			matchID,
-		)
-		if err != nil {
-			return fmt.Errorf("update match status (live): %w", err)
+		).Scan(&changed); err != nil {
+			return false, fmt.Errorf("update match status (live): %w", err)
 		}
-		return nil
+		return changed, nil
 	}
-	_, err := db.Exec(ctx, `
+	ct, err := db.Exec(ctx, `
 UPDATE matches
    SET status = $2::match_status, updated_at = NOW()
  WHERE id = $1
-   AND (status::text NOT IN ('closed','cancelled') OR status::text = $2)
+   AND status::text NOT IN ('closed','cancelled')
+   AND status::text <> $2
    AND $2 <> 'not_started'`,
 		matchID, status,
 	)
 	if err != nil {
-		return fmt.Errorf("update match status: %w", err)
+		return false, fmt.Errorf("update match status: %w", err)
 	}
-	return nil
+	return ct.RowsAffected() > 0, nil
 }
 
 // UpdateAllMarketsStatusForMatch flips every non-terminal market on a

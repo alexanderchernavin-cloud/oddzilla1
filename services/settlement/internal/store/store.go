@@ -48,11 +48,16 @@ func (s *Store) BeginTx(ctx context.Context) (pgx.Tx, error) {
 //     match-winner market keeps the match active, so this won't
 //     false-positive.
 //
-// Returns nil when the row doesn't exist (settlement reached us before
-// feed-ingester ingested the fixture) or when either gate skipped the
-// update; callers don't need to distinguish these.
-func MarkMatchClosedIfAllMarketsTerminal(ctx context.Context, pool *pgxpool.Pool, providerURN string) error {
-	_, err := pool.Exec(ctx, `
+// Returns (matchID, true) when the flip actually fired so the caller
+// can broadcast a matchStatus WS frame on the match's odds channel —
+// without that frame the storefront's LIVE pill stays frozen until a
+// hard refresh. Returns (0, false) when the row doesn't exist
+// (settlement reached us before feed-ingester ingested the fixture)
+// or when either gate skipped the update; callers can treat both as
+// "no broadcast needed".
+func MarkMatchClosedIfAllMarketsTerminal(ctx context.Context, pool *pgxpool.Pool, providerURN string) (int64, bool, error) {
+	var matchID int64
+	err := pool.QueryRow(ctx, `
 UPDATE matches
    SET status = 'closed'::match_status, updated_at = NOW()
  WHERE provider_urn = $1
@@ -61,11 +66,15 @@ UPDATE matches
      SELECT 1 FROM markets mk
       WHERE mk.match_id = matches.id
         AND mk.status NOT IN (-3, -4)
-   )`, providerURN)
+   )
+RETURNING id`, providerURN).Scan(&matchID)
 	if err != nil {
-		return fmt.Errorf("mark match closed if all markets terminal: %w", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("mark match closed if all markets terminal: %w", err)
 	}
-	return nil
+	return matchID, true, nil
 }
 
 // ─── Apply-once settlement insert ──────────────────────────────────────────

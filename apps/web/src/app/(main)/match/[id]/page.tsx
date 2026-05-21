@@ -3,13 +3,12 @@ import { cookies, headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { serverApi } from "@/lib/server-fetch";
 import { getTranslations } from "@/lib/i18n/server";
-import { LocalDateTime } from "@/components/match/local-datetime";
 import { LiveMarkets, type MarketGroup, type MarketSnapshot } from "./live-markets";
 import { LiveScoreboard } from "./live-scoreboard";
-import { Pill, LiveDot } from "@/components/ui/primitives";
 import { TierMark } from "@/components/ui/tier-mark";
 import { I } from "@/components/ui/icons";
 import { type MatchStream } from "@/components/match/match-streams";
+import { MatchHeaderStatusPill } from "@/components/match/header-status-pill";
 import { MatchLiveMedia } from "@/components/widgets/match-live-media";
 import { MatchPrematchMobile } from "@/components/widgets/match-prematch-mobile";
 import { ZillaFactsCards } from "@/components/match/zillafacts-cards";
@@ -54,7 +53,6 @@ export default async function MatchPage({
   const { match, markets, marketGroups } = data;
   const streams = match.streams ?? [];
   const parentHost = await resolveEmbedHost();
-  const isLive = match.status === "live";
   const initialLiveScore = match.liveScore ?? null;
 
   // For the analyses section CTA, "logged in" presence-checks the access
@@ -64,10 +62,6 @@ export default async function MatchPage({
   // anonymous viewers see "log in to publish" instead of the Write button.
   const cookieStore = await cookies();
   const loggedIn = Boolean(cookieStore.get("oddzilla_access"));
-  const [tMatch, tHome] = await Promise.all([
-    getTranslations("match"),
-    getTranslations("home"),
-  ]);
 
   return (
     <div
@@ -114,17 +108,12 @@ export default async function MatchPage({
             flexWrap: "wrap",
           }}
         >
-          {isLive ? (
-            <Pill tone="live">
-              <LiveDot size={6} /> {tMatch("live")}
-            </Pill>
-          ) : (
-            <Pill>
-              {tHome("upcoming")}
-              {" · "}
-              <LocalDateTime iso={match.scheduledAt} mode="match-detail" />
-            </Pill>
-          )}
+          <MatchHeaderStatusPill
+            matchId={String(match.id)}
+            initialStatus={match.status}
+            scheduledAt={match.scheduledAt}
+          />
+
           {(match.tournament.riskTier === 1 || match.tournament.riskTier === 2) && (
             <TopPill />
           )}
@@ -154,7 +143,7 @@ export default async function MatchPage({
           awayLogoUrl={match.awayLogoUrl ?? null}
           bestOf={match.bestOf}
           initialLiveScore={initialLiveScore}
-          isLive={isLive}
+          initialStatus={match.status}
           sportSlug={match.sport.slug}
         />
       </div>
@@ -166,7 +155,7 @@ export default async function MatchPage({
         awayTeam={match.awayTeam}
         streams={streams}
         parentHost={parentHost}
-        isLive={isLive}
+        initialStatus={match.status}
       />
 
       {/* ZillaFacts surfaces hard, consecutive-from-newest streaks on

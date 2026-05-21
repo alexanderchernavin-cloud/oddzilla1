@@ -157,9 +157,11 @@ func (s *Settler) handleBetSettlement(ctx context.Context, body []byte) error {
 	// unconditionally: per-map market settlements during a live match
 	// won't false-positive because the match-winner market is still at
 	// status=1.
-	if err := store.MarkMatchClosedIfAllMarketsTerminal(ctx, s.store.Pool(), msg.EventID); err != nil {
+	if closedMatchID, closed, err := store.MarkMatchClosedIfAllMarketsTerminal(ctx, s.store.Pool(), msg.EventID); err != nil {
 		s.log.Warn().Err(err).Str("event", msg.EventID).
 			Msg("bet_settlement: mark match closed (all-terminal) failed; continuing")
+	} else if closed {
+		s.publishMatchStatus(ctx, closedMatchID, "closed", msg.Timestamp)
 	}
 	return nil
 }
@@ -703,9 +705,11 @@ func (s *Settler) handleBetCancel(ctx context.Context, body []byte) error {
 	// closes the last remaining bettable market should also flip the
 	// match. Unconditional / forward-only / no-op when active markets
 	// remain.
-	if err := store.MarkMatchClosedIfAllMarketsTerminal(ctx, s.store.Pool(), msg.EventID); err != nil {
+	if closedMatchID, closed, err := store.MarkMatchClosedIfAllMarketsTerminal(ctx, s.store.Pool(), msg.EventID); err != nil {
 		s.log.Warn().Err(err).Str("event", msg.EventID).
 			Msg("bet_cancel: mark match closed (all-terminal) failed; continuing")
+	} else if closed {
+		s.publishMatchStatus(ctx, closedMatchID, "closed", msg.Timestamp)
 	}
 	return nil
 }
@@ -1078,6 +1082,32 @@ func (s *Settler) reverseTicket(ctx context.Context, tx pgx.Tx, ticketID, reason
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
+
+// publishMatchStatus broadcasts a match-level lifecycle transition on
+// the match's odds channel so the storefront can drop a stale LIVE
+// pill immediately when settlement closes the match. Without this
+// frame the rendered match.status stays frozen at whatever SSR
+// captured — per-market status ticks already flow but the top-level
+// indicator only refreshes on a hard reload. Best-effort: pub/sub
+// drops are tolerable (matches.status in pg is the source of truth).
+func (s *Settler) publishMatchStatus(ctx context.Context, matchID int64, status string, oddinTs int64) {
+	payload := map[string]any{
+		"type":    "matchStatus",
+		"matchId": fmt.Sprintf("%d", matchID),
+		"status":  status,
+		"ts":      oddinTs,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	channel := oddsChannelPrefix + fmt.Sprintf("%d", matchID)
+	if err := s.rdb.Publish(ctx, channel, body).Err(); err != nil {
+		s.log.Debug().Err(err).
+			Int64("match", matchID).Str("status", status).
+			Msg("publish match status failed")
+	}
+}
 
 // publishMarketStatus broadcasts a market-level status change on the
 // match's odds channel so the storefront can lock placement immediately
