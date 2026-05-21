@@ -12,7 +12,7 @@
 // 5xx errors are transient and worth retrying. We throw on both — the
 // outbox worker's MAX_ATTEMPTS cap handles the "give up" path.
 
-import type { EmailClient, SendEmailInput } from "./client.js";
+import type { EmailClient, SendEmailInput, SendEmailResult } from "./client.js";
 
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
 // Resend's documented timeout is generous; cap ours so a hung connection
@@ -33,10 +33,17 @@ interface ResendError {
 export function createResendClient(apiKey: string): EmailClient {
   return {
     name: "resend",
-    async send(input: SendEmailInput): Promise<void> {
+    async send(input: SendEmailInput): Promise<SendEmailResult> {
       const ac = new AbortController();
       const timer = setTimeout(() => ac.abort(), SEND_TIMEOUT_MS);
       let res: Response;
+      // Custom headers — Resend forwards arbitrary headers via the
+      // `headers` map (e.g. for In-Reply-To). They overwrite Message-ID
+      // with their own, so don't try to set that here.
+      const customHeaders: Record<string, string> = {};
+      if (input.inReplyTo) {
+        customHeaders["In-Reply-To"] = `<${input.inReplyTo}>`;
+      }
       try {
         res = await fetch(RESEND_ENDPOINT, {
           method: "POST",
@@ -51,6 +58,9 @@ export function createResendClient(apiKey: string): EmailClient {
             html: input.html,
             text: input.text,
             reply_to: input.replyTo ?? input.from,
+            ...(Object.keys(customHeaders).length > 0
+              ? { headers: customHeaders }
+              : {}),
           }),
           signal: ac.signal,
         });
@@ -63,18 +73,13 @@ export function createResendClient(apiKey: string): EmailClient {
       }
 
       if (res.ok) {
-        // Parse to surface the message id in the worker log line,
-        // but treat a 2xx as success even if parse fails — Resend has
-        // returned a 200 with an empty body during incidents.
         try {
           const ok = (await res.json()) as ResendSuccess;
-          if (ok?.id) {
-            return;
-          }
+          return { providerMessageId: ok?.id ?? null };
         } catch {
-          // empty body on 2xx — count as success
+          // empty body on 2xx — count as success without a provider id
+          return { providerMessageId: null };
         }
-        return;
       }
 
       // Non-2xx. Try to read the structured body; fall back to status.

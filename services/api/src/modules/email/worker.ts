@@ -19,6 +19,7 @@ import type { FastifyInstance } from "fastify";
 import { loadEnv } from "@oddzilla/config";
 import { resolveEmailClient, emailProviderSummary, type EmailClient } from "./client.js";
 import {
+  renderAdminMessage,
   renderPasswordReset,
   renderVerifyEmail,
   type PasswordResetPayload,
@@ -38,6 +39,10 @@ interface PendingRow {
   to_address: string;
   subject: string;
   payload: Record<string, unknown>;
+  text_body: string | null;
+  html_body: string | null;
+  in_reply_to: string | null;
+  thread_id: string | null;
   attempts: number;
 }
 
@@ -97,6 +102,10 @@ export async function startEmailOutboxWorker(app: FastifyInstance): Promise<Emai
              to_address,
              subject,
              payload,
+             text_body,
+             html_body,
+             in_reply_to,
+             thread_id::text AS thread_id,
              attempts
         FROM email_outbox
        WHERE sent_at IS NULL
@@ -111,27 +120,42 @@ export async function startEmailOutboxWorker(app: FastifyInstance): Promise<Emai
     // doesn't grow unbounded. Operator sees the state in boot log and
     // in per-row last_error.
     if (!client) {
-      await markSent(row.id, "email_disabled");
+      await markSent(row.id, "email_disabled", null);
       return;
     }
 
     const rendered = renderForKind(row);
     if (!rendered) {
-      await markSent(row.id, `unsupported_kind:${row.kind}`);
+      await markSent(row.id, `unsupported_kind:${row.kind}`, null);
       return;
     }
 
-    await client.send({
+    const result = await client.send({
       to: row.to_address,
       subject: row.subject,
       html: rendered.html,
       text: rendered.text,
       from: env.EMAIL_FROM,
       replyTo: env.EMAIL_REPLY_TO,
+      inReplyTo: row.in_reply_to ?? undefined,
     });
-    await markSent(row.id, null);
+
+    await markSent(row.id, null, result.providerMessageId);
+
+    // For admin-initiated kinds, bump the thread's outbound counter
+    // and last_outbound_at so the inbox list reorders. Built-in kinds
+    // (verify_email, password_reset) don't carry a thread_id today.
+    if (row.thread_id && (row.kind === "admin_outbound" || row.kind === "admin_reply")) {
+      await sql`
+        UPDATE email_threads
+           SET last_outbound_at = NOW(),
+               outbound_count = outbound_count + 1
+         WHERE id = ${row.thread_id}::uuid
+      `;
+    }
+
     app.log.debug(
-      { id: row.id, kind: row.kind, to: row.to_address },
+      { id: row.id, kind: row.kind, to: row.to_address, providerId: result.providerMessageId },
       "email: sent",
     );
   }
@@ -142,17 +166,33 @@ export async function startEmailOutboxWorker(app: FastifyInstance): Promise<Emai
         return renderVerifyEmail(row.payload as unknown as VerifyEmailPayload);
       case "password_reset":
         return renderPasswordReset(row.payload as unknown as PasswordResetPayload);
+      case "admin_outbound":
+      case "admin_reply":
+        // Admin-authored bodies live on the row directly. Missing
+        // bodies are a bug in the enqueue path; render an empty body
+        // so the email goes out as a no-content shell rather than
+        // throwing and retrying forever.
+        return renderAdminMessage({
+          subject: row.subject,
+          textBody: row.text_body ?? "",
+          htmlBody: row.html_body ?? null,
+        });
       default:
         return null;
     }
   }
 
-  async function markSent(id: string, lastError: string | null): Promise<void> {
+  async function markSent(
+    id: string,
+    lastError: string | null,
+    providerMessageId: string | null,
+  ): Promise<void> {
     await sql`
       UPDATE email_outbox
          SET sent_at = NOW(),
              attempts = attempts + 1,
-             last_error = ${lastError}
+             last_error = ${lastError},
+             provider_message_id = COALESCE(${providerMessageId}, provider_message_id)
        WHERE id = ${id}::bigint
     `;
   }
