@@ -42,7 +42,11 @@ export const zillapassTasks = pgTable(
     description: text(),
     targetCount: integer("target_count").notNull(),
     predicateKey: text("predicate_key").notNull(),
-    period: zillapassPeriodEnum().notNull().default("daily"),
+    // Defaults to 'season' since migration 0073 — daily / weekly are
+    // still accepted (the writer / reader periodStart helper honours
+    // them) but every shipped task is no-reset, and the operator's
+    // standing instruction is that progress carries across days.
+    period: zillapassPeriodEnum().notNull().default("season"),
     // Stage number. Users only see tasks where `set_number` matches
     // their current_set_number; they advance one UTC day after
     // completing the set. Added by migration 0064.
