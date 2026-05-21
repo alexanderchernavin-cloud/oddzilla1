@@ -25,6 +25,10 @@ export interface SessionUser {
   countryCode: string | null;
   sportOrder: string[] | null;
   hiddenSports: string[] | null;
+  /** ISO timestamp string when the user confirmed their email, or
+   * null if they never have. The storefront renders an
+   * email-verification banner while this is null. */
+  emailVerifiedAt: string | null;
 }
 
 /**

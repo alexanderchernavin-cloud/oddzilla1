@@ -68,6 +68,11 @@ export const users = pgTable(
     // hidden slugs still surface in the sidebar's edit mode so the
     // bettor can unhide them.
     hiddenSports: text("hidden_sports").array(),
+    // Email verification (migration 0073). NULL = unverified; non-null
+    // = the moment the user clicked the verify link. The storefront
+    // surfaces a banner while NULL. Login still works regardless so
+    // existing demo-OZ accounts aren't locked out on the rollout.
+    emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     lastLoginAt: timestamp({ withTimezone: true }),

@@ -1,10 +1,17 @@
 // Auth business logic. Kept separate from routes so it's trivially
 // unit-testable and so session rotation is a single call site.
 
-import { eq, and, inArray, isNull } from "drizzle-orm";
+import { eq, and, inArray, isNull, ne } from "drizzle-orm";
 import type { Redis } from "ioredis";
 import type { DbClient } from "@oddzilla/db";
-import { users, sessions, wallets, walletLedger } from "@oddzilla/db";
+import {
+  users,
+  sessions,
+  wallets,
+  walletLedger,
+  emailVerificationTokens,
+  passwordResetTokens,
+} from "@oddzilla/db";
 import { SIGNUP_BONUS_OZ_MICRO } from "@oddzilla/types";
 import { randomUUID } from "node:crypto";
 import { SESSION_STATUS_KEY } from "../../plugins/auth.js";
@@ -12,6 +19,9 @@ import {
   type AccountNamespace,
   rolesForNamespace,
 } from "../../lib/account-namespace.js";
+import { enqueueVerifyEmail, enqueuePasswordReset } from "../email/enqueue.js";
+import { hashTokenRaw } from "../email/tokens.js";
+import { BadRequestError } from "../../lib/errors.js";
 
 // A Drizzle transaction handle has the same query API as the root client
 // (`.insert`, `.update`, `.select`, etc.). We extract the callback's first
@@ -64,6 +74,9 @@ export interface PublicUser {
   countryCode: string | null;
   sportOrder: string[] | null;
   hiddenSports: string[] | null;
+  /** Migration 0073. Null = email never verified (storefront shows
+   * banner); non-null = the moment the user clicked the verify link. */
+  emailVerifiedAt: Date | null;
   createdAt: Date;
 }
 
@@ -226,6 +239,16 @@ export class AuthService {
           memo: "demo OZ signup bonus",
         })
         .onConflictDoNothing();
+
+      // Enqueue the verify-email send inside the same tx as the user
+      // insert. If signup rolls back, the verification token + outbox
+      // row roll back too — we never email a user whose row didn't
+      // commit. The worker drains the outbox after this tx commits.
+      await enqueueVerifyEmail(tx, {
+        userId: created.id,
+        email: created.email,
+        displayName: created.displayName,
+      });
 
       return created;
     });
@@ -510,6 +533,195 @@ export class AuthService {
     await Promise.all(revoked.map((s) => this.cacheRevoked(s.id)));
   }
 
+  /** Consume a verify-email token. Stamps users.email_verified_at,
+   * marks the token used, and invalidates every other outstanding
+   * verification token for the same user (a leaked older link can no
+   * longer be replayed). Idempotent re-verify (already-verified user)
+   * is treated as success — the user clicking the link twice is a
+   * legitimate flow.
+   */
+  async consumeEmailVerificationToken(rawToken: string): Promise<PublicUser> {
+    const hash = hashTokenRaw(rawToken);
+    const result = await this.db.transaction(async (tx) => {
+      // FOR UPDATE prevents a second consume racing with the first —
+      // both would otherwise pass the used_at check.
+      const [tokenRow] = await tx
+        .select()
+        .from(emailVerificationTokens)
+        .where(eq(emailVerificationTokens.tokenHash, hash))
+        .for("update")
+        .limit(1);
+      if (!tokenRow) {
+        throw new BadRequestError("invalid_token", "invalid_token");
+      }
+      if (tokenRow.usedAt) {
+        throw new BadRequestError("token_already_used", "token_already_used");
+      }
+      if (tokenRow.expiresAt.getTime() <= Date.now()) {
+        throw new BadRequestError("token_expired", "token_expired");
+      }
+
+      // Stamp the token used. Same tx as the user update for atomicity.
+      await tx
+        .update(emailVerificationTokens)
+        .set({ usedAt: new Date() })
+        .where(eq(emailVerificationTokens.id, tokenRow.id));
+
+      // Burn every OTHER unused token for this user. Stops a leaked
+      // older link from being replayed later.
+      await tx
+        .update(emailVerificationTokens)
+        .set({ usedAt: new Date() })
+        .where(
+          and(
+            eq(emailVerificationTokens.userId, tokenRow.userId),
+            isNull(emailVerificationTokens.usedAt),
+            ne(emailVerificationTokens.id, tokenRow.id),
+          ),
+        );
+
+      // Stamp the verified-at timestamp on the user row. The
+      // `IS NULL` guard preserves the original verification time
+      // when the user clicks the same link a second time — the
+      // UPDATE returns no rows in that case and we re-read below.
+      const [updated] = await tx
+        .update(users)
+        .set({ emailVerifiedAt: new Date() })
+        .where(and(eq(users.id, tokenRow.userId), isNull(users.emailVerifiedAt)))
+        .returning();
+
+      // If the user was already verified the UPDATE didn't return —
+      // re-read so we hand back the canonical row.
+      if (updated) return updated;
+      const [existing] = await tx
+        .select()
+        .from(users)
+        .where(eq(users.id, tokenRow.userId))
+        .limit(1);
+      if (!existing) throw new BadRequestError("user_missing", "user_missing");
+      return existing;
+    });
+    return publicUser(result);
+  }
+
+  /** Issue a fresh verify-email send for an already-signed-up user.
+   * No-op (but reports success to the caller) when the user is already
+   * verified — surface the same shape regardless so an attacker can't
+   * tell verified vs unverified accounts via response timing. */
+  async resendVerificationEmail(
+    userId: string,
+  ): Promise<{ enqueued: boolean }> {
+    const [user] = await this.db
+      .select()
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    if (!user) return { enqueued: false };
+    if (user.emailVerifiedAt) return { enqueued: false };
+
+    await enqueueVerifyEmail(this.db, {
+      userId: user.id,
+      email: user.email,
+      displayName: user.displayName,
+    });
+    return { enqueued: true };
+  }
+
+  /** Always returns success to prevent account enumeration. When the
+   * email matches a user in the requested namespace, enqueue a reset
+   * email; otherwise silently no-op. The route should ALSO mint a
+   * dummy verifyPassword call for timing parity, but the heavy lifting
+   * (argon2) isn't part of this flow so the response time is
+   * inherently uniform. */
+  async requestPasswordReset(
+    email: string,
+    namespace: AccountNamespace,
+    requestedIp: string | null,
+  ): Promise<void> {
+    const [user] = await this.db
+      .select()
+      .from(users)
+      .where(
+        and(
+          eq(users.email, email.toLowerCase()),
+          inArray(users.role, [...rolesForNamespace(namespace)]),
+        ),
+      )
+      .limit(1);
+    if (!user) return;
+    if (user.status === "blocked") return;
+
+    await enqueuePasswordReset(this.db, {
+      userId: user.id,
+      email: user.email,
+      displayName: user.displayName,
+      requestedIp,
+    });
+  }
+
+  /** Consume a password-reset token. Atomically:
+   *  1. validate the token (exists, unused, unexpired)
+   *  2. hash the new password and update the user row
+   *  3. mark the token used + burn every other outstanding reset for the same user
+   *  4. revoke every session so all devices are forced to re-login
+   *
+   * Returns the user id so the route handler can log it / surface it.
+   */
+  async consumePasswordResetToken(
+    rawToken: string,
+    newPassword: string,
+  ): Promise<{ userId: string }> {
+    const hash = hashTokenRaw(rawToken);
+    const passwordHash = await hashPassword(newPassword);
+    const userId = await this.db.transaction(async (tx) => {
+      const [tokenRow] = await tx
+        .select()
+        .from(passwordResetTokens)
+        .where(eq(passwordResetTokens.tokenHash, hash))
+        .for("update")
+        .limit(1);
+      if (!tokenRow) throw new BadRequestError("invalid_token", "invalid_token");
+      if (tokenRow.usedAt) throw new BadRequestError("token_already_used", "token_already_used");
+      if (tokenRow.expiresAt.getTime() <= Date.now()) {
+        throw new BadRequestError("token_expired", "token_expired");
+      }
+
+      await tx
+        .update(passwordResetTokens)
+        .set({ usedAt: new Date() })
+        .where(eq(passwordResetTokens.id, tokenRow.id));
+
+      // Burn every other outstanding reset token for this user. The
+      // attacker / leaker may have requested a second link via the
+      // public flow; one successful reset invalidates all of them.
+      await tx
+        .update(passwordResetTokens)
+        .set({ usedAt: new Date() })
+        .where(
+          and(
+            eq(passwordResetTokens.userId, tokenRow.userId),
+            isNull(passwordResetTokens.usedAt),
+            ne(passwordResetTokens.id, tokenRow.id),
+          ),
+        );
+
+      await tx
+        .update(users)
+        .set({ passwordHash, updatedAt: new Date() })
+        .where(eq(users.id, tokenRow.userId));
+
+      return tokenRow.userId;
+    });
+
+    // Revoke sessions outside the tx so the Redis cache flip + drizzle
+    // update don't run inside the password-change transaction. If the
+    // tx already committed, sessions ARE invalid (next access JWT
+    // verify will hit the DB and find revoked_at set); cache priming
+    // is best-effort.
+    await this.revokeAllSessions(userId);
+    return { userId };
+  }
+
   private async issueTokens(
     userId: string,
     role: "user" | "admin" | "support",
@@ -583,6 +795,7 @@ function publicUser(row: typeof users.$inferSelect): PublicUser {
     countryCode: row.countryCode,
     sportOrder: row.sportOrder ?? null,
     hiddenSports: row.hiddenSports ?? null,
+    emailVerifiedAt: row.emailVerifiedAt ?? null,
     createdAt: row.createdAt,
   };
 }
