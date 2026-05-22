@@ -1,15 +1,16 @@
 "use client";
 
 // SidePanelContext — holds which match (if any) is mounted in the left
-// and right empty bands flanking the centered shell on ultra-wide
-// viewports. Each side renders an iframe of the shell-less embed route
+// and right empty bands flanking the centered shell on wide viewports.
+// Each side renders an iframe of the shell-less embed route
 // (`/embed/match/[id]`) so a bettor can keep two or three matches open
-// at once on 4K / wide-aspect displays.
+// at once on QHD / 4K / wide-aspect displays.
 //
 // Mounted in `(main)/layout.tsx` so every page under the storefront
 // shell can open / close panels. The visibility threshold itself
 // (when the buttons + panels appear at all) is enforced in CSS via
-// `@media (min-width: 2200px)`; this file only tracks state.
+// `@media (min-width: 2000px)`, synced with the 1/2-column toggle.
+// This file only tracks state.
 
 import {
   createContext,
