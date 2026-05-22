@@ -246,15 +246,14 @@ body {
 .oz-shell {
   display: grid;
   grid-template-columns: 240px 1fr 300px;
-  /* No top-bar row on desktop — the theme / bell / wallet / avatar
-     cluster lives in the bet-slip rail header (see `.oz-rail-controls`
-     in shell/user-controls.tsx). The `<TopBar>` component still mounts
-     in the DOM so its mobile/tablet content is available below 1100px;
-     `.oz-topbar { display: none }` (in the desktop @media block lower
-     down) is what makes the row actually collapse. Below 1100px the
-     @media block re-adds the `top` row so the top bar reappears. */
-  grid-template-rows: 1fr;
-  grid-template-areas: "side main rail";
+  /* 90px top bar carries the theme / bell / wallet / avatar cluster
+     on every breakpoint. The earlier experiment that folded the
+     cluster into the bet-slip rail header was reverted because the
+     wallet pill alone is ~200px and a usable rail width can't host
+     the full cluster without overflow. See user-controls.tsx for the
+     `variant="topbar"` mount; the rail no longer mounts a copy. */
+  grid-template-rows: 90px 1fr;
+  grid-template-areas: "top top top" "side main rail";
   /* 240 sidebar + 900 main cap + 300 rail = 1440. The match page
      and the catalog list pages both cap their inner content around
      1000px; widening the shell beyond that just leaks an empty
@@ -551,27 +550,13 @@ body {
   .oz-zillapass-chip-label-mobile { display: inline; }
 }
 
-/* Twin top-right user-controls cluster (theme / bell / wallet / avatar).
-   The topbar variant lives in `<TopBar>`, the rail variant lives at
-   the top of the docked bet-slip rail. Only one is in layout at a
-   time — the other is hidden so screen readers + tab order stay
-   coherent. Padding + bottom hairline are applied directly on
-   `.oz-rail-controls` so hiding the cluster also collapses the
-   strip (no empty padding block stays at the top of the bottom-sheet
-   below 1100px). */
+/* The rail-variant user-controls cluster (theme / bell / wallet / avatar)
+   used to mount at the top of the docked rail on desktop; it was reverted
+   because a usable rail width (≤340px) can't host the full cluster without
+   the leftmost item overflowing past the rail's left edge. The cluster
+   lives in `<TopBar>` on every breakpoint now. `.oz-rail-controls` is
+   kept as a defensive selector so any stray copy stays hidden. */
 .oz-rail-controls { display: none !important; }
-@media (min-width: 1100px) {
-  /* Desktop: the top bar collapses entirely; user controls now sit
-     in the rail. Hiding the top bar removes the whole 90px grid row
-     because the grid template above doesn't allocate one at this
-     breakpoint. */
-  .oz-topbar { display: none !important; }
-  .oz-rail-controls {
-    display: flex !important;
-    padding: 10px 16px;
-    border-bottom: 1px solid var(--hairline);
-  }
-}
 
 /* Inline widget toggle + container on the match page is mobile-only;
    on desktop the same widget renders in the right rail. */

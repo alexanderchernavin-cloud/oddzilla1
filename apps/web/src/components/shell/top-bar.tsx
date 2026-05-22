@@ -89,10 +89,12 @@ export function TopBar({ signedIn, user }: TopBarProps) {
       <div style={{ flex: 1 }} />
 
       {/*
-        Theme + bell + wallet + avatar (or login / signup). On desktop
-        (≥1100px) the entire top bar is hidden via `.oz-topbar` and a
-        twin <UserControls variant="rail" /> in the bet-slip rail
-        carries the same cluster — see globals.css.
+        Theme + bell + wallet + avatar (or login / signup). Lives in
+        the top bar on every breakpoint — the prior experiment of
+        moving this cluster into the bet-slip rail header was reverted
+        because the wallet pill alone is ~200px and the rail can't
+        host the full cluster without the leftmost item leaking past
+        the rail's left edge.
       */}
       <UserControls signedIn={signedIn} user={user} variant="topbar" />
     </header>

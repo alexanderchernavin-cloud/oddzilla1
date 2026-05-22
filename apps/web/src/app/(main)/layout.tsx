@@ -101,14 +101,14 @@ export default async function MainLayout({ children }: { children: React.ReactNo
             {children}
           </div>
         </main>
-        <BetSlipRail signedIn={Boolean(user)} user={user ?? undefined} />
+        <BetSlipRail />
         <MobileShellOverlay />
         <MobileBetSlipBar />
       </ShellContainer>
       {/* Two iframes pinned to the empty bands flanking the centered
-          shell on ultra-wide viewports. Hidden via CSS below 2400px so
-          they never overlap the shell on a normal laptop / 1080p
-          monitor; at the threshold each band is ≥410px wide. */}
+          shell on wide viewports. Hidden via CSS below 2000px (synced
+          with the 1/2-column toggle) so they never overlap the shell
+          on a normal laptop / 1080p monitor. */}
       <SidePanels />
       </ZillapassProvider>
       </WalletProvider>
