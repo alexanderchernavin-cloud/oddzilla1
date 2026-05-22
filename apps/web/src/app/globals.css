@@ -1041,15 +1041,18 @@ body {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
-   Match-row side-panel affordance — ultra-wide viewports only.
+   Match-row side-panel affordance — wide viewports.
    The centered `.oz-shell` caps at 1580px, so a 4K (3840px) or wide
    ultrawide monitor leaves a sizeable empty band on each side. The
    two tall buttons flanking every match card open that match in an
    iframe that fills that band, so a bettor can keep two extra games
    open while the central column stays on the catalog.
-   The threshold is min-width: 2400px — each band is ≥410px there,
-   the narrowest width at which the embed match view stays readable.
-   Anything narrower hides the buttons and the panels entirely.
+   The threshold is min-width: 2000px — synced with the 1/2-column
+   toggle so both wide-viewport features turn on together. At 2000px
+   each band is ~210px which is cramped for the embed view but the
+   buttons themselves are useful as soon as there is any empty band
+   to project the iframe into; the embed page scales the controls
+   down on narrower bands.
    ───────────────────────────────────────────────────────────────────────── */
 .oz-match-row {
   display: flex;
@@ -1141,7 +1144,7 @@ body {
   background: var(--bg);
 }
 
-@media (min-width: 2400px) {
+@media (min-width: 2000px) {
   .oz-match-side-btn {
     display: inline-flex;
   }
