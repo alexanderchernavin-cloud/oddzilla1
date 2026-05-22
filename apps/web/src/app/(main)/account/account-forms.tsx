@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
-import { useTranslations } from "@/lib/i18n";
+import { useLocale, useTranslations } from "@/lib/i18n";
+import { getCountries } from "@/lib/countries";
 
 export function AccountForms({
   initialDisplayName,
@@ -32,11 +33,13 @@ function ProfileForm({
 }) {
   const router = useRouter();
   const [displayName, setDisplayName] = useState(initialDisplayName);
-  const [countryCode, setCountryCode] = useState(initialCountryCode);
+  const [countryCode, setCountryCode] = useState(initialCountryCode.toUpperCase());
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const t = useTranslations("account");
   const tCommon = useTranslations("common");
+  const locale = useLocale();
+  const countries = useMemo(() => getCountries(locale), [locale]);
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -81,13 +84,18 @@ function ProfileForm({
 
       <label className="block">
         <span className="text-xs text-[var(--color-fg-subtle)]">{t("country")}</span>
-        <input
-          type="text"
-          maxLength={2}
+        <select
           value={countryCode}
           onChange={(e) => setCountryCode(e.target.value)}
-          className="mt-1 w-24 rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-3 py-2 uppercase outline-none focus:border-[var(--color-accent)]"
-        />
+          className="mt-1 w-full rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-3 py-2 outline-none focus:border-[var(--color-accent)] sm:w-72"
+        >
+          <option value="">—</option>
+          {countries.map((c) => (
+            <option key={c.code} value={c.code}>
+              {c.flag} {c.name}
+            </option>
+          ))}
+        </select>
       </label>
 
       {message ? (
