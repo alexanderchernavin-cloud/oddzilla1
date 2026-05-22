@@ -236,7 +236,7 @@ body {
 *::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
 
 /* ─────────── Responsive shell ───────────
-   Desktop (≥1100px): 240px sidebar + main + 340px persistent bet-slip rail.
+   Desktop (≥1100px): 240px sidebar + main + 240px persistent bet-slip rail.
    Tablet  (720–1099px): sidebar + main; bet-slip rail hidden and
        re-mounts as a bottom sheet invoked by the sticky peek bar.
    Mobile  (<720px): just main; sidebar slides in from the left, the
@@ -245,7 +245,7 @@ body {
 
 .oz-shell {
   display: grid;
-  grid-template-columns: 240px 1fr 340px;
+  grid-template-columns: 240px 1fr 240px;
   /* No top-bar row on desktop — the theme / bell / wallet / avatar
      cluster lives in the bet-slip rail header (see `.oz-rail-controls`
      in shell/user-controls.tsx). The `<TopBar>` component still mounts
@@ -255,15 +255,19 @@ body {
      @media block re-adds the `top` row so the top bar reappears. */
   grid-template-rows: 1fr;
   grid-template-areas: "side main rail";
-  /* 240 sidebar + 900 main cap + 340 rail = 1480. The match page
+  /* 240 sidebar + 900 main cap + 240 rail = 1380. The match page
      and the catalog list pages both cap their inner content around
      1000px; widening the shell beyond that just leaks an empty
      band between the central content and the right rail on wide
      monitors. 900px is the deliberately-tighter resting width that
      keeps match cards and ZillaFlash tiles from looking stretched
      at QHD+ viewports. The 1fr center cell still grows on smaller
-     viewports (everything below 1480 + body padding fills naturally). */
-  max-width: 1480px;
+     viewports (everything below 1380 + body padding fills naturally).
+     The rail itself is symmetrically 240px so it mirrors the sidebar;
+     the wallet pill + theme/bell/avatar cluster in the rail header
+     is the tightest content there — see user-controls.tsx if it
+     starts to overflow. */
+  max-width: 1380px;
   margin-inline: auto;
   /* Pin the shell to the viewport width on every breakpoint so a
      stubborn flex/grid child can't make the page wider than the
@@ -1044,14 +1048,14 @@ body {
 
 /* ─────────────────────────────────────────────────────────────────────────
    Match-row side-panel affordance — wide viewports.
-   The centered `.oz-shell` caps at 1480px, so a 4K (3840px) or wide
+   The centered `.oz-shell` caps at 1380px, so a 4K (3840px) or wide
    ultrawide monitor leaves a sizeable empty band on each side. The
    two tall buttons flanking every match card open that match in an
    iframe that fills that band, so a bettor can keep two extra games
    open while the central column stays on the catalog.
    The threshold is min-width: 2000px — synced with the 1/2-column
    toggle so both wide-viewport features turn on together. At 2000px
-   each band is ~260px which is cramped for the embed view but the
+   each band is ~310px which is cramped for the embed view but the
    buttons themselves are useful as soon as there is any empty band
    to project the iframe into; the embed page scales the controls
    down on narrower bands.
@@ -1095,7 +1099,7 @@ body {
   position: fixed;
   top: 0;
   bottom: 0;
-  width: max(0px, calc((100vw - 1480px) / 2));
+  width: max(0px, calc((100vw - 1380px) / 2));
   background: var(--bg);
   z-index: 40;
   overflow: hidden;
