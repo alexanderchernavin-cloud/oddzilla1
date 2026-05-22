@@ -12,13 +12,14 @@ export default async function AccountPage() {
   return (
     <div>
       <h1 className="text-2xl font-semibold tracking-tight">{t("title")}</h1>
-      <p className="mt-2 text-sm text-[var(--color-fg-muted)]">
-        {t("emailChangeNote")}
-      </p>
 
       <section className="mt-8 grid gap-4 sm:grid-cols-3">
         <dl className="card p-6 sm:col-span-3 grid gap-3 sm:grid-cols-3">
-          <Field label={t("email")} value={user.email} />
+          <Field
+            label={t("email")}
+            value={user.email}
+            hint={t("emailChangeNote")}
+          />
           <Field label="Role" value={user.role} />
           <Field label="KYC status" value={user.kycStatus} />
         </dl>
@@ -42,13 +43,24 @@ export default async function AccountPage() {
   );
 }
 
-function Field({ label, value }: { label: string; value: string }) {
+function Field({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+}) {
   return (
     <div>
       <dt className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
         {label}
       </dt>
       <dd className="mt-1 text-sm">{value}</dd>
+      {hint ? (
+        <p className="mt-1 text-xs text-[var(--color-fg-muted)]">{hint}</p>
+      ) : null}
     </div>
   );
 }
