@@ -4,7 +4,11 @@ import type { CSSProperties, JSX, ReactNode } from "react";
 import { useMemo, useRef, useState } from "react";
 import { useBetSlip } from "@/lib/bet-slip";
 import { useOddsFlash } from "@/lib/use-odds-flash";
-import { useLiveOddsForMatches, type LiveOddsTick } from "@/lib/use-live-odds";
+import {
+  useLiveOddsForMatches,
+  useLiveMarketStatusForMatches,
+  type LiveOddsTick,
+} from "@/lib/use-live-odds";
 import { useTranslations } from "@/lib/i18n";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { computeCombiBoost } from "@oddzilla/types/combi-boost";
@@ -88,6 +92,15 @@ export function ThreeFoldCards({
   }, [visibleTiers, suggestions]);
 
   const ticks = useLiveOddsForMatches(matchIds);
+  // Per-market status — needed so a suggested leg sitting on a market
+  // that has flipped to suspended/settled/cancelled is stamped
+  // active=false when the user activates the card. Oddin leaves the
+  // outcome at active=true with stale prices while the parent market
+  // is suspended (see odds-publisher comment), so the per-outcome
+  // `tick.active` alone misses the lock and POST /bets dead-ends at
+  // `market_not_active` ("This market is suspended"). Same shared
+  // socket as ticks above.
+  const marketStatuses = useLiveMarketStatusForMatches(matchIds);
 
   // First-visible tier index. Desktop renders [first, first+1]; mobile
   // renders [first]. Pagination differs per breakpoint:
@@ -116,6 +129,16 @@ export function ThreeFoldCards({
     slip.setMode("combo");
     for (const leg of legs) {
       const tick = ticks[`${leg.marketId}:${leg.outcomeId}`];
+      const marketTick = marketStatuses[leg.marketId];
+      // A leg is active iff its outcome is active AND the parent
+      // market is currently at status=1. Oddin sometimes lags the
+      // outcome flip on a suspension, so the market-level signal is
+      // the authoritative gate. Suspended legs are still added (so
+      // the slip rail surfaces the "drop suspended legs?" confirm
+      // before placement instead of silently dropping them).
+      const outcomeActive = tick ? tick.active : true;
+      const marketActive = marketTick == null || marketTick.status === 1;
+      const legActive = outcomeActive && marketActive;
       const fresh: ThreeFoldLeg =
         tick && tick.active
           ? {
@@ -124,7 +147,7 @@ export function ThreeFoldCards({
               probability: tick.probability ?? leg.probability,
             }
           : leg;
-      slip.add({ ...stripPickedSide(fresh), active: tick?.active ?? true });
+      slip.add({ ...stripPickedSide(fresh), active: legActive });
     }
     slip.setOpen(true);
   };
