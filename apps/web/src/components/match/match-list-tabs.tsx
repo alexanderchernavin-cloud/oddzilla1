@@ -7,8 +7,10 @@ import {
   useLiveOddsForMatches,
   useLiveScoresForMatches,
   useLiveMatchStatusForMatches,
+  useLiveMarketStatusForMatches,
   type LiveOddsTick,
   type LiveMatchStatusTick,
+  type LiveMarketStatusTick,
 } from "@/lib/use-live-odds";
 import { useSessionUserId } from "@/lib/session-user";
 import { useViewerCountsForMatches } from "@/lib/use-viewer-counts";
@@ -63,6 +65,17 @@ export function MatchListTabs({
   // Used to drop the LIVE pill the moment Oddin reports the match
   // closed; without it the row stays at "live" until a hard refresh.
   const matchStatuses = useLiveMatchStatusForMatches(matchIds);
+  // Per-market status — feed-ingester publishes a `marketStatus` frame
+  // on every markets.status transition (suspend / settle / cancel /
+  // resume). Listening here is what keeps the inline match-winner
+  // odds button honest: Oddin frequently leaves `<outcome active="1">`
+  // with the last price while the parent `<market status="-1">` is
+  // suspended, so without merging the market-level status, the row
+  // keeps showing a clickable price for a market the server will
+  // reject at placement with `market_not_active` ("This market is
+  // suspended"). Same shared socket as the odds / score / lifecycle
+  // ticks above.
+  const marketStatuses = useLiveMarketStatusForMatches(matchIds);
   // Match-room viewer counts for the "N watching" pill. REST poll
   // every 30s; the hook is keyed by the sorted matchIds so navigating
   // between list pages doesn't re-fetch unnecessarily.
@@ -78,8 +91,8 @@ export function MatchListTabs({
   //
   // SSR + initial client paint: ticks / scores / statuses arrive via
   // useEffect → WebSocket, so on the first render they are empty
-  // objects. In that state mergeMatchWithLive(m, {}, {}, {}) returns m
-  // by referential identity and the lookup Map's lookups all resolve
+  // objects. In that state mergeMatchWithLive(m, {}, {}, {}, {}) returns
+  // m by referential identity and the lookup Map's lookups all resolve
   // to the original input. The hasLiveData gate skips the 180-iteration
   // map + Map allocation for the no-data case — measurable v8 GC
   // pressure on the SSR process at 250+ concurrent storefront
@@ -87,14 +100,17 @@ export function MatchListTabs({
   const hasLiveData =
     Object.keys(ticks).length > 0 ||
     Object.keys(scores).length > 0 ||
-    Object.keys(matchStatuses).length > 0;
+    Object.keys(matchStatuses).length > 0 ||
+    Object.keys(marketStatuses).length > 0;
 
   const merged = useMemo(
     () =>
       hasLiveData
-        ? matches.map((m) => mergeMatchWithLive(m, ticks, scores, matchStatuses))
+        ? matches.map((m) =>
+            mergeMatchWithLive(m, ticks, scores, matchStatuses, marketStatuses),
+          )
         : matches,
-    [matches, ticks, scores, matchStatuses, hasLiveData],
+    [matches, ticks, scores, matchStatuses, marketStatuses, hasLiveData],
   );
   const mergedById = useMemo(() => {
     if (merged === matches) return null;
@@ -231,17 +247,19 @@ function ColsToggle({
 }
 
 // Overlay live odds AND live scoreboard AND match-level lifecycle
-// status onto a server-rendered match. Returns a new object only when
-// something actually changed, so React's referential equality
-// short-circuits unaffected rows. `active=false` ticks null out the
-// price — MatchRow already locks the inline button when price is
-// null, which is the same affordance LiveMarkets uses on the detail
-// page.
+// status AND per-market status onto a server-rendered match. Returns a
+// new object only when something actually changed, so React's
+// referential equality short-circuits unaffected rows. `active=false`
+// ticks null out the price; a market-status tick != 1 nulls every
+// outcome on that market — MatchRow already locks the inline button
+// when price is null, which is the same affordance LiveMarkets uses on
+// the detail page.
 function mergeMatchWithLive(
   m: ListMatchEnriched,
   ticks: Record<string, LiveOddsTick>,
   scores: Record<string, LiveScore>,
   statuses: Record<string, LiveMatchStatusTick>,
+  marketStatuses: Record<string, LiveMarketStatusTick>,
 ): ListMatchEnriched {
   let next = m;
 
@@ -262,7 +280,14 @@ function mergeMatchWithLive(
     const drawTick = mw.draw
       ? ticks[`${mw.marketId}:${mw.draw.outcomeId}`]
       : undefined;
-    if (homeTick || awayTick || drawTick) {
+    const marketStatusTick = marketStatuses[mw.marketId];
+    // The catalog only ships matches whose match-winner market is at
+    // status=1, so the only meaningful WS transition here is "anything
+    // other than 1" → lock the row. Resume (back to 1) is handled
+    // implicitly: subsequent odds ticks re-populate the price.
+    const marketLocked =
+      marketStatusTick != null && marketStatusTick.status !== 1;
+    if (homeTick || awayTick || drawTick || marketLocked) {
       next = {
         ...next,
         matchWinner: {
@@ -270,26 +295,41 @@ function mergeMatchWithLive(
           home: homeTick
             ? {
                 outcomeId: mw.home.outcomeId,
-                price: homeTick.active ? homeTick.publishedOdds : null,
+                price:
+                  marketLocked || !homeTick.active
+                    ? null
+                    : homeTick.publishedOdds,
                 probability: homeTick.probability ?? mw.home.probability ?? null,
               }
-            : mw.home,
+            : marketLocked
+              ? { outcomeId: mw.home.outcomeId, price: null, probability: mw.home.probability ?? null }
+              : mw.home,
           away: awayTick
             ? {
                 outcomeId: mw.away.outcomeId,
-                price: awayTick.active ? awayTick.publishedOdds : null,
+                price:
+                  marketLocked || !awayTick.active
+                    ? null
+                    : awayTick.publishedOdds,
                 probability: awayTick.probability ?? mw.away.probability ?? null,
               }
-            : mw.away,
+            : marketLocked
+              ? { outcomeId: mw.away.outcomeId, price: null, probability: mw.away.probability ?? null }
+              : mw.away,
           draw:
             mw.draw && drawTick
               ? {
                   outcomeId: mw.draw.outcomeId,
-                  price: drawTick.active ? drawTick.publishedOdds : null,
+                  price:
+                    marketLocked || !drawTick.active
+                      ? null
+                      : drawTick.publishedOdds,
                   probability:
                     drawTick.probability ?? mw.draw.probability ?? null,
                 }
-              : mw.draw ?? null,
+              : mw.draw && marketLocked
+                ? { outcomeId: mw.draw.outcomeId, price: null, probability: mw.draw.probability ?? null }
+                : mw.draw ?? null,
         },
       };
     }
