@@ -6,6 +6,9 @@ import { Wordmark } from "@/components/ui/monogram";
 import { useTranslations } from "@/lib/i18n";
 import { useMobileDrawers } from "./mobile-drawer-context";
 import { UserControls } from "./user-controls";
+import { TopBarSearch } from "./top-bar-search";
+import { ZillapassIndicator } from "./zillapass-indicator";
+import { TodayLabel } from "@/components/lobby/today-label";
 
 interface TopBarProps {
   signedIn: boolean;
@@ -86,7 +89,26 @@ export function TopBar({ signedIn, user }: TopBarProps) {
         <Wordmark size={60} priority />
       </Link>
 
-      <div style={{ flex: 1 }} />
+      {/*
+        Date kicker + global search + ZillaPass chip. Lives in the
+        top bar on tablet + desktop so the whole row is fixed at the
+        top alongside the user-controls cluster. Hidden on mobile via
+        `.oz-topbar-shellrow-wide { display: none }` — at <720px the
+        same components mount in `.oz-shell-search` below the top
+        bar, where the existing mobile responsive rules already lay
+        them out correctly. */}
+      <div className="oz-topbar-shellrow-wide">
+        <TodayLabel />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <TopBarSearch />
+        </div>
+        <ZillapassIndicator />
+      </div>
+
+      {/* Mobile-only flex spacer — pushes the cluster to the right
+          edge when the shell row above is hidden. Symmetrical with
+          the previous unconditional spacer; CSS gates it. */}
+      <div className="oz-topbar-spacer" aria-hidden="true" />
 
       {/*
         Theme + bell + wallet + avatar (or login / signup). Lives in

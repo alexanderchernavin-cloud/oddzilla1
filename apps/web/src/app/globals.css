@@ -347,6 +347,32 @@ body {
    the mobile breakpoint block below. */
 .oz-topbar-logo { display: none !important; }
 
+/* Date kicker + global search + ZillaPass chip — live in the top bar
+   on tablet + desktop. Hidden on mobile (<720px) where the same
+   components mount inside `.oz-shell-search` below the top bar; the
+   mobile responsive rules already lay them out for a 360-414px
+   viewport. The flex:1 lets the search input grow to fill the gap
+   between the date kicker and the ZillaPass chip. */
+.oz-topbar-shellrow-wide {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+@media (max-width: 719px) {
+  .oz-topbar-shellrow-wide { display: none; }
+}
+
+/* Pushes the user-controls cluster to the right edge of the top bar
+   on mobile, where `.oz-topbar-shellrow-wide` is hidden. Above 720px
+   the shell row above is in layout with `flex: 1`, so it absorbs the
+   gap and this spacer is suppressed. */
+.oz-topbar-spacer { display: none; }
+@media (max-width: 719px) {
+  .oz-topbar-spacer { display: block; flex: 1; }
+}
+
 /* Lobby header: date kicker + search input. Inline row on tablet +
    desktop, stacked vertically on mobile so the search input gets the
    full viewport width. The brand mark lives in the top bar (mobile)
@@ -466,6 +492,13 @@ body {
   padding: 22px 32px 0;
   margin-bottom: -58px;
   pointer-events: none;
+}
+/* On tablet + desktop the search input + ZillaPass chip ride inside
+   the top bar (.oz-topbar-shellrow-wide), so this mobile-fallback
+   strip is hidden to avoid rendering duplicate copies. */
+@media (min-width: 720px) {
+  .oz-shell-search { display: none; }
+  .oz-lobby-header { display: none; }
 }
 .oz-shell-search > * {
   width: 100%;
