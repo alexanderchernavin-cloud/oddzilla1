@@ -67,6 +67,13 @@ interface ThreadSummary {
   unreadInbound: number;
   archived: boolean;
   preview: string | null;
+  /** True when at least one outbound message on this thread reached
+   * MAX_ATTEMPTS and was force-marked sent with a `max_attempts:` /
+   * unsupported_kind error. Surfaced in the inbox row so the operator
+   * can see "Send failed" without opening the thread. Successful
+   * sends with prior transient errors do NOT trip this (worker clears
+   * last_error on success). */
+  hasFailedOutbound: boolean;
 }
 
 interface ThreadMessage {
@@ -79,6 +86,9 @@ interface ThreadMessage {
   htmlBody: string | null;
   ts: string;
   status: "received" | "queued" | "sent" | "failed";
+  /** Reason string from email_outbox.last_error when status="failed".
+   * Only set for outbound messages that hit a delivery error. */
+  failureReason?: string | null;
   attachments?: Array<{ filename: string; contentType: string | null; sizeBytes: number }>;
   spamScore?: number | null;
 }
@@ -123,13 +133,21 @@ export default async function adminEmailRoutes(app: FastifyInstance) {
           )`,
         );
       } else if (q.filter === "sent") {
-        // Threads we've sent at least one message into. Includes both
-        // admin-initiated conversations (compose) and threads we've
-        // replied to. Archived threads are excluded by default —
-        // operators looking at Sent want what they actually shipped,
-        // not what they handled and filed away.
+        // Threads we've ATTEMPTED to send into — successful AND failed.
+        // `outbound_count` only increments on successful delivery, so
+        // a `> 0` gate hid dead-letter rows (e.g. domain-not-verified
+        // 403s after MAX_ATTEMPTS). Operators expect "I clicked Send
+        // → it's in Sent" regardless of provider outcome; the row UI
+        // surfaces failed status separately so they can spot dead
+        // sends and re-send. Archived threads still excluded.
         filters.push(sql`${emailThreads.archivedAt} IS NULL`);
-        filters.push(sql`${emailThreads.outboundCount} > 0`);
+        filters.push(
+          sql`EXISTS (
+            SELECT 1 FROM ${emailOutbox}
+             WHERE ${emailOutbox.threadId} = ${emailThreads.id}
+               AND ${emailOutbox.kind} IN ('admin_outbound', 'admin_reply')
+          )`,
+        );
       }
       if (q.q) {
         const pattern = `%${q.q.replace(/[%_]/g, (m) => `\\${m}`)}%`;
@@ -161,6 +179,7 @@ export default async function adminEmailRoutes(app: FastifyInstance) {
         archived_at: Date | null;
         unread_inbound: number;
         preview: string | null;
+        has_failed_outbound: boolean;
         activity_ts: Date;
       }>(sql`
         SELECT
@@ -175,6 +194,18 @@ export default async function adminEmailRoutes(app: FastifyInstance) {
           t.archived_at,
           COALESCE(unread.cnt, 0) AS unread_inbound,
           preview.body AS preview,
+          -- A dead-letter outbound row: worker gave up after
+          -- MAX_ATTEMPTS and stamped sent_at + last_error. Excludes
+          -- "email_disabled" (graceful-idle when the provider isn't
+          -- configured — not actually a failure, just queued for later).
+          EXISTS (
+            SELECT 1
+              FROM email_outbox
+             WHERE thread_id = t.id
+               AND kind IN ('admin_outbound', 'admin_reply')
+               AND last_error IS NOT NULL
+               AND last_error LIKE 'max_attempts:%'
+          ) AS has_failed_outbound,
           GREATEST(COALESCE(t.last_inbound_at, t.created_at),
                    COALESCE(t.last_outbound_at, t.created_at)) AS activity_ts
         FROM email_threads t
@@ -229,6 +260,7 @@ export default async function adminEmailRoutes(app: FastifyInstance) {
           unreadInbound: r.unread_inbound,
           archived: r.archived_at !== null,
           preview: r.preview,
+          hasFailedOutbound: r.has_failed_outbound,
         })),
         nextCursor,
       };
@@ -280,27 +312,46 @@ export default async function adminEmailRoutes(app: FastifyInstance) {
           }>) ?? [],
           spamScore: r.spamScore !== null ? Number(r.spamScore) : null,
         })),
-        ...outboundRows.map<ThreadMessage>((r) => ({
-          direction: "outbound",
-          id: String(r.id),
-          who: r.toAddress,
-          whoName: null,
-          subject: r.subject,
-          textBody: r.textBody,
-          htmlBody: r.htmlBody,
-          ts: (r.sentAt ?? r.enqueuedAt).toISOString(),
-          status: r.sentAt
+        ...outboundRows.map<ThreadMessage>((r) => {
+          const status: ThreadMessage["status"] = r.sentAt
             ? r.lastError && r.lastError !== "email_disabled"
               ? "failed"
               : "sent"
-            : "queued",
-        })),
+            : "queued";
+          // Strip the `max_attempts:` prefix for display — leaves
+          // just the provider-side error string (e.g.
+          // `resend_send_failed: status=403 validation_error: …`).
+          // Operator-facing copy, not log-level detail.
+          let failureReason: string | null = null;
+          if (status === "failed" && r.lastError) {
+            failureReason = r.lastError.replace(/^max_attempts:/, "");
+          }
+          return {
+            direction: "outbound" as const,
+            id: String(r.id),
+            who: r.toAddress,
+            whoName: null,
+            subject: r.subject,
+            textBody: r.textBody,
+            htmlBody: r.htmlBody,
+            ts: (r.sentAt ?? r.enqueuedAt).toISOString(),
+            status,
+            failureReason,
+          };
+        }),
       ].sort((a, b) => a.ts.localeCompare(b.ts));
 
       const unreadInbound = inboundRows.filter((r) => r.readAt === null).length;
       const lastInboundForPreview = inboundRows
         .slice()
         .sort((a, b) => b.receivedAt.getTime() - a.receivedAt.getTime())[0];
+
+      const hasFailedOutbound = outboundRows.some(
+        (r) =>
+          (r.kind === "admin_outbound" || r.kind === "admin_reply") &&
+          r.lastError !== null &&
+          r.lastError.startsWith("max_attempts:"),
+      );
 
       const summary: ThreadSummary = {
         id: thread.id,
@@ -316,6 +367,7 @@ export default async function adminEmailRoutes(app: FastifyInstance) {
         preview: lastInboundForPreview
           ? (lastInboundForPreview.textBody ?? lastInboundForPreview.subject).slice(0, 240)
           : null,
+        hasFailedOutbound,
       };
 
       return { thread: summary, messages };

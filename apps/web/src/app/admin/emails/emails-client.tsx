@@ -17,6 +17,7 @@ interface ThreadSummary {
   unreadInbound: number;
   archived: boolean;
   preview: string | null;
+  hasFailedOutbound: boolean;
 }
 
 interface ListResponse {
@@ -198,6 +199,14 @@ function ThreadRow({ thread }: { thread: ThreadSummary }) {
               {thread.unreadInbound > 0 && (
                 <span className="inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-[var(--color-fg)] px-1 text-[10px] font-semibold text-[var(--color-bg)]">
                   {thread.unreadInbound}
+                </span>
+              )}
+              {thread.hasFailedOutbound && (
+                <span
+                  className="rounded-sm bg-[var(--color-danger)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-white"
+                  title="At least one message in this thread failed to send. Open the thread to see which one and re-send."
+                >
+                  Failed
                 </span>
               )}
               {thread.archived && (

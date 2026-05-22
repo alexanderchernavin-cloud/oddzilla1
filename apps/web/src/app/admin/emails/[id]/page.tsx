@@ -35,6 +35,7 @@ interface ThreadSummary {
   unreadInbound: number;
   archived: boolean;
   preview: string | null;
+  hasFailedOutbound: boolean;
 }
 
 interface ThreadResponse {

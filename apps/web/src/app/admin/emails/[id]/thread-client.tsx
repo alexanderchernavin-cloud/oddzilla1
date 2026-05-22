@@ -14,6 +14,7 @@ interface ThreadMessage {
   htmlBody: string | null;
   ts: string;
   status: "received" | "queued" | "sent" | "failed";
+  failureReason?: string | null;
   attachments?: Array<{ filename: string; contentType: string | null; sizeBytes: number }>;
   spamScore?: number | null;
 }
@@ -30,6 +31,7 @@ interface ThreadSummary {
   unreadInbound: number;
   archived: boolean;
   preview: string | null;
+  hasFailedOutbound: boolean;
 }
 
 interface ThreadResponse {
@@ -224,6 +226,17 @@ function MessageCard({ message }: { message: ThreadMessage }) {
           <span>{date}</span>
         </div>
       </div>
+      {!inbound && message.status === "failed" && message.failureReason && (
+        <div
+          className="mt-3 rounded-md border border-[var(--color-danger)] bg-[var(--color-danger)]/10 p-3 text-xs leading-relaxed text-[var(--color-danger)]"
+          role="alert"
+        >
+          <div className="font-semibold uppercase tracking-wider">Delivery failed</div>
+          <div className="mt-1 break-words font-mono text-[var(--color-fg)]">
+            {message.failureReason}
+          </div>
+        </div>
+      )}
       {message.textBody ? (
         <pre className="mt-3 whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-[var(--color-fg)]">
           {message.textBody}
