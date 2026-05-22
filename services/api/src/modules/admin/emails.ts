@@ -118,47 +118,53 @@ export default async function adminEmailRoutes(app: FastifyInstance) {
         }
       }
 
+      // IMPORTANT: the FROM clause below aliases email_threads as `t`.
+      // Postgres scopes the bare table name OUT once an alias is set,
+      // so every filter/order-by reference here must use `t.<column>`,
+      // NOT `${emailThreads.<column>}` (which would generate the
+      // unaliased `"email_threads"."<column>"` and trip
+      // `invalid reference to FROM-clause entry for table "email_threads"`).
+      // Caught 2026-05-22 when the operator hit an empty inbox in
+      // production despite data being present.
       const filters: ReturnType<typeof sql>[] = [];
       if (q.filter === "inbox") {
-        filters.push(sql`${emailThreads.archivedAt} IS NULL`);
+        filters.push(sql`t.archived_at IS NULL`);
       } else if (q.filter === "archived") {
-        filters.push(sql`${emailThreads.archivedAt} IS NOT NULL`);
+        filters.push(sql`t.archived_at IS NOT NULL`);
       } else if (q.filter === "unread") {
-        filters.push(sql`${emailThreads.archivedAt} IS NULL`);
+        filters.push(sql`t.archived_at IS NULL`);
         filters.push(
           sql`EXISTS (
-            SELECT 1 FROM ${emailInbound}
-             WHERE ${emailInbound.threadId} = ${emailThreads.id}
-               AND ${emailInbound.readAt} IS NULL
+            SELECT 1 FROM email_inbound
+             WHERE thread_id = t.id
+               AND read_at IS NULL
           )`,
         );
       } else if (q.filter === "sent") {
         // Threads we've ATTEMPTED to send into — successful AND failed.
         // `outbound_count` only increments on successful delivery, so
-        // a `> 0` gate hid dead-letter rows (e.g. domain-not-verified
-        // 403s after MAX_ATTEMPTS). Operators expect "I clicked Send
-        // → it's in Sent" regardless of provider outcome; the row UI
-        // surfaces failed status separately so they can spot dead
-        // sends and re-send. Archived threads still excluded.
-        filters.push(sql`${emailThreads.archivedAt} IS NULL`);
+        // a `> 0` gate hid dead-letter rows. Operators expect
+        // "I clicked Send → it's in Sent" regardless of provider
+        // outcome; the row UI surfaces failed status separately.
+        filters.push(sql`t.archived_at IS NULL`);
         filters.push(
           sql`EXISTS (
-            SELECT 1 FROM ${emailOutbox}
-             WHERE ${emailOutbox.threadId} = ${emailThreads.id}
-               AND ${emailOutbox.kind} IN ('admin_outbound', 'admin_reply')
+            SELECT 1 FROM email_outbox
+             WHERE thread_id = t.id
+               AND kind IN ('admin_outbound', 'admin_reply')
           )`,
         );
       }
       if (q.q) {
         const pattern = `%${q.q.replace(/[%_]/g, (m) => `\\${m}`)}%`;
         filters.push(
-          sql`(${emailThreads.subject} ILIKE ${pattern} OR ${emailThreads.firstFrom} ILIKE ${pattern})`,
+          sql`(t.subject ILIKE ${pattern} OR t.first_from ILIKE ${pattern})`,
         );
       }
       if (cursorActivity && cursorId) {
         filters.push(
-          sql`(GREATEST(COALESCE(${emailThreads.lastInboundAt}, ${emailThreads.createdAt}),
-                       COALESCE(${emailThreads.lastOutboundAt}, ${emailThreads.createdAt})), ${emailThreads.id}::text)
+          sql`(GREATEST(COALESCE(t.last_inbound_at, t.created_at),
+                       COALESCE(t.last_outbound_at, t.created_at)), t.id::text)
               < (${cursorActivity.toISOString()}::timestamptz, ${cursorId})`,
         );
       }
