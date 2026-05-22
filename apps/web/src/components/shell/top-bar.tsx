@@ -45,7 +45,7 @@ export function TopBar({ signedIn, user }: TopBarProps) {
         alignItems: "center",
         gap: 12,
         padding: "0 clamp(12px, 3vw, 24px)",
-        height: 90,
+        height: 60,
         borderBottom: "1px solid var(--hairline)",
         background: "color-mix(in oklab, var(--bg) 80%, transparent)",
         backdropFilter: "blur(12px)",
