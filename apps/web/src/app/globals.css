@@ -246,13 +246,16 @@ body {
 .oz-shell {
   display: grid;
   grid-template-columns: 240px 1fr 300px;
-  /* 90px top bar carries the theme / bell / wallet / avatar cluster
-     on every breakpoint. The earlier experiment that folded the
+  /* 60px top bar carries the theme / bell / wallet / avatar cluster
+     on desktop + tablet. The cluster is 36px tall so 60px gives 12px
+     above + below — tight but not cramped, no big empty band. On
+     mobile (<720px) the @media block bumps the row + the .oz-topbar
+     height back to 90px because the hamburger button is 66px and
+     would otherwise overflow. The earlier experiment that folded the
      cluster into the bet-slip rail header was reverted because the
      wallet pill alone is ~200px and a usable rail width can't host
-     the full cluster without overflow. See user-controls.tsx for the
-     `variant="topbar"` mount; the rail no longer mounts a copy. */
-  grid-template-rows: 90px 1fr;
+     the full cluster without overflow. */
+  grid-template-rows: 60px 1fr;
   grid-template-areas: "top top top" "side main rail";
   /* 240 sidebar + 900 main cap + 300 rail = 1440. The match page
      and the catalog list pages both cap their inner content around
@@ -756,13 +759,9 @@ body {
 @media (max-width: 1099px) {
   .oz-shell {
     grid-template-columns: 240px 1fr;
-    /* Re-introduce the 90px top-bar row when the right rail collapses
-       to a bottom-sheet — at that point the user controls move back
-       into the top bar (`.oz-rail-controls` is hidden below 1100px).
-       The row is sized to match the inline `height: 90` on `.oz-topbar`
-       in top-bar.tsx; bumping that without bumping this here would
-       cause the bar to overflow into the main grid area. */
-    grid-template-rows: 90px 1fr;
+    /* Tablet (720–1099px) inherits the 60px top-bar row from the
+       default. The mobile @media block below overrides back to 90px
+       because the hamburger button (66px) needs the extra height. */
     grid-template-areas: "top top" "side main";
   }
   /* Below desktop the rail collapses into a bottom-sheet bet-slip; the
@@ -811,11 +810,13 @@ body {
      This is far more thumb-friendly than a right-edge drawer. The
      sheet insets from the persistent sidebar at tablet widths.
 
-     `height: calc(100dvh - 90px)` (vs `auto`) keeps the drawer at
+     `height: calc(100dvh - 60px)` (vs `auto`) keeps the drawer at
      full available height whenever it's open — that gives the
      selections list room to actually claim leftover vertical space
      via flex:1, instead of being pinned to its natural content
-     height which leaves the form to dominate. */
+     height which leaves the form to dominate. The 60px matches the
+     tablet top-bar height; mobile (<720px) overrides this further
+     down because its top bar is 90px. */
   .oz-rail {
     position: fixed !important;
     left: 240px;
@@ -823,8 +824,8 @@ body {
     bottom: 0;
     top: auto !important;
     width: auto !important;
-    height: calc(100dvh - 90px) !important;
-    max-height: calc(100dvh - 90px) !important;
+    height: calc(100dvh - 60px) !important;
+    max-height: calc(100dvh - 60px) !important;
     z-index: 60;
     background: var(--bg);
     border-left: 0 !important;

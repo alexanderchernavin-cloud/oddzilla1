@@ -720,12 +720,12 @@ export function BetSlipRail() {
         display: "flex",
         flexDirection: "column",
         position: "sticky",
-        // Desktop layout has a 90px sticky top bar; the rail sticks
+        // Desktop layout has a 60px sticky top bar; the rail sticks
         // immediately below it so the two don't fight for y=0. On
         // tablet + mobile the bottom-sheet @media rules in globals.css
         // override `position` / `top` entirely.
-        top: 90,
-        maxHeight: "calc(100vh - 90px)",
+        top: 60,
+        maxHeight: "calc(100vh - 60px)",
         // Widget panels and long histories can exceed the viewport-bounded
         // sticky aside — let the entire rail column scroll as one. The
         // selections list inside still has its own overflow so a mid-slip
