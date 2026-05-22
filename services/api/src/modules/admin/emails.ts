@@ -245,11 +245,24 @@ export default async function adminEmailRoutes(app: FastifyInstance) {
         LIMIT ${q.limit + 1}
       `);
 
+      // db.execute returns timestamp columns as ISO strings (NOT Date
+      // objects) when the SQL is raw `sql\`\`\`` rather than a Drizzle
+      // query-builder chain. The TypeScript row-type annotation
+      // (Date | null) is misleading — TS doesn't enforce runtime
+      // shape. Normalise here so the outbound serialiser is uniform
+      // regardless of what the driver returns. Caught after the alias
+      // fix landed and the next request 500'd on
+      // `r.last_inbound_at.toISOString is not a function`.
+      const toIso = (v: Date | string | null | undefined): string | null => {
+        if (v == null) return null;
+        return typeof v === "string" ? v : v.toISOString();
+      };
+
       const trimmed = rows.slice(0, q.limit);
       const hasMore = rows.length > q.limit;
       const nextCursor = hasMore
         ? Buffer.from(
-            `${rows[q.limit - 1]!.activity_ts.toISOString()}|${rows[q.limit - 1]!.id}`,
+            `${toIso(rows[q.limit - 1]!.activity_ts)}|${rows[q.limit - 1]!.id}`,
           ).toString("base64url")
         : null;
 
@@ -259,8 +272,8 @@ export default async function adminEmailRoutes(app: FastifyInstance) {
           subject: r.subject,
           firstFrom: r.first_from,
           firstTo: r.first_to,
-          lastInboundAt: r.last_inbound_at ? r.last_inbound_at.toISOString() : null,
-          lastOutboundAt: r.last_outbound_at ? r.last_outbound_at.toISOString() : null,
+          lastInboundAt: toIso(r.last_inbound_at),
+          lastOutboundAt: toIso(r.last_outbound_at),
           inboundCount: r.inbound_count,
           outboundCount: r.outbound_count,
           unreadInbound: r.unread_inbound,
