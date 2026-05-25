@@ -339,6 +339,51 @@ func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 	if err := store.UpsertOutcomesBulk(ctx, d.Store.Pool(), outcomeRows); err != nil {
 		return fmt.Errorf("upsert outcomes bulk: %w", err)
 	}
+	// Per Oddin / UOF protocol semantics, each odds_change carries the
+	// FULL current outcome set for the markets it references. Outcomes
+	// Oddin omits are no longer on offer. Without this diff cleanup the
+	// prior row keeps its stale `active=true, published_odds=…` and the
+	// storefront keeps rendering it as bettable — confirmed production
+	// bug on /match/707005 where a "Winning margin 5-7" stayed quoted
+	// at 2.15 after Oddin had pulled it. Scoped to status=1 markets in
+	// the incoming message; suspended/handover/terminal markets are
+	// left alone (see DeactivateMissingOutcomes docstring). Best-effort:
+	// failure logs and continues since the DB-side upsert above is the
+	// hot path; the diff is correctness defense in depth.
+	scopeMarketIDs := make([]int64, 0, len(aux))
+	scopeSet := make(map[int64]struct{}, len(aux))
+	for _, a := range aux {
+		if a.market.Status != 1 {
+			continue
+		}
+		mid, ok := idByKey[keyFor(a.market.ID, a.hash)]
+		if !ok {
+			continue
+		}
+		if _, dup := scopeSet[mid]; dup {
+			continue
+		}
+		scopeSet[mid] = struct{}{}
+		scopeMarketIDs = append(scopeMarketIDs, mid)
+	}
+	if len(scopeMarketIDs) > 0 {
+		keepMarketIDs := make([]int64, 0, len(outcomeRows))
+		keepOutcomeIDs := make([]string, 0, len(outcomeRows))
+		for _, r := range outcomeRows {
+			if _, ok := scopeSet[r.MarketID]; !ok {
+				continue
+			}
+			keepMarketIDs = append(keepMarketIDs, r.MarketID)
+			keepOutcomeIDs = append(keepOutcomeIDs, r.OutcomeID)
+		}
+		if err := store.DeactivateMissingOutcomes(
+			ctx, d.Store.Pool(), scopeMarketIDs, keepMarketIDs, keepOutcomeIDs, msg.Timestamp,
+		); err != nil {
+			d.Log.Warn().Err(err).Int64("match_id", matchID).
+				Int("markets", len(scopeMarketIDs)).
+				Msg("deactivate missing outcomes failed; continuing")
+		}
+	}
 	if err := store.AppendOddsHistoryBulk(ctx, d.Store.Pool(), historyRows); err != nil {
 		// Log + continue. History is nice-to-have; live state is more
 		// important. Retrying would stall the consumer.

@@ -367,6 +367,83 @@ ON CONFLICT (market_id, outcome_id) DO UPDATE
 	return nil
 }
 
+// DeactivateMissingOutcomes nulls odds + probability and flips
+// `active=false` on any `market_outcomes` row whose outcome_id is not
+// in the keep set for its market. The Oddin / UOF protocol semantic is
+// that each `odds_change` carries the FULL current outcome set for the
+// markets it references — outcomes Oddin drops from the message are no
+// longer on offer (e.g. a winning-margin bucket becomes unreachable as
+// the score progresses, or risk pulls a price). Without this diff
+// cleanup, the prior `active=true, published_odds=…` row persists in
+// the DB and the storefront keeps rendering it as bettable. Confirmed
+// production bug: a "Winning margin 5-7" outcome stayed quoted at 2.15
+// long after Oddin had removed it from the offer.
+//
+// The recovery suspend-before-recover flush
+// (services/feed-ingester/internal/store/recovery.go) already applies
+// this same null-everything-Oddin-doesn't-re-assert rule on AMQP
+// (re)connect; this function extends the same assumption to the
+// steady-state per-message diff.
+//
+// Scope is intentionally narrow: callers pass only the market ids the
+// incoming message marked as `status=1` (active). Markets in suspended /
+// handover / terminal states are skipped — their outcomes are gated by
+// `markets.status` at the catalog layer, and clearing odds there would
+// strip context from the storefront's "Suspended" rendering during
+// routine mid-round pauses or settle the same desync settlement is
+// already authoritative about. Idempotent: only flips rows where
+// `active = TRUE`, so replays of the same message are no-ops.
+//
+// Wire shape:
+//   - scopeMarketIDs: distinct market ids participating in the diff.
+//     Anti-join is anchored on `mo.market_id = ANY(scopeMarketIDs)` so
+//     we never touch markets that weren't in the message.
+//   - keepMarketIDs / keepOutcomeIDs: parallel arrays of the
+//     (market_id, outcome_id) pairs Oddin re-asserted in this message.
+//   - oddinTs: the message timestamp; written via GREATEST so the
+//     row's last_oddin_ts can only move forward.
+func DeactivateMissingOutcomes(
+	ctx context.Context,
+	db pgxRunner,
+	scopeMarketIDs []int64,
+	keepMarketIDs []int64,
+	keepOutcomeIDs []string,
+	oddinTs int64,
+) error {
+	if len(scopeMarketIDs) == 0 {
+		return nil
+	}
+	if len(keepMarketIDs) != len(keepOutcomeIDs) {
+		return fmt.Errorf(
+			"deactivate missing outcomes: keep arrays length mismatch (%d markets vs %d outcomes)",
+			len(keepMarketIDs), len(keepOutcomeIDs),
+		)
+	}
+	const q = `
+WITH keeps AS (
+  SELECT t.mid, t.oid
+    FROM UNNEST($1::bigint[], $2::text[]) AS t(mid, oid)
+)
+UPDATE market_outcomes mo
+   SET active         = FALSE,
+       published_odds = NULL,
+       raw_odds       = NULL,
+       probability    = NULL,
+       last_oddin_ts  = GREATEST(mo.last_oddin_ts, $4),
+       updated_at     = NOW()
+ WHERE mo.market_id = ANY($3::bigint[])
+   AND mo.active = TRUE
+   AND NOT EXISTS (
+     SELECT 1 FROM keeps k
+      WHERE k.mid = mo.market_id
+        AND k.oid = mo.outcome_id
+   )`
+	if _, err := db.Exec(ctx, q, keepMarketIDs, keepOutcomeIDs, scopeMarketIDs, oddinTs); err != nil {
+		return fmt.Errorf("deactivate missing outcomes: %w", err)
+	}
+	return nil
+}
+
 // AppendOddsHistoryBulk batch-inserts every odds_history row from one
 // odds_change message in a single UNNEST INSERT. The semantics match
 // AppendOddsHistory: append-only, no uniqueness constraint, duplicates
