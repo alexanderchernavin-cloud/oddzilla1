@@ -4,7 +4,7 @@
 // Math must match the TS version byte-for-byte so the price the slip
 // captured (server-rendered via the catalog endpoint) equals the price
 // the worker recomputes during drift evaluation. Same multiplier, same
-// clamps, same 2-decimal floor truncation.
+// high-side clamp, same 4dp floor truncation with trailing-zero trim.
 
 package worker
 
@@ -12,18 +12,18 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 )
 
-const minPublishedOdds = 1.01
-
 // applyBettorAdjustment multiplies the raw decimal odds by (1 + bp/10000)
-// then clamps to [1.01, 1/probability]. The fair-odds ceiling is skipped
-// when probability is nil / unparseable (legacy outcomes without a
-// probability column).
+// and clamps to <= 1/probability (fair-odds ceiling — operator can't
+// accidentally hand the bettor +EV). No low-side floor: the publisher
+// pipeline displays whatever the math produces, and this worker mirrors
+// that convention so per-leg drift compares like-for-like.
 //
-// bp=0 returns the raw odds unchanged (no float arithmetic at all). The
-// fair-odds clamp is the operator-asked "can't go below zero margin"
-// guarantee.
+// The fair-odds clamp is skipped when probability is nil / unparseable
+// (legacy outcomes without a probability column). bp=0 returns the raw
+// odds unchanged.
 func applyBettorAdjustment(rawOdds float64, probability *string, bp int) float64 {
 	if bp == 0 {
 		return rawOdds
@@ -41,19 +41,33 @@ func applyBettorAdjustment(rawOdds float64, probability *string, bp int) float64
 			}
 		}
 	}
-	if adjusted < minPublishedOdds {
-		adjusted = minPublishedOdds
-	}
 	return adjusted
 }
 
-// formatOddsFloor2 renders a decimal-odds float as the 2-decimal
-// floor-truncated string the published_odds column always carries on
-// the wire. Matches the TS formatOdds() / odds-publisher representation.
+// formatOddsTrim renders a decimal-odds float at up to 4dp with trailing
+// zeros trimmed to a 2dp minimum. Matches the publisher's
+// formatPublishedOdds + the TS formatters byte-for-byte — every layer
+// produces the same string for the same numeric value, so the price the
+// slip captured equals the price this worker re-emits on accept.
 //
-// Small epsilon added before the floor — same trick the TS helper uses —
-// so 1.95 doesn't collapse to "1.94" on 1.94999999… float artefacts.
-func formatOddsFloor2(v float64) string {
-	cents := int64(math.Floor(v*100 + 1e-9))
-	return fmt.Sprintf("%d.%02d", cents/100, cents%100)
+// Small epsilon nudge in the scaled domain absorbs float64 round-down
+// artefacts (1.0034 stored as 1.00339999...e). 1e-6 here is 1e-10 in
+// raw odds, far below NUMERIC(10,4) resolution.
+func formatOddsTrim(v float64) string {
+	units := int64(math.Floor(v*10000 + 1e-6))
+	if units < 0 {
+		// Shouldn't happen for valid odds; defensive fallback.
+		return fmt.Sprintf("%.2f", v)
+	}
+	intP := units / 10000
+	frac := units % 10000
+	s := fmt.Sprintf("%d.%04d", intP, frac)
+	for strings.HasSuffix(s, "0") {
+		dot := strings.IndexByte(s, '.')
+		if dot < 0 || len(s)-1-dot <= 2 {
+			break
+		}
+		s = s[:len(s)-1]
+	}
+	return s
 }

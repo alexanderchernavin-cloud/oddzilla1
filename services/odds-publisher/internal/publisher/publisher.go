@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -155,16 +156,15 @@ func (p *Publisher) processOne(ctx context.Context, ev bus.Event) error {
 	return nil
 }
 
-// MinPublishedCents is the floor applied to every published quote in
-// cents (1.01). Decimal odds of exactly 1.00 mean "stake back, no
-// profit" — useless to the user and refused by the bet slip. Every book
-// in the market quotes a minimum of 1.01, so we clamp here to match.
-const MinPublishedCents = 101
-
 // applyMargin divides raw decimal odds by (1 + margin_bp/10000) using
-// big.Float end-to-end (no float64 intermediate) and floor-truncates to
-// 2 decimals. The DB column is NUMERIC(10,4) but the feed and the UI
-// both work in 2-decimal precision.
+// big.Float end-to-end (no float64 intermediate) and renders the result
+// at the storage column's NUMERIC(10,4) precision with trailing zeros
+// trimmed down to a 2-decimal minimum.
+//
+// Output shape: minimum 2dp, maximum 4dp, no trailing zeros above 2dp.
+// "1.5000"→"1.50", "1.0030"→"1.003", "1.5034"→"1.5034". This mirrors
+// what Oddin sends (typically 2-3dp) instead of forcing a 2dp display
+// that rounds 1.003 → 1.00.
 //
 // Floor-truncation (not round-half-even) keeps the house conservative:
 // we never publish odds HIGHER than the margined price.
@@ -175,8 +175,9 @@ const MinPublishedCents = 101
 // Oddin legitimately sends near-1.00 odds for deeply-in-the-money
 // outcomes; the float path turned those into 1.00 displays.
 //
-// After truncation the result is clamped to MinPublishedCents so a
-// displayed 1.00 is never possible regardless of upstream quote.
+// No low-side floor — display whatever Oddin sends. Decimal odds of 1.00
+// (stake back, no profit) are legitimate quotes for deeply-in-the-money
+// outcomes and we surface them honestly.
 func applyMargin(rawOdds string, marginBp int) (string, error) {
 	if rawOdds == "" {
 		return "", fmt.Errorf("empty raw odds")
@@ -185,20 +186,49 @@ func applyMargin(rawOdds string, marginBp int) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("parse raw odds %q", rawOdds)
 	}
+	if marginBp == 0 {
+		// Pass-through: no division needed. Re-render at the
+		// canonical shape so DB NUMERIC(10,4) round-trips don't
+		// reintroduce trailing zeros downstream.
+		return formatPublishedOdds(raw), nil
+	}
 	divisor := new(big.Float).SetPrec(128).Quo(
 		new(big.Float).SetInt64(int64(10000+marginBp)),
 		new(big.Float).SetInt64(10000),
 	)
 	pub := new(big.Float).SetPrec(128).Quo(raw, divisor)
-	// Scale to cents and truncate. big.Float.Int truncates toward zero,
-	// which equals floor for non-negative inputs.
-	scaled := new(big.Float).SetPrec(128).Mul(pub, new(big.Float).SetInt64(100))
-	centsBig, _ := scaled.Int(nil)
-	cents := centsBig.Int64()
-	if cents < MinPublishedCents {
-		cents = MinPublishedCents
+	return formatPublishedOdds(pub), nil
+}
+
+// formatPublishedOdds renders a big.Float at NUMERIC(10,4) precision
+// (4 fractional digits, floor-truncated — same toward-zero convention
+// big.Float.Int uses for non-negative values) then trims trailing zeros
+// down to a 2dp minimum. Shared shape with the TS formatOdds and the
+// Go drift-worker formatter so every layer in the pipeline produces
+// byte-identical strings.
+//
+// epsilon nudge: SetString("1.0034") at 128-bit precision can round
+// SLIGHTLY below the target ("1.00339999...e"); multiplied by 10000
+// that becomes 10033.9999..., which Int floors to 10033 → "1.0033".
+// A 1e-6 nudge on the scaled value (≈1e-10 in raw odds) absorbs this
+// without crossing any real threshold — NUMERIC(10,4) only resolves to
+// 1e-4. Same trick the TS and drift-worker formatters use.
+func formatPublishedOdds(v *big.Float) string {
+	scaled := new(big.Float).SetPrec(128).Mul(v, new(big.Float).SetInt64(10000))
+	scaled = new(big.Float).SetPrec(128).Add(scaled, big.NewFloat(1e-6))
+	unitsBig, _ := scaled.Int(nil)
+	units := unitsBig.Int64()
+	intP := units / 10000
+	frac := units % 10000
+	s := fmt.Sprintf("%d.%04d", intP, frac)
+	for strings.HasSuffix(s, "0") {
+		dot := strings.IndexByte(s, '.')
+		if dot < 0 || len(s)-1-dot <= 2 {
+			break
+		}
+		s = s[:len(s)-1]
 	}
-	return fmt.Sprintf("%d.%02d", cents/100, cents%100), nil
+	return s
 }
 
 // Stats returns a lightweight snapshot used by /healthz.
