@@ -844,17 +844,13 @@ function TournamentItem({
           {tournament.liveCount}
         </span>
       )}
-      {tournament.matchCount > 0 && (
-        <span
-          className="mono tnum"
-          style={{
-            fontSize: 10.5,
-            color: active ? "var(--fg)" : "var(--fg-dim)",
-          }}
-        >
-          {tournament.matchCount}
-        </span>
-      )}
+      {/* matchCount is intentionally NOT rendered — the sidebar tournament
+          tree shows the live-only badge above; the total-match count was
+          dropped per operator request 2026-05-25 because it added visual
+          noise without driving navigation (the user already clicks through
+          to see the list). matchCount stays on the API response + Tournament
+          type so the row's visibility gate (matchCount > 0) keeps working
+          in the parent list. */}
     </Link>
   );
 }
