@@ -7,18 +7,18 @@
 //   - The persisted bp delta multiplies the published odds. Positive bp
 //     → bettor sees higher odds (operator gives up margin); negative bp
 //     → bettor sees lower odds (operator widens margin).
-//   - Two clamps after the multiply:
-//       low  = 1.01      (matches the odds-publisher floor — no useless
-//                         "stake-back-only" quotes)
-//       high = 1/probability  (fair odds; the floor the user asked for
-//                              — operator can't accidentally give the
-//                              bettor +EV money). Skipped silently when
-//                              the outcome has no probability column
-//                              (legacy markets without it).
+//   - Single high-side clamp after the multiply:
+//       high = 1/probability  (fair odds; operator can't accidentally
+//                              give the bettor +EV money). Skipped
+//                              silently when the outcome has no
+//                              probability column (legacy markets).
+//     No low-side floor — display whatever the math produces, matching
+//     the publisher's "display what Oddin sends" convention.
 //
-// Storage convention: the catalog response keeps publishedOdds in the
-// same 2-decimal floor-truncated form formatOdds() already produces, so
-// downstream code (slip, drift checks, charts) stays unchanged.
+// Storage convention: the catalog response renders publishedOdds at up
+// to 4dp with trailing zeros trimmed down to a 2dp minimum — same shape
+// formatOdds() produces, so downstream code (slip, drift checks, charts)
+// receives byte-identical strings.
 
 import { eq } from "drizzle-orm";
 import type { DbClient } from "@oddzilla/db";
@@ -131,28 +131,32 @@ export function resolveBettorAdjustmentBp(
   return cascade.globalBp ?? 0;
 }
 
-// Apply the bp delta to a raw decimal-odds string and floor-truncate to
-// 2 decimals. Mirrors formatOdds() / odds-publisher's representation so
-// downstream consumers (slip drift, charts, audit log) see the same
-// shape they always did.
+// Apply the bp delta to a raw decimal-odds string and render at up to
+// 4dp with trailing zeros trimmed to a 2dp minimum. Mirrors formatOdds()
+// and odds-publisher's representation so downstream consumers (slip
+// drift, charts, audit log) see byte-identical strings.
 //
 // `probability` is the outcome's published probability ([0, 1] decimal
 // string) when known — used for the fair-odds ceiling. Pass null when
 // the column is empty (legacy / OBB markets); the clamp degrades
 // gracefully.
 //
-// Floor at 1.01 (matches odds-publisher MinPublishedCents). The DB-level
-// CHECK on adjustment_bp range keeps the multiplier bounded so the math
-// stays in float64 territory.
+// No low-side floor — operator-applied bp can push the displayed price
+// below 1.00 if they configure it that way. The DB-level CHECK on
+// adjustment_bp keeps the multiplier in (-90%, +90%) so the float math
+// stays well within float64 territory.
 export function applyBettorAdjustment(
   rawOdds: string | null,
   probability: string | null | undefined,
   bp: number,
 ): string | null {
   if (rawOdds == null) return null;
-  if (bp === 0) return formatOddsFloor2(rawOdds);
   const raw = Number.parseFloat(rawOdds);
-  if (!Number.isFinite(raw) || raw <= 0) return formatOddsFloor2(rawOdds);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    // Best-effort passthrough for unparseable inputs.
+    return formatOddsTrim(rawOdds);
+  }
+  if (bp === 0) return formatOddsTrimNum(raw);
 
   let adjusted = raw * (1 + bp / 10000);
 
@@ -167,21 +171,33 @@ export function applyBettorAdjustment(
     }
   }
 
-  // Floor at the same MinPublishedCents the odds-publisher enforces.
-  if (adjusted < 1.01) adjusted = 1.01;
-
-  // Floor-truncate to 2 decimals (Math.floor matches the publisher's
-  // big.Float Int() conversion — toward zero, equivalent to floor for
-  // non-negative values).
-  const cents = Math.floor(adjusted * 100 + 1e-9);
-  return `${Math.floor(cents / 100)}.${(cents % 100).toString().padStart(2, "0")}`;
+  return formatOddsTrimNum(adjusted);
 }
 
-// Standalone formatter for the bp=0 / out-of-range short-circuit so the
-// catalog responses always emit 2-decimal odds regardless of whether an
-// adjustment fires.
-function formatOddsFloor2(s: string): string {
+// Render a decimal-odds string at up to 4dp with trailing zeros trimmed
+// to a 2dp minimum. Shared shape with catalog/routes.ts formatOdds and
+// the Go formatPublishedOdds — every layer in the pipeline produces the
+// same string for the same numeric value.
+function formatOddsTrim(s: string): string {
   const n = Number.parseFloat(s);
   if (!Number.isFinite(n)) return s;
-  return (Math.floor(n * 100 + 1e-9) / 100).toFixed(2);
+  return formatOddsTrimNum(n);
+}
+
+// Floor-truncate to 4dp with an epsilon nudge to absorb float64
+// round-down artefacts (1.0034 stored as 1.00339999...e). Matches the
+// publisher's big.Float scaled-to-Int convention byte-for-byte. The
+// 1e-6 epsilon is in the *10000 scaled domain — 1e-10 in raw odds, far
+// below NUMERIC(10,4) resolution.
+function formatOddsTrimNum(n: number): string {
+  if (!Number.isFinite(n)) return String(n);
+  const units = Math.floor(n * 10000 + 1e-6);
+  if (units < 0) {
+    // Negative odds make no sense; fall back to a tolerable representation.
+    return n.toFixed(2);
+  }
+  const intP = Math.floor(units / 10000);
+  const frac = units % 10000;
+  const padded = `${intP}.${frac.toString().padStart(4, "0")}`;
+  return padded.replace(/(\.\d{2})(\d*?)0+$/, "$1$2");
 }

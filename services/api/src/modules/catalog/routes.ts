@@ -148,14 +148,22 @@ const matchListQuery = z.object({
   team: z.coerce.number().int().positive().optional(),
 });
 
-// Postgres returns NUMERIC(10,4) as "3.1400" or "3.1429" (pre-2026-04-18
-// data, before the publisher started truncating to 2 decimals). Trim to
-// the industry-standard 2-decimal display regardless of what's in the row.
+// Postgres returns NUMERIC(10,4) as "3.1400" or "1.0030" with trailing
+// zeros padded to scale. Floor-truncate to 4dp (with an epsilon nudge to
+// absorb float64 round-down artefacts) and trim trailing zeros down to
+// a 2dp minimum so a 1.50 quote stays "1.50" while a 1.003 quote keeps
+// its third decimal. Matches odds-publisher's formatPublishedOdds shape
+// byte-for-byte.
 function formatOdds(s: string | null | undefined): string | null {
   if (s == null) return null;
   const n = Number.parseFloat(s);
   if (!Number.isFinite(n)) return null;
-  return (Math.floor(n * 100) / 100).toFixed(2);
+  const units = Math.floor(n * 10000 + 1e-6);
+  if (units < 0) return null;
+  const intP = Math.floor(units / 10000);
+  const frac = units % 10000;
+  const padded = `${intP}.${frac.toString().padStart(4, "0")}`;
+  return padded.replace(/(\.\d{2})(\d*?)0+$/, "$1$2");
 }
 
 // Stream embed helper. matches.tv_channels is a JSONB array of

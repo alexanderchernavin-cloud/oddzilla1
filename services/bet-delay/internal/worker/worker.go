@@ -377,7 +377,7 @@ func (w *Worker) evaluate(p store.PendingTicket, selections []store.Selection, b
 			if bp != 0 {
 				adj := applyBettorAdjustment(currentRaw, s.Probability, bp)
 				current = adj
-				currentS = formatOddsFloor2(adj)
+				currentS = formatOddsTrim(adj)
 			}
 		}
 		drifted := false

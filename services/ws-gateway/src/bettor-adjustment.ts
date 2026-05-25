@@ -98,8 +98,10 @@ export function resolveBp(
   return cascade.globalBp ?? 0;
 }
 
-// applyAdjustment: same math as the API lib. floor(adjusted * 100) / 100,
-// clamped to [1.01, 1/probability].
+// applyAdjustment: same math as the API lib. Floor-truncate to 4dp,
+// trim trailing zeros to a 2dp minimum. High-side clamp at 1/probability
+// (fair-odds — operator can't accidentally hand the bettor +EV). No
+// low-side floor — display whatever the operator's bp produced.
 //
 // `probability` is the published probability as a decimal string. When
 // null/unparseable (legacy markets without one) the fair-odds ceiling
@@ -121,8 +123,12 @@ export function applyAdjustment(
       if (adjusted > fair) adjusted = fair;
     }
   }
-  if (adjusted < 1.01) adjusted = 1.01;
 
-  const cents = Math.floor(adjusted * 100 + 1e-9);
-  return `${Math.floor(cents / 100)}.${(cents % 100).toString().padStart(2, "0")}`;
+  // Floor-truncate to 4dp (epsilon absorbs float64 round-down).
+  const units = Math.floor(adjusted * 10000 + 1e-6);
+  if (units < 0) return rawOdds;
+  const intP = Math.floor(units / 10000);
+  const frac = units % 10000;
+  const padded = `${intP}.${frac.toString().padStart(4, "0")}`;
+  return padded.replace(/(\.\d{2})(\d*?)0+$/, "$1$2");
 }
