@@ -178,17 +178,21 @@ export default async function riskzillaSettingsRoutes(app: FastifyInstance) {
         md.provider_market_id,
         -- Use the variant='' template when present, otherwise the
         -- first available template; falls back to a synthetic label.
+        -- Admin UI is English-only; pin to 'en' so the per-id row
+        -- doesn't pick whichever language Postgres happens to return.
         COALESCE(
           (
             SELECT name_template
               FROM market_descriptions inner_md
              WHERE inner_md.provider_market_id = md.provider_market_id
+               AND inner_md.language = 'en'
              ORDER BY (inner_md.variant = '') DESC, inner_md.variant
              LIMIT 1
           ),
           'Market #' || md.provider_market_id
         ) AS label
         FROM market_descriptions md
+       WHERE md.language = 'en'
        GROUP BY md.provider_market_id
        ORDER BY md.provider_market_id
     `)) as unknown as Array<{ provider_market_id: number; label: string }>;

@@ -112,11 +112,13 @@ const selectionJsonBuildSql = sql`
          FROM market_descriptions md
         WHERE md.provider_market_id = lmk.provider_market_id
           AND md.variant = COALESCE(lmk.specifiers_json->>'variant', '')
+          AND md.language = 'en'
         LIMIT 1),
       (SELECT md.name_template
          FROM market_descriptions md
         WHERE md.provider_market_id = lmk.provider_market_id
           AND md.variant = ''
+          AND md.language = 'en'
         LIMIT 1),
       'Market #' || lmk.provider_market_id
     ),
@@ -126,12 +128,14 @@ const selectionJsonBuildSql = sql`
         WHERE od.provider_market_id = lmk.provider_market_id
           AND od.variant = COALESCE(lmk.specifiers_json->>'variant', '')
           AND od.outcome_id = ts.outcome_id
+          AND od.language = 'en'
         LIMIT 1),
       (SELECT od.name_template
          FROM outcome_descriptions od
         WHERE od.provider_market_id = lmk.provider_market_id
           AND od.variant = ''
           AND od.outcome_id = ts.outcome_id
+          AND od.language = 'en'
         LIMIT 1),
       NULLIF(mo.name, ''),
       ts.outcome_id
@@ -170,11 +174,13 @@ const unifiedSelectionJsonBuildSql = sql`
          FROM market_descriptions md
         WHERE md.provider_market_id = lmk.provider_market_id
           AND md.variant = COALESCE(lmk.specifiers_json->>'variant', '')
+          AND md.language = 'en'
         LIMIT 1),
       (SELECT md.name_template
          FROM market_descriptions md
         WHERE md.provider_market_id = lmk.provider_market_id
           AND md.variant = ''
+          AND md.language = 'en'
         LIMIT 1),
       'Market #' || lmk.provider_market_id
     ),
@@ -184,12 +190,14 @@ const unifiedSelectionJsonBuildSql = sql`
         WHERE od.provider_market_id = lmk.provider_market_id
           AND od.variant = COALESCE(lmk.specifiers_json->>'variant', '')
           AND od.outcome_id = src.outcome_id
+          AND od.language = 'en'
         LIMIT 1),
       (SELECT od.name_template
          FROM outcome_descriptions od
         WHERE od.provider_market_id = lmk.provider_market_id
           AND od.variant = ''
           AND od.outcome_id = src.outcome_id
+          AND od.language = 'en'
         LIMIT 1),
       NULLIF(mo.name, ''),
       src.outcome_id

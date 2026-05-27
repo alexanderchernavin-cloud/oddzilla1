@@ -669,6 +669,7 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
         and(
           eq(marketDescriptions.providerMarketId, market.providerMarketId),
           inArray(marketDescriptions.variant, [variant, ""]),
+          eq(marketDescriptions.language, "en"),
         ),
       )
       .orderBy(desc(marketDescriptions.variant))
@@ -688,6 +689,7 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
         and(
           eq(outcomeDescriptions.providerMarketId, market.providerMarketId),
           inArray(outcomeDescriptions.variant, [variant, ""]),
+          eq(outcomeDescriptions.language, "en"),
         ),
       );
     const outcomeTemplateMap = new Map<string, string>();
