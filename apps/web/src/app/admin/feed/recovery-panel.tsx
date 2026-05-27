@@ -47,7 +47,11 @@ export function RecoveryPanel({ initialStatus }: { initialStatus: FeedStatus }) 
     try {
       const body = await clientApi<RecoveryResponse>("/admin/feed/recovery", {
         method: "POST",
-        body: JSON.stringify({ flushOdds, hours }),
+        body: JSON.stringify({
+          flushOdds,
+          hours,
+          ...(flushOdds ? { confirm: "flush-active-catalog" } : {}),
+        }),
       });
       setResult(body);
       setConfirming(false);
