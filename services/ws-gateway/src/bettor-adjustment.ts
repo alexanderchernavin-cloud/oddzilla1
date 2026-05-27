@@ -18,6 +18,14 @@
 
 import type postgres from "postgres";
 
+// Lowest decimal price an adjusted outcome may show. Must match the
+// constant in services/api/src/lib/bettor-odds-adjustment.ts and the
+// Go mirror in services/bet-delay/internal/worker/adjust.go — the slip
+// captures the catalog response's adjusted price, so a divergent floor
+// here would make every live tick re-render the rail with a different
+// value than was captured.
+const ADJUSTED_ODDS_FLOOR = 1.001;
+
 export interface BettorAdjustmentCascade {
   globalBp: number | null;
   bySport: Map<number, number>;
@@ -100,8 +108,9 @@ export function resolveBp(
 
 // applyAdjustment: same math as the API lib. Floor-truncate to 4dp,
 // trim trailing zeros to a 2dp minimum. High-side clamp at 1/probability
-// (fair-odds — operator can't accidentally hand the bettor +EV). No
-// low-side floor — display whatever the operator's bp produced.
+// (fair-odds — operator can't accidentally hand the bettor +EV).
+// Low-side floor at ADJUSTED_ODDS_FLOOR catches the case where a small
+// negative bp pulls near-1.0 raw odds below 1.0.
 //
 // `probability` is the published probability as a decimal string. When
 // null/unparseable (legacy markets without one) the fair-odds ceiling
@@ -123,6 +132,8 @@ export function applyAdjustment(
       if (adjusted > fair) adjusted = fair;
     }
   }
+
+  if (adjusted < ADJUSTED_ODDS_FLOOR) adjusted = ADJUSTED_ODDS_FLOOR;
 
   // Floor-truncate to 4dp (epsilon absorbs float64 round-down).
   const units = Math.floor(adjusted * 10000 + 1e-6);

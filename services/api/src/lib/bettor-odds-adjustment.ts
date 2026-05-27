@@ -7,13 +7,17 @@
 //   - The persisted bp delta multiplies the published odds. Positive bp
 //     → bettor sees higher odds (operator gives up margin); negative bp
 //     → bettor sees lower odds (operator widens margin).
-//   - Single high-side clamp after the multiply:
+//   - Two clamps after the multiply:
 //       high = 1/probability  (fair odds; operator can't accidentally
 //                              give the bettor +EV money). Skipped
 //                              silently when the outcome has no
 //                              probability column (legacy markets).
-//     No low-side floor — display whatever the math produces, matching
-//     the publisher's "display what Oddin sends" convention.
+//       low  = ADJUSTED_ODDS_FLOOR (decimal 1.001 — a negative bp can
+//                              mathematically push raw 1.02 below 1.0,
+//                              which is nonsense as a bettor-facing
+//                              price. The floor keeps the displayed
+//                              odds in the "you still win something on
+//                              a win" range.)
 //
 // Storage convention: the catalog response renders publishedOdds at up
 // to 4dp with trailing zeros trimmed down to a 2dp minimum — same shape
@@ -23,6 +27,14 @@
 import { eq } from "drizzle-orm";
 import type { DbClient } from "@oddzilla/db";
 import { bettorOddsAdjustmentConfig } from "@oddzilla/db";
+
+// Lowest decimal price an adjusted outcome may show to a bettor. A
+// negative bp on near-1.0 raw odds can mathematically dip below 1.0
+// (e.g. 1.02 × 0.97 ≈ 0.99), which would mean a winning ticket pays
+// less than the stake. The bet-delay Go mirror and the ws-gateway TS
+// mirror must use the same constant so drift comparison + live ticks
+// match the catalog response byte-for-byte.
+export const ADJUSTED_ODDS_FLOOR = 1.001;
 
 // The placement transaction needs to call this helper inside its tx so
 // admin writes mid-placement don't change the cascade between the lock
@@ -141,10 +153,11 @@ export function resolveBettorAdjustmentBp(
 // the column is empty (legacy / OBB markets); the clamp degrades
 // gracefully.
 //
-// No low-side floor — operator-applied bp can push the displayed price
-// below 1.00 if they configure it that way. The DB-level CHECK on
-// adjustment_bp keeps the multiplier in (-90%, +90%) so the float math
-// stays well within float64 territory.
+// Adjusted odds are clamped to [ADJUSTED_ODDS_FLOOR, 1/probability]. The
+// DB-level CHECK on adjustment_bp keeps the multiplier in (-90%, +90%)
+// so the float math stays well within float64 territory; the low floor
+// catches the geometric case where a small negative bp on near-1.0 raw
+// odds dips below 1.0.
 export function applyBettorAdjustment(
   rawOdds: string | null,
   probability: string | null | undefined,
@@ -170,6 +183,8 @@ export function applyBettorAdjustment(
       if (adjusted > fair) adjusted = fair;
     }
   }
+
+  if (adjusted < ADJUSTED_ODDS_FLOOR) adjusted = ADJUSTED_ODDS_FLOOR;
 
   return formatOddsTrimNum(adjusted);
 }

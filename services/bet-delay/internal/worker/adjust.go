@@ -15,11 +15,19 @@ import (
 	"strings"
 )
 
+// adjustedOddsFloor is the lowest decimal price an adjusted outcome
+// may show to a bettor. Must match the constant of the same name in
+// services/api/src/lib/bettor-odds-adjustment.ts and the ws-gateway
+// mirror — the slip captures the catalog response's adjusted price,
+// so drift comparison + live tick re-rendering have to use the same
+// clamp.
+const adjustedOddsFloor = 1.001
+
 // applyBettorAdjustment multiplies the raw decimal odds by (1 + bp/10000)
-// and clamps to <= 1/probability (fair-odds ceiling — operator can't
-// accidentally hand the bettor +EV). No low-side floor: the publisher
-// pipeline displays whatever the math produces, and this worker mirrors
-// that convention so per-leg drift compares like-for-like.
+// and clamps to [adjustedOddsFloor, 1/probability]. The high-side clamp
+// is the fair-odds ceiling (operator can't accidentally hand the bettor
+// +EV); the low-side floor catches the geometric case where a small
+// negative bp on near-1.0 raw odds dips below 1.0.
 //
 // The fair-odds clamp is skipped when probability is nil / unparseable
 // (legacy outcomes without a probability column). bp=0 returns the raw
@@ -40,6 +48,9 @@ func applyBettorAdjustment(rawOdds float64, probability *string, bp int) float64
 				adjusted = fair
 			}
 		}
+	}
+	if adjusted < adjustedOddsFloor {
+		adjusted = adjustedOddsFloor
 	}
 	return adjusted
 }
