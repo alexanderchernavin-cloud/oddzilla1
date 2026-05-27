@@ -226,6 +226,20 @@ func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 							Int64("match", matchID).Str("status", newStatus).
 							Msg("publish match status failed")
 					}
+					// not_started → live: Oddin frequently attaches the
+					// broadcaster URL around match start without firing a
+					// STREAM_URL (106) fixture_change, leaving matches.tv_channels
+					// stale. Nudge the fixture_refresh listener (5-min per-URN
+					// cooldown, fire-and-forget) so tv_channels picks up any
+					// late broadcaster additions.
+					if newStatus == "live" {
+						if _, nerr := d.Store.Pool().Exec(ctx,
+							"SELECT pg_notify('fixture_refresh', $1)", msg.EventID,
+						); nerr != nil {
+							d.Log.Debug().Err(nerr).Str("urn", msg.EventID).
+								Msg("notify fixture_refresh on live transition failed; continuing")
+						}
+					}
 				}
 			}
 		}
