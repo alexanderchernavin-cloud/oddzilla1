@@ -50,21 +50,37 @@ CREATE INDEX admin_audit_subject_idx
 -- formats `user:${userId}:…` from a zod-validated UUID), but we still
 -- gate on the canonical-uuid regex to be robust against any
 -- hand-written / malformed row that snuck in.
+--
+-- Every backfill statement gates on the subject still existing in
+-- `users`. Audit rows survive user deletion (intentional — the
+-- `user.delete` audit row IS the canonical record of the deletion),
+-- so a historical row may reference a UUID that was later removed.
+-- The FK below would reject the UPDATE; the EXISTS gate skips orphans
+-- gracefully. Those rows stay subject_user_id IS NULL and remain
+-- queryable via the existing target_id index — they're already lost
+-- to the per-bettor view since the user is gone anyway.
 
-UPDATE admin_audit_log
-   SET subject_user_id = target_id::uuid
- WHERE subject_user_id IS NULL
-   AND target_type = 'user'
-   AND target_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$';
+UPDATE admin_audit_log al
+   SET subject_user_id = al.target_id::uuid
+ WHERE al.subject_user_id IS NULL
+   AND al.target_type = 'user'
+   AND al.target_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+   AND EXISTS (
+       SELECT 1 FROM users u WHERE u.id = al.target_id::uuid
+   );
 
-UPDATE admin_audit_log
-   SET subject_user_id = substring(target_id from 6 for 36)::uuid
- WHERE subject_user_id IS NULL
-   AND target_type IN (
+UPDATE admin_audit_log al
+   SET subject_user_id = substring(al.target_id from 6 for 36)::uuid
+ WHERE al.subject_user_id IS NULL
+   AND al.target_type IN (
        'bettor_odds_adjustment_config',
        'bettor_promo_visibility_config'
    )
-   AND target_id ~ '^user:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}:';
+   AND al.target_id ~ '^user:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}:'
+   AND EXISTS (
+       SELECT 1 FROM users u
+        WHERE u.id = substring(al.target_id from 6 for 36)::uuid
+   );
 
 ALTER TABLE users
     ADD COLUMN notes TEXT;
