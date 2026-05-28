@@ -344,6 +344,35 @@ export const analysisInspirations = pgTable(
 
 export type AnalysisInspiration = typeof analysisInspirations.$inferSelect;
 
+// Persisted Expert designation per (user, sport). See migration 0078.
+// V1 is admin-nominated; a follow-up PR replaces the manual path with
+// the spec's monthly auto-recalc.
+export const communityExperts = pgTable(
+  "community_experts",
+  {
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    sportId: integer()
+      .notNull()
+      .references(() => sports.id, { onDelete: "cascade" }),
+    nominatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    validUntil: timestamp({ withTimezone: true }).notNull(),
+    nominatedBy: uuid().references(() => users.id, { onDelete: "set null" }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.sportId] }),
+    index("community_experts_user_sport_idx").on(
+      t.userId,
+      t.sportId,
+      t.validUntil,
+    ),
+    index("community_experts_sport_idx").on(t.sportId, sql`${t.validUntil} DESC`),
+  ],
+);
+
+export type CommunityExpert = typeof communityExperts.$inferSelect;
+
 // ─── Oz ledger ──────────────────────────────────────────────────────────────
 //
 // Loyalty-point ledger for the analyst-rewards pipeline. V1 is earn-
