@@ -6,6 +6,7 @@ import { UserEditForm } from "./user-edit-form";
 import { DeleteUserButton } from "./delete-user-button";
 import { AdjustBalanceForm } from "./adjust-balance-form";
 import { ZillapassStageForm } from "./zillapass-stage-form";
+import { BettorAuditLog } from "@/components/admin/bettor-audit-log";
 
 interface OddsAdjustmentSummary {
   global: { adjustmentBp: number } | null;
@@ -228,6 +229,15 @@ export default async function UserDetailPage({
         </h2>
         <div className="mt-4 card p-6">
           <DeleteUserButton userId={user.id} email={user.email} />
+        </div>
+      </section>
+
+      <section className="mt-10">
+        <h2 className="text-sm uppercase tracking-[0.18em] text-[var(--color-fg-subtle)]">
+          Admin activity (audit log)
+        </h2>
+        <div className="mt-4">
+          <BettorAuditLog userId={user.id} />
         </div>
       </section>
 

@@ -6,6 +6,7 @@ import {
   type SportRow,
   type Override,
 } from "./tree-client";
+import { BettorAuditLog } from "@/components/admin/bettor-audit-log";
 
 export const dynamic = "force-dynamic";
 
@@ -80,6 +81,15 @@ export default async function PromoVisibilityPage({
         globalCombiBoost={data.globalCombiBoost}
         sports={data.entries}
       />
+
+      <section className="mt-10">
+        <h2 className="text-sm uppercase tracking-[0.18em] text-[var(--color-fg-subtle)]">
+          Admin activity (audit log)
+        </h2>
+        <div className="mt-4">
+          <BettorAuditLog userId={id} />
+        </div>
+      </section>
     </div>
   );
 }
