@@ -35,6 +35,13 @@ interface Props {
 
 const COLLAPSE_LIMIT = 240;
 
+type CopyStatus =
+  | { kind: "idle" }
+  | { kind: "loading" }
+  | { kind: "added"; legs: number; dropped: number }
+  | { kind: "no_legs" }
+  | { kind: "error"; message: string };
+
 export function AnalysisCard({
   analysis,
   hideMatch = false,
@@ -45,6 +52,7 @@ export function AnalysisCard({
   const [thumbsUp, setThumbsUp] = useState(analysis.thumbsUpCount);
   const [reactPending, setReactPending] = useState(false);
   const [expanded, setExpanded] = useState(!collapsed);
+  const [copyStatus, setCopyStatus] = useState<CopyStatus>({ kind: "idle" });
   const router = useRouter();
   const slip = useBetSlip();
   const [_, startTransition] = useTransition();
@@ -79,11 +87,16 @@ export function AnalysisCard({
   async function onCopy() {
     // Copy the analysis's attached ticket into the slip. Re-uses the
     // existing /community/copy endpoint — same shape as the Big Wins
-    // CTA — and bumps the analysis's inspiration_count via the
-    // counter already on the row. Future PR threads
-    // copied_from_analysis_id through bet placement.
+    // CTA. The endpoint now reads from the live `tickets` table, so
+    // pre-match analyses (the common case) resolve correctly. Error
+    // surfacing matches CopyButton on the tickets feed: 401 → login,
+    // anything else → inline negative message under the CTA so a
+    // silent 404/5xx doesn't masquerade as a no-op.
+    setCopyStatus({ kind: "loading" });
     try {
       const resp = await clientApi<{
+        currency: string;
+        betType: string;
         selections: Array<{
           matchId: string;
           marketId: string;
@@ -100,15 +113,32 @@ export function AnalysisCard({
       }>(`/community/copy/${analysis.ticketId}`, { method: "POST" });
 
       const available = resp.selections.filter((s) => s.available);
+      if (available.length === 0) {
+        setCopyStatus({ kind: "no_legs" });
+        return;
+      }
       for (const sel of available) {
         slip.add(sel);
       }
       slip.setOpen(true);
+      setCopyStatus({
+        kind: "added",
+        legs: available.length,
+        dropped: resp.selections.length - available.length,
+      });
       startTransition(() => router.refresh());
     } catch (err) {
       if (err instanceof ApiFetchError && err.status === 401) {
         router.push("/login");
+        return;
       }
+      setCopyStatus({
+        kind: "error",
+        message:
+          err instanceof ApiFetchError
+            ? err.body.message
+            : "Couldn't copy this bet.",
+      });
     }
   }
 
@@ -187,16 +217,53 @@ export function AnalysisCard({
             {analysis.ticketLegCount > 1 ? ` · ${analysis.ticketLegCount} legs` : ""}
           </span>
         </div>
-        <button
-          type="button"
-          onClick={onCopy}
-          className="rounded-full border border-[var(--color-accent)] px-3 py-1 text-[11px] uppercase tracking-[0.15em] text-[var(--color-accent)] transition hover:bg-[var(--color-accent)]/10"
-        >
-          Copy bet
-        </button>
+        <div className="text-right">
+          <button
+            type="button"
+            onClick={onCopy}
+            disabled={copyStatus.kind === "loading"}
+            className="rounded-full border border-[var(--color-accent)] px-3 py-1 text-[11px] uppercase tracking-[0.15em] text-[var(--color-accent)] transition hover:bg-[var(--color-accent)]/10 disabled:opacity-60"
+          >
+            {copyStatus.kind === "loading" ? "Copying…" : "Copy bet"}
+          </button>
+          <CopyStatusLine status={copyStatus} />
+        </div>
       </footer>
     </li>
   );
+}
+
+function CopyStatusLine({ status }: { status: CopyStatus }) {
+  if (status.kind === "added") {
+    if (status.dropped > 0) {
+      return (
+        <p className="mt-1 text-[10px] text-[var(--color-fg-muted)]">
+          Added {status.legs} leg{status.legs === 1 ? "" : "s"} ·{" "}
+          {status.dropped} closed
+        </p>
+      );
+    }
+    return (
+      <p className="mt-1 text-[10px] text-[var(--color-positive)]">
+        Added to slip
+      </p>
+    );
+  }
+  if (status.kind === "no_legs") {
+    return (
+      <p className="mt-1 text-[10px] text-[var(--color-fg-muted)]">
+        Markets closed
+      </p>
+    );
+  }
+  if (status.kind === "error") {
+    return (
+      <p className="mt-1 text-[10px] text-[var(--color-negative)]">
+        {status.message}
+      </p>
+    );
+  }
+  return null;
 }
 
 function OutcomeBadge({ outcome }: { outcome: AnalysisOutcome | null }) {

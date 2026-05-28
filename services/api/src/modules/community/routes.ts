@@ -413,6 +413,16 @@ export default async function communityRoutes(app: FastifyInstance) {
   // the top, and the same path could spam pick_copied notifications.
   // Anonymous copy is meaningless in practice because POST /bets
   // requires a session anyway.
+  //
+  // Source of truth is the live `tickets` table, not the
+  // `community_tickets` projection. Recent + Analyses surfaces both
+  // read `tickets` directly and surface pre-settlement bets the
+  // projection (settlement-only) doesn't yet carry; routing the
+  // existence check through `community_tickets` 404'd every live /
+  // pre-match copy. The inspiration_count + pick_copied dedup block
+  // below stays gated on the projection because both signals are
+  // settled-surface concepts (Best Wins / "Most Copied"); see the
+  // comment there for details.
   app.post<{ Params: { communityTicketId: string } }>(
     "/community/copy/:communityTicketId",
     { config: writeRateLimit },
@@ -423,17 +433,17 @@ export default async function communityRoutes(app: FastifyInstance) {
 
       const [ct] = await app.db
         .select({
-          ticketId: communityTickets.ticketId,
-          currency: communityTickets.currency,
-          betType: communityTickets.betType,
-          ownerId: communityTickets.userId,
+          ticketId: tickets.id,
+          currency: tickets.currency,
+          betType: tickets.betType,
+          ownerId: tickets.userId,
           ownerNickname: users.nickname,
         })
-        .from(communityTickets)
-        .innerJoin(users, eq(users.id, communityTickets.userId))
+        .from(tickets)
+        .innerJoin(users, eq(users.id, tickets.userId))
         .where(
           and(
-            eq(communityTickets.ticketId, id),
+            eq(tickets.id, id),
             publicAuthorClause(users),
           ),
         )
@@ -511,24 +521,42 @@ export default async function communityRoutes(app: FastifyInstance) {
       // Redis flushes), atomically composes with the counter bump,
       // and pairs with the route's new requireAuth() so anonymous
       // IP-based dedup is no longer needed.
-      const freshlyInspired = await app.db.transaction(async (tx) => {
-        const inserted = await tx
-          .insert(communityTicketInspirations)
-          .values({ communityTicketId: id, viewerUserId: viewer.id })
-          .onConflictDoNothing()
-          .returning({
-            communityTicketId: communityTicketInspirations.communityTicketId,
-          });
-        if (inserted.length === 0) return false;
+      //
+      // Gate: community_ticket_inspirations.community_ticket_id FKs
+      // into community_tickets, which only carries settled rows. A
+      // pre-settlement copy (Recent / Analyses surfaces) has no
+      // projection row yet, so we skip the whole block — there's
+      // nothing to bump (inspiration_count is a Best Wins-only sort
+      // key) and pick_copied stays gated on a real dedup row. When
+      // the ticket later settles, the projection write picks up
+      // inspiration_count = 0; future copies of the now-settled
+      // ticket flow through the full path.
+      const [projection] = await app.db
+        .select({ ticketId: communityTickets.ticketId })
+        .from(communityTickets)
+        .where(eq(communityTickets.ticketId, id))
+        .limit(1);
 
-        await tx
-          .update(communityTickets)
-          .set({
-            inspirationCount: sql`${communityTickets.inspirationCount} + 1`,
+      const freshlyInspired = projection
+        ? await app.db.transaction(async (tx) => {
+            const inserted = await tx
+              .insert(communityTicketInspirations)
+              .values({ communityTicketId: id, viewerUserId: viewer.id })
+              .onConflictDoNothing()
+              .returning({
+                communityTicketId: communityTicketInspirations.communityTicketId,
+              });
+            if (inserted.length === 0) return false;
+
+            await tx
+              .update(communityTickets)
+              .set({
+                inspirationCount: sql`${communityTickets.inspirationCount} + 1`,
+              })
+              .where(eq(communityTickets.ticketId, id));
+            return true;
           })
-          .where(eq(communityTickets.ticketId, id));
-        return true;
-      });
+        : false;
 
       // Emit `pick_copied` to the ticket owner only on a fresh
       // inspiration. The emit helper itself drops self-emits, but
