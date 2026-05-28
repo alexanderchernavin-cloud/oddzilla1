@@ -1,17 +1,31 @@
-// Shared support-chat helpers — row-to-API mapping + Redis pub/sub
-// fan-out. Kept separate from routes.ts so the admin module can reuse
-// the same publish path without importing the bettor route file.
+// Shared support-chat helpers — row-to-API mapping, multipart parsing,
+// attachment hydration, and Redis pub/sub fan-out. Kept separate from
+// routes.ts so the admin module reuses the same publish + parse paths
+// without importing the bettor route file.
 
 import type { Redis } from "ioredis";
+import { inArray, sql } from "drizzle-orm";
 import type {
+  SupportAttachment,
+  SupportAttachmentMime,
   SupportMessage,
   SupportMessageFrame,
   SupportThread,
 } from "@oddzilla/types";
-import type {
-  SupportMessageRow,
-  SupportThreadRow,
+import {
+  SUPPORT_ATTACHMENT_MAX_BYTES,
+  SUPPORT_ATTACHMENT_MAX_PER_MESSAGE,
+  SUPPORT_ATTACHMENT_MIME_TYPES,
+} from "@oddzilla/types";
+import {
+  supportAttachments,
+  type SupportAttachmentRow,
+  type SupportMessageRow,
+  type SupportThreadRow,
 } from "@oddzilla/db";
+import type { DbClient } from "@oddzilla/db";
+import type { MultipartFile } from "@fastify/multipart";
+import { BadRequestError } from "../../lib/errors.js";
 
 /** Reuse the existing ws-gateway `user:{id}` pub/sub channel so the
  * floating support widget shares one WebSocket with live odds + ticket
@@ -22,6 +36,26 @@ const USER_CHANNEL_PREFIX = "user:";
 
 export const MESSAGE_PAGE_DEFAULT = 100;
 export const MESSAGE_PAGE_MAX = 500;
+
+// Re-exported so route modules can import every constant from one
+// place rather than juggling two sources of truth.
+export const ATTACHMENT_MAX_BYTES = SUPPORT_ATTACHMENT_MAX_BYTES;
+export const ATTACHMENT_MAX_PER_MESSAGE = SUPPORT_ATTACHMENT_MAX_PER_MESSAGE;
+export const ATTACHMENT_MIME_ALLOWLIST = new Set<string>(
+  SUPPORT_ATTACHMENT_MIME_TYPES,
+);
+
+const ALLOWED_MIME_TYPESET = new Set<SupportAttachmentMime>(
+  SUPPORT_ATTACHMENT_MIME_TYPES,
+);
+
+function isAllowedMime(value: string): value is SupportAttachmentMime {
+  return (ALLOWED_MIME_TYPESET as Set<string>).has(value);
+}
+
+export function attachmentUrl(id: string | bigint): string {
+  return `/support/attachments/${id}`;
+}
 
 export function mapThread(row: SupportThreadRow): SupportThread {
   return {
@@ -37,8 +71,30 @@ export function mapThread(row: SupportThreadRow): SupportThread {
   };
 }
 
+export function mapAttachment(row: {
+  id: bigint;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+}): SupportAttachment {
+  const mime = isAllowedMime(row.contentType)
+    ? row.contentType
+    : // Should never happen — the CHECK constraint pins this set. If
+      // somehow a stale row slips through, fall back to a safe
+      // download-only render.
+      "application/pdf";
+  return {
+    id: String(row.id),
+    filename: row.filename,
+    contentType: mime,
+    sizeBytes: row.sizeBytes,
+    url: attachmentUrl(row.id),
+  };
+}
+
 export function mapMessage(
   row: SupportMessageRow,
+  attachments: SupportAttachment[] = [],
   senderName?: string | null,
 ): SupportMessage {
   return {
@@ -49,6 +105,109 @@ export function mapMessage(
     senderName: senderName ?? null,
     body: row.body,
     createdAt: row.createdAt.toISOString(),
+    attachments,
+  };
+}
+
+/** Load attachments for a set of messages in one query and return a
+ * Map keyed by string-of-message-id. Empty input short-circuits to an
+ * empty map without round-tripping. */
+export async function loadAttachmentsFor(
+  db: DbClient,
+  messageIds: bigint[],
+): Promise<Map<string, SupportAttachment[]>> {
+  const map = new Map<string, SupportAttachment[]>();
+  if (messageIds.length === 0) return map;
+  const rows = await db
+    .select({
+      id: supportAttachments.id,
+      messageId: supportAttachments.messageId,
+      filename: supportAttachments.filename,
+      contentType: supportAttachments.contentType,
+      sizeBytes: supportAttachments.sizeBytes,
+    })
+    .from(supportAttachments)
+    .where(inArray(supportAttachments.messageId, messageIds))
+    .orderBy(supportAttachments.id);
+  for (const r of rows) {
+    const key = String(r.messageId);
+    const list = map.get(key) ?? [];
+    list.push(
+      mapAttachment({
+        id: r.id,
+        filename: r.filename,
+        contentType: r.contentType,
+        sizeBytes: r.sizeBytes,
+      }),
+    );
+    map.set(key, list);
+  }
+  return map;
+}
+
+/** Strip path separators + trim to 255 chars so a misbehaving client
+ * can't sneak a relative-path filename into the row. We never use the
+ * value as a file system path (storage is BYTEA in the DB), but it's
+ * shown to humans on download so a sanitised display name is the
+ * right hygiene. */
+export function sanitiseFilename(raw: string | null | undefined): string {
+  const fallback = "attachment";
+  if (!raw) return fallback;
+  const noPaths = raw.replace(/[\\/]+/g, "_");
+  const trimmed = noPaths.trim();
+  if (trimmed.length === 0) return fallback;
+  // Keep the extension but cap total length.
+  return trimmed.slice(0, 255);
+}
+
+export interface ParsedAttachment {
+  filename: string;
+  contentType: SupportAttachmentMime;
+  data: Buffer;
+}
+
+export interface ParsedSupportPayload {
+  body: string;
+  subject?: string;
+  attachments: ParsedAttachment[];
+}
+
+/** Convert a single multipart file part to a validated ParsedAttachment
+ * or throw a typed error the caller can pass straight to Fastify. The
+ * multipart plugin's `truncated` flag fires when the stream was
+ * truncated at the per-file byte limit; we surface that explicitly so
+ * the caller doesn't think a partial buffer is a complete file. */
+export async function parseAttachmentPart(
+  part: MultipartFile,
+): Promise<ParsedAttachment> {
+  if (!isAllowedMime(part.mimetype)) {
+    throw new BadRequestError(
+      "unsupported_attachment_mime",
+      "unsupported_attachment_mime",
+    );
+  }
+  const buffer = await part.toBuffer();
+  if (part.file.truncated) {
+    throw new BadRequestError(
+      "attachment_too_large",
+      "attachment_too_large",
+    );
+  }
+  if (buffer.length === 0) {
+    throw new BadRequestError("attachment_empty", "attachment_empty");
+  }
+  if (buffer.length > ATTACHMENT_MAX_BYTES) {
+    // Should be unreachable — fileSize stream limit catches first —
+    // but guard at the route layer too.
+    throw new BadRequestError(
+      "attachment_too_large",
+      "attachment_too_large",
+    );
+  }
+  return {
+    filename: sanitiseFilename(part.filename),
+    contentType: part.mimetype,
+    data: buffer,
   };
 }
 
@@ -64,3 +223,7 @@ export async function publishSupportFrame(
     // next mount / interval if a frame drops.
   }
 }
+
+// Helper kept for symmetry with `inArray` typing — silences unused
+// import when the build isolates dead exports.
+void sql;

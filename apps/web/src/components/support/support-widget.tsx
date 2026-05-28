@@ -13,27 +13,55 @@
 //                               a not-yet-loaded thread (handles the
 //                               "operator replied while widget was
 //                               closed" edge — fetch fills the history).
-//   POST /support/me/messages   on send (optimistic-append on success)
+//   POST /support/me/messages   multipart/form-data: `body` text field
+//                               + up to 5 `files[]` parts (10 MiB each).
+//                               Bare fetch because clientApi force-sets
+//                               application/json which would corrupt
+//                               the multipart boundary — same convention
+//                               every admin file-upload component uses.
 //   POST /support/me/mark-read  whenever the panel opens + after each
 //                               admin frame while open
-//
-// The widget is permission-mode-friendly: every fetch uses clientApi
-// (cookie-credentialed) and there's no SSR data dependency, so it
-// mounts cleanly into the (main) layout for anonymous renders too —
-// they just don't see anything.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { useSessionUserId } from "@/lib/session-user";
 import { useSupportStream } from "@/lib/use-support-stream";
 import type {
+  SupportAttachment,
   SupportMessage,
   SupportMessageFrame,
   SupportMyThreadResponse,
   SupportThread,
 } from "@oddzilla/types";
+import {
+  SUPPORT_ATTACHMENT_MAX_BYTES,
+  SUPPORT_ATTACHMENT_MAX_PER_MESSAGE,
+  SUPPORT_ATTACHMENT_MIME_TYPES,
+} from "@oddzilla/types";
 
 const MAX_BODY = 2000;
+const ACCEPT_ATTR = SUPPORT_ATTACHMENT_MIME_TYPES.join(",");
+
+interface PendingFile {
+  /** Stable per-pick id so the chip list keys + the X-button removal
+   * stays stable across re-renders even when filenames collide. */
+  key: string;
+  file: File;
+}
+
+function nextPendingKey(): string {
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
+function isAllowedMime(value: string): boolean {
+  return (SUPPORT_ATTACHMENT_MIME_TYPES as readonly string[]).includes(value);
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 export function SupportWidget() {
   const userId = useSessionUserId();
@@ -43,13 +71,12 @@ export function SupportWidget() {
   const [thread, setThread] = useState<SupportThread | null>(null);
   const [messages, setMessages] = useState<SupportMessage[]>([]);
   const [draft, setDraft] = useState("");
+  const [pending, setPending] = useState<PendingFile[]>([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Server-authoritative unread counter; falls back to 0 until the
-  // first /thread fetch completes. Stays accurate across tabs because
-  // every admin reply ships its own unreadUser in the frame.
   const unreadUser = thread?.unreadUser ?? 0;
 
   const refresh = useCallback(async () => {
@@ -60,8 +87,6 @@ export function SupportWidget() {
       setMessages(data.messages);
       setLoaded(true);
     } catch (e) {
-      // 401 means the cookie expired between SSR and this fetch — the
-      // shell will redirect on the next mutation; silently ignore here.
       if (!(e instanceof ApiFetchError && e.status === 401)) {
         setError("Could not load chat.");
       }
@@ -79,8 +104,6 @@ export function SupportWidget() {
     }
   }, []);
 
-  // Open handler: lazy-load + mark read so the badge clears as soon
-  // as the operator's reply is on screen.
   const handleOpen = useCallback(() => {
     setOpen(true);
     setError(null);
@@ -90,10 +113,6 @@ export function SupportWidget() {
 
   const handleClose = useCallback(() => setOpen(false), []);
 
-  // Live frame handler. Append in chronological order (server emits
-  // ascending ids) and update the unread counter for the closed-panel
-  // case. If the panel is open we eagerly mark-read so the badge stays
-  // at zero while the operator is replying live.
   useSupportStream(
     useCallback(
       (frame: SupportMessageFrame) => {
@@ -105,8 +124,6 @@ export function SupportWidget() {
               unreadUser: frame.unreadUser,
             };
           }
-          // First frame and we never loaded the thread yet — trigger
-          // a backfill rather than guessing fields.
           if (!prev || prev.id !== frame.threadId) {
             void refresh();
             return prev;
@@ -114,8 +131,6 @@ export function SupportWidget() {
           return prev;
         });
         setMessages((prev) => {
-          // Dedup by id — our own post lands here through the WS frame
-          // too, but the optimistic insert ran first.
           if (prev.some((m) => m.id === frame.message.id)) return prev;
           return [...prev, frame.message];
         });
@@ -127,7 +142,6 @@ export function SupportWidget() {
     ),
   );
 
-  // Scroll to bottom when the panel opens or new messages arrive.
   useEffect(() => {
     if (!open) return;
     const el = listRef.current;
@@ -137,37 +151,103 @@ export function SupportWidget() {
     });
   }, [open, messages.length]);
 
+  const pickFiles = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const addFiles = useCallback(
+    (incoming: FileList | File[]) => {
+      const list = Array.from(incoming);
+      if (list.length === 0) return;
+      setError(null);
+      setPending((prev) => {
+        const next = [...prev];
+        for (const f of list) {
+          if (next.length >= SUPPORT_ATTACHMENT_MAX_PER_MESSAGE) {
+            setError(
+              `You can attach up to ${SUPPORT_ATTACHMENT_MAX_PER_MESSAGE} files per message.`,
+            );
+            break;
+          }
+          if (!isAllowedMime(f.type)) {
+            setError(`Unsupported file type: ${f.name}`);
+            continue;
+          }
+          if (f.size > SUPPORT_ATTACHMENT_MAX_BYTES) {
+            setError(
+              `${f.name} is over the ${formatBytes(SUPPORT_ATTACHMENT_MAX_BYTES)} limit.`,
+            );
+            continue;
+          }
+          if (f.size === 0) {
+            setError(`${f.name} is empty.`);
+            continue;
+          }
+          next.push({ key: nextPendingKey(), file: f });
+        }
+        return next;
+      });
+    },
+    [],
+  );
+
+  const removePending = useCallback((key: string) => {
+    setPending((prev) => prev.filter((p) => p.key !== key));
+  }, []);
+
   const handleSend = useCallback(async () => {
     const trimmed = draft.trim();
-    if (!trimmed || sending) return;
+    if (sending) return;
+    if (!trimmed && pending.length === 0) return;
     setSending(true);
     setError(null);
     try {
-      const res = await clientApi<{ threadId: string; message: SupportMessage }>(
-        "/support/me/messages",
-        {
-          method: "POST",
-          body: JSON.stringify({ body: trimmed }),
-        },
-      );
+      const fd = new FormData();
+      fd.append("body", trimmed);
+      for (const p of pending) fd.append("files", p.file, p.file.name);
+      // Bare fetch — clientApi would stamp content-type: application/json
+      // and break the multipart boundary. Cookie auth rides via
+      // credentials: 'include' (same-origin so SameSite=Lax allows it).
+      const res = await fetch("/api/support/me/messages", {
+        method: "POST",
+        body: fd,
+        credentials: "include",
+      });
+      if (!res.ok) {
+        let msg = "Could not send.";
+        try {
+          const body = (await res.json()) as {
+            error?: string;
+            message?: string;
+          };
+          msg = body.message || body.error || msg;
+        } catch {
+          // non-JSON body
+        }
+        throw new Error(msg);
+      }
+      const data = (await res.json()) as {
+        threadId: string;
+        message: SupportMessage;
+      };
       setMessages((prev) => {
-        if (prev.some((m) => m.id === res.message.id)) return prev;
-        return [...prev, res.message];
+        if (prev.some((m) => m.id === data.message.id)) return prev;
+        return [...prev, data.message];
       });
       setThread((prev) =>
-        prev && prev.id === res.threadId
-          ? { ...prev, lastMessageAt: res.message.createdAt }
+        prev && prev.id === data.threadId
+          ? { ...prev, lastMessageAt: data.message.createdAt }
           : prev ?? null,
       );
       setDraft("");
+      setPending([]);
       if (!thread) void refresh();
     } catch (e) {
-      const msg = e instanceof ApiFetchError ? e.body.message : "Could not send.";
-      setError(msg || "Could not send.");
+      setError(e instanceof Error ? e.message : "Could not send.");
     } finally {
       setSending(false);
     }
-  }, [draft, refresh, sending, thread]);
+  }, [draft, pending, refresh, sending, thread]);
 
   const buttonAria = useMemo(
     () =>
@@ -247,6 +327,11 @@ export function SupportWidget() {
           onClose={handleClose}
           listRef={listRef}
           threadStatus={thread?.status ?? "open"}
+          pending={pending}
+          onPickFiles={pickFiles}
+          onRemovePending={removePending}
+          fileInputRef={fileInputRef}
+          onFilesPicked={(files) => addFiles(files)}
         />
       ) : null}
     </>
@@ -278,6 +363,20 @@ function ChatGlyph({ open }: { open: boolean }) {
   );
 }
 
+function PaperclipGlyph() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M10.5 4.5L6 9a1.5 1.5 0 0 0 2.121 2.121L13 6.243a3 3 0 1 0-4.243-4.243L4 6.757a4.5 4.5 0 1 0 6.364 6.364L14 9.5"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 interface PanelProps {
   loading: boolean;
   loaded: boolean;
@@ -290,6 +389,11 @@ interface PanelProps {
   onClose: () => void;
   listRef: React.MutableRefObject<HTMLDivElement | null>;
   threadStatus: "open" | "closed";
+  pending: PendingFile[];
+  onPickFiles: () => void;
+  onRemovePending: (key: string) => void;
+  fileInputRef: React.MutableRefObject<HTMLInputElement | null>;
+  onFilesPicked: (files: FileList) => void;
 }
 
 function SupportPanel({
@@ -304,8 +408,15 @@ function SupportPanel({
   onClose,
   listRef,
   threadStatus,
+  pending,
+  onPickFiles,
+  onRemovePending,
+  fileInputRef,
+  onFilesPicked,
 }: PanelProps) {
   const closed = threadStatus === "closed";
+  const canSend = !sending && (draft.trim().length > 0 || pending.length > 0);
+  const attachLimit = pending.length >= SUPPORT_ATTACHMENT_MAX_PER_MESSAGE;
 
   return (
     <div
@@ -316,7 +427,7 @@ function SupportPanel({
         right: 20,
         bottom: 84,
         width: "min(380px, calc(100vw - 32px))",
-        height: "min(520px, calc(100vh - 120px))",
+        height: "min(540px, calc(100vh - 120px))",
         zIndex: 9001,
         display: "flex",
         flexDirection: "column",
@@ -427,13 +538,34 @@ function SupportPanel({
             {error}
           </div>
         ) : null}
+        {pending.length > 0 ? (
+          <ul
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 6,
+              margin: 0,
+              padding: 0,
+              listStyle: "none",
+            }}
+          >
+            {pending.map((p) => (
+              <PendingChip
+                key={p.key}
+                file={p.file}
+                onRemove={() => onRemovePending(p.key)}
+                disabled={sending}
+              />
+            ))}
+          </ul>
+        ) : null}
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value.slice(0, MAX_BODY))}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              onSend();
+              if (canSend) onSend();
             }
           }}
           placeholder="Type your message…"
@@ -451,6 +583,19 @@ function SupportPanel({
             fontSize: 13,
           }}
         />
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept={ACCEPT_ATTR}
+          style={{ display: "none" }}
+          onChange={(e) => {
+            const files = e.target.files;
+            if (files && files.length > 0) onFilesPicked(files);
+            // Reset so picking the same file again still fires onChange.
+            e.target.value = "";
+          }}
+        />
         <div
           style={{
             display: "flex",
@@ -459,19 +604,48 @@ function SupportPanel({
             gap: 8,
           }}
         >
-          <span
-            className="mono"
-            style={{
-              fontSize: 10,
-              color: "var(--color-fg-subtle, var(--fg-dim))",
-            }}
-          >
-            {draft.length}/{MAX_BODY}
-          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              type="button"
+              onClick={onPickFiles}
+              disabled={sending || attachLimit}
+              aria-label="Attach files"
+              title={
+                attachLimit
+                  ? `Max ${SUPPORT_ATTACHMENT_MAX_PER_MESSAGE} files`
+                  : `Attach files (max ${formatBytes(SUPPORT_ATTACHMENT_MAX_BYTES)} each)`
+              }
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 30,
+                height: 30,
+                borderRadius: 8,
+                border: "1px solid var(--color-border, var(--border))",
+                background: "transparent",
+                color: "inherit",
+                cursor: sending || attachLimit ? "not-allowed" : "pointer",
+                opacity: sending || attachLimit ? 0.5 : 1,
+                fontFamily: "inherit",
+              }}
+            >
+              <PaperclipGlyph />
+            </button>
+            <span
+              className="mono"
+              style={{
+                fontSize: 10,
+                color: "var(--color-fg-subtle, var(--fg-dim))",
+              }}
+            >
+              {draft.length}/{MAX_BODY}
+            </span>
+          </div>
           <button
             type="button"
             onClick={onSend}
-            disabled={sending || draft.trim().length === 0}
+            disabled={!canSend}
             style={{
               padding: "6px 12px",
               borderRadius: 8,
@@ -480,8 +654,8 @@ function SupportPanel({
               color: "var(--color-bg, var(--bg))",
               fontFamily: "inherit",
               fontSize: 13,
-              cursor: sending || !draft.trim() ? "not-allowed" : "pointer",
-              opacity: sending || !draft.trim() ? 0.5 : 1,
+              cursor: canSend ? "pointer" : "not-allowed",
+              opacity: canSend ? 1 : 0.5,
             }}
           >
             {sending ? "Sending…" : "Send"}
@@ -489,6 +663,82 @@ function SupportPanel({
         </div>
       </div>
     </div>
+  );
+}
+
+function PendingChip({
+  file,
+  onRemove,
+  disabled,
+}: {
+  file: File;
+  onRemove: () => void;
+  disabled: boolean;
+}) {
+  const isImage = file.type.startsWith("image/");
+  return (
+    <li
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "4px 6px",
+        borderRadius: 6,
+        border: "1px solid var(--color-border, var(--border))",
+        background: "var(--color-bg-subtle, var(--surface-2))",
+        fontSize: 11,
+        maxWidth: 220,
+      }}
+    >
+      <span
+        aria-hidden
+        style={{
+          fontSize: 10,
+          padding: "1px 4px",
+          borderRadius: 3,
+          background: "var(--color-bg, var(--bg))",
+          color: "var(--color-fg-muted, var(--fg-muted))",
+          fontFamily: "var(--mono, monospace)",
+        }}
+      >
+        {isImage ? "IMG" : "FILE"}
+      </span>
+      <span
+        style={{
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          flex: 1,
+        }}
+        title={file.name}
+      >
+        {file.name}
+      </span>
+      <span style={{ color: "var(--color-fg-subtle, var(--fg-dim))" }}>
+        {formatBytes(file.size)}
+      </span>
+      <button
+        type="button"
+        onClick={onRemove}
+        disabled={disabled}
+        aria-label={`Remove ${file.name}`}
+        style={{
+          marginLeft: 2,
+          width: 18,
+          height: 18,
+          borderRadius: 4,
+          border: "0",
+          background: "transparent",
+          color: "inherit",
+          cursor: disabled ? "not-allowed" : "pointer",
+          fontFamily: "inherit",
+          fontSize: 12,
+          lineHeight: 1,
+        }}
+      >
+        ×
+      </button>
+    </li>
   );
 }
 
@@ -528,7 +778,7 @@ function MessageBubble({ message }: { message: SupportMessage }) {
         display: "flex",
         flexDirection: "column",
         alignItems: align,
-        gap: 2,
+        gap: 4,
         maxWidth: "85%",
         alignSelf: align,
       }}
@@ -547,23 +797,40 @@ function MessageBubble({ message }: { message: SupportMessage }) {
           {message.senderName ?? "Support"}
         </span>
       ) : null}
-      <div
-        style={{
-          padding: fromSystem ? "4px 8px" : "8px 10px",
-          borderRadius: 10,
-          border: fromSystem
-            ? "0"
-            : "1px solid var(--color-border, var(--border))",
-          background: bg,
-          color,
-          fontSize: 13,
-          lineHeight: 1.4,
-          whiteSpace: "pre-wrap",
-          wordBreak: "break-word",
-        }}
-      >
-        {message.body}
-      </div>
+      {message.body.length > 0 ? (
+        <div
+          style={{
+            padding: fromSystem ? "4px 8px" : "8px 10px",
+            borderRadius: 10,
+            border: fromSystem
+              ? "0"
+              : "1px solid var(--color-border, var(--border))",
+            background: bg,
+            color,
+            fontSize: 13,
+            lineHeight: 1.4,
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+          }}
+        >
+          {message.body}
+        </div>
+      ) : null}
+      {message.attachments.length > 0 ? (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+            alignItems: align,
+            width: "100%",
+          }}
+        >
+          {message.attachments.map((a) => (
+            <AttachmentTile key={a.id} attachment={a} mineAlign={fromUser} />
+          ))}
+        </div>
+      ) : null}
       <span
         style={{
           fontSize: 10,
@@ -575,6 +842,103 @@ function MessageBubble({ message }: { message: SupportMessage }) {
       </span>
     </div>
   );
+}
+
+function AttachmentTile({
+  attachment,
+  mineAlign,
+}: {
+  attachment: SupportAttachment;
+  mineAlign: boolean;
+}) {
+  const url = `/api${attachment.url}`;
+  const isImage = attachment.contentType.startsWith("image/");
+  if (isImage) {
+    return (
+      <a
+        href={url}
+        target="_blank"
+        rel="noreferrer noopener"
+        title={attachment.filename}
+        style={{
+          alignSelf: mineAlign ? "flex-end" : "flex-start",
+          maxWidth: "100%",
+          borderRadius: 8,
+          overflow: "hidden",
+          border: "1px solid var(--color-border, var(--border))",
+          display: "block",
+        }}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={url}
+          alt={attachment.filename}
+          style={{
+            display: "block",
+            maxWidth: 240,
+            maxHeight: 240,
+            objectFit: "cover",
+          }}
+        />
+      </a>
+    );
+  }
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noreferrer noopener"
+      title={attachment.filename}
+      style={{
+        alignSelf: mineAlign ? "flex-end" : "flex-start",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "6px 8px",
+        borderRadius: 8,
+        border: "1px solid var(--color-border, var(--border))",
+        background: "var(--color-bg, var(--bg))",
+        color: "var(--color-fg, var(--fg))",
+        fontSize: 12,
+        textDecoration: "none",
+        maxWidth: "100%",
+      }}
+    >
+      <span
+        aria-hidden
+        style={{
+          fontSize: 10,
+          padding: "1px 4px",
+          borderRadius: 3,
+          background: "var(--color-bg-subtle, var(--surface-2))",
+          color: "var(--color-fg-muted, var(--fg-muted))",
+          fontFamily: "var(--mono, monospace)",
+        }}
+      >
+        {labelFor(attachment.contentType)}
+      </span>
+      <span
+        style={{
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          maxWidth: 200,
+        }}
+      >
+        {attachment.filename}
+      </span>
+      <span style={{ color: "var(--color-fg-subtle, var(--fg-dim))" }}>
+        {formatBytes(attachment.sizeBytes)}
+      </span>
+    </a>
+  );
+}
+
+function labelFor(mime: string): string {
+  if (mime === "application/pdf") return "PDF";
+  if (mime === "text/plain") return "TXT";
+  if (mime.startsWith("image/")) return "IMG";
+  return "FILE";
 }
 
 function formatTime(iso: string): string {

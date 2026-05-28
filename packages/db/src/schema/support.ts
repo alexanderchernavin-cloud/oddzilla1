@@ -1,7 +1,9 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   bigserial,
   check,
+  customType,
   index,
   integer,
   pgEnum,
@@ -12,6 +14,15 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import { users } from "./users.js";
+
+// Postgres BYTEA. Drizzle's stock helpers don't ship a bytea wrapper,
+// so we declare a thin customType returning Buffer at the row level —
+// same pattern as the email token-hash columns.
+const bytea = customType<{ data: Buffer }>({
+  dataType() {
+    return "bytea";
+  },
+});
 
 // Migration 0075. Live support chat between bettors and the backoffice.
 //
@@ -110,9 +121,11 @@ export const supportMessages = pgTable(
     index("support_messages_sender_idx")
       .on(t.senderUserId, sql`${t.createdAt} DESC`)
       .where(sql`${t.senderUserId} IS NOT NULL`),
+    // Lower bound relaxed by migration 0076 — attachment-only messages
+    // are valid; the API still rejects "no body AND no attachments".
     check(
       "support_messages_body_length",
-      sql`char_length(${t.body}) BETWEEN 1 AND 4000`,
+      sql`char_length(${t.body}) <= 4000`,
     ),
     check(
       "support_messages_user_required",
@@ -123,3 +136,50 @@ export const supportMessages = pgTable(
 
 export type SupportMessageRow = typeof supportMessages.$inferSelect;
 export type NewSupportMessageRow = typeof supportMessages.$inferInsert;
+
+// Migration 0076. Up to N attachments per message — each holds the raw
+// bytes inline (BYTEA) so a single backup snapshot is enough to restore
+// the entire chat history. Per-file cap is 10 MiB, enforced by the
+// CHECK below as belt + braces against any future code path that
+// forgets the route-level limit.
+export const supportAttachments = pgTable(
+  "support_attachments",
+  {
+    id: bigserial({ mode: "bigint" }).primaryKey(),
+    messageId: bigint("message_id", { mode: "bigint" })
+      .notNull()
+      .references(() => supportMessages.id, { onDelete: "cascade" }),
+    filename: text().notNull(),
+    contentType: text("content_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    data: bytea().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("support_attachments_message_idx").on(t.messageId),
+    check(
+      "support_attachments_filename_length",
+      sql`char_length(${t.filename}) BETWEEN 1 AND 255`,
+    ),
+    check(
+      "support_attachments_size_range",
+      sql`${t.sizeBytes} > 0 AND ${t.sizeBytes} <= 10485760`,
+    ),
+    check(
+      "support_attachments_mime_allowed",
+      sql`${t.contentType} IN (
+        'image/png',
+        'image/jpeg',
+        'image/webp',
+        'image/gif',
+        'application/pdf',
+        'text/plain'
+      )`,
+    ),
+  ],
+);
+
+export type SupportAttachmentRow = typeof supportAttachments.$inferSelect;
+export type NewSupportAttachmentRow = typeof supportAttachments.$inferInsert;

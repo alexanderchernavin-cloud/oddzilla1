@@ -5,6 +5,37 @@ export type SupportSenderKind = "user" | "admin" | "system";
 
 export type SupportThreadStatus = "open" | "closed";
 
+/** Per-file caps. Mirrored in the API plugin limits AND the
+ * support_attachments CHECK constraint. Bump all three together. */
+export const SUPPORT_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+export const SUPPORT_ATTACHMENT_MAX_PER_MESSAGE = 5;
+
+/** MIME allowlist for chat attachments. Intentionally NO image/svg+xml
+ * — SVG is served back to other users and can carry inline <script>,
+ * so it stays out of the user-generated content safe set. */
+export const SUPPORT_ATTACHMENT_MIME_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+  "application/pdf",
+  "text/plain",
+] as const;
+
+export type SupportAttachmentMime = (typeof SUPPORT_ATTACHMENT_MIME_TYPES)[number];
+
+export interface SupportAttachment {
+  id: string;
+  filename: string;
+  contentType: SupportAttachmentMime;
+  sizeBytes: number;
+  /** Byte-serve URL. Storefront + admin clients render image MIMEs as
+   * inline previews and everything else as a download link. The route
+   * gates access by thread ownership (bettor) or `support`/`admin`
+   * role (operator). */
+  url: string;
+}
+
 export interface SupportMessage {
   id: string;
   threadId: string;
@@ -19,6 +50,8 @@ export interface SupportMessage {
   body: string;
   /** ISO 8601. */
   createdAt: string;
+  /** Files attached to this message. Empty array on text-only messages. */
+  attachments: SupportAttachment[];
 }
 
 export interface SupportThread {
