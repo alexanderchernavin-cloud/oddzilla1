@@ -6,6 +6,7 @@ import type {
   AnalysisOutcome,
 } from "@oddzilla/types";
 import { serverApi } from "@/lib/server-fetch";
+import { Avatar } from "@/components/community/avatar";
 
 export const dynamic = "force-dynamic";
 
@@ -184,24 +185,7 @@ function Row({ row, highlight = false }: { row: LeaderboardRow; highlight?: bool
       <span className="w-6 shrink-0 text-center text-sm font-bold tabular-nums text-[var(--color-fg)]">
         {row.rank}
       </span>
-      <div className="relative h-9 w-9 shrink-0 overflow-hidden rounded-full bg-[var(--color-bg)]">
-        {/* Avatar uses next/image elsewhere; here a bare img keeps the
-            page server-rendered without pulling the runtime config. */}
-        {row.avatarUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={row.avatarUrl}
-            alt=""
-            width={36}
-            height={36}
-            className="h-full w-full object-cover"
-          />
-        ) : (
-          <span className="flex h-full w-full items-center justify-center font-mono text-sm text-[var(--color-fg-muted)]">
-            {(row.nickname ?? "?").charAt(0).toUpperCase()}
-          </span>
-        )}
-      </div>
+      <Avatar imageUrl={row.avatarUrl} name={row.nickname} size={36} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
           <Link
