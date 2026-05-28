@@ -168,6 +168,7 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
         countryCode: users.countryCode,
         globalLimitMicro: users.globalLimitMicro,
         betDelaySeconds: users.betDelaySeconds,
+        notes: users.notes,
         createdAt: users.createdAt,
         lastLoginAt: users.lastLoginAt,
         balanceMicro: wallets.balanceMicro,
@@ -238,6 +239,7 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
         countryCode: user.countryCode,
         globalLimitMicro: user.globalLimitMicro.toString(),
         betDelaySeconds: user.betDelaySeconds,
+        notes: user.notes,
         createdAt: user.createdAt.toISOString(),
         lastLoginAt: user.lastLoginAt?.toISOString() ?? null,
         balanceMicro: (user.balanceMicro ?? 0n).toString(),
@@ -352,6 +354,7 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
         action: "user.update",
         targetType: "user",
         targetId: params.id,
+        subjectUserId: params.id,
         beforeJson: before,
         afterJson: after,
         ipInet: request.ip ?? null,
@@ -416,6 +419,7 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
         action: "user.create",
         targetType: "user",
         targetId: u.id,
+        subjectUserId: u.id,
         beforeJson: {},
         afterJson: {
           email: u.email,
@@ -504,6 +508,7 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
         action: "user.delete",
         targetType: "user",
         targetId: params.id,
+        subjectUserId: params.id,
         beforeJson: {
           email: existing.email,
           role: existing.role,
@@ -616,6 +621,7 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
         action: "wallet.adjust",
         targetType: "user",
         targetId: params.id,
+        subjectUserId: params.id,
         beforeJson: {
           currency: body.currency,
           balanceMicro: wallet.balanceMicro.toString(),
@@ -710,6 +716,7 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
         action: "zillapass.stage.override",
         targetType: "user",
         targetId: params.id,
+        subjectUserId: params.id,
         beforeJson: before ?? null,
         afterJson: { ...after, targetEmail: target.email },
         ipInet: request.ip ?? null,
@@ -717,5 +724,149 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
     });
 
     return after;
+  });
+
+  // ── Per-bettor audit log ───────────────────────────────────────────────
+  //
+  // Read-only view of every admin_audit_log row affecting this user —
+  // status / role / limit / bet-delay / balance / risk_score / zillapass
+  // stage / odds-adjustment scope changes / promo-visibility scope
+  // changes / notes. Filtered via the indexed subject_user_id column
+  // (migration 0075), so the page-load cost is O(rows returned), not
+  // O(total audit-log size).
+  //
+  // Cursor pagination on (createdAt DESC, id DESC) — the page is small
+  // enough that a numeric offset would be cheaper, but the index already
+  // supports cursor and it gives us stable next-page behaviour as new
+  // rows land.
+  const auditLogQuery = z.object({
+    limit: z.coerce.number().int().min(1).max(200).default(50),
+    cursorCreatedAt: z
+      .string()
+      .datetime()
+      .optional(),
+    cursorId: z
+      .string()
+      .regex(/^\d+$/)
+      .optional(),
+  });
+
+  app.get("/admin/users/:id/audit-log", async (request) => {
+    request.requireRole("admin");
+    const params = z.object({ id: z.string().uuid() }).parse(request.params);
+    const q = auditLogQuery.parse(request.query);
+
+    // Existence check so 404 fires on an unknown id instead of returning
+    // an empty result that an operator could mistake for "this user has
+    // never been touched".
+    const [exists] = await app.db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, params.id))
+      .limit(1);
+    if (!exists) throw new NotFoundError("user_not_found", "user_not_found");
+
+    const cursorWhere =
+      q.cursorCreatedAt && q.cursorId
+        ? sql`(${adminAuditLog.createdAt}, ${adminAuditLog.id}) < (${new Date(q.cursorCreatedAt).toISOString()}::timestamptz, ${BigInt(q.cursorId)})`
+        : sql`TRUE`;
+
+    const rows = await app.db
+      .select({
+        id: adminAuditLog.id,
+        actorUserId: adminAuditLog.actorUserId,
+        actorEmail: users.email,
+        action: adminAuditLog.action,
+        targetType: adminAuditLog.targetType,
+        targetId: adminAuditLog.targetId,
+        beforeJson: adminAuditLog.beforeJson,
+        afterJson: adminAuditLog.afterJson,
+        ipInet: adminAuditLog.ipInet,
+        createdAt: adminAuditLog.createdAt,
+      })
+      .from(adminAuditLog)
+      .leftJoin(users, eq(users.id, adminAuditLog.actorUserId))
+      .where(
+        and(eq(adminAuditLog.subjectUserId, params.id), cursorWhere),
+      )
+      .orderBy(desc(adminAuditLog.createdAt), desc(adminAuditLog.id))
+      .limit(q.limit + 1);
+
+    const hasMore = rows.length > q.limit;
+    const page = hasMore ? rows.slice(0, q.limit) : rows;
+    const last = page[page.length - 1];
+
+    return {
+      entries: page.map((r) => ({
+        id: r.id.toString(),
+        actorUserId: r.actorUserId,
+        actorEmail: r.actorEmail ?? null,
+        action: r.action,
+        targetType: r.targetType,
+        targetId: r.targetId,
+        beforeJson: r.beforeJson ?? null,
+        afterJson: r.afterJson ?? null,
+        ipInet: r.ipInet,
+        createdAt: r.createdAt.toISOString(),
+      })),
+      nextCursor:
+        hasMore && last
+          ? {
+              createdAt: last.createdAt.toISOString(),
+              id: last.id.toString(),
+            }
+          : null,
+    };
+  });
+
+  // ── Operator notes ─────────────────────────────────────────────────────
+  //
+  // Free-text per-bettor notes (migration 0075). Surfaced on the
+  // RiskZilla bettor page so the risk team can pin context that doesn't
+  // fit into structured fields ("VIP", "self-reported problem gambling,
+  // watch closely", "contacted on 2026-05-20 about deposit limits", …).
+  //
+  // Plain text, capped at 4000 chars (matches the DB CHECK). Empty
+  // string clears the field. Audit-logged so notes-changes show up in
+  // the same per-bettor audit feed as everything else.
+  const notesBody = z.object({
+    notes: z.string().max(4000),
+  });
+
+  app.put("/admin/users/:id/notes", async (request) => {
+    const admin = request.requireRole("admin");
+    const params = z.object({ id: z.string().uuid() }).parse(request.params);
+    const body = notesBody.parse(request.body);
+    const normalised = body.notes.trim() === "" ? null : body.notes;
+
+    const [existing] = await app.db
+      .select({ id: users.id, email: users.email, notes: users.notes })
+      .from(users)
+      .where(eq(users.id, params.id))
+      .limit(1);
+    if (!existing) throw new NotFoundError("user_not_found", "user_not_found");
+
+    if ((existing.notes ?? null) === normalised) {
+      return { ok: true, changed: false, notes: normalised };
+    }
+
+    await app.db.transaction(async (tx) => {
+      await tx
+        .update(users)
+        .set({ notes: normalised, updatedAt: new Date() })
+        .where(eq(users.id, params.id));
+      await tx.insert(adminAuditLog).values({
+        actorUserId: admin.id,
+        action: "user.notes_update",
+        targetType: "user",
+        targetId: params.id,
+        subjectUserId: params.id,
+        beforeJson: { notes: existing.notes ?? null },
+        afterJson: { notes: normalised, targetEmail: existing.email },
+        ipInet: request.ip ?? null,
+      });
+    });
+
+    return { ok: true, changed: true, notes: normalised };
   });
 }

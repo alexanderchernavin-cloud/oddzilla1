@@ -62,10 +62,21 @@ export const adminAuditLog = pgTable(
     // from app code. Verifier: SELECT * FROM admin_audit_chain_check().
     prevHash: bytea("prev_hash"),
     rowHash: bytea("row_hash"),
+    // Subject (migration 0075). The bettor this mutation affects, when
+    // the actor isn't the same user. Denormalised from target_id +
+    // before_json/after_json so the per-bettor audit-log view filters
+    // in one indexed scan. The chain trigger does NOT include this
+    // column, so populating it later is hash-safe.
+    subjectUserId: uuid("subject_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
   },
   (t) => [
     index("admin_audit_actor_idx").on(t.actorUserId, sql`${t.createdAt} DESC`),
     index("admin_audit_target_idx").on(t.targetType, t.targetId),
+    index("admin_audit_subject_idx")
+      .on(t.subjectUserId, sql`${t.createdAt} DESC`)
+      .where(sql`${t.subjectUserId} IS NOT NULL`),
   ],
 );
 

@@ -73,6 +73,12 @@ export const users = pgTable(
     // surfaces a banner while NULL. Login still works regardless so
     // existing demo-OZ accounts aren't locked out on the rollout.
     emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
+    // Free-text operator notes (migration 0075). Surfaced on the
+    // RiskZilla bettor page so the risk team can pin context — "VIP,
+    // contacted on 2026-05-20 about deposit limits", "self-reported
+    // problem gambling, watch closely", etc. NULL = no notes. Capped
+    // at 4000 chars (DB CHECK) so a runaway paste can't bloat the row.
+    notes: text(),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     lastLoginAt: timestamp({ withTimezone: true }),
@@ -114,6 +120,10 @@ export const users = pgTable(
     check(
       "users_hidden_sports_len",
       sql`${t.hiddenSports} IS NULL OR array_length(${t.hiddenSports}, 1) <= 100`,
+    ),
+    check(
+      "users_notes_length",
+      sql`${t.notes} IS NULL OR length(${t.notes}) <= 4000`,
     ),
   ],
 );

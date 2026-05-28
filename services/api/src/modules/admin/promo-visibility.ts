@@ -453,6 +453,7 @@ export default async function adminPromoVisibilityRoutes(app: FastifyInstance) {
             : `bettor_promo_visibility.${kind}.global_create`,
           targetType: "bettor_promo_visibility_config",
           targetId: `user:${userId}:${kind}:global`,
+          subjectUserId: userId,
           beforeJson: before
             ? (rowToOverrideDto(before) as unknown as Record<string, unknown>)
             : null,
@@ -498,6 +499,7 @@ export default async function adminPromoVisibilityRoutes(app: FastifyInstance) {
           action: `bettor_promo_visibility.${kind}.global_delete`,
           targetType: "bettor_promo_visibility_config",
           targetId: `user:${userId}:${kind}:global`,
+          subjectUserId: userId,
           beforeJson: rowToOverrideDto(before) as unknown as Record<string, unknown>,
           afterJson: null,
           ipInet: request.ip ?? null,
@@ -593,6 +595,7 @@ export default async function adminPromoVisibilityRoutes(app: FastifyInstance) {
             : `bettor_promo_visibility.${kind}.${opts.scope}_create`,
           targetType: "bettor_promo_visibility_config",
           targetId: `user:${userId}:${kind}:${opts.scope}:${refIdStr}`,
+          subjectUserId: userId,
           beforeJson: before
             ? (rowToOverrideDto(before) as unknown as Record<string, unknown>)
             : null,
@@ -650,6 +653,7 @@ export default async function adminPromoVisibilityRoutes(app: FastifyInstance) {
           action: `bettor_promo_visibility.${kind}.${opts.scope}_delete`,
           targetType: "bettor_promo_visibility_config",
           targetId: `user:${userId}:${kind}:${opts.scope}:${refIdStr}`,
+          subjectUserId: userId,
           beforeJson: rowToOverrideDto(before) as unknown as Record<string, unknown>,
           afterJson: null,
           ipInet: request.ip ?? null,

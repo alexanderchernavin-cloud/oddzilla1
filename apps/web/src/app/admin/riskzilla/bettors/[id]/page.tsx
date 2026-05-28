@@ -3,7 +3,9 @@ import { notFound } from "next/navigation";
 import { serverApi } from "@/lib/server-fetch";
 import { fromMicroMoney } from "@oddzilla/types/money";
 import { RsEditor } from "./rs-editor";
+import { NotesEditor } from "./notes-editor";
 import { readRzCurrencyFromSearchParams } from "../../currency";
+import { BettorAuditLog } from "@/components/admin/bettor-audit-log";
 
 export const dynamic = "force-dynamic";
 
@@ -88,6 +90,13 @@ interface BettorProfile {
   }>;
 }
 
+interface UserDetailLite {
+  user: {
+    id: string;
+    notes: string | null;
+  };
+}
+
 export default async function BettorProfilePage({
   params,
   searchParams,
@@ -98,9 +107,14 @@ export default async function BettorProfilePage({
   const { id } = await params;
   const sp = await searchParams;
   const currency = readRzCurrencyFromSearchParams(sp);
-  const data = await serverApi<BettorProfile>(
-    `/admin/riskzilla/bettors/${id}?currency=${currency}`,
-  );
+  const [data, detail] = await Promise.all([
+    serverApi<BettorProfile>(
+      `/admin/riskzilla/bettors/${id}?currency=${currency}`,
+    ),
+    // Notes live on the users row — pulled via the existing detail
+    // endpoint so the RiskZilla bettors API stays focused on stats.
+    serverApi<UserDetailLite>(`/admin/users/${id}`),
+  ]);
   if (!data) notFound();
 
   const usdcWallet = data.wallets.find((w) => w.currency === "USDC");
@@ -146,6 +160,14 @@ export default async function BettorProfilePage({
         </div>
         <RsEditor userId={data.id} initial={data.riskScore} />
       </header>
+
+      <Section title="Operator notes">
+        <p style={{ fontSize: 12, color: "var(--color-fg-muted)", margin: "0 0 12px" }}>
+          Free-text context shared across the risk team. Visible to every
+          admin viewing this bettor. Audit-logged on save.
+        </p>
+        <NotesEditor userId={id} initial={detail?.user.notes ?? null} />
+      </Section>
 
       <Section title="Wallets">
         {data.wallets.length === 0 ? (
@@ -377,6 +399,16 @@ export default async function BettorProfilePage({
             </tbody>
           </table>
         )}
+      </Section>
+
+      <Section title="Admin activity (audit log)">
+        <p style={{ fontSize: 12, color: "var(--color-fg-muted)", margin: "0 0 12px" }}>
+          Every admin action affecting this bettor: status / role / limit
+          / bet-delay / balance adjustments / risk score / odds adjustment
+          / promo visibility / ZillaPass stage / notes. Sourced from the
+          tamper-evident <code>admin_audit_log</code> hash chain.
+        </p>
+        <BettorAuditLog userId={id} />
       </Section>
     </div>
   );

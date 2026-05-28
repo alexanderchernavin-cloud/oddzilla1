@@ -516,6 +516,7 @@ export default async function adminOddsAdjustmentRoutes(app: FastifyInstance) {
             : "bettor_odds_adjustment.global_create",
           targetType: "bettor_odds_adjustment_config",
           targetId: `user:${userId}:global`,
+          subjectUserId: userId,
           beforeJson: before
             ? (rowToOverrideDto(before) as unknown as Record<string, unknown>)
             : null,
@@ -551,6 +552,7 @@ export default async function adminOddsAdjustmentRoutes(app: FastifyInstance) {
           action: "bettor_odds_adjustment.global_delete",
           targetType: "bettor_odds_adjustment_config",
           targetId: `user:${userId}:global`,
+          subjectUserId: userId,
           beforeJson: rowToOverrideDto(before) as unknown as Record<string, unknown>,
           afterJson: null,
           ipInet: request.ip ?? null,
@@ -646,6 +648,7 @@ export default async function adminOddsAdjustmentRoutes(app: FastifyInstance) {
             : `bettor_odds_adjustment.${opts.scope}_create`,
           targetType: "bettor_odds_adjustment_config",
           targetId: `user:${userId}:${opts.scope}:${refIdStr}`,
+          subjectUserId: userId,
           beforeJson: before
             ? (rowToOverrideDto(before) as unknown as Record<string, unknown>)
             : null,
@@ -702,6 +705,7 @@ export default async function adminOddsAdjustmentRoutes(app: FastifyInstance) {
           action: `bettor_odds_adjustment.${opts.scope}_delete`,
           targetType: "bettor_odds_adjustment_config",
           targetId: `user:${userId}:${opts.scope}:${refIdStr}`,
+          subjectUserId: userId,
           beforeJson: rowToOverrideDto(before) as unknown as Record<string, unknown>,
           afterJson: null,
           ipInet: request.ip ?? null,

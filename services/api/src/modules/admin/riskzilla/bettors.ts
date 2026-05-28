@@ -587,6 +587,7 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
         action: "riskzilla.bettor.risk_score_update",
         targetType: "user",
         targetId: params.id,
+        subjectUserId: params.id,
         beforeJson: { riskScore: before.riskScore },
         afterJson: { riskScore: updated.riskScore },
         ipInet: request.ip ?? null,
