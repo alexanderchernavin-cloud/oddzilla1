@@ -422,6 +422,60 @@ export interface AnalysisAuthorStats {
   roi365dPct: number | null;
 }
 
+// ─── Leaderboard ────────────────────────────────────────────────────────────
+//
+// Top Authors surface. Ranks bettors by Oz earned in the trailing
+// 30-day window (the default), with secondary ROI / recency sorts.
+// Reads primarily from oz_ledger (migration 0076) — when the trigger
+// pipeline lands, every credit lights up here automatically.
+//
+// Sort options:
+//   • oz      — SUM(oz_ledger.delta) over the window, DESC.
+//   • roi     — average per-analysis return %, currency-agnostic.
+//               Authors with < 3 settled analyses are excluded.
+//   • recent  — MAX(analyses.published_at), DESC. Surfaces newcomers.
+export type LeaderboardSort = "oz" | "roi" | "recent";
+export type LeaderboardWindow = "30d" | "all_time";
+
+export interface LeaderboardRow {
+  rank: number;            // 1-indexed position within the response
+  userId: string;
+  nickname: string;
+  avatarUrl: string | null;
+  // Total Oz credited inside the response window. JS number — Oz
+  // amounts are small (per-credit cap of 250 in the V1 reward
+  // formula); BIGINT in storage purely for header-room.
+  ozEarned: number;
+  // Analyses-derived stats inside the window. NULL when the author
+  // has no settled analyses there. Settled = won + lost (void and
+  // cashed_out_void are excluded from ROI math).
+  settled: number;
+  wins: number;
+  // Currency-agnostic ROI: average of per-analysis (payout / stake - 1) * 100.
+  // NULL until ≥3 settled in the window. Matches the
+  // community_author_stats.win_rate_pct sample-floor convention.
+  roiPct: number | null;
+  // Last 5 settled outcomes inside the window, newest first. Drives
+  // the mini W/L badges in the row.
+  recentOutcomes: AnalysisOutcome[];
+  // Visual-only "Expert cut-off" indicator. v1 derives this from the
+  // rank position (top-5 = candidate); a future PR introducing a
+  // community_experts table will replace this with a real join.
+  isExpertCandidate: boolean;
+}
+
+export interface LeaderboardResponse {
+  // Echo of the active filters. The frontend renders these as chip
+  // labels so the user can read the current view at a glance.
+  sport: string | null;     // sport.slug; null = all sports
+  window: LeaderboardWindow;
+  sort: LeaderboardSort;
+  rows: LeaderboardRow[];
+  // The caller's own row if signed in AND ranked inside the response
+  // window. Renders as a sticky footer row in the UI. Null otherwise.
+  viewerRow: LeaderboardRow | null;
+}
+
 // ─── Competitions (Phase 11) ────────────────────────────────────────────────
 //
 // Operator-curated prediction games over a set of matches. Bettors join,
