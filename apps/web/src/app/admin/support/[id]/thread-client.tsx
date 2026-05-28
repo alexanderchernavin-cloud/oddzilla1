@@ -400,7 +400,6 @@ function AttachmentTile({ attachment }: { attachment: SupportAttachment }) {
         title={attachment.filename}
         className="block overflow-hidden rounded-md border border-[var(--color-border)]"
       >
-        {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={url}
           alt={attachment.filename}
