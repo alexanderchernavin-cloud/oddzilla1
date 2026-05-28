@@ -673,6 +673,14 @@ func (s *Settler) maybeSettleTicket(ctx context.Context, tx pgx.Tx, ticketID, so
 		s.log.Warn().Err(err).Str("ticket", t.ID).
 			Msg("community projection write failed; continuing")
 	}
+	// Phase 10.5 analyses settlement projection — flips analyses.outcome
+	// + bumps community_author_stats when the just-settled ticket has a
+	// published analysis attached. Same best-effort posture as the
+	// community projection above.
+	if err := store.WriteAnalysisSettlementProjection(ctx, tx, t.ID); err != nil {
+		s.log.Warn().Err(err).Str("ticket", t.ID).
+			Msg("analysis settlement projection write failed; continuing")
+	}
 	// Phase 10.4 achievement evaluation. Idempotent on the (user_id,
 	// achievement_id) composite PK — re-runs are no-ops. Best-effort
 	// for the same reason as the projection write.
@@ -870,6 +878,13 @@ func (s *Settler) reverseSettledForCancel(ctx context.Context, tx pgx.Tx, ticket
 	if err := store.WriteCommunityProjection(ctx, tx, ticketID); err != nil {
 		s.log.Warn().Err(err).Str("ticket", ticketID).
 			Msg("community projection reverse (bet_cancel) failed; continuing")
+	}
+	// Mirror the reversal onto the analyses projection — clears
+	// analyses.outcome and decrements community_author_stats so a
+	// settle→cancel→settle cycle nets to a single +1 bump.
+	if err := store.ReverseAnalysisSettlementProjection(ctx, tx, ticketID); err != nil {
+		s.log.Warn().Err(err).Str("ticket", ticketID).
+			Msg("analysis projection reverse (bet_cancel) failed; continuing")
 	}
 	return true, nil
 }
@@ -1077,6 +1092,10 @@ func (s *Settler) reverseTicket(ctx context.Context, tx pgx.Tx, ticketID, reason
 	if err := store.WriteCommunityProjection(ctx, tx, ticketID); err != nil {
 		s.log.Warn().Err(err).Str("ticket", ticketID).Str("reason", reason).
 			Msg("community projection reverse (rollback) failed; continuing")
+	}
+	if err := store.ReverseAnalysisSettlementProjection(ctx, tx, ticketID); err != nil {
+		s.log.Warn().Err(err).Str("ticket", ticketID).Str("reason", reason).
+			Msg("analysis projection reverse (rollback) failed; continuing")
 	}
 	return true, nil
 }
