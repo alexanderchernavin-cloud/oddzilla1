@@ -17,7 +17,8 @@
     "./networks": "./src/networks.ts",
     "./zillatips": "./src/zillatips.ts",
     "./zillafacts": "./src/zillafacts.ts",
-    "./live-chat": "./src/live-chat.ts"
+    "./live-chat": "./src/live-chat.ts",
+    "./support": "./src/support.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

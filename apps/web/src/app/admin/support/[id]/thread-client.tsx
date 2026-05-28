@@ -8,11 +8,14 @@ import type {
   SupportAttachment,
   SupportMessage,
 } from "@oddzilla/types";
+// Deep subpath for value imports — Next's webpack can't chase every
+// `export * from './*.js'` re-export in the barrel index, so we hit
+// the leaf module directly. Mirrors the @oddzilla/types/money pattern.
 import {
   SUPPORT_ATTACHMENT_MAX_BYTES,
   SUPPORT_ATTACHMENT_MAX_PER_MESSAGE,
   SUPPORT_ATTACHMENT_MIME_TYPES,
-} from "@oddzilla/types";
+} from "@oddzilla/types/support";
 
 const ACCEPT_ATTR = SUPPORT_ATTACHMENT_MIME_TYPES.join(",");
 

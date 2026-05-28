@@ -33,11 +33,16 @@ import type {
   SupportMyThreadResponse,
   SupportThread,
 } from "@oddzilla/types";
+// Value imports go through the deep subpath so Next's webpack doesn't
+// have to chase every `export * from './*.js'` re-export in the
+// barrel index — same convention as `@oddzilla/types/money`,
+// `@oddzilla/types/live-chat`, etc. Type-only imports above can ride
+// the barrel because TS strips them before bundling.
 import {
   SUPPORT_ATTACHMENT_MAX_BYTES,
   SUPPORT_ATTACHMENT_MAX_PER_MESSAGE,
   SUPPORT_ATTACHMENT_MIME_TYPES,
-} from "@oddzilla/types";
+} from "@oddzilla/types/support";
 
 const MAX_BODY = 2000;
 const ACCEPT_ATTR = SUPPORT_ATTACHMENT_MIME_TYPES.join(",");
