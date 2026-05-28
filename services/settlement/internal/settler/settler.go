@@ -681,6 +681,14 @@ func (s *Settler) maybeSettleTicket(ctx context.Context, tx pgx.Tx, ticketID, so
 		s.log.Warn().Err(err).Str("ticket", t.ID).
 			Msg("analysis settlement projection write failed; continuing")
 	}
+	// Analyst reward: win-bonus Oz credit when the just-settled
+	// analysis outcome landed on 'won'. Runs AFTER the projection so
+	// analyses.outcome already reflects the win. Idempotent on the
+	// ledger's idempotency_key — replays no-op cleanly.
+	if err := store.CreditAnalysisWinBonus(ctx, tx, t.ID); err != nil {
+		s.log.Warn().Err(err).Str("ticket", t.ID).
+			Msg("analysis win-bonus credit failed; continuing")
+	}
 	// Phase 10.4 achievement evaluation. Idempotent on the (user_id,
 	// achievement_id) composite PK — re-runs are no-ops. Best-effort
 	// for the same reason as the projection write.

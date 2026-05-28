@@ -111,6 +111,64 @@ ON CONFLICT (user_id) DO UPDATE
 	return nil
 }
 
+// CreditAnalysisWinBonus credits the analysis author when their
+// just-settled analysis won. Runs after WriteAnalysisSettlementProjection
+// inside the same settler tx — by the time this fires,
+// analyses.outcome already reflects the win. Amount is stake-scaled
+// per OzFromStakeMicros (25% of stake, floor 1, cap 250).
+//
+// Idempotent: idempotency_key is `analysis_win_bonus:<analysis_id>`,
+// so a re-settle (e.g. after a rollback) doesn't double-credit. If
+// the analysis was reversed (outcome set back to NULL by
+// ReverseAnalysisSettlementProjection) and then re-settled to 'won'
+// again, the ledger still no-ops the second credit. This is correct
+// per the spec's "cashout voids reward" intent — once you've earned
+// the win bonus, replay shouldn't multiply it.
+//
+// Failure semantics match the other community writers — log + continue
+// at the call site; never unwind a settlement.
+func CreditAnalysisWinBonus(ctx context.Context, tx pgx.Tx, ticketID string) error {
+	// Find any published analysis attached to this ticket whose
+	// outcome is 'won'. Subquery is cheap — analyses_ticket_id_idx
+	// makes the lookup a single index scan. Almost every settled
+	// ticket has no analysis; the query returns 0 rows in that case
+	// and the credit is skipped.
+	var (
+		analysisID string
+		authorID   string
+		stakeMicro int64
+	)
+	const findQ = `
+SELECT a.id, a.author_id, t.stake_micro
+  FROM analyses a
+  JOIN tickets t ON t.id = a.ticket_id
+ WHERE a.ticket_id = $1
+   AND a.status   = 'published'
+   AND a.outcome  = 'won'
+ LIMIT 1
+`
+	err := tx.QueryRow(ctx, findQ, ticketID).Scan(&analysisID, &authorID, &stakeMicro)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil // No won analysis on this ticket — nothing to credit.
+		}
+		return fmt.Errorf("credit win bonus: find analysis: %w", err)
+	}
+
+	delta := OzFromStakeMicros(stakeMicro)
+	if _, err := CreditOz(ctx, tx, CreditOzInput{
+		UserID:         authorID,
+		Delta:          delta,
+		Reason:         "analysis_win_bonus",
+		SourceKind:     "analysis",
+		SourceID:       analysisID,
+		IdempotencyKey: fmt.Sprintf("analysis_win_bonus:%s", analysisID),
+	}); err != nil {
+		return fmt.Errorf("credit win bonus: %w", err)
+	}
+	return nil
+}
+
 // ReverseAnalysisSettlementProjection undoes a prior settlement of any
 // analysis attached to `ticketID`. Used by the bet_cancel and
 // rollback_bet_settlement paths so the analyses projection mirrors the
