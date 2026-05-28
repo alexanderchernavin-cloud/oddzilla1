@@ -727,12 +727,11 @@ body {
   }
 }
 
-/* ComboZilla carousel row. Two slots side-by-side on desktop; one
-   slot on mobile. Prev / next cycle buttons flank the cards and
-   collapse via visibility:hidden at the boundaries so the cards
-   don't jiggle. Desktop pages by 2 (the visible window size); mobile
-   pages by 1. SSR-safe: both desktop + mobile cycle buttons are in
-   the DOM and CSS picks the right one. */
+/* ComboZilla carousel row. All tier cards live in a single
+   horizontally-scrollable track with native scroll-snap. The header
+   carries the title + a pair of chevron buttons that scroll by one
+   card. Card widths are tuned so the next card peeks past the right
+   edge — that peek is the affordance that more content exists. */
 .oz-combozilla-row {
   display: flex;
   flex-direction: column;
@@ -743,50 +742,37 @@ body {
   align-items: center;
   gap: 12px;
 }
-.oz-combozilla-track-wrap {
-  display: grid;
-  /* Narrow gutters either side of the cards — the cycle buttons live
-     here at full-card height. */
-  grid-template-columns: 32px minmax(0, 1fr) 32px;
-  gap: 10px;
-  align-items: stretch;
-}
-.oz-combozilla-cycle-slot {
-  display: flex;
-  align-items: stretch;
-  justify-content: center;
-}
-.oz-combozilla-track {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-/* Tall narrow cycle buttons. Width fixed at 32 px; height stretches
-   to the card height via `align-items: stretch` on the parent grid
-   row. Icon is vertically centered inside. The `.oz-cycle-desktop`
-   / `.oz-cycle-mobile` classes drive per-breakpoint visibility — one
-   variant per side renders at any time, never both. */
-.oz-cycle {
-  width: 32px;
-  align-self: stretch;
+.oz-combozilla-nav {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  gap: 8px;
 }
-.oz-cycle.oz-cycle-mobile { display: none; }
-/* On desktop slot-A renders the desktop card, mobile card stays hidden.
-   On mobile slot-A renders the mobile card, slot-B is hidden entirely. */
-.oz-combozilla-card-desktop { display: block; }
-.oz-combozilla-card-mobile { display: none; }
-@media (max-width: 1099px) {
-  .oz-combozilla-track {
-    grid-template-columns: minmax(0, 1fr);
+.oz-combozilla-track {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none; /* Firefox */
+  /* Small bottom padding swallows the scrollbar gutter on touch
+     browsers that briefly expose it during a flick. */
+  padding-bottom: 2px;
+}
+.oz-combozilla-track::-webkit-scrollbar { display: none; }
+.oz-combozilla-card-slot {
+  flex: 0 0 calc((100% - 24px) / 2.15);
+  min-width: 0;
+  scroll-snap-align: start;
+  display: flex;
+}
+.oz-combozilla-card-slot > * { width: 100%; }
+@media (max-width: 699px) {
+  /* Mobile: one card with a peek of the next. */
+  .oz-combozilla-card-slot {
+    flex-basis: 88%;
   }
-  .oz-combozilla-slot[data-slot="b"] { display: none; }
-  .oz-combozilla-card-desktop { display: none; }
-  .oz-combozilla-card-mobile { display: block; }
-  .oz-cycle.oz-cycle-desktop { display: none; }
-  .oz-cycle.oz-cycle-mobile { display: inline-flex; }
 }
 
 @media (max-width: 1099px) {
