@@ -318,6 +318,32 @@ export type Analysis = typeof analyses.$inferSelect;
 export type NewAnalysis = typeof analyses.$inferInsert;
 export type AnalysisReaction = typeof analysisReactions.$inferSelect;
 
+// Per-viewer dedup ledger for analyses inspirations. Mirror of
+// community_ticket_inspirations but keyed on the analysis. See
+// migration 0077 for the rationale (pre-match copies have no
+// community_tickets row, so they need their own dedup).
+export const analysisInspirations = pgTable(
+  "analysis_inspirations",
+  {
+    analysisId: uuid()
+      .notNull()
+      .references(() => analyses.id, { onDelete: "cascade" }),
+    viewerId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    inspiredAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.analysisId, t.viewerId] }),
+    index("analysis_inspirations_viewer_idx").on(
+      t.viewerId,
+      sql`${t.inspiredAt} DESC`,
+    ),
+  ],
+);
+
+export type AnalysisInspiration = typeof analysisInspirations.$inferSelect;
+
 // ─── Oz ledger ──────────────────────────────────────────────────────────────
 //
 // Loyalty-point ledger for the analyst-rewards pipeline. V1 is earn-
