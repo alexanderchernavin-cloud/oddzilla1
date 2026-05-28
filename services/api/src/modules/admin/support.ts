@@ -15,8 +15,10 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
+import multipart from "@fastify/multipart";
 import {
   adminAuditLog,
+  supportAttachments,
   supportMessages,
   supportThreads,
   users,
@@ -30,22 +32,24 @@ import type {
 } from "@oddzilla/types";
 import { BadRequestError, NotFoundError } from "../../lib/errors.js";
 import {
+  ATTACHMENT_MAX_BYTES,
+  ATTACHMENT_MAX_PER_MESSAGE,
+  loadAttachmentsFor,
   mapMessage,
+  parseAttachmentPart,
   publishSupportFrame,
+  type ParsedAttachment,
   MESSAGE_PAGE_DEFAULT,
 } from "../support/shared.js";
 
 const UUID_SHAPE = /^[0-9a-f-]{36}$/i;
+const REPLY_BODY_MAX = 4000;
 
 const listQuery = z.object({
   cursor: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   filter: z.enum(["open", "closed", "unread", "all"]).default("open"),
   q: z.string().trim().max(200).optional(),
-});
-
-const replyBody = z.object({
-  body: z.string().trim().min(1).max(4000),
 });
 
 const writeRateLimit = {
@@ -106,6 +110,18 @@ async function loadAdminDisplayName(
 }
 
 export default async function adminSupportRoutes(app: FastifyInstance) {
+  // Multipart is local to this plugin scope so the other JSON-body
+  // /admin/support routes (close / reopen / mark-read) keep default
+  // parsing. Limits mirror the bettor side — see shared.ts constants.
+  await app.register(multipart, {
+    limits: {
+      fileSize: ATTACHMENT_MAX_BYTES,
+      files: ATTACHMENT_MAX_PER_MESSAGE,
+      fields: 4,
+      fieldSize: 4096 + REPLY_BODY_MAX, // headroom for the long reply body
+    },
+  });
+
   // ─── Inbox list ────────────────────────────────────────────────────────
   app.get("/admin/support/threads", async (request) => {
     request.requireRole("support");
@@ -250,6 +266,11 @@ export default async function adminSupportRoutes(app: FastifyInstance) {
       .orderBy(asc(supportMessages.id))
       .limit(MESSAGE_PAGE_DEFAULT * 5);
 
+    const attachmentsByMessage = await loadAttachmentsFor(
+      app.db,
+      messageRows.map((r) => r.id),
+    );
+
     const messages: SupportMessage[] = messageRows.map((r) => {
       const name =
         r.senderKind === "admin"
@@ -264,6 +285,7 @@ export default async function adminSupportRoutes(app: FastifyInstance) {
           body: r.body,
           createdAt: r.createdAt,
         },
+        attachmentsByMessage.get(String(r.id)) ?? [],
         name,
       );
     });
@@ -274,7 +296,10 @@ export default async function adminSupportRoutes(app: FastifyInstance) {
     };
   });
 
-  // ─── Reply ─────────────────────────────────────────────────────────────
+  // ─── Reply (multipart) ─────────────────────────────────────────────────
+  // Same multipart shape as the bettor POST: `body` text field + up to
+  // 5 `files[]` parts capped at 10 MiB each. body OR at least one file
+  // must be present.
   app.post(
     "/admin/support/threads/:id/reply",
     { config: writeRateLimit },
@@ -284,7 +309,46 @@ export default async function adminSupportRoutes(app: FastifyInstance) {
       if (!UUID_SHAPE.test(id)) {
         throw new NotFoundError("thread_not_found", "thread_not_found");
       }
-      const body = replyBody.parse(request.body);
+
+      if (!request.isMultipart()) {
+        throw new BadRequestError(
+          "multipart_required",
+          "multipart_required",
+        );
+      }
+
+      let bodyText = "";
+      const attachments: ParsedAttachment[] = [];
+
+      for await (const part of request.parts()) {
+        if (part.type === "field") {
+          if (part.fieldname === "body") {
+            const raw = typeof part.value === "string" ? part.value : "";
+            const trimmed = raw.trim();
+            bodyText =
+              trimmed.length > REPLY_BODY_MAX
+                ? trimmed.slice(0, REPLY_BODY_MAX)
+                : trimmed;
+          }
+          continue;
+        }
+        if (attachments.length >= ATTACHMENT_MAX_PER_MESSAGE) {
+          throw new BadRequestError(
+            "too_many_attachments",
+            "too_many_attachments",
+          );
+        }
+        attachments.push(await parseAttachmentPart(part));
+      }
+
+      const hasBody = bodyText.length > 0;
+      const hasAttachments = attachments.length > 0;
+      if (!hasBody && !hasAttachments) {
+        throw new BadRequestError(
+          "body_or_attachment_required",
+          "body_or_attachment_required",
+        );
+      }
 
       const result = await app.db.transaction(async (tx) => {
         const [thread] = await tx
@@ -306,10 +370,31 @@ export default async function adminSupportRoutes(app: FastifyInstance) {
             threadId: id,
             senderKind: "admin",
             senderUserId: admin.id,
-            body: body.body,
+            body: bodyText,
           })
           .returning();
         if (!msg) throw new Error("support message insert empty");
+
+        const insertedAttachments =
+          hasAttachments
+            ? await tx
+                .insert(supportAttachments)
+                .values(
+                  attachments.map((a) => ({
+                    messageId: msg.id,
+                    filename: a.filename,
+                    contentType: a.contentType,
+                    sizeBytes: a.data.length,
+                    data: a.data,
+                  })),
+                )
+                .returning({
+                  id: supportAttachments.id,
+                  filename: supportAttachments.filename,
+                  contentType: supportAttachments.contentType,
+                  sizeBytes: supportAttachments.sizeBytes,
+                })
+            : [];
 
         // Bump bettor-side unread + reset admin-side unread in one
         // statement. Operator who replied has implicitly acked any
@@ -331,18 +416,33 @@ export default async function adminSupportRoutes(app: FastifyInstance) {
           targetType: "support_thread",
           targetId: id,
           beforeJson: {},
-          afterJson: { len: body.body.length },
+          afterJson: {
+            len: bodyText.length,
+            attachments: attachments.length,
+          },
         });
 
         return {
           message: msg,
+          attachments: insertedAttachments,
           userId: thread.userId,
           unreadUser: thread.unreadUser + 1,
         };
       });
 
       const senderName = await loadAdminDisplayName(app, admin.id);
-      const mapped = mapMessage(result.message, senderName ?? "Support");
+      const attachmentDtos = result.attachments.map((row) => ({
+        id: String(row.id),
+        filename: row.filename,
+        contentType: row.contentType as SupportMessage["attachments"][number]["contentType"],
+        sizeBytes: row.sizeBytes,
+        url: `/support/attachments/${row.id}`,
+      }));
+      const mapped = mapMessage(
+        result.message,
+        attachmentDtos,
+        senderName ?? "Support",
+      );
 
       const frame: SupportMessageFrame = {
         type: "support_message",
