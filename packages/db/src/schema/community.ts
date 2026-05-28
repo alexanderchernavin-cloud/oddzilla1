@@ -318,6 +318,50 @@ export type Analysis = typeof analyses.$inferSelect;
 export type NewAnalysis = typeof analyses.$inferInsert;
 export type AnalysisReaction = typeof analysisReactions.$inferSelect;
 
+// ─── Oz ledger ──────────────────────────────────────────────────────────────
+//
+// Loyalty-point ledger for the analyst-rewards pipeline. V1 is earn-
+// only; the CHECK (delta > 0) in migration 0076 enforces that. See
+// the migration for the full rationale.
+
+export const ozLedger = pgTable(
+  "oz_ledger",
+  {
+    id: bigserial({ mode: "bigint" }).primaryKey(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    delta: bigint({ mode: "number" }).notNull(),
+    reason: text().notNull(),
+    sourceKind: text(),
+    sourceId: text(),
+    idempotencyKey: text().notNull().unique(),
+    createdBy: uuid().references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("oz_ledger_user_created_idx").on(t.userId, sql`${t.createdAt} DESC`),
+    index("oz_ledger_created_at_idx").on(sql`${t.createdAt} DESC`),
+    check("oz_ledger_delta_pos", sql`${t.delta} > 0`),
+  ],
+);
+
+export const ozBalanceUser = pgTable(
+  "oz_balance_user",
+  {
+    userId: uuid()
+      .primaryKey()
+      .references(() => users.id, { onDelete: "cascade" }),
+    balance: bigint({ mode: "number" }).notNull().default(0),
+    updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [check("oz_balance_user_nonneg", sql`${t.balance} >= 0`)],
+);
+
+export type OzLedgerEntry = typeof ozLedger.$inferSelect;
+export type NewOzLedgerEntry = typeof ozLedger.$inferInsert;
+export type OzBalance = typeof ozBalanceUser.$inferSelect;
+
 // ─── Competitions (Phase 11) ────────────────────────────────────────────────
 //
 // Operator-curated prediction games over a set of matches. Bettors join,
