@@ -77,6 +77,35 @@ export async function creditEngagementFloor(
   return { credited: credit.credited, delta };
 }
 
+// Inspirations milestone — flat +50 Oz credit when an analysis's
+// inspiration_count crosses from 499 → 500. From the Reward formula
+// V1 spec ("+50 Nets at 500 inspirations"); collapsed to Oz at the
+// same flat amount because at 500 inspirations the social-proof
+// signal is the reward, not the stake size — every author who hits
+// this milestone gets the same bonus.
+export const INSPIRATIONS_MILESTONE_THRESHOLD = 500;
+export const INSPIRATIONS_MILESTONE_OZ = 50;
+
+export interface InspirationsMilestoneInput {
+  analysisId: string;
+  authorId: string;
+}
+
+export async function creditInspirationsMilestone(
+  db: OzLedgerExecutor,
+  input: InspirationsMilestoneInput,
+): Promise<EngagementFloorResult> {
+  const credit = await creditOz(db, {
+    userId: input.authorId,
+    delta: INSPIRATIONS_MILESTONE_OZ,
+    reason: "analysis_inspirations_milestone",
+    sourceKind: "analysis",
+    sourceId: input.analysisId,
+    idempotencyKey: `analysis_inspirations_milestone:${input.analysisId}`,
+  });
+  return { credited: credit.credited, delta: INSPIRATIONS_MILESTONE_OZ };
+}
+
 // Re-export for callers — saves them an extra import.
 export type { OzLedgerExecutor };
 export type { DbClient };

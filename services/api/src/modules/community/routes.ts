@@ -46,7 +46,11 @@ import {
   analyses,
   analysisInspirations,
 } from "@oddzilla/db";
-import { creditEngagementFloor } from "./analyses-rewards.js";
+import {
+  creditEngagementFloor,
+  creditInspirationsMilestone,
+  INSPIRATIONS_MILESTONE_THRESHOLD,
+} from "./analyses-rewards.js";
 import type {
   CommunityProfile,
   CommunityMe,
@@ -608,11 +612,22 @@ export default async function communityRoutes(app: FastifyInstance) {
           // transaction observes "count == 10 after my bump" — the
           // others see 11, 12, … and skip. Ledger-side
           // idempotencyKey is the second line of defence.
-          if (bumped && Number(bumped.inspirationCount) === 10) {
+          const newCount = bumped ? Number(bumped.inspirationCount) : 0;
+          if (newCount === 10) {
             await creditEngagementFloor(tx, {
               analysisId: analysisRow.id,
               authorId: analysisRow.authorId,
               ticketStakeMicro: analysisRow.stakeMicro,
+            });
+          }
+          // Same crossing pattern at the 500-inspirations milestone.
+          // Both events can credit the same author over the analysis's
+          // lifetime — distinct reasons + distinct idempotency_keys
+          // mean they never collide at the ledger.
+          if (newCount === INSPIRATIONS_MILESTONE_THRESHOLD) {
+            await creditInspirationsMilestone(tx, {
+              analysisId: analysisRow.id,
+              authorId: analysisRow.authorId,
             });
           }
         });
