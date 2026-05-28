@@ -187,15 +187,27 @@ SELECT a.id, a.author_id, t.stake_micro
 // Idempotent: a second reverse against an already-cleared analysis
 // no-ops because `prior` is empty.
 func ReverseAnalysisSettlementProjection(ctx context.Context, tx pgx.Tx, ticketID string) error {
+	// Tricky bit: PostgreSQL's RETURNING always returns the NEW row
+	// after SET, so `RETURNING outcome` from the cleared UPDATE would
+	// be NULL — we'd lose the information we need to compute the
+	// decrement. Instead, capture (author_id, outcome) in a sibling
+	// SELECT CTE first. All CTEs in a single WITH share the same
+	// pre-statement snapshot, so `prior` sees the original outcome
+	// even though `cleared` is updating the same rows.
 	const q = `
 WITH prior AS (
-  UPDATE analyses
-     SET outcome    = NULL,
-         settled_at = NULL
+  SELECT id, author_id, outcome
+    FROM analyses
    WHERE ticket_id = $1
      AND status    = 'published'
      AND outcome   IS NOT NULL
-  RETURNING author_id, outcome
+),
+cleared AS (
+  UPDATE analyses
+     SET outcome    = NULL,
+         settled_at = NULL
+   WHERE id IN (SELECT id FROM prior)
+  RETURNING id
 ),
 adjustments AS (
   SELECT
@@ -220,6 +232,10 @@ UPDATE community_author_stats cas
   FROM adjustments a
  WHERE cas.user_id = a.author_id
    AND a.settled_delta > 0
+   -- Force the cleared CTE to materialise (Postgres prunes
+   -- unreferenced CTEs in some plans). EXISTS is cheap; the dedup
+   -- predicate is always true when prior had rows.
+   AND EXISTS (SELECT 1 FROM cleared)
 `
 	if _, err := tx.Exec(ctx, q, ticketID); err != nil {
 		return fmt.Errorf("reverse analysis settlement projection: %w", err)
