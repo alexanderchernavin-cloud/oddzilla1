@@ -1,7 +1,7 @@
 "use client";
 
 import type { CSSProperties, JSX, ReactNode } from "react";
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useBetSlip } from "@/lib/bet-slip";
 import { useOddsFlash } from "@/lib/use-odds-flash";
 import {
@@ -21,12 +21,11 @@ import {
   type TierKey,
 } from "@/lib/three-fold-builder";
 
-// ComboZilla rebrand: the existing four pre-built parlays are now
-// surfaced as a horizontally-paged carousel. Desktop renders two cards
-// at a time; mobile renders one. A single cycle button advances by 1
-// slot and wraps. Its label reflects whichever tier slides INTO view
-// next, so the affordance reads e.g. "Risky →" while the user is
-// currently looking at safe + challenging.
+// ComboZilla carousel. All tier cards live in a single horizontally
+// scrollable track with native scroll-snap. Desktop renders ~2 cards
+// with the next peeking on the right; mobile renders ~1 card with a
+// peek. Header arrow buttons scroll by one card and disable at the
+// boundaries; touch/wheel/drag also scroll natively and snap.
 
 interface TierMeta {
   key: TierKey;
@@ -102,27 +101,48 @@ export function ThreeFoldCards({
   // socket as ticks above.
   const marketStatuses = useLiveMarketStatusForMatches(matchIds);
 
-  // First-visible tier index. Desktop renders [first, first+1]; mobile
-  // renders [first]. Pagination differs per breakpoint:
-  //   - Desktop (2 cards per page): wraparound + symmetric. With the
-  //     per-sport cap the carousel is almost always exactly 2 pages,
-  //     so prev from page 0 lands on the last page and next from the
-  //     last page lands on page 0 — both buttons always visible, and
-  //     for the 2-page case they resolve to the same destination.
-  //   - Mobile (1 card per page): boundary semantics, no wraparound.
-  //     The prev button hides on the first page and the next button
-  //     hides on the last page — the icons therefore advertise
-  //     different tiers per side, matching the original behaviour.
-  // Cycle buttons are icon-only — the icon is the tier that would land
-  // in the leftmost slot after pressing.
-  const N = visibleTiers.length;
-  const [first, setFirst] = useState(0);
-  // Clamp the desktop view if the state was set via mobile navigation
-  // to an index that would put the second visible slot past the end.
-  const desktopFirst = Math.max(0, Math.min(first, N - 2));
-  const mobileFirst = Math.max(0, Math.min(first, N - 1));
+  // Scroll boundary state — drives the disabled state of the header
+  // arrows. Updated on scroll + resize via a single rAF-coalesced
+  // listener so wheel/touch/drag stay in sync with button clicks.
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const [canPrev, setCanPrev] = useState(false);
+  const [canNext, setCanNext] = useState(true);
 
-  if (N === 0) return null;
+  const updateBoundaries = useCallback(() => {
+    const el = trackRef.current;
+    if (!el) return;
+    // 2-px epsilon to absorb subpixel rounding after smooth-scroll.
+    const epsilon = 2;
+    setCanPrev(el.scrollLeft > epsilon);
+    setCanNext(el.scrollLeft + el.clientWidth < el.scrollWidth - epsilon);
+  }, []);
+
+  useEffect(() => {
+    const el = trackRef.current;
+    if (!el) return;
+    updateBoundaries();
+    el.addEventListener("scroll", updateBoundaries, { passive: true });
+    const ro = new ResizeObserver(updateBoundaries);
+    ro.observe(el);
+    return () => {
+      el.removeEventListener("scroll", updateBoundaries);
+      ro.disconnect();
+    };
+  }, [updateBoundaries, visibleTiers.length]);
+
+  const scrollByOneCard = (direction: 1 | -1) => {
+    const el = trackRef.current;
+    if (!el) return;
+    const firstCard = el.querySelector<HTMLElement>("[data-card-slot]");
+    // Card width + flex-gap. The gap is fixed at 12 px in the CSS;
+    // querying computedStyle here avoids a magic number drifting out
+    // of sync, but the CSS variable would be even better long-term.
+    const cardWidth = firstCard ? firstCard.offsetWidth : el.clientWidth;
+    const gap = parseFloat(getComputedStyle(el).columnGap || "0") || 12;
+    el.scrollBy({ left: direction * (cardWidth + gap), behavior: "smooth" });
+  };
+
+  if (visibleTiers.length === 0) return null;
 
   const handle = (legs: ThreeFoldLeg[]) => {
     slip.clear();
@@ -152,46 +172,9 @@ export function ThreeFoldCards({
     slip.setOpen(true);
   };
 
-  // Tiers shown in each visible slot.
-  const slotA = visibleTiers[desktopFirst]!;
-  const slotB = visibleTiers[Math.min(desktopFirst + 1, N - 1)]!;
-  const mobileTier = visibleTiers[mobileFirst]!;
-
-  // Where each cycle button would land. Desktop uses wraparound so
-  // both buttons stay visible on every page; mobile uses bounded
-  // navigation so the prev / next icons differ (and one hides at the
-  // boundary).
-  const desktopLastFirst = Math.max(0, N - 2);
-  const desktopPrevFirst =
-    desktopFirst <= 0 ? desktopLastFirst : Math.max(0, desktopFirst - 2);
-  const desktopNextFirst =
-    desktopFirst >= desktopLastFirst ? 0 : Math.min(desktopFirst + 2, desktopLastFirst);
-  const mobilePrevFirst = Math.max(mobileFirst - 1, 0);
-  const mobileNextFirst = Math.min(mobileFirst + 1, N - 1);
-
-  const desktopPrevTier = visibleTiers[desktopPrevFirst] ?? null;
-  const desktopNextTier = visibleTiers[desktopNextFirst] ?? null;
-  const mobilePrevTier = visibleTiers[mobilePrevFirst] ?? null;
-  const mobileNextTier = visibleTiers[mobileNextFirst] ?? null;
-
-  // Desktop buttons present whenever there's a second window to cycle
-  // to (N > 2). Mobile keeps the boundary behaviour — prev hidden at
-  // the first page, next hidden at the last page.
-  const canPrevDesktop = N > 2;
-  const canNextDesktop = N > 2;
-  const canPrevMobile = mobileFirst > 0;
-  const canNextMobile = mobileFirst + 1 < N;
-
-  const renderCard = (tier: TierMeta) => (
-    <Card
-      key={tier.key}
-      tier={tier}
-      suggestion={suggestions[tier.key]!}
-      ticks={ticks}
-      onActivate={handle}
-      boostCfg={boostCfg}
-    />
-  );
+  // Hide the nav entirely if there's nothing to scroll — keeps a
+  // single visible tier from showing two dead-disabled chevrons.
+  const showNav = canPrev || canNext;
 
   return (
     <section className="oz-combozilla-row" aria-label="ComboZilla">
@@ -220,138 +203,113 @@ export function ThreeFoldCards({
             ComboZilla
           </span>
         </div>
+        <span style={{ flex: 1 }} />
+        {showNav && (
+          <div className="oz-combozilla-nav">
+            <ArrowButton
+              direction="prev"
+              disabled={!canPrev}
+              ariaLabel={t("cyclePrevGeneric")}
+              onClick={() => scrollByOneCard(-1)}
+            />
+            <ArrowButton
+              direction="next"
+              disabled={!canNext}
+              ariaLabel={t("cycleNextGeneric")}
+              onClick={() => scrollByOneCard(1)}
+            />
+          </div>
+        )}
       </header>
-      <div className="oz-combozilla-track-wrap">
-        <div className="oz-combozilla-cycle-slot" data-side="prev">
-          <CycleButton
-            className="oz-cycle-desktop"
-            direction="prev"
-            tier={desktopPrevTier}
-            visible={canPrevDesktop}
-            ariaLabel={
-              desktopPrevTier
-                ? t("cyclePrev", { tier: desktopPrevTier.label })
-                : t("cyclePrevGeneric")
-            }
-            onClick={() => setFirst(desktopPrevFirst)}
-          />
-          <CycleButton
-            className="oz-cycle-mobile"
-            direction="prev"
-            tier={mobilePrevTier}
-            visible={canPrevMobile}
-            ariaLabel={
-              mobilePrevTier
-                ? t("cyclePrev", { tier: mobilePrevTier.label })
-                : t("cyclePrevGeneric")
-            }
-            onClick={() => setFirst(mobilePrevFirst)}
-          />
-        </div>
-        <div className="oz-combozilla-track">
-          <div className="oz-combozilla-slot" data-slot="a">
-            {/* Desktop pulls from slotA; mobile pulls from mobileTier */}
-            <div className="oz-combozilla-card-desktop">{renderCard(slotA)}</div>
-            <div className="oz-combozilla-card-mobile">{renderCard(mobileTier)}</div>
+      <div className="oz-combozilla-track" ref={trackRef}>
+        {visibleTiers.map((tier) => (
+          <div key={tier.key} className="oz-combozilla-card-slot" data-card-slot>
+            <Card
+              tier={tier}
+              suggestion={suggestions[tier.key]!}
+              ticks={ticks}
+              onActivate={handle}
+              boostCfg={boostCfg}
+            />
           </div>
-          <div className="oz-combozilla-slot" data-slot="b">
-            {renderCard(slotB)}
-          </div>
-        </div>
-        <div className="oz-combozilla-cycle-slot" data-side="next">
-          <CycleButton
-            className="oz-cycle-desktop"
-            direction="next"
-            tier={desktopNextTier}
-            visible={canNextDesktop}
-            ariaLabel={
-              desktopNextTier
-                ? t("cycleNext", { tier: desktopNextTier.label })
-                : t("cycleNextGeneric")
-            }
-            onClick={() => setFirst(desktopNextFirst)}
-          />
-          <CycleButton
-            className="oz-cycle-mobile"
-            direction="next"
-            tier={mobileNextTier}
-            visible={canNextMobile}
-            ariaLabel={
-              mobileNextTier
-                ? t("cycleNext", { tier: mobileNextTier.label })
-                : t("cycleNextGeneric")
-            }
-            onClick={() => setFirst(mobileNextFirst)}
-          />
-        </div>
+        ))}
       </div>
     </section>
   );
 }
 
-// Icon-only carousel button. Tall and narrow — matches the card
-// height via `align-self: stretch` driven by the surrounding grid
-// (`.oz-combozilla-track-wrap { align-items: stretch }`). Renders
-// the tier that would slide into the leftmost slot after pressing,
-// so the icon alone communicates the discount / risk-tier flavour.
-//
-// Visibility is driven by CSS classes (.oz-cycle-desktop /
-// .oz-cycle-mobile), one of which display:none's per breakpoint.
-// Crucially: NO inline `display` here, or the class rule would be
-// overridden and BOTH desktop + mobile buttons would render side by
-// side. The previous version had this bug.
-//
-// When `visible` is false the button stays mounted but hidden via
-// visibility:hidden so the cards don't shift sideways. On desktop
-// that only happens when N <= 2 (one window covers every tier); on
-// mobile it happens at the boundaries (prev hidden on the first
-// page, next hidden on the last), which is the original behaviour.
-function CycleButton({
-  className,
+// Header chevron button. Sits in the top-right of the ComboZilla
+// header next to the title; scrolls the track by one card. Stays
+// mounted but `disabled` (opacity 0.5) at the boundaries so the
+// header chrome doesn't shift when reaching the start or end.
+function ArrowButton({
   direction,
-  tier,
-  visible,
+  disabled,
   ariaLabel,
   onClick,
 }: {
-  className: string;
   direction: "prev" | "next";
-  tier: TierMeta | null;
-  visible: boolean;
+  disabled: boolean;
   ariaLabel: string;
   onClick: () => void;
 }) {
-  if (!tier) {
-    return <span className={`oz-cycle ${className}`} aria-hidden />;
-  }
   return (
     <button
       type="button"
-      className={`oz-cycle ${className}`}
       onClick={onClick}
+      disabled={disabled}
       aria-label={ariaLabel}
       title={ariaLabel}
+      data-direction={direction}
       style={{
+        width: 32,
+        height: 32,
         background: "var(--surface)",
         border: "1px solid var(--border)",
-        borderRadius: 12,
-        cursor: visible ? "pointer" : "default",
+        borderRadius: 10,
         color: "var(--fg)",
+        opacity: disabled ? 0.45 : 1,
+        cursor: disabled ? "default" : "pointer",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
         padding: 0,
-        visibility: visible ? "visible" : "hidden",
-        transition: "border-color 140ms var(--ease)",
+        transition: "border-color 140ms var(--ease), opacity 140ms var(--ease)",
       }}
       onMouseEnter={(e) => {
-        (e.currentTarget as HTMLButtonElement).style.borderColor =
-          "var(--fg-muted)";
+        if (!disabled) {
+          (e.currentTarget as HTMLButtonElement).style.borderColor =
+            "var(--fg-muted)";
+        }
       }}
       onMouseLeave={(e) => {
-        (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--border)";
+        (e.currentTarget as HTMLButtonElement).style.borderColor =
+          "var(--border)";
       }}
-      data-direction={direction}
     >
-      <tier.Icon size={20} color={tier.accent} />
+      <ChevronGlyph direction={direction} />
     </button>
+  );
+}
+
+function ChevronGlyph({ direction }: { direction: "prev" | "next" }) {
+  return (
+    <svg
+      width={14}
+      height={14}
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden
+      style={{ transform: direction === "prev" ? "rotate(180deg)" : undefined }}
+    >
+      <path
+        d="m6 4 4 4-4 4"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }
 
