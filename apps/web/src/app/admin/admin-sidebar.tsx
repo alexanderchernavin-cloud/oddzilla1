@@ -25,7 +25,7 @@ interface Item {
   // Key identifying a runtime badge count source. The sidebar polls
   // the matching count and renders a numeric pill on the link.
   // Currently "deposits-alerts" + "emails-unread" are wired.
-  badgeKey?: "deposits-alerts" | "emails-unread";
+  badgeKey?: "deposits-alerts" | "emails-unread" | "support-unread";
 }
 
 interface Section {
@@ -83,6 +83,13 @@ const SECTIONS: Section[] = [
         Icon: I.Bell,
         matchPrefix: "/admin/emails",
         badgeKey: "emails-unread",
+      },
+      {
+        href: "/admin/support",
+        label: "Support chat",
+        Icon: I.Bell,
+        matchPrefix: "/admin/support",
+        badgeKey: "support-unread",
       },
       { href: "/admin/audit", label: "Audit", Icon: I.Clock, matchPrefix: "/admin/audit" },
       { href: "/admin/feed", label: "Feed", Icon: I.Live, matchPrefix: "/admin/feed" },
@@ -211,12 +218,15 @@ export function AdminSidebar() {
     let cancelled = false;
     async function refresh() {
       try {
-        const [deposits, emails] = await Promise.all([
+        const [deposits, emails, support] = await Promise.all([
           clientApi<{ total: number }>("/admin/deposits/alert-counts").catch(
             () => ({ total: 0 }),
           ),
           clientApi<{ unread: number; threads: number }>(
             "/admin/emails/unread-count",
+          ).catch(() => ({ unread: 0, threads: 0 })),
+          clientApi<{ unread: number; threads: number }>(
+            "/admin/support/unread-count",
           ).catch(() => ({ unread: 0, threads: 0 })),
         ]);
         if (!cancelled) {
@@ -227,6 +237,7 @@ export function AdminSidebar() {
             // badge is "how many conversations need attention", which is
             // more actionable than a message tally.
             "emails-unread": emails.threads,
+            "support-unread": support.threads,
           }));
         }
       } catch (e) {

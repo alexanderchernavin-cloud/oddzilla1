@@ -64,6 +64,8 @@ import riskzillaRoutes from "./modules/admin/riskzilla/routes.js";
 import zillapassUserRoutes from "./modules/zillapass/routes.js";
 import adminZillapassRoutes from "./modules/admin/zillapass.js";
 import adminEmailsRoutes from "./modules/admin/emails.js";
+import adminSupportRoutes from "./modules/admin/support.js";
+import supportUserRoutes from "./modules/support/routes.js";
 import { startPushOutboxWorker, type PushWorkerHandle } from "./modules/push/worker.js";
 import { startEmailOutboxWorker, type EmailWorkerHandle } from "./modules/email/worker.js";
 import inboundEmailRoutes from "./modules/email/inbound/routes.js";
@@ -268,6 +270,8 @@ await app.register(riskzillaRoutes);
 await app.register(zillapassUserRoutes);
 await app.register(adminZillapassRoutes);
 await app.register(adminEmailsRoutes);
+await app.register(adminSupportRoutes);
+await app.register(supportUserRoutes);
 await app.register(inboundEmailRoutes);
 
 app.get("/", async () => ({ service: "oddzilla-api", status: "ok" }));

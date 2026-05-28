@@ -22,7 +22,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { openSocket } from "./ws-client";
 import type { LiveScore } from "./live-score";
-import type { LiveChatBroadcastFrame } from "@oddzilla/types";
+import type { LiveChatBroadcastFrame, SupportMessageFrame } from "@oddzilla/types";
 
 export interface LiveOddsTick {
   marketId: string;
@@ -89,6 +89,8 @@ type TicketListener = (frame: TicketFrame) => void;
 
 type ChatFrameListener = (frame: LiveChatBroadcastFrame) => void;
 
+type SupportFrameListener = (frame: SupportMessageFrame) => void;
+
 interface SharedConnection {
   socket: WebSocket | null;
   opening: boolean;
@@ -128,6 +130,10 @@ interface SharedConnection {
     { matchIds: Set<string>; onFrame: ChatFrameListener }
   >;
   ticketListeners: Set<TicketListener>;
+  // Live support-chat frames pushed on the same user:{id} Redis channel
+  // as ticket frames. The floating widget registers one listener; the
+  // gateway forwards the JSON verbatim, we route by `type` field below.
+  supportListeners: Set<SupportFrameListener>;
   reconnectAttempts: number;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   // Bumped on every "open" event and decremented on close. UI uses
@@ -158,6 +164,7 @@ export function getShared(): SharedConnection {
       scoreListeners: new Map(),
       chatListeners: new Map(),
       ticketListeners: new Set(),
+      supportListeners: new Set(),
       reconnectAttempts: 0,
       reconnectTimer: null,
       connectionGeneration: 0,
@@ -315,6 +322,16 @@ function ensureConnected(conn: SharedConnection) {
         for (const listener of conn.ticketListeners) listener(frame);
         return;
       }
+      // Live support chat — admin replies (and the bettor's own posts
+      // from other tabs) ride here. The api publishes the entire
+      // SupportMessageFrame shape on `user:{userId}`; ws-gateway
+      // forwards verbatim and we dispatch by `type`.
+      if (payload.type === "support_message") {
+        const frame = payload as unknown as SupportMessageFrame;
+        if (!frame.threadId || !frame.message) return;
+        for (const listener of conn.supportListeners) listener(frame);
+        return;
+      }
       // Chat fan-out frames. The matchId is always present (the
       // server-side publishers stamp it before publish) so we route
       // by it directly to interested listeners.
@@ -341,7 +358,8 @@ function ensureConnected(conn: SharedConnection) {
     const hasSubscribers =
       conn.subscriptionCounts.size > 0 ||
       conn.chatSubscriptionCounts.size > 0 ||
-      conn.ticketListeners.size > 0;
+      conn.ticketListeners.size > 0 ||
+      conn.supportListeners.size > 0;
     if (!hasSubscribers) return;
 
     // Exponential backoff with full jitter so a synchronised reconnect

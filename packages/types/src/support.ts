@@ -1,0 +1,91 @@
+// Shared support-chat types. Lives in packages/types so the api routes
+// and the storefront widget agree on the wire shape.
+
+export type SupportSenderKind = "user" | "admin" | "system";
+
+export type SupportThreadStatus = "open" | "closed";
+
+export interface SupportMessage {
+  id: string;
+  threadId: string;
+  senderKind: SupportSenderKind;
+  /** UUID of the user (bettor or operator) who posted. NULL for
+   * system messages (e.g. "Thread closed by support"). */
+  senderUserId: string | null;
+  /** Display name for the operator-side (admin nickname or "Support"
+   * fallback) so the storefront can render a friendly badge without
+   * a separate user-info lookup. NULL for bettor-sent / system rows. */
+  senderName?: string | null;
+  body: string;
+  /** ISO 8601. */
+  createdAt: string;
+}
+
+export interface SupportThread {
+  id: string;
+  userId: string;
+  status: SupportThreadStatus;
+  subject: string | null;
+  unreadUser: number;
+  unreadAdmin: number;
+  /** ISO 8601. */
+  lastMessageAt: string;
+  /** ISO 8601. */
+  createdAt: string;
+  /** ISO 8601 or null when status='open'. */
+  closedAt: string | null;
+}
+
+/** Response of `GET /support/me/thread`. Returns null only when the
+ * user has never posted (no thread exists yet). */
+export interface SupportMyThreadResponse {
+  thread: SupportThread | null;
+  messages: SupportMessage[];
+}
+
+/** WS frame the api publishes on the `user:{userId}` Redis channel
+ * after a bettor or operator posts. Fan-out by ws-gateway. The
+ * floating widget listens for these to refresh without polling. */
+export interface SupportMessageFrame {
+  type: "support_message";
+  threadId: string;
+  message: SupportMessage;
+  /** Latest unread counter for the bettor side (i.e. messages from
+   * admin/system the bettor hasn't acked). Mirrors what
+   * `GET /support/me/thread` returns so the widget badge can update
+   * without an extra round-trip. */
+  unreadUser: number;
+}
+
+/** Admin-side summary returned by the inbox list. */
+export interface AdminSupportThreadSummary {
+  id: string;
+  userId: string;
+  userEmail: string;
+  userNickname: string | null;
+  status: SupportThreadStatus;
+  subject: string | null;
+  unreadAdmin: number;
+  unreadUser: number;
+  lastMessageAt: string;
+  createdAt: string;
+  closedAt: string | null;
+  /** Body preview of the most recent message (any sender), trimmed
+   * to 240 chars. Lets the inbox row show a one-liner without a
+   * second query. */
+  preview: string | null;
+}
+
+export interface AdminSupportThreadDetail {
+  thread: AdminSupportThreadSummary;
+  messages: SupportMessage[];
+}
+
+export interface AdminSupportUnreadCount {
+  /** Sum of `unread_admin` over open threads — message-level. */
+  unread: number;
+  /** Count of distinct open threads with `unread_admin > 0`. The
+   * sidebar prefers this since "5 conversations waiting" is more
+   * actionable than "27 messages". */
+  threads: number;
+}
