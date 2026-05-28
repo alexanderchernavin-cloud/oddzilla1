@@ -43,7 +43,10 @@ import {
   achievementDefinitions,
   userAchievements,
   avatarTemplates,
+  analyses,
+  analysisInspirations,
 } from "@oddzilla/db";
+import { creditEngagementFloor } from "./analyses-rewards.js";
 import type {
   CommunityProfile,
   CommunityMe,
@@ -557,6 +560,63 @@ export default async function communityRoutes(app: FastifyInstance) {
             return true;
           })
         : false;
+
+      // Analyses-side inspiration counter. Lives in its own dedup
+      // table (analysis_inspirations, migration 0077) because the
+      // analyses signal is needed PRE-settlement — the existing
+      // community_ticket_inspirations path above gates on the post-
+      // settlement projection row and skips pre-match copies. When
+      // the bumped inspiration_count crosses 10 we credit the
+      // analysis author's Oz balance (Reward formula V1 mapping:
+      // engagement-floor reward). The credit is keyed off the
+      // analysis_id, so a retry that double-fires the +1 (which
+      // can't actually happen given the per-viewer dedup, but is
+      // worth defending against) is no-op'd at the ledger.
+      const [analysisRow] = await app.db
+        .select({
+          id: analyses.id,
+          authorId: analyses.authorId,
+          stakeMicro: tickets.stakeMicro,
+        })
+        .from(analyses)
+        .innerJoin(tickets, eq(tickets.id, analyses.ticketId))
+        .where(and(eq(analyses.ticketId, id), eq(analyses.status, "published")))
+        .limit(1);
+
+      if (analysisRow) {
+        await app.db.transaction(async (tx) => {
+          const inserted = await tx
+            .insert(analysisInspirations)
+            .values({ analysisId: analysisRow.id, viewerId: viewer.id })
+            .onConflictDoNothing()
+            .returning({ analysisId: analysisInspirations.analysisId });
+          if (inserted.length === 0) return;
+
+          const [bumped] = await tx
+            .update(analyses)
+            .set({
+              inspirationCount: sql`${analyses.inspirationCount} + 1`,
+            })
+            .where(eq(analyses.id, analysisRow.id))
+            .returning({
+              inspirationCount: analyses.inspirationCount,
+            });
+
+          // Engagement-floor crossing: the +1 we just applied lands
+          // the count exactly at 10. Even under concurrent inserts
+          // each viewer's dedup INSERT is atomic, so only one
+          // transaction observes "count == 10 after my bump" — the
+          // others see 11, 12, … and skip. Ledger-side
+          // idempotencyKey is the second line of defence.
+          if (bumped && Number(bumped.inspirationCount) === 10) {
+            await creditEngagementFloor(tx, {
+              analysisId: analysisRow.id,
+              authorId: analysisRow.authorId,
+              ticketStakeMicro: analysisRow.stakeMicro,
+            });
+          }
+        });
+      }
 
       // Emit `pick_copied` to the ticket owner only on a fresh
       // inspiration. The emit helper itself drops self-emits, but
