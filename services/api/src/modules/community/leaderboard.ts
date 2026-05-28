@@ -57,6 +57,7 @@ interface RawLeaderboardRow {
   roiPct: string | null;
   recentOutcomes: string[] | null;
   lastPublishedAt: string | null;
+  isExpert: boolean;
 }
 
 export default async function communityLeaderboardRoutes(app: FastifyInstance) {
@@ -231,7 +232,20 @@ SELECT
   COALESCE(s.wins, 0)::int          AS "wins",
   s.roi_pct                         AS "roiPct",
   s.recent_outcomes                 AS "recentOutcomes",
-  s.last_published_at               AS "lastPublishedAt"
+  s.last_published_at               AS "lastPublishedAt",
+  -- Real Expert flag. Sport-filtered view scopes to that sport;
+  -- all-sports view returns true if the user is Expert in ANY sport.
+  -- valid_until > now() filter excludes expired nominations.
+  EXISTS (
+    SELECT 1 FROM community_experts ce
+     WHERE ce.user_id = u.id
+       AND ce.valid_until > now()
+       ${
+         q.sport !== null
+           ? sql`AND ce.sport_id = (SELECT id FROM sports WHERE slug = ${q.sport}::text)`
+           : sql``
+       }
+  )                                 AS "isExpert"
   FROM users u
   -- The leaderboard's row set is the union of (users with Oz earned)
   -- and (users with analyses published) inside the window. FULL OUTER
@@ -269,9 +283,10 @@ function shapeRow(r: RawLeaderboardRow, rank: number): LeaderboardRow {
     wins: r.wins,
     roiPct: r.roiPct === null ? null : Number(r.roiPct),
     recentOutcomes: recent,
-    // Visual-only cut-off matching the prototype's Stage 6 (Expert
-    // candidate marker at top-5). A future PR introducing a real
-    // community_experts table will replace this with a join.
+    isExpert: Boolean(r.isExpert),
+    // Visual cut-off matching the prototype's Stage 6 — divider
+    // sits between rank 5 and 6 regardless of who the top-5
+    // happen to be. Independent of the persisted isExpert flag.
     isExpertCandidate: rank <= 5,
   };
 }

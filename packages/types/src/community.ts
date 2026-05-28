@@ -458,9 +458,17 @@ export interface LeaderboardRow {
   // Last 5 settled outcomes inside the window, newest first. Drives
   // the mini W/L badges in the row.
   recentOutcomes: AnalysisOutcome[];
-  // Visual-only "Expert cut-off" indicator. v1 derives this from the
-  // rank position (top-5 = candidate); a future PR introducing a
-  // community_experts table will replace this with a real join.
+  // Real persisted Expert status from community_experts (0078). When
+  // the leaderboard is sport-filtered, this is true iff the user is
+  // an Expert in that sport; in the all-sports view, true iff the
+  // user is Expert in ANY sport.
+  isExpert: boolean;
+  // Visual cut-off indicator. v1 derives this from rank position
+  // (rank ≤ 5 = candidate slot), independent of the persisted
+  // isExpert flag — the divider sits between rank 5 and 6 regardless
+  // of whether any of the top-5 are actual Experts. A future PR
+  // running the spec's monthly auto-recalc folds these two concepts
+  // together.
   isExpertCandidate: boolean;
 }
 

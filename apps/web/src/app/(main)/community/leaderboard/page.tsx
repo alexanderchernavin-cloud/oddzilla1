@@ -203,12 +203,22 @@ function Row({ row, highlight = false }: { row: LeaderboardRow; highlight?: bool
         )}
       </div>
       <div className="min-w-0 flex-1">
-        <Link
-          href={`/u/${encodeURIComponent(row.nickname)}`}
-          className="block truncate text-sm font-semibold text-[var(--color-fg)] hover:underline"
-        >
-          {row.nickname}
-        </Link>
+        <div className="flex items-center gap-1.5">
+          <Link
+            href={`/u/${encodeURIComponent(row.nickname)}`}
+            className="block truncate text-sm font-semibold text-[var(--color-fg)] hover:underline"
+          >
+            {row.nickname}
+          </Link>
+          {row.isExpert && (
+            <span
+              title="Expert"
+              className="inline-flex shrink-0 items-center rounded-sm bg-[var(--color-accent)] px-1 py-0.5 text-[9px] font-bold uppercase tracking-wider text-[var(--color-accent-fg)]"
+            >
+              Expert
+            </span>
+          )}
+        </div>
         <div className="mt-0.5 flex items-center gap-2">
           <WLBadges results={row.recentOutcomes} />
           <span className="text-xs text-[var(--color-fg-muted)]">
