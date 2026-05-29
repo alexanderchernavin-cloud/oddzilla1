@@ -2,8 +2,8 @@
 
 Deploy, backup, observability, and incident response for the Hetzner CPX31
 deployment (4 vCPU / 8 GB / 160 GB; upgraded from CPX22 on 2026-05-11 to
-support the Next.js SSR replica fan-out). See [`CONNECT.md`](../CONNECT.md)
-for server access credentials.
+support the Next.js SSR replica fan-out). Access is SSH key-based as
+`team@178.104.174.24`.
 
 ## Server state (current)
 
@@ -800,9 +800,8 @@ in the same transaction.
 
 ## Access management
 
-- SSH keys in `/home/team/.ssh/authorized_keys`. Add/remove per
-  [`CONNECT.md`](../CONNECT.md).
-- VNC password rotation via `vncpasswd` on the box (see `CONNECT.md`).
+- SSH keys in `/home/team/.ssh/authorized_keys`. Add a collaborator by
+  appending their public key; remove by deleting their line.
 - Admin UI access is gated by `role='admin'` on the `users` row. Promote
   a user:
   ```sql

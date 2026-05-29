@@ -1,7 +1,8 @@
 # Hetzner provisioning
 
-Server: `178.104.174.24` (Hetzner CPX22, Ubuntu 24.04, shared `team` account).
-See [`../../CONNECT.md`](../../CONNECT.md) for access credentials and VNC instructions.
+Server: `178.104.174.24` (Hetzner CPX31, Ubuntu 24.04, shared `team` account).
+Access is SSH key-based — append collaborator public keys to
+`/home/team/.ssh/authorized_keys`.
 
 ## First-time setup
 

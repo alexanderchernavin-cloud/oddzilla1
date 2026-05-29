@@ -69,7 +69,7 @@ Each service has its own local README:
 - [packages/auth](packages/auth/README.md)
 - [packages/config](packages/config/README.md)
 
-Server access (Hetzner CPX22): [CONNECT.md](CONNECT.md).
+Server access (Hetzner CPX31): SSH key-based as `team@178.104.174.24`.
 
 ## Repository layout
 
