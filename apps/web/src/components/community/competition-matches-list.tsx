@@ -220,7 +220,7 @@ function PredictionForm({
               className={
                 "h-8 w-8 rounded-[6px] border text-xs font-semibold " +
                 (tip === opt
-                  ? "border-[var(--color-accent)] bg-[var(--color-accent)] text-[var(--color-on-accent)]"
+                  ? "border-[var(--color-accent)] bg-[var(--color-accent)] text-[var(--color-accent-fg)]"
                   : "border-[var(--color-border-strong)] text-[var(--color-fg)]")
               }
             >
@@ -232,7 +232,7 @@ function PredictionForm({
       <button
         type="submit"
         disabled={pending}
-        className="rounded-[8px] bg-[var(--color-accent)] px-3 py-1.5 text-xs font-semibold text-[var(--color-on-accent)] hover:opacity-90 disabled:opacity-60"
+        className="rounded-[8px] bg-[var(--color-accent)] px-3 py-1.5 text-xs font-semibold text-[var(--color-accent-fg)] hover:opacity-90 disabled:opacity-60"
       >
         {pending ? "Saving…" : initial ? "Update" : "Predict"}
       </button>

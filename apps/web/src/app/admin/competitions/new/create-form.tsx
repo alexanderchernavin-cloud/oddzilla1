@@ -367,7 +367,7 @@ export function CompetitionCreateForm() {
         <button
           type="submit"
           disabled={pending}
-          className="rounded-[10px] bg-[var(--color-accent)] px-5 py-2 text-sm font-semibold text-[var(--color-on-accent)] hover:opacity-90 disabled:opacity-60"
+          className="rounded-[10px] bg-[var(--color-accent)] px-5 py-2 text-sm font-semibold text-[var(--color-accent-fg)] hover:opacity-90 disabled:opacity-60"
         >
           {pending ? "Saving…" : "Save as draft"}
         </button>

@@ -24,7 +24,7 @@ export function CompetitionJoinButton({
     return (
       <a
         href="/login"
-        className="inline-flex items-center rounded-[10px] bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-on-accent)] hover:opacity-90"
+        className="inline-flex items-center rounded-[10px] bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-accent-fg)] hover:opacity-90"
       >
         Sign in to join
       </a>
@@ -79,7 +79,7 @@ export function CompetitionJoinButton({
             setPending(false);
           }
         }}
-        className="inline-flex items-center rounded-[10px] bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-on-accent)] hover:opacity-90 disabled:opacity-60"
+        className="inline-flex items-center rounded-[10px] bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-accent-fg)] hover:opacity-90 disabled:opacity-60"
       >
         {pending ? "Joining…" : "Join competition"}
       </button>

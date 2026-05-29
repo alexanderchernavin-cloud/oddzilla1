@@ -29,7 +29,7 @@ export default async function AdminCompetitionsPage() {
         </div>
         <Link
           href="/admin/competitions/new"
-          className="rounded-[10px] bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-on-accent)] hover:opacity-90"
+          className="rounded-[10px] bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-accent-fg)] hover:opacity-90"
         >
           + New competition
         </Link>

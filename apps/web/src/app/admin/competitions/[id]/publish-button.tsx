@@ -33,7 +33,7 @@ export function PublishButton({ competitionId }: { competitionId: string }) {
             setPending(false);
           }
         }}
-        className="rounded-[8px] bg-[var(--color-accent)] px-3 py-1.5 text-xs font-semibold text-[var(--color-on-accent)] hover:opacity-90 disabled:opacity-60"
+        className="rounded-[8px] bg-[var(--color-accent)] px-3 py-1.5 text-xs font-semibold text-[var(--color-accent-fg)] hover:opacity-90 disabled:opacity-60"
       >
         {pending ? "Publishing…" : "Publish"}
       </button>
