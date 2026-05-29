@@ -167,17 +167,11 @@ export const supportAttachments = pgTable(
       "support_attachments_size_range",
       sql`${t.sizeBytes} > 0 AND ${t.sizeBytes} <= 10485760`,
     ),
-    check(
-      "support_attachments_mime_allowed",
-      sql`${t.contentType} IN (
-        'image/png',
-        'image/jpeg',
-        'image/webp',
-        'image/gif',
-        'application/pdf',
-        'text/plain'
-      )`,
-    ),
+    // The MIME allowlist that lived here originally was dropped in
+    // migration 0077 — `Content-Disposition: attachment` + nosniff on
+    // the byte-serve route forces every download to save-to-disk, so
+    // any format is safe to store. Capped only by size + per-message
+    // count (5).
   ],
 );
 

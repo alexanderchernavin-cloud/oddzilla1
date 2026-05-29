@@ -10,29 +10,24 @@ export type SupportThreadStatus = "open" | "closed";
 export const SUPPORT_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 export const SUPPORT_ATTACHMENT_MAX_PER_MESSAGE = 5;
 
-/** MIME allowlist for chat attachments. Intentionally NO image/svg+xml
- * — SVG is served back to other users and can carry inline <script>,
- * so it stays out of the user-generated content safe set. */
-export const SUPPORT_ATTACHMENT_MIME_TYPES = [
-  "image/png",
-  "image/jpeg",
-  "image/webp",
-  "image/gif",
-  "application/pdf",
-  "text/plain",
-] as const;
-
-export type SupportAttachmentMime = (typeof SUPPORT_ATTACHMENT_MIME_TYPES)[number];
+/** Open MIME — any browser-supplied content type is accepted. The
+ * byte-serve route pins `Content-Disposition: attachment` plus
+ * `X-Content-Type-Options: nosniff`, so every download is a save-to-
+ * disk action and the browser cannot sniff its way into rendering a
+ * disguised script. Inline image preview in the chat bubble is gated
+ * on `contentType.startsWith("image/")`, which is a render-side
+ * choice — not a security boundary. */
+export type SupportAttachmentMime = string;
 
 export interface SupportAttachment {
   id: string;
   filename: string;
   contentType: SupportAttachmentMime;
   sizeBytes: number;
-  /** Byte-serve URL. Storefront + admin clients render image MIMEs as
-   * inline previews and everything else as a download link. The route
-   * gates access by thread ownership (bettor) or `support`/`admin`
-   * role (operator). */
+  /** Byte-serve URL. Storefront + admin clients render image content
+   * types as inline previews and everything else as a download link.
+   * The route gates access by thread ownership (bettor) or
+   * `support`/`admin` role (operator). */
   url: string;
 }
 
