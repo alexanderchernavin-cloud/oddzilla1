@@ -90,7 +90,13 @@ export const depositIntents = pgTable(
     rejectedAt: timestamp("rejected_at", { withTimezone: true }),
   },
   (t) => [
-    unique("deposit_intents_tx_unique").on(t.network, t.txHash),
+    // (network, tx_hash, log_index) so two ERC20 Transfers in one tx are
+    // distinct intents, not collapsed by ON CONFLICT (migration 0079).
+    // NULLS NOT DISTINCT keeps the degenerate NULL-log_index case to one
+    // row per tx.
+    unique("deposit_intents_tx_log_unique")
+      .on(t.network, t.txHash, t.logIndex)
+      .nullsNotDistinct(),
     check(
       "deposit_intents_amount_pos",
       sql`${t.amountMicro} IS NULL OR ${t.amountMicro} > 0`,

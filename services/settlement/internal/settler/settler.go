@@ -822,17 +822,23 @@ func (s *Settler) applyCancelToTickets(ctx context.Context, tx pgx.Tx, marketID 
 		// Reverse if previously settled. SKIP-LOCKED misses inside
 		// reverseSettledForCancel just no-op the ticket — another worker
 		// has it.
-		reversed, err := s.reverseSettledForCancel(ctx, tx, tid)
-		if err != nil {
+		// Reverse the wallet/ledger if the ticket was previously settled.
+		// SKIP-LOCKED misses just no-op (another worker holds it).
+		if _, err := s.reverseSettledForCancel(ctx, tx, tid); err != nil {
 			return nil, err
 		}
-		// If we reversed a previously-settled ticket, its selections on
-		// this market still hold the old result. Clear them so the
-		// void-then-resettle below has clean ground.
-		if reversed {
-			if err := store.ReverseSelectionsForTicketOnMarket(ctx, tx, tid, marketID); err != nil {
-				return nil, err
-			}
+		// Clear any prior per-leg result on this market BEFORE voiding —
+		// UNCONDITIONALLY, not only for previously-'settled' tickets. A
+		// still-'accepted' multibet can already carry a RESOLVED leg on this
+		// market: Oddin can settle a per-map market (resolving that leg) and
+		// then cancel it while other legs keep the ticket 'accepted'. The
+		// `result IS NULL` guard in VoidSelectionsForTicketOnMarket would
+		// otherwise skip that resolved leg, and the combo would later settle
+		// paying out on a market Oddin had cancelled (fund loss). Clearing to
+		// NULL first makes the subsequent void apply in every case — singles
+		// and accepted/settled multibets alike.
+		if err := store.ReverseSelectionsForTicketOnMarket(ctx, tx, tid, marketID); err != nil {
+			return nil, err
 		}
 		if err := store.VoidSelectionsForTicketOnMarket(ctx, tx, tid, marketID); err != nil {
 			return nil, err
