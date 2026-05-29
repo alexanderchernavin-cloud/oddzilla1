@@ -7,6 +7,7 @@ import type {
 } from "@oddzilla/types";
 import { serverApi } from "@/lib/server-fetch";
 import { Avatar } from "@/components/community/avatar";
+import { CommunityTabs } from "@/components/community/tabs";
 
 export const dynamic = "force-dynamic";
 
@@ -77,6 +78,12 @@ export default async function LeaderboardPage({
           Last 30 days
         </span>
       </header>
+
+      {/* Same tab strip as /community so users can hop between feed
+          surfaces. Active state is "leaderboard" here; the other tabs
+          link back to /community?tab=... */}
+      <CommunityTabs activeTab="leaderboard" />
+
 
       {/* Sport filter — chip row. "All" returns the unfiltered view;
           each sport slug toggles the ?sport= query param. */}
