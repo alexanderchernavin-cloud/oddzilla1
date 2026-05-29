@@ -94,10 +94,18 @@ export function compute(input: ComputeInput): ComputeOutput {
   if (!input.config.enabled) {
     return blank("feature_disabled");
   }
-  // Tiple/Tippot products have probability-driven payout schedules that
-  // don't reduce to stake × ticketOdds × Π(prob). Until they get their
+  // Products without a simple stake × ticketOdds × Π(prob) cashout model
+  // refuse to quote. Tiple/Tippot have probability-driven payout schedules.
+  // BetBuilder odds are non-multiplicative (Oddin's correlation model) AND
+  // its per-leg odds_at_placement is not server-validated (per-leg drift is
+  // skipped at placement), so the simple math both mis-prices it and would
+  // be bettor-controllable up to the payout cap. Until any of them gets its
   // own cashout engine, refuse to quote.
-  if (input.betType === "tiple" || input.betType === "tippot") {
+  if (
+    input.betType === "tiple" ||
+    input.betType === "tippot" ||
+    input.betType === "betbuilder"
+  ) {
     return blank("bet_type_unsupported");
   }
 

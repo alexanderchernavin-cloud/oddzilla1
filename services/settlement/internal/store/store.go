@@ -887,13 +887,25 @@ func nextPayoutRefID(ctx context.Context, tx pgx.Tx, ticketID, ledgerType string
 	); err != nil {
 		return "", fmt.Errorf("next payout ref id (lock): %w", err)
 	}
+	// Count generations across BOTH credit types (bet_payout + bet_refund),
+	// not just the type being written now. The generation suffix must be
+	// monotonic per ticket regardless of whether a given settle produced a
+	// payout or a refund: a rollback pairs its compensating 'adjustment' row
+	// to a credit by ref_id ALONE, so if a gen-1 payout (ref_id=ticketID)
+	// and a later gen-1 refund both took ref_id=ticketID, the refund's
+	// reversal would look already-compensated by the payout's adjustment and
+	// its own adjustment row would be silently dropped (reconciliation drift
+	// on alternating-result rollbacks). Counting across types gives each
+	// generation a distinct ref_id (ticketID, ticketID:2, …). ledgerType is
+	// retained for the caller's INSERT and intentionally does not scope this
+	// generation count.
 	var count int
 	err := tx.QueryRow(ctx, `
 SELECT COUNT(*) FROM wallet_ledger
  WHERE ref_type = 'ticket'
-   AND type = $2::wallet_tx_type
+   AND type IN ('bet_payout', 'bet_refund')
    AND (ref_id = $1 OR ref_id LIKE $1 || ':%')`,
-		ticketID, ledgerType,
+		ticketID,
 	).Scan(&count)
 	if err != nil {
 		return "", fmt.Errorf("next payout ref id: %w", err)

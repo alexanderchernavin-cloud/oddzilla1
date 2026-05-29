@@ -31,6 +31,7 @@ import {
   NotFoundError,
   ServiceUnavailableError,
 } from "../../lib/errors.js";
+import { buildSelectionId } from "./selection-id.js";
 
 // Shared singleton across betbuilder routes + bets service so both
 // paths reuse the same gRPC channel (keepalive + connection pool).
@@ -60,27 +61,9 @@ const quoteBody = z.object({
     .max(20),
 });
 
-/**
- * Build the Oddin selection_id wire format from internal pieces. Per the
- * OBB doc §2.4.1, the format is literally `<event>/<market>/<outcome>?<spec>`
- * where `<spec>` is `k1=v1&k2=v2` with values unencoded — the doc's
- * example uses `?variant=way:two&way=two` (literal colon). Running values
- * through encodeURIComponent breaks Oddin's parser; spec values come from
- * Oddin's own feed, so they're already safe (`way:two`, `total:over`,
- * numeric thresholds, etc. — no `&`, `=`, `?`, or `#`). Keys are sorted
- * lexicographically for stable round-trip with our markets.specifiers_hash.
- */
-function buildSelectionId(
-  eventUrn: string,
-  providerMarketId: number,
-  outcomeId: string,
-  specifiers: Record<string, string>,
-): string {
-  const keys = Object.keys(specifiers).sort();
-  const qs = keys.map((k) => `${k}=${specifiers[k]!}`).join("&");
-  const base = `${eventUrn}/${providerMarketId}/${outcomeId}`;
-  return qs ? `${base}?${qs}` : base;
-}
+// buildSelectionId moved to ./selection-id.ts — shared with bet placement
+// (services/api/src/modules/bets/service.ts) so the quote-time ids and the
+// placement-time reconstruction are byte-identical.
 
 /** Map Oddin's reject Code enum (proto) into our public union. */
 function mapRejectReason(code: number): BetBuilderQuoteRejectedResponse["reason"] {

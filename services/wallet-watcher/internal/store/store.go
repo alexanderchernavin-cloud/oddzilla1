@@ -105,17 +105,18 @@ type DiscoveredIntent struct {
 	LogIndex    int
 }
 
-// InsertDiscoveredIntent records a Transfer the discoverer attributed to
-// a linked wallet. Idempotent on (network, tx_hash) — if the user
-// already pasted this tx hash, we leave their pending row alone and
-// the processor's Inspect call will resolve it.
+// InsertDiscoveredIntent records a Transfer the discoverer attributed to a
+// linked wallet. Idempotent on (network, tx_hash, log_index) — re-scanning
+// the same block range re-inserts the same Transfer as a no-op, while a
+// SECOND USDC Transfer in the same tx (different log_index) is recorded as
+// its own intent rather than being silently dropped (migration 0079).
 func (s *Store) InsertDiscoveredIntent(ctx context.Context, d DiscoveredIntent) error {
 	_, err := s.pool.Exec(ctx, `
 INSERT INTO deposit_intents
   (user_id, network, tx_hash, from_address, to_address, amount_micro,
    block_number, block_hash, log_index, confirmations, status)
 VALUES ($1, $2::chain_network, $3, $4, $5, $6, $7, $8, $9, 0, 'confirming')
-ON CONFLICT (network, tx_hash) DO NOTHING`,
+ON CONFLICT (network, tx_hash, log_index) DO NOTHING`,
 		d.UserID, d.Network, d.TxHash, d.From, d.To, d.AmountMicro,
 		d.BlockNumber, d.BlockHash, d.LogIndex)
 	if err != nil {

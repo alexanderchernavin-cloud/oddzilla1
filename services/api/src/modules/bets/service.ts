@@ -39,6 +39,7 @@ import {
   combiBoostConfig,
   riskzillaLiveDelayConfig,
 } from "@oddzilla/db";
+import { buildSelectionId } from "../betbuilder/selection-id.js";
 import {
   DEFAULT_CURRENCY,
   DEFAULT_ODDS_DRIFT_TOLERANCE,
@@ -642,6 +643,43 @@ export class BetsService {
         const eventUrn = matchRow[0]?.providerUrn ?? "";
         if (!eventUrn) {
           throw new BadRequestError("match_not_open", "match_not_open");
+        }
+
+        // ── Bind OBB-priced selectionIds to the legs we persist + settle ──
+        // SessionInfo validates the (sessionId, selectionIds, odds) tuple,
+        // but the rows written to ticket_selections — which ALONE decide
+        // won/lost/void at settlement — come from req.selections. Without
+        // this check a client could price an easy builder (low odds) and
+        // submit req.selections pointing at a DIFFERENT, more-favourable leg
+        // set, then settle at the priced odds. Reconstruct each leg's
+        // canonical OBB id from the SAME sources the quote used (eventUrn +
+        // market.providerMarketId + outcomeId + market.specifiersJson) and
+        // require an exact set match against the OBB-priced ids.
+        const reconstructedIds = req.selections.map((s) => {
+          const m = marketByID.get(s.marketId);
+          if (!m || m.providerMarketId === null) {
+            throw new BadRequestError(
+              "betbuilder_selection_invalid",
+              "betbuilder_selection_invalid",
+            );
+          }
+          return buildSelectionId(
+            eventUrn,
+            m.providerMarketId,
+            s.outcomeId,
+            (m.specifiersJson ?? {}) as Record<string, string>,
+          );
+        });
+        const wantIds = [...reconstructedIds].sort();
+        const gotIds = [...req.betBuilder.selectionIds].sort();
+        if (
+          wantIds.length !== gotIds.length ||
+          wantIds.some((id, i) => id !== gotIds[i])
+        ) {
+          throw new BadRequestError(
+            "betbuilder_selection_mismatch",
+            "betbuilder_selection_mismatch",
+          );
         }
 
         let sessionInfo;

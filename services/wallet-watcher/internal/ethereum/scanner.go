@@ -15,6 +15,7 @@ package ethereum
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -240,8 +241,13 @@ func (v *Verifier) DiscoverIncoming(ctx context.Context) error {
 		}
 		userID, ok, err := v.st.LookupUserByWalletAddress(ctx, store.ChainERC20, lg.From)
 		if err != nil {
-			v.log.Warn().Err(err).Msg("lookup wallet address")
-			continue
+			// Fatal to the tick: returning (instead of continue) leaves the
+			// cursor un-advanced so this block range re-runs next tick. A
+			// `continue` here would skip attributing this USDC deposit AND
+			// still advance the cursor below — losing the credit forever
+			// (there is no paste-hash fallback). The INSERTs are unique-key
+			// guarded, so the retry is idempotent.
+			return fmt.Errorf("lookup wallet address (tx %s): %w", lg.TxHash, err)
 		}
 		if !ok {
 			// Sender not whitelisted — leave the deposit unattributed.
@@ -259,8 +265,10 @@ func (v *Verifier) DiscoverIncoming(ctx context.Context) error {
 			BlockHash:   lg.BlockHash,
 			LogIndex:    lg.LogIndex,
 		}); err != nil {
-			v.log.Warn().Err(err).Str("tx", lg.TxHash).Msg("insert discovered intent")
-			continue
+			// Fatal to the tick (do not advance the cursor) — see the
+			// lookup-error note above. A dropped INSERT here would silently
+			// lose a credited USDC deposit.
+			return fmt.Errorf("insert discovered intent (tx %s): %w", lg.TxHash, err)
 		}
 		attributed++
 	}
@@ -282,8 +290,9 @@ func (v *Verifier) DiscoverIncoming(ctx context.Context) error {
 		// pasted the hash and the inspect-path will tag it wrong_token).
 		exists, err := v.st.HasDepositIntentFor(ctx, string(store.ChainERC20), lg.TxHash)
 		if err != nil {
-			v.log.Warn().Err(err).Str("tx", lg.TxHash).Msg("has intent check")
-			continue
+			// Fatal to the tick — do not advance the cursor on a transient
+			// DB error; re-run the range next tick.
+			return fmt.Errorf("has deposit intent check (tx %s): %w", lg.TxHash, err)
 		}
 		if exists {
 			continue
@@ -303,8 +312,9 @@ func (v *Verifier) DiscoverIncoming(ctx context.Context) error {
 			TokenDecimalsKnown: info.DecimalsKnown,
 			AmountRaw:          lg.Amount.String(),
 		}); err != nil {
-			v.log.Warn().Err(err).Str("tx", lg.TxHash).Msg("insert unattributed deposit")
-			continue
+			// Fatal to the tick — do not advance the cursor on a transient
+			// DB error; re-run the range next tick (unique-key guarded).
+			return fmt.Errorf("insert unattributed deposit (tx %s): %w", lg.TxHash, err)
 		}
 		wrongToken++
 	}

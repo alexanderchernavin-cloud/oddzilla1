@@ -151,6 +151,32 @@ export interface ObbClient {
  * (no host / no token). The api routes branch on null and 503 the
  * /betbuilder/* surface — frontend silently hides the toggle.
  */
+// The proto-loader stub methods are typed with only the
+// (request, metadata, callback) overload, but grpc-js also accepts
+// (request, metadata, options, callback) at runtime — which is how we pass a
+// per-call deadline. Re-declare the three unary methods with the options arg
+// so the calls below stay fully typed (no `any`).
+interface ObbUnaryStub {
+  AvailableMarkets(
+    req: { eventUrn: string },
+    md: Metadata,
+    opts: { deadline: number },
+    cb: (err: ServiceError | null, res: AvailableMarketsResponseRaw) => void,
+  ): void;
+  SessionCreate(
+    req: { selectionIds: string[] },
+    md: Metadata,
+    opts: { deadline: number },
+    cb: (err: ServiceError | null, res: SessionCreateResponseRaw) => void,
+  ): void;
+  SessionInfo(
+    req: { sessionId: string; selections: Array<{ selectionId: string }>; odds: string },
+    md: Metadata,
+    opts: { deadline: number },
+    cb: (err: ServiceError | null, res: SessionInfoResponseRaw) => void,
+  ): void;
+}
+
 export function createObbClient(cfg: ObbConfig | null): ObbClient | null {
   if (!cfg) return null;
 
@@ -173,26 +199,30 @@ export function createObbClient(cfg: ObbConfig | null): ObbClient | null {
     "grpc.keepalive_timeout_ms": 10_000,
     "grpc.keepalive_permit_without_calls": 1,
   });
+  // Same runtime object; the cast just exposes the (req, md, options, cb)
+  // overload so we can attach a per-call deadline (see callOptions below).
+  const ostub = stub as unknown as ObbUnaryStub;
 
-  function withDeadline(): Metadata {
-    // Empty metadata; the deadline is set at call site via `options` we
-    // bypass through proto-loader's flexibility — cleaner to set it
-    // ourselves via grpc.Deadline. proto-loader's signature accepts
-    // (req, metadata, options, cb) where `options` carries `deadline`.
-    // To keep our wrapper simple (and avoid an `as any` dance), we set
-    // the deadline by manipulating the call object after the fact via
-    // the `Date`-based metadata convention is not supported — instead we
-    // signal cancellation via AbortController on the wrapper level. For
-    // now: rely on keepalive + connect timeout + the OBB caller's outer
-    // request timeout (Fastify routes have 30s default).
-    return new Metadata();
-  }
+  // Per-call hard deadline. SessionInfo runs INSIDE the bet-placement
+  // transaction, so an unbounded RPC would hold the placing user's row
+  // locks open for as long as Oddin hangs. grpc-js honours options.deadline
+  // (ms-since-epoch or Date) and cancels the call when it passes. 8s is
+  // generous for a single correlation-model lookup (normally sub-second);
+  // override via ODDIN_OBB_DEADLINE_MS.
+  const deadlineMs = (() => {
+    const v = Number(process.env.ODDIN_OBB_DEADLINE_MS);
+    return Number.isFinite(v) && v > 0 ? v : 8000;
+  })();
+  const callMeta = (): Metadata => new Metadata();
+  const callOptions = (): { deadline: number } => ({
+    deadline: Date.now() + deadlineMs,
+  });
 
   return {
     availableMarkets(eventUrn: string): Promise<AvailableMarketsResponseRaw> {
       return new Promise((resolve, reject) => {
-        const md = withDeadline();
-        stub.AvailableMarkets({ eventUrn }, md, (err, response) => {
+        const md = callMeta();
+        ostub.AvailableMarkets({ eventUrn }, md, callOptions(), (err, response) => {
           if (err) {
             reject(wrapGrpcError(err));
             return;
@@ -203,8 +233,8 @@ export function createObbClient(cfg: ObbConfig | null): ObbClient | null {
     },
     sessionCreate(selectionIds: string[]): Promise<SessionCreateResponseRaw> {
       return new Promise((resolve, reject) => {
-        const md = withDeadline();
-        stub.SessionCreate({ selectionIds }, md, (err, response) => {
+        const md = callMeta();
+        ostub.SessionCreate({ selectionIds }, md, callOptions(), (err, response) => {
           if (err) {
             reject(wrapGrpcError(err));
             return;
@@ -215,14 +245,15 @@ export function createObbClient(cfg: ObbConfig | null): ObbClient | null {
     },
     sessionInfo(args): Promise<SessionInfoResponseRaw> {
       return new Promise((resolve, reject) => {
-        const md = withDeadline();
-        stub.SessionInfo(
+        const md = callMeta();
+        ostub.SessionInfo(
           {
             sessionId: args.sessionId,
             selections: args.selectionIds.map((id) => ({ selectionId: id })),
             odds: args.oddsX10000.toString(),
           },
           md,
+          callOptions(),
           (err, response) => {
             if (err) {
               reject(wrapGrpcError(err));
