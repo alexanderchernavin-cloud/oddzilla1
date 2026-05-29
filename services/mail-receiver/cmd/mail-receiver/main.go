@@ -31,9 +31,12 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -55,8 +58,12 @@ func main() {
 
 	relayClient := relay.New(cfg.WebhookURL, cfg.WebhookSecret)
 	backend := &Backend{
-		domain: cfg.Domain,
-		relay:  relayClient,
+		domain:          cfg.Domain,
+		relay:           relayClient,
+		maxConnsPerIP:   cfg.MaxConnsPerIP,
+		maxMsgsPerIPMin: cfg.MaxMsgsPerIPMin,
+		activeByIP:      make(map[string]int),
+		msgByIP:         make(map[string]*ipMsgWindow),
 	}
 
 	srv := smtp.NewServer(backend)
@@ -106,10 +113,12 @@ func main() {
 }
 
 type config struct {
-	Listen        string
-	Domain        string
-	WebhookURL    string
-	WebhookSecret string
+	Listen          string
+	Domain          string
+	WebhookURL      string
+	WebhookSecret   string
+	MaxConnsPerIP   int
+	MaxMsgsPerIPMin int
 }
 
 func loadConfig() (config, error) {
@@ -121,6 +130,12 @@ func loadConfig() (config, error) {
 		Domain:        envOrDefault("MAIL_RECEIVER_DOMAIN", "oddzilla.cc"),
 		WebhookURL:    os.Getenv("MAIL_WEBHOOK_URL"),
 		WebhookSecret: os.Getenv("SENDGRID_INBOUND_SECRET"),
+		// Abuse caps. The MX is public and unauthenticated, so without
+		// these a single source could open unlimited concurrent
+		// connections or fire unlimited messages (DoS + unbounded inbound
+		// storage). Tunable; 0 disables a given cap.
+		MaxConnsPerIP:   envIntOrDefault("MAIL_MAX_CONNS_PER_IP", 10),
+		MaxMsgsPerIPMin: envIntOrDefault("MAIL_MAX_MSGS_PER_IP_MIN", 30),
 	}
 	if c.WebhookURL == "" {
 		return c, errors.New("MAIL_WEBHOOK_URL is required (e.g. http://api:3001/webhooks/sendgrid-inbound)")
@@ -138,27 +153,119 @@ func envOrDefault(name, def string) string {
 	return def
 }
 
+func envIntOrDefault(name string, def int) int {
+	if v := os.Getenv(name); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
 // ─── SMTP backend ──────────────────────────────────────────────────────────
 
+type ipMsgWindow struct {
+	count       int
+	windowStart time.Time
+}
+
 type Backend struct {
-	domain string
-	relay  *relay.Client
+	domain          string
+	relay           *relay.Client
+	maxConnsPerIP   int
+	maxMsgsPerIPMin int
+
+	mu         sync.Mutex
+	activeByIP map[string]int
+	msgByIP    map[string]*ipMsgWindow
+}
+
+// remoteIP extracts the bare host from a connection's remote address,
+// falling back to the raw string when it isn't host:port shaped.
+func remoteIP(c *smtp.Conn) string {
+	addr := c.Conn().RemoteAddr().String()
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
+	}
+	return addr
+}
+
+// acquireConn enforces the per-IP concurrent-connection cap. Returns false
+// when the IP is already at the cap; the caller rejects the session.
+func (b *Backend) acquireConn(ip string) bool {
+	if b.maxConnsPerIP <= 0 {
+		return true
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.activeByIP[ip] >= b.maxConnsPerIP {
+		return false
+	}
+	b.activeByIP[ip]++
+	return true
+}
+
+func (b *Backend) releaseConn(ip string) {
+	if b.maxConnsPerIP <= 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if n := b.activeByIP[ip]; n <= 1 {
+		delete(b.activeByIP, ip)
+	} else {
+		b.activeByIP[ip] = n - 1
+	}
+}
+
+// allowMessage enforces a per-IP fixed-window message rate. Returns false
+// when the IP has exhausted its quota for the current minute.
+func (b *Backend) allowMessage(ip string, now time.Time) bool {
+	if b.maxMsgsPerIPMin <= 0 {
+		return true
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	w := b.msgByIP[ip]
+	if w == nil || now.Sub(w.windowStart) >= time.Minute {
+		b.msgByIP[ip] = &ipMsgWindow{count: 1, windowStart: now}
+		return true
+	}
+	if w.count >= b.maxMsgsPerIPMin {
+		return false
+	}
+	w.count++
+	return true
 }
 
 func (b *Backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
+	ip := remoteIP(c)
+	if !b.acquireConn(ip) {
+		log.Warn().Str("remote", ip).Int("max", b.maxConnsPerIP).
+			Msg("rejecting connection — per-IP cap reached")
+		return nil, &smtp.SMTPError{
+			Code:         421,
+			EnhancedCode: smtp.EnhancedCode{4, 7, 0},
+			Message:      "too many concurrent connections, slow down",
+		}
+	}
 	return &Session{
-		domain: b.domain,
-		relay:  b.relay,
+		backend: b,
+		ip:      ip,
+		domain:  b.domain,
+		relay:   b.relay,
 		log: log.With().
-			Str("remote", c.Conn().RemoteAddr().String()).
+			Str("remote", ip).
 			Logger(),
 	}, nil
 }
 
 type Session struct {
-	domain string
-	relay  *relay.Client
-	log    zerolog.Logger
+	backend *Backend
+	ip      string
+	domain  string
+	relay   *relay.Client
+	log     zerolog.Logger
 
 	from string
 	to   []string
@@ -188,6 +295,18 @@ func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 }
 
 func (s *Session) Data(r io.Reader) error {
+	// Per-IP message rate limit. Reject before buffering the body so a
+	// flood can't make us read 8 MiB per message. 451 = temporary failure,
+	// so a legitimate sender retries later.
+	if !s.backend.allowMessage(s.ip, time.Now()) {
+		s.log.Warn().Int("max", s.backend.maxMsgsPerIPMin).
+			Msg("rejecting message — per-IP rate cap reached")
+		return &smtp.SMTPError{
+			Code:         451,
+			EnhancedCode: smtp.EnhancedCode{4, 7, 0},
+			Message:      "rate limit exceeded, please retry later",
+		}
+	}
 	raw, err := io.ReadAll(io.LimitReader(r, 8*1024*1024))
 	if err != nil {
 		return &smtp.SMTPError{Code: 451, Message: "could not read data"}
@@ -222,4 +341,7 @@ func (s *Session) Reset() {
 	s.to = nil
 }
 
-func (s *Session) Logout() error { return nil }
+func (s *Session) Logout() error {
+	s.backend.releaseConn(s.ip)
+	return nil
+}

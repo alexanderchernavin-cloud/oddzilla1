@@ -30,17 +30,30 @@ export function normaliseMessageId(raw: string | null | undefined): string | nul
   return value.length > 0 ? value : null;
 }
 
-/** Extract every angle-bracketed id from a References header value.
- * Order is preserved — the spec says References is oldest-to-newest
- * so the LAST id is the most recent ancestor. */
+// RFC reply chains are short; only the most recent ancestors matter for
+// threading. Cap how many References ids we keep so a crafted megabyte-
+// sized header can't drive one DB round-trip per id inside the insert
+// transaction (amplification DoS reachable via the public MX).
+const MAX_REFERENCES_CHAIN = 20;
+
+/** Extract angle-bracketed ids from a References header value, deduped and
+ * capped to the newest MAX_REFERENCES_CHAIN. Order is preserved — the spec
+ * says References is oldest-to-newest so the LAST id is the most recent
+ * ancestor; we keep the tail (newest) when truncating. */
 export function parseReferencesChain(raw: string | null | undefined): string[] {
   if (!raw) return [];
+  const seen = new Set<string>();
   const ids: string[] = [];
   for (const match of raw.matchAll(/<([^>]+)>/g)) {
     const id = match[1]?.trim();
-    if (id && id.length > 0) ids.push(id);
+    if (id && id.length > 0 && !seen.has(id)) {
+      seen.add(id);
+      ids.push(id);
+    }
   }
-  return ids;
+  return ids.length > MAX_REFERENCES_CHAIN
+    ? ids.slice(ids.length - MAX_REFERENCES_CHAIN)
+    : ids;
 }
 
 /** Normalise a subject for fallback matching. Strips repeated reply /

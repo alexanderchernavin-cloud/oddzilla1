@@ -89,6 +89,22 @@ const MAX_SUBSCRIPTIONS_PER_CLIENT = 100;
 // At the cap we send HTTP 503 on the upgrade so the browser keeps its
 // existing exponential backoff (with jitter, see use-live-odds.ts).
 const MAX_CLIENTS = Number(process.env.WS_MAX_CLIENTS ?? 5000);
+// Hard cap on a single inbound WebSocket frame. The largest legitimate
+// client message is a subscribe envelope with up to
+// MAX_SUBSCRIPTIONS_PER_CLIENT match ids — a few KiB. Without this the
+// `ws` default is 100 MiB/frame: one anonymous frame (buffered, then
+// .toString()'d to ~2x as a UTF-16 string) OOM-kills the 256 MiB
+// container. ws auto-closes oversize frames with 1009 before allocating.
+const WS_MAX_PAYLOAD_BYTES = Number(process.env.WS_MAX_PAYLOAD_BYTES ?? 16 * 1024);
+// Per-connection inbound message rate limit (token bucket). A single
+// socket spamming subscribe/unsubscribe churns Redis SUBSCRIBE/UNSUBSCRIBE
+// and per-match refcounts; cap the sustained rate while allowing a burst.
+const WS_MSG_RATE_PER_SEC = Number(process.env.WS_MSG_RATE_PER_SEC ?? 20);
+const WS_MSG_BURST = Number(process.env.WS_MSG_BURST ?? 40);
+// Max concurrent connections from a single client IP (X-Forwarded-For
+// from Caddy, else the socket peer). Stops one source from eating the
+// global MAX_CLIENTS budget via a reconnect flood. 0 disables the cap.
+const WS_MAX_CLIENTS_PER_IP = Number(process.env.WS_MAX_CLIENTS_PER_IP ?? 50);
 // Idle sweep — every minute walk `clients` and drop entries whose
 // socket has already closed but `ws.on("close")` somehow never fired
 // (TCP-RST without a clean close, GFW-style packet drops). Defensive:
@@ -215,6 +231,12 @@ interface ClientState {
   // a chatty room can't push a client past MAX_SUBSCRIPTIONS_PER_CLIENT
   // by combining the two dimensions.
   chatMatchIds: Set<string>;
+  // Real client IP (X-Forwarded-For from Caddy, else socket peer). Held so
+  // the per-IP connection count can be released on disconnect.
+  ip: string;
+  // Per-connection inbound-message token bucket (see WS_MSG_* consts).
+  msgTokens: number;
+  msgLastRefillMs: number;
 }
 
 const clients = new Set<ClientState>();
@@ -238,6 +260,25 @@ const chatMatchRefs = new Map<string, number>();
 // for the chat dimension. Lets dispatchChat send to interested clients
 // in O(subscribers) instead of scanning every connected socket.
 const chatMatchSubscribers = new Map<string, Set<ClientState>>();
+// Concurrent connection count per client IP. Bounds a single source's
+// share of the global MAX_CLIENTS budget so one host can't reconnect-flood
+// the gateway off the air for everyone. Incremented on connection accept,
+// released on cleanup.
+const ipCounts = new Map<string, number>();
+
+// Real client IP for rate/connection accounting. Caddy overwrites
+// X-Forwarded-For with the true peer on the /ws upgrade (see Caddyfile
+// ws_proxy), so the first hop is trustworthy. Falls back to the socket peer
+// when XFF is absent (direct / dev connections).
+function clientIpOf(req: IncomingMessage): string {
+  const xff = req.headers["x-forwarded-for"];
+  const raw = Array.isArray(xff) ? xff[0] : xff;
+  if (raw) {
+    const first = raw.split(",")[0]?.trim();
+    if (first) return first;
+  }
+  return req.socket.remoteAddress ?? "unknown";
+}
 
 async function authenticate(req: IncomingMessage): Promise<AccessTokenClaims | null> {
   const cookieHeader = req.headers.cookie ?? "";
@@ -285,7 +326,7 @@ const http = createServer(async (req, res) => {
 
 // noServer lets us authenticate before accepting the upgrade — invalid
 // cookies get a proper HTTP 401 rather than being accepted then closed.
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, maxPayload: WS_MAX_PAYLOAD_BYTES });
 
 function extractRequestId(req: IncomingMessage): string | undefined {
   const raw = req.headers[REQUEST_ID_HEADER];
@@ -348,6 +389,23 @@ http.on("upgrade", (req, socket, head) => {
       socket.destroy();
       return;
     }
+    // Per-IP connection cap. Stops a single source from consuming the whole
+    // global budget via a reconnect flood. Read-only check here; the count
+    // is incremented when the connection is accepted and released on close.
+    if (WS_MAX_CLIENTS_PER_IP > 0) {
+      const ip = clientIpOf(req);
+      if ((ipCounts.get(ip) ?? 0) >= WS_MAX_CLIENTS_PER_IP) {
+        log.warn(
+          { ip, perIp: ipCounts.get(ip), max: WS_MAX_CLIENTS_PER_IP, requestId },
+          "rejecting upgrade — per-IP cap reached",
+        );
+        socket.write(
+          "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 5\r\nConnection: close\r\n\r\n",
+        );
+        socket.destroy();
+        return;
+      }
+    }
     log.debug(
       { userId: claims?.sub ?? null, requestId, clients: clients.size + 1 },
       "ws upgrade accepted",
@@ -359,14 +417,19 @@ http.on("upgrade", (req, socket, head) => {
 });
 
 wss.on("connection", (ws: WebSocket, _req: IncomingMessage, claims: AccessTokenClaims | null) => {
+  const ip = clientIpOf(_req);
   const state: ClientState = {
     socket: ws,
     userId: claims?.sub ?? null,
     role: claims?.role ?? null,
     matchIds: new Set(),
     chatMatchIds: new Set(),
+    ip,
+    msgTokens: WS_MSG_BURST,
+    msgLastRefillMs: Date.now(),
   };
   clients.add(state);
+  ipCounts.set(ip, (ipCounts.get(ip) ?? 0) + 1);
   if (claims) {
     addUserSocket(state);
     incrementUserRef(claims.sub);
@@ -383,6 +446,24 @@ wss.on("connection", (ws: WebSocket, _req: IncomingMessage, claims: AccessTokenC
   });
 
   ws.on("message", (raw) => {
+    // Per-connection inbound rate limit (token bucket). Refill by elapsed
+    // time (capped at the burst size), then drop frames that exceed the
+    // rate BEFORE parsing — so a flood can't churn Redis subscribe/
+    // unsubscribe or burn CPU on JSON.parse. Legit clients (a few subscribe
+    // envelopes per navigation) never approach the limit.
+    const now = Date.now();
+    state.msgTokens = Math.min(
+      WS_MSG_BURST,
+      state.msgTokens + ((now - state.msgLastRefillMs) / 1000) * WS_MSG_RATE_PER_SEC,
+    );
+    state.msgLastRefillMs = now;
+    if (state.msgTokens < 1) {
+      // Silently drop — emitting an error per dropped frame would itself be
+      // attacker-controlled work. The connection stays open.
+      return;
+    }
+    state.msgTokens -= 1;
+
     let msg: InboundFrame;
     try {
       msg = JSON.parse(raw.toString()) as InboundFrame;
@@ -434,6 +515,9 @@ function cleanupClient(client: ClientState) {
     removeUserSocket(client);
     decrementUserRef(client.userId);
   }
+  const ipLeft = (ipCounts.get(client.ip) ?? 1) - 1;
+  if (ipLeft <= 0) ipCounts.delete(client.ip);
+  else ipCounts.set(client.ip, ipLeft);
   clients.delete(client);
 }
 

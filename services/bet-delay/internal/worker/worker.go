@@ -247,7 +247,7 @@ func (w *Worker) processTicket(ctx context.Context, p store.PendingTicket) error
 	decision := w.evaluate(p, selections, bettorAdj)
 	switch decision.action {
 	case actionReject:
-		if err := store.RejectAndRefund(ctx, tx, p.ID, p.UserID, p.Currency, decision.reason, p.StakeMicro); err != nil {
+		if err := store.RejectAndRefund(ctx, tx, p.ID, p.UserID, p.Currency, decision.reason, p.StakeMicro, p.PotentialPayoutMicro); err != nil {
 			return err
 		}
 		if err := tx.Commit(ctx); err != nil {

@@ -20,6 +20,11 @@ import { clientApi, ApiFetchError } from "@/lib/api-client";
 // incoming Transfers' from-address against per-user whitelists and
 // auto-credits. Deposits from unlinked senders fall through to admin
 // review at /admin/deposits.
+//
+// Linking requires PROOF OF CONTROL: the user signs an EIP-191 challenge
+// (GET /wallet/addresses/challenge) with the wallet, and the server
+// verifies the signature recovers the address before storing it — so a
+// bettor can't claim an address (e.g. a CEX hot wallet) they don't own.
 
 const STATUS_COLOR: Record<string, string> = {
   pending: "text-[var(--color-warning)]",
@@ -33,6 +38,21 @@ const STATUS_COLOR: Record<string, string> = {
   failed: "text-[var(--color-negative)]",
   cancelled: "text-[var(--color-fg-muted)]",
 };
+
+// Minimal EIP-1193 provider shape — we only call request(). Avoids pulling
+// a web3 library into the storefront bundle just to personal_sign.
+interface Eip1193Provider {
+  request(args: { method: string; params?: unknown[] }): Promise<unknown>;
+}
+
+function getEthereum(): Eip1193Provider | null {
+  if (typeof window === "undefined") return null;
+  const eth = (window as unknown as { ethereum?: Eip1193Provider }).ethereum;
+  return eth ?? null;
+}
+
+const NO_WALLET_TEXT =
+  "No Ethereum wallet detected. Install MetaMask (or another browser wallet) to link a sending address.";
 
 export function WalletPanels({
   depositAddress,
@@ -144,6 +164,30 @@ function LinkedWalletsCard({
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [removingId, setRemovingId] = useState<string | null>(null);
 
+  // Connect the browser wallet and pre-fill the address with the active
+  // account, so the user links the wallet they actually control.
+  async function connect() {
+    setMsg(null);
+    const eth = getEthereum();
+    if (!eth) {
+      setMsg({ kind: "err", text: NO_WALLET_TEXT });
+      return;
+    }
+    try {
+      const accounts = (await eth.request({
+        method: "eth_requestAccounts",
+      })) as string[];
+      const account = accounts?.[0];
+      if (!account) {
+        setMsg({ kind: "err", text: "No wallet account available." });
+        return;
+      }
+      setAddress(account);
+    } catch {
+      setMsg({ kind: "err", text: "Wallet connection was rejected." });
+    }
+  }
+
   function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setMsg(null);
@@ -152,16 +196,48 @@ function LinkedWalletsCard({
       setMsg({ kind: "err", text: "Address must be 0x followed by 40 hex characters." });
       return;
     }
+    const eth = getEthereum();
+    if (!eth) {
+      setMsg({ kind: "err", text: NO_WALLET_TEXT });
+      return;
+    }
     startTransition(async () => {
       try {
+        // 1. The connected wallet must BE the address being linked.
+        const accounts = (await eth.request({
+          method: "eth_requestAccounts",
+        })) as string[];
+        const account = accounts?.[0];
+        if (!account) {
+          setMsg({ kind: "err", text: "No wallet account available." });
+          return;
+        }
+        if (account.toLowerCase() !== trimmed.toLowerCase()) {
+          setMsg({
+            kind: "err",
+            text: "Your wallet's active account doesn't match this address. Switch to it in your wallet, or use Connect wallet to fill it in.",
+          });
+          return;
+        }
+        // 2. Fetch the server challenge and sign it (proof of control).
+        const challenge = await clientApi<{ issuedAt: number; message: string }>(
+          `/wallet/addresses/challenge?address=${encodeURIComponent(trimmed)}`,
+        );
+        const signature = (await eth.request({
+          method: "personal_sign",
+          params: [challenge.message, account],
+        })) as string;
+        // 3. Submit the signed proof.
         await clientApi("/wallet/addresses", {
           method: "POST",
           body: JSON.stringify({
-            address: trimmed.toLowerCase(),
+            address: trimmed,
             label: label.trim() || undefined,
+            signature,
+            issuedAt: challenge.issuedAt,
           }),
         });
-        setMsg({ kind: "ok", text: "Wallet linked. Future deposits from it will credit automatically." });
+        setMsg({ kind: "ok", text: "Wallet verified and linked. Future deposits from it will credit automatically." });
         setAddress("");
         setLabel("");
         router.refresh();
@@ -195,10 +271,11 @@ function LinkedWalletsCard({
         Linked wallets
       </h2>
       <p className="mt-2 text-xs text-[var(--color-fg-muted)]">
-        Register the ERC20 address you send USDC from. Deposits arriving
-        from a linked wallet are auto-credited after confirmations — no
-        tx hash to paste. One address can only be linked to one
-        Oddzilla account.
+        Register the ERC20 address you send USDC from. You&apos;ll sign a
+        one-time message with that wallet to prove you control it; then
+        deposits arriving from it are auto-credited after confirmations —
+        no tx hash to paste. One address can only be linked to one Oddzilla
+        account.
       </p>
 
       {linkedWallets.length === 0 ? (
@@ -237,6 +314,14 @@ function LinkedWalletsCard({
       )}
 
       <form onSubmit={onSubmit} className="mt-5 space-y-3">
+        <button
+          type="button"
+          onClick={connect}
+          disabled={pending}
+          className="w-full rounded-[10px] border border-[var(--color-border-strong)] px-3 py-2 text-sm text-[var(--color-fg-muted)] hover:text-[var(--color-fg)] disabled:opacity-50"
+        >
+          Connect wallet
+        </button>
         <label className="block">
           <span className="text-xs text-[var(--color-fg-subtle)]">
             Sending address
@@ -279,7 +364,7 @@ function LinkedWalletsCard({
           </p>
         ) : null}
         <button type="submit" disabled={pending} className="btn btn-primary w-full">
-          {pending ? "Linking…" : "Link wallet"}
+          {pending ? "Signing…" : "Sign & link wallet"}
         </button>
       </form>
     </div>
@@ -293,9 +378,28 @@ function mapLinkError(err: unknown): string {
         return "That address is already linked (possibly to another account).";
       case "address_is_internal":
         return "That's the Oddzilla receive address — pick a sending wallet you control.";
+      case "address_not_allowed":
+        return "That looks like an exchange/custodial address, which can't be linked. Use a self-custodial wallet you control.";
+      case "signature_address_mismatch":
+        return "The signature didn't match this address. Sign with the wallet that owns it.";
+      case "invalid_signature":
+        return "Could not verify the signature. Please try signing again.";
+      case "challenge_expired":
+        return "The signing request expired. Please try again.";
+      case "invalid_address":
+        return "That doesn't look like a valid ERC20 address.";
       default:
         return err.body.message;
     }
+  }
+  // EIP-1193 user-rejected-request (e.g. closed the wallet prompt).
+  if (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as { code?: unknown }).code === 4001
+  ) {
+    return "Signature request was rejected in your wallet.";
   }
   return "Could not link wallet.";
 }

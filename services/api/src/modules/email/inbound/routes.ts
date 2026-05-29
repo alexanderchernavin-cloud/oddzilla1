@@ -81,8 +81,14 @@ export default async function inboundEmailRoutes(app: FastifyInstance) {
     "/webhooks/sendgrid-inbound/:secret",
     {
       bodyLimit: BODY_LIMIT_BYTES,
-      // No rate limit — SendGrid is the only legitimate caller and
-      // they throttle their own redelivery cadence.
+      // Backstop rate limit. Inbound now arrives via the self-hosted
+      // mail-receiver fed by the PUBLIC MX, so an external sender can drive
+      // this endpoint (it is no longer SendGrid-only). All legitimate
+      // inbound shares the mail-receiver's source IP and real volume is a
+      // handful/week, so a collective 60/min cap is generous for real mail
+      // yet bounds a flood. Pairs with the References-chain cap in
+      // threading.ts that kills the per-message query amplification.
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
     },
     async (request, reply) => {
       const env = loadEnv();

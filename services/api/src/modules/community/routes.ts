@@ -539,12 +539,20 @@ export default async function communityRoutes(app: FastifyInstance) {
       // inspiration_count = 0; future copies of the now-settled
       // ticket flow through the full path.
       const [projection] = await app.db
-        .select({ ticketId: communityTickets.ticketId })
+        .select({
+          ticketId: communityTickets.ticketId,
+          ownerId: communityTickets.userId,
+        })
         .from(communityTickets)
         .where(eq(communityTickets.ticketId, id))
         .limit(1);
 
-      const freshlyInspired = projection
+      // Self-action guard: a bettor copying their OWN ticket must not bump
+      // its inspiration_count — that counter is a "Most Copied" ranking
+      // signal, and a self-copy would let an author inflate their own
+      // standing. (Cross-account sockpuppet farming is a broader anti-sybil
+      // problem out of scope here; this closes the trivial self-inflation.)
+      const freshlyInspired = projection && projection.ownerId !== viewer.id
         ? await app.db.transaction(async (tx) => {
             const inserted = await tx
               .insert(communityTicketInspirations)
@@ -587,7 +595,10 @@ export default async function communityRoutes(app: FastifyInstance) {
         .where(and(eq(analyses.ticketId, id), eq(analyses.status, "published")))
         .limit(1);
 
-      if (analysisRow) {
+      // Self-action guard: an author inspiring their own analysis must not
+      // bump its inspiration_count, which can credit Oz at the engagement
+      // floor and feeds the leaderboard. Skip the block when viewer == author.
+      if (analysisRow && analysisRow.authorId !== viewer.id) {
         await app.db.transaction(async (tx) => {
           const inserted = await tx
             .insert(analysisInspirations)
