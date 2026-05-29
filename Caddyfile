@@ -111,7 +111,12 @@
 		header Upgrade    websocket
 	}
 	handle /ws {
-		reverse_proxy ws-gateway:3002
+		reverse_proxy ws-gateway:3002 {
+			# Overwrite (not append) X-Forwarded-For with the real peer so
+			# ws-gateway's per-IP connection cap keys on the actual client
+			# rather than Caddy's address. Mirrors api_proxy above.
+			header_up X-Forwarded-For {remote_host}
+		}
 	}
 }
 

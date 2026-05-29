@@ -82,11 +82,16 @@ if [ "${MIGRATIONS_PENDING}" -gt 0 ]; then
   # service name) for in-container resolution. The migrate runner
   # runs ON the host, so we rewrite to 127.0.0.1 where postgres
   # binds via the compose `ports:` entry.
-  set -a
-  # shellcheck disable=SC1090
-  . "${REPO_ROOT}/.env"
-  set +a
-  export DATABASE_URL="${DATABASE_URL//@postgres:/@127.0.0.1:}"
+  # Read ONLY DATABASE_URL from .env. Sourcing the whole file (set -a; .
+  # .env) would export every secret (JWT_SECRET, REFRESH_COOKIE_SECRET,
+  # ODDIN_TOKEN, HD_MASTER_MNEMONIC, ...) into this shell AND every child
+  # process below (pnpm + its transitive dependency lifecycle scripts),
+  # exposing them via /proc/<pid>/environ for the whole deploy window — a
+  # supply-chain exfil surface. The migrate step only needs DATABASE_URL.
+  # Mirrors infra/hetzner/backup/pg_backup.sh, which was already hardened
+  # this way. Values in .env are unquoted, so cut -f2- preserves the URL.
+  DB_URL_RAW="$(grep -E '^DATABASE_URL=' "${REPO_ROOT}/.env" | head -n1 | cut -d= -f2-)"
+  export DATABASE_URL="${DB_URL_RAW//@postgres:/@127.0.0.1:}"
   deploy_run pnpm --filter @oddzilla/db db:migrate
 fi
 

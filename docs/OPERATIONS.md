@@ -379,6 +379,31 @@ ssh team@178.104.174.24 'set -a; . /home/team/oddzilla/.env; set +a; \
 someone modified an audit row via direct DB access (the API path goes
 through the trigger and stays consistent).
 
+### Audit-log integrity check (automated daily)
+
+The probe above is manual. [`infra/hetzner/backup/audit_chain_check.sh`](../infra/hetzner/backup/audit_chain_check.sh)
+runs it on a schedule and Slack-pages if any row fails the chain, so the
+tamper-evidence isn't dormant until someone remembers to check. Install:
+
+```bash
+ssh team@178.104.174.24
+sudo cp /home/team/oddzilla/infra/hetzner/backup/audit_chain_check.sh \
+  /usr/local/bin/oddzilla-audit-chain-check
+sudo chmod 750 /usr/local/bin/oddzilla-audit-chain-check
+
+# Append to root's crontab — daily 04:00 UTC (just after the 03:00 pg dump):
+sudo crontab -e
+# 0 4 * * * /usr/local/bin/oddzilla-audit-chain-check
+```
+
+Reuses `SLACK_WEBHOOK_URL`; on tamper it exits non-zero and pages, on a
+clean run it logs a JSON `ok` line to journal. Like `pg_backup.sh` and the
+deploy script (`infra/deploy/deploy.sh`), it reads ONLY the specific `.env`
+keys it needs (`POSTGRES_*`, `SLACK_WEBHOOK_URL`) instead of `source`-ing
+the whole file — so secrets never enter the cron/child-process environment.
+(2026-05-29 audit hardening; `deploy.sh` was switched to read just
+`DATABASE_URL` in the same pass.)
+
 ### Pre-launch todos
 
 Before accepting real money:

@@ -256,6 +256,11 @@ SELECT
   LEFT JOIN avatar_templates av ON av.id = u.avatar_template_id
   ${sportJoin}
  WHERE (o.user_id IS NOT NULL OR s.user_id IS NOT NULL)
+   -- Exclude AI seed accounts (Decision D2 / SEC-C1) and nameless rows so
+   -- the public board matches the visibility every other community surface
+   -- enforces — bot-seeded rows must never rank as genuine standing.
+   AND u.is_ai = false
+   AND u.nickname IS NOT NULL
  ORDER BY ${sql.raw("")} ${orderClause}, u.id
  LIMIT ${q.limit};
   `)) as unknown as RawLeaderboardRow[];

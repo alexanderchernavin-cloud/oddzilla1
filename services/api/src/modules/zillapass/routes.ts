@@ -196,10 +196,18 @@ async function buildMeResponse(
 }
 
 export default async function zillapassUserRoutes(app: FastifyInstance) {
-  app.get("/zillapass/me", async (request): Promise<ZillapassMeResponse> => {
-    const user = request.requireAuth();
-    return buildMeResponse(app, user.id);
-  });
+  app.get(
+    "/zillapass/me",
+    {
+      // Authed, but each call runs a stage-advancement write + several
+      // queries, and the storefront chip polls it. Cap per IP.
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+    },
+    async (request): Promise<ZillapassMeResponse> => {
+      const user = request.requireAuth();
+      return buildMeResponse(app, user.id);
+    },
+  );
 
   // ─── Event tracking ──────────────────────────────────────────────────────
   //
@@ -247,16 +255,26 @@ export default async function zillapassUserRoutes(app: FastifyInstance) {
   // Returns the FRESH /zillapass/me-shaped state inline. Lets the
   // chip flip its progress bar in one round-trip — no second fetch,
   // no race between writer commit and a follow-up read.
-  app.post("/zillapass/track", async (request): Promise<ZillapassMeResponse> => {
-    const user = request.requireAuth();
-    const body = trackBody.parse(request.body);
-    if (body.event === "sport_view") {
-      await nudgeSportViewed(app, user.id, body.sportSlug);
-    } else if (body.event === "match_view") {
-      await nudgeMatchViewed(app, user.id, body.matchId, body.sportSlug);
-    } else {
-      await nudgeMarketTabChange(app, user.id);
-    }
-    return buildMeResponse(app, user.id);
-  });
+  app.post(
+    "/zillapass/track",
+    {
+      // Each call triggers SELECT FOR UPDATE progress writers + a full
+      // me-response build. The client dedups per session, so a real user
+      // stays well under this; the cap stops a script from churning the
+      // writers / DB locks.
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+    },
+    async (request): Promise<ZillapassMeResponse> => {
+      const user = request.requireAuth();
+      const body = trackBody.parse(request.body);
+      if (body.event === "sport_view") {
+        await nudgeSportViewed(app, user.id, body.sportSlug);
+      } else if (body.event === "match_view") {
+        await nudgeMatchViewed(app, user.id, body.matchId, body.sportSlug);
+      } else {
+        await nudgeMarketTabChange(app, user.id);
+      }
+      return buildMeResponse(app, user.id);
+    },
+  );
 }

@@ -8,7 +8,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq, and, or, ilike, inArray, desc, sql, type SQL } from "drizzle-orm";
+import { eq, and, or, ilike, inArray, desc, isNull, sql, type SQL } from "drizzle-orm";
 import {
   users,
   wallets,
@@ -17,6 +17,7 @@ import {
   deposits,
   withdrawals,
   adminAuditLog,
+  sessions,
   zillapassUserState,
 } from "@oddzilla/db";
 import { hashPassword } from "@oddzilla/auth";
@@ -28,6 +29,7 @@ import {
   NotFoundError,
 } from "../../lib/errors.js";
 import { requireBalanceEditAdmin } from "../../lib/balance-edit-gate.js";
+import { SESSION_STATUS_KEY } from "../../plugins/auth.js";
 
 const listQuery = z.object({
   q: z.string().trim().max(128).optional(),
@@ -347,7 +349,18 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
       throw new BadRequestError("no_changes", "no_changes");
     }
 
-    await app.db.transaction(async (tx) => {
+    // Kill the user's live sessions when we block/suspend them (the access
+    // JWT otherwise stays valid for its full ~15-min TTL, so an emergency
+    // block wouldn't be immediate) or when their role changes (the role is
+    // frozen into the access token, so a demotion only takes effect once
+    // the token is re-minted). The DB revoke runs in the same tx as the
+    // user update; the Redis revoke-cache is primed after commit so the
+    // existing access JWTs stop verifying right away instead of at TTL.
+    const revokeSessions =
+      (patch.status !== undefined && body.status !== "active") ||
+      patch.role !== undefined;
+
+    const revokedSessionIds = await app.db.transaction(async (tx) => {
       await tx.update(users).set(patch).where(eq(users.id, params.id));
       await tx.insert(adminAuditLog).values({
         actorUserId: admin.id,
@@ -359,9 +372,33 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
         afterJson: after,
         ipInet: request.ip ?? null,
       });
+      if (!revokeSessions) return [] as string[];
+      const revoked = await tx
+        .update(sessions)
+        .set({ revokedAt: new Date() })
+        .where(and(eq(sessions.userId, params.id), isNull(sessions.revokedAt)))
+        .returning({ id: sessions.id });
+      return revoked.map((s) => s.id);
     });
 
-    return { ok: true, changed: Object.keys(after) };
+    // Best-effort cache prime so the in-flight access JWTs are rejected by
+    // the auth preHandler immediately. Mirrors AuthService.cacheRevoked
+    // (value "revoked", TTL covering the full access-token lifetime). The
+    // DB revoked_at is the source of truth if Redis is unavailable.
+    if (revokedSessionIds.length > 0) {
+      const ttl = Math.max(60, app.auth.jwtAccessTtlSeconds + 60);
+      await Promise.allSettled(
+        revokedSessionIds.map((sid) =>
+          app.redis.set(SESSION_STATUS_KEY(sid), "revoked", "EX", ttl),
+        ),
+      );
+    }
+
+    return {
+      ok: true,
+      changed: Object.keys(after),
+      sessionsRevoked: revokedSessionIds.length,
+    };
   });
 
   app.post("/admin/users", async (request, reply) => {

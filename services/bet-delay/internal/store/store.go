@@ -323,9 +323,10 @@ UPDATE riskzilla_bank_state
 }
 
 // RejectAndRefund rejects the ticket, unlocks the stake on the
-// (user_id, currency) wallet, and writes a compensating wallet_ledger row
-// keyed so replaying is safe.
-func RejectAndRefund(ctx context.Context, tx pgx.Tx, ticketID, userID, currency, reason string, stakeMicro int64) error {
+// (user_id, currency) wallet, writes a compensating wallet_ledger row
+// keyed so replaying is safe, and releases the RiskZilla open-liability
+// the ticket reserved at placement.
+func RejectAndRefund(ctx context.Context, tx pgx.Tx, ticketID, userID, currency, reason string, stakeMicro, potentialPayoutMicro int64) error {
 	if _, err := tx.Exec(ctx, `
 UPDATE tickets
    SET status = 'rejected',
@@ -349,6 +350,23 @@ VALUES ($1, $2, $3, 'bet_refund', 'ticket', $4, $5)
 ON CONFLICT (type, ref_type, ref_id) WHERE ref_id IS NOT NULL DO NOTHING`,
 		userID, currency, stakeMicro, ticketID, reason); err != nil {
 		return fmt.Errorf("ledger refund: %w", err)
+	}
+	// Release the open-liability this ticket reserved at placement. The
+	// RiskZilla engine bumps open_liability_micro by potential_payout for
+	// every ACCEPTED USDC ticket — including pending_delay ones — but
+	// settlement only decrements tickets that actually settle. A ticket the
+	// bet-delay worker rejects would otherwise leak its potential_payout
+	// into the cached counter until the next admin recompute, progressively
+	// over-tightening the bank gate (bank_limit_exceeded false rejects). OZ
+	// never touches the counter, so guard on currency. GREATEST(0, …)
+	// mirrors settlement's UpdateRiskzillaBankOnSettle and prevents
+	// underflow. Singleton row, no WHERE — matches the accept path above.
+	if currency == "USDC" && potentialPayoutMicro > 0 {
+		if _, err := tx.Exec(ctx, `
+UPDATE riskzilla_bank_state
+   SET open_liability_micro = GREATEST(0, open_liability_micro - $1)`, potentialPayoutMicro); err != nil {
+			return fmt.Errorf("release open liability: %w", err)
+		}
 	}
 	return nil
 }

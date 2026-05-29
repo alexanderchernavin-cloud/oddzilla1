@@ -1763,7 +1763,19 @@ export default async function catalogRoutes(app: FastifyInstance) {
   // rows (default 6). Only active rows are returned, and matches are
   // restricted to not_started/live with at least one active market so
   // clicking through lands on a page where the user can place a bet.
-  app.get("/catalog/search", async (request) => {
+  app.get(
+    "/catalog/search",
+    {
+      // Anonymous and reachable directly from the browser (top-bar search).
+      // The query runs leading-wildcard ILIKE scans across sports /
+      // tournaments / teams / matches that cannot use an index, so an
+      // unthrottled scraper could saturate the small (max 10) DB pool and
+      // starve live storefront traffic. Per-IP cap (request.ip resolves to
+      // the real client via Caddy's X-Forwarded-For + Fastify trustProxy).
+      // The debounced search box never approaches 60/min for a real user.
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+    },
+    async (request) => {
     const q = z
       .object({
         q: z.string().trim().min(1).max(64),

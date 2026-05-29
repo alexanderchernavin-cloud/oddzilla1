@@ -100,7 +100,15 @@ x-web: &web-base
   # web2`, …) and you end up building three identical images per deploy
   # or hand-tagging them. Building web1 alone now feeds all three.
   image: oddzilla-web:latest
-  env_file: .env
+  # No `env_file: .env` here by design: the internet-facing web tier must
+  # NOT carry server secrets (JWT_SECRET, REFRESH_COOKIE_SECRET,
+  # POSTGRES_PASSWORD, ODDIN_TOKEN, ...). JWTs are HS256 (symmetric), so a
+  # web RCE able to read the secret from process.env could FORGE admin
+  # tokens — the exact escalation apps/web/src/lib/auth.ts documents as
+  # foreclosed. Each web service below lists only the non-secret runtime
+  # vars it actually reads (grep apps/web/src for process.env); Compose
+  # still interpolates ${...} from .env at parse time, which never enters
+  # the container environment.
   depends_on:
     - api
     - ws-gateway
@@ -347,19 +355,26 @@ services:
     <<: *web-base
     container_name: oddzilla-web1
     environment:
+      # Explicit non-secret allowlist (NO env_file). These are the only
+      # vars apps/web reads at runtime (grep apps/web/src for process.env).
+      NODE_ENV: ${NODE_ENV:-production}
       PORT: ${WEB_PORT:-3000}
-      # Next.js standalone reads HOSTNAME for the bind address. Default is
-      # the container's hostname (resolves to eth0 only), which makes the
-      # container's loopback healthcheck fail. 0.0.0.0 binds to all ifaces.
+      # Next.js standalone binds HOSTNAME; 0.0.0.0 so the loopback
+      # healthcheck reaches it.
       HOSTNAME: 0.0.0.0
-      # Shared with Caddy so the app can recognize admin-backoffice requests
-      # (e.g. suppress the signup surface there).
+      FRONTEND_HOST: ${FRONTEND_HOST:-localhost}
+      # Shared with Caddy so the app recognizes admin-backoffice requests.
       ADMIN_HOST: ${ADMIN_HOST:-admin.localhost}
-      # REPLICA_NAME lands in every log line emitted from middleware +
-      # server-fetch. Combined with the x-request-id header propagated
-      # from Caddy → web → api, a single grep finds the SSR render and
-      # every API call it triggered, regardless of which replica
-      # produced it.
+      # Server-component → API base over the Docker network.
+      INTERNAL_API_URL: ${INTERNAL_API_URL:-http://api:3001}
+      # NEXT_PUBLIC_* are baked at build; empty at runtime so the browser
+      # falls back to same-origin /api + wss://<host>/ws via Caddy.
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+      NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-}
+      # Locale-preference cookie scope (shared across subdomains).
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+      # REPLICA_NAME tags every log line so one x-request-id grep finds
+      # the SSR render + every API call regardless of replica.
       REPLICA_NAME: web1
 
   # web2 + web3 are gated on the `scaled` profile so local dev runs a
@@ -371,9 +386,15 @@ services:
     container_name: oddzilla-web2
     profiles: [scaled]
     environment:
+      NODE_ENV: ${NODE_ENV:-production}
       PORT: ${WEB_PORT:-3000}
       HOSTNAME: 0.0.0.0
+      FRONTEND_HOST: ${FRONTEND_HOST:-localhost}
       ADMIN_HOST: ${ADMIN_HOST:-admin.localhost}
+      INTERNAL_API_URL: ${INTERNAL_API_URL:-http://api:3001}
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+      NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
       REPLICA_NAME: web2
 
   web3:
@@ -381,9 +402,15 @@ services:
     container_name: oddzilla-web3
     profiles: [scaled]
     environment:
+      NODE_ENV: ${NODE_ENV:-production}
       PORT: ${WEB_PORT:-3000}
       HOSTNAME: 0.0.0.0
+      FRONTEND_HOST: ${FRONTEND_HOST:-localhost}
       ADMIN_HOST: ${ADMIN_HOST:-admin.localhost}
+      INTERNAL_API_URL: ${INTERNAL_API_URL:-http://api:3001}
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+      NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
       REPLICA_NAME: web3
 
   feed-ingester:

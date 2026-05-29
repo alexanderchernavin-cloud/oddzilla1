@@ -14,13 +14,23 @@
 // and steal their deposit. Deposits from unlinked senders fall
 // through to admin review at /admin/deposits/:id/credit-manual.
 //
+// Registering a sending address requires PROOF OF CONTROL: the user
+// signs an EIP-191 challenge (GET /wallet/addresses/challenge) binding
+// (userId, address, issuedAt), and POST /wallet/addresses verifies the
+// signature recovers the claimed address before storing it. Without this
+// proof, any bettor could register an address they don't own — e.g. a CEX
+// hot wallet that every exchange withdrawal originates from — and have the
+// wallet-watcher auto-credit those deposits to their account, a
+// deposit-attribution theft primitive equivalent to the tx-hash one above.
+// Known shared-custody hot wallets are additionally blocklisted.
+//
 // Withdrawals stay manual — the user opens a request and an admin
 // processes it from /admin/withdrawals using an external signer.
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq, desc, and, sql } from "drizzle-orm";
-import { getAddress } from "ethers";
+import { eq, desc, and, inArray, sql } from "drizzle-orm";
+import { getAddress, verifyMessage } from "ethers";
 import {
   users,
   wallets,
@@ -69,10 +79,65 @@ const withdrawalBody = z.object({
   amountMicro: z.string().regex(/^\d+$/, "amount must be a positive integer string"),
 });
 
+// Cap concurrent open (non-terminal) withdrawal requests per user. Stops a
+// bettor (or a stolen session) from flooding the manual admin review queue
+// and piling up stake locks with many requests. Checked inside the
+// placement tx after the per-user wallet FOR UPDATE lock, so concurrent
+// requests from the same user serialize and can't race past the cap.
+const MAX_PENDING_WITHDRAWALS = 5;
+const OPEN_WITHDRAWAL_STATUSES = ["requested", "approved", "submitted"] as const;
+
 const linkedWalletBody = z.object({
   address: z.string().regex(/^0x[0-9a-fA-F]{40}$/u, "address must be 0x + 40 hex chars"),
   label: z.string().max(60).optional(),
+  // EIP-191 personal_sign signature (65 bytes) over the challenge message,
+  // proving control of `address`. Required — see the header comment and
+  // GET /wallet/addresses/challenge.
+  signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/u, "signature must be 0x + 130 hex chars"),
+  issuedAt: z.number().int().positive(),
 });
+
+// Challenge freshness. The signed message embeds issuedAt; we accept it
+// within this window (plus a small clock-skew allowance) so a captured
+// signature has a bounded replay lifetime. Stateless — no nonce store is
+// needed because the message also binds the authenticated userId and the
+// address, which together prevent cross-user and cross-address reuse.
+const CHALLENGE_TTL_SECONDS = 600;
+const CHALLENGE_SKEW_SECONDS = 60;
+
+// Best-effort blocklist of known custodial / exchange hot wallets. A
+// shared-custody address can never prove single-user ownership, and CEX
+// withdrawals originate from these public addresses. Defense-in-depth —
+// the signature proof is the primary control. Lowercased.
+const CEX_HOTWALLET_BLOCKLIST = new Set<string>([
+  "0x28c6c06298d514db089934071355e5743bf21d60", // Binance
+  "0x21a31ee1afc51d94c2efccaa2092ad1028285549", // Binance
+  "0xdfd5293d8e347dfe59e90efd55b2956a1343963d", // Binance
+  "0x56eddb7aa87536c09ccc2793473599fd21a8b17f", // Binance
+  "0x9696f59e4d72e237be84ffd425dcad154bf96976", // Binance
+  "0x71660c4005ba85c37ccec55d0c4493e66fe775d3", // Coinbase
+  "0x503828976d22510aad0201ac7ec88293211d23da", // Coinbase
+  "0xddfabcdc4d8ffc6d5beaf154f18b778f892a0740", // Coinbase
+  "0x3cd751e6b0078be393132286c442345e5dc49699", // Coinbase
+]);
+
+// Canonical EIP-191 challenge. getAddress() yields a checksummed address so
+// signer + verifier agree byte-for-byte. Built identically by the GET
+// challenge endpoint and the POST verifier.
+function depositVerificationMessage(
+  userId: string,
+  checksummedAddress: string,
+  issuedAt: number,
+): string {
+  return [
+    "Oddzilla deposit address verification.",
+    "Signing proves you control this wallet and authorizes Oddzilla to",
+    "credit deposits sent FROM it to your account.",
+    `User: ${userId}`,
+    `Address: ${checksummedAddress}`,
+    `Issued: ${issuedAt}`,
+  ].join("\n");
+}
 
 export default async function walletRoutes(app: FastifyInstance) {
   const env = loadEnv();
@@ -192,7 +257,16 @@ export default async function walletRoutes(app: FastifyInstance) {
   });
 
   // ── Withdrawal request ───────────────────────────────────────────────
-  app.post("/wallet/withdrawals", async (request) => {
+  app.post(
+    "/wallet/withdrawals",
+    {
+      // Withdrawals enter a manual admin review queue and lock stake. Cap
+      // the request rate per IP so a bettor (or a stolen session) can't
+      // flood the queue / churn wallet locks. Pairs with the per-user
+      // MAX_PENDING_WITHDRAWALS cap enforced inside the tx below.
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    },
+    async (request) => {
     const u = request.requireAuth();
     const body = withdrawalBody.parse(request.body);
     const amount = BigInt(body.amountMicro);
@@ -223,6 +297,24 @@ export default async function walletRoutes(app: FastifyInstance) {
       const available = wallet.balanceMicro - wallet.lockedMicro;
       if (amount > available) {
         throw new BadRequestError("insufficient_balance", "insufficient_balance");
+      }
+
+      // Cap open withdrawal requests per user (serialized by the wallet
+      // FOR UPDATE above) so the manual admin queue can't be flooded.
+      const [pending] = await tx
+        .select({ n: sql<number>`count(*)::int` })
+        .from(withdrawalsTable)
+        .where(
+          and(
+            eq(withdrawalsTable.userId, u.id),
+            inArray(withdrawalsTable.status, [...OPEN_WITHDRAWAL_STATUSES]),
+          ),
+        );
+      if ((pending?.n ?? 0) >= MAX_PENDING_WITHDRAWALS) {
+        throw new BadRequestError(
+          "too_many_pending_withdrawals",
+          "too_many_pending_withdrawals",
+        );
       }
 
       // Defensive: reject withdrawing to the shared receive address —
@@ -333,16 +425,80 @@ export default async function walletRoutes(app: FastifyInstance) {
     };
   });
 
-  app.post("/wallet/addresses", async (request) => {
+  // Challenge for proving control of a sending address. The client signs
+  // the returned `message` with the wallet key (personal_sign) and submits
+  // the signature to POST /wallet/addresses. Stateless — the server
+  // re-derives and verifies the message on submit.
+  app.get("/wallet/addresses/challenge", async (request) => {
+    const u = request.requireAuth();
+    const q = z
+      .object({ address: z.string().regex(/^0x[0-9a-fA-F]{40}$/u) })
+      .parse(request.query);
+    let checksummed: string;
+    try {
+      checksummed = getAddress(q.address);
+    } catch {
+      throw new BadRequestError("invalid_address", "invalid_address");
+    }
+    const issuedAt = Math.floor(Date.now() / 1000);
+    return {
+      issuedAt,
+      ttlSeconds: CHALLENGE_TTL_SECONDS,
+      message: depositVerificationMessage(u.id, checksummed, issuedAt),
+    };
+  });
+
+  app.post(
+    "/wallet/addresses",
+    { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
+    async (request) => {
     const u = request.requireAuth();
     const body = linkedWalletBody.parse(request.body);
-    const lower = body.address.toLowerCase();
 
-    // Reject the operator's own receive address — would create a
-    // cycle where users could "credit" themselves with house-side
-    // refunds.
+    let checksummed: string;
+    try {
+      checksummed = getAddress(body.address);
+    } catch {
+      throw new BadRequestError("invalid_address", "invalid_address");
+    }
+    const lower = checksummed.toLowerCase();
+
+    // Reject the operator's own receive address — would create a cycle
+    // where users could "credit" themselves with house-side refunds.
     if (receiveAddress && lower === receiveAddress.toLowerCase()) {
       throw new BadRequestError("address_is_internal", "address_is_internal");
+    }
+
+    // Reject known shared-custody / exchange hot wallets (defense-in-depth).
+    if (CEX_HOTWALLET_BLOCKLIST.has(lower)) {
+      throw new BadRequestError("address_not_allowed", "address_not_allowed");
+    }
+
+    // ── Proof of control (EIP-191) ───────────────────────────────────
+    // The signed challenge binds (userId, address, issuedAt). A captured
+    // signature can't be replayed by another user (the server rebuilds the
+    // message with the AUTHENTICATED user's id, so verification recovers a
+    // different address) nor reused for a different address (the address is
+    // in the signed bytes). The freshness window bounds replay lifetime.
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (
+      body.issuedAt > nowSec + CHALLENGE_SKEW_SECONDS ||
+      body.issuedAt < nowSec - CHALLENGE_TTL_SECONDS
+    ) {
+      throw new BadRequestError("challenge_expired", "challenge_expired");
+    }
+    const message = depositVerificationMessage(u.id, checksummed, body.issuedAt);
+    let recovered: string;
+    try {
+      recovered = verifyMessage(message, body.signature);
+    } catch {
+      throw new BadRequestError("invalid_signature", "invalid_signature");
+    }
+    if (recovered.toLowerCase() !== lower) {
+      throw new BadRequestError(
+        "signature_address_mismatch",
+        "signature_address_mismatch",
+      );
     }
 
     try {

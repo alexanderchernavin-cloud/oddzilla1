@@ -216,6 +216,24 @@ export class RiskzillaEngine {
       };
     }
 
+    // ── Serialize the solvency + liability gates ───────────────────
+    // evaluate() reads bank_state, the USDC wallet-balance sum, and the
+    // per-(match,market,outcome) liability buckets with NON-locking
+    // SELECTs, and commitAccepted() (later in this same tx) increments
+    // open_liability AFTER the decision. Under READ COMMITTED, two
+    // placements by DIFFERENT bettors each read the same pre-increment
+    // snapshot, both pass the bank gate and per-match caps, and both
+    // commit — write-skew that lets committed liability exceed
+    // bank_limit_micro and the per-match cap. A transaction-scoped
+    // advisory lock on the bank singleton makes read→gate→increment
+    // atomic across placements; Postgres releases it on commit/rollback.
+    // Acquired AFTER the non-USDC early return (so OZ demo bets never
+    // serialize) and AFTER the caller's per-user user/wallet FOR UPDATE
+    // locks, giving a consistent user→wallet→bank acquisition order that
+    // can't deadlock. The gate is a few indexed reads (~ms), so the
+    // global serialization sits well within MVP placement throughput.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('riskzilla:bank_state'))`);
+
     // ── Load configuration ────────────────────────────────────────
     const tiersInPlay = new Set<number>([0]);
     for (const leg of intent.legs) {
