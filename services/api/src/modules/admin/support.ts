@@ -299,10 +299,12 @@ export default async function adminSupportRoutes(app: FastifyInstance) {
   // ─── Reply (multipart) ─────────────────────────────────────────────────
   // Same multipart shape as the bettor POST: `body` text field + up to
   // 5 `files[]` parts capped at 10 MiB each. body OR at least one file
-  // must be present.
+  // must be present. bodyLimit override matches the bettor route —
+  // global cap is 64 KiB; we need 60 MiB to cover the maximum
+  // multipart payload.
   app.post(
     "/admin/support/threads/:id/reply",
-    { config: writeRateLimit },
+    { config: writeRateLimit, bodyLimit: 60 * 1024 * 1024 },
     async (request) => {
       const admin = request.requireRole("support");
       const id = (request.params as { id?: string }).id ?? "";

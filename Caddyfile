@@ -22,7 +22,13 @@
 	servers {
 		timeouts {
 			read_header 5s
-			read_body   30s
+			# 90s upper bound on body read so a 50 MiB support-attachment
+			# upload from a 5 Mbps connection completes (the largest
+			# legitimate payload — 5 files × 10 MiB on /api/support/me/
+			# messages or the admin reply). Slowloris-style holders
+			# still drop within reason; legitimate uploads need the
+			# headroom.
+			read_body   90s
 			write       30s
 			idle        120s
 		}
@@ -76,6 +82,17 @@
 # extracted so the two never drift apart.
 (api_proxy) {
 	handle_path /api/* {
+		# Support-chat multipart routes legitimately ship up to 5 ×
+		# 10 MiB attachments per request — give them a 60 MiB ceiling
+		# (multipart boundary overhead on top of 50 MiB of file
+		# bytes). Everything else stays at 1 MiB. The path matcher
+		# fires against the post-strip path (handle_path already
+		# stripped /api/), so the leading segment is /support or
+		# /admin/support.
+		@support_uploads path /support/me/messages /admin/support/threads/*/reply
+		request_body @support_uploads {
+			max_size 60MB
+		}
 		# Cap request bodies at the edge — Fastify's per-route default is
 		# 1 MiB but slow uploaders still tie up api memory while the body
 		# streams in. Matches the largest legitimate admin payload (the

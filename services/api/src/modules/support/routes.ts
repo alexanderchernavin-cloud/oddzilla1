@@ -115,9 +115,14 @@ export default async function supportUserRoutes(app: FastifyInstance) {
   });
 
   // ─── Post a bettor message (multipart) ────────────────────────────────
+  // Per-route bodyLimit override: the global Fastify cap is 64 KiB
+  // (services/api/src/server.ts), so an unbumped POST would 413 the
+  // moment the multipart body crossed that. 60 MiB = 5 × 10 MiB
+  // attachment cap + multipart boundary/text-field overhead. The
+  // matching Caddy edge cap lives in the @support_uploads matcher.
   app.post(
     "/support/me/messages",
-    { config: writeRateLimit },
+    { config: writeRateLimit, bodyLimit: 60 * 1024 * 1024 },
     async (request) => {
       const u = request.requireAuth();
 
