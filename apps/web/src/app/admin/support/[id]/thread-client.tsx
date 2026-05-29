@@ -14,10 +14,7 @@ import type {
 import {
   SUPPORT_ATTACHMENT_MAX_BYTES,
   SUPPORT_ATTACHMENT_MAX_PER_MESSAGE,
-  SUPPORT_ATTACHMENT_MIME_TYPES,
 } from "@oddzilla/types/support";
-
-const ACCEPT_ATTR = SUPPORT_ATTACHMENT_MIME_TYPES.join(",");
 
 interface PendingFile {
   key: string;
@@ -26,10 +23,6 @@ interface PendingFile {
 
 function nextPendingKey(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
-}
-
-function isAllowedMime(value: string): boolean {
-  return (SUPPORT_ATTACHMENT_MIME_TYPES as readonly string[]).includes(value);
 }
 
 function formatBytes(n: number): string {
@@ -107,10 +100,6 @@ export function SupportThreadClient({
             `Up to ${SUPPORT_ATTACHMENT_MAX_PER_MESSAGE} files per reply.`,
           );
           break;
-        }
-        if (!isAllowedMime(f.type)) {
-          setError(`Unsupported file type: ${f.name}`);
-          continue;
         }
         if (f.size > SUPPORT_ATTACHMENT_MAX_BYTES) {
           setError(
@@ -286,7 +275,7 @@ export function SupportThreadClient({
           ref={fileInputRef}
           type="file"
           multiple
-          accept={ACCEPT_ATTR}
+          // No accept filter — any format goes, size + count caps still apply.
           className="hidden"
           onChange={(e) => {
             const files = e.target.files;

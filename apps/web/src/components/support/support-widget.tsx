@@ -41,11 +41,9 @@ import type {
 import {
   SUPPORT_ATTACHMENT_MAX_BYTES,
   SUPPORT_ATTACHMENT_MAX_PER_MESSAGE,
-  SUPPORT_ATTACHMENT_MIME_TYPES,
 } from "@oddzilla/types/support";
 
 const MAX_BODY = 2000;
-const ACCEPT_ATTR = SUPPORT_ATTACHMENT_MIME_TYPES.join(",");
 
 interface PendingFile {
   /** Stable per-pick id so the chip list keys + the X-button removal
@@ -56,10 +54,6 @@ interface PendingFile {
 
 function nextPendingKey(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
-}
-
-function isAllowedMime(value: string): boolean {
-  return (SUPPORT_ATTACHMENT_MIME_TYPES as readonly string[]).includes(value);
 }
 
 function formatBytes(n: number): string {
@@ -173,10 +167,6 @@ export function SupportWidget() {
               `You can attach up to ${SUPPORT_ATTACHMENT_MAX_PER_MESSAGE} files per message.`,
             );
             break;
-          }
-          if (!isAllowedMime(f.type)) {
-            setError(`Unsupported file type: ${f.name}`);
-            continue;
           }
           if (f.size > SUPPORT_ATTACHMENT_MAX_BYTES) {
             setError(
@@ -592,7 +582,8 @@ function SupportPanel({
           ref={fileInputRef}
           type="file"
           multiple
-          accept={ACCEPT_ATTR}
+          // No accept filter — any file format is allowed. Size + count
+          // caps still apply (10 MiB per file, 5 files per message).
           style={{ display: "none" }}
           onChange={(e) => {
             const files = e.target.files;

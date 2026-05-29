@@ -15,7 +15,6 @@ import type {
 import {
   SUPPORT_ATTACHMENT_MAX_BYTES,
   SUPPORT_ATTACHMENT_MAX_PER_MESSAGE,
-  SUPPORT_ATTACHMENT_MIME_TYPES,
 } from "@oddzilla/types";
 import {
   supportAttachments,
@@ -41,17 +40,6 @@ export const MESSAGE_PAGE_MAX = 500;
 // place rather than juggling two sources of truth.
 export const ATTACHMENT_MAX_BYTES = SUPPORT_ATTACHMENT_MAX_BYTES;
 export const ATTACHMENT_MAX_PER_MESSAGE = SUPPORT_ATTACHMENT_MAX_PER_MESSAGE;
-export const ATTACHMENT_MIME_ALLOWLIST = new Set<string>(
-  SUPPORT_ATTACHMENT_MIME_TYPES,
-);
-
-const ALLOWED_MIME_TYPESET = new Set<SupportAttachmentMime>(
-  SUPPORT_ATTACHMENT_MIME_TYPES,
-);
-
-function isAllowedMime(value: string): value is SupportAttachmentMime {
-  return (ALLOWED_MIME_TYPESET as Set<string>).has(value);
-}
 
 export function attachmentUrl(id: string | bigint): string {
   return `/support/attachments/${id}`;
@@ -77,16 +65,15 @@ export function mapAttachment(row: {
   contentType: string;
   sizeBytes: number;
 }): SupportAttachment {
-  const mime = isAllowedMime(row.contentType)
-    ? row.contentType
-    : // Should never happen — the CHECK constraint pins this set. If
-      // somehow a stale row slips through, fall back to a safe
-      // download-only render.
-      "application/pdf";
+  // Stored MIME passes through verbatim — the byte-serve route is the
+  // security boundary (`Content-Disposition: attachment` +
+  // `X-Content-Type-Options: nosniff`). The render layer only uses
+  // contentType to decide between inline image preview and a
+  // download-link chip; both treat unknown values as "download-only".
   return {
     id: String(row.id),
     filename: row.filename,
-    contentType: mime,
+    contentType: row.contentType || "application/octet-stream",
     sizeBytes: row.sizeBytes,
     url: attachmentUrl(row.id),
   };
@@ -180,12 +167,6 @@ export interface ParsedSupportPayload {
 export async function parseAttachmentPart(
   part: MultipartFile,
 ): Promise<ParsedAttachment> {
-  if (!isAllowedMime(part.mimetype)) {
-    throw new BadRequestError(
-      "unsupported_attachment_mime",
-      "unsupported_attachment_mime",
-    );
-  }
   const buffer = await part.toBuffer();
   if (part.file.truncated) {
     throw new BadRequestError(
@@ -204,9 +185,15 @@ export async function parseAttachmentPart(
       "attachment_too_large",
     );
   }
+  // Any client-supplied MIME is accepted. Browsers sometimes omit the
+  // header entirely (e.g. for unrecognised extensions); fall back to
+  // the generic binary type so the row stays well-formed.
+  const mime = part.mimetype && part.mimetype.length > 0
+    ? part.mimetype
+    : "application/octet-stream";
   return {
     filename: sanitiseFilename(part.filename),
-    contentType: part.mimetype,
+    contentType: mime,
     data: buffer,
   };
 }

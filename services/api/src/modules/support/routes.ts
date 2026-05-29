@@ -355,9 +355,12 @@ export default async function supportUserRoutes(app: FastifyInstance) {
       }
 
       // Force `attachment` disposition so a browser can't auto-render
-      // PDF/text/etc. as the active page — defence against shell
-      // gadgets in user-supplied content. We rely on the MIME
-      // allowlist for additional safety.
+      // an .html / .svg / .pdf as the active page — every download is
+      // a save-to-disk action regardless of the stored MIME. Pair with
+      // X-Content-Type-Options: nosniff so the browser can't MIME-sniff
+      // its way around a misleading content-type either. Together these
+      // are the security boundary; that's why the MIME allowlist was
+      // dropped in migration 0077 — it was redundant.
       const safeFilename = row.filename.replace(/["\\\r\n]/g, "_");
       reply
         .header("content-type", row.contentType)
@@ -366,6 +369,7 @@ export default async function supportUserRoutes(app: FastifyInstance) {
           "content-disposition",
           `attachment; filename="${safeFilename}"`,
         )
+        .header("x-content-type-options", "nosniff")
         // Short-lived private cache — same response shouldn't be served
         // to a different user from a shared proxy.
         .header("cache-control", "private, max-age=300")
