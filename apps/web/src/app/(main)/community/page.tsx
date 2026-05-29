@@ -18,6 +18,7 @@ import { FeedFilters } from "@/components/community/feed-filters";
 import { CommunityTicketCard } from "@/components/community/ticket-card";
 import { AnalysisCard } from "@/components/community/analysis-card";
 import { CompetitionCard } from "@/components/community/competition-card";
+import { CommunityTabs } from "@/components/community/tabs";
 
 export const dynamic = "force-dynamic";
 
@@ -172,7 +173,7 @@ export default async function CommunityFeedPage({
         <NicknameNudge />
       ) : null}
 
-      <SortTabs
+      <CommunityTabs
         activeTab={tab}
         ticketSort={ticketSort}
         analysisSort={analysisSort}
@@ -253,83 +254,6 @@ function tabSubtitle(tab: TabKind): string {
   if (tab === "analyses") return "Pre-match takes from the community. Skin in the game required.";
   if (tab === "competitions") return "Free prediction games. Pick scores, climb the leaderboard.";
   return "Live bets you can still copy — the matches are still on.";
-}
-
-// Tab bar for Recent / Best Wins / Big Wins. Matches the existing
-// visual language of the [Match | Top] toggle on the match list cards.
-function SortTabs({
-  activeTab,
-  ticketSort,
-  analysisSort,
-  currency,
-  sportId,
-}: {
-  activeTab: TabKind;
-  ticketSort: TicketSortKind;
-  analysisSort: AnalysisSortKind;
-  currency: Currency | null;
-  sportId: number | null;
-}) {
-  // We don't try to carry sort across tab switches that map to
-  // different sort universes — tickets sort and analyses sort
-  // share a URL key but mean different things. Each link drops
-  // the irrelevant sort and the receiving page falls back to its
-  // own default.
-  const baseParams: string[] = [];
-  if (currency) baseParams.push(`currency=${encodeURIComponent(currency)}`);
-  if (sportId) baseParams.push(`sport=${encodeURIComponent(sportId)}`);
-
-  const link = (next: TabKind) => {
-    const parts = [...baseParams, `tab=${next}`];
-    if (next === "bigWins" && ticketSort !== "recent") {
-      parts.push(`sort=${encodeURIComponent(ticketSort)}`);
-    } else if (next === "analyses" && analysisSort !== "recommended") {
-      parts.push(`sort=${encodeURIComponent(analysisSort)}`);
-    }
-    return `/community?${parts.join("&")}`;
-  };
-
-  return (
-    <div
-      role="tablist"
-      aria-label="Section"
-      className="mt-5 inline-flex rounded-[10px] border border-[var(--color-border-strong)] p-1"
-    >
-      <Tab href={link("recent")} active={activeTab === "recent"}>
-        Recent
-      </Tab>
-      <Tab href={link("bigWins")} active={activeTab === "bigWins"}>
-        Big wins
-      </Tab>
-      <Tab href={link("analyses")} active={activeTab === "analyses"}>
-        Analyses
-      </Tab>
-      <Tab href={link("competitions")} active={activeTab === "competitions"}>
-        Competitions
-      </Tab>
-    </div>
-  );
-}
-
-function Tab({
-  href,
-  active,
-  children,
-}: {
-  href: string;
-  active: boolean;
-  children: React.ReactNode;
-}) {
-  const cls =
-    "rounded-[8px] px-3 py-1.5 text-xs uppercase tracking-[0.15em] transition " +
-    (active
-      ? "bg-[var(--color-bg-elevated)] text-[var(--color-fg)]"
-      : "text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)]");
-  return (
-    <a role="tab" aria-selected={active} href={href} className={cls}>
-      {children}
-    </a>
-  );
 }
 
 // Sort dropdown for the Best Wins / Big Wins tabs. Server-rendered
