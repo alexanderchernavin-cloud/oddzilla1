@@ -164,6 +164,22 @@ func main() {
 	// previous run; a small hourly sweep keeps the table bounded.
 	go runFeedMessageCleanup(ctx, st, logger)
 
+	// ── Alive watchdog (safety net for a silent feed) ──────────────────
+	// Suspends the active catalog when no AMQP message (alive heartbeat,
+	// odds_change, anything) has arrived for FEED_STALE_SUSPEND_SECONDS.
+	// Independent of connection state, so it covers the case the
+	// OnConnect flush cannot: a server-side token revocation where every
+	// reconnect fails and OnConnect never runs (the 2026-05-29 incident).
+	// Armed whenever Oddin is enabled; also armed when creds are absent
+	// but stale active markets linger from a prior run so they can't stay
+	// bettable at frozen odds. <=0 disables it.
+	if cfg.FeedStaleSuspendSeconds > 0 {
+		staleAfter := time.Duration(cfg.FeedStaleSuspendSeconds) * time.Second
+		go runAliveWatchdog(ctx, deps, time.Now(), staleAfter, logger)
+	} else {
+		logger.Warn().Msg("alive watchdog disabled (FEED_STALE_SUSPEND_SECONDS<=0) — a silent feed will NOT auto-suspend the catalog")
+	}
+
 	// ── AMQP (optional) ────────────────────────────────────────────────
 	if !cfg.Oddin.Enabled {
 		logger.Warn().Msg("Oddin creds absent (ODDIN_TOKEN/ODDIN_CUSTOMER_ID); running idle — health endpoint only")
@@ -573,18 +589,108 @@ func flushBeforeRecover(ctx context.Context, deps handler.Deps, log zerolog.Logg
 	// session locks placement immediately — without this the page
 	// keeps showing pre-flush prices until Oddin's replay reaches the
 	// match, and any click in that window dead-ends at
-	// `market_not_active`. Use the current wall clock as the WS frame
-	// timestamp — the flush isn't tied to a specific Oddin message.
-	if deps.Bus != nil && len(summary.SuspendedRefs) > 0 {
-		nowMs := time.Now().UnixMilli()
-		for _, ref := range summary.SuspendedRefs {
-			if perr := deps.Bus.PublishMarketStatus(ctx, ref.MatchID, ref.MarketID, -1, nowMs); perr != nil {
-				log.Debug().Err(perr).
-					Int64("match", ref.MatchID).Int64("market", ref.MarketID).
-					Msg("flush: publish market status failed")
+	// `market_not_active`.
+	broadcastSuspended(ctx, deps, summary.SuspendedRefs, log)
+}
+
+// broadcastSuspended publishes a marketStatus=-1 WS frame for every
+// market a flush just suspended so open storefront sessions lock their
+// bet slips immediately. Uses the current wall clock as the frame
+// timestamp — a flush isn't tied to a specific Oddin message. Best-
+// effort: a pub/sub failure is logged at debug and never blocks.
+func broadcastSuspended(ctx context.Context, deps handler.Deps, refs []store.FlushSuspendedRef, log zerolog.Logger) {
+	if deps.Bus == nil || len(refs) == 0 {
+		return
+	}
+	nowMs := time.Now().UnixMilli()
+	for _, ref := range refs {
+		if perr := deps.Bus.PublishMarketStatus(ctx, ref.MatchID, ref.MarketID, -1, nowMs); perr != nil {
+			log.Debug().Err(perr).
+				Int64("match", ref.MatchID).Int64("market", ref.MarketID).
+				Msg("publish market status failed")
+		}
+	}
+}
+
+// runAliveWatchdog is the safety net for a silent feed. Oddin sends an
+// `alive` heartbeat on every producer every ~10s (docs §2.4.7); the
+// consumer's handler closure bumps lastAmqpMessageUnix on EVERY delivery,
+// so a stale value means no message of any kind — alive, odds_change, or
+// settlement — has arrived recently. That is the canonical "producer
+// down / token revoked / network partition" signal.
+//
+// The connection-driven flush (OnConnect → flushBeforeRecover) only fires
+// on a SUCCESSFUL (re)connect, so it cannot help when the token is
+// revoked server-side: the reconnect attempts fail, OnConnect never runs,
+// and the catalog keeps quoting frozen odds indefinitely (the 2026-05-29
+// token-revocation incident — 8k markets stayed bettable for over an
+// hour). This time-based watchdog closes that gap; it fires regardless of
+// connection state and suspends the active catalog the moment the feed
+// goes quiet past the threshold.
+//
+// It suspends at most once per silence episode (guarded by `suspended`)
+// and clears the guard when fresh data resumes. Re-activation rides the
+// existing recovery paths — OnConnect flush+recover on a fresh connect,
+// or the alive-gap recovery when heartbeats resume on a live connection.
+func runAliveWatchdog(ctx context.Context, deps handler.Deps, startedAt time.Time, staleAfter time.Duration, log zerolog.Logger) {
+	const checkEvery = 5 * time.Second
+	t := time.NewTicker(checkEvery)
+	defer t.Stop()
+	suspended := false
+	log.Info().Dur("threshold", staleAfter).Msg("alive watchdog armed")
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			sinceLast := feedSilence(lastAmqpMessageUnix.Load(), now, startedAt)
+			stale := sinceLast >= staleAfter
+			switch {
+			case stale && !suspended:
+				log.Error().
+					Dur("since_last_msg", sinceLast).
+					Dur("threshold", staleAfter).
+					Msg("feed silent past threshold — no alive/odds; suspending active catalog")
+				suspendCatalogForStaleness(ctx, deps, log)
+				suspended = true
+			case !stale && suspended:
+				log.Warn().
+					Dur("since_last_msg", sinceLast).
+					Msg("feed resumed; staleness guard cleared (recovery re-activates markets)")
+				suspended = false
 			}
 		}
 	}
+}
+
+// feedSilence reports how long the feed has been quiet. It measures from
+// the last delivery (lastMsgUnix, seconds since epoch) when one exists, or
+// from boot (startedAt) when nothing has arrived yet — the dead-token-at-
+// startup case, where lastMsgUnix is 0 and we must still eventually
+// suspend rather than wait forever for a first message that never comes.
+func feedSilence(lastMsgUnix int64, now, startedAt time.Time) time.Duration {
+	if lastMsgUnix > 0 {
+		return now.Sub(time.Unix(lastMsgUnix, 0))
+	}
+	return now.Sub(startedAt)
+}
+
+// suspendCatalogForStaleness flushes the active catalog and broadcasts the
+// suspension, called by the watchdog when the feed has gone silent. Unlike
+// flushBeforeRecover it does NOT rewind the recovery cursor or trigger a
+// replay — there is no live feed to replay from. Re-activation happens
+// later through the normal recovery paths once the feed returns.
+func suspendCatalogForStaleness(ctx context.Context, deps handler.Deps, log zerolog.Logger) {
+	summary, err := store.FlushAndSuspendActiveCatalog(ctx, deps.Store.Pool())
+	if err != nil {
+		log.Error().Err(err).Msg("watchdog: flush active catalog failed")
+		return
+	}
+	log.Warn().
+		Int64("suspended_markets", summary.SuspendedMarkets).
+		Int64("suspended_outcomes", summary.SuspendedOutcomes).
+		Msg("watchdog: active catalog suspended due to feed silence")
+	broadcastSuspended(ctx, deps, summary.SuspendedRefs, log)
 }
 
 func runAMQP(ctx context.Context, cfg config.Config, deps handler.Deps, log zerolog.Logger) {

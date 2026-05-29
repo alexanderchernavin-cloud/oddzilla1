@@ -20,6 +20,15 @@ type Config struct {
 
 	HealthPort string
 
+	// FeedStaleSuspendSeconds is how long the AMQP feed may go fully
+	// silent (no alive heartbeat, no odds_change — nothing) before the
+	// alive-watchdog suspends the entire active catalog. Oddin sends an
+	// `alive` on each producer every ~10s (docs §2.4.7), so a value of
+	// 20s = two missed heartbeats, well beyond the ±5s gap tolerance the
+	// per-message handler already uses. Override with
+	// FEED_STALE_SUSPEND_SECONDS; <=0 disables the watchdog entirely.
+	FeedStaleSuspendSeconds int
+
 	// Oddin — all optional. If Token is empty, the ingester boots idle
 	// (health endpoint only) until credentials arrive.
 	Oddin OddinConfig
@@ -57,6 +66,8 @@ func Load() (Config, error) {
 		ServiceName: getEnvDefault("SERVICE_NAME", "feed-ingester"),
 		LogLevel:    getEnvDefault("LOG_LEVEL", "info"),
 		HealthPort:  getEnvDefault("HEALTH_PORT", "8081"),
+
+		FeedStaleSuspendSeconds: atoiDefault("FEED_STALE_SUSPEND_SECONDS", 20),
 	}
 
 	cfg.DatabaseURL = os.Getenv("DATABASE_URL")
