@@ -16,10 +16,10 @@ bin/
 *.test
 *.out
 
-# Env & secrets
+# Env & secrets — ignore every .env variant (incl. .bak / .backup-* dumps),
+# keep only the committed template.
 .env
-.env.local
-.env.*.local
+.env.*
 !.env.example
 
 # Load-test artifacts (cookies contain valid session JWTs while a run is live)
@@ -31,6 +31,9 @@ postgres-data/
 redis-data/
 caddy-data/
 caddy-config/
+
+# Deploy state — pre-deploy pg_dump backups + per-service image stacks
+.deploy/
 
 # IDE
 .idea/
