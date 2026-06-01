@@ -25,6 +25,14 @@ type Config struct {
 	// WorkerCount controls fan-out for the per-market settle phase 2
 	// (see settler.New). Read from SETTLEMENT_WORKER_COUNT, default 4.
 	WorkerCount int
+	// ReconcileIntervalSeconds is the cadence of the stranded-ticket
+	// reconciliation sweeper (settler.ReconcileStranded), which settles
+	// `accepted` tickets whose market is terminally settled but whose leg
+	// result never got written (the per-message cascade only writes it on
+	// the fresh settle; a recovery/bet-delay reorder leaves it stranded).
+	// Read from SETTLEMENT_RECONCILE_INTERVAL_SECONDS, default 300; <=0
+	// disables the sweeper.
+	ReconcileIntervalSeconds int
 }
 
 type OddinConfig struct {
@@ -53,6 +61,10 @@ func Load() (Config, error) {
 		// the upper bound to 8 since the singleton riskzilla_bank_state
 		// row becomes the contention ceiling past that.
 		WorkerCount: atoiDefault("SETTLEMENT_WORKER_COUNT", 4),
+		// Stranded-ticket reconciliation cadence. 5 min is well within an
+		// acceptable settle-latency budget for the rare miss while keeping
+		// the scan (partial index WHERE result IS NULL) negligible.
+		ReconcileIntervalSeconds: atoiDefault("SETTLEMENT_RECONCILE_INTERVAL_SECONDS", 300),
 	}
 	cfg.DatabaseURL = os.Getenv("DATABASE_URL")
 	if cfg.DatabaseURL == "" {

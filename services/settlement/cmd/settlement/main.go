@@ -82,6 +82,15 @@ func main() {
 		go runAMQP(ctx, cfg, stt, logger)
 	}
 
+	// Stranded-ticket reconciler. Runs off DB state only (no Oddin), so it
+	// stays armed even when the feed is idle — it still heals historical
+	// strandings. <=0 disables.
+	if cfg.ReconcileIntervalSeconds > 0 {
+		go runReconcileSweeper(ctx, stt, time.Duration(cfg.ReconcileIntervalSeconds)*time.Second, logger)
+	} else {
+		logger.Info().Msg("stranded-ticket reconciler disabled (SETTLEMENT_RECONCILE_INTERVAL_SECONDS<=0)")
+	}
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
@@ -173,6 +182,35 @@ type healthResp struct {
 	RolledBack    int64  `json:"rolledBack"`
 	Skipped       int64  `json:"skipped"`
 	Errors        int64  `json:"errors"`
+}
+
+// runReconcileSweeper periodically heals tickets stranded `accepted` on a
+// settled market (settler.ReconcileStranded) and settles them. Idempotent
+// and a no-op when nothing is stranded; it's the structural backstop for
+// the per-message settle path missing a leg-result write under recovery /
+// bet-delay reordering.
+func runReconcileSweeper(ctx context.Context, stt *settler.Settler, interval time.Duration, log zerolog.Logger) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	log.Info().Dur("interval", interval).Msg("stranded-ticket reconciler armed")
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			healed, settled, err := stt.ReconcileStranded(ctx)
+			if err != nil {
+				log.Warn().Err(err).Msg("reconcile sweep failed")
+				continue
+			}
+			if healed > 0 || settled > 0 {
+				log.Info().
+					Int64("healed_legs", healed).
+					Int("settled_tickets", settled).
+					Msg("reconcile: settled stranded tickets")
+			}
+		}
+	}
 }
 
 func startHealth(port string, pool *pgxpool.Pool, rdb *redis.Client, stt *settler.Settler, log zerolog.Logger) *http.Server {

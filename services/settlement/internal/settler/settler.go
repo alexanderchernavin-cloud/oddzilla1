@@ -699,6 +699,56 @@ func (s *Settler) maybeSettleTicket(ctx context.Context, tx pgx.Tx, ticketID, so
 	return true, nil
 }
 
+// ─── stranded-ticket reconciliation ────────────────────────────────────────
+
+// ReconcileStranded repairs tickets left `accepted` on a market that is in
+// fact terminally settled but whose leg result never got written (see
+// store.HealStrandedSelections for how that happens). It (1) heals the
+// NULL legs from the authoritative current market state, then (2) settles
+// every `accepted` ticket that is now fully resolved, via the normal
+// settle path. Both steps read current DB truth, never message replays,
+// so a rolled-back market (status=1, NULL result) is untouched and the
+// replay-gated rollback path can't be defeated. No-op when nothing is
+// stranded; safe to run on a timer. Returns (legs healed, tickets
+// settled).
+func (s *Settler) ReconcileStranded(ctx context.Context) (int64, int, error) {
+	tx, err := s.store.BeginTx(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	healed, err := store.HealStrandedSelections(ctx, tx)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		return 0, 0, err
+	}
+	// Computed inside the same tx so it observes the legs just healed.
+	candidates, err := store.SettleReadyAcceptedTickets(ctx, tx)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		return 0, 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, 0, err
+	}
+	if len(candidates) == 0 {
+		return healed, 0, nil
+	}
+
+	settled, err := s.settleTicketsInParallel(ctx, candidates)
+	if err != nil {
+		return healed, 0, fmt.Errorf("reconcile settle: %w", err)
+	}
+	for _, tid := range settled {
+		s.publishTicketEvent(ctx, tid, "settled", "")
+	}
+	if len(settled) > 0 {
+		if err := store.NotifyPushOutbox(ctx, s.store.Pool()); err != nil {
+			s.log.Debug().Err(err).Msg("reconcile: notify push outbox failed; sweep will catch up")
+		}
+	}
+	return healed, len(settled), nil
+}
+
 // ─── bet_cancel ────────────────────────────────────────────────────────────
 
 func (s *Settler) handleBetCancel(ctx context.Context, body []byte) error {

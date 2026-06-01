@@ -220,6 +220,79 @@ SELECT DISTINCT ticket_id
 	return out, rows.Err()
 }
 
+// HealStrandedSelections repairs the "market settled but ticket stuck
+// `accepted`" class of bug. The per-message settle cascade
+// (ApplyOutcomeToSelections) only writes a leg's result on the FRESH
+// settle (InsertIfNew inserted=true); a replay skips it. A selection that
+// became settle-eligible AFTER that fresh pass — ticket still in
+// bet-delay, recovery delivered the settle before the ticket existed, or
+// the only later delivery was a replay — never got its `result` written,
+// leaving an open ticket with an unresolved leg on a market that is in
+// fact terminally settled, forever.
+//
+// This reads the AUTHORITATIVE current state — market_outcomes.result +
+// void_factor on a market whose status is terminal (-3 settled / -4
+// cancelled) — and fills any still-NULL leg on a still-`accepted` ticket.
+// It deliberately does NOT key off message replays, so it cannot defeat
+// the replay-gated rollback path: a rolled-back market is status=1 with a
+// NULL outcome result, so it is never matched here. Idempotent
+// (WHERE ts.result IS NULL). Returns the number of legs healed.
+func HealStrandedSelections(ctx context.Context, tx pgx.Tx) (int64, error) {
+	tag, err := tx.Exec(ctx, `
+UPDATE ticket_selections ts
+   SET result      = mo.result,
+       void_factor = mo.void_factor,
+       settled_at  = NOW()
+  FROM market_outcomes mo
+  JOIN markets m ON m.id = mo.market_id
+  JOIN tickets t ON t.id = ts.ticket_id
+ WHERE ts.market_id  = mo.market_id
+   AND ts.outcome_id = mo.outcome_id
+   AND ts.result IS NULL
+   AND mo.result IS NOT NULL
+   AND m.status IN (-3, -4)
+   AND t.status = 'accepted'`)
+	if err != nil {
+		return 0, fmt.Errorf("heal stranded selections: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// SettleReadyAcceptedTickets returns the IDs of `accepted` tickets whose
+// every leg is already resolved (no ticket_selections row with result IS
+// NULL) — i.e. tickets that are ready to settle but are still sitting
+// open. In a healthy system this set is empty; it surfaces exactly the
+// strandings HealStrandedSelections just repaired (and any other ticket
+// the per-message settle path missed). The caller pushes them through the
+// normal settle path (maybeSettleTicket re-validates each under SKIP
+// LOCKED + status='accepted', so this is race-safe against concurrent
+// settlement). Decoupling the candidate set from HealStrandedSelections'
+// RETURNING makes the sweep self-healing: if a prior tick healed the legs
+// but crashed before settling, the next tick still finds the ticket here.
+func SettleReadyAcceptedTickets(ctx context.Context, tx pgx.Tx) ([]string, error) {
+	rows, err := tx.Query(ctx, `
+SELECT t.id
+  FROM tickets t
+ WHERE t.status = 'accepted'
+   AND EXISTS (SELECT 1 FROM ticket_selections ts WHERE ts.ticket_id = t.id)
+   AND NOT EXISTS (
+     SELECT 1 FROM ticket_selections ts WHERE ts.ticket_id = t.id AND ts.result IS NULL
+   )`)
+	if err != nil {
+		return nil, fmt.Errorf("settle-ready accepted tickets: %w", err)
+	}
+	defer rows.Close()
+	out := make([]string, 0, 8)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // LoadTicketUserMap returns a map[ticketID]userID for the given ticket
 // ids in one round trip. The settler uses this to partition tickets by
 // owner before fan-out — each user's tickets always land in the same
