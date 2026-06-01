@@ -9,6 +9,7 @@ interface ThreadMessage {
   id: string;
   who: string;
   whoName: string | null;
+  toAddress: string | null;
   subject: string;
   textBody: string | null;
   htmlBody: string | null;
@@ -191,17 +192,25 @@ function MessageCard({ message }: { message: ThreadMessage }) {
       }`}
     >
       <div className="flex items-baseline justify-between gap-3 text-sm">
-        <div className="font-medium">
-          {inbound ? (
-            <>
-              {message.whoName ? `${message.whoName} ` : ""}
-              <span className="text-[var(--color-fg-muted)]">{message.who}</span>
-            </>
-          ) : (
-            <>
-              <span className="text-[var(--color-fg-muted)]">to</span>{" "}
-              {message.who}
-            </>
+        <div className="min-w-0">
+          <div className="font-medium">
+            {inbound ? (
+              <>
+                {message.whoName ? `${message.whoName} ` : ""}
+                <span className="text-[var(--color-fg-muted)]">{message.who}</span>
+              </>
+            ) : (
+              <>
+                <span className="text-[var(--color-fg-muted)]">to</span>{" "}
+                {message.who}
+              </>
+            )}
+          </div>
+          {inbound && message.toAddress && (
+            <div className="mt-0.5 break-all text-xs text-[var(--color-fg-subtle)]">
+              <span className="text-[var(--color-fg-muted)]">To</span>{" "}
+              {message.toAddress}
+            </div>
           )}
         </div>
         <div className="flex items-center gap-2 text-xs text-[var(--color-fg-subtle)]">
