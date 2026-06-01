@@ -14,6 +14,7 @@ interface ThreadMessage {
   id: string;
   who: string;
   whoName: string | null;
+  toAddress: string | null;
   subject: string;
   textBody: string | null;
   htmlBody: string | null;
@@ -69,7 +70,8 @@ export default async function ThreadPage({
         {data.thread.subject}
       </h1>
       <p className="mt-1 text-sm text-[var(--color-fg-muted)]">
-        with {data.thread.firstFrom ?? data.thread.firstTo ?? "—"} ·{" "}
+        with {data.thread.firstFrom ?? "—"}
+        {data.thread.firstTo ? <> · to {data.thread.firstTo}</> : null} ·{" "}
         {data.thread.inboundCount + data.thread.outboundCount} message
         {data.thread.inboundCount + data.thread.outboundCount === 1 ? "" : "s"}
         {data.thread.archived && " · Archived"}

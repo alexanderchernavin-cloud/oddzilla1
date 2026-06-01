@@ -81,6 +81,11 @@ interface ThreadMessage {
   id: string;
   who: string;
   whoName: string | null;
+  /** The recipient address this message was sent to. For inbound mail
+   * this is the @oddzilla.cc mailbox it landed in (the MX is a domain
+   * catch-all, so the local-part identifies which signup / address the
+   * sender used). For outbound it mirrors `who`. */
+  toAddress: string | null;
   subject: string;
   textBody: string | null;
   htmlBody: string | null;
@@ -319,6 +324,7 @@ export default async function adminEmailRoutes(app: FastifyInstance) {
           id: r.id,
           who: r.fromAddress,
           whoName: r.fromName,
+          toAddress: r.toAddress,
           subject: r.subject,
           textBody: r.textBody,
           htmlBody: r.htmlBody,
@@ -350,6 +356,7 @@ export default async function adminEmailRoutes(app: FastifyInstance) {
             id: String(r.id),
             who: r.toAddress,
             whoName: null,
+            toAddress: r.toAddress,
             subject: r.subject,
             textBody: r.textBody,
             htmlBody: r.htmlBody,
