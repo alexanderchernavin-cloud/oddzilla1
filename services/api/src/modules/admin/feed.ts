@@ -14,23 +14,29 @@
 //   timestamp. Markets that were stuck "LIVE" without odds get
 //   re-populated; new matches that were missed appear.
 //
-//   When `flushOdds=true` (default), the active catalog is wiped and
-//   reset before the replay so only what Oddin sends back over the
-//   rewind window survives. Three steps, in order:
+//   When `flushOdds=true` (default), every active market is fully
+//   flushed before the replay so only what Oddin re-confirms over the
+//   rewind window comes back. The flush is SUSPEND-based, NOT DELETE:
 //
-//     1. DELETE every market on a not_started/live match that has no
-//        ticket_selections row AND no settlements row. Cascades to
-//        market_outcomes. The settlements/ticket_selections FKs are
-//        RESTRICT, so money-attached markets are physically protected
-//        — they fall through to step 3.
-//     2. DELETE every not_started/live match left with no markets
-//        (orphaned by step 1). Cascades to feed_messages, which the
-//        replay re-populates naturally.
-//     3. SUSPEND surviving active markets (the money-attached ones
-//        that step 1 couldn't touch): status=-1, null published_odds /
-//        raw_odds / probability, market_outcomes.active=false. So bet
-//        placement stays blocked and Tiple/Tippot can't price off
-//        stale probability snapshots until the replay refills them.
+//     - Every market on a not_started/live match at status=1 is flipped
+//       to status=-1 (suspended), and its outcomes have published_odds /
+//       raw_odds / probability nulled and active=false. That is a
+//       complete odds wipe — the catalog filter gates on status=1, so a
+//       suspended market is invisible to the storefront exactly like a
+//       deleted one, and bet placement / Tiple / Tippot can't price off
+//       stale snapshots until the replay refills them.
+//
+//   We deliberately do NOT `DELETE FROM markets`: a bulk delete deadlocks
+//   against the live feed-ingester's concurrent market upserts (the
+//   "something went wrong" 500 this path used to throw) and FK-races
+//   concurrent settlement INSERTs. An UPDATE on the parent triggers no
+//   child FK checks and has the identical storefront end-state. This is
+//   the same race-safe approach the auto-recovery path uses
+//   (store.FlushAndSuspendActiveCatalog). The whole operation runs in one
+//   transaction (so a failure can't leave a half-flushed catalog or a
+//   rewound cursor with no replay), bounded by a lock_timeout and retried
+//   on transient lock contention; if the feed stays too busy it returns a
+//   typed 503 instead of an unhandled 500.
 //
 //   Closed/cancelled matches are never touched (terminal history). The
 //   `settlements` table is never touched — append-only and apply-once.
@@ -39,7 +45,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { sql } from "drizzle-orm";
 import { adminAuditLog, amqpState } from "@oddzilla/db";
-import { BadRequestError } from "../../lib/errors.js";
+import { BadRequestError, ServiceUnavailableError } from "../../lib/errors.js";
 
 const bodySchema = z.object({
   flushOdds: z.boolean().optional(),
@@ -61,6 +67,25 @@ const bodySchema = z.object({
 const recoveryRateLimit = {
   rateLimit: { max: 3, timeWindow: "1 hour" },
 };
+
+// The flush UPDATEs can still lose a deadlock against the hot feed-ingester
+// (40P01) or hit our lock_timeout (55P03). Both are transient — retry a few
+// times before surfacing a typed 503.
+const RECOVERY_MAX_ATTEMPTS = 3;
+
+// postgres.js puts the SQLSTATE on `.code`; drizzle wraps the driver error,
+// so walk the cause chain looking for a deadlock / lock-not-available code.
+function isTransientLockError(err: unknown): boolean {
+  let e: unknown = err;
+  for (let i = 0; i < 5 && e; i++) {
+    const code = (e as { code?: string }).code;
+    if (code === "40P01" /* deadlock_detected */ || code === "55P03" /* lock_not_available */) {
+      return true;
+    }
+    e = (e as { cause?: unknown }).cause;
+  }
+  return false;
+}
 
 export default async function adminFeedRoutes(app: FastifyInstance) {
   app.post(
@@ -102,111 +127,6 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
     // than ~3 days so this is clamped at 72h by the schema above.
     const cursorMs = Date.now() - hours * 60 * 60 * 1000;
 
-    // Count currently-active markets so the audit log + response has a
-    // meaningful "affected" number. These are the ones flush will
-    // suspend and recovery will re-activate.
-    const marketCountRows = (await app.db.execute(sql`
-      SELECT COUNT(*)::text AS cnt
-      FROM markets m
-      JOIN matches ma ON ma.id = m.match_id
-      WHERE m.status = 1
-        AND ma.status IN ('not_started', 'live')
-    `)) as unknown as Array<{ cnt: string }>;
-    const activeMarkets = Number(marketCountRows[0]?.cnt ?? "0");
-
-    let flushedMarkets = 0;
-    let flushedOutcomes = 0;
-    let deletedMarkets = 0;
-    let deletedMatches = 0;
-
-    if (flush) {
-      // Step 1: hard-delete markets on not_started/live matches that
-      // have no money attached. Cascades to market_outcomes via FK.
-      // The settlements + ticket_selections FKs are RESTRICT so any
-      // market with bets or settlements physically can't be deleted —
-      // those fall through to the SUSPEND step below.
-      const deletedMarketsResult = await app.db.execute(sql`
-        DELETE FROM markets m
-         USING matches ma
-         WHERE m.match_id = ma.id
-           AND ma.status IN ('not_started', 'live')
-           AND NOT EXISTS (
-             SELECT 1 FROM ticket_selections ts WHERE ts.market_id = m.id
-           )
-           AND NOT EXISTS (
-             SELECT 1 FROM settlements s WHERE s.market_id = m.id
-           )
-      `);
-      deletedMarkets =
-        typeof (deletedMarketsResult as { count?: number }).count === "number"
-          ? (deletedMarketsResult as { count: number }).count
-          : 0;
-
-      // Step 2: hard-delete matches that no longer have any markets.
-      // Cascades to feed_messages — replay refills as messages land.
-      const deletedMatchesResult = await app.db.execute(sql`
-        DELETE FROM matches ma
-         WHERE ma.status IN ('not_started', 'live')
-           AND NOT EXISTS (
-             SELECT 1 FROM markets m WHERE m.match_id = ma.id
-           )
-      `);
-      deletedMatches =
-        typeof (deletedMatchesResult as { count?: number }).count === "number"
-          ? (deletedMatchesResult as { count: number }).count
-          : 0;
-
-      // Step 3: suspend whatever active markets survived (money-
-      // attached ones) and null their odds so bet placement stays
-      // blocked until the replay republishes prices.
-      const marketResult = await app.db.execute(sql`
-        UPDATE markets
-           SET status = -1, updated_at = NOW()
-          FROM matches ma
-         WHERE ma.id = markets.match_id
-           AND markets.status = 1
-           AND ma.status IN ('not_started', 'live')
-      `);
-      flushedMarkets =
-        typeof (marketResult as { count?: number }).count === "number"
-          ? (marketResult as { count: number }).count
-          : 0;
-
-      const outcomeResult = await app.db.execute(sql`
-        UPDATE market_outcomes
-           SET published_odds = NULL,
-               raw_odds       = NULL,
-               probability    = NULL,
-               active         = FALSE,
-               updated_at     = NOW()
-          FROM markets m
-          JOIN matches ma ON ma.id = m.match_id
-         WHERE market_outcomes.market_id = m.id
-           AND ma.status IN ('not_started', 'live')
-      `);
-      flushedOutcomes =
-        typeof (outcomeResult as { count?: number }).count === "number"
-          ? (outcomeResult as { count: number }).count
-          : 0;
-    }
-
-    // Rewind the cursor for both producers. We want to force it
-    // backwards, so the upsert overwrites unconditionally (not
-    // GREATEST, which is what the normal ingest path uses).
-    await app.db
-      .insert(amqpState)
-      .values([
-        { key: "producer:1", afterTs: BigInt(cursorMs) },
-        { key: "producer:2", afterTs: BigInt(cursorMs) },
-      ])
-      .onConflictDoUpdate({
-        target: amqpState.key,
-        set: {
-          afterTs: sql`EXCLUDED.after_ts`,
-          updatedAt: sql`NOW()`,
-        },
-      });
-
     // pg_notify wakes the feed-ingester LISTEN loop. Payload is JSON so
     // the ingester can log what triggered the replay. Ingester reads the
     // fresh cursor from amqp_state rather than trusting the payload.
@@ -215,35 +135,143 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
       cursorMs,
       flush,
     });
-    await app.db.execute(sql`SELECT pg_notify('feed_recovery', ${payload})`);
 
-    await app.db.insert(adminAuditLog).values({
-      actorUserId: admin.id,
-      action: "feed.recovery",
-      targetType: "amqp_state",
-      targetId: "producer:1,producer:2",
-      beforeJson: { activeMarkets },
-      afterJson: {
-        cursorMs,
-        hours,
-        flush,
-        deletedMarkets,
-        deletedMatches,
-        flushedMarkets,
-        flushedOutcomes,
-      },
-      ipInet: request.ip ?? null,
-    });
+    // One transaction: full odds flush (SUSPEND, never DELETE) + cursor
+    // rewind + recovery notify + audit. Atomic, so a failure can't strand
+    // a half-flushed catalog or a rewound cursor that never triggered a
+    // replay. pg_notify is transactional — it fires on COMMIT, exactly
+    // when the flush is durable. lock_timeout bounds how long we'll block
+    // behind the live feed's row locks; the outer loop retries transient
+    // deadlock / lock-timeout before giving up with a typed 503.
+    const runRecoveryTxn = () =>
+      app.db.transaction(async (tx) => {
+        await tx.execute(sql`SET LOCAL lock_timeout = '8s'`);
+
+        const marketCountRows = (await tx.execute(sql`
+          SELECT COUNT(*)::text AS cnt
+          FROM markets m
+          JOIN matches ma ON ma.id = m.match_id
+          WHERE m.status = 1
+            AND ma.status IN ('not_started', 'live')
+        `)) as unknown as Array<{ cnt: string }>;
+        const activeMarkets = Number(marketCountRows[0]?.cnt ?? "0");
+
+        let flushedMarkets = 0;
+        let flushedOutcomes = 0;
+
+        if (flush) {
+          // Full odds flush: suspend EVERY active market on a
+          // not_started/live fixture and null its outcome prices. No
+          // DELETE — see the header comment for why (deadlock + FK race
+          // against the live feed). Storefront end-state is identical:
+          // status=-1 is invisible to the catalog filter.
+          const marketResult = await tx.execute(sql`
+            UPDATE markets
+               SET status = -1, updated_at = NOW()
+              FROM matches ma
+             WHERE ma.id = markets.match_id
+               AND markets.status = 1
+               AND ma.status IN ('not_started', 'live')
+          `);
+          flushedMarkets =
+            typeof (marketResult as { count?: number }).count === "number"
+              ? (marketResult as { count: number }).count
+              : 0;
+
+          const outcomeResult = await tx.execute(sql`
+            UPDATE market_outcomes
+               SET published_odds = NULL,
+                   raw_odds       = NULL,
+                   probability    = NULL,
+                   active         = FALSE,
+                   updated_at     = NOW()
+              FROM markets m
+              JOIN matches ma ON ma.id = m.match_id
+             WHERE market_outcomes.market_id = m.id
+               AND ma.status IN ('not_started', 'live')
+          `);
+          flushedOutcomes =
+            typeof (outcomeResult as { count?: number }).count === "number"
+              ? (outcomeResult as { count: number }).count
+              : 0;
+        }
+
+        // Rewind the cursor for both producers. Force it backwards, so
+        // the upsert overwrites unconditionally (not GREATEST, which is
+        // what the normal ingest path uses).
+        await tx
+          .insert(amqpState)
+          .values([
+            { key: "producer:1", afterTs: BigInt(cursorMs) },
+            { key: "producer:2", afterTs: BigInt(cursorMs) },
+          ])
+          .onConflictDoUpdate({
+            target: amqpState.key,
+            set: {
+              afterTs: sql`EXCLUDED.after_ts`,
+              updatedAt: sql`NOW()`,
+            },
+          });
+
+        await tx.execute(sql`SELECT pg_notify('feed_recovery', ${payload})`);
+
+        await tx.insert(adminAuditLog).values({
+          actorUserId: admin.id,
+          action: "feed.recovery",
+          targetType: "amqp_state",
+          targetId: "producer:1,producer:2",
+          beforeJson: { activeMarkets },
+          afterJson: {
+            cursorMs,
+            hours,
+            flush,
+            mode: "suspend",
+            flushedMarkets,
+            flushedOutcomes,
+          },
+          ipInet: request.ip ?? null,
+        });
+
+        return { activeMarkets, flushedMarkets, flushedOutcomes };
+      });
+
+    let txResult:
+      | { activeMarkets: number; flushedMarkets: number; flushedOutcomes: number }
+      | undefined;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        txResult = await runRecoveryTxn();
+        break;
+      } catch (err) {
+        if (isTransientLockError(err)) {
+          if (attempt >= RECOVERY_MAX_ATTEMPTS) {
+            request.log.warn(
+              { attempt },
+              "feed recovery flush exhausted retries on lock contention",
+            );
+            throw new ServiceUnavailableError(
+              "Feed recovery could not get a clean lock window — the live feed is busy. Nothing was changed; try again in a few seconds.",
+              "recovery_lock_contended",
+            );
+          }
+          request.log.warn(
+            { attempt },
+            "feed recovery flush hit lock contention; retrying",
+          );
+          await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+          continue;
+        }
+        throw err;
+      }
+    }
 
     return {
       ok: true,
       cursorMs,
       hours,
-      deletedMarkets,
-      deletedMatches,
-      flushedMarkets,
-      flushedOutcomes,
-      activeMarketsBefore: activeMarkets,
+      flushedMarkets: txResult.flushedMarkets,
+      flushedOutcomes: txResult.flushedOutcomes,
+      activeMarketsBefore: txResult.activeMarkets,
     };
   },
   );
