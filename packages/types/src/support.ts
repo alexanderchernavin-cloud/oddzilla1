@@ -146,6 +146,23 @@ export interface SupportAccountWalletFact {
   locked: string;
 }
 
+/** One leg of a ticket, fully labelled by the server so the assistant can
+ * explain exactly why a bet won, lost, or only partly paid. */
+export interface SupportAccountTicketLegFact {
+  /** Human market name, e.g. "Match winner", "Total rounds 24.5 - Map 1". */
+  market: string;
+  /** The outcome the bettor picked, e.g. "Astralis", "Over 24.5". */
+  pick: string;
+  odds: string;
+  /** won | lost | void | half_won | half_lost | pending */
+  result: string;
+  /** "Home vs Away", or "" when the match row is gone. */
+  match: string;
+  sport: string;
+  /** not_started | live | closed | cancelled | suspended | "" */
+  matchStatus: string;
+}
+
 export interface SupportAccountTicketFact {
   id: string;
   status: string;
@@ -156,6 +173,8 @@ export interface SupportAccountTicketFact {
   actualPayout: string | null;
   placedAt: string;
   settledAt: string | null;
+  /** Per-leg breakdown so the assistant can explain how the bet settled. */
+  legs: SupportAccountTicketLegFact[];
 }
 
 export interface SupportAccountDepositFact {
