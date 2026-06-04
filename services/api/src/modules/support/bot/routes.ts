@@ -34,7 +34,11 @@ import {
   ServiceUnavailableError,
 } from "../../../lib/errors.js";
 import { mapMessage, publishSupportFrame } from "../shared.js";
-import { buildAccountFacts, buildCatalogDigest } from "./account-facts.js";
+import {
+  buildAccountFacts,
+  buildCatalogDigest,
+  buildTeamResults,
+} from "./account-facts.js";
 
 const UUID_SHAPE = /^[0-9a-f-]{36}$/i;
 const REPLY_BODY_MAX = 4000;
@@ -325,4 +329,19 @@ export default async function supportBotRoutes(app: FastifyInstance) {
     }
     return { ok: true, lastSeen: now };
   });
+
+  // ─── Tool: a team's recent finished matches (won / lost) ─────────────────
+  app.get(
+    "/webhooks/support-ai/:secret/tools/team-results",
+    async (request) => {
+      assertBotAuth(request);
+      const parsed = z
+        .object({
+          q: z.string().trim().min(1).max(80),
+          limit: z.coerce.number().int().min(1).max(20).default(12),
+        })
+        .parse(request.query);
+      return buildTeamResults(app, parsed.q, parsed.limit);
+    },
+  );
 }

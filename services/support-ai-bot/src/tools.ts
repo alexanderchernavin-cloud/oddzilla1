@@ -40,6 +40,19 @@ export const TOOLS: ToolSpec[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "team_results",
+      description:
+        "Get a team's recent FINISHED matches and whether they won or lost each. Use for history / form questions ('when did X last win or lose', 'X's recent results', recent head-to-head). Takes a team name.",
+      parameters: {
+        type: "object",
+        properties: { team: { type: "string", description: "a team name" } },
+        required: ["team"],
+      },
+    },
+  },
 ];
 
 const FETCH_TIMEOUT_MS = 15_000;
@@ -70,6 +83,17 @@ interface MatchResponse {
     providerMarketId?: number;
     status?: number;
     outcomes?: Array<{ name?: string; publishedOdds?: string; active?: boolean }>;
+  }>;
+}
+
+interface TeamResultsResponse {
+  team: string | null;
+  results: Array<{
+    playedAt: string;
+    opponent: string;
+    sport: string;
+    tournament: string;
+    result: string;
   }>;
 }
 
@@ -137,6 +161,16 @@ export async function executeTool(
         scheduledAt: m.scheduledAt ?? "",
         markets,
       });
+    }
+
+    if (name === "team_results") {
+      const team = String(args.team ?? "").slice(0, 80);
+      if (!team) return JSON.stringify({ error: "invalid_team" });
+      const url = `${cfg.apiBase}/webhooks/support-ai/${encodeURIComponent(
+        cfg.botToken,
+      )}/tools/team-results?q=${encodeURIComponent(team)}&limit=12`;
+      const body = (await getJson(url)) as TeamResultsResponse;
+      return JSON.stringify(body);
     }
   } catch (err) {
     return JSON.stringify({ error: `tool_failed: ${(err as Error).message}` });
