@@ -91,6 +91,12 @@ export default async function supportBotRoutes(app: FastifyInstance) {
       assertBotAuth(request);
       const { limit } = pendingQuery.parse(request.query);
 
+      // "Needs a bot reply" = open + AI-handled + the LAST message in the
+      // thread is the bettor's. We deliberately do NOT key off unread_admin:
+      // that counter is operator read-state and gets zeroed when an admin
+      // merely opens the thread in the backoffice (e.g. to click Resume AI),
+      // which would silently hide a genuinely-unanswered bettor message from
+      // the bot. The latest-message-is-user check is independent of that.
       const threadRows = await app.db
         .select({
           id: supportThreads.id,
@@ -99,7 +105,7 @@ export default async function supportBotRoutes(app: FastifyInstance) {
         })
         .from(supportThreads)
         .where(
-          sql`${supportThreads.status} = 'open' AND ${supportThreads.aiHandling} = true AND ${supportThreads.unreadAdmin} > 0`,
+          sql`${supportThreads.status} = 'open' AND ${supportThreads.aiHandling} = true AND (SELECT m.sender_kind FROM support_messages m WHERE m.thread_id = ${supportThreads.id} ORDER BY m.id DESC LIMIT 1) = 'user'`,
         )
         .orderBy(asc(supportThreads.lastMessageAt))
         .limit(limit);
