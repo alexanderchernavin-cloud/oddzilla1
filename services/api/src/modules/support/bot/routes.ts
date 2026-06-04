@@ -338,10 +338,14 @@ export default async function supportBotRoutes(app: FastifyInstance) {
       const parsed = z
         .object({
           q: z.string().trim().min(1).max(80),
+          sport: z.string().trim().min(1).max(40).optional(),
           limit: z.coerce.number().int().min(1).max(20).default(12),
         })
         .parse(request.query);
-      return buildTeamResults(app, parsed.q, parsed.limit);
+      return buildTeamResults(app, parsed.q, {
+        sport: parsed.sport,
+        limit: parsed.limit,
+      });
     },
   );
 }
