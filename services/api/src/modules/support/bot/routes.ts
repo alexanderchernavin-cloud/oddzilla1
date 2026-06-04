@@ -34,7 +34,7 @@ import {
   ServiceUnavailableError,
 } from "../../../lib/errors.js";
 import { mapMessage, publishSupportFrame } from "../shared.js";
-import { buildAccountFacts } from "./account-facts.js";
+import { buildAccountFacts, buildCatalogDigest } from "./account-facts.js";
 
 const UUID_SHAPE = /^[0-9a-f-]{36}$/i;
 const REPLY_BODY_MAX = 4000;
@@ -110,6 +110,10 @@ export default async function supportBotRoutes(app: FastifyInstance) {
         .orderBy(asc(supportThreads.lastMessageAt))
         .limit(limit);
 
+      // Shared catalog snapshot — computed once, attached to every thread, so
+      // the assistant can answer schedule / "what's on" / "when does X play".
+      const catalog = threadRows.length ? await buildCatalogDigest(app) : [];
+
       const threads = await Promise.all(
         threadRows.map(async (t) => {
           const recent = await app.db
@@ -136,6 +140,7 @@ export default async function supportBotRoutes(app: FastifyInstance) {
               createdAt: m.createdAt.toISOString(),
             })),
             accountFacts,
+            catalog,
           };
         }),
       );
