@@ -42,6 +42,7 @@ import {
 import { compute } from "./algorithm.js";
 import { writeCommunityProjection } from "../community/projection.js";
 import { evaluateAchievements } from "../community/achievements.js";
+import { releaseOpenLiability } from "../../lib/riskzilla/open-liability.js";
 
 // Quote validity. Long enough for the user to read + click + sit
 // through the acceptance delay; short enough that stale offers don't
@@ -373,6 +374,13 @@ export class CashoutService {
           settledAt: cashedOutAt,
         })
         .where(eq(tickets.id, ticketId));
+
+      // Release the RiskZilla open-liability this ticket reserved at
+      // placement. Settlement's UpdateRiskzillaBankOnSettle is the usual
+      // release, but maybeSettleTicket gates on status='accepted' and so
+      // never runs for a cashed_out ticket — without this the counter
+      // leaks the full potential payout. See lib/riskzilla/open-liability.ts.
+      await releaseOpenLiability(tx, ticket.currency, ticket.potentialPayoutMicro);
 
       await tx
         .update(cashouts)
