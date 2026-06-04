@@ -187,3 +187,77 @@ export async function buildCatalogDigest(
     status: r.status,
   }));
 }
+
+export interface TeamResult {
+  playedAt: string;
+  opponent: string;
+  sport: string;
+  tournament: string;
+  /** won | lost | void | unknown — from the settled match-winner market. */
+  result: string;
+}
+
+/** A team's recent FINISHED matches and whether they won or lost each, for
+ * history / form questions. Win/loss comes from the settled match-winner
+ * market (market_outcomes.result), which is authoritative — live_score is
+ * unreliable (some closed matches store 0-0). Read-only, public data. */
+export async function buildTeamResults(
+  app: FastifyInstance,
+  query: string,
+  limit = 12,
+): Promise<{ team: string | null; results: TeamResult[] }> {
+  const q = query.trim().slice(0, 80);
+  if (!q) return { team: null, results: [] };
+  const like = `%${q}%`;
+  const prefix = `${q}%`;
+  const rows = await app.db.execute<{
+    team: string;
+    played_at: string;
+    opponent: string;
+    sport: string;
+    tournament: string;
+    result: string | null;
+  }>(sql`
+    WITH t AS (
+      SELECT id, name FROM competitors
+      WHERE name ILIKE ${like}
+      ORDER BY (lower(name) = lower(${q})) DESC,
+               (name ILIKE ${prefix}) DESC,
+               length(name) ASC
+      LIMIT 1
+    )
+    SELECT t.name AS team,
+           to_char(m.scheduled_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS played_at,
+           CASE WHEN m.home_competitor_id = t.id THEN ac.name ELSE hc.name END AS opponent,
+           s.slug AS sport,
+           tr.name AS tournament,
+           (SELECT mo.result
+              FROM markets mk
+              JOIN market_outcomes mo ON mo.market_id = mk.id
+             WHERE mk.match_id = m.id AND mk.provider_market_id = 1
+               AND mo.outcome_id = CASE WHEN m.home_competitor_id = t.id THEN '1' ELSE '2' END
+             LIMIT 1) AS result
+    FROM t
+    JOIN matches m
+      ON (m.home_competitor_id = t.id OR m.away_competitor_id = t.id)
+    JOIN competitors hc ON hc.id = m.home_competitor_id
+    JOIN competitors ac ON ac.id = m.away_competitor_id
+    JOIN tournaments tr ON tr.id = m.tournament_id
+    JOIN categories cat ON cat.id = tr.category_id
+    JOIN sports s ON s.id = cat.sport_id
+    WHERE m.status = 'closed'
+    ORDER BY m.scheduled_at DESC
+    LIMIT ${limit}
+  `);
+  const arr = Array.from(rows);
+  return {
+    team: arr[0]?.team ?? null,
+    results: arr.map((r) => ({
+      playedAt: r.played_at,
+      opponent: r.opponent,
+      sport: r.sport,
+      tournament: r.tournament,
+      result: r.result ?? "unknown",
+    })),
+  };
+}
