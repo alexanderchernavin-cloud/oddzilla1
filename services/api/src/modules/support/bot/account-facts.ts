@@ -204,12 +204,17 @@ export interface TeamResult {
 export async function buildTeamResults(
   app: FastifyInstance,
   query: string,
-  limit = 12,
-): Promise<{ team: string | null; results: TeamResult[] }> {
+  opts: { sport?: string; limit?: number } = {},
+): Promise<{ team: string | null; sport: string | null; results: TeamResult[] }> {
   const q = query.trim().slice(0, 80);
-  if (!q) return { team: null, results: [] };
+  if (!q) return { team: null, sport: null, results: [] };
+  const limit = opts.limit ?? 12;
+  const sport = opts.sport?.trim().toLowerCase() || null;
   const like = `%${q}%`;
   const prefix = `${q}%`;
+  // Same team name = a different team per game, so scope to one sport when the
+  // caller knows which game the question is about.
+  const sportFilter = sport ? sql`AND s.slug = ${sport}` : sql``;
   const rows = await app.db.execute<{
     team: string;
     played_at: string;
@@ -245,13 +250,14 @@ export async function buildTeamResults(
     JOIN tournaments tr ON tr.id = m.tournament_id
     JOIN categories cat ON cat.id = tr.category_id
     JOIN sports s ON s.id = cat.sport_id
-    WHERE m.status = 'closed'
+    WHERE m.status = 'closed' ${sportFilter}
     ORDER BY m.scheduled_at DESC
     LIMIT ${limit}
   `);
   const arr = Array.from(rows);
   return {
     team: arr[0]?.team ?? null,
+    sport,
     results: arr.map((r) => ({
       playedAt: r.played_at,
       opponent: r.opponent,

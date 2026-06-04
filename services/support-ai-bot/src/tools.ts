@@ -48,7 +48,14 @@ export const TOOLS: ToolSpec[] = [
         "Get a team's recent FINISHED matches and whether they won or lost each. Use for history / form questions ('when did X last win or lose', 'X's recent results', recent head-to-head). Takes a team name.",
       parameters: {
         type: "object",
-        properties: { team: { type: "string", description: "a team name" } },
+        properties: {
+          team: { type: "string", description: "a team name" },
+          sport: {
+            type: "string",
+            description:
+              "optional game/sport slug (e.g. cs2, lol, valorant, dota2, rocketleague) — include it once you know which game the question is about, since one team name can be a different team in different games",
+          },
+        },
         required: ["team"],
       },
     },
@@ -88,6 +95,7 @@ interface MatchResponse {
 
 interface TeamResultsResponse {
   team: string | null;
+  sport: string | null;
   results: Array<{
     playedAt: string;
     opponent: string;
@@ -166,9 +174,11 @@ export async function executeTool(
     if (name === "team_results") {
       const team = String(args.team ?? "").slice(0, 80);
       if (!team) return JSON.stringify({ error: "invalid_team" });
-      const url = `${cfg.apiBase}/webhooks/support-ai/${encodeURIComponent(
+      const sport = String(args.sport ?? "").slice(0, 40);
+      let url = `${cfg.apiBase}/webhooks/support-ai/${encodeURIComponent(
         cfg.botToken,
       )}/tools/team-results?q=${encodeURIComponent(team)}&limit=12`;
+      if (sport) url += `&sport=${encodeURIComponent(sport)}`;
       const body = (await getJson(url)) as TeamResultsResponse;
       return JSON.stringify(body);
     }
