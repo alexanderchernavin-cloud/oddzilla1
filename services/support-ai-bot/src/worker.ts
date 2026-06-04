@@ -16,9 +16,10 @@ import type {
 import { loadConfig } from "./config.js";
 import { logger } from "./logger.js";
 import { BotApi, BotApiError } from "./api-client.js";
-import { LmStudio } from "./lmstudio.js";
+import { LmStudio, type ChatMessage } from "./lmstudio.js";
 import { buildMessages } from "./prompt.js";
-import { DEFAULT_HOLDING_MESSAGE, parseDecision } from "./guardrails.js";
+import { DEFAULT_HOLDING_MESSAGE } from "./guardrails.js";
+import { TOOLS, executeTool } from "./tools.js";
 
 const cfg = loadConfig();
 const api = new BotApi(cfg);
@@ -30,8 +31,10 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const MAX_TOOL_ROUNDS = 2;
+const ESCALATE_PREFIX = "ESCALATE:";
+
 async function handleThread(thread: SupportBotPendingThread): Promise<void> {
-  // 1) Resolve the model (auto-discovers the loaded one if not pinned).
   const model = await lm.discoverModel();
   if (!model) {
     logger.error(
@@ -41,56 +44,78 @@ async function handleThread(thread: SupportBotPendingThread): Promise<void> {
     return;
   }
 
-  // 2) Ask the model. The two rules (no actions, Oddzilla-only) live in the
-  //    system prompt; the structural guarantee that the bot can't change
-  //    anything is that there are no action endpoints to call.
-  let raw: string;
-  try {
-    raw = await lm.chat(model, buildMessages(thread));
-  } catch (err) {
-    // Leave the thread pending — the next tick retries once LM Studio responds.
-    logger.error({
-      event: "lm_error",
-      threadId: thread.threadId,
-      err: (err as Error).message,
-    });
-    return;
+  // The model answers from ACCOUNT_FACTS + the in-context schedule, and may
+  // call read-only tools (find_matches / match_markets) to fetch anything it
+  // doesn't already have. Loop: run with tools; if it requests a tool, execute
+  // it and feed the result back; otherwise its text is the reply. On the final
+  // round we drop tools to force a written answer. There are no mutating tools,
+  // so the assistant can look anything up but can never change anything.
+  const messages: ChatMessage[] = buildMessages(thread);
+  let finalContent = "";
+
+  for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
+    const allowTools = round < MAX_TOOL_ROUNDS;
+    let completion;
+    try {
+      completion = await lm.complete(
+        model,
+        messages,
+        allowTools ? TOOLS : undefined,
+      );
+    } catch (err) {
+      logger.error({
+        event: "lm_error",
+        threadId: thread.threadId,
+        err: (err as Error).message,
+      });
+      return;
+    }
+
+    if (allowTools && completion.toolCalls.length > 0) {
+      messages.push({
+        role: "assistant",
+        content: completion.content,
+        tool_calls: completion.toolCalls.map((c) => ({
+          id: c.id,
+          type: "function",
+          function: { name: c.name, arguments: c.arguments },
+        })),
+      });
+      for (const call of completion.toolCalls) {
+        const result = await executeTool(cfg, call.name, call.arguments);
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: result,
+        });
+        logger.info({
+          event: "tool",
+          threadId: thread.threadId,
+          tool: call.name,
+          args: call.arguments.slice(0, 120),
+        });
+      }
+      continue;
+    }
+
+    finalContent = completion.content.trim();
+    break;
   }
 
-  const decision = parseDecision(raw);
-  if (!decision) {
-    logger.warn({ event: "unparseable", threadId: thread.threadId });
-    await api.escalate(
-      thread.threadId,
-      "unparseable_model_output",
-      DEFAULT_HOLDING_MESSAGE,
-    );
-    return;
-  }
-
-  // Escalation only happens now when the bettor explicitly asked for a human
-  // (the model returns action=escalate). Everything else gets answered.
-  if (decision.action === "escalate") {
-    await api.escalate(
-      thread.threadId,
-      decision.reason ?? "model_escalate",
-      decision.message.trim() || DEFAULT_HOLDING_MESSAGE,
-    );
-    logger.info({
-      event: "escalate",
-      threadId: thread.threadId,
-      reason: decision.reason ?? "model_escalate",
-    });
-    return;
-  }
-
-  const text = decision.message.trim().slice(0, cfg.maxReplyChars);
-  if (!text) {
-    // Reply with no body — hand to a human rather than send an empty bubble.
+  if (!finalContent) {
     await api.escalate(thread.threadId, "empty_reply", DEFAULT_HOLDING_MESSAGE);
     logger.warn({ event: "empty_reply", threadId: thread.threadId });
     return;
   }
+  if (finalContent.startsWith(ESCALATE_PREFIX)) {
+    const note =
+      finalContent.slice(ESCALATE_PREFIX.length).trim() ||
+      DEFAULT_HOLDING_MESSAGE;
+    await api.escalate(thread.threadId, "model_escalate", note);
+    logger.info({ event: "escalate", threadId: thread.threadId });
+    return;
+  }
+  const text = finalContent.slice(0, cfg.maxReplyChars);
   await api.reply(thread.threadId, text);
   logger.info({ event: "reply", threadId: thread.threadId, chars: text.length });
 }
