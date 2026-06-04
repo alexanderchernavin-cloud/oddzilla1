@@ -158,12 +158,13 @@ export async function buildCatalogDigest(
     tournament: string;
     home: string | null;
     away: string | null;
-    scheduled_at: Date;
+    scheduled_at: string;
     status: string;
   }>(sql`
     SELECT s.slug AS sport, t.name AS tournament,
            hc.name AS home, ac.name AS away,
-           m.scheduled_at, m.status
+           to_char(m.scheduled_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS scheduled_at,
+           m.status
     FROM matches m
     JOIN tournaments t ON t.id = m.tournament_id
     JOIN categories cat ON cat.id = t.category_id
@@ -182,7 +183,7 @@ export async function buildCatalogDigest(
     tournament: r.tournament,
     home: r.home ?? "TBD",
     away: r.away ?? "TBD",
-    scheduledAt: r.scheduled_at.toISOString(),
+    scheduledAt: r.scheduled_at,
     status: r.status,
   }));
 }

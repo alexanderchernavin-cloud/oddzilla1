@@ -112,7 +112,12 @@ export default async function supportBotRoutes(app: FastifyInstance) {
 
       // Shared catalog snapshot — computed once, attached to every thread, so
       // the assistant can answer schedule / "what's on" / "when does X play".
-      const catalog = threadRows.length ? await buildCatalogDigest(app) : [];
+      // Best-effort: a catalog-digest failure must never 500 the whole queue
+      // and block every reply — degrade to no in-context schedule (the bot can
+      // still look matches up with the find_matches tool).
+      const catalog = threadRows.length
+        ? await buildCatalogDigest(app).catch(() => [])
+        : [];
 
       const threads = await Promise.all(
         threadRows.map(async (t) => {
