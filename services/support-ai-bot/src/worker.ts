@@ -18,13 +18,7 @@ import { logger } from "./logger.js";
 import { BotApi, BotApiError } from "./api-client.js";
 import { LmStudio } from "./lmstudio.js";
 import { buildMessages } from "./prompt.js";
-import {
-  DEFAULT_HOLDING_MESSAGE,
-  RG_HOLDING_MESSAGE,
-  isResponsibleGamblingConcern,
-  parseDecision,
-  replyLooksUnsafe,
-} from "./guardrails.js";
+import { DEFAULT_HOLDING_MESSAGE, parseDecision } from "./guardrails.js";
 
 const cfg = loadConfig();
 const api = new BotApi(cfg);
@@ -36,29 +30,8 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function latestUserMessage(thread: SupportBotPendingThread): string {
-  for (let i = thread.messages.length - 1; i >= 0; i -= 1) {
-    const m = thread.messages[i];
-    if (m && m.sender === "user") return m.body;
-  }
-  return "";
-}
-
 async function handleThread(thread: SupportBotPendingThread): Promise<void> {
-  const userText = latestUserMessage(thread);
-
-  // 1) Responsible-gambling backstop — fires regardless of the model.
-  if (userText && isResponsibleGamblingConcern(userText)) {
-    await api.escalate(thread.threadId, "responsible_gambling", RG_HOLDING_MESSAGE);
-    logger.warn({
-      event: "escalate",
-      threadId: thread.threadId,
-      reason: "responsible_gambling",
-    });
-    return;
-  }
-
-  // 2) Resolve the model (auto-discovers the loaded one if not pinned).
+  // 1) Resolve the model (auto-discovers the loaded one if not pinned).
   const model = await lm.discoverModel();
   if (!model) {
     logger.error(
@@ -68,7 +41,9 @@ async function handleThread(thread: SupportBotPendingThread): Promise<void> {
     return;
   }
 
-  // 3) Ask the model.
+  // 2) Ask the model. The two rules (no actions, Oddzilla-only) live in the
+  //    system prompt; the structural guarantee that the bot can't change
+  //    anything is that there are no action endpoints to call.
   let raw: string;
   try {
     raw = await lm.chat(model, buildMessages(thread));
@@ -93,6 +68,8 @@ async function handleThread(thread: SupportBotPendingThread): Promise<void> {
     return;
   }
 
+  // Escalation only happens now when the bettor explicitly asked for a human
+  // (the model returns action=escalate). Everything else gets answered.
   if (decision.action === "escalate") {
     await api.escalate(
       thread.threadId,
@@ -107,15 +84,11 @@ async function handleThread(thread: SupportBotPendingThread): Promise<void> {
     return;
   }
 
-  // 4) Reply path — deterministic output guardrails before sending.
   const text = decision.message.trim().slice(0, cfg.maxReplyChars);
-  if (!text || replyLooksUnsafe(text)) {
-    await api.escalate(
-      thread.threadId,
-      "unsafe_or_empty_reply",
-      DEFAULT_HOLDING_MESSAGE,
-    );
-    logger.warn({ event: "blocked_reply", threadId: thread.threadId });
+  if (!text) {
+    // Reply with no body — hand to a human rather than send an empty bubble.
+    await api.escalate(thread.threadId, "empty_reply", DEFAULT_HOLDING_MESSAGE);
+    logger.warn({ event: "empty_reply", threadId: thread.threadId });
     return;
   }
   await api.reply(thread.threadId, text);
@@ -143,6 +116,12 @@ async function pollOnce(): Promise<void> {
     return;
   }
   if (!pending) return;
+
+  logger.info({
+    event: "poll",
+    count: pending.threads.length,
+    ids: pending.threads.map((t) => t.threadId.slice(0, 8)),
+  });
 
   for (const thread of pending.threads) {
     if (stopped) break;
