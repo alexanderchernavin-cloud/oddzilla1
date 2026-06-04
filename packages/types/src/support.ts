@@ -47,6 +47,10 @@ export interface SupportMessage {
   createdAt: string;
   /** Files attached to this message. Empty array on text-only messages. */
   attachments: SupportAttachment[];
+  /** True when the Gemma assistant authored this reply (sender_kind is
+   * still 'admin' + the dedicated AI support user). The admin UI badges
+   * it; the storefront renders it as a normal support reply. */
+  viaAi?: boolean;
 }
 
 export interface SupportThread {
@@ -98,6 +102,11 @@ export interface AdminSupportThreadSummary {
   lastMessageAt: string;
   createdAt: string;
   closedAt: string | null;
+  /** Migration 0080. The Gemma assistant auto-replies only while true.
+   * Flipped false when a human "takes over" or the bot escalates. */
+  aiHandling: boolean;
+  /** ISO 8601 when ai_handling was last turned off, else null. */
+  aiPausedAt: string | null;
   /** Body preview of the most recent message (any sender), trimmed
    * to 240 chars. Lets the inbox row show a one-liner without a
    * second query. */
@@ -116,4 +125,102 @@ export interface AdminSupportUnreadCount {
    * sidebar prefers this since "5 conversations waiting" is more
    * actionable than "27 messages". */
   threads: number;
+}
+
+// ── AI support assistant (Gemma via LM Studio) ────────────────────────────
+// The autonomous assistant runs on an operator PC (services/support-ai-bot),
+// polls the server over outbound HTTPS, runs the local model, and posts
+// replies back through /webhooks/support-ai/:secret. The types below are the
+// wire contract shared by the API and that worker.
+
+/** Fixed UUID of the seeded "Oddzilla Assistant" support user (migration
+ * 0080). The API attributes bot replies to this id; the admin UI uses it to
+ * badge AI-authored messages. Single source of truth so the seed + code agree. */
+export const AI_SUPPORT_USER_ID = "00000000-0000-4000-8000-0000000a1b07";
+
+/** One wallet balance, amounts pre-formatted as decimal strings by the
+ * server (never raw micros) so the model can't fumble bigint math. */
+export interface SupportAccountWalletFact {
+  currency: string;
+  available: string;
+  locked: string;
+}
+
+export interface SupportAccountTicketFact {
+  id: string;
+  status: string;
+  betType: string;
+  currency: string;
+  stake: string;
+  potentialPayout: string;
+  actualPayout: string | null;
+  placedAt: string;
+  settledAt: string | null;
+}
+
+export interface SupportAccountDepositFact {
+  status: string;
+  /** Formatted amount, or null when the intent has no parsed amount yet. */
+  amount: string | null;
+  confirmations: number;
+  failureReason: string | null;
+  submittedAt: string | null;
+}
+
+export interface SupportAccountWithdrawalFact {
+  status: string;
+  amount: string;
+  fee: string;
+  failureReason: string | null;
+  requestedAt: string | null;
+}
+
+/** Server-computed, read-only snapshot of the asking bettor's own account.
+ * The assistant may ONLY state facts present here — never invent figures.
+ * Excludes all secrets/PII (addresses, tx hashes, IPs, password/refresh
+ * hashes, admin-approver ids, bet_meta). */
+export interface SupportAccountFacts {
+  wallets: SupportAccountWalletFact[];
+  tickets: SupportAccountTicketFact[];
+  deposits: SupportAccountDepositFact[];
+  withdrawals: SupportAccountWithdrawalFact[];
+}
+
+export interface SupportBotPendingMessage {
+  sender: SupportSenderKind;
+  viaAi: boolean;
+  body: string;
+  createdAt: string;
+}
+
+/** One unit of work for the assistant: an open, AI-handled thread with an
+ * unanswered bettor message, plus the recent transcript and account facts. */
+export interface SupportBotPendingThread {
+  threadId: string;
+  userId: string;
+  subject: string | null;
+  messages: SupportBotPendingMessage[];
+  accountFacts: SupportAccountFacts;
+}
+
+export interface SupportBotPendingResponse {
+  threads: SupportBotPendingThread[];
+}
+
+export interface SupportBotReplyRequest {
+  text: string;
+}
+
+export interface SupportBotEscalateRequest {
+  /** Internal note for the audit log (not shown to the bettor). */
+  reason?: string;
+  /** Optional bettor-facing holding message posted before handoff. */
+  holdingMessage?: string;
+}
+
+/** Whether the assistant worker is currently online (heartbeating). Drives
+ * the admin "Assistant online/offline" indicator. */
+export interface SupportAiStatus {
+  online: boolean;
+  lastSeen: string | null;
 }

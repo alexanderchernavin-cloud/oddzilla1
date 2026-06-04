@@ -27,6 +27,7 @@ import type {
   AdminSupportThreadDetail,
   AdminSupportThreadSummary,
   AdminSupportUnreadCount,
+  SupportAiStatus,
   SupportMessage,
   SupportMessageFrame,
 } from "@oddzilla/types";
@@ -66,6 +67,8 @@ interface ListRow extends Record<string, unknown> {
   last_message_at: Date | string;
   created_at: Date | string;
   closed_at: Date | string | null;
+  ai_handling: boolean;
+  ai_paused_at: Date | string | null;
   user_email: string;
   user_nickname: string | null;
   preview: string | null;
@@ -89,6 +92,8 @@ function summarizeListRow(row: ListRow): AdminSupportThreadSummary {
     lastMessageAt: toIso(row.last_message_at),
     createdAt: toIso(row.created_at),
     closedAt: row.closed_at ? toIso(row.closed_at) : null,
+    aiHandling: row.ai_handling,
+    aiPausedAt: row.ai_paused_at ? toIso(row.ai_paused_at) : null,
     preview: row.preview,
   };
 }
@@ -180,6 +185,8 @@ export default async function adminSupportRoutes(app: FastifyInstance) {
         t.last_message_at,
         t.created_at,
         t.closed_at,
+        t.ai_handling,
+        t.ai_paused_at,
         u.email::text                 AS user_email,
         u.nickname::text              AS user_nickname,
         preview.body                  AS preview
@@ -232,6 +239,8 @@ export default async function adminSupportRoutes(app: FastifyInstance) {
         t.last_message_at,
         t.created_at,
         t.closed_at,
+        t.ai_handling,
+        t.ai_paused_at,
         u.email::text                 AS user_email,
         u.nickname::text              AS user_nickname,
         NULL::text                    AS preview
@@ -256,6 +265,7 @@ export default async function adminSupportRoutes(app: FastifyInstance) {
         senderKind: supportMessages.senderKind,
         senderUserId: supportMessages.senderUserId,
         body: supportMessages.body,
+        viaAi: supportMessages.viaAi,
         createdAt: supportMessages.createdAt,
         senderNickname: users.nickname,
         senderDisplayName: users.displayName,
@@ -283,6 +293,7 @@ export default async function adminSupportRoutes(app: FastifyInstance) {
           senderKind: r.senderKind,
           senderUserId: r.senderUserId,
           body: r.body,
+          viaAi: r.viaAi,
           createdAt: r.createdAt,
         },
         attachmentsByMessage.get(String(r.id)) ?? [],
@@ -409,6 +420,11 @@ export default async function adminSupportRoutes(app: FastifyInstance) {
             unreadAdmin: 0,
             assignedAdminId:
               thread.assignedAdminId ?? admin.id,
+            // A human operator replied — pause the AI assistant so it
+            // doesn't talk over the human on the bettor's next message.
+            // "Resume AI" re-enables it.
+            aiHandling: false,
+            aiPausedAt: new Date(),
           })
           .where(eq(supportThreads.id, id));
 
@@ -586,6 +602,61 @@ export default async function adminSupportRoutes(app: FastifyInstance) {
          WHERE status = 'open'
       `);
       return { unread: row?.unread ?? 0, threads: row?.threads ?? 0 };
+    },
+  );
+
+  // ─── AI assistant: handoff (take over / resume) ─────────────────────────
+  // Migration 0080. "Take over" pauses the Gemma assistant on this thread so
+  // a human owns it; "Resume AI" hands it back. The bot's pending query gates
+  // on ai_handling=true, so a paused thread simply drops out of its queue.
+  for (const [path, enable] of [
+    ["/admin/support/threads/:id/take-over", false],
+    ["/admin/support/threads/:id/resume-ai", true],
+  ] as const) {
+    app.post(path, { config: writeRateLimit }, async (request) => {
+      const admin = request.requireRole("support");
+      const id = (request.params as { id?: string }).id ?? "";
+      if (!UUID_SHAPE.test(id)) {
+        throw new NotFoundError("thread_not_found", "thread_not_found");
+      }
+      const [updated] = await app.db
+        .update(supportThreads)
+        .set(
+          enable
+            ? { aiHandling: true, aiPausedAt: null }
+            : { aiHandling: false, aiPausedAt: new Date() },
+        )
+        .where(eq(supportThreads.id, id))
+        .returning({ id: supportThreads.id });
+      if (!updated) {
+        throw new NotFoundError("thread_not_found", "thread_not_found");
+      }
+      await app.db.insert(adminAuditLog).values({
+        actorUserId: admin.id,
+        action: enable ? "support_ai_resume" : "support_ai_take_over",
+        targetType: "support_thread",
+        targetId: id,
+        beforeJson: {},
+        afterJson: {},
+      });
+      return { ok: true };
+    });
+  }
+
+  // ─── AI assistant online indicator ───────────────────────────────────────
+  // The worker heartbeats to /webhooks/support-ai/:secret/heartbeat (45s TTL
+  // Redis key). The admin inbox polls this to show online/offline.
+  app.get(
+    "/admin/support/ai-status",
+    async (request): Promise<SupportAiStatus> => {
+      request.requireRole("support");
+      let lastSeen: string | null = null;
+      try {
+        lastSeen = await app.redis.get("support:ai:online");
+      } catch {
+        lastSeen = null;
+      }
+      return { online: lastSeen != null, lastSeen };
     },
   );
 

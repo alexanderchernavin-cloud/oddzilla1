@@ -165,6 +165,17 @@ const EnvSchema = z.object({
     (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
     z.string().min(16).optional(),
   ),
+
+  // Support AI assistant token (migration 0080). The assistant worker
+  // (services/support-ai-bot, runs on an operator PC) authenticates to
+  // /webhooks/support-ai/<secret> with this value. Unset → those routes
+  // return 503 bot_disabled and the admin "assistant online" indicator
+  // stays offline — graceful-idle, same shape as SENDGRID_INBOUND_SECRET.
+  // Generate with: openssl rand -hex 24
+  SUPPORT_AI_BOT_TOKEN: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.string().min(16).optional(),
+  ),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
