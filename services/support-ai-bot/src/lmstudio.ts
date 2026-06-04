@@ -1,36 +1,55 @@
-// Minimal OpenAI-compatible client for a local LM Studio server. LM Studio
-// exposes /v1/models + /v1/chat/completions on (by default) :1234. We request
-// structured output via response_format json_schema (LM Studio's supported
-// form — note `json_object` is rejected by some models, e.g. gemma-4). The
-// strict schema both guarantees parseable JSON and stops chatty / reasoning
-// models from rambling into prose. If a model's server build rejects
-// json_schema (HTTP 400) we retry once without it and lean on defensive parsing.
+// Minimal OpenAI-compatible client for a local LM Studio server (/v1/models +
+// /v1/chat/completions, default :1234). Supports tool / function calling so the
+// assistant can fetch read-only platform data on demand. `complete` returns the
+// raw assistant turn (text content and/or tool calls); the worker drives the
+// tool loop and feeds results back as role:"tool" messages.
 
 import type { BotConfig } from "./config.js";
 
-export interface ChatMessage {
-  role: "system" | "user" | "assistant";
-  content: string;
+export interface ToolSpec {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
 }
 
-// Constrains the model to exactly our decision shape: {action, message, reason?}.
-const DECISION_SCHEMA = {
-  type: "json_schema",
-  json_schema: {
-    name: "support_decision",
-    strict: true,
-    schema: {
-      type: "object",
-      properties: {
-        action: { type: "string", enum: ["reply", "escalate"] },
-        message: { type: "string" },
-        reason: { type: "string" },
-      },
-      required: ["action", "message"],
-      additionalProperties: false,
-    },
-  },
-} as const;
+export interface ChatMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  /** Present on an assistant turn that requested tools. */
+  tool_calls?: Array<{
+    id: string;
+    type: "function";
+    function: { name: string; arguments: string };
+  }>;
+  /** Present on a role:"tool" result, linking it to the assistant's call. */
+  tool_call_id?: string;
+}
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+export interface Completion {
+  content: string;
+  toolCalls: ToolCall[];
+}
+
+interface RawCompletion {
+  choices?: Array<{
+    message?: {
+      content?: string | null;
+      tool_calls?: Array<{
+        id?: string;
+        function?: { name?: string; arguments?: string };
+      }>;
+    };
+  }>;
+}
 
 export class LmStudio {
   constructor(private readonly cfg: BotConfig) {}
@@ -58,42 +77,45 @@ export class LmStudio {
     }
   }
 
-  async chat(model: string, messages: ChatMessage[]): Promise<string> {
-    const run = async (withSchema: boolean): Promise<Response> => {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), this.cfg.requestTimeoutMs);
-      try {
-        const payload: Record<string, unknown> = {
-          model,
-          messages,
-          temperature: this.cfg.temperature,
-          max_tokens: this.cfg.maxTokens,
-          stream: false,
-        };
-        if (withSchema) payload.response_format = DECISION_SCHEMA;
-        return await fetch(`${this.cfg.lmStudioBaseUrl}/v1/chat/completions`, {
-          method: "POST",
-          headers: this.headers(),
-          signal: ctrl.signal,
-          body: JSON.stringify(payload),
-        });
-      } finally {
-        clearTimeout(timer);
+  async complete(
+    model: string,
+    messages: ChatMessage[],
+    tools?: ToolSpec[],
+  ): Promise<Completion> {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), this.cfg.requestTimeoutMs);
+    try {
+      const payload: Record<string, unknown> = {
+        model,
+        messages,
+        temperature: this.cfg.temperature,
+        max_tokens: this.cfg.maxTokens,
+        stream: false,
+      };
+      if (tools && tools.length > 0) {
+        payload.tools = tools;
+        payload.tool_choice = "auto";
       }
-    };
-
-    let res = await run(true);
-    if (!res.ok && res.status === 400) {
-      // Some model server builds don't accept response_format — fall back.
-      res = await run(false);
+      const res = await fetch(`${this.cfg.lmStudioBaseUrl}/v1/chat/completions`, {
+        method: "POST",
+        headers: this.headers(),
+        signal: ctrl.signal,
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`lm_studio_http_${res.status}: ${text.slice(0, 200)}`);
+      }
+      const body = (await res.json()) as RawCompletion;
+      const msg = body.choices?.[0]?.message;
+      const toolCalls: ToolCall[] = (msg?.tool_calls ?? []).map((tc, i) => ({
+        id: tc.id ?? `call_${i}`,
+        name: tc.function?.name ?? "",
+        arguments: tc.function?.arguments ?? "{}",
+      }));
+      return { content: msg?.content ?? "", toolCalls };
+    } finally {
+      clearTimeout(timer);
     }
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`lm_studio_http_${res.status}: ${text.slice(0, 200)}`);
-    }
-    const body = (await res.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    return body.choices?.[0]?.message?.content ?? "";
   }
 }
