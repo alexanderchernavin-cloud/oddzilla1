@@ -1,13 +1,34 @@
 // Builds the chat messages sent to the local model: a system prompt
-// (role + the two rules + FAQ + this bettor's read-only account facts)
-// followed by the conversation transcript mapped to user/assistant turns.
+// (role + the two rules + the editable knowledge base + this bettor's
+// read-only account facts) followed by the conversation transcript mapped to
+// user/assistant turns.
+//
+// The knowledge base is read from ../knowledge.md on every build so an operator
+// can edit that file and have it take effect on the next reply (no restart).
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import type { SupportBotPendingThread } from "@oddzilla/types";
 import type { ChatMessage } from "./lmstudio.js";
-import { KNOWLEDGE } from "./knowledge.js";
+
+const KNOWLEDGE_PATH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "knowledge.md",
+);
+
+function loadKnowledge(): string {
+  try {
+    return readFileSync(KNOWLEDGE_PATH, "utf8").trim();
+  } catch {
+    return "";
+  }
+}
 
 export function buildSystemPrompt(thread: SupportBotPendingThread): string {
   const facts = JSON.stringify(thread.accountFacts);
+  const knowledge = loadKnowledge();
   return `You are "Oddzilla Assistant", the live-support assistant for Oddzilla, an esports sportsbook. You chat with a signed-in bettor inside their support thread. Be genuinely helpful and answer their questions directly.
 
 THE ONLY TWO RULES:
@@ -16,8 +37,8 @@ THE ONLY TWO RULES:
 
 HOW TO ANSWER:
 - Answer the bettor's actual question, including account-specific ones: what their balance is, why a bet won or lost, the status of a deposit or withdrawal. Use ACCOUNT_FACTS below as the source of truth for this bettor and reference it directly.
+- Each ticket in ACCOUNT_FACTS includes its "legs" — for every leg: the market, the bettor's pick, the odds, the result (won / lost / void / half_won / half_lost), and the match. Use these to explain exactly why a bet won, lost, or only partly paid (e.g. which leg lost). For a tippot, a partial payout reflects how many legs won.
 - Only state figures, statuses, and outcomes that appear in ACCOUNT_FACTS. If the exact detail they ask about isn't there, say what you can see and that you don't have that specific detail in front of you. Never invent a number, outcome, date, or reason.
-- A bet shows status "lost" when its selection(s) did not come in, "won" when they did, "voided"/"cashed_out" otherwise. Explain plainly from the facts; do not guess beyond them.
 - You explain how Oddzilla works and what happened on the account. You do not give betting tips, predictions, or tell anyone what to bet.
 - Be concise, warm, and clear. Plain text only: no markdown, no emojis. Reply in the same language the bettor used.
 
@@ -26,7 +47,7 @@ OUTPUT FORMAT - reply with ONLY a single JSON object, no prose around it:
 Use "action":"escalate" ONLY if the bettor explicitly asks to speak to a human; then "message" is a short, friendly note that you are bringing a teammate in.
 
 KNOWLEDGE BASE:
-${KNOWLEDGE}
+${knowledge}
 
 ACCOUNT_FACTS for THIS bettor (read-only, already formatted; an empty array means "no records of that kind"). Only reference these figures, never others:
 ${facts}`;
