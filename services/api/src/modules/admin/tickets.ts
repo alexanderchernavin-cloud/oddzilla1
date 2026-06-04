@@ -20,6 +20,7 @@ import {
   NotFoundError,
 } from "../../lib/errors.js";
 import { requireBalanceEditAdmin } from "../../lib/balance-edit-gate.js";
+import { releaseOpenLiability } from "../../lib/riskzilla/open-liability.js";
 
 const voidBody = z.object({
   reason: z.string().min(3).max(500),
@@ -142,6 +143,14 @@ export default async function adminTicketsRoutes(app: FastifyInstance) {
         refId: params.id,
         memo: `admin_void:${body.reason}`,
       }).onConflictDoNothing();
+
+      // Release the RiskZilla open-liability this accepted ticket
+      // reserved at placement. Settlement never runs for a voided ticket
+      // (maybeSettleTicket gates on status='accepted'), so without this
+      // the cached counter leaks the full potential payout. The
+      // status='accepted' WHERE guard above means this runs exactly once.
+      // See lib/riskzilla/open-liability.ts.
+      await releaseOpenLiability(tx, ticketCurrency, existing.potentialPayoutMicro);
 
       await tx.insert(adminAuditLog).values({
         actorUserId: admin.id,
