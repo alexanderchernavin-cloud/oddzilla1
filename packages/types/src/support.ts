@@ -205,6 +205,19 @@ export interface SupportAccountFacts {
   withdrawals: SupportAccountWithdrawalFact[];
 }
 
+/** One bettable match in the current schedule (upcoming or live). Shared
+ * catalog data so the assistant can answer "when does X play" / "what's on". */
+export interface SupportCatalogMatch {
+  sport: string;
+  tournament: string;
+  home: string;
+  away: string;
+  /** ISO 8601 UTC timestamp. */
+  scheduledAt: string;
+  /** not_started | live */
+  status: string;
+}
+
 export interface SupportBotPendingMessage {
   sender: SupportSenderKind;
   viaAi: boolean;
@@ -220,6 +233,8 @@ export interface SupportBotPendingThread {
   subject: string | null;
   messages: SupportBotPendingMessage[];
   accountFacts: SupportAccountFacts;
+  /** Current bettable schedule (upcoming + live), shared across threads. */
+  catalog: SupportCatalogMatch[];
 }
 
 export interface SupportBotPendingResponse {
