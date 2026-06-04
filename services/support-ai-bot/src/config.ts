@@ -60,7 +60,7 @@ export function loadConfig(): BotConfig {
     pendingBatch: num("BOT_PENDING_BATCH", 8),
     maxReplyChars: num("BOT_MAX_REPLY_CHARS", 1500),
     temperature: num("BOT_TEMPERATURE", 0.3),
-    maxTokens: num("BOT_MAX_TOKENS", 512),
+    maxTokens: num("BOT_MAX_TOKENS", 1024),
     requestTimeoutMs: num("BOT_LM_TIMEOUT_MS", 60000),
   };
 }

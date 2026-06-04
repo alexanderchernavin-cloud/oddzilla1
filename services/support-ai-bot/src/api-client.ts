@@ -26,10 +26,16 @@ export class BotApi {
   }
 
   private async call<T>(path: string, init?: RequestInit): Promise<T> {
-    const res = await fetch(`${this.base}${path}`, {
-      ...init,
-      headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
-    });
+    // Only declare a JSON content-type when there's actually a body. Fastify
+    // 400s a POST that sets application/json but sends an empty body — which
+    // is exactly the no-body heartbeat POST.
+    const headers: Record<string, string> = {
+      ...((init?.headers as Record<string, string> | undefined) ?? {}),
+    };
+    if (init?.body !== undefined && init?.body !== null) {
+      headers["content-type"] = "application/json";
+    }
+    const res = await fetch(`${this.base}${path}`, { ...init, headers });
     if (!res.ok) {
       let code = "http_error";
       let message = `HTTP ${res.status}`;
