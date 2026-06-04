@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   bigint,
   bigserial,
+  boolean,
   check,
   customType,
   index,
@@ -68,6 +69,12 @@ export const supportThreads = pgTable(
     closedByUserId: uuid("closed_by_user_id").references(() => users.id, {
       onDelete: "set null",
     }),
+    // Migration 0080. The Gemma assistant only picks up threads where
+    // ai_handling=true; a human "Take over" or a bot escalation flips it
+    // false (stamping ai_paused_at) so the assistant never re-enters a
+    // human-owned conversation until "Resume AI".
+    aiHandling: boolean("ai_handling").notNull().default(true),
+    aiPausedAt: timestamp("ai_paused_at", { withTimezone: true }),
   },
   (t) => [
     uniqueIndex("support_threads_one_open_per_user")
@@ -83,6 +90,13 @@ export const supportThreads = pgTable(
     index("support_threads_unread_admin_idx")
       .on(sql`${t.lastMessageAt} DESC`)
       .where(sql`${t.status} = 'open' AND ${t.unreadAdmin} > 0`),
+    // Migration 0080. Bot work queue — open threads the assistant still
+    // owns with an unanswered bettor message.
+    index("support_threads_ai_pending_idx")
+      .on(sql`${t.lastMessageAt} DESC`)
+      .where(
+        sql`${t.status} = 'open' AND ${t.aiHandling} = true AND ${t.unreadAdmin} > 0`,
+      ),
     check("support_threads_status_chk", sql`${t.status} IN ('open', 'closed')`),
     check("support_threads_unread_user_nonneg", sql`${t.unreadUser} >= 0`),
     check("support_threads_unread_admin_nonneg", sql`${t.unreadAdmin} >= 0`),
@@ -112,6 +126,10 @@ export const supportMessages = pgTable(
       onDelete: "set null",
     }),
     body: text().notNull(),
+    // Migration 0080. True when the Gemma assistant authored this reply
+    // (still sender_kind='admin' + the AI support user). Drives the admin
+    // "AI" badge; the storefront renders it as a normal support reply.
+    viaAi: boolean("via_ai").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

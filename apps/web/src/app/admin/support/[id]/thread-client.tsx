@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { ApiFetchError, clientApi } from "@/lib/api-client";
 import type {
   AdminSupportThreadDetail,
+  SupportAiStatus,
   SupportAttachment,
   SupportMessage,
 } from "@oddzilla/types";
@@ -46,6 +47,7 @@ export function SupportThreadClient({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
+  const [aiOnline, setAiOnline] = useState<boolean | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -67,6 +69,26 @@ export function SupportThreadClient({
       cancelled = true;
     };
   }, [threadId, thread.unreadAdmin]);
+
+  // Poll the AI assistant's online status (the worker heartbeats every
+  // ~15s with a 45s TTL key). Drives the "Assistant online/offline" dot.
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const s = await clientApi<SupportAiStatus>("/admin/support/ai-status");
+        if (!cancelled) setAiOnline(s.online);
+      } catch {
+        if (!cancelled) setAiOnline(null);
+      }
+    };
+    void tick();
+    const timer = setInterval(tick, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
 
   const refresh = useCallback(async () => {
     const data = await clientApi<AdminSupportThreadDetail>(
@@ -188,6 +210,33 @@ export function SupportThreadClient({
     }
   }
 
+  async function toggleAi() {
+    const resume = !thread.aiHandling;
+    const action = resume ? "resume-ai" : "take-over";
+    setActionBusy(action);
+    setError(null);
+    try {
+      await clientApi(`/admin/support/threads/${threadId}/${action}`, {
+        method: "POST",
+      });
+      setThread((t) => ({
+        ...t,
+        aiHandling: resume,
+        aiPausedAt: resume ? null : new Date().toISOString(),
+      }));
+      await refresh();
+      router.refresh();
+    } catch (err) {
+      if (err instanceof ApiFetchError) {
+        setError(err.body.message || err.body.error || "action_failed");
+      } else {
+        setError("Network error.");
+      }
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
   const canReply =
     thread.status === "open" &&
     !sending &&
@@ -196,15 +245,40 @@ export function SupportThreadClient({
 
   return (
     <div className="mt-6 space-y-4">
-      <div className="flex items-center justify-end gap-2">
-        <button
-          type="button"
-          onClick={toggleStatus}
-          disabled={actionBusy !== null}
-          className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg-card)] px-3 py-1.5 text-sm hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
-        >
-          {thread.status === "open" ? "Close thread" : "Reopen thread"}
-        </button>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-xs text-[var(--color-fg-subtle)]">
+          <span
+            className={`inline-block h-2 w-2 rounded-full ${
+              aiOnline ? "bg-[#16a34a]" : "bg-[var(--color-fg-subtle)]"
+            }`}
+            aria-hidden
+          />
+          <span>
+            Assistant {aiOnline == null ? "…" : aiOnline ? "online" : "offline"}
+            {" · "}
+            {thread.aiHandling ? "AI handling" : "Human handling"}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          {thread.status === "open" && (
+            <button
+              type="button"
+              onClick={toggleAi}
+              disabled={actionBusy !== null}
+              className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg-card)] px-3 py-1.5 text-sm hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
+            >
+              {thread.aiHandling ? "Take over (stop AI)" : "Resume AI"}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={toggleStatus}
+            disabled={actionBusy !== null}
+            className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg-card)] px-3 py-1.5 text-sm hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
+          >
+            {thread.status === "open" ? "Close thread" : "Reopen thread"}
+          </button>
+        </div>
       </div>
 
       <div
@@ -352,12 +426,17 @@ function MessageRow({ message }: { message: SupportMessage }) {
       }`}
     >
       <div className="mb-1 flex items-baseline justify-between gap-3 text-xs text-[var(--color-fg-subtle)]">
-        <span>
+        <span className="inline-flex items-center gap-1.5">
           {fromSystem
             ? "System"
             : fromUser
               ? "Bettor"
               : (message.senderName ?? "Support")}
+          {message.viaAi && (
+            <span className="rounded bg-[var(--color-bg-card)] px-1 py-0.5 font-mono text-[10px] uppercase tracking-wider text-[var(--color-fg-muted)]">
+              AI
+            </span>
+          )}
         </span>
         <span>{date}</span>
       </div>

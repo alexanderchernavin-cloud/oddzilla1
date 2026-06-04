@@ -80,7 +80,13 @@ export function mapAttachment(row: {
 }
 
 export function mapMessage(
-  row: SupportMessageRow,
+  // Structural subset so callers can pass either a full SupportMessageRow
+  // (which carries via_ai) or a hand-built literal (admin/bettor detail
+  // selects). viaAi is optional and defaults false.
+  row: Pick<
+    SupportMessageRow,
+    "id" | "threadId" | "senderKind" | "senderUserId" | "body" | "createdAt"
+  > & { viaAi?: boolean },
   attachments: SupportAttachment[] = [],
   senderName?: string | null,
 ): SupportMessage {
@@ -93,6 +99,7 @@ export function mapMessage(
     body: row.body,
     createdAt: row.createdAt.toISOString(),
     attachments,
+    viaAi: Boolean(row.viaAi),
   };
 }
 
