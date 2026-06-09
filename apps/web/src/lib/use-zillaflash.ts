@@ -28,7 +28,13 @@ import type {
 } from "@oddzilla/types";
 
 const POLL_INTERVAL_MS = 2_000;
-const TICK_INTERVAL_MS = 250;
+// 1 s, not 250 ms: the countdown the tick drives (formatRemaining) has
+// whole-second granularity and the lobby progress bar smooths steps with a
+// CSS transition, so sub-second ticks bought nothing — but each tick
+// re-renders every consumer, and on the match page that consumer is the
+// full markets tree (~125 unmemoized market cards). 250 ms × that tree was
+// a constant 4 Hz idle re-render of the heaviest page in the app.
+const TICK_INTERVAL_MS = 1_000;
 
 export interface ZillaFlashSnapshot {
   prematch: ZillaFlashOffer[];
@@ -86,10 +92,22 @@ export function useZillaFlash(): ZillaFlashSnapshot {
     };
   }, []);
 
+  // Only run the countdown tick when there's actually an offer counting
+  // down, and never while the tab is hidden. Previously this ran 4 Hz for
+  // the lifetime of every page that mounts the hook (incl. every match
+  // page via LiveMarkets) regardless of whether any offer existed — a
+  // permanent idle re-render driver. When offers come and go the poll
+  // flips `hasOffers` and this effect re-subscribes.
+  const hasOffers =
+    (data?.prematch.length ?? 0) > 0 || (data?.live.length ?? 0) > 0;
   useEffect(() => {
-    const t = setInterval(() => setTick((n) => n + 1), TICK_INTERVAL_MS);
+    if (!hasOffers) return;
+    const t = setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      setTick((n) => n + 1);
+    }, TICK_INTERVAL_MS);
     return () => clearInterval(t);
-  }, []);
+  }, [hasOffers]);
   void tick; // referenced only for re-render side-effect
 
   return useMemo(() => {

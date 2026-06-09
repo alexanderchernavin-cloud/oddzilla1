@@ -26,14 +26,11 @@ import {
   sports,
   tournaments,
   categories,
-  users,
 } from "@oddzilla/db";
 import type { ZillaFlashOffer } from "@oddzilla/types";
-import {
-  loadPromoVisibilityCascades,
-  resolveVisible,
-} from "../../lib/bettor-promo-visibility.js";
+import { resolveVisible } from "../../lib/bettor-promo-visibility.js";
 import { getActiveOffers } from "./engine.js";
+import { loadZillaFlashViewerPrefs } from "./viewer-prefs.js";
 
 export default async function zillaflashRoutes(app: FastifyInstance) {
   app.get("/catalog/zillaflash", async (request, reply) => {
@@ -42,15 +39,11 @@ export default async function zillaflashRoutes(app: FastifyInstance) {
 
     // Anonymous → public payload unchanged.
     if (!request.user) return response;
-    const [cascades, [userRow]] = await Promise.all([
-      loadPromoVisibilityCascades(app.db, request.user.id),
-      app.db
-        .select({ hiddenSports: users.hiddenSports })
-        .from(users)
-        .where(eq(users.id, request.user.id))
-        .limit(1),
-    ]);
-    const hiddenSet = new Set(userRow?.hiddenSports ?? []);
+    // In-process per-viewer cache (30 s TTL + writer invalidation) — the
+    // 2 s poll cadence made these two lookups a steady per-user query
+    // stream when they were fetched live on every request.
+    const { cascades, hiddenSports: hiddenSet } =
+      await loadZillaFlashViewerPrefs(app, request.user.id);
     // Fast path: nothing to filter for this bettor — visibility
     // cascade is empty AND no hidden sports — return the public
     // payload unchanged. Saves a metadata round-trip for the long

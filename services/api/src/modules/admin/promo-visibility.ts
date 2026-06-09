@@ -24,6 +24,7 @@ import {
   users,
 } from "@oddzilla/db";
 import { BadRequestError, NotFoundError } from "../../lib/errors.js";
+import { invalidateZillaFlashViewerPrefs } from "../zillaflash/viewer-prefs.js";
 
 type PromoKind = "zillaflash" | "combi_boost";
 const PROMO_KINDS = ["zillaflash", "combi_boost"] as const;
@@ -463,6 +464,9 @@ export default async function adminPromoVisibilityRoutes(app: FastifyInstance) {
         return row;
       });
 
+      // Drop the bettor's cached ZillaFlash viewer prefs so the polled
+      // strip reflects the change on its next tick, not after the TTL.
+      invalidateZillaFlashViewerPrefs(userId);
       return rowToOverrideDto(result);
     },
   );
@@ -505,6 +509,7 @@ export default async function adminPromoVisibilityRoutes(app: FastifyInstance) {
           ipInet: request.ip ?? null,
         });
       });
+      invalidateZillaFlashViewerPrefs(userId);
       return { ok: true };
     },
   );
@@ -604,6 +609,7 @@ export default async function adminPromoVisibilityRoutes(app: FastifyInstance) {
         });
         return row;
       });
+      invalidateZillaFlashViewerPrefs(userId);
       return rowToOverrideDto(result);
     });
 
@@ -659,6 +665,7 @@ export default async function adminPromoVisibilityRoutes(app: FastifyInstance) {
           ipInet: request.ip ?? null,
         });
       });
+      invalidateZillaFlashViewerPrefs(userId);
       return { ok: true };
     });
   }

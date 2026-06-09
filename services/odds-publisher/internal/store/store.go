@@ -192,6 +192,17 @@ func (s *Store) CurrentMargin(ctx context.Context, info MarketInfo, ttl time.Dur
 // the market_outcomes row. Bumps last_oddin_ts monotonically. The
 // probability arg may be "" — in that case we leave the existing
 // probability column alone (the ingester already wrote it on its pass).
+//
+// No-op skip: Oddin re-sends the full outcome set on every odds_change,
+// so a large share of ticks carry a price that hasn't moved since the
+// last publish. The `IS DISTINCT FROM` guard makes those a 0-row UPDATE
+// — no new heap tuple, no WAL, no index/visibility churn on the second-
+// largest table in the system. The row was already touched milliseconds
+// earlier by the ingester's upsert; this is the second writer per tick,
+// so skipping unchanged values roughly halves market_outcomes write
+// volume during steady live play. Nothing reads last_oddin_ts/updated_at
+// on market_outcomes for freshness (the catalog reads markets.last_oddin_ts,
+// a different table), so not bumping them on an unchanged tick is safe.
 func (s *Store) UpdateOutcomePublishedOdds(ctx context.Context, marketID int64, outcomeID, publishedOdds, probability string, oddinTs int64) error {
 	const q = `
 UPDATE market_outcomes
@@ -199,7 +210,9 @@ UPDATE market_outcomes
        probability    = COALESCE($4::numeric, probability),
        last_oddin_ts  = GREATEST(last_oddin_ts, $5),
        updated_at     = NOW()
- WHERE market_id = $1 AND outcome_id = $2`
+ WHERE market_id = $1 AND outcome_id = $2
+   AND (published_odds IS DISTINCT FROM $3::numeric
+        OR ($4::numeric IS NOT NULL AND probability IS DISTINCT FROM $4::numeric))`
 	var prob any
 	if probability != "" {
 		prob = probability

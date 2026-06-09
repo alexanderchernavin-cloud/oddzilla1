@@ -360,7 +360,22 @@ ON CONFLICT (market_id, outcome_id) DO UPDATE
        active        = EXCLUDED.active,
        name          = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE market_outcomes.name END,
        last_oddin_ts = GREATEST(market_outcomes.last_oddin_ts, EXCLUDED.last_oddin_ts),
-       updated_at    = NOW()`
+       updated_at    = NOW()
+ WHERE market_outcomes.active IS DISTINCT FROM EXCLUDED.active
+    OR (EXCLUDED.raw_odds IS NOT NULL
+        AND market_outcomes.raw_odds IS DISTINCT FROM EXCLUDED.raw_odds::numeric)
+    OR (EXCLUDED.probability IS NOT NULL
+        AND market_outcomes.probability IS DISTINCT FROM EXCLUDED.probability::numeric)
+    OR (EXCLUDED.name <> '' AND market_outcomes.name IS DISTINCT FROM EXCLUDED.name)`
+	// The DO UPDATE WHERE makes an all-fields-identical tick a 0-row write:
+	// Oddin re-sends the full outcome set on every odds_change, so most
+	// referenced outcomes carry a price/active/name that hasn't moved since
+	// the last message. Without the guard each one rewrote its row (new heap
+	// tuple + WAL + index maintenance) for no semantic change. State is
+	// identical either way; we just stop bumping last_oddin_ts/updated_at on
+	// unchanged rows (no reader depends on those advancing — verified). The
+	// downstream odds.raw / odds_history / WS volume is unaffected: those are
+	// built from the message in the handler, not from this write's row count.
 	if _, err := db.Exec(ctx, q, marketIDs, outcomeIDs, names, rawOdds, probs, actives, lastTs); err != nil {
 		return fmt.Errorf("upsert outcomes bulk: %w", err)
 	}

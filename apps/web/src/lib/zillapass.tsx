@@ -83,10 +83,22 @@ export function ZillapassProvider({ children }: { children: ReactNode }) {
       return;
     }
     void refresh();
+    // Skip the poll while the tab is hidden — quest progress doesn't
+    // change when the user isn't looking, and a backgrounded tab kept
+    // hitting /zillapass/me every 30 s forever. Catch up once on
+    // re-show. Mirrors the notifications provider's gate.
     const t = window.setInterval(() => {
+      if (document.visibilityState === "hidden") return;
       void refresh();
     }, POLL_MS);
-    return () => window.clearInterval(t);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(t);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [userId, refresh]);
 
   return (

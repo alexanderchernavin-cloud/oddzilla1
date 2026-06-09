@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRef } from "react";
+import { memo, useRef } from "react";
 import type { CSSProperties, MouseEvent, ReactNode } from "react";
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { Pill, LiveDot, TeamMark } from "@/components/ui/primitives";
@@ -45,7 +45,18 @@ interface Props {
   viewerCount?: number;
 }
 
-export function MatchRow({
+// Memoized: MatchListTabs holds five aggregated live-state objects, so any
+// single odds/score/status tick on any visible match re-renders the list
+// component. mergeMatchWithLive already returns a referentially-identical
+// `match` object for every row the tick didn't touch (precisely so React can
+// skip them) — but that short-circuit only fires if the row is memoized.
+// Without this, one tick re-rendered all ~140 rows (each with odds buttons,
+// score table, team imgs, 2 useTranslations); with it, only affected rows
+// re-render. Props are memo-friendly: `match` identity is stable across
+// untouched ticks, the rest are primitives. (The slip-context churn that
+// would otherwise defeat this is addressed separately — see bet-slip.tsx
+// dropping per-tick pendingOdds persistence.)
+export const MatchRow = memo(function MatchRow({
   match,
   sportSlug,
   sportShort,
@@ -284,7 +295,7 @@ export function MatchRow({
       />
     </div>
   );
-}
+});
 
 // Tall vertical button on the left or right edge of a match card. Only
 // visible on ultra-wide viewports where the side-panel iframes can

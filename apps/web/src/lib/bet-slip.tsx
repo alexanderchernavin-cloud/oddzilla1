@@ -204,8 +204,21 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!hydrated) return;
     try {
+      // Persist the DURABLE leg fields only — strip the per-tick
+      // pendingOdds / pendingProbability that live-odds drift stashes on
+      // each selection. They're reconstructed from live WS ticks on the
+      // next render and loadFromStorage never reads them. Including them
+      // meant every drift tick (up to 5/s) produced a different `next`,
+      // defeating the equality guard below: a synchronous localStorage
+      // write + a cross-document `storage` event fired on every tick, and
+      // any open side-panel iframe's provider re-hydrated from it. With
+      // them stripped, a pure drift tick serialises identically to what's
+      // already stored, so the guard short-circuits and nothing is written.
+      const persistedSelections = state.selections.map(
+        ({ pendingOdds: _po, pendingProbability: _pp, ...keep }) => keep,
+      );
       const next = JSON.stringify({
-        selections: state.selections,
+        selections: persistedSelections,
         mode: state.mode,
         currency: state.currency,
         betbuilderMatchId: state.betbuilderMatchId,
