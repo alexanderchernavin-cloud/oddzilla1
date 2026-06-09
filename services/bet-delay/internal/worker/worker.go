@@ -408,17 +408,24 @@ func (w *Worker) evaluate(p store.PendingTicket, selections []store.Selection, b
 	// per-leg published prices, preserving any frozen combi-boost
 	// multiplier on bet_meta so re-priced combos respect the same
 	// promotion the bettor saw at placement.
+	//
+	// We rewrite EVERY leg's odds_at_placement to its current price — not
+	// just the legs that breached the drift band. newPayout below is the
+	// product of every leg's CURRENT price, and settlement recomputes the
+	// payout from the stored per-leg odds; if we only rewrote the drifted
+	// legs, the non-drifted legs would settle at their old placement odds
+	// and the paid amount would silently disagree with both newPayout and
+	// the open_liability delta we bump here. Rewriting all legs keeps the
+	// stored basis identical to newPayout.
 	productOdds := 1.0
 	updates := make([]store.UpdatedLegOdds, 0, len(checks))
 	for _, c := range checks {
 		productOdds *= c.current
-		if c.drifted {
-			updates = append(updates, store.UpdatedLegOdds{
-				MarketID:  c.marketID,
-				OutcomeID: c.outcomeID,
-				NewOdds:   c.currentS,
-			})
-		}
+		updates = append(updates, store.UpdatedLegOdds{
+			MarketID:  c.marketID,
+			OutcomeID: c.outcomeID,
+			NewOdds:   c.currentS,
+		})
 	}
 	boost := extractBoostMultiplier(p.BetMetaJSON)
 	if boost > 1.0 {
@@ -439,6 +446,18 @@ func (w *Worker) evaluate(p store.PendingTicket, selections []store.Selection, b
 	}
 	newPayout := tmp.Int64()
 	if newPayout <= 0 {
+		return evalResult{action: actionReject, reason: "odds_drift_exceeded"}
+	}
+	// Re-pricing must not push liability past what RiskZilla approved at
+	// placement. This worker can't re-run the (TypeScript) risk engine —
+	// the per-match / per-bettor / bank gates live there — so if the new
+	// payout would exceed the originally-approved potential payout we fall
+	// back to rejection rather than silently accepting more liability than
+	// the bank gate cleared. Downward re-pricing (the dominant live case —
+	// the favoured price shortened) is unaffected; only an upward drift
+	// beyond the approved ceiling bounces, which is the safe direction to
+	// err for the house.
+	if p.PotentialPayoutMicro > 0 && newPayout > p.PotentialPayoutMicro {
 		return evalResult{action: actionReject, reason: "odds_drift_exceeded"}
 	}
 	return evalResult{

@@ -19,7 +19,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { timingSafeEqual } from "node:crypto";
 import { z } from "zod";
-import { asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, sql } from "drizzle-orm";
 import { loadEnv } from "@oddzilla/config";
 import { adminAuditLog, supportMessages, supportThreads } from "@oddzilla/db";
 import type { SupportMessageRow } from "@oddzilla/db";
@@ -34,11 +34,16 @@ import {
   ServiceUnavailableError,
 } from "../../../lib/errors.js";
 import { mapMessage, publishSupportFrame } from "../shared.js";
-import {
-  buildAccountFacts,
-  buildCatalogDigest,
-  buildTeamResults,
-} from "./account-facts.js";
+import { buildAccountFacts, buildTeamResults } from "./account-facts.js";
+
+// Empty account-facts fallback so one bettor's hydration failure degrades to
+// "no records" for that thread instead of 500-ing the whole work queue.
+const EMPTY_ACCOUNT_FACTS = {
+  wallets: [],
+  tickets: [],
+  deposits: [],
+  withdrawals: [],
+};
 
 const UUID_SHAPE = /^[0-9a-f-]{36}$/i;
 const REPLY_BODY_MAX = 4000;
@@ -49,6 +54,13 @@ const ASSISTANT_DISPLAY_NAME = "Oddzilla Assistant";
 
 const replySchema = z.object({
   text: z.string().trim().min(1).max(REPLY_BODY_MAX),
+  // The id of the last message the worker saw when it generated this reply.
+  // If a newer bettor message has landed since (a follow-up sent while the
+  // local model was thinking), the reply is stale: posting it would bury the
+  // follow-up below the bot's answer and drop the thread out of /pending, so
+  // the follow-up never gets answered. We reject with `stale_transcript` and
+  // the worker simply regenerates on its next poll against the fuller thread.
+  asOfMessageId: z.string().regex(/^\d+$/).optional(),
 });
 const escalateSchema = z.object({
   reason: z.string().trim().max(500).optional(),
@@ -114,19 +126,11 @@ export default async function supportBotRoutes(app: FastifyInstance) {
         .orderBy(asc(supportThreads.lastMessageAt))
         .limit(limit);
 
-      // Shared catalog snapshot — computed once, attached to every thread, so
-      // the assistant can answer schedule / "what's on" / "when does X play".
-      // Best-effort: a catalog-digest failure must never 500 the whole queue
-      // and block every reply — degrade to no in-context schedule (the bot can
-      // still look matches up with the find_matches tool).
-      const catalog = threadRows.length
-        ? await buildCatalogDigest(app).catch(() => [])
-        : [];
-
       const threads = await Promise.all(
         threadRows.map(async (t) => {
           const recent = await app.db
             .select({
+              id: supportMessages.id,
               senderKind: supportMessages.senderKind,
               viaAi: supportMessages.viaAi,
               body: supportMessages.body,
@@ -137,11 +141,29 @@ export default async function supportBotRoutes(app: FastifyInstance) {
             .orderBy(desc(supportMessages.id))
             .limit(RECENT_MESSAGE_LIMIT);
           recent.reverse(); // chronological ascending for the prompt
-          const accountFacts = await buildAccountFacts(app, t.userId);
+          // The newest message id the worker is reasoning over. It echoes
+          // this back on reply; if a fresher bettor message arrived since,
+          // the reply is rejected as stale (see replySchema.asOfMessageId).
+          const lastMessageId =
+            recent.length > 0 ? recent[recent.length - 1]!.id.toString() : null;
+          // Best-effort per thread: one bettor's account-facts hydration
+          // failure must NOT reject the whole Promise.all and block every
+          // other thread's reply (the same failure class we already guard
+          // for the catalog). Degrade that thread to empty facts.
+          const accountFacts = await buildAccountFacts(app, t.userId).catch(
+            (err) => {
+              app.log.warn(
+                { err: (err as Error).message, threadId: t.id },
+                "support-ai: account-facts hydration failed; degrading to empty",
+              );
+              return EMPTY_ACCOUNT_FACTS;
+            },
+          );
           return {
             threadId: t.id,
             userId: t.userId,
             subject: t.subject,
+            lastMessageId,
             messages: recent.map((m) => ({
               sender: m.senderKind,
               viaAi: m.viaAi,
@@ -149,7 +171,6 @@ export default async function supportBotRoutes(app: FastifyInstance) {
               createdAt: m.createdAt.toISOString(),
             })),
             accountFacts,
-            catalog,
           };
         }),
       );
@@ -162,7 +183,7 @@ export default async function supportBotRoutes(app: FastifyInstance) {
   app.post("/webhooks/support-ai/:secret/threads/:id/reply", async (request) => {
     assertBotAuth(request);
     const id = parseThreadId(request);
-    const { text } = replySchema.parse(request.body ?? {});
+    const { text, asOfMessageId } = replySchema.parse(request.body ?? {});
 
     const result = await app.db.transaction(async (tx) => {
       const [thread] = await tx
@@ -181,6 +202,25 @@ export default async function supportBotRoutes(app: FastifyInstance) {
         // A human took over (or the bot escalated). The assistant must not
         // re-enter the conversation until an operator clicks "Resume AI".
         throw new BadRequestError("ai_paused", "ai_paused");
+      }
+      // Stale-transcript guard: if a bettor message arrived after the one the
+      // worker reasoned over, this reply would bury the follow-up. Reject so
+      // the worker regenerates against the fuller thread on its next poll.
+      if (asOfMessageId) {
+        const [newer] = await tx
+          .select({ id: supportMessages.id })
+          .from(supportMessages)
+          .where(
+            and(
+              eq(supportMessages.threadId, id),
+              eq(supportMessages.senderKind, "user"),
+              gt(supportMessages.id, BigInt(asOfMessageId)),
+            ),
+          )
+          .limit(1);
+        if (newer) {
+          throw new BadRequestError("stale_transcript", "stale_transcript");
+        }
       }
 
       const [msg] = await tx
@@ -255,6 +295,13 @@ export default async function supportBotRoutes(app: FastifyInstance) {
       }
       if (thread.status !== "open") {
         throw new BadRequestError("thread_closed", "thread_closed");
+      }
+      if (!thread.aiHandling) {
+        // A human already took over while the worker was generating. Don't
+        // post a "let me bring in a teammate" holding message into a thread
+        // the operator now owns — it confuses both sides. Mirror the reply
+        // route's guard; the worker treats `ai_paused` as a benign skip.
+        throw new BadRequestError("ai_paused", "ai_paused");
       }
 
       let message: SupportMessageRow | null = null;

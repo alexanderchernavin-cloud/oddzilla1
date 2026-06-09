@@ -5,9 +5,13 @@
 //   - poll: fetch open, AI-handled threads with an unanswered bettor message,
 //     run the local model, and either reply or escalate to a human.
 //
-// Posting a reply clears unread_admin server-side, so the same message is
-// never answered twice. A human "Take over" flips ai_handling=false and the
-// thread drops out of /pending; the bot won't touch it again until "Resume AI".
+// A thread is "pending" while its newest message is the bettor's. Posting a
+// reply makes the bot's message newest, so the thread drops out of /pending.
+// The reply carries the message id the worker reasoned over; if a bettor
+// follow-up arrived mid-generation the server rejects it (`stale_transcript`)
+// and the next poll regenerates. A human "Take over" flips ai_handling=false
+// and the thread drops out of /pending; the bot won't touch it again until
+// "Resume AI".
 
 import type {
   SupportBotPendingResponse,
@@ -116,7 +120,11 @@ async function handleThread(thread: SupportBotPendingThread): Promise<void> {
     return;
   }
   const text = finalContent.slice(0, cfg.maxReplyChars);
-  await api.reply(thread.threadId, text);
+  // Pass the message id we reasoned over so the server can reject the reply
+  // if the bettor sent a follow-up while the model was generating (the reply
+  // would otherwise bury that follow-up). On `stale_transcript` we skip and
+  // the next poll regenerates against the fuller thread.
+  await api.reply(thread.threadId, text, thread.lastMessageId);
   logger.info({ event: "reply", threadId: thread.threadId, chars: text.length });
 }
 
@@ -155,9 +163,13 @@ async function pollOnce(): Promise<void> {
     } catch (err) {
       if (
         err instanceof BotApiError &&
-        (err.code === "ai_paused" || err.code === "thread_closed")
+        (err.code === "ai_paused" ||
+          err.code === "thread_closed" ||
+          err.code === "stale_transcript")
       ) {
-        // Raced with a human taking over / closing the thread — fine, skip.
+        // Raced with a human taking over / closing the thread, or a bettor
+        // follow-up landed mid-generation (stale_transcript) — fine, skip.
+        // The next poll regenerates against the current thread state.
         logger.info({
           event: "skip",
           threadId: thread.threadId,

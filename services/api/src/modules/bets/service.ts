@@ -443,6 +443,15 @@ export class BetsService {
       // The persisted leg.probabilityAtPlacement comes from outcome.probability
       // directly at the insert site, so we don't need to thread strings here.
       const probabilities: number[] = [];
+      // Server-authoritative price per leg, keyed by `${marketId}:${outcomeId}`.
+      // This — NOT the client-submitted odds — is what we freeze on the ticket,
+      // multiply into the combo product, and pay out from. The submitted odds
+      // is only a drift tripwire. Pricing at the submitted value let a scripted
+      // client mint up to `tolerance` of EV per leg (compounding across combo
+      // legs) by quoting just under the band with no odds movement at all.
+      const authoritativeOddsBySel = new Map<string, { num: number; str: string }>();
+      const selKey = (s: { marketId: string; outcomeId: string }) =>
+        `${s.marketId}:${s.outcomeId}`;
       for (const sel of req.selections) {
         const market = marketByID.get(sel.marketId);
         if (!market) {
@@ -505,6 +514,40 @@ export class BetsService {
         if (currentOdds <= 0 || submittedOdds <= 0) {
           throw new BadRequestError("outcome_no_price", "outcome_no_price");
         }
+        // Resolve the server-authoritative price for this leg.
+        //
+        // ZillaFlash legs are the one case where a price ABOVE the raw
+        // published odds is legitimate: routes.ts already re-validated the
+        // offer and OVERWROTE sel.odds with the engine's authoritative
+        // boosted value (within the engine's own ±0.01 tolerance), so for
+        // these legs the submitted odds IS the server's number.
+        //
+        // Every other leg is priced at the bettor's *adjusted* current
+        // published odds — the exact value the catalog rendered. We never
+        // price at the client-submitted figure; the submitted odds only
+        // feeds the drift tripwire below.
+        let authStr = outcome.publishedOdds;
+        let authNum = currentOdds;
+        if (sel.zillaFlashOfferId) {
+          authStr = sel.odds;
+          authNum = submittedOdds;
+        } else if (bettorCascade && !bettorCascade.empty) {
+          const bp = resolveBettorAdjustmentBp(bettorCascade, {
+            matchId: market.matchId,
+            tournamentId: market.tournamentId,
+            sportId: market.sportId,
+          });
+          const adj = applyBettorAdjustment(
+            outcome.publishedOdds,
+            outcome.probability,
+            bp,
+          );
+          const parsed = adj != null ? Number(adj) : NaN;
+          if (adj != null && Number.isFinite(parsed) && parsed > 0) {
+            authStr = adj;
+            authNum = parsed;
+          }
+        }
         if (!isBetBuilder) {
           // BetBuilder skips per-leg drift: the agreed odds is the OBB
           // session combined odds. Per-leg movements may not reflect a
@@ -512,33 +555,19 @@ export class BetsService {
           // non-multiplicative (Oddin docs §1.1). Server re-validates
           // the whole session via SessionInfo below.
           //
-          // For singles + traditional combos the drift is computed
-          // against the bettor's *adjusted* current odds — the same
-          // shape the slip captured at click time. Without this the
-          // catalog's adjusted display and the server's drift gate
-          // disagree, and every adjusted bettor sees odds_drift_exceeded
-          // on placement.
-          let driftReference = currentOdds;
-          if (bettorCascade && !bettorCascade.empty) {
-            const bp = resolveBettorAdjustmentBp(bettorCascade, {
-              matchId: market.matchId,
-              tournamentId: market.tournamentId,
-              sportId: market.sportId,
-            });
-            const adj = applyBettorAdjustment(
-              outcome.publishedOdds,
-              outcome.probability,
-              bp,
-            );
-            const parsed = adj != null ? Number(adj) : NaN;
-            if (Number.isFinite(parsed) && parsed > 0) driftReference = parsed;
-          }
-          const drift = Math.abs(driftReference - submittedOdds) / submittedOdds;
+          // Drift is the bettor-protection / staleness gate only: the
+          // price they SAW (submitted) must be within tolerance of the
+          // server's authoritative price. Whether it passes or not, we
+          // price at `authNum` — so a client quoting just inside the band
+          // gains nothing. ZillaFlash legs trivially pass (authNum ==
+          // submittedOdds by construction).
+          const drift = Math.abs(authNum - submittedOdds) / submittedOdds;
           if (drift > tolerance) {
             throw new BadRequestError("odds_drift_exceeded", "odds_drift_exceeded");
           }
         }
-        productOdds *= submittedOdds;
+        authoritativeOddsBySel.set(selKey(sel), { num: authNum, str: authStr });
+        productOdds *= authNum;
 
         // Probability: required for tiple/tippot, freezes on the leg row
         // either way (audit trail; settlement uses it for re-pricing on
@@ -779,7 +808,10 @@ export class BetsService {
               }
             : undefined;
           const boost = computeCombiBoost(
-            req.selections.map((s) => s.odds),
+            // Eligibility (per-leg min odds) is judged on the same
+            // authoritative prices we freeze and pay from, not the
+            // client-submitted figures.
+            req.selections.map((s) => authoritativeOddsBySel.get(selKey(s))!.str),
             liveConfig,
           );
           combiMultiplier = boost.multiplier;
@@ -854,7 +886,7 @@ export class BetsService {
             sportId: m.sportId,
             tournamentId: m.tournamentId,
             riskTier: m.tournamentRiskTier ?? null,
-            oddsAtPlacement: Number(s.odds),
+            oddsAtPlacement: authoritativeOddsBySel.get(selKey(s))!.num,
           };
         }),
       };
@@ -1078,7 +1110,7 @@ export class BetsService {
             ticketId: inserted.id,
             marketId: BigInt(s.marketId),
             outcomeId: s.outcomeId,
-            oddsAtPlacement: s.odds,
+            oddsAtPlacement: authoritativeOddsBySel.get(selKey(s))!.str,
             probabilityAtPlacement: outcome.probability ?? null,
           };
         }),

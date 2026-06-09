@@ -1278,10 +1278,31 @@ func hashMarketPayload(settlementType, eventURN string, market oddinxml.Market) 
 	// outcome iteration order is deterministic per the XML schema.
 	h := sha256.New()
 	fmt.Fprintf(h, "%s|%s|%d|%s", settlementType, eventURN, market.ID, market.Specifiers)
+	// Windowed bet_cancel: include the void window (start/end). Two cancels
+	// for the same market with DIFFERENT windows carry no outcomes, so without
+	// the window they hash identically and InsertIfNew drops the second as a
+	// replay — leaving bets that should be voided in the new window live.
+	// Scoped to the windowed case (StartTime/EndTime present only on
+	// bet_cancel) so settle / rollback / unwindowed-cancel messages keep their
+	// exact prior hash: no message that was already applied before this change
+	// can re-hash and re-apply across the deploy.
+	if market.StartTime != nil || market.EndTime != nil {
+		fmt.Fprintf(h, "|w=%s,%s",
+			formatNullableMs(market.StartTime), formatNullableMs(market.EndTime))
+	}
 	for _, o := range market.Outcomes {
 		fmt.Fprintf(h, "|%s=%s,%s", o.ID, o.Result, o.VoidFactor)
 	}
 	return h.Sum(nil)
+}
+
+// formatNullableMs renders a nullable epoch-ms pointer for hashing: the
+// decimal value when present, empty string when nil.
+func formatNullableMs(p *int64) string {
+	if p == nil {
+		return ""
+	}
+	return strconv.FormatInt(*p, 10)
 }
 
 func marketAuditPayload(eventURN string, ts int64, market oddinxml.Market) map[string]any {

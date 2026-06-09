@@ -904,19 +904,25 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .orderBy(desc(matches.status), matches.scheduledAt)
       .limit(q.limit);
 
-    // Enrich each row with match-winner odds (provider_market_id=1) so
-    // list cards render prices without an extra round trip per match.
-    const oddsByMatch = await loadMatchWinnerOdds(
-      app.db,
-      rows.map((r) => r.matchId),
-    );
-
-    // Per-bettor odds adjustment. Anonymous requests skip the lookup
-    // (EMPTY_CASCADE makes resolveBettorAdjustmentBp a no-op short-
-    // circuit), so the public-feed path stays unchanged.
-    const cascade = request.user
-      ? await loadBettorAdjustmentCascade(app.db, request.user.id)
-      : EMPTY_CASCADE;
+    // These three reads are mutually independent (all keyed off `rows` +
+    // sport.id), so fire them together instead of paying three serial round
+    // trips on this high-QPS SSR endpoint:
+    //   • match-winner odds (provider_market_id=1) for inline list-card prices
+    //   • per-bettor odds-adjustment cascade — anonymous requests resolve to
+    //     EMPTY_CASCADE so the public-feed path is unchanged
+    //   • the curated Top-market id list for this sport
+    // loadTopMarketsForMatches below genuinely depends on the latter two, so
+    // it stays sequential.
+    const [oddsByMatch, cascade, topIdsBySport] = await Promise.all([
+      loadMatchWinnerOdds(
+        app.db,
+        rows.map((r) => r.matchId),
+      ),
+      request.user
+        ? loadBettorAdjustmentCascade(app.db, request.user.id)
+        : Promise.resolve(EMPTY_CASCADE),
+      loadTopMarketIdsBySport(app.db, [sport.id]),
+    ]);
     const bpByMatch = new Map<string, number>();
     if (!cascade.empty) {
       for (const r of rows) {
@@ -942,7 +948,6 @@ export default async function catalogRoutes(app: FastifyInstance) {
     // Inline Top market per card (when admin configured the Top scope
      // for this sport). Returned alongside matchWinner so the storefront
      // can show either depending on which list-page tab is active.
-    const topIdsBySport = await loadTopMarketIdsBySport(app.db, [sport.id]);
     const topMarkets = await loadTopMarketsForMatches(
       app.db,
       rows.map((r) => ({ matchId: r.matchId, sportId: sport.id })),
@@ -1062,19 +1067,6 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .limit(1);
     if (!match) throw new NotFoundError("match_not_found", "match_not_found");
 
-    // Per-bettor adjustment for this match. Resolved once and used by
-    // both the full markets render path below and the related-tab
-    // helpers downstream. Anonymous requests short-circuit on the
-    // EMPTY_CASCADE sentinel.
-    const cascade = request.user
-      ? await loadBettorAdjustmentCascade(app.db, request.user.id)
-      : EMPTY_CASCADE;
-    const matchBp = resolveBettorAdjustmentBp(cascade, {
-      matchId: match.id,
-      tournamentId: match.tournamentId,
-      sportId: match.sportId,
-    });
-
     // Phantom-live trip wire. Oddin's integration broker sometimes leaves
     // a match flagged `live` for hours (or, in extreme cases, years) after
     // the real fixture is over — usually because we missed a
@@ -1099,44 +1091,67 @@ export default async function catalogRoutes(app: FastifyInstance) {
         });
     }
 
-    // Only active markets (status=1). Join against market_descriptions
-    // so each row carries a human-readable name template, then expand
-    // {specifier} placeholders at render time using the row's own
-    // specifiers_json. Fall back to "Market #N" when a description is
-    // missing (Oddin added a new market type, cache stale, etc.) so the
-    // UI degrades visibly instead of silently.
-    const rows = await app.db
-      .select({
-        marketId: markets.id,
-        providerMarketId: markets.providerMarketId,
-        specifiersJson: markets.specifiersJson,
-        status: markets.status,
-        lastOddinTs: markets.lastOddinTs,
-        outcomeId: marketOutcomes.outcomeId,
-        outcomeName: marketOutcomes.name,
-        publishedOdds: marketOutcomes.publishedOdds,
-        probability: marketOutcomes.probability,
-        active: marketOutcomes.active,
-      })
-      .from(markets)
-      .leftJoin(marketOutcomes, eq(marketOutcomes.marketId, markets.id))
-      // Include in-play-suspended markets too — between possessions /
-      // free throws / mid-round Oddin briefly flips the whole offer to
-      // status 0 (deactivated) or -1 (suspended). If we filter to only
-      // status=1 here, the page goes blank during those windows and
-      // the WS subscription is never mounted, so when markets come
-      // back active a few seconds later the user sees nothing until
-      // they hard-refresh. The rendered button shows a Suspended pill
-      // and locks until an outcome tick lands with active=true (see
-      // live-markets.tsx). Settled / cancelled / pre-match-stuck
-      // (-2/-3/-4) stay excluded — those don't recover.
-      .where(
-        and(
-          eq(markets.matchId, params.id),
-          inArray(markets.status, [1, 0, -1]),
-        ),
-      )
-      .orderBy(markets.providerMarketId);
+    // Three independent reads run together so the match-detail page (SSR'd
+    // per navigation across 3 replicas) doesn't pay serial round trips:
+    //   • the markets + outcomes themselves
+    //   • the per-bettor odds-adjustment cascade (EMPTY_CASCADE for anonymous)
+    //   • the per-scope admin market ordering for this sport (consumed near
+    //     the end of the handler; only needs match.sportId, known already)
+    //
+    // Markets note: include in-play-suspended markets too — between
+    // possessions / free throws / mid-round Oddin briefly flips the whole
+    // offer to status 0 (deactivated) or -1 (suspended). If we filter to
+    // only status=1 here, the page goes blank during those windows and the
+    // WS subscription is never mounted, so when markets come back active a
+    // few seconds later the user sees nothing until they hard-refresh. The
+    // rendered button shows a Suspended pill and locks until an outcome tick
+    // lands with active=true (see live-markets.tsx). Settled / cancelled /
+    // pre-match-stuck (-2/-3/-4) stay excluded — those don't recover.
+    //
+    // market_descriptions is joined later (per distinct market id) to expand
+    // {specifier} placeholders; missing ones fall back to "Market #N".
+    const [rows, cascade, orderRows] = await Promise.all([
+      app.db
+        .select({
+          marketId: markets.id,
+          providerMarketId: markets.providerMarketId,
+          specifiersJson: markets.specifiersJson,
+          status: markets.status,
+          lastOddinTs: markets.lastOddinTs,
+          outcomeId: marketOutcomes.outcomeId,
+          outcomeName: marketOutcomes.name,
+          publishedOdds: marketOutcomes.publishedOdds,
+          probability: marketOutcomes.probability,
+          active: marketOutcomes.active,
+        })
+        .from(markets)
+        .leftJoin(marketOutcomes, eq(marketOutcomes.marketId, markets.id))
+        .where(
+          and(
+            eq(markets.matchId, params.id),
+            inArray(markets.status, [1, 0, -1]),
+          ),
+        )
+        .orderBy(markets.providerMarketId),
+      request.user
+        ? loadBettorAdjustmentCascade(app.db, request.user.id)
+        : Promise.resolve(EMPTY_CASCADE),
+      app.db
+        .select({
+          scope: feMarketDisplayOrder.scope,
+          providerMarketId: feMarketDisplayOrder.providerMarketId,
+          displayOrder: feMarketDisplayOrder.displayOrder,
+        })
+        .from(feMarketDisplayOrder)
+        .where(eq(feMarketDisplayOrder.sportId, match.sportId)),
+    ]);
+    // Per-bettor adjustment for this match. Used by the full markets render
+    // path below and the related-tab helpers downstream.
+    const matchBp = resolveBettorAdjustmentBp(cascade, {
+      matchId: match.id,
+      tournamentId: match.tournamentId,
+      sportId: match.sportId,
+    });
 
     // Collect URN-style outcome ids (od:competitor:N / od:player:N) so
     // we can join against our profile cache and substitute human names
@@ -1386,19 +1401,10 @@ export default async function catalogRoutes(app: FastifyInstance) {
     }
     const groups = Array.from(scopeMap.values()).sort((a, b) => a.order - b.order);
 
-    // Per-scope admin ordering. Scope values live directly in
-    // fe_market_display_order and are addressed the same way the
-    // storefront tabs are: `match`, `top`, or `map_<N>`. Each Map N tab
-    // gets its own independently configurable list (migration 0057).
-    const orderRows = await app.db
-      .select({
-        scope: feMarketDisplayOrder.scope,
-        providerMarketId: feMarketDisplayOrder.providerMarketId,
-        displayOrder: feMarketDisplayOrder.displayOrder,
-      })
-      .from(feMarketDisplayOrder)
-      .where(eq(feMarketDisplayOrder.sportId, match.sportId));
-
+    // Per-scope admin ordering (loaded in the parallel batch above). Scope
+    // values live directly in fe_market_display_order and are addressed the
+    // same way the storefront tabs are: `match`, `top`, or `map_<N>`. Each
+    // Map N tab gets its own independently configurable list (migration 0057).
     const orderByScope = new Map<string, Map<number, number>>();
     for (const r of orderRows) {
       let bucket = orderByScope.get(r.scope);
@@ -1561,16 +1567,22 @@ export default async function catalogRoutes(app: FastifyInstance) {
       )
       .limit(q.limit);
 
-    const oddsByMatch = await loadMatchWinnerOdds(
-      app.db,
-      rows.map((r) => r.matchId),
-    );
-
-    // Per-bettor adjustment, cross-sport flavour. Mirrors /catalog/sports/:slug
-    // but every row has its own sportId.
-    const cascade = request.user
-      ? await loadBettorAdjustmentCascade(app.db, request.user.id)
-      : EMPTY_CASCADE;
+    // Independent reads (match-winner odds, per-bettor cascade, Top-market
+    // id list across the distinct sports in this page) run together — three
+    // serial round trips on a high-QPS SSR endpoint otherwise. Per-bettor
+    // adjustment is cross-sport here (every row has its own sportId);
+    // anonymous resolves to EMPTY_CASCADE so the public path is unchanged.
+    const distinctSportIds = Array.from(new Set(rows.map((r) => r.sportId)));
+    const [oddsByMatch, cascade, topIdsBySport] = await Promise.all([
+      loadMatchWinnerOdds(
+        app.db,
+        rows.map((r) => r.matchId),
+      ),
+      request.user
+        ? loadBettorAdjustmentCascade(app.db, request.user.id)
+        : Promise.resolve(EMPTY_CASCADE),
+      loadTopMarketIdsBySport(app.db, distinctSportIds),
+    ]);
     const bpByMatch = new Map<string, number>();
     if (!cascade.empty) {
       for (const r of rows) {
@@ -1596,8 +1608,6 @@ export default async function catalogRoutes(app: FastifyInstance) {
     // Inline Top markets per card. We fetch the curated id list per
     // sport once (typically a handful of distinct sports in any list
     // response), then resolve the first available Top market per match.
-    const distinctSportIds = Array.from(new Set(rows.map((r) => r.sportId)));
-    const topIdsBySport = await loadTopMarketIdsBySport(app.db, distinctSportIds);
     const topMarkets = await loadTopMarketsForMatches(
       app.db,
       rows.map((r) => ({ matchId: r.matchId, sportId: r.sportId })),

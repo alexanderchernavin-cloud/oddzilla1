@@ -1,7 +1,7 @@
 // Fastify REST API. Boots, registers plugins + routes, serves /healthz.
 // Route surface: /auth, /users, /wallet, /catalog, /admin (role-gated).
 
-import Fastify, { type FastifyError } from "fastify";
+import Fastify, { type FastifyError, type FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
@@ -86,6 +86,18 @@ const startedAt = Date.now();
 const REQUEST_ID_HEADER = "x-request-id";
 const REQUEST_ID_SHAPE = /^[A-Za-z0-9_-]{1,128}$/;
 
+// Webhook routes carry their auth secret as a URL path segment
+// (`/webhooks/<name>/<secret>/...` — support-ai poll/heartbeat/reply, the
+// inbound-mail webhook). Fastify logs `req.url` on every request, so without
+// masking the live SUPPORT_AI_BOT_TOKEN / SENDGRID_INBOUND_SECRET would land
+// in the json logs thousands of times a day (the bot polls every few
+// seconds). Replace the secret segment with a placeholder before the request
+// serializer ever emits it.
+const WEBHOOK_SECRET_PATH = /^(\/webhooks\/[^/]+\/)[^/?]+/;
+function maskWebhookSecret(url: string): string {
+  return url.replace(WEBHOOK_SECRET_PATH, "$1***");
+}
+
 const app = Fastify({
   logger: {
     level: env.LOG_LEVEL,
@@ -106,6 +118,21 @@ const app = Fastify({
       "req.cookies",
       "*.cookies",
     ],
+    serializers: {
+      // Mirror Fastify's default request log fields, but strip the secret
+      // path segment out of webhook URLs before it's written. Keeping the
+      // rest of the shape means existing log tooling / request-id grep is
+      // unaffected.
+      req(request: FastifyRequest) {
+        return {
+          method: request.method,
+          url: maskWebhookSecret(request.url),
+          host: request.headers.host,
+          remoteAddress: request.ip,
+          remotePort: request.socket?.remotePort,
+        };
+      },
+    },
   },
   // Read X-Request-ID from the inbound request so a single grep finds
   // the SSR render and every API call it triggered across both log

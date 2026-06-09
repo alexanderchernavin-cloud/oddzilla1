@@ -6,9 +6,9 @@
 // bettor, and omits all secrets/PII (addresses, tx hashes, IPs, hashes,
 // admin-approver ids, bet_meta).
 //
-// buildCatalogDigest: the current bettable schedule (upcoming + live matches),
-// shared across threads, so the assistant can answer "when does team X play",
-// "what's live", "what's on" — catalog data, not account data.
+// The schedule ("when does X play", "what's live") is fetched on demand by
+// the worker via the read-only find_matches tool, so it is NOT pre-bundled
+// into the /pending payload.
 
 import type { FastifyInstance } from "fastify";
 import { desc, eq, sql } from "drizzle-orm";
@@ -19,7 +19,6 @@ import type {
   SupportAccountTicketFact,
   SupportAccountWalletFact,
   SupportAccountWithdrawalFact,
-  SupportCatalogMatch,
 } from "@oddzilla/types";
 import { depositIntents, wallets, withdrawals } from "@oddzilla/db";
 import { BetsService } from "../../bets/service.js";
@@ -27,9 +26,6 @@ import { BetsService } from "../../bets/service.js";
 const TICKET_LIMIT = 10;
 const DEPOSIT_LIMIT = 5;
 const WITHDRAWAL_LIMIT = 5;
-// All currently-bettable matches (upcoming + live). Small in practice (~tens),
-// so the whole near-term schedule fits the model context once it's widened.
-const CATALOG_LIMIT = 150;
 
 function iso(d: Date | null | undefined): string | null {
   return d ? d.toISOString() : null;
@@ -147,47 +143,6 @@ export async function buildAccountFacts(
   };
 }
 
-/** The current bettable schedule (upcoming + live matches with an active
- * market). Shared catalog data — same for every bettor — so the assistant can
- * answer schedule / "what's on" / "when does X play next" questions. */
-export async function buildCatalogDigest(
-  app: FastifyInstance,
-): Promise<SupportCatalogMatch[]> {
-  const rows = await app.db.execute<{
-    sport: string;
-    tournament: string;
-    home: string | null;
-    away: string | null;
-    scheduled_at: string;
-    status: string;
-  }>(sql`
-    SELECT s.slug AS sport, t.name AS tournament,
-           hc.name AS home, ac.name AS away,
-           to_char(m.scheduled_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS scheduled_at,
-           m.status
-    FROM matches m
-    JOIN tournaments t ON t.id = m.tournament_id
-    JOIN categories cat ON cat.id = t.category_id
-    JOIN sports s ON s.id = cat.sport_id
-    LEFT JOIN competitors hc ON hc.id = m.home_competitor_id
-    LEFT JOIN competitors ac ON ac.id = m.away_competitor_id
-    WHERE m.status IN ('not_started', 'live')
-      AND EXISTS (
-        SELECT 1 FROM markets mk WHERE mk.match_id = m.id AND mk.status = 1
-      )
-    ORDER BY m.scheduled_at
-    LIMIT ${CATALOG_LIMIT}
-  `);
-  return Array.from(rows).map((r) => ({
-    sport: r.sport,
-    tournament: r.tournament,
-    home: r.home ?? "TBD",
-    away: r.away ?? "TBD",
-    scheduledAt: r.scheduled_at,
-    status: r.status,
-  }));
-}
-
 export interface TeamResult {
   playedAt: string;
   opponent: string;
@@ -212,9 +167,16 @@ export async function buildTeamResults(
   const sport = opts.sport?.trim().toLowerCase() || null;
   const like = `%${q}%`;
   const prefix = `${q}%`;
-  // Same team name = a different team per game, so scope to one sport when the
-  // caller knows which game the question is about.
-  const sportFilter = sport ? sql`AND s.slug = ${sport}` : sql``;
+  // Same team name = a different team per game (competitors are per-sport
+  // rows), so when the caller knows which game the question is about we must
+  // scope the team PICK itself — not just the matches. Filtering only the
+  // matches let the CTE pick the wrong game's competitor (shortest-name
+  // tiebreak) and then return zero rows, so the bot answered "no results"
+  // for a team that exists. Once the right competitor is chosen its matches
+  // are already all in that sport, so no outer sport filter is needed.
+  const teamSportFilter = sport
+    ? sql`AND c.sport_id = (SELECT cs.id FROM sports cs WHERE cs.slug = ${sport})`
+    : sql``;
   const rows = await app.db.execute<{
     team: string;
     played_at: string;
@@ -224,11 +186,12 @@ export async function buildTeamResults(
     result: string | null;
   }>(sql`
     WITH t AS (
-      SELECT id, name FROM competitors
-      WHERE name ILIKE ${like}
-      ORDER BY (lower(name) = lower(${q})) DESC,
-               (name ILIKE ${prefix}) DESC,
-               length(name) ASC
+      SELECT c.id, c.name FROM competitors c
+      WHERE c.name ILIKE ${like}
+        ${teamSportFilter}
+      ORDER BY (lower(c.name) = lower(${q})) DESC,
+               (c.name ILIKE ${prefix}) DESC,
+               length(c.name) ASC
       LIMIT 1
     )
     SELECT t.name AS team,
@@ -250,7 +213,7 @@ export async function buildTeamResults(
     JOIN tournaments tr ON tr.id = m.tournament_id
     JOIN categories cat ON cat.id = tr.category_id
     JOIN sports s ON s.id = cat.sport_id
-    WHERE m.status = 'closed' ${sportFilter}
+    WHERE m.status = 'closed'
     ORDER BY m.scheduled_at DESC
     LIMIT ${limit}
   `);

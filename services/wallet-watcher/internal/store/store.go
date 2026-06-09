@@ -355,12 +355,26 @@ UPDATE deposit_intents
 		return err
 	}
 
-	if _, err := tx.Exec(ctx, `
+	walletTag, err := tx.Exec(ctx, `
 UPDATE wallets
    SET balance_micro = balance_micro + $2,
        updated_at    = NOW()
- WHERE user_id = $1 AND currency = $3`, intent.UserID, intent.AmountMicro, cur); err != nil {
+ WHERE user_id = $1 AND currency = $3`, intent.UserID, intent.AmountMicro, cur)
+	if err != nil {
 		return fmt.Errorf("credit wallet: %w", err)
+	}
+	// Fail closed if the (user, currency) wallet row doesn't exist. It's
+	// created at signup and is a documented precondition — but if it were
+	// somehow missing, the UPDATE affects 0 rows while the rest of this tx
+	// still marks the intent 'credited', writes a ledger row, and bumps the
+	// operator bank. The bettor's balance would never move and the deposit
+	// would silently vanish. Aborting rolls the whole tx back so the intent
+	// stays creditable on the next tick / via admin review.
+	if walletTag.RowsAffected() != 1 {
+		return fmt.Errorf(
+			"credit wallet: expected 1 wallet row for user %s currency %s, updated %d",
+			intent.UserID, cur, walletTag.RowsAffected(),
+		)
 	}
 
 	if _, err := tx.Exec(ctx, `
