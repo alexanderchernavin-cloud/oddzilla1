@@ -298,11 +298,18 @@ The daily dump is wired up via root cron at 03:00 UTC, running
 [`infra/hetzner/backup/pg_backup.sh`](../infra/hetzner/backup/pg_backup.sh).
 The script `docker exec`s into the postgres container and writes
 `/var/backups/oddzilla/oddzilla-<TS>.sql.gz` (root:team mode 640), with
-5-day retention (was 14; trimmed 2026-05-09 after dumps reached
-~2.3 GB/day and 14 × that overlapped the docker-prune cron failure to
-fill the 75 GB disk). Set `BACKUP_GPG_RECIPIENT` in `.env` to
-GPG-encrypt the dump in addition to gzipping; the file extension
-becomes `.sql.gz.gpg`.
+**count-based retention: keep the newest `RETENTION_COUNT` dumps
+(default 4)**. Count-based (not the old `-mtime` rotation) so the local
+footprint is hard-bounded to ~4 × 4.5 GB even if a run is skipped, and
+the rotation runs **before** the dump (drops all but the newest N-1 to
+make room) — the 2026-06-09 outage was an `-mtime`-rotate-after-dump that
+never executed because the dump itself failed on a 100%-full disk, so the
+pile-up never self-corrected and crash-looped postgres for hours. The
+dump is staged to a `.part` temp and atomically renamed on success, so a
+truncated dump (e.g. disk fills mid-write) can never masquerade as a valid
+backup. Override the count via the `RETENTION_COUNT` env var. Set
+`BACKUP_GPG_RECIPIENT` in `.env` to GPG-encrypt the dump in addition to
+gzipping; the file extension becomes `.sql.gz.gpg`.
 
 Hardening applied in PR #130: the script no longer sources the entire
 `.env` into the cron shell environment (every secret was being exported
@@ -335,32 +342,49 @@ ssh team@178.104.174.24 "sudo chgrp -R team /var/backups/oddzilla && \
 
 New dumps inherit those modes from the script.
 
-### Disk-fill alert (Slack)
+### Disk-fill alert (email)
 
 [`infra/hetzner/backup/disk_fill_alert.sh`](../infra/hetzner/backup/disk_fill_alert.sh)
-posts to a Slack incoming webhook when the root filesystem crosses
-`DISK_FILL_THRESHOLD_PCT` (default 80%). Install on the server:
+emails the operator when the root filesystem crosses
+`DISK_FILL_THRESHOLD_PCT` (default 80%). It runs from root cron every 15
+minutes and pages through the shared
+[`infra/hetzner/backup/alert_email.sh`](../infra/hetzner/backup/alert_email.sh)
+helper (installed as `/usr/local/bin/oddzilla-alert-email`), which POSTs
+to the Resend HTTP API using the same `EMAIL_PROVIDER_TOKEN` + `EMAIL_FROM`
+the app already uses. The email includes the top disk consumers and the
+recovery recipe so triage starts straight from the inbox.
+
+**Installed + live (2026-06-09).** The three scripts live in
+`/usr/local/bin/` and the cron entry is in root's crontab:
 
 ```bash
-ssh team@178.104.174.24
-sudo cp /home/team/oddzilla/infra/hetzner/backup/disk_fill_alert.sh \
-  /usr/local/bin/oddzilla-disk-fill-alert
-sudo chmod 750 /usr/local/bin/oddzilla-disk-fill-alert
+# what's installed:
+#   /usr/local/bin/oddzilla-alert-email      (755, shared email helper)
+#   /usr/local/bin/oddzilla-disk-fill-alert  (750, the watchdog)
+#   /usr/local/bin/oddzilla-pg-backup        (750, daily dump)
+# crontab:
+#   */15 * * * * /usr/local/bin/oddzilla-disk-fill-alert >> /var/log/oddzilla-disk-fill-alert.log 2>&1
 
-# Append to root's crontab — every 15 minutes:
-sudo crontab -e
-# */15 * * * * /usr/local/bin/oddzilla-disk-fill-alert
+# to re-deploy after editing the repo scripts:
+ssh team@178.104.174.24
+sudo cp /home/team/oddzilla/infra/hetzner/backup/alert_email.sh /usr/local/bin/oddzilla-alert-email
+sudo cp /home/team/oddzilla/infra/hetzner/backup/disk_fill_alert.sh /usr/local/bin/oddzilla-disk-fill-alert
+sudo cp /home/team/oddzilla/infra/hetzner/backup/pg_backup.sh /usr/local/bin/oddzilla-pg-backup
+sudo chmod 755 /usr/local/bin/oddzilla-alert-email
+sudo chmod 750 /usr/local/bin/oddzilla-disk-fill-alert /usr/local/bin/oddzilla-pg-backup
 ```
 
-Set `SLACK_WEBHOOK_URL` (and optionally `DISK_FILL_THRESHOLD_PCT`) in
-`/home/team/oddzilla/.env`. Without the webhook the script logs a
-single JSON line to journal and exits 0 — the next on-call can wire
-up an alternative channel without redeploying.
+Recipient is `ALERT_EMAIL_TO` in `/home/team/oddzilla/.env` (falls back to
+`EMAIL_REPLY_TO`). Without `EMAIL_PROVIDER_TOKEN` + a recipient the helper
+logs a single JSON line to journal and exits 0 — graceful-idle, matching
+the rest of the stack, so the watchdog still runs and records every check.
+The `pg_backup.sh` failure trap pages through the same helper.
 
 The 2026-04-22 → 2026-04-28 disk-full incident
 (`project_disk_full_incident` memory) ran for 6 days before anyone
-noticed because postgres was the only loud signal and the
-`docker_prune.sh` mitigation is passive. This is the active page.
+noticed, and 2026-06-09 crash-looped postgres again, because postgres was
+the only loud signal and the `docker_prune.sh` mitigation is passive. This
+is the active page.
 
 ### Audit-log integrity probe
 

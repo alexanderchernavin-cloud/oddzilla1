@@ -89,7 +89,8 @@ foreach ($remotePath in $remoteFiles) {
 }
 
 # Local retention prune. Delete dumps older than KeepDays since their
-# write time on this PC. Server retention (14 days) is independent.
+# write time on this PC. Server retention (newest 4 dumps) is independent —
+# the PC keeps a longer history than the box does, which is the point.
 $cutoff = (Get-Date).AddDays(-$KeepDays)
 $pruned = 0
 Get-ChildItem -LiteralPath $DestDir -File `
