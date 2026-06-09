@@ -187,6 +187,33 @@ func TestEvaluateAcceptOddsChangesComboPartialDrift(t *testing.T) {
 	}
 }
 
+// Consistency guarantee: a leg that nudged WITHIN tolerance (so it isn't
+// repriced) must contribute its PLACED odds to newPayout, not its current
+// price — because settlement recomputes the payout from the stored
+// odds_at_placement, and we only rewrite the drifted legs. Here leg A moved
+// 2.00→2.04 (2% < 5%, not drifted) while leg B moved 1.85→2.10 (drifted).
+// newPayout must be stake × 2.00 × 2.10 = 42_000_000 (A at its placed price),
+// NOT stake × 2.04 × 2.10 — otherwise the recomputed payout would disagree
+// with what settlement pays from stored odds, and the open_liability delta
+// would drift. Only leg B is rewritten.
+func TestEvaluateAcceptOddsChangesUntouchedLegUsesPlacedOdds(t *testing.T) {
+	w := &Worker{driftTolerance: 0.05}
+	sels := []store.Selection{
+		{MarketID: 100, OutcomeID: "1", MarketStatus: 1, OutcomeActive: true, CurrentPublished: strPtr("2.04"), OddsAtPlacement: "2.00"},
+		{MarketID: 200, OutcomeID: "2", MarketStatus: 1, OutcomeActive: true, CurrentPublished: strPtr("2.10"), OddsAtPlacement: "1.85"},
+	}
+	res := w.evaluate(makePending("combo", true, 10_000_000, 37_000_000), sels, nil)
+	if res.action != actionAcceptWithUpdatedOdds {
+		t.Fatalf("expected actionAcceptWithUpdatedOdds, got %v reason=%q", res.action, res.reason)
+	}
+	if res.newPayoutMicro != 42_000_000 {
+		t.Fatalf("newPayoutMicro: got %d want 42_000_000 (untouched leg must use its placed 2.00, not current 2.04)", res.newPayoutMicro)
+	}
+	if len(res.updatedLegs) != 1 || res.updatedLegs[0].MarketID != 200 {
+		t.Fatalf("expected only the drifted leg (200) rewritten, got: %+v", res.updatedLegs)
+	}
+}
+
 // accept_odds_changes does NOT override a suspended market. The flag is
 // "accept the new price", not "accept against a market that's no longer
 // bettable".
