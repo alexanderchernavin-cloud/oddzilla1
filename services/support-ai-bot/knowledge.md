@@ -20,8 +20,14 @@ Oddzilla is a B2C esports sportsbook. Bettors place bets on esports matches
 ## Deposits (USDC only)
 - Send USDC on the Ethereum (ERC20) network to the receive address shown on the
   deposit screen.
-- One shared address is used, so after sending the bettor pastes their
-  transaction hash so the deposit can be attributed to their account.
+- One shared address is used. To get deposits credited automatically, the
+  bettor first links their sending wallet address on the wallet screen (this
+  requires signing a verification message with that wallet, proving they
+  control it). Deposits sent from a linked address are attributed and
+  credited automatically.
+- There is no way to claim a deposit by pasting a transaction hash. A deposit
+  sent from an address the bettor has not linked goes to the team for manual
+  review — advise the bettor to link their sending address before depositing.
 - Status moves: pending → confirming → credited.
 - Only USDC is supported. A different token (e.g. USDT) or the wrong network is
   not auto-credited and needs the team to review.

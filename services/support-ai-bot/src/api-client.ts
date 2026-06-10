@@ -60,10 +60,16 @@ export class BotApi {
     return this.call(`/pending?limit=${limit}`, { method: "GET" });
   }
 
-  reply(threadId: string, text: string): Promise<unknown> {
+  reply(
+    threadId: string,
+    text: string,
+    asOfMessageId?: string | null,
+  ): Promise<unknown> {
     return this.call(`/threads/${threadId}/reply`, {
       method: "POST",
-      body: JSON.stringify({ text }),
+      body: JSON.stringify(
+        asOfMessageId ? { text, asOfMessageId } : { text },
+      ),
     });
   }
 

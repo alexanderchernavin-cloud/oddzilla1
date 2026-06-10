@@ -107,6 +107,18 @@ let poolFetchedAt = 0;
 let rotationTimer: NodeJS.Timeout | null = null;
 let appRef: FastifyInstance | null = null;
 
+// Rendered-response snapshot cache. The storefront polls /catalog/zillaflash
+// every ~2 s from every viewer on the lobby / live / upcoming / match pages;
+// without this each poll re-ran rotate() + a full Postgres re-hydration of all
+// 4 slots (~10 queries) for a payload that is identical for every viewer and
+// changes at most once per second. We cache the rendered public payload for
+// one tick and single-flight concurrent builds, so a burst of N simultaneous
+// polls costs one build, not N. Per-user filtering still happens per request
+// in routes.ts against this shared snapshot.
+const SNAPSHOT_TTL_MS = 1_000;
+let snapshot: { at: number; value: ZillaFlashResponse } | null = null;
+let snapshotInFlight: Promise<ZillaFlashResponse> | null = null;
+
 // Cached config snapshot. Default to the @oddzilla/types constants so
 // boot before the first DB load (and tests without a `zillaflash_config`
 // row) still produce coherent rotation behaviour.
@@ -651,8 +663,31 @@ async function rotate(app: FastifyInstance): Promise<void> {
 export async function getActiveOffers(
   app: FastifyInstance,
 ): Promise<ZillaFlashResponse> {
+  const now = Date.now();
+  if (snapshot && now - snapshot.at < SNAPSHOT_TTL_MS) {
+    return snapshot.value;
+  }
+  // Single-flight: a burst of concurrent polls that all see a stale/empty
+  // snapshot share one build instead of each hammering Postgres.
+  if (snapshotInFlight) return snapshotInFlight;
+  snapshotInFlight = (async () => {
+    try {
+      const value = await buildActiveOffers(app);
+      snapshot = { at: Date.now(), value };
+      return value;
+    } finally {
+      snapshotInFlight = null;
+    }
+  })();
+  return snapshotInFlight;
+}
+
+async function buildActiveOffers(
+  app: FastifyInstance,
+): Promise<ZillaFlashResponse> {
   // Run a rotate pass synchronously so the first poll after boot has
-  // populated slots. Subsequent polls amortise across the timer.
+  // populated slots. Subsequent polls amortise across the timer + the
+  // snapshot cache above.
   if (poolFetchedAt === 0) {
     await refreshPool(app);
   }

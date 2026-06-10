@@ -310,16 +310,33 @@ export class RiskzillaEngine {
     const freeCapacityBefore = bankLimit - userBalances - openLiability;
 
     // ── Per-leg gates: min stake, max payout, market factor =0 ──────
-    // First-leg tier governs min/max for the ticket as a whole.
-    const firstTier = tierFor(intent.legs[0]!);
-    const minBet = BigInt(firstTier.min_bet_micro);
-    const maxPayout = BigInt(firstTier.max_payout_micro);
+    // The ticket's floor/ceiling is the STRICTEST tier across all legs, not
+    // the first leg's. Keying off legs[0] let a bettor combine a tight
+    // tier-1 match with a lax tier-9 one and simply list the tier-9 leg
+    // first to be gated by tier-9's larger max_payout / smaller min_bet —
+    // the leg order is client-controlled. Strictest = highest min_bet
+    // (largest floor a bettor must clear) and lowest max_payout (smallest
+    // ceiling any leg's tier allows). They may come from different legs;
+    // effectiveTier reports the tighter-ceiling leg's tier for the betticker.
+    let minBet = BigInt(tierFor(intent.legs[0]!).min_bet_micro);
+    let maxPayout = BigInt(tierFor(intent.legs[0]!).max_payout_micro);
+    let ceilingTier = tierFor(intent.legs[0]!);
+    for (const leg of intent.legs) {
+      const t = tierFor(leg);
+      const legMin = BigInt(t.min_bet_micro);
+      const legMax = BigInt(t.max_payout_micro);
+      if (legMin > minBet) minBet = legMin;
+      if (legMax < maxPayout) {
+        maxPayout = legMax;
+        ceilingTier = t;
+      }
+    }
 
     const baseMeta = {
-      effectiveTier: Number(firstTier.tier),
+      effectiveTier: Number(ceilingTier.tier),
       effectiveMinBetMicro: minBet.toString(),
       effectiveMaxPayoutMicro: maxPayout.toString(),
-      effectiveBetFactor: firstTier.bet_factor,
+      effectiveBetFactor: ceilingTier.bet_factor,
       bankLimitMicro: bankLimit.toString(),
       openLiabilityMicroBefore: openLiability.toString(),
       userBalancesMicro: userBalances.toString(),

@@ -342,6 +342,7 @@ func (w *Worker) evaluate(p store.PendingTicket, selections []store.Selection, b
 	type legCheck struct {
 		marketID  int64
 		outcomeID string
+		placed    float64
 		current   float64
 		currentS  string
 		drifted   bool
@@ -394,6 +395,7 @@ func (w *Worker) evaluate(p store.PendingTicket, selections []store.Selection, b
 		checks = append(checks, legCheck{
 			marketID:  s.MarketID,
 			outcomeID: s.OutcomeID,
+			placed:    placed,
 			current:   current,
 			currentS:  currentS,
 			drifted:   drifted,
@@ -404,20 +406,32 @@ func (w *Worker) evaluate(p store.PendingTicket, selections []store.Selection, b
 		return evalResult{action: actionAccept}
 	}
 
-	// Re-pricing path. Compute the new potential payout from the latest
-	// per-leg published prices, preserving any frozen combi-boost
-	// multiplier on bet_meta so re-priced combos respect the same
-	// promotion the bettor saw at placement.
+	// Re-pricing path. Compute the new potential payout, preserving any
+	// frozen combi-boost multiplier on bet_meta so re-priced combos respect
+	// the same promotion the bettor saw at placement.
+	//
+	// Critical consistency rule: newPayout must be built from exactly the
+	// per-leg odds we STORE, because settlement recomputes the payout from
+	// the stored ticket_selections.odds_at_placement. So each leg contributes
+	// its CURRENT price iff we rewrite it (drifted legs), otherwise its
+	// existing placed price (untouched legs). Earlier this multiplied every
+	// leg's current price into newPayout while only rewriting the drifted
+	// legs — a within-tolerance leg that had nudged would settle at its old
+	// placed odds and the paid amount would silently disagree with newPayout
+	// and the open_liability delta. Only-drifted legs are repriced; stable
+	// legs keep the price the bettor agreed to.
 	productOdds := 1.0
 	updates := make([]store.UpdatedLegOdds, 0, len(checks))
 	for _, c := range checks {
-		productOdds *= c.current
 		if c.drifted {
+			productOdds *= c.current
 			updates = append(updates, store.UpdatedLegOdds{
 				MarketID:  c.marketID,
 				OutcomeID: c.outcomeID,
 				NewOdds:   c.currentS,
 			})
+		} else {
+			productOdds *= c.placed
 		}
 	}
 	boost := extractBoostMultiplier(p.BetMetaJSON)

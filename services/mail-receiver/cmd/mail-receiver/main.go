@@ -164,6 +164,14 @@ func envIntOrDefault(name string, def int) int {
 
 // ─── SMTP backend ──────────────────────────────────────────────────────────
 
+// msgWindowGCThreshold bounds the per-IP rate-window map. Port 25 is public
+// and scanned by botnets from huge IP ranges, so without eviction msgByIP
+// would grow for the whole process lifetime inside the 64 MiB-capped
+// container. When the map exceeds this many entries we sweep out windows that
+// have already rolled over. Sized well above any plausible legitimate
+// concurrent-sender count.
+const msgWindowGCThreshold = 4096
+
 type ipMsgWindow struct {
 	count       int
 	windowStart time.Time
@@ -226,6 +234,17 @@ func (b *Backend) allowMessage(ip string, now time.Time) bool {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	// Opportunistic GC: when the map gets large, drop every window that has
+	// already rolled over (older than a minute) — those entries would reset
+	// on next use anyway, so removing them changes no decision. O(n) but only
+	// when over threshold, amortised across thousands of inserts.
+	if len(b.msgByIP) > msgWindowGCThreshold {
+		for k, win := range b.msgByIP {
+			if now.Sub(win.windowStart) >= time.Minute {
+				delete(b.msgByIP, k)
+			}
+		}
+	}
 	w := b.msgByIP[ip]
 	if w == nil || now.Sub(w.windowStart) >= time.Minute {
 		b.msgByIP[ip] = &ipMsgWindow{count: 1, windowStart: now}

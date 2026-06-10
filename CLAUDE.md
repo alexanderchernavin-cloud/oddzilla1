@@ -29,8 +29,12 @@ live at `s.oddzilla.cc` on 2026-04-18 and moved to the apex
 `payback_margin_bp=0` globally (Oddin already sends margined odds —
 see [`docs/OPERATIONS.md`](./docs/OPERATIONS.md) before re-enabling).
 Migration 0032 (2026-05-07) replaced the per-user HD-address USDT
-flow with a single shared ERC20 address + user-submitted tx-hash
-attribution; wallet-watcher is now intent-driven. Next: pre-launch
+flow with a single shared ERC20 address; deposits are now attributed
+by matching the on-chain sender against the bettor's signature-verified
+linked wallet addresses (there is intentionally NO user-facing
+paste-your-tx-hash route — that would be a deposit-theft vector), and
+unlinked-sender deposits fall through to admin review. wallet-watcher
+is intent-driven. Next: pre-launch
 exit gates (KYC, wallet reconciliation, off-server backup rsync,
 monitoring, runbook). Full roadmap in
 [`docs/PHASES.md`](./docs/PHASES.md).

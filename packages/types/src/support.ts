@@ -205,19 +205,6 @@ export interface SupportAccountFacts {
   withdrawals: SupportAccountWithdrawalFact[];
 }
 
-/** One bettable match in the current schedule (upcoming or live). Shared
- * catalog data so the assistant can answer "when does X play" / "what's on". */
-export interface SupportCatalogMatch {
-  sport: string;
-  tournament: string;
-  home: string;
-  away: string;
-  /** ISO 8601 UTC timestamp. */
-  scheduledAt: string;
-  /** not_started | live */
-  status: string;
-}
-
 export interface SupportBotPendingMessage {
   sender: SupportSenderKind;
   viaAi: boolean;
@@ -231,10 +218,13 @@ export interface SupportBotPendingThread {
   threadId: string;
   userId: string;
   subject: string | null;
+  /** Id of the newest message in the snapshot. The worker echoes this on
+   * reply (`asOfMessageId`) so the server can reject a reply that would bury
+   * a bettor follow-up sent while the model was generating. Null only when
+   * the thread somehow has no messages. */
+  lastMessageId: string | null;
   messages: SupportBotPendingMessage[];
   accountFacts: SupportAccountFacts;
-  /** Current bettable schedule (upcoming + live), shared across threads. */
-  catalog: SupportCatalogMatch[];
 }
 
 export interface SupportBotPendingResponse {
@@ -243,6 +233,10 @@ export interface SupportBotPendingResponse {
 
 export interface SupportBotReplyRequest {
   text: string;
+  /** Echo of SupportBotPendingThread.lastMessageId. When a newer bettor
+   * message has arrived since, the server rejects with `stale_transcript`
+   * and the worker regenerates against the fuller thread. */
+  asOfMessageId?: string;
 }
 
 export interface SupportBotEscalateRequest {
