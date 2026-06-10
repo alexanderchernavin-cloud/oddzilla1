@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"strconv"
 	"sync"
 	"time"
 
@@ -812,9 +813,15 @@ func nullableProbability(s string) *string {
 		return nil
 	}
 	// Defensive parse — Oddin sends e.g. "0.368". Anything outside [0,1]
-	// is meaningless and dropped.
-	var f float64
-	if _, err := fmt.Sscanf(s, "%f", &f); err != nil {
+	// is meaningless and dropped. strconv.ParseFloat over fmt.Sscanf: this
+	// runs once per outcome (up to ~600 per odds_change message), and
+	// ParseFloat is ~20-50x cheaper than Sscanf's reflect-based scan with
+	// no per-call allocation. It's also stricter — Sscanf would accept
+	// "0.5xyz" (stops at the first bad rune), ParseFloat rejects it, which
+	// is the behaviour we actually want for a "validate this is a clean
+	// decimal" guard.
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
 		return nil
 	}
 	if f < 0 || f > 1 {

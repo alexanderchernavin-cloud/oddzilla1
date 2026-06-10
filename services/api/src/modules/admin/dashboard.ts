@@ -83,6 +83,13 @@ export default async function adminDashboardRoutes(app: FastifyInstance) {
         FROM wallet_ledger wl
         JOIN users u ON u.id = wl.user_id
         WHERE wl.created_at >= date_trunc('day', now() AT TIME ZONE 'UTC')
+          -- Redundant given the CASE arms only score these three types,
+          -- but it lets the planner use the partial PnL index
+          -- (wallet_ledger_pnl_idx ... WHERE type IN (...), migration 0030)
+          -- instead of seq-scanning the day's non-financial ledger rows
+          -- (signup_bonus, withdrawal_*, deposit_credit, …). The pnl-by-day
+          -- query already carries this predicate; the KPI one was missing it.
+          AND wl.type IN ('bet_stake', 'bet_payout', 'bet_refund')
           AND wl.currency = 'USDC'
           AND u.is_ai = false
       `),

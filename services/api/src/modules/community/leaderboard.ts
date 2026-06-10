@@ -26,6 +26,7 @@ import type {
   LeaderboardRow,
 } from "@oddzilla/types";
 import { resolveOptionalAvatarUrl } from "./avatar-url.js";
+import { cached } from "../../lib/cache.js";
 
 const readRateLimit = { rateLimit: { max: 60, timeWindow: "1 minute" } };
 
@@ -68,40 +69,41 @@ export default async function communityLeaderboardRoutes(app: FastifyInstance) {
       const q = querySchema.parse(request.query);
       const viewerId = request.user?.id ?? null;
 
-      const rows = await runLeaderboardQuery(app, {
-        sport: q.sport ?? null,
-        window: q.window,
-        sort: q.sort,
-        limit: q.limit,
-      });
-
-      const shaped: LeaderboardRow[] = rows.map((r, idx) =>
-        shapeRow(r, idx + 1),
-      );
-
-      // Viewer row: re-run the same query unbounded by limit for the
-      // caller, then pick out their slot. Cheap because the aggregates
-      // are already cached for a fresh read; could be tightened later
-      // by re-rank-windowing inline, but the corpus is small.
-      let viewerRow: LeaderboardRow | null = null;
-      if (viewerId && !shaped.some((r) => r.userId === viewerId)) {
-        const all = await runLeaderboardQuery(app, {
+      // One Redis-cached run at the 1000-row ceiling serves BOTH the page
+      // slice and the viewer-rank lookup — previously an authed viewer
+      // outside the top page triggered a SECOND full aggregate (the
+      // heaviest query on the community surface, with a correlated
+      // recent-outcomes subquery per author), and every request ran the
+      // aggregate cold. The row set is identical for every viewer; only
+      // which slot is "you" differs, and that's a findIndex over the
+      // cached array. 30 s staleness is invisible on a ranking that moves
+      // with settlements, not ticks. (1000 is the documented hard ceiling
+      // — past that the shape needs a dedicated rank-of-viewer endpoint.)
+      const cacheKey = `community:leaderboard:v1:${q.sport ?? "all"}:${q.window}:${q.sort}`;
+      const all = await cached(app.redis, cacheKey, 30, () =>
+        runLeaderboardQuery(app, {
           sport: q.sport ?? null,
           window: q.window,
           sort: q.sort,
-          // Hard ceiling: don't scan more than 1000 rows for the
-          // viewer-rank lookup. If the leaderboard ever grows past
-          // that, the response shape needs a dedicated rank-of-viewer
-          // endpoint anyway.
           limit: 1000,
-        });
-        const viewerIdx = all.findIndex((r) => r.userId === viewerId);
-        if (viewerIdx >= 0) {
-          viewerRow = shapeRow(all[viewerIdx]!, viewerIdx + 1);
+        }),
+      );
+
+      const shaped: LeaderboardRow[] = all
+        .slice(0, q.limit)
+        .map((r, idx) => shapeRow(r, idx + 1));
+
+      let viewerRow: LeaderboardRow | null = null;
+      if (viewerId) {
+        const inPage = shaped.find((r) => r.userId === viewerId);
+        if (inPage) {
+          viewerRow = inPage;
+        } else {
+          const viewerIdx = all.findIndex((r) => r.userId === viewerId);
+          if (viewerIdx >= 0) {
+            viewerRow = shapeRow(all[viewerIdx]!, viewerIdx + 1);
+          }
         }
-      } else if (viewerId) {
-        const found = shaped.find((r) => r.userId === viewerId);
-        viewerRow = found ?? null;
       }
 
       return {

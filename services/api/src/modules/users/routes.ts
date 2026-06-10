@@ -12,6 +12,7 @@ import {
 } from "../../lib/errors.js";
 import { clearAuthCookies } from "../../lib/cookies.js";
 import { SESSION_STATUS_KEY } from "../../plugins/auth.js";
+import { invalidateZillaFlashViewerPrefs } from "../zillaflash/viewer-prefs.js";
 
 const updateBody = z.object({
   displayName: z.string().min(1).max(64).nullable().optional(),
@@ -202,6 +203,9 @@ export default async function usersRoutes(app: FastifyInstance) {
       .where(eq(users.id, u.id))
       .returning();
     if (!updated) throw new NotFoundError();
+    // Drop the cached ZillaFlash viewer prefs so the polled strip
+    // reflects the new hidden set on its next tick, not after the TTL.
+    invalidateZillaFlashViewerPrefs(u.id);
     return { user: publicize(updated) };
   });
 }

@@ -90,6 +90,14 @@ const SPORTS_CACHE_KEY = "catalog:sports:v1";
 const SPORTS_CACHE_TTL_SECONDS = 60;
 const LIVE_COUNTS_CACHE_KEY = "catalog:live-counts:v1";
 const LIVE_COUNTS_CACHE_TTL_SECONDS = 5;
+// Anonymous-only response cache for the three hottest catalog endpoints
+// (sport list, cross-sport list, match detail). Signed-out responses are
+// identical for every viewer; authed requests bypass because the
+// per-bettor odds adjustment personalises prices. 3 s is short enough
+// that list staleness is invisible next to the WS live-odds reconcile,
+// while collapsing the 3 SSR replicas' render fan-out (plus client
+// refetches) to roughly one DB build per key per window.
+const ANON_LIST_CACHE_TTL_SECONDS = 3;
 
 // Two aliases of `competitors` so a single match query can pull the home
 // and away team's branding columns (logo_url, brand_color) in one round
@@ -780,6 +788,12 @@ export default async function catalogRoutes(app: FastifyInstance) {
         return { enabled: false, minOdds: 1.5, tiers: [] };
       }
     }
+    // The public shape is one singleton row, identical for everyone who
+    // passed the visibility gate — cache it briefly. Placement reads the
+    // row live inside its own transaction (bets/service.ts), so the
+    // "admin save applies to the very next placement" contract is
+    // unaffected; only this display endpoint lags by up to the TTL.
+    return cached(app.redis, "catalog:combi-boost:v1", 10, async () => {
     const [row] = await app.db
       .select()
       .from(combiBoostConfig)
@@ -811,12 +825,22 @@ export default async function catalogRoutes(app: FastifyInstance) {
       minOdds: Number(row.minOdds),
       tiers,
     };
+    });
   });
 
   // ── One sport + its upcoming/live matches ───────────────────────────
   app.get("/catalog/sports/:slug", async (request) => {
     const params = z.object({ slug: z.string().min(1).max(32) }).parse(request.params);
     const q = matchListQuery.parse(request.query);
+
+    // Anonymous responses are identical for every signed-out viewer — the
+    // only personalisation is the per-bettor odds adjustment, which
+    // resolves to EMPTY_CASCADE without a user. Cache briefly keyed by the
+    // full query shape so the 3 SSR replicas' render fan-out collapses to
+    // ~one build per key per window; the storefront reconciles live odds
+    // over WS after hydration, so a few seconds of staleness is invisible.
+    // Authed requests bypass (their odds are per-user).
+    const build = async () => {
 
     const [sport] = await app.db
       .select()
@@ -1019,6 +1043,12 @@ export default async function catalogRoutes(app: FastifyInstance) {
         };
       }),
     };
+    };
+    if (!request.user) {
+      const key = `catalog:sport:v1:${params.slug}:${q.live ? 1 : 0}:${q.tournament ?? ""}:${q.team ?? ""}:${q.limit}`;
+      return cached(app.redis, key, ANON_LIST_CACHE_TTL_SECONDS, build);
+    }
+    return build();
   });
 
   // ── One match (+ tournament/sport + active markets + outcomes) ──────
@@ -1034,6 +1064,13 @@ export default async function catalogRoutes(app: FastifyInstance) {
     // every market still gets a label even if Oddin doesn't ship the
     // requested language.
     const locale = resolveLocale(request.cookies as Record<string, string | undefined>);
+
+    // Anonymous-only short cache. The response varies by locale (market
+    // description templates), so the key carries it. Side note: the
+    // phantom-live REST-refresh trip wire inside the build only fires on
+    // cache misses now — fine, feed-ingester dedupes per URN with a 5-min
+    // cooldown anyway, so per-request firing was always redundant.
+    const build = async () => {
 
     const [match] = await app.db
       .select({
@@ -1504,6 +1541,12 @@ export default async function catalogRoutes(app: FastifyInstance) {
       markets: marketList,
       marketGroups: groups,
     };
+    };
+    if (!request.user) {
+      const key = `catalog:match:v1:${params.id}:${locale}`;
+      return cached(app.redis, key, ANON_LIST_CACHE_TTL_SECONDS, build);
+    }
+    return build();
   });
 
   // ── Cross-sport match list (powers /live + /upcoming pages) ───────
@@ -1521,6 +1564,9 @@ export default async function catalogRoutes(app: FastifyInstance) {
         limit: z.coerce.number().int().min(1).max(200).default(80),
       })
       .parse(request.query);
+
+    // Anonymous-only short cache — same rationale as /catalog/sports/:slug.
+    const build = async () => {
 
     const cond =
       q.status === "live"
@@ -1680,6 +1726,12 @@ export default async function catalogRoutes(app: FastifyInstance) {
         };
       }),
     };
+    };
+    if (!request.user) {
+      const key = `catalog:matches:v1:${q.status}:${q.limit}`;
+      return cached(app.redis, key, ANON_LIST_CACHE_TTL_SECONDS, build);
+    }
+    return build();
   });
 
   // ── Tournaments under a sport (for sidebar expansion) ──────────────
@@ -1702,6 +1754,16 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .where(and(eq(sports.slug, params.slug), eq(sports.active, true)))
       .limit(1);
     if (!sport) throw new NotFoundError("sport_not_found", "sport_not_found");
+
+    // Fully public (no per-user shaping) and the sidebar auto-fetches it on
+    // every sport-page render, but the aggregate LEFT JOINs every match
+    // under the sport and evaluates the correlated hasActiveMarket EXISTS
+    // per (tournament, match) row — hundreds of `markets` index probes per
+    // call on a busy sport. Cache the rendered payload; 10 s keeps the
+    // sidebar's live/match counts visually fresh (live-counts itself runs
+    // at 5 s) at ~1/100th of the query volume. The cheap sport lookup +
+    // 404 stay outside so unknown slugs never enter the cache.
+    return cached(app.redis, `catalog:tournaments:v1:${sport.id}`, 10, async () => {
 
     const matchCountExpr = sql<string>`COUNT(DISTINCT ${matches.id}) FILTER (
       WHERE ${matches.status} IN ('not_started','live')
@@ -1766,6 +1828,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
       sport: { id: sport.id, slug: sport.slug, name: sport.name },
       tournaments: tournamentsOut,
     };
+    });
   });
 
   // ── Global search across sports, tournaments, teams, and matches ───

@@ -1209,6 +1209,17 @@ WITH legs AS (
     -- Recent feed.
     BOOL_OR(mk.status = 1 AND mt.status IN ('not_started', 'live')) AS bettable
     FROM tickets t
+    -- Author-visibility filter lives INSIDE the aggregation CTE, not on
+    -- the outer query, so the expensive per-ticket aggregates (EXP(SUM(LN))
+    -- product odds, ARRAY_AGG of sport ids, BOOL_OR bettable) never run for
+    -- tickets that will be discarded anyway — private profiles and AI seed
+    -- accounts. With AI bettors generating the bulk of volume, that's most
+    -- of the window. The outer JOIN below re-reads the same row for the
+    -- display columns (nickname / bio / avatar).
+    JOIN users au             ON au.id = t.user_id
+                              AND au.tickets_public = true
+                              AND au.nickname IS NOT NULL
+                              AND au.is_ai = false
     JOIN ticket_selections ts ON ts.ticket_id = t.id
     JOIN markets mk           ON mk.id = ts.market_id
     JOIN matches mt           ON mt.id = mk.match_id

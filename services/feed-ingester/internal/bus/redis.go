@@ -93,6 +93,12 @@ func (b *Bus) PublishOddsBatch(ctx context.Context, events []OddsEvent) error {
 				"provider_market_id": ev.ProviderMarketID,
 				"specifiers":        ev.SpecifiersCanonical,
 				"raw_odds":          ev.RawOdds,
+				// Must mirror PublishOdds — omitting probability here meant
+				// the batch path (the only one the handler uses) never put
+				// it on the stream, so published odds_history rows and the
+				// live WS odds frames carried no probability and the
+				// ws-gateway fair-odds clamp had nothing to clamp against.
+				"probability":       ev.Probability,
 				"active":            boolInt(ev.Active),
 				"match_id":          ev.MatchID,
 				"oddin_ts":          ev.OddinTs,
