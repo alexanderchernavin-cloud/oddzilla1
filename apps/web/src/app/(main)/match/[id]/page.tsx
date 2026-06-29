@@ -12,6 +12,7 @@ import { MatchHeaderStatusPill } from "@/components/match/header-status-pill";
 import { MatchLiveMedia } from "@/components/widgets/match-live-media";
 import { MatchPrematchMobile } from "@/components/widgets/match-prematch-mobile";
 import { ZillaFactsCards } from "@/components/match/zillafacts-cards";
+import { ZillaBuildCards } from "@/components/match/zillabuild-cards";
 import { MatchPageRegistrar } from "@/lib/match-page-context";
 import { type LiveScore } from "@/lib/live-score";
 import { getSessionUser } from "@/lib/auth";
@@ -171,6 +172,18 @@ export default async function MatchPage({
         homeTeam={match.homeTeam}
         awayTeam={match.awayTeam}
         sportSlug={match.sport.slug}
+      />
+
+      {/* ZillaBuild — admin-curated pre-built BetBuilder combos. Prematch
+          only; self-hides (returns null) when the feature is off, when
+          BetBuilder isn't available for the match, or when the bettor has
+          it hidden via the promo-visibility cascade. */}
+      <ZillaBuildCards
+        matchId={String(match.id)}
+        homeTeam={match.homeTeam}
+        awayTeam={match.awayTeam}
+        sportSlug={match.sport.slug}
+        initialStatus={match.status}
       />
 
       <MatchPrematchMobile

@@ -26,8 +26,8 @@ import {
 import { BadRequestError, NotFoundError } from "../../lib/errors.js";
 import { invalidateZillaFlashViewerPrefs } from "../zillaflash/viewer-prefs.js";
 
-type PromoKind = "zillaflash" | "combi_boost";
-const PROMO_KINDS = ["zillaflash", "combi_boost"] as const;
+type PromoKind = "zillaflash" | "combi_boost" | "zillabuild";
+const PROMO_KINDS = ["zillaflash", "combi_boost", "zillabuild"] as const;
 
 interface OverrideDto {
   id: string;
@@ -53,6 +53,7 @@ interface SportRowDto {
   name: string;
   zillaflash: PerKindRow;
   combi_boost: PerKindRow;
+  zillabuild: PerKindRow;
 }
 
 interface TournamentRowDto {
@@ -64,6 +65,7 @@ interface TournamentRowDto {
   riskTier: number | null;
   zillaflash: PerKindRow;
   combi_boost: PerKindRow;
+  zillabuild: PerKindRow;
 }
 
 interface MatchRowDto {
@@ -74,6 +76,7 @@ interface MatchRowDto {
   status: string;
   zillaflash: PerKindRow;
   combi_boost: PerKindRow;
+  zillabuild: PerKindRow;
 }
 
 const visibleBody = z.object({ visible: z.boolean() });
@@ -266,6 +269,7 @@ export default async function adminPromoVisibilityRoutes(app: FastifyInstance) {
       name: r.name,
       zillaflash: makePerKindRow(loaded, "zillaflash", { sportId: r.id }),
       combi_boost: makePerKindRow(loaded, "combi_boost", { sportId: r.id }),
+      zillabuild: makePerKindRow(loaded, "zillabuild", { sportId: r.id }),
     }));
 
     return {
@@ -274,6 +278,9 @@ export default async function adminPromoVisibilityRoutes(app: FastifyInstance) {
         : null,
       globalCombiBoost: loaded.globalByKind.get("combi_boost")
         ? rowToOverrideDto(loaded.globalByKind.get("combi_boost")!)
+        : null,
+      globalZillabuild: loaded.globalByKind.get("zillabuild")
+        ? rowToOverrideDto(loaded.globalByKind.get("zillabuild")!)
         : null,
       entries,
     };
@@ -321,6 +328,7 @@ export default async function adminPromoVisibilityRoutes(app: FastifyInstance) {
         riskTier: r.riskTier,
         zillaflash: tournamentPerKindRow(loaded, "zillaflash", r.id, sportId),
         combi_boost: tournamentPerKindRow(loaded, "combi_boost", r.id, sportId),
+        zillabuild: tournamentPerKindRow(loaded, "zillabuild", r.id, sportId),
       }));
 
       return { sport: sportRow, entries };
@@ -388,6 +396,13 @@ export default async function adminPromoVisibilityRoutes(app: FastifyInstance) {
         combi_boost: matchPerKindRow(
           loaded,
           "combi_boost",
+          r.id,
+          tournamentId,
+          tnt.sportId,
+        ),
+        zillabuild: matchPerKindRow(
+          loaded,
+          "zillabuild",
           r.id,
           tournamentId,
           tnt.sportId,

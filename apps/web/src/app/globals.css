@@ -1051,6 +1051,21 @@ body {
   }
 }
 
+/* ZillaBuild card grid — pre-built BetBuilder combos on the match page.
+   Each card carries 2-4 legs, so cap at 2 columns on wide viewports and
+   collapse to a single column on mobile. */
+.oz-zillabuild-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 719px) {
+  .oz-zillabuild-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
    Match-row side-panel affordance — wide viewports.
    The centered `.oz-shell` caps at 1440px, so a 4K (3840px) or wide

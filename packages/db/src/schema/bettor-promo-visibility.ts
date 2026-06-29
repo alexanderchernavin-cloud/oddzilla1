@@ -26,6 +26,10 @@ import { matches, sports, tournaments } from "./catalog.js";
 export const bettorPromoKindEnum = pgEnum("bettor_promo_kind", [
   "zillaflash",
   "combi_boost",
+  // Added in migration 0082 via ALTER TYPE ... ADD VALUE. Mirrored here
+  // so inserts of the new kind typecheck (drizzle-kit isn't the migration
+  // source — we hand-write SQL — so this array only drives TS types).
+  "zillabuild",
 ]);
 
 export const bettorPromoScopeEnum = pgEnum("bettor_promo_scope", [

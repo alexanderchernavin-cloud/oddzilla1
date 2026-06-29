@@ -4,9 +4,9 @@ import { useCallback, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 
-// Sport → Tournament → Match tree with two toggle columns per row
-// (ZillaFlash / CombiBoost). Each row's effective visibility cascades
-// match > tournament > sport > global, with the server doing the
+// Sport → Tournament → Match tree with three toggle columns per row
+// (ZillaFlash / CombiBoost / ZillaBuild). Each row's effective visibility
+// cascades match > tournament > sport > global, with the server doing the
 // resolution and shipping `effectiveVisible` + `effectiveSource` per
 // row so the UI can render "Inherits sport" hints without re-computing
 // client-side.
@@ -19,7 +19,15 @@ export interface Override {
 }
 
 type Source = "global" | "sport" | "tournament" | "match" | "none";
-type PromoKind = "zillaflash" | "combi_boost";
+type PromoKind = "zillaflash" | "combi_boost" | "zillabuild";
+
+// Render order + display labels for the per-row toggle columns. The key
+// is the path segment the admin routes consume.
+const KINDS: ReadonlyArray<{ key: PromoKind; label: string }> = [
+  { key: "zillaflash", label: "ZillaFlash" },
+  { key: "combi_boost", label: "CombiBoost" },
+  { key: "zillabuild", label: "ZillaBuild" },
+];
 
 interface PerKindRow {
   override: Override | null;
@@ -27,33 +35,30 @@ interface PerKindRow {
   effectiveSource: Source;
 }
 
-export interface SportRow {
+// Every scope row carries one PerKindRow per promo kind.
+type KindRows = Record<PromoKind, PerKindRow>;
+
+export interface SportRow extends KindRows {
   id: number;
   slug: string;
   name: string;
-  zillaflash: PerKindRow;
-  combi_boost: PerKindRow;
 }
 
-interface TournamentRow {
+interface TournamentRow extends KindRows {
   id: number;
   slug: string;
   name: string;
   startAt: string | null;
   endAt: string | null;
   riskTier: number | null;
-  zillaflash: PerKindRow;
-  combi_boost: PerKindRow;
 }
 
-interface MatchRow {
+interface MatchRow extends KindRows {
   id: string;
   homeTeam: string;
   awayTeam: string;
   scheduledAt: string | null;
   status: string;
-  zillaflash: PerKindRow;
-  combi_boost: PerKindRow;
 }
 
 // ─── Top-level tree ─────────────────────────────────────────────────────
@@ -62,11 +67,13 @@ export function PromoVisibilityTree({
   userId,
   globalZillaflash,
   globalCombiBoost,
+  globalZillabuild,
   sports,
 }: {
   userId: string;
   globalZillaflash: Override | null;
   globalCombiBoost: Override | null;
+  globalZillabuild: Override | null;
   sports: SportRow[];
 }) {
   const router = useRouter();
@@ -100,8 +107,11 @@ export function PromoVisibilityTree({
 
       <GlobalRow
         userId={userId}
-        zillaflash={globalZillaflash}
-        combiBoost={globalCombiBoost}
+        globals={{
+          zillaflash: globalZillaflash,
+          combi_boost: globalCombiBoost,
+          zillabuild: globalZillabuild,
+        }}
         onError={onError}
         onSuccess={onSuccess}
       />
@@ -139,14 +149,12 @@ export function PromoVisibilityTree({
 
 function GlobalRow({
   userId,
-  zillaflash,
-  combiBoost,
+  globals,
   onError,
   onSuccess,
 }: {
   userId: string;
-  zillaflash: Override | null;
-  combiBoost: Override | null;
+  globals: Record<PromoKind, Override | null>;
   onError: (msg: string) => void;
   onSuccess: () => void;
 }) {
@@ -189,27 +197,20 @@ function GlobalRow({
             specific row overrides.
           </div>
         </div>
-        <div style={{ display: "inline-flex", gap: 16 }}>
-          <KindEditor
-            label="ZillaFlash"
-            override={zillaflash}
-            inheritedVisible={null}
-            inheritedSource={null}
-            putUrl={`/admin/users/${userId}/promo-visibility/zillaflash/global`}
-            deleteUrl={`/admin/users/${userId}/promo-visibility/zillaflash/global`}
-            onError={onError}
-            onSuccess={onSuccess}
-          />
-          <KindEditor
-            label="CombiBoost"
-            override={combiBoost}
-            inheritedVisible={null}
-            inheritedSource={null}
-            putUrl={`/admin/users/${userId}/promo-visibility/combi_boost/global`}
-            deleteUrl={`/admin/users/${userId}/promo-visibility/combi_boost/global`}
-            onError={onError}
-            onSuccess={onSuccess}
-          />
+        <div style={{ display: "inline-flex", gap: 16, flexWrap: "wrap" }}>
+          {KINDS.map(({ key, label }) => (
+            <KindEditor
+              key={key}
+              label={label}
+              override={globals[key]}
+              inheritedVisible={null}
+              inheritedSource={null}
+              putUrl={`/admin/users/${userId}/promo-visibility/${key}/global`}
+              deleteUrl={`/admin/users/${userId}/promo-visibility/${key}/global`}
+              onError={onError}
+              onSuccess={onSuccess}
+            />
+          ))}
         </div>
       </div>
     </section>
@@ -262,13 +263,10 @@ function SportNode({
         onToggle={toggle}
         title={sport.name}
         action={
-          <DualKindEditor
-            zillaflashRow={sport.zillaflash}
-            combiBoostRow={sport.combi_boost}
-            zillaflashPutUrl={`/admin/users/${userId}/promo-visibility/zillaflash/sport/${sport.id}`}
-            zillaflashDeleteUrl={`/admin/users/${userId}/promo-visibility/zillaflash/sport/${sport.id}`}
-            combiBoostPutUrl={`/admin/users/${userId}/promo-visibility/combi_boost/sport/${sport.id}`}
-            combiBoostDeleteUrl={`/admin/users/${userId}/promo-visibility/combi_boost/sport/${sport.id}`}
+          <KindsEditor
+            userId={userId}
+            scopePath={`sport/${sport.id}`}
+            row={sport}
             onError={onError}
             onSuccess={onSuccess}
           />
@@ -341,13 +339,10 @@ function TournamentNode({
         onToggle={toggle}
         title={tournament.name}
         action={
-          <DualKindEditor
-            zillaflashRow={tournament.zillaflash}
-            combiBoostRow={tournament.combi_boost}
-            zillaflashPutUrl={`/admin/users/${userId}/promo-visibility/zillaflash/tournament/${tournament.id}`}
-            zillaflashDeleteUrl={`/admin/users/${userId}/promo-visibility/zillaflash/tournament/${tournament.id}`}
-            combiBoostPutUrl={`/admin/users/${userId}/promo-visibility/combi_boost/tournament/${tournament.id}`}
-            combiBoostDeleteUrl={`/admin/users/${userId}/promo-visibility/combi_boost/tournament/${tournament.id}`}
+          <KindsEditor
+            userId={userId}
+            scopePath={`tournament/${tournament.id}`}
+            row={tournament}
             onError={onError}
             onSuccess={onSuccess}
           />
@@ -404,13 +399,10 @@ function MatchNode({
         </span>
       }
       action={
-        <DualKindEditor
-          zillaflashRow={match.zillaflash}
-          combiBoostRow={match.combi_boost}
-          zillaflashPutUrl={`/admin/users/${userId}/promo-visibility/zillaflash/match/${match.id}`}
-          zillaflashDeleteUrl={`/admin/users/${userId}/promo-visibility/zillaflash/match/${match.id}`}
-          combiBoostPutUrl={`/admin/users/${userId}/promo-visibility/combi_boost/match/${match.id}`}
-          combiBoostDeleteUrl={`/admin/users/${userId}/promo-visibility/combi_boost/match/${match.id}`}
+        <KindsEditor
+          userId={userId}
+          scopePath={`match/${match.id}`}
+          row={match}
           onError={onError}
           onSuccess={onSuccess}
         />
@@ -535,57 +527,41 @@ function KindEditor({
   );
 }
 
-// Two KindEditors side-by-side for rows that show both promos at the
-// same scope (sport / tournament / match).
-function DualKindEditor({
-  zillaflashRow,
-  combiBoostRow,
-  zillaflashPutUrl,
-  zillaflashDeleteUrl,
-  combiBoostPutUrl,
-  combiBoostDeleteUrl,
+// All promo-kind editors side-by-side for one scope row (sport /
+// tournament / match). URLs are derived from (userId, kind, scopePath)
+// so adding a kind is a one-line change to KINDS.
+function KindsEditor({
+  userId,
+  scopePath,
+  row,
   onError,
   onSuccess,
 }: {
-  zillaflashRow: PerKindRow;
-  combiBoostRow: PerKindRow;
-  zillaflashPutUrl: string;
-  zillaflashDeleteUrl: string;
-  combiBoostPutUrl: string;
-  combiBoostDeleteUrl: string;
+  userId: string;
+  scopePath: string;
+  row: KindRows;
   onError: (msg: string) => void;
   onSuccess: () => void;
 }) {
   return (
-    <div style={{ display: "inline-flex", gap: 16, alignItems: "flex-start" }}>
-      <KindEditor
-        label="ZillaFlash"
-        override={zillaflashRow.override}
-        inheritedVisible={
-          zillaflashRow.override ? null : zillaflashRow.effectiveVisible
-        }
-        inheritedSource={
-          zillaflashRow.override ? null : zillaflashRow.effectiveSource
-        }
-        putUrl={zillaflashPutUrl}
-        deleteUrl={zillaflashDeleteUrl}
-        onError={onError}
-        onSuccess={onSuccess}
-      />
-      <KindEditor
-        label="CombiBoost"
-        override={combiBoostRow.override}
-        inheritedVisible={
-          combiBoostRow.override ? null : combiBoostRow.effectiveVisible
-        }
-        inheritedSource={
-          combiBoostRow.override ? null : combiBoostRow.effectiveSource
-        }
-        putUrl={combiBoostPutUrl}
-        deleteUrl={combiBoostDeleteUrl}
-        onError={onError}
-        onSuccess={onSuccess}
-      />
+    <div style={{ display: "inline-flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
+      {KINDS.map(({ key, label }) => {
+        const r = row[key];
+        const url = `/admin/users/${userId}/promo-visibility/${key}/${scopePath}`;
+        return (
+          <KindEditor
+            key={key}
+            label={label}
+            override={r.override}
+            inheritedVisible={r.override ? null : r.effectiveVisible}
+            inheritedSource={r.override ? null : r.effectiveSource}
+            putUrl={url}
+            deleteUrl={url}
+            onError={onError}
+            onSuccess={onSuccess}
+          />
+        );
+      })}
     </div>
   );
 }

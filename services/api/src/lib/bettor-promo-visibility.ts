@@ -19,7 +19,7 @@ import { eq } from "drizzle-orm";
 import type { DbClient } from "@oddzilla/db";
 import { bettorPromoVisibilityConfig } from "@oddzilla/db";
 
-export type PromoKind = "zillaflash" | "combi_boost";
+export type PromoKind = "zillaflash" | "combi_boost" | "zillabuild";
 
 type TxHandle = Parameters<Parameters<DbClient["transaction"]>[0]>[0];
 
@@ -41,7 +41,8 @@ export interface PromoVisibilityCascade {
 export interface BettorPromoCascades {
   zillaflash: PromoVisibilityCascade;
   combi_boost: PromoVisibilityCascade;
-  empty: boolean; // true when BOTH cascades are empty — caller skips entirely
+  zillabuild: PromoVisibilityCascade;
+  empty: boolean; // true when ALL cascades are empty — caller skips entirely
 }
 
 function emptyCascade(): PromoVisibilityCascade {
@@ -57,6 +58,7 @@ function emptyCascade(): PromoVisibilityCascade {
 export const EMPTY_CASCADES: BettorPromoCascades = Object.freeze({
   zillaflash: emptyCascade(),
   combi_boost: emptyCascade(),
+  zillabuild: emptyCascade(),
   empty: true,
 }) as BettorPromoCascades;
 
@@ -85,9 +87,12 @@ export async function loadPromoVisibilityCascades(
   zillaflash.empty = true;
   const combi_boost = emptyCascade();
   combi_boost.empty = true;
+  const zillabuild = emptyCascade();
+  zillabuild.empty = true;
   const buckets: Record<PromoKind, PromoVisibilityCascade> = {
     zillaflash,
     combi_boost,
+    zillabuild,
   };
 
   for (const r of rows) {
@@ -115,7 +120,8 @@ export async function loadPromoVisibilityCascades(
   return {
     zillaflash,
     combi_boost,
-    empty: zillaflash.empty && combi_boost.empty,
+    zillabuild,
+    empty: zillaflash.empty && combi_boost.empty && zillabuild.empty,
   };
 }
 
