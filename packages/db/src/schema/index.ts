@@ -27,5 +27,6 @@ export * from "./bettor-promo-visibility.js";
 export * from "./live-chat.js";
 export * from "./support.js";
 export * from "./zillaflash.js";
+export * from "./zillabuild.js";
 export * from "./zillapass.js";
 export * from "../enums.js";

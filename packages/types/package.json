@@ -17,6 +17,7 @@
     "./networks": "./src/networks.ts",
     "./zillatips": "./src/zillatips.ts",
     "./zillafacts": "./src/zillafacts.ts",
+    "./zillabuild": "./src/zillabuild.ts",
     "./live-chat": "./src/live-chat.ts",
     "./support": "./src/support.ts"
   },

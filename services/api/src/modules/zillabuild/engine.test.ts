@@ -1,0 +1,115 @@
+// Unit tests for the pure ZillaBuild card-assembly helpers. The
+// OBB/DB-backed `getZillaBuildForMatch` isn't covered here (it needs a live
+// gRPC + Postgres); these lock down the deterministic combinatorics.
+//
+// Run with: tsx --test src/modules/zillabuild/engine.test.ts
+
+import { describe, it } from "node:test";
+import { strict as assert } from "node:assert";
+import {
+  legSetKey,
+  randInt,
+  shuffled,
+  pickCandidateLegs,
+  type EligibleMarket,
+  type StoredLeg,
+} from "./engine.js";
+
+function mkMarket(id: string, outcomes: string[]): EligibleMarket {
+  return {
+    id,
+    providerMarketId: Number(id),
+    specifiers: {},
+    variant: "",
+    mapNumber: 1,
+    marketLabel: "",
+    outcomes: outcomes.map((o) => ({ outcomeId: o, odds: "2.00" })),
+  };
+}
+
+describe("legSetKey", () => {
+  it("is order-independent across legs", () => {
+    const a: StoredLeg[] = [
+      { marketId: "1", outcomeId: "x" },
+      { marketId: "2", outcomeId: "y" },
+    ];
+    const b: StoredLeg[] = [
+      { marketId: "2", outcomeId: "y" },
+      { marketId: "1", outcomeId: "x" },
+    ];
+    assert.equal(legSetKey(a), legSetKey(b));
+  });
+
+  it("distinguishes a different outcome on the same market", () => {
+    assert.notEqual(
+      legSetKey([{ marketId: "1", outcomeId: "x" }]),
+      legSetKey([{ marketId: "1", outcomeId: "y" }]),
+    );
+  });
+});
+
+describe("randInt", () => {
+  it("returns lo when the range is degenerate", () => {
+    assert.equal(randInt(3, 3, () => 0.99), 3);
+    assert.equal(randInt(5, 2, () => 0.99), 5);
+  });
+
+  it("spans the inclusive range at the rng extremes", () => {
+    assert.equal(randInt(2, 4, () => 0), 2);
+    assert.equal(randInt(2, 4, () => 0.999), 4);
+  });
+});
+
+describe("shuffled", () => {
+  it("returns a permutation and does not mutate the input", () => {
+    const input = [1, 2, 3, 4, 5];
+    const out = shuffled(input, () => 0.42);
+    assert.deepEqual(input, [1, 2, 3, 4, 5]); // input untouched
+    assert.deepEqual(
+      [...out].sort((a, b) => a - b),
+      [1, 2, 3, 4, 5],
+    ); // same multiset
+    assert.equal(out.length, 5);
+  });
+});
+
+describe("pickCandidateLegs", () => {
+  const markets = [
+    mkMarket("1", ["a"]),
+    mkMarket("2", ["b"]),
+    mkMarket("3", ["c"]),
+    mkMarket("4", ["d"]),
+  ];
+
+  it("returns null when there are fewer eligible markets than minLegs", () => {
+    assert.equal(
+      pickCandidateLegs([mkMarket("1", ["a"])], { minLegs: 2, maxLegs: 4 }),
+      null,
+    );
+  });
+
+  it("picks between minLegs and maxLegs distinct markets", () => {
+    for (const r of [0, 0.3, 0.6, 0.99]) {
+      const legs = pickCandidateLegs(markets, { minLegs: 2, maxLegs: 4 }, () => r);
+      assert.ok(legs, `expected legs for rng=${r}`);
+      assert.ok(legs!.length >= 2 && legs!.length <= 4);
+      const marketIds = new Set(legs!.map((l) => l.marketId));
+      assert.equal(marketIds.size, legs!.length); // one leg per distinct market
+    }
+  });
+
+  it("caps the leg count at the number of available markets", () => {
+    const legs = pickCandidateLegs(markets.slice(0, 2), { minLegs: 2, maxLegs: 4 }, () => 0.99);
+    assert.ok(legs);
+    assert.equal(legs!.length, 2);
+  });
+
+  it("only emits outcomes that belong to the chosen market", () => {
+    const legs = pickCandidateLegs(markets, { minLegs: 4, maxLegs: 4 }, () => 0)!;
+    assert.equal(legs.length, 4);
+    for (const leg of legs) {
+      const m = markets.find((x) => x.id === leg.marketId)!;
+      assert.ok(m.outcomes.some((o) => o.outcomeId === leg.outcomeId));
+    }
+  });
+});

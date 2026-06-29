@@ -13,6 +13,7 @@ export const dynamic = "force-dynamic";
 interface SportsResponse {
   globalZillaflash: Override | null;
   globalCombiBoost: Override | null;
+  globalZillabuild: Override | null;
   entries: SportRow[];
 }
 
@@ -67,10 +68,11 @@ export default async function PromoVisibilityPage({
           maxWidth: 760,
         }}
       >
-        Per-bettor visibility for ZillaFlash (boosted-odds flash cards) and
-        CombiBoost (combo-bet multiplier). Default is shown — toggling a row
-        OFF hides the promo for this bettor at that scope (and everything
-        below, unless a child row overrides). Cascade: <code>match</code>{" "}
+        Per-bettor visibility for ZillaFlash (boosted-odds flash cards),
+        CombiBoost (combo-bet multiplier), and ZillaBuild (pre-built
+        BetBuilder cards). Default is shown — toggling a row OFF hides the
+        promo for this bettor at that scope (and everything below, unless a
+        child row overrides). Cascade: <code>match</code>{" "}
         &rarr; <code>tournament</code> &rarr; <code>sport</code> &rarr;{" "}
         <code>global</code> (first explicit row wins). Placement re-checks
         on the server — even a stale client can&apos;t claim a hidden promo.
@@ -79,6 +81,7 @@ export default async function PromoVisibilityPage({
         userId={id}
         globalZillaflash={data.globalZillaflash}
         globalCombiBoost={data.globalCombiBoost}
+        globalZillabuild={data.globalZillabuild}
         sports={data.entries}
       />
 

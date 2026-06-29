@@ -120,6 +120,12 @@ const SECTIONS: Section[] = [
         matchPrefix: "/admin/combi-boost",
       },
       {
+        href: "/admin/zillabuild",
+        label: "ZillaBuild",
+        Icon: I.Ticket,
+        matchPrefix: "/admin/zillabuild",
+      },
+      {
         href: "/admin/zillapass",
         label: "ZillaPass",
         Icon: I.Sparkles,
