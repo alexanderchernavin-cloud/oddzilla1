@@ -24,6 +24,8 @@ import {
   marketOutcomes,
   marketDescriptions,
   outcomeDescriptions,
+  competitorProfiles,
+  playerProfiles,
   zillabuildConfig,
   zillabuildCards,
 } from "@oddzilla/db";
@@ -340,10 +342,12 @@ async function buildForMatch(
     outcomesByMarket.set(mid, list);
   }
 
-  // 4. Labels. One pair of description lookups keyed by (pmi, variant) +
-  //    (pmi, variant, outcomeId) in English. profiles are skipped — the
-  //    curated per-map market set (winners / totals / handicaps) uses
-  //    positional / over-under outcome ids, not player/competitor URNs.
+  // 4. Labels (English). Resolves market name + outcome labels via
+  //    market_descriptions / outcome_descriptions, AND resolves
+  //    od:player:N / od:competitor:N URNs — appearing as outcome ids
+  //    (player-prop outcomes) or as {player}/{competitor} specifier
+  //    values — to human names via the profile cache. Without this a
+  //    player-prop card shows the raw "od:player:45" URN.
   await hydrateLabels(app, byMap, outcomesByMarket, args.homeTeam, args.awayTeam);
 
   // Attach each market's priced outcomes, then drop markets with none and
@@ -582,7 +586,11 @@ function draftsToCards(
 // ── Label hydration ───────────────────────────────────────────────────
 // Fills EligibleMarket.marketLabel and EligibleOutcome.label for every
 // market/outcome in the map groups, using market_descriptions /
-// outcome_descriptions (English) + the catalog's naming helpers.
+// outcome_descriptions (English) + the catalog's naming helpers. Resolves
+// od:player:N / od:competitor:N URNs (player/team-prop outcome ids and
+// {player}/{competitor} specifier values) to human names via the profile
+// cache — mirrors the catalog match-detail render so a player-prop card
+// shows "s1mple" instead of the raw "od:player:45".
 
 async function hydrateLabels(
   app: FastifyInstance,
@@ -595,7 +603,22 @@ async function hydrateLabels(
   const pmis = Array.from(new Set(allMarkets.map((m) => m.providerMarketId)));
   if (pmis.length === 0) return;
 
-  const [mDescs, oDescs] = await Promise.all([
+  // Harvest URN-style outcome ids + specifier values so the profile join
+  // below can swap them for names.
+  const competitorUrns = new Set<string>();
+  const playerUrns = new Set<string>();
+  const harvest = (raw: string) => {
+    if (raw.startsWith("od:competitor:")) competitorUrns.add(raw);
+    else if (raw.startsWith("od:player:")) playerUrns.add(raw);
+  };
+  for (const m of allMarkets) {
+    for (const v of Object.values(m.specifiers)) {
+      if (typeof v === "string" && v.startsWith("od:")) harvest(v);
+    }
+    for (const oc of outcomesByMarket.get(m.id) ?? []) harvest(oc.outcomeId);
+  }
+
+  const [mDescs, oDescs, cps, pps] = await Promise.all([
     app.db
       .select({
         providerMarketId: marketDescriptions.providerMarketId,
@@ -623,7 +646,25 @@ async function hydrateLabels(
           eq(outcomeDescriptions.language, "en"),
         ),
       ),
+    competitorUrns.size > 0
+      ? app.db
+          .select({ urn: competitorProfiles.urn, name: competitorProfiles.name })
+          .from(competitorProfiles)
+          .where(inArray(competitorProfiles.urn, Array.from(competitorUrns)))
+      : Promise.resolve([]),
+    playerUrns.size > 0
+      ? app.db
+          .select({ urn: playerProfiles.urn, name: playerProfiles.name })
+          .from(playerProfiles)
+          .where(inArray(playerProfiles.urn, Array.from(playerUrns)))
+      : Promise.resolve([]),
   ]);
+
+  const competitors = new Map<string, string>();
+  for (const c of cps) competitors.set(c.urn, c.name);
+  const players = new Map<string, string>();
+  for (const p of pps) players.set(p.urn, p.name);
+  const profiles = { competitors, players };
 
   const mTemplate = new Map<string, string>();
   for (const d of mDescs) mTemplate.set(`${d.providerMarketId}:${d.variant}`, d.nameTemplate);
@@ -634,12 +675,13 @@ async function hydrateLabels(
   for (const m of allMarkets) {
     const tmpl = mTemplate.get(`${m.providerMarketId}:${m.variant}`);
     m.marketLabel = tmpl
-      ? substituteTemplate(tmpl, m.specifiers, { homeTeam, awayTeam }, undefined, "en")
+      ? substituteTemplate(tmpl, m.specifiers, { homeTeam, awayTeam }, profiles, "en")
       : `Market #${m.providerMarketId}`;
     const outcomes = outcomesByMarket.get(m.id) ?? [];
     for (const oc of outcomes) {
-      const otmpl = oTemplate.get(`${m.providerMarketId}:${m.variant}:${oc.outcomeId}`) ?? oc.outcomeId;
-      oc.label = renderOutcomeLabel(otmpl, m.specifiers, homeTeam, awayTeam, undefined, "en");
+      const otmpl =
+        oTemplate.get(`${m.providerMarketId}:${m.variant}:${oc.outcomeId}`) ?? oc.outcomeId;
+      oc.label = renderOutcomeLabel(otmpl, m.specifiers, homeTeam, awayTeam, profiles, "en");
     }
   }
 }
