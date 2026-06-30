@@ -95,6 +95,12 @@ export function shuffled<T>(items: ReadonlyArray<T>, rng: () => number = Math.ra
  * markets, one random active outcome each. Returns null when the map
  * can't satisfy minLegs (the "show-what's-buildable" path leaves the slot
  * empty). Dedup against already-used leg sets is the caller's job.
+ *
+ * No two legs may come from the same market family (same conflictKey) — e.g.
+ * the two-way and three-way variants of "Map 1 winner", or two lines of the
+ * same total. Those describe the same underlying event and OBB rejects the
+ * combination as invalid; picking distinct families keeps cards sensible and
+ * avoids burning SessionCreate retries on combos that can never price.
  */
 export function pickCandidateLegs(
   marketsForMap: ReadonlyArray<EligibleMarket>,
@@ -104,14 +110,44 @@ export function pickCandidateLegs(
   const maxL = Math.min(cfg.maxLegs, marketsForMap.length);
   if (maxL < cfg.minLegs) return null;
   const count = randInt(cfg.minLegs, maxL, rng);
-  const chosen = shuffled(marketsForMap, rng).slice(0, count);
-  const legs: StoredLeg[] = [];
-  for (const m of chosen) {
-    if (m.outcomes.length === 0) return null;
-    const oc = m.outcomes[Math.floor(rng() * m.outcomes.length)]!;
-    legs.push({ marketId: m.id, outcomeId: oc.outcomeId });
+  // Greedily take markets with distinct conflict keys until we have `count`
+  // (or the pool runs dry). Scans the full shuffled list so a same-family
+  // collision early on doesn't starve the pick.
+  const chosen: EligibleMarket[] = [];
+  const usedKeys = new Set<string>();
+  for (const m of shuffled(marketsForMap, rng)) {
+    if (chosen.length >= count) break;
+    if (m.outcomes.length === 0) continue;
+    const key = conflictKey(m);
+    if (usedKeys.has(key)) continue;
+    usedKeys.add(key);
+    chosen.push(m);
   }
-  return legs;
+  if (chosen.length < cfg.minLegs) return null;
+  return chosen.map((m) => {
+    const oc = m.outcomes[Math.floor(rng() * m.outcomes.length)]!;
+    return { marketId: m.id, outcomeId: oc.outcomeId };
+  });
+}
+
+/**
+ * Identity of a market's "family" for same-event conflict detection:
+ * provider_market_id + its subject specifiers (the player / competitor /
+ * side a prop is about). Two markets with the same key are the same bet
+ * expressed differently — different `variant` (way:two vs way:three) or a
+ * different line/threshold — and must never share a card. Distinct subjects
+ * (e.g. two different players' kill props, same provider_market_id) get
+ * distinct keys and CAN be combined.
+ */
+export function conflictKey(m: {
+  providerMarketId: number;
+  specifiers: Record<string, string>;
+}): string {
+  const s = m.specifiers;
+  const subject = [s.entity, s.player, s.competitor, s.competitor1, s.competitor2, s.side]
+    .filter((v): v is string => typeof v === "string" && v.length > 0)
+    .join(",");
+  return `${m.providerMarketId}|${subject}`;
 }
 
 // ── Internal working types ────────────────────────────────────────────
