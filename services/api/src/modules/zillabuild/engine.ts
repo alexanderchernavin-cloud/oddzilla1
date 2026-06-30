@@ -159,6 +159,20 @@ async function loadConfig(app: FastifyInstance): Promise<ZillaBuildConfigLive> {
   };
 }
 
+// A label is card-ready only when it fully resolved: it has a real
+// market-name template (not the "Market #N" fallback), no leftover
+// od:<kind>:N URN (a missing competitor/player profile), and no leftover
+// {placeholder} (a missing specifier). Used to gate which markets +
+// outcomes ZillaBuild will surface — the regular markets list tolerates
+// these gaps, but a curated promo card shouldn't show them.
+export function isCleanLabel(label: string | undefined): boolean {
+  if (!label) return false;
+  if (label.startsWith("Market #")) return false;
+  if (/od:(player|competitor|match|tournament):/i.test(label)) return false;
+  if (/\{[a-z0-9_]+\}/i.test(label)) return false;
+  return true;
+}
+
 // ── Odds formatting (mirror the catalog's ≥2dp / trim-to-4dp convention) ─
 function fmtOdds(v: string | null): string {
   const n = Number(v);
@@ -350,14 +364,24 @@ async function buildForMatch(
   //    player-prop card shows the raw "od:player:45" URN.
   await hydrateLabels(app, byMap, outcomesByMarket, args.homeTeam, args.awayTeam);
 
-  // Attach each market's priced outcomes, then drop markets with none and
-  // maps left empty (the "show-what's-buildable" path — a sparse map just
-  // yields fewer cards).
+  // Attach each market's priced outcomes, dropping anything that can't
+  // render a clean label: a market with no description template (renders
+  // "Market #107"), a market name with an unresolved od:player:N /
+  // {placeholder}, or an outcome whose own label didn't resolve (a raw
+  // od:player:N whose profile is missing). A promo card must read cleanly
+  // — "show-what's-buildable" means fewer cards, never broken-looking ones.
+  // Then drop maps left empty.
   for (const [mapNo, list] of byMap) {
     const usable: EligibleMarket[] = [];
     for (const m of list) {
-      m.outcomes = outcomesByMarket.get(m.id) ?? [];
-      if (m.outcomes.length > 0) usable.push(m);
+      if (!isCleanLabel(m.marketLabel)) continue;
+      const clean = (outcomesByMarket.get(m.id) ?? []).filter((o) =>
+        isCleanLabel(o.label ?? o.outcomeId),
+      );
+      if (clean.length === 0) continue;
+      m.outcomes = clean;
+      outcomesByMarket.set(m.id, clean);
+      usable.push(m);
     }
     if (usable.length === 0) byMap.delete(mapNo);
     else byMap.set(mapNo, usable);

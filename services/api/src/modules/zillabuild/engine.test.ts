@@ -11,6 +11,7 @@ import {
   randInt,
   shuffled,
   pickCandidateLegs,
+  isCleanLabel,
   type EligibleMarket,
   type StoredLeg,
 } from "./engine.js";
@@ -70,6 +71,33 @@ describe("shuffled", () => {
       [1, 2, 3, 4, 5],
     ); // same multiset
     assert.equal(out.length, 5);
+  });
+});
+
+describe("isCleanLabel", () => {
+  it("accepts fully-resolved labels", () => {
+    for (const ok of [
+      "Map 1 winner",
+      "Ninjas in Pyjamas",
+      "Under",
+      "xiELO Total kills 14.5 - map 1",
+      "Pistol Round 1 winner - map 1",
+    ]) {
+      assert.equal(isCleanLabel(ok), true, ok);
+    }
+  });
+
+  it("rejects the no-template fallback, unresolved URNs, and leftover placeholders", () => {
+    for (const bad of [
+      "Market #107",
+      "od:player:18786 Total kills 15.5 - map 1",
+      "OD:PLAYER:18786 TOTAL KILLS",
+      "od:competitor:42",
+      "Total kills {threshold} - map {map}",
+      undefined,
+    ]) {
+      assert.equal(isCleanLabel(bad), false, String(bad));
+    }
   });
 });
 
