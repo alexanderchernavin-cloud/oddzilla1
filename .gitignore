@@ -55,3 +55,10 @@ logs/
 # Local scratch / one-off harnesses (e.g. .scratch/pg-smoke for the
 # embedded-Postgres placement→settlement smoke run).
 .scratch/
+
+# Team-logo library (~2.5 GB) for the /logos browser. In production Caddy
+# serves it from a host-mounted dir (/srv/oddzilla-logos), synced via rsync
+# — never committed (would bloat git history + every web image). For local
+# `pnpm dev`, regenerate this dir from the source collection with the
+# Logos project's sync-to-web.py.
+/apps/web/public/logos/

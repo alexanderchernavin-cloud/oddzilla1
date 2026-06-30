@@ -33,7 +33,7 @@ const REQUEST_ID_HEADER = "x-request-id";
 // can't poison logs with newlines / control characters / huge payloads.
 const REQUEST_ID_SHAPE = /^[A-Za-z0-9_-]{1,128}$/;
 
-const PROTECTED_PREFIXES = ["/account", "/wallet", "/bets", "/admin"];
+const PROTECTED_PREFIXES = ["/account", "/wallet", "/bets", "/admin", "/logos"];
 
 function generateNonce(): string {
   // 16 bytes of entropy as base64. Edge runtime exposes

@@ -219,6 +219,11 @@ services:
       # bytes en route to user devices. Bootstrap the directory once
       # via infra/hetzner/oddzilla-apk-init.sh.
       - /srv/oddzilla-apk:/srv/oddzilla-apk:ro
+      # Team-logo library served at /logos/* (see Caddyfile). ~2.5 GB image
+      # tree kept out of the web image + git; synced with rsync to the host
+      # dir. Read-only so a Caddy RCE can't tamper with served assets.
+      # Bootstrap once via infra/hetzner/oddzilla-logos-init.sh.
+      - /srv/oddzilla-logos:/srv/oddzilla-logos:ro
     environment:
       FRONTEND_HOST: ${FRONTEND_HOST:-localhost}
       ADMIN_HOST: ${ADMIN_HOST:-admin.localhost}
