@@ -12,6 +12,7 @@ import {
   shuffled,
   pickCandidateLegs,
   isCleanLabel,
+  conflictKey,
   type EligibleMarket,
   type StoredLeg,
 } from "./engine.js";
@@ -24,6 +25,23 @@ function mkMarket(id: string, outcomes: string[]): EligibleMarket {
     variant: "",
     mapNumber: 1,
     marketLabel: "",
+    outcomes: outcomes.map((o) => ({ outcomeId: o, odds: "2.00" })),
+  };
+}
+
+function mk(
+  id: string,
+  providerMarketId: number,
+  specifiers: Record<string, string>,
+  outcomes: string[],
+): EligibleMarket {
+  return {
+    id,
+    providerMarketId,
+    specifiers,
+    variant: specifiers.variant ?? "",
+    mapNumber: 1,
+    marketLabel: "x",
     outcomes: outcomes.map((o) => ({ outcomeId: o, odds: "2.00" })),
   };
 }
@@ -97,6 +115,46 @@ describe("isCleanLabel", () => {
       undefined,
     ]) {
       assert.equal(isCleanLabel(bad), false, String(bad));
+    }
+  });
+});
+
+describe("conflictKey", () => {
+  it("collapses variant/line differences of the same market", () => {
+    // Map-1-winner two-way vs three-way — same pmi, no subject → same family.
+    assert.equal(
+      conflictKey({ providerMarketId: 6, specifiers: { map: "1", variant: "way:two", way: "two" } }),
+      conflictKey({ providerMarketId: 6, specifiers: { map: "1", variant: "way:three", way: "three" } }),
+    );
+  });
+
+  it("keeps different players' props (same pmi, different subject) distinct", () => {
+    assert.notEqual(
+      conflictKey({ providerMarketId: 169, specifiers: { entity: "od:player:1", threshold: "14.5" } }),
+      conflictKey({ providerMarketId: 169, specifiers: { entity: "od:player:2", threshold: "14.5" } }),
+    );
+  });
+});
+
+describe("pickCandidateLegs — same-family exclusion", () => {
+  // Two variants of map-1-winner (same family) + two distinct markets.
+  const markets = [
+    mk("a", 6, { map: "1", variant: "way:three", way: "three" }, ["3"]),
+    mk("b", 6, { map: "1", variant: "way:two", way: "two" }, ["1"]),
+    mk("c", 28, { map: "1" }, ["4"]),
+    mk("d", 169, { map: "1", entity: "od:player:1" }, ["4"]),
+  ];
+
+  it("never puts two legs from the same market family on one card", () => {
+    for (const r of [0, 0.25, 0.5, 0.75, 0.99]) {
+      const legs = pickCandidateLegs(markets, { minLegs: 2, maxLegs: 4 }, () => r);
+      assert.ok(legs, `expected legs at rng=${r}`);
+      const fromWinnerFamily = legs!.filter(
+        (l) => l.marketId === "a" || l.marketId === "b",
+      ).length;
+      assert.ok(fromWinnerFamily <= 1, `picked ${fromWinnerFamily} winner-variants at rng=${r}`);
+      const keys = new Set(legs!.map((l) => l.marketId));
+      assert.equal(keys.size, legs!.length); // still distinct markets
     }
   });
 });
