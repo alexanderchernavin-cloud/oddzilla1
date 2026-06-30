@@ -3,10 +3,11 @@
 import { useEffect, useMemo, useState } from "react";
 
 // ── Manifest shape (emitted by sync-to-web.py) ──────────────────────────────
-type Team = { n: string; s: string }; // name, url-encoded path under /logos/
-type League = { name: string; teams: Team[] };
-type Category = { name: string; count: number; leagues: League[] };
-type Sport = { name: string; count: number; categories: Category[] };
+// n=name, s/logo/flag/icon = url-encoded paths under /logos/
+type Team = { n: string; s: string };
+type League = { name: string; teams: Team[]; logo?: string };
+type Category = { name: string; count: number; leagues: League[]; flag?: string };
+type Sport = { name: string; count: number; categories: Category[]; icon?: string };
 type Manifest = { totalTeams: number; sports: Sport[] };
 
 const ALL = "__all__"; // sentinel for the "All Leagues" selection
@@ -51,11 +52,14 @@ export function LogosBrowser() {
     const teams = leagues.flatMap((l) => l.teams);
     const q = query.trim().toLowerCase();
     const filtered = q ? teams.filter((t) => t.n.toLowerCase().includes(q)) : teams;
+    const single = sel.league === ALL ? null : leagues[0];
     return {
       title:
         sel.league === ALL
           ? `${sel.sport} · ${sel.category} · All Leagues`
           : `${sel.sport} · ${sel.category} · ${sel.league}`,
+      img: single?.logo ?? cat.flag, // league badge, or country flag for "All Leagues"
+      round: !single, // flags render with rounded corners, badges square
       total: teams.length,
       teams: filtered,
     };
@@ -97,6 +101,7 @@ export function LogosBrowser() {
                 hasChildren
                 label={sport.name}
                 count={sport.count}
+                img={sport.icon}
                 onClick={() => setExpSports((s) => toggle(s, sport.name))}
               />
               {sportOpen &&
@@ -111,6 +116,8 @@ export function LogosBrowser() {
                         hasChildren
                         label={cat.name}
                         count={cat.count}
+                        img={cat.flag}
+                        round
                         onClick={() => setExpCats((s) => toggle(s, catKey))}
                       />
                       {catOpen && (
@@ -139,6 +146,7 @@ export function LogosBrowser() {
                               depth={2}
                               label={lg.name}
                               count={lg.teams.length}
+                              img={lg.logo}
                               active={
                                 sel?.sport === sport.name &&
                                 sel?.category === cat.name &&
@@ -182,12 +190,31 @@ export function LogosBrowser() {
                 flexWrap: "wrap",
               }}
             >
-              <div>
-                <div style={{ fontSize: 15, fontWeight: 600 }}>{view.title}</div>
-                <div style={{ fontSize: 12.5, color: "var(--fg-muted)", marginTop: 2 }}>
-                  {view.teams.length === view.total
-                    ? `${view.total} teams`
-                    : `${view.teams.length} of ${view.total} teams`}
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                {view.img && (
+                  <img
+                    src={`/logos/${view.img}`}
+                    alt=""
+                    style={{
+                      width: 28,
+                      height: 28,
+                      objectFit: "contain",
+                      borderRadius: view.round ? 4 : 0,
+                      border: view.round ? "1px solid var(--hairline)" : "none",
+                      flex: "0 0 auto",
+                    }}
+                    onError={(e) => {
+                      (e.currentTarget as HTMLImageElement).style.display = "none";
+                    }}
+                  />
+                )}
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 600 }}>{view.title}</div>
+                  <div style={{ fontSize: 12.5, color: "var(--fg-muted)", marginTop: 2 }}>
+                    {view.teams.length === view.total
+                      ? `${view.total} teams`
+                      : `${view.teams.length} of ${view.total} teams`}
+                  </div>
                 </div>
               </div>
               <input
@@ -269,6 +296,8 @@ function Row({
   hasChildren,
   active,
   emphasis,
+  img,
+  round,
   onClick,
 }: {
   depth: number;
@@ -278,8 +307,11 @@ function Row({
   hasChildren?: boolean;
   active?: boolean;
   emphasis?: boolean;
+  img?: string; // url-encoded path under /logos/
+  round?: boolean; // flags get rounded corners + border; icons/badges don't
   onClick: () => void;
 }) {
+  const imgSize = depth === 0 ? 18 : 16;
   return (
     <button
       onClick={onClick}
@@ -310,6 +342,27 @@ function Row({
       >
         {hasChildren ? (open ? "▾" : "▸") : ""}
       </span>
+      {img ? (
+        <img
+          src={`/logos/${img}`}
+          alt=""
+          width={imgSize}
+          height={imgSize}
+          style={{
+            width: imgSize,
+            height: imgSize,
+            flex: `0 0 ${imgSize}px`,
+            objectFit: "contain",
+            borderRadius: round ? 3 : 0,
+            border: round ? "1px solid var(--hairline)" : "none",
+          }}
+          onError={(e) => {
+            (e.currentTarget as HTMLImageElement).style.visibility = "hidden";
+          }}
+        />
+      ) : (
+        <span style={{ flex: `0 0 ${imgSize}px` }} />
+      )}
       <span
         style={{
           flex: 1,
