@@ -1,12 +1,8 @@
-import { getSessionUser } from "@/lib/auth";
 import { LogosBrowser } from "./logos-browser";
 
-// Authenticated team-logo browser. The (main) layout + middleware already
-// redirect logged-out visitors to /login; the check below is defensive.
-export default async function LogosPage() {
-  const user = await getSessionUser();
-  if (!user) return null;
-
+// Public team-logo browser — open to logged-out visitors too (not in the
+// middleware PROTECTED_PREFIXES). Logo assets are served publicly by Caddy.
+export default function LogosPage() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div>
