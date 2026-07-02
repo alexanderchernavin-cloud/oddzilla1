@@ -389,7 +389,7 @@
   },
   "cookieConsent": {
     "title": "Cookies na webu Oddzilla",
-    "body": "Používáme nezbytně nutné cookies, které vás udrží přihlášené, zabezpečí váš účet a zapamatují si vaše předvolby. S vaším souhlasem načítáme také vložený obsah třetích stran (živé přenosy a widgety se statistikami zápasů), který může ukládat vlastní cookies, a sbíráme vlastní analytická data o používání webu.",
+    "body": "Používáme nezbytně nutné cookies, které vás udrží přihlášené, zabezpečí váš účet a zapamatují si vaše předvolby. Načítáme také vložený obsah třetích stran (živé přenosy a widgety se statistikami zápasů), který může ukládat vlastní cookies, a sbíráme vlastní analytická data o používání webu.",
     "learnMore": "Zásady ochrany soukromí a cookies",
     "acceptAll": "Přijmout vše",
     "necessaryOnly": "Pouze nezbytné",

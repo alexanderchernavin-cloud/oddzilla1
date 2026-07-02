@@ -389,7 +389,7 @@
   },
   "cookieConsent": {
     "title": "Cookies on Oddzilla",
-    "body": "We use strictly necessary cookies to keep you signed in, secure your account, and remember your preferences. With your consent, we also load embedded third-party content (live streams and statistics widgets) that can set its own cookies, and collect first-party analytics about how the site is used.",
+    "body": "We use strictly necessary cookies to keep you signed in, secure your account, and remember your preferences. We also load embedded third-party content (live streams and statistics widgets) that can set its own cookies, and collect first-party analytics about how the site is used.",
     "learnMore": "Privacy & Cookies Policy",
     "acceptAll": "Accept all",
     "necessaryOnly": "Necessary only",
