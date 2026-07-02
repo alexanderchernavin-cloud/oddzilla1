@@ -28,6 +28,8 @@ import {
   competitorProfiles,
   playerProfiles,
   feMarketDisplayOrder,
+  feMarketGroups,
+  isCustomScope,
   combiBoostConfig,
 } from "@oddzilla/db";
 import { NotFoundError } from "../../lib/errors.js";
@@ -1128,12 +1130,14 @@ export default async function catalogRoutes(app: FastifyInstance) {
         });
     }
 
-    // Three independent reads run together so the match-detail page (SSR'd
+    // Four independent reads run together so the match-detail page (SSR'd
     // per navigation across 3 replicas) doesn't pay serial round trips:
     //   • the markets + outcomes themselves
     //   • the per-bettor odds-adjustment cascade (EMPTY_CASCADE for anonymous)
     //   • the per-scope admin market ordering for this sport (consumed near
     //     the end of the handler; only needs match.sportId, known already)
+    //   • the tab (group) config for this sport — custom curated groups +
+    //     admin-set tab order (migration 0083)
     //
     // Markets note: include in-play-suspended markets too — between
     // possessions / free throws / mid-round Oddin briefly flips the whole
@@ -1147,7 +1151,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
     //
     // market_descriptions is joined later (per distinct market id) to expand
     // {specifier} placeholders; missing ones fall back to "Market #N".
-    const [rows, cascade, orderRows] = await Promise.all([
+    const [rows, cascade, orderRows, groupConfigRows] = await Promise.all([
       app.db
         .select({
           marketId: markets.id,
@@ -1181,6 +1185,14 @@ export default async function catalogRoutes(app: FastifyInstance) {
         })
         .from(feMarketDisplayOrder)
         .where(eq(feMarketDisplayOrder.sportId, match.sportId)),
+      app.db
+        .select({
+          scope: feMarketGroups.scope,
+          label: feMarketGroups.label,
+          displayOrder: feMarketGroups.displayOrder,
+        })
+        .from(feMarketGroups)
+        .where(eq(feMarketGroups.sportId, match.sportId)),
     ]);
     // Per-bettor adjustment for this match. Used by the full markets render
     // path below and the related-tab helpers downstream.
@@ -1436,7 +1448,9 @@ export default async function catalogRoutes(app: FastifyInstance) {
       g.markets.push(m);
       scopeMap.set(m.scope.id, g);
     }
-    const groups = Array.from(scopeMap.values()).sort((a, b) => a.order - b.order);
+    // Natural (Match / Map N) groups; curated groups (Top + custom) are
+    // appended below and the whole set is sorted once at the end.
+    const groups = Array.from(scopeMap.values());
 
     // Per-scope admin ordering (loaded in the parallel batch above). Scope
     // values live directly in fe_market_display_order and are addressed the
@@ -1480,25 +1494,26 @@ export default async function catalogRoutes(app: FastifyInstance) {
       applySort(orderMap, g.markets);
     }
 
-    // Synthetic "Top" group — markets the admin explicitly curated for
-    // this sport, regardless of their actual scope. We pick at most one
-    // representative market row per provider_market_id (preferring the
-    // match-scope copy if it exists, falling back to the lowest-id map
-    // copy) so the Top tab doesn't double up on totals/handicaps that
-    // exist for both Match and Map 1. Insertion order matches the admin
-    // configuration.
-    const topOrder = orderByScope.get("top");
-    if (topOrder && topOrder.size > 0) {
-      const topGroup = {
-        id: "top",
-        label: "Top",
-        order: -1, // render before Match in the scope-tabs strip
-        markets: [] as MarketRow[],
-      };
-      const topIds = Array.from(topOrder.entries()).sort(
+    // Synthetic curated groups — markets the admin explicitly listed for
+    // this sport, regardless of their actual scope. Two kinds share the
+    // shape: the built-in "Top" tab and admin-created custom groups
+    // (migration 0083). We pick at most one representative market row per
+    // provider_market_id (preferring the match-scope copy if it exists,
+    // falling back to the lowest-order map copy) so a curated tab doesn't
+    // double up on totals/handicaps that exist for both Match and Map 1.
+    // Insertion order matches the admin configuration.
+    function buildCuratedGroup(
+      id: string,
+      label: string,
+      order: number,
+    ): { id: string; label: string; order: number; markets: MarketRow[] } | null {
+      const curated = orderByScope.get(id);
+      if (!curated || curated.size === 0) return null;
+      const group = { id, label, order, markets: [] as MarketRow[] };
+      const curatedIds = Array.from(curated.entries()).sort(
         (a, b) => a[1] - b[1],
       );
-      for (const [providerMarketId] of topIds) {
+      for (const [providerMarketId] of curatedIds) {
         const candidates = marketList.filter(
           (m) => m.providerMarketId === providerMarketId,
         );
@@ -1507,10 +1522,48 @@ export default async function catalogRoutes(app: FastifyInstance) {
         const pick =
           matchCopy ??
           candidates.sort((a, b) => a.scope.order - b.scope.order)[0];
-        if (pick) topGroup.markets.push(pick);
+        if (pick) group.markets.push(pick);
       }
-      if (topGroup.markets.length > 0) groups.unshift(topGroup);
+      return group.markets.length > 0 ? group : null;
     }
+
+    // order=-1 renders Top before Match when no admin tab order is set.
+    const topGroup = buildCuratedGroup("top", "Top", -1);
+    if (topGroup) groups.push(topGroup);
+
+    // Custom groups carry their operator-authored label verbatim — the
+    // storefront's scopeLabel() falls through to `label` for ids it
+    // doesn't recognise, so no client change is needed per group.
+    for (const cfg of groupConfigRows) {
+      if (!isCustomScope(cfg.scope)) continue;
+      const custom = buildCuratedGroup(
+        cfg.scope,
+        cfg.label ?? "Custom",
+        cfg.displayOrder,
+      );
+      if (custom) groups.push(custom);
+    }
+
+    // Tab order: groups with a fe_market_groups row sort first by the
+    // admin-set display_order; the rest keep the default order (top=-1,
+    // match=0, map_N=N). A sport with zero config rows behaves exactly
+    // as before migration 0083.
+    const groupOrderConfig = new Map(
+      groupConfigRows.map((r) => [r.scope as string, r.displayOrder]),
+    );
+    groups.sort((a, b) => {
+      const ca = groupOrderConfig.get(a.id);
+      const cb = groupOrderConfig.get(b.id);
+      if (ca != null && cb != null) return ca - cb || a.order - b.order;
+      if (ca != null) return -1;
+      if (cb != null) return 1;
+      return a.order - b.order;
+    });
+    // Re-stamp `order` with the final render position so the wire value
+    // stays consistent with the sorted array for any client that sorts.
+    groups.forEach((g, idx) => {
+      g.order = idx;
+    });
 
     return {
       match: {

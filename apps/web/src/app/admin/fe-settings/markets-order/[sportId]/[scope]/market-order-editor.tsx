@@ -9,11 +9,16 @@ export interface MarketEntry {
   label: string;
 }
 
-// `match`, `top`, or `map_<N>` — the scope string the API stores
-// verbatim in fe_market_display_order.scope. The editor itself is
-// scope-agnostic; the only place scope semantics matter here is the
-// empty-state copy below, which differs for the curated `top` tab.
+// `match`, `top`, `map_<N>`, or `custom_<key>` — the scope string the
+// API stores verbatim in fe_market_display_order.scope. The editor
+// itself is scope-agnostic; the only place scope semantics matter here
+// is the empty-state copy below, which differs for the curated tabs
+// (`top` + custom groups: opt-in lists with no implicit pool).
 type Scope = string;
+
+function isCuratedScope(scope: Scope): boolean {
+  return scope === "top" || /^custom_[a-z0-9]{4,32}$/.test(scope);
+}
 
 export function MarketOrderEditor({
   sportId,
@@ -256,8 +261,8 @@ export function MarketOrderEditor({
                 onDragOver={handleDragOver(0)}
                 onDrop={handleDropOrdered(0)}
               >
-                {scope === "top"
-                  ? "Drop markets here to feature them on the Top tab."
+                {isCuratedScope(scope)
+                  ? "Drop markets here to feature them on this tab."
                   : "No explicit order — markets fall back to provider market id ascending."}
               </li>
             ) : (
@@ -337,8 +342,8 @@ export function MarketOrderEditor({
           <ul className="card mt-2 divide-y divide-[var(--color-border)]">
             {unranked.length === 0 ? (
               <li className="px-4 py-3 text-sm text-[var(--color-fg-muted)]">
-                {scope === "top"
-                  ? "Top has no implicit pool — every known market id for this sport that isn't ordered yet is shown here."
+                {isCuratedScope(scope)
+                  ? "Curated tabs have no implicit pool — every known market id for this sport that isn't ordered yet is shown here."
                   : "Every known market for this sport is in the ordered list."}
               </li>
             ) : (

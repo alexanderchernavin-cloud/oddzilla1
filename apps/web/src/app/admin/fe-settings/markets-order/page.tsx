@@ -6,8 +6,11 @@ interface SportSummary {
   slug: string;
   name: string;
   maxMapNumber: number;
-  // Keyed by scope value (match | top | map_<N>). Missing keys = 0.
+  // Keyed by scope value (match | top | map_<N> | custom_<key>).
+  // Missing keys = 0.
   configured: Record<string, number>;
+  // Admin-created curated groups, in tab order.
+  customGroups: Array<{ scope: string; label: string | null }>;
 }
 
 interface SportListResponse {
@@ -25,6 +28,9 @@ function scopeChips(sport: SportSummary): ScopeChip[] {
     chips.push({ scope: `map_${n}`, label: `Map ${n}` });
   }
   chips.push({ scope: "top", label: "Top" });
+  for (const g of sport.customGroups) {
+    chips.push({ scope: g.scope, label: g.label ?? g.scope });
+  }
   return chips;
 }
 
@@ -39,10 +45,12 @@ export default async function MarketsOrderIndex() {
         Override the default order of market types per sport, with a separate
         list for each tab on the match-detail page: <strong>Match</strong>{" "}
         (markets without a map specifier), one list per <strong>Map N</strong>{" "}
-        tab (independently configurable), and <strong>Top</strong> (a curated
-        highlights tab; empty by default and only shows ids you add). The
-        storefront <strong>All</strong> tab is not configurable — it just
-        aggregates every market in its native order.
+        tab (independently configurable), <strong>Top</strong> (a curated
+        highlights tab; empty by default and only shows ids you add), and any
+        number of <strong>custom groups</strong> (curated tabs you create and
+        name yourself — see the Groups chip per sport, which also lets you
+        reorder the tabs). The storefront <strong>All</strong> tab is not
+        configurable — it just aggregates every market in its native order.
       </p>
 
       {sports.length === 0 ? (
@@ -88,6 +96,12 @@ export default async function MarketsOrderIndex() {
                           </Link>
                         );
                       })}
+                      <Link
+                        href={`/admin/fe-settings/markets-order/${s.id}/groups`}
+                        className="inline-flex items-center rounded border border-dashed border-[var(--color-border)] px-2 py-1 text-xs uppercase tracking-[0.12em] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]"
+                      >
+                        Groups
+                      </Link>
                     </div>
                   </td>
                 </tr>
