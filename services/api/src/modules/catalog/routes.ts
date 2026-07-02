@@ -1137,7 +1137,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
     //   • the per-scope admin market ordering for this sport (consumed near
     //     the end of the handler; only needs match.sportId, known already)
     //   • the tab (group) config for this sport — custom curated groups +
-    //     admin-set tab order (migration 0083)
+    //     admin-set tab order (migration 0084)
     //
     // Markets note: include in-play-suspended markets too — between
     // possessions / free throws / mid-round Oddin briefly flips the whole
@@ -1497,7 +1497,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
     // Synthetic curated groups — markets the admin explicitly listed for
     // this sport, regardless of their actual scope. Two kinds share the
     // shape: the built-in "Top" tab and admin-created custom groups
-    // (migration 0083). We pick at most one representative market row per
+    // (migration 0084). We pick at most one representative market row per
     // provider_market_id (preferring the match-scope copy if it exists,
     // falling back to the lowest-order map copy) so a curated tab doesn't
     // double up on totals/handicaps that exist for both Match and Map 1.
@@ -1547,7 +1547,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
     // Tab order: groups with a fe_market_groups row sort first by the
     // admin-set display_order; the rest keep the default order (top=-1,
     // match=0, map_N=N). A sport with zero config rows behaves exactly
-    // as before migration 0083.
+    // as before migration 0084.
     const groupOrderConfig = new Map(
       groupConfigRows.map((r) => [r.scope as string, r.displayOrder]),
     );

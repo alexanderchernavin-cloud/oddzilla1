@@ -6,6 +6,7 @@ import { BetSlipProvider } from "@/lib/bet-slip";
 import { I18nProvider } from "@/lib/i18n";
 import { getServerMessages } from "@/lib/i18n/server";
 import { ChunkErrorHandler } from "@/components/shell/chunk-error-handler";
+import { AnalyticsTracker } from "@/lib/analytics/analytics-tracker";
 
 const geist = Geist({
   subsets: ["latin"],
@@ -100,6 +101,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       </head>
       <body>
         <ChunkErrorHandler />
+        <AnalyticsTracker />
         <I18nProvider locale={locale} messages={messages}>
           <BetSlipProvider>{children}</BetSlipProvider>
         </I18nProvider>

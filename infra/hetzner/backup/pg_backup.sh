@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Daily Postgres dump with 14-day rotation. Invoked from root's crontab.
+# Daily Postgres dump, count-based retention (keep the newest N locally).
+# Invoked from root's crontab.
 # Dumps run via `docker exec` into the oddzilla-postgres-1 container so the
 # host doesn't need postgresql-client installed.
 #
@@ -14,37 +15,41 @@
 #   • Dumps written mode 600 root-only.
 #   • Optional GPG encryption — set BACKUP_GPG_RECIPIENT (e.g. an
 #     off-host operator's pubkey) and the dump is encrypted in addition
-#     to gzipped. Off-host transfer (rsync to backup host) remains a
-#     separate operator step; document it next to your monitoring setup.
+#     to gzipped. Dumps are written root:team mode 640 so the `team` SSH
+#     login can pull them off-box without sudo — scripts/pull-backup.ps1
+#     is the operator's PC-side pull (server has no route to push to a
+#     home PC behind NAT).
 
 set -euo pipefail
 
 BACKUP_DIR="/var/backups/oddzilla"
-RETENTION_DAYS=5
+# Keep only the newest N dumps locally (count-based, not mtime). At
+# ~4.5 GB/dump this hard-bounds the local footprint to ~N x 4.5 GB even
+# if a rotation is ever skipped. The 2026-06-09 outage was a pile-up
+# that filled the disk to 100% and crash-looped postgres; older history
+# lives off-host. Override via the RETENTION_COUNT env var.
+RETENTION_COUNT="${RETENTION_COUNT:-2}"
 CONTAINER="oddzilla-postgres-1"
 ENV_FILE="/home/team/oddzilla/.env"
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 
 # Page on failure. The cron's only output is a JSON line to journal —
 # without an explicit alert path, a string of failed backups goes
-# unnoticed until someone needs a restore. SLACK_WEBHOOK_URL is shared
-# with disk_fill_alert.sh.
+# unnoticed until someone needs a restore. Paging goes through the shared
+# oddzilla-alert-email helper (Resend HTTP API), which is graceful-idle
+# when email is unconfigured.
+ALERT_CMD="${ALERT_CMD:-/usr/local/bin/oddzilla-alert-email}"
 alert_failure() {
     local exit_code="$?"
-    [ "${exit_code}" -eq 0 ] && return 0
-    local hook
-    hook=$(grep -E '^SLACK_WEBHOOK_URL=' "${ENV_FILE}" 2>/dev/null \
-        | head -1 | cut -d= -f2- || true)
-    local hostname
-    hostname=$(hostname)
+    if [ "${exit_code}" -eq 0 ]; then return 0; fi
+    local hostname_s
+    hostname_s=$(hostname)
     printf '{"service":"pg-backup","event":"failed","exit":%d,"host":"%s","ts":"%s"}\n' \
-        "${exit_code}" "${hostname}" "${TS}" >&2
-    if [ -n "${hook}" ]; then
-        local payload
-        payload=$(printf 'pg-backup FAILED on %s — exit %d at %s' "${hostname}" "${exit_code}" "${TS}" \
-            | python3 -c 'import json,sys; print(json.dumps({"text": sys.stdin.read()}))')
-        curl -fsS -X POST -H "Content-Type: application/json" \
-            --data "${payload}" "${hook}" >/dev/null 2>&1 || true
+        "${exit_code}" "${hostname_s}" "${TS}" >&2
+    if [ -x "${ALERT_CMD}" ]; then
+        "${ALERT_CMD}" "pg-backup FAILED" \
+            "pg-backup exited ${exit_code} on ${hostname_s} at ${TS}. Disk: $(df -h / | tail -1)." \
+            || true
     fi
 }
 trap alert_failure EXIT
@@ -81,10 +86,36 @@ DUMP="${BACKUP_DIR}/oddzilla-${TS}.sql.gz"
 if [ -n "${BACKUP_GPG_RECIPIENT}" ]; then
     DUMP="${DUMP}.gpg"
 fi
+DUMP_TMP="${DUMP}.part"
+
+# Keep only the newest $1 dumps; delete the rest. Count-based (not mtime)
+# so the local footprint stays hard-bounded even if a run is skipped.
+# Tolerates 0 or 1 existing dumps (tail of a short list is empty).
+prune_dumps() {
+    local keep="$1"
+    if [ "${keep}" -lt 0 ]; then keep=0; fi
+    find "${BACKUP_DIR}" -maxdepth 1 -type f \
+         \( -name 'oddzilla-*.sql.gz' -o -name 'oddzilla-*.sql.gz.gpg' \) \
+         -printf '%T@ %p\n' \
+        | sort -rn \
+        | tail -n +"$((keep + 1))" \
+        | cut -d' ' -f2- \
+        | xargs -r rm -f --
+}
+
+# Make room BEFORE dumping: drop all but the newest (RETENTION_COUNT-1)
+# so a fresh ~4.5 GB dump has space. This is the lesson of 2026-06-09 —
+# rotation that runs only AFTER the dump never executes when the dump
+# itself fails on a full disk, so the pile-up never self-corrects. Also
+# clear any leftover .part from a previously-failed run.
+rm -f "${BACKUP_DIR}"/oddzilla-*.part 2>/dev/null || true
+prune_dumps "$((RETENTION_COUNT - 1))"
 
 # pg_dump runs inside the postgres container; gzip / gpg run on host.
 # The password is passed through an explicit env into the container only
-# (not the host shell environment).
+# (not the host shell environment). Write to a .part temp and atomically
+# rename on success so a truncated dump (e.g. disk fills mid-write) can
+# never masquerade as a valid backup.
 if [ -n "${BACKUP_GPG_RECIPIENT}" ]; then
     docker exec \
         -e PGPASSWORD="${POSTGRES_PASSWORD}" \
@@ -96,7 +127,7 @@ if [ -n "${BACKUP_GPG_RECIPIENT}" ]; then
         | gzip -9 \
         | gpg --batch --yes --trust-model always \
               --encrypt --recipient "${BACKUP_GPG_RECIPIENT}" \
-              --output "${DUMP}"
+              --output "${DUMP_TMP}"
 else
     docker exec \
         -e PGPASSWORD="${POSTGRES_PASSWORD}" \
@@ -105,8 +136,9 @@ else
             --host=127.0.0.1 --port=5432 \
             --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" \
             --no-owner --clean --if-exists \
-        | gzip -9 > "${DUMP}"
+        | gzip -9 > "${DUMP_TMP}"
 fi
+mv -f "${DUMP_TMP}" "${DUMP}"
 
 # Wipe the password from the shell as soon as we're done with it.
 unset POSTGRES_PASSWORD
@@ -114,14 +146,13 @@ unset POSTGRES_PASSWORD
 chown root:team "${DUMP}" 2>/dev/null || true
 chmod 640 "${DUMP}"
 
-# Rotate — delete anything older than RETENTION_DAYS.
-find "${BACKUP_DIR}" -maxdepth 1 -type f \
-     \( -name 'oddzilla-*.sql.gz' -o -name 'oddzilla-*.sql.gz.gpg' \) \
-     -mtime +"${RETENTION_DAYS}" -delete
+# Final safety prune (no-op in the normal path; catches a lowered
+# RETENTION_COUNT).
+prune_dumps "${RETENTION_COUNT}"
 
 # Emit a one-line JSON event to journal for grep-ability.
 size=$(stat -c %s "${DUMP}")
 encrypted=false
 [ -n "${BACKUP_GPG_RECIPIENT}" ] && encrypted=true
-printf '{"service":"pg-backup","event":"dump_complete","file":"%s","bytes":%d,"retention_days":%d,"encrypted":%s}\n' \
-    "${DUMP}" "${size}" "${RETENTION_DAYS}" "${encrypted}"
+printf '{"service":"pg-backup","event":"dump_complete","file":"%s","bytes":%d,"retention_count":%d,"encrypted":%s}\n' \
+    "${DUMP}" "${size}" "${RETENTION_COUNT}" "${encrypted}"

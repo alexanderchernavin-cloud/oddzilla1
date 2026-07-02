@@ -78,7 +78,10 @@ That's the whole deploy. The target wraps
    [`infra/deploy/detect-services.sh`](../infra/deploy/detect-services.sh).
 5. `git reset --hard origin/main`.
 6. If the diff includes any `packages/db/migrations/*.sql`: take a pre-deploy
-   `pg_dump` to `.deploy/backups/<sha>.sql.gz` (keep last 10).
+   `pg_dump` to `.deploy/backups/<sha>.sql.gz` (keep only the most recent —
+   `PRE_DEPLOY_BACKUP_RETENTION`, default 1 since 2026-07-02; dumps are
+   ~8.3 GB each now, and two retained plus one in-flight nearly filled
+   the 150 GB box mid-deploy).
 7. Apply migrations via `pnpm --filter @oddzilla/db db:migrate` with the
    `DATABASE_URL` rewritten from `@postgres:` to `@127.0.0.1:` for host-side
    resolution.
@@ -297,12 +300,86 @@ matching `ledger = same` — it nets to zero like USDT does.
 The daily dump is wired up via root cron at 03:00 UTC, running
 [`infra/hetzner/backup/pg_backup.sh`](../infra/hetzner/backup/pg_backup.sh).
 The script `docker exec`s into the postgres container and writes
-`/var/backups/oddzilla/oddzilla-<TS>.sql.gz` (root:team mode 640), with
-5-day retention (was 14; trimmed 2026-05-09 after dumps reached
-~2.3 GB/day and 14 × that overlapped the docker-prune cron failure to
-fill the 75 GB disk). Set `BACKUP_GPG_RECIPIENT` in `.env` to
-GPG-encrypt the dump in addition to gzipping; the file extension
-becomes `.sql.gz.gpg`.
+`/var/backups/oddzilla/oddzilla-<TS>.sql.gz` (root:team mode 640).
+Retention is **count-based** — keep the newest `RETENTION_COUNT` dumps
+(default **2**, lowered from 4 on 2026-06-17). At ~5.5 GB/dump (the dump
+size tracks the DB; see odds_history retention below) two dumps hard-bound
+the local footprint to ~11 GB. The script prunes to `RETENTION_COUNT-1`
+**before** dumping and writes to a `.part` temp with an atomic rename, so a
+full disk can neither block rotation (the 2026-06-09 death-spiral) nor leave
+a truncated dump masquerading as valid. Set `BACKUP_GPG_RECIPIENT` in `.env`
+to GPG-encrypt the dump in addition to gzipping; the extension becomes
+`.sql.gz.gpg`. Older history lives off-host (pull-to-workstation, below).
+
+### odds_history retention
+
+`odds_history` is `PARTITION BY RANGE (ts)` (migrations 0000 + 0001), but
+the intended partition maintenance never ran: **pg_partman was never
+installed** in the postgres image, and the "Phase 3" cron that the 0001
+fallback comment promised (pre-create upcoming partitions, drop old ones)
+**was never built**. So from launch (2026-04-18) every row landed in the
+catch-all `odds_history_default` partition and nothing pruned it — by
+2026-06-17 it was 64 GB / 560 M rows, growing ~1 GB/day. This is the root
+cause of the repeat disk-full outages (2026-04-22, 05-09, 06-09, 06-17);
+trimming backups only ever delayed an unbounded table.
+
+[`infra/hetzner/backup/odds_retention.sh`](../infra/hetzner/backup/odds_retention.sh)
+(installed as `oddzilla-odds-retention`, cron `30 3 * * *`) caps the table at
+`ODDS_RETENTION_DAYS` (default **45**; was 60 until 2026-07-02 — daily odds
+volume grew to ~17.5M rows/day and the 60-day window pushed pg dumps past
+8 GB) with a batched DELETE
+(`ODDS_RETENTION_BATCH` rows/statement, default 1 M) so one run can't spike
+WAL on a tight disk. Paired with the per-table autovacuum set once at install
+(`autovacuum_vacuum_scale_factor=0, *_threshold=2000000` on
+`odds_history_default`), freed space is reused by new inserts and the heap
+**plateaus** instead of growing without bound.
+
+Note: a DELETE never returns pages to the OS, so this **stops growth but
+does not shrink** the existing 64 GB heap. The disk stays at its current ~78%
+until the backlog is reclaimed. What's safe to keep at 60 days while admin
+odds charts only look back 7 days and ZillaTips snapshots `prematch_odds`
+permanently is an operator call — the 60-day window was chosen 2026-06-17.
+
+#### One-time reclaim (when you want the ~50 GB back)
+
+> **Executed 2026-07-02.** Adapted for low free disk (16 GB — not enough
+> to hold old + new copies of the full 45-day window): swapped in
+> `odds_history_default2` as the new DEFAULT partition (with the same
+> aggressive autovacuum reloptions), backfilled the **9 most recent days**
+> (~72.2M rows, row-count-verified against the source) newest-first with a
+> 6 GB free-disk guard, then dropped the old 68 GB default. Disk went
+> 95% → 50% (73 GB free). The table regrows ~1 GB/day back to its 45-day
+> plateau (~45 GB) over the following 5 weeks — steady state ≈ 65% used.
+> History older than 2026-06-24 exists only in the nightly dumps from
+> before the reclaim. The nightly DELETE cron continues to work unchanged
+> (it targets the parent table).
+
+A plain DELETE + `VACUUM` won't return disk; `VACUUM FULL` needs ~table-size
+temp and an `ACCESS EXCLUSIVE` lock (odds writes freeze for minutes), and
+`pg_repack` isn't in the image. The cheap, lock-light path exploits the
+partitioning — a partition DROP is instant and returns space immediately:
+
+```sql
+BEGIN;                                          -- brief lock; inserts wait a few seconds
+ALTER TABLE odds_history DETACH PARTITION odds_history_default;
+-- create go-forward dated partitions covering now + a few days, e.g. daily:
+CREATE TABLE odds_history_p20260617 PARTITION OF odds_history
+  FOR VALUES FROM ('2026-06-17') TO ('2026-06-18');
+-- … repeat for the next several days …
+CREATE TABLE odds_history_default2 PARTITION OF odds_history DEFAULT;
+COMMIT;
+-- backfill the keep-window in DAILY batches with CHECKPOINT between each so
+-- WAL stays bounded (skip entirely if a few sparse days of admin charts is OK):
+INSERT INTO odds_history SELECT * FROM odds_history_default
+  WHERE ts >= '2026-06-10' AND ts < '2026-06-11';   -- one day; CHECKPOINT; repeat
+DROP TABLE odds_history_default;                 -- instant; frees the old heap
+```
+
+This also converts retention to the clean partition-drop model going forward
+(drop the oldest dated partition each night instead of DELETE — no bloat, no
+VACUUM ever). It's destructive (drops history beyond the keep-window, though
+it's in the daily dump) and has a few-second write pause, so do it deliberately
+with a fresh backup in hand — it is **not** wired into the nightly cron.
 
 Hardening applied in PR #130: the script no longer sources the entire
 `.env` into the cron shell environment (every secret was being exported
@@ -335,32 +412,46 @@ ssh team@178.104.174.24 "sudo chgrp -R team /var/backups/oddzilla && \
 
 New dumps inherit those modes from the script.
 
-### Disk-fill alert (Slack)
+### Disk-fill alert (email)
 
 [`infra/hetzner/backup/disk_fill_alert.sh`](../infra/hetzner/backup/disk_fill_alert.sh)
-posts to a Slack incoming webhook when the root filesystem crosses
-`DISK_FILL_THRESHOLD_PCT` (default 80%). Install on the server:
+emails the operator when the root filesystem crosses
+`DISK_FILL_THRESHOLD_PCT` (default 80%), paging through the shared
+[`oddzilla-alert-email`](../infra/hetzner/backup/alert_email.sh) helper
+(Resend HTTP API, `EMAIL_PROVIDER_TOKEN` + `ALERT_EMAIL_TO` from `.env`).
+The email includes the largest dirs under `/` for fast triage. Install:
 
 ```bash
 ssh team@178.104.174.24
+sudo cp /home/team/oddzilla/infra/hetzner/backup/alert_email.sh \
+  /usr/local/bin/oddzilla-alert-email
 sudo cp /home/team/oddzilla/infra/hetzner/backup/disk_fill_alert.sh \
   /usr/local/bin/oddzilla-disk-fill-alert
+sudo chmod 755 /usr/local/bin/oddzilla-alert-email
 sudo chmod 750 /usr/local/bin/oddzilla-disk-fill-alert
 
 # Append to root's crontab — every 15 minutes:
 sudo crontab -e
-# */15 * * * * /usr/local/bin/oddzilla-disk-fill-alert
+# */15 * * * * /usr/local/bin/oddzilla-disk-fill-alert >> /var/log/oddzilla-disk-fill-alert.log 2>&1
 ```
 
-Set `SLACK_WEBHOOK_URL` (and optionally `DISK_FILL_THRESHOLD_PCT`) in
-`/home/team/oddzilla/.env`. Without the webhook the script logs a
-single JSON line to journal and exits 0 — the next on-call can wire
-up an alternative channel without redeploying.
+Without `EMAIL_PROVIDER_TOKEN` + `ALERT_EMAIL_TO` the helper logs a single
+JSON line to journal and exits 0 — the watchdog still runs and records every
+check, it just can't page. (An earlier version posted to `SLACK_WEBHOOK_URL`;
+the box switched to email on 2026-06-09.) Confirm the channel actually reaches
+you with a test page — `sudo /usr/local/bin/oddzilla-alert-email "test" "body"`
+— so a real fill isn't the first time you learn it's misrouted.
 
 The 2026-04-22 → 2026-04-28 disk-full incident
 (`project_disk_full_incident` memory) ran for 6 days before anyone
 noticed because postgres was the only loud signal and the
-`docker_prune.sh` mitigation is passive. This is the active page.
+`docker_prune.sh` mitigation is passive. This is the active page — but
+note it only fires once the disk is *already* near full. The structural
+guard against a slow fill is the odds_history retention above; the watchdog
+is the backstop. On 2026-06-17 the box hit 100% while sitting just under the
+80% threshold for days as odds_history crept up — the threshold caught the
+final spike, not the creep, which is why capping the table matters more than
+tuning the alert.
 
 ### Audit-log integrity probe
 

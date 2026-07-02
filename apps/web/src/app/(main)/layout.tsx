@@ -10,6 +10,8 @@ import { TopBarSearch } from "@/components/shell/top-bar-search";
 import { ZillapassIndicator } from "@/components/shell/zillapass-indicator";
 import { EmailVerificationBanner } from "@/components/shell/email-verification-banner";
 import { SupportWidget } from "@/components/support/support-widget";
+import { CookieBanner } from "@/components/shell/cookie-banner";
+import { ShellFooter } from "@/components/shell/shell-footer";
 import { MatchPageProvider } from "@/lib/match-page-context";
 import { SidePanelProvider } from "@/lib/side-panel";
 import { CombiBoostConfigProvider } from "@/lib/combi-boost-config";
@@ -100,12 +102,14 @@ export default async function MainLayout({ children }: { children: React.ReactNo
               <EmailVerificationBanner email={user.email} />
             )}
             {children}
+            <ShellFooter />
           </div>
         </main>
         <BetSlipRail />
         <MobileShellOverlay />
         <MobileBetSlipBar />
         <SupportWidget />
+        <CookieBanner />
       </ShellContainer>
       {/* Two iframes pinned to the empty bands flanking the centered
           shell on wide viewports. Hidden via CSS below 2000px (synced

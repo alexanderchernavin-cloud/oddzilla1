@@ -1,7 +1,7 @@
 // Per-sport per-scope storefront ordering for market types. See
-// migrations 0019, 0020, 0057, and 0083.
+// migrations 0019, 0020, 0057, and 0084.
 //
-// Scopes (after migration 0083):
+// Scopes (after migration 0084):
 //   match        — markets without a `map` specifier (Match tab + match cards).
 //   top          — curated highlights, empty by default. Rendered as the "Top"
 //                  tab on the match-detail page AND inline on match list cards.
@@ -45,7 +45,7 @@ export const FE_MARKET_SCOPES: readonly FeBaseScope[] = FE_BASE_SCOPES;
 
 const MAP_SCOPE_RE = /^map_([1-9][0-9]*)$/;
 // Mirrors the DB CHECK on fe_market_groups.scope / fe_market_display_order
-// .scope (migration 0083). Keys are API-generated random hex, but the CHECK
+// .scope (migration 0084). Keys are API-generated random hex, but the CHECK
 // (and this regex) accept any [a-z0-9]{4,32} suffix for forward flexibility.
 const CUSTOM_SCOPE_RE = /^custom_([a-z0-9]{4,32})$/;
 
@@ -107,7 +107,7 @@ export const feMarketDisplayOrder = pgTable(
 
 export type FeMarketDisplayOrder = typeof feMarketDisplayOrder.$inferSelect;
 
-// Tab (group) configuration for the match-detail page (migration 0083).
+// Tab (group) configuration for the match-detail page (migration 0084).
 // A row exists only for tabs the admin has touched:
 //   custom groups — scope 'custom_<key>', label NOT NULL (the tab title).
 //   built-in anchors — scope 'match' | 'top' | 'map_<N>', label NULL;

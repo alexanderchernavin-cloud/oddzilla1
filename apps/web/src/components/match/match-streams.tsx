@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { I } from "@/components/ui/icons";
+import { useEmbedsAllowed, acceptAll } from "@/lib/cookie-consent";
+import { useTranslations } from "@/lib/i18n";
 
 export interface MatchStream {
   platform: "twitch" | "youtube" | "kick" | "gjirafa" | "other";
@@ -30,6 +32,12 @@ export function MatchStreams({ streams, parentHost }: Props) {
   );
 
   const [activeIdx, setActiveIdx] = useState(0);
+  // Third-party players (Twitch / YouTube / Kick / Gjirafa) set their
+  // own cookies the moment the iframe mounts — gated behind the cookie
+  // banner's "third-party media" consent (GDPR / ePrivacy). Without
+  // consent we render a click-to-enable placeholder instead; clicking
+  // it IS an affirmative consent action and unblocks embeds site-wide.
+  const embedsAllowed = useEmbedsAllowed();
 
   if (streams.length === 0) return null;
 
@@ -94,7 +102,11 @@ export function MatchStreams({ streams, parentHost }: Props) {
       </div>
 
       {active ? (
-        <StreamEmbed stream={active} parentHost={parentHost} />
+        embedsAllowed ? (
+          <StreamEmbed stream={active} parentHost={parentHost} />
+        ) : (
+          <EmbedConsentPlaceholder />
+        )
       ) : (
         <FallbackCard stream={streams[0]!} />
       )}
@@ -203,6 +215,62 @@ function StreamEmbed({
           border: 0,
         }}
       />
+    </div>
+  );
+}
+
+// Rendered in place of the player while the cookie banner is still
+// unanswered. The button is the same "Accept all" the banner offers —
+// clicking it stores the acceptance and the player mounts immediately.
+function EmbedConsentPlaceholder() {
+  const t = useTranslations("cookieConsent");
+  return (
+    <div
+      style={{
+        width: "100%",
+        aspectRatio: "16 / 9",
+        borderRadius: "var(--r-md, 10px)",
+        border: "1px solid var(--border)",
+        background: "var(--surface-2)",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 10,
+        padding: 20,
+        textAlign: "center",
+      }}
+    >
+      <div style={{ fontSize: 13, fontWeight: 600 }}>
+        {t("embedsBlockedTitle")}
+      </div>
+      <div
+        style={{
+          fontSize: 12,
+          color: "var(--fg-muted)",
+          lineHeight: 1.5,
+          maxWidth: 380,
+        }}
+      >
+        {t("embedsBlockedBody")}
+      </div>
+      <button
+        type="button"
+        onClick={acceptAll}
+        style={{
+          marginTop: 4,
+          padding: "8px 14px",
+          fontSize: 12.5,
+          fontWeight: 600,
+          background: "var(--accent)",
+          color: "var(--accent-fg)",
+          border: "1px solid var(--accent)",
+          borderRadius: 8,
+          cursor: "pointer",
+        }}
+      >
+        {t("acceptAll")}
+      </button>
     </div>
   );
 }

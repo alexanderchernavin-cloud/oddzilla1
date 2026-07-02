@@ -11,7 +11,7 @@
 //                  list per map tab (Map 1 / Map 2 / Map 3 / …). Replaces the
 //                  pre-0057 shared `map` scope; existing rows were backfilled
 //                  to map_1..map_5 by the migration.
-//   custom_<key> — admin-created curated tab (migration 0083). Content
+//   custom_<key> — admin-created curated tab (migration 0084). Content
 //                  semantics identical to `top`; the tab label + position
 //                  live in fe_market_groups.
 //

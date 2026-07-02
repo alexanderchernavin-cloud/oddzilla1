@@ -10,10 +10,14 @@
 # inside the postgres container via `sudo -n docker exec` so we don't
 # need a postgresql-client install on the host.
 #
-# Retention here is independent of /var/backups/oddzilla — keep the
-# last 2 pre-deploy snapshots. The /var/backups/oddzilla cron is the
-# durable history line; this dir only needs to support "roll back the
-# deploy I just did" without the per-dump ~3 GB starving the disk.
+# Retention here is independent of /var/backups/oddzilla — keep only
+# the most recent pre-deploy snapshot (was 2 until 2026-07-02, when
+# dumps had grown to ~8.3 GB each and two of them plus one in-flight
+# nearly filled the 150 GB box mid-deploy). The /var/backups/oddzilla
+# cron is the durable history line; this dir only needs to support
+# "roll back the deploy I just did". Peak usage during a migration
+# deploy is retention + 1 dumps (rotation trims after the new dump
+# lands), so retention 1 caps the peak at ~2 dumps.
 
 set -euo pipefail
 
@@ -27,7 +31,7 @@ if [ "$#" -lt 1 ]; then
 fi
 
 SHA="$1"
-RETENTION="${PRE_DEPLOY_BACKUP_RETENTION:-2}"
+RETENTION="${PRE_DEPLOY_BACKUP_RETENTION:-1}"
 ENV_FILE="${ENV_FILE:-${REPO_ROOT}/.env}"
 
 deploy_ensure_dirs

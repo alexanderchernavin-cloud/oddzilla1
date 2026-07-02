@@ -73,7 +73,9 @@
     "moveSportDown": "Mover para baixo",
     "hideSport": "Ocultar",
     "showSport": "Mostrar",
-    "hiddenSportsHeader": "Ocultos"
+    "hiddenSportsHeader": "Ocultos",
+    "privacyPolicy": "Política de privacidade e cookies",
+    "cookiePreferences": "Preferências de cookies"
   },
   "wallet": {
     "title": "Carteira",
@@ -384,5 +386,23 @@
     "pt": "Português",
     "ru": "Русский",
     "es": "Español"
+  },
+  "cookieConsent": {
+    "title": "Cookies na Oddzilla",
+    "body": "Usamos cookies estritamente necessários para manter a sua sessão iniciada, proteger a sua conta e lembrar as suas preferências. Com o seu consentimento, também carregamos conteúdo incorporado de terceiros (transmissões ao vivo e widgets de estatísticas) que pode definir os seus próprios cookies, e coletamos análises próprias sobre o uso do site.",
+    "learnMore": "Política de privacidade e cookies",
+    "acceptAll": "Aceitar tudo",
+    "necessaryOnly": "Apenas necessários",
+    "customize": "Personalizar",
+    "saveChoices": "Guardar escolhas",
+    "catNecessaryTitle": "Estritamente necessários",
+    "catNecessaryBody": "Cookies de sessão, segurança e preferências. Sempre ativos.",
+    "catEmbedsTitle": "Mídia de terceiros",
+    "catEmbedsBody": "Transmissões ao vivo e widgets de estatísticas de Twitch, YouTube, Kick, Gjirafa e Oddin. Esses provedores podem definir os seus próprios cookies.",
+    "catAnalyticsTitle": "Análises",
+    "catAnalyticsBody": "Estatísticas de uso próprias (páginas visitadas, cliques, duração da sessão) processadas apenas nos nossos servidores. Nunca compartilhadas com terceiros.",
+    "embedsBlockedTitle": "Conteúdo de terceiros desativado",
+    "embedsBlockedBody": "Streams e widgets incorporados permanecem desativados até você aceitar os cookies. Ao aceitar, o provedor poderá definir os seus próprios cookies.",
+    "embedsEnable": "Ativar mídia de terceiros"
   }
 }

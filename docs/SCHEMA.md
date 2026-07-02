@@ -47,7 +47,7 @@ Canonical SQL lives in [`../packages/db/migrations/`](../packages/db/migrations/
   `loadTopMarketsForMatches` in `services/api/src/modules/catalog/routes.ts`).
   Superseded twice since: `0057_fe_market_order_per_map` replaced the
   shared `map` scope with one independent `map_<N>` list per map tab,
-  and `0083_fe_market_groups` added `custom_<key>` scopes — admin-created
+  and `0084_fe_market_groups` added `custom_<key>` scopes — admin-created
   curated tabs whose label + tab position live in the new
   `fe_market_groups` table (`(sport_id, scope)` unique; custom rows carry
   a NOT NULL `label`, built-in scopes get label-NULL anchor rows that
@@ -536,6 +536,41 @@ not logged** — they're heartbeats / recovery markers, not match-scoped
 debugging signal. Settlement messages are dispatched by the
 settlement worker but feed-ingester sees them too on the same broker
 topic, so the per-match log is complete from a single write site.
+
+### FE analytics (first-party)
+
+Migration 0083. Self-hosted storefront behaviour capture — the tracker in
+`apps/web/src/lib/analytics/` batches to `POST /analytics/collect`; no
+third-party analytics vendor sees bettor traffic. Retention runs as an
+hourly sweep in the api service (Redis NX lock): 90 days for sessions +
+events, 14 days for mouse batches.
+
+**`analytics_sessions`** — one row per browser session. The PK is a
+client-generated UUID (per-tab `sessionStorage`, renewed after 30 min
+idle) so a session spans SSR navigations without a server round-trip at
+start. `user_id` is NULL for anonymous visitors and set by the first
+authed flush (`COALESCE` on conflict — a session never switches owner).
+Denormalised `page_view_count` / `click_count` / `event_count` are bumped
+by the number of event rows that actually inserted, so KPI and list
+queries never aggregate the events table per session.
+
+**`analytics_events`** — append-only journey log (`page_view`, `click`,
+`heartbeat`, `session_end`). The client stamps a per-session monotonic
+`seq`, giving exact click order and apply-once ingestion via
+`UNIQUE (session_id, seq)` — pagehide flushes can double-deliver
+(sendBeacon + keepalive), and replays are row-level no-ops. `kind` and
+`section` are open TEXT on purpose: new event kinds / storefront
+sections must not need a migration (same rationale as
+`zillapass_tasks.predicate_key`); the API validates with zod. `payload`
+carries the click target descriptor (`label` precomputed client-side so
+the admin "top clicked elements" view is a plain `GROUP BY
+payload->>'label'`).
+
+**`analytics_mouse_batches`** — sampled mouse trails: one point per
+120 ms while the pointer moves, stored as `[[dtMs, x, y], ...]` JSONB
+per flush segment with viewport dims for replay scaling. Shares the
+per-session `seq` counter space with events. By far the heaviest table,
+hence the shorter 14-day retention and its own `created_at` sweep index.
 
 ## Common queries
 
