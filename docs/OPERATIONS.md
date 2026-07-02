@@ -78,7 +78,10 @@ That's the whole deploy. The target wraps
    [`infra/deploy/detect-services.sh`](../infra/deploy/detect-services.sh).
 5. `git reset --hard origin/main`.
 6. If the diff includes any `packages/db/migrations/*.sql`: take a pre-deploy
-   `pg_dump` to `.deploy/backups/<sha>.sql.gz` (keep last 10).
+   `pg_dump` to `.deploy/backups/<sha>.sql.gz` (keep only the most recent —
+   `PRE_DEPLOY_BACKUP_RETENTION`, default 1 since 2026-07-02; dumps are
+   ~8.3 GB each now, and two retained plus one in-flight nearly filled
+   the 150 GB box mid-deploy).
 7. Apply migrations via `pnpm --filter @oddzilla/db db:migrate` with the
    `DATABASE_URL` rewritten from `@postgres:` to `@127.0.0.1:` for host-side
    resolution.

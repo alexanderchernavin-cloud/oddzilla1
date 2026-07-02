@@ -558,7 +558,7 @@ State the deploy keeps under `/home/team/oddzilla/.deploy/`:
 | `last-sha` | Atomically-written marker of the last successful deploy. `deploy-status` diffs from here. |
 | `log` | Append-only newline log of every `deploy` / `rollback` / `smoke_fail` event with timestamp, SHA, and services touched. `tail -f` during incidents. |
 | `images/<svc>` | Per-service stack of the last 3 SHAs ever built. Source of truth for rollback. |
-| `backups/<sha>.sql.gz` | Pre-deploy `pg_dump` taken right before a migration runs. Last 2 retained — at ~3 GB per dump, longer retention starves the 150 GB box. `/var/backups/oddzilla/` (14-day cron) is the durable history line. |
+| `backups/<sha>.sql.gz` | Pre-deploy `pg_dump` taken right before a migration runs. Only the most recent is retained (`PRE_DEPLOY_BACKUP_RETENTION`, default 1 since 2026-07-02) — dumps have grown to ~8.3 GB each, and keeping 2 plus one in-flight nearly filled the 150 GB box mid-deploy. `/var/backups/oddzilla/` (14-day cron) is the durable history line. |
 
 Concurrency: `flock` on `/var/lock/oddzilla-deploy.lock` — two
 operators running `make deploy` at the same time get a clean "another
