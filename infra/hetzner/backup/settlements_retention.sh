@@ -7,6 +7,12 @@
 #   2. DELETE — drop settle/cancel rows older than RETENTION_DAYS whose
 #               market has no open ticket.
 #
+# Operator decision 2026-07-03: settlement history is kept 365 days
+# (bettor-facing history — tickets / ticket_selections / wallet_ledger /
+# market_outcomes.result — is NEVER deleted by anything; this table is the
+# Oddin message journal on top of that). Only the raw audit payload strips
+# at 45 days, matching the odds_history debug window.
+#
 # Why this exists
 #   settlements is the apply-once log for Oddin settlement messages
 #   (CLAUDE.md invariant #3). By 2026-07-02 it was 9.8 GB / 12.05M rows,
@@ -46,14 +52,16 @@
 # What it does / does not do
 #   • Caps the table at a steady state of roughly
 #     STRIP_DAYS x full-row-rate + (RETENTION_DAYS - STRIP_DAYS) x
-#     stripped-row-rate (~9.5 GB at 2026-07 volume with the 45/120
-#     defaults). Paired with the per-table autovacuum reloptions set at
-#     install time (below), freed space returns to the free-space map and
-#     is reused by new inserts, so the heap PLATEAUS.
+#     stripped-row-rate (~25 GB at 2026-07 volume with the 45/365
+#     defaults: 45 d x ~111 MB + 320 d x ~63 MB). Paired with the
+#     per-table autovacuum reloptions set at install time (below), freed
+#     space returns to the free-space map and is reused by new inserts,
+#     so the heap PLATEAUS.
 #   • It does NOT shrink the heap on disk — same caveat as odds_retention.
 #     Launch was 2026-04-18, so the DELETE phase finds nothing eligible
-#     until ~2026-08-16; the STRIP phase starts shedding payload bulk on
-#     night one.
+#     until ~2027-04-18; the STRIP phase starts shedding payload bulk on
+#     night one. Mind the disk budget: the ~25 GB plateau is ~15 GB above
+#     the 2026-07 size — see OPERATIONS.md "settlements retention".
 #
 # Install
 #   sudo cp infra/hetzner/backup/settlements_retention.sh /usr/local/bin/oddzilla-settlements-retention
@@ -72,7 +80,7 @@
 #
 # Tunables (env overrides):
 #   SETTLEMENTS_STRIP_DAYS      days payload_json is kept    (default 45 — matches odds_history; feed_messages keeps 7)
-#   SETTLEMENTS_RETENTION_DAYS  days settle/cancel rows live (default 120; systematic replay window is 24h, so this is >100x margin)
+#   SETTLEMENTS_RETENTION_DAYS  days settle/cancel rows live (default 365 — operator-set "keep a year of tickets history"; the systematic replay window is only 24h)
 #   SETTLEMENTS_RETENTION_BATCH rows per statement           (default 100000; settlements rows are fat (~860 B) and carry 4 indexes — smaller than odds_retention's 1M)
 
 set -euo pipefail
@@ -80,7 +88,7 @@ set -euo pipefail
 ENV_FILE="${ENV_FILE:-/home/team/oddzilla/.env}"
 CONTAINER="${SETTLEMENTS_RETENTION_CONTAINER:-oddzilla-postgres-1}"
 STRIP_DAYS="${SETTLEMENTS_STRIP_DAYS:-45}"
-RETENTION_DAYS="${SETTLEMENTS_RETENTION_DAYS:-120}"
+RETENTION_DAYS="${SETTLEMENTS_RETENTION_DAYS:-365}"
 BATCH="${SETTLEMENTS_RETENTION_BATCH:-100000}"
 ALERT_CMD="${ALERT_CMD:-/usr/local/bin/oddzilla-alert-email}"
 

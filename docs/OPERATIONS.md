@@ -406,10 +406,15 @@ batched phases nightly:
    stripping sheds ~70% of heap bytes with the replay guard fully intact.
    Requires migration 0085 (`payload_json` DROP NOT NULL).
 2. **Delete** — drop `settle` / `cancel` rows older than
-   `SETTLEMENTS_RETENTION_DAYS` (default **120**) whose market has no open
-   (`pending_delay` / `accepted`) ticket. `rollback_settle` /
-   `rollback_cancel` rows are never deleted (~300 rows total; a re-applied
-   rollback is the one replay class that would claw back a real payout).
+   `SETTLEMENTS_RETENTION_DAYS` (default **365** — operator decision
+   2026-07-03: keep a full year of settlement history; only odds data
+   lives 45 days) whose market has no open (`pending_delay` /
+   `accepted`) ticket. `rollback_settle` / `rollback_cancel` rows are
+   never deleted (~300 rows total; a re-applied rollback is the one
+   replay class that would claw back a real payout). Bettor-facing bet
+   history (`tickets`, `ticket_selections`, `wallet_ledger`,
+   `market_outcomes.result`) is never deleted by anything — this cron
+   only touches the Oddin message journal.
 
 Why deleting dedup rows is safe: the unique key only rejects
 **byte-identical** replays — a genuine late re-settlement from Oddin carries
@@ -421,13 +426,21 @@ months-late identical replay is money-safe: `maybeSettleTicket` skips every
 non-`accepted` ticket, terminal market status is sticky, outcome-result
 rewrites are idempotent, and `wallet_ledger`'s unique
 `(type, ref_type, ref_id)` index blocks residual double-credits
-(invariant #4). 120 days is therefore >100× margin over the real window.
+(invariant #4). 365 days is therefore enormous margin over the real
+window — the retention length is a history-keeping choice, not a safety
+requirement.
 
 Same plateau caveat as odds_history: DELETE/UPDATE never return pages to
-the OS — with the install-time autovacuum reloptions the heap stabilises at
-roughly `45 d × full-row rate + 75 d × stripped-row rate` ≈ 9.5 GB at
-2026-07 volume. Note launch was 2026-04-18, so the delete phase first finds
-eligible rows around 2026-08-16; the strip phase bites on night one.
+the OS — with the install-time autovacuum reloptions the heap stabilises
+at roughly `45 d × full-row rate + 320 d × stripped-row rate` ≈ **25 GB**
+at 2026-07 volume (~111 MB/day full, ~63 MB/day stripped since the
+indexes + fixed row cost survive the strip). That is ~15 GB above the
+2026-07-02 size, reached gradually until the delete phase first finds
+eligible rows around 2027-04-18 (launch + 365 d); the strip phase bites
+on night one. Budget the disk accordingly — at the post-reclaim ~80%
+baseline this plateau needs headroom from somewhere (bigger volume, or a
+shorter `SETTLEMENTS_RETENTION_DAYS`, which is safe to lower any time;
+the replay window only needs days).
 
 ### Off-server copy — pull to operator workstation
 
