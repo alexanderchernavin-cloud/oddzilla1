@@ -146,11 +146,11 @@ export default function PrivacyPage() {
             troubleshooting.
           </Li>
           <Li>
-            Usage analytics (only after you accept cookies): pages visited,
-            clicks, session length, and sampled mouse movement, tied to a
-            per-tab session identifier and — if you are signed in — to your
-            account. Collected and processed exclusively on our own servers;
-            no third-party analytics vendor is involved.
+            Usage analytics: pages visited, clicks, session length, and
+            sampled mouse movement, tied to a per-tab session identifier and
+            — if you are signed in — to your account. Collected and processed
+            exclusively on our own servers; no third-party analytics vendor
+            is involved.
           </Li>
         </ul>
 
@@ -170,10 +170,10 @@ export default function PrivacyPage() {
             platform security, and audit trails.
           </Li>
           <Li>
-            With your acceptance — push notifications, third-party embedded
-            media cookies, and first-party usage analytics. These stay off
-            until you accept them (push notifications additionally require a
-            device-level permission you can revoke in your device settings).
+            To understand and improve the product — first-party usage
+            analytics and third-party embedded media, which are active by
+            default. Push notifications require a device-level permission
+            you can revoke in your device settings at any time.
           </Li>
         </ul>
 
@@ -205,8 +205,8 @@ export default function PrivacyPage() {
         </ul>
         <P>
           We do not sell personal data and we run no advertising or
-          third-party analytics trackers. Usage analytics, once you accept
-          cookies, are collected first-party and stay on our own servers.
+          third-party analytics trackers. Usage analytics are collected
+          first-party and stay on our own servers.
         </P>
 
         <H3>5. International transfers</H3>
@@ -227,8 +227,8 @@ export default function PrivacyPage() {
           <Li>Raw feed message logs: 7 days.</Li>
           <Li>Database backups: 14 days.</Li>
           <Li>
-            Usage analytics (if accepted): sessions and events 90 days,
-            mouse-movement samples 14 days.
+            Usage analytics: sessions and events 90 days, mouse-movement
+            samples 14 days.
           </Li>
           <Li>
             Server logs: rotated automatically (approximately 50 MB per
@@ -273,11 +273,12 @@ export default function PrivacyPage() {
         <P>
           Cookies are small files stored on your device. We group them into
           three categories. Strictly necessary cookies are required for the
-          site to function (signing in, security, remembering your language)
-          and are always on. Third-party media cookies are set by external
-          providers when you load embedded streams or statistics widgets.
-          First-party analytics storage supports our own usage statistics.
-          The last two stay off until you accept cookies on the banner.
+          site to function (signing in, security, remembering your language).
+          Third-party media cookies are set by external providers when a
+          match page embeds streams or statistics widgets. First-party
+          analytics storage supports our own usage statistics. All three are
+          active by default — the banner you see on your first visit is an
+          informational notice.
         </P>
 
         <H3>Strictly necessary cookies and storage</H3>
@@ -326,25 +327,23 @@ export default function PrivacyPage() {
           Match pages can embed live streams and statistics widgets from
           Twitch, YouTube, Kick, Gjirafa, and Oddin. These providers may set
           their own cookies and process your IP address under their own
-          privacy policies. These embeds stay off until you accept cookies on
-          the banner (or accept directly from a stream placeholder).
+          privacy policies whenever a page embedding them is open.
         </P>
 
         <H3>First-party analytics</H3>
         <P>
-          Once you accept cookies, we record how the site is used — pages
-          visited, clicks, session length, and sampled mouse movement — to
-          improve the product. A random session identifier
-          (oz:analytics:session) is kept in your browser&rsquo;s session
-          storage for at most 30 minutes of inactivity and is created only
-          after you accept. The data is processed exclusively on our own
-          servers and is never shared with or sold to anyone.
+          We record how the site is used — pages visited, clicks, session
+          length, and sampled mouse movement — to improve the product. A
+          random session identifier (oz:analytics:session) is kept in your
+          browser&rsquo;s session storage for at most 30 minutes of
+          inactivity. The data is processed exclusively on our own servers
+          and is never shared with or sold to anyone.
         </P>
 
         <H3>Managing cookies</H3>
         <P>
-          The cookie banner offers acceptance only. If you prefer not to use
-          these cookies, you can delete or block them at any time through
+          The cookie banner is an informational notice. If you prefer not to
+          use these cookies, you can delete or block them at any time through
           your browser settings (including site data and local storage for
           oddzilla.cc). Blocking strictly necessary cookies will prevent
           signing in from working.

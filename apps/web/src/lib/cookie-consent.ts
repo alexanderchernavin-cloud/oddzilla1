@@ -1,26 +1,24 @@
 "use client";
 
-// Cookie acknowledgment store.
+// Cookie-notice acknowledgment store.
 //
-// Operator decision (2026-07-02, UZ-market product call): the banner is
-// ACCEPTANCE-ONLY — it offers two "Accept all" buttons and no reject
-// path. Clicking either accepts every category. The store still gates
-// the two non-essential surfaces (third-party embedded media + the
-// fe-analytics tracker) until the visitor has clicked accept, so
-// nothing loads behind an unanswered banner.
+// Operator decision (2026-07-02, UZ-market product call): cookies,
+// third-party embeds, and first-party analytics are ON BY DEFAULT.
+// The banner is a pure informational notice — its two "Accept all"
+// buttons acknowledge and dismiss it; nothing in the product is gated
+// on the acknowledgment. This store only remembers whether the visitor
+// has dismissed the notice so it isn't shown again.
 //
-// Guardrail for future edits: the buttons say "Accept all" and that is
-// exactly what they do — label and behaviour match. If a Reject /
-// "Necessary only" option is ever reintroduced, it MUST genuinely
-// disable the categories. A reject-labelled control that accepts is
-// deceptive design; do not wire one up.
+// Guardrail for future edits: the banner text and /privacy describe
+// tracking as on-by-default, and the buttons do exactly what they say.
+// If a Reject / "Necessary only" control is ever reintroduced, it MUST
+// genuinely disable the categories it claims to — a reject-labelled
+// control that accepts is deceptive design; do not wire one up.
 //
 // Storage: localStorage["oz:cookie-consent"], same `oz:` prefix as the
-// theme toggle. v bumped 1 → 2 when the banner went acceptance-only so
-// choices stored by the short-lived v1 banner (including declines) are
-// re-asked instead of silently carried forward. Cross-component sync
-// via a window event so the banner and every gated embed re-render the
-// moment the visitor accepts.
+// theme toggle. The v2 shape carries {embeds, analytics} booleans from
+// the earlier gated regime; they are kept for record-keeping but no
+// longer gate anything.
 
 import { useEffect, useState } from "react";
 
@@ -29,9 +27,7 @@ const CHANGED_EVENT = "oz:cookie-consent-changed";
 
 export interface CookieConsent {
   v: 2;
-  // Third-party embedded media (streams + widgets) allowed.
   embeds: boolean;
-  // First-party analytics (fe-analytics tracker) allowed.
   analytics: boolean;
   decidedAt: string;
 }
@@ -50,11 +46,12 @@ export function readConsent(): CookieConsent | null {
     ) {
       return parsed;
     }
-    // Unknown or older shape — treat as unanswered so the banner shows
-    // again rather than assuming an answer from a different regime.
+    // Unknown or older shape — treat as unacknowledged so the notice
+    // shows once more.
     return null;
   } catch {
-    // localStorage may throw in restrictive contexts — treat as unanswered.
+    // localStorage may throw in restrictive contexts — treat as
+    // unacknowledged.
     return null;
   }
 }
@@ -102,14 +99,4 @@ export function useCookieConsent(): {
   }, []);
 
   return { ready, consent };
-}
-
-/**
- * Hook: true once the visitor has accepted (embeds allowed). Unanswered
- * counts as NOT allowed — nothing non-essential loads behind an
- * unanswered banner.
- */
-export function useEmbedsAllowed(): boolean {
-  const { consent } = useCookieConsent();
-  return consent?.embeds === true;
 }

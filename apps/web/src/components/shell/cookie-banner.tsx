@@ -1,10 +1,11 @@
 "use client";
 
-// Cookie banner, acceptance-only (operator decision 2026-07-02 for the
-// UZ market): two buttons, both "Accept all", both accepting all.
-// Labels match behaviour exactly — there is no reject control, offered
-// or implied. Until the visitor clicks, the non-essential surfaces
-// (third-party embeds + fe-analytics) stay off via the consent store.
+// Cookie notice banner (operator decision 2026-07-02 for the UZ
+// market): purely informational. Cookies, third-party embeds, and
+// first-party analytics are on by default; the two "Accept all"
+// buttons acknowledge the notice and dismiss it — nothing is gated on
+// the click. The body text and /privacy describe the on-by-default
+// behaviour; keep all three in sync if the regime changes.
 //
 // If a Reject / "Necessary only" button is ever brought back, it must
 // genuinely disable the categories — see the guardrail note in

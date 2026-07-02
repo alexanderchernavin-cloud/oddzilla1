@@ -389,7 +389,7 @@
   },
   "cookieConsent": {
     "title": "Cookies en Oddzilla",
-    "body": "Usamos cookies estrictamente necesarias para mantener tu sesión iniciada, proteger tu cuenta y recordar tus preferencias. Con tu consentimiento, también cargamos contenido incrustado de terceros (transmisiones en vivo y widgets de estadísticas) que puede instalar sus propias cookies, y recopilamos analíticas propias sobre el uso del sitio.",
+    "body": "Usamos cookies estrictamente necesarias para mantener tu sesión iniciada, proteger tu cuenta y recordar tus preferencias. También cargamos contenido incrustado de terceros (transmisiones en vivo y widgets de estadísticas) que puede instalar sus propias cookies, y recopilamos analíticas propias sobre el uso del sitio.",
     "learnMore": "Política de privacidad y cookies",
     "acceptAll": "Aceptar todo",
     "necessaryOnly": "Solo necesarias",
