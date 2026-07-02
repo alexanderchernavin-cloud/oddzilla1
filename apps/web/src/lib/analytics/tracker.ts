@@ -76,6 +76,13 @@ type MouseSegment = {
 
 let initialized = false;
 let disabled = false;
+// Consent gate (GDPR / ePrivacy): session-level behavioural tracking
+// with identity linkage sits outside every audience-measurement
+// exemption, so nothing is captured, stored, or flushed until the
+// cookie banner's "analytics" category is granted. Starts false; the
+// AnalyticsTracker mount syncs it from the stored consent and keeps it
+// in sync when the user changes their choice.
+let consentGranted = false;
 let session: PersistedSession | null = null;
 let events: AnalyticsWireEvent[] = [];
 let mouseBatches: AnalyticsMouseWireBatch[] = [];
@@ -153,7 +160,7 @@ function nextSeq(): number {
 }
 
 function enqueue(kind: AnalyticsEventKind, fields: Partial<AnalyticsWireEvent> = {}) {
-  if (disabled || !isTrackablePath(currentPath)) return;
+  if (disabled || !consentGranted || !isTrackablePath(currentPath)) return;
   if (events.length >= EVENT_QUEUE_CAP) return;
   events.push({
     seq: nextSeq(),
@@ -173,7 +180,7 @@ function closeSegment() {
   segment = null;
   if (seg.points.length < MOUSE_SEGMENT_MIN_POINTS) return;
   if (mouseBatches.length >= MOUSE_QUEUE_CAP) return;
-  if (disabled || !isTrackablePath(seg.path)) return;
+  if (disabled || !consentGranted || !isTrackablePath(seg.path)) return;
   mouseBatches.push({
     seq: nextSeq(),
     path: seg.path,
@@ -186,7 +193,7 @@ function closeSegment() {
 }
 
 function handleMouseMove(e: MouseEvent) {
-  if (disabled || !currentPath || !isTrackablePath(currentPath)) return;
+  if (disabled || !consentGranted || !currentPath || !isTrackablePath(currentPath)) return;
   const now = Date.now();
   if (segment && segment.path !== currentPath) closeSegment();
   if (!segment) {
@@ -372,8 +379,28 @@ function pageView(path: string) {
   if (disabled) return;
   if (segment && segment.path !== path) closeSegment();
   currentPath = path;
-  if (!isTrackablePath(path)) return;
+  if (!consentGranted || !isTrackablePath(path)) return;
   enqueue("page_view");
+}
+
+// Flip the consent gate. Withdrawal drops everything queued AND the
+// stored session id — keeping an identifier in sessionStorage without
+// consent would itself violate ePrivacy art. 5(3), not just the
+// network flushes.
+function setConsent(allowed: boolean) {
+  if (consentGranted === allowed) return;
+  consentGranted = allowed;
+  if (!allowed) {
+    events = [];
+    mouseBatches = [];
+    segment = null;
+    session = null;
+    try {
+      sessionStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // Storage blocked — nothing persisted to remove.
+    }
+  }
 }
 
 function init() {
@@ -386,7 +413,11 @@ function init() {
     return;
   }
 
-  ensureSession();
+  // No eager ensureSession() here: creating (and persisting) the
+  // session id before the user grants analytics consent would store an
+  // identifier on the device pre-consent. Sessions are created lazily
+  // by nextSeq() on the first captured event, which only happens once
+  // the consent gate is open.
 
   document.addEventListener("click", handleClick, { capture: true, passive: true });
   document.addEventListener("mousemove", handleMouseMove, { passive: true });
@@ -409,4 +440,4 @@ function init() {
   });
 }
 
-export const analyticsTracker = { init, pageView };
+export const analyticsTracker = { init, pageView, setConsent };

@@ -286,6 +286,13 @@ export function Sidebar({
         {tShell("responsibleGambling")}
         <br />
         {tShell("ageNotice")}
+        <br />
+        <Link
+          href="/privacy"
+          style={{ color: "var(--fg-dim)", textDecoration: "underline" }}
+        >
+          {tShell("privacyPolicy")}
+        </Link>
       </div>
     </aside>
   );

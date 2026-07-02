@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { Wordmark } from "@/components/ui/monogram";
 import { ThemeToggle } from "@/components/shell/theme-toggle";
+import { CookieBanner } from "@/components/shell/cookie-banner";
+import { AuthFooterLink } from "./auth-footer-link";
 
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -13,8 +15,12 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
         <ThemeToggle />
       </header>
       <div className="oz-auth-body">
-        <div>{children}</div>
+        <div>
+          {children}
+          <AuthFooterLink />
+        </div>
       </div>
+      <CookieBanner />
     </div>
   );
 }

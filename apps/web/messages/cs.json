@@ -73,7 +73,9 @@
     "moveSportDown": "Posunout dolů",
     "hideSport": "Skrýt",
     "showSport": "Zobrazit",
-    "hiddenSportsHeader": "Skryté"
+    "hiddenSportsHeader": "Skryté",
+    "privacyPolicy": "Zásady ochrany soukromí a cookies",
+    "cookiePreferences": "Nastavení cookies"
   },
   "wallet": {
     "title": "Peněženka",
@@ -384,5 +386,23 @@
     "pt": "Português",
     "ru": "Русский",
     "es": "Español"
+  },
+  "cookieConsent": {
+    "title": "Cookies na webu Oddzilla",
+    "body": "Používáme nezbytně nutné cookies, které vás udrží přihlášené, zabezpečí váš účet a zapamatují si vaše předvolby. S vaším souhlasem načítáme také vložený obsah třetích stran (živé přenosy a widgety se statistikami zápasů), který může ukládat vlastní cookies, a sbíráme vlastní analytická data o používání webu.",
+    "learnMore": "Zásady ochrany soukromí a cookies",
+    "acceptAll": "Přijmout vše",
+    "necessaryOnly": "Pouze nezbytné",
+    "customize": "Přizpůsobit",
+    "saveChoices": "Uložit výběr",
+    "catNecessaryTitle": "Nezbytně nutné",
+    "catNecessaryBody": "Cookies pro přihlášení, zabezpečení a předvolby. Vždy zapnuté.",
+    "catEmbedsTitle": "Média třetích stran",
+    "catEmbedsBody": "Živé přenosy a widgety se statistikami od Twitch, YouTube, Kick, Gjirafa a Oddin. Tito poskytovatelé mohou ukládat vlastní cookies.",
+    "catAnalyticsTitle": "Analytika",
+    "catAnalyticsBody": "Vlastní statistiky používání (navštívené stránky, kliknutí, délka návštěvy) zpracovávané výhradně na našich serverech. Nikdy je nesdílíme s třetími stranami.",
+    "embedsBlockedTitle": "Obsah třetích stran je vypnutý",
+    "embedsBlockedBody": "Vaše nastavení cookies ponechává vložené přenosy a widgety vypnuté. Jejich povolením umožníte poskytovateli ukládat vlastní cookies.",
+    "embedsEnable": "Povolit média třetích stran"
   }
 }
