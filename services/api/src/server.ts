@@ -72,6 +72,12 @@ import adminEmailsRoutes from "./modules/admin/emails.js";
 import adminSupportRoutes from "./modules/admin/support.js";
 import supportUserRoutes from "./modules/support/routes.js";
 import supportBotRoutes from "./modules/support/bot/routes.js";
+import {
+  analyticsRoutes,
+  startAnalyticsRetentionSweeper,
+  type AnalyticsSweeperHandle,
+} from "./modules/analytics/routes.js";
+import { adminAnalyticsRoutes } from "./modules/admin/analytics.js";
 import { startPushOutboxWorker, type PushWorkerHandle } from "./modules/push/worker.js";
 import { startEmailOutboxWorker, type EmailWorkerHandle } from "./modules/email/worker.js";
 import inboundEmailRoutes from "./modules/email/inbound/routes.js";
@@ -312,6 +318,8 @@ await app.register(adminSupportRoutes);
 await app.register(supportUserRoutes);
 await app.register(supportBotRoutes);
 await app.register(inboundEmailRoutes);
+await app.register(analyticsRoutes);
+await app.register(adminAnalyticsRoutes);
 
 app.get("/", async () => ({ service: "oddzilla-api", status: "ok" }));
 
@@ -353,6 +361,15 @@ if (process.env.EMAIL_OUTBOX_WORKER_DISABLED !== "1") {
   emailWorkerHandle = await startEmailOutboxWorker(app);
 }
 
+// FE-analytics retention sweep. Hourly, Redis-lock-guarded so a future
+// multi-instance api runs one sweep per interval: 90 d for sessions +
+// journey events, 14 d for mouse-trail batches (the heavy table). Set
+// ANALYTICS_SWEEPER_DISABLED=1 to skip.
+let analyticsSweeperHandle: AnalyticsSweeperHandle | null = null;
+if (process.env.ANALYTICS_SWEEPER_DISABLED !== "1") {
+  analyticsSweeperHandle = startAnalyticsRetentionSweeper(app);
+}
+
 // ─── Boot ───────────────────────────────────────────────────────────────────
 
 app
@@ -380,6 +397,7 @@ async function shutdown() {
   app.log.info("shutting down");
   stopMonitoringSampler();
   stopZillaFlashRotation();
+  analyticsSweeperHandle?.close();
   if (matchWatcherHandle) {
     try {
       await matchWatcherHandle.close();
