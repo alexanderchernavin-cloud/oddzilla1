@@ -325,7 +325,9 @@ trimming backups only ever delayed an unbounded table.
 
 [`infra/hetzner/backup/odds_retention.sh`](../infra/hetzner/backup/odds_retention.sh)
 (installed as `oddzilla-odds-retention`, cron `30 3 * * *`) caps the table at
-`ODDS_RETENTION_DAYS` (default **60**) with a batched DELETE
+`ODDS_RETENTION_DAYS` (default **45**; was 60 until 2026-07-02 — daily odds
+volume grew to ~17.5M rows/day and the 60-day window pushed pg dumps past
+8 GB) with a batched DELETE
 (`ODDS_RETENTION_BATCH` rows/statement, default 1 M) so one run can't spike
 WAL on a tight disk. Paired with the per-table autovacuum set once at install
 (`autovacuum_vacuum_scale_factor=0, *_threshold=2000000` on

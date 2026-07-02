@@ -38,14 +38,14 @@
 #   # 30 3 * * * /usr/local/bin/oddzilla-odds-retention >> /var/log/oddzilla-odds-retention.log 2>&1
 #
 # Tunables (env overrides):
-#   ODDS_RETENTION_DAYS   days of history to keep         (default 60)
+#   ODDS_RETENTION_DAYS   days of history to keep         (default 45; was 60 until 2026-07-02 — daily odds volume grew ~17.5M rows/day and the 60-day window pushed dumps past 8 GB)
 #   ODDS_RETENTION_BATCH  rows deleted per statement      (default 1000000)
 
 set -euo pipefail
 
 ENV_FILE="${ENV_FILE:-/home/team/oddzilla/.env}"
 CONTAINER="${ODDS_RETENTION_CONTAINER:-oddzilla-postgres-1}"
-RETENTION_DAYS="${ODDS_RETENTION_DAYS:-60}"
+RETENTION_DAYS="${ODDS_RETENTION_DAYS:-45}"
 BATCH="${ODDS_RETENTION_BATCH:-1000000}"
 ALERT_CMD="${ALERT_CMD:-/usr/local/bin/oddzilla-alert-email}"
 TABLE="odds_history"

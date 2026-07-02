@@ -28,7 +28,7 @@ only builds docker services — re-`cp` after editing any of them here).
 | Cron | Script | Job |
 | --- | --- | --- |
 | `0 3 * * *`   | `oddzilla-pg-backup` (`backup/pg_backup.sh`) | Daily `pg_dump` → `/var/backups/oddzilla`. Count-based retention (`RETENTION_COUNT`, default **2**); prunes BEFORE dumping + atomic `.part` rename so a full disk can't block rotation. |
-| `30 3 * * *`  | `oddzilla-odds-retention` (`backup/odds_retention.sh`) | Caps `odds_history` at `ODDS_RETENTION_DAYS` (default **60**) via batched DELETE. Stops the unbounded growth that filled the disk on 2026-04-22 / 05-09 / 06-09 / 06-17. See OPERATIONS.md → "odds_history retention". |
+| `30 3 * * *`  | `oddzilla-odds-retention` (`backup/odds_retention.sh`) | Caps `odds_history` at `ODDS_RETENTION_DAYS` (default **45**; was 60 until 2026-07-02) via batched DELETE. Stops the unbounded growth that filled the disk on 2026-04-22 / 05-09 / 06-09 / 06-17. See OPERATIONS.md → "odds_history retention". |
 | `0 4 * * *`   | `oddzilla-docker-prune` (`backup/docker_prune.sh`) | Build cache > `MAX_USED_SPACE_GB` (default 10), dangling images, long-stopped containers. |
 | `0 4 * * *`   | `oddzilla-audit-chain-check` (`backup/audit_chain_check.sh`) | Verifies the `admin_audit_log` SHA-256 hash chain. |
 | `*/15 * * * *`| `oddzilla-disk-fill-alert` (`backup/disk_fill_alert.sh`) | Emails the operator (via `oddzilla-alert-email`) when `/` crosses `DISK_FILL_THRESHOLD_PCT` (default 80). |
