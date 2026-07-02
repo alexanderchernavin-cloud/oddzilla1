@@ -45,6 +45,15 @@ Canonical SQL lives in [`../packages/db/migrations/`](../packages/db/migrations/
   rendered as a "Top" tab on the match-detail page and an inline tab
   toggle on match list cards via `loadTopMarketIdsBySport` /
   `loadTopMarketsForMatches` in `services/api/src/modules/catalog/routes.ts`).
+  Superseded twice since: `0057_fe_market_order_per_map` replaced the
+  shared `map` scope with one independent `map_<N>` list per map tab,
+  and `0084_fe_market_groups` added `custom_<key>` scopes — admin-created
+  curated tabs whose label + tab position live in the new
+  `fe_market_groups` table (`(sport_id, scope)` unique; custom rows carry
+  a NOT NULL `label`, built-in scopes get label-NULL anchor rows that
+  carry `display_order` when the admin reorders tabs; tabs with a row
+  sort first by `display_order`, the rest keep the default Top, Match,
+  Map 1..N order).
 - `0021_competitor_logos.sql` — adds `competitors.logo_url TEXT` and
   `competitors.brand_color TEXT` for storefront team branding. Both
   are nullable; a CHECK constraint requires

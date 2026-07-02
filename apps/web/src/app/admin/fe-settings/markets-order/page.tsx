@@ -1,31 +1,8 @@
-import Link from "next/link";
 import { serverApi } from "@/lib/server-fetch";
-
-interface SportSummary {
-  id: number;
-  slug: string;
-  name: string;
-  maxMapNumber: number;
-  // Keyed by scope value (match | top | map_<N>). Missing keys = 0.
-  configured: Record<string, number>;
-}
+import { SportRow, type SportSummary } from "./sport-row";
 
 interface SportListResponse {
   sports: SportSummary[];
-}
-
-interface ScopeChip {
-  scope: string;
-  label: string;
-}
-
-function scopeChips(sport: SportSummary): ScopeChip[] {
-  const chips: ScopeChip[] = [{ scope: "match", label: "Match" }];
-  for (let n = 1; n <= sport.maxMapNumber; n++) {
-    chips.push({ scope: `map_${n}`, label: `Map ${n}` });
-  }
-  chips.push({ scope: "top", label: "Top" });
-  return chips;
 }
 
 export default async function MarketsOrderIndex() {
@@ -39,10 +16,12 @@ export default async function MarketsOrderIndex() {
         Override the default order of market types per sport, with a separate
         list for each tab on the match-detail page: <strong>Match</strong>{" "}
         (markets without a map specifier), one list per <strong>Map N</strong>{" "}
-        tab (independently configurable), and <strong>Top</strong> (a curated
-        highlights tab; empty by default and only shows ids you add). The
-        storefront <strong>All</strong> tab is not configurable — it just
-        aggregates every market in its native order.
+        tab (independently configurable), <strong>Top</strong> (a curated
+        highlights tab; empty by default and only shows ids you add), and any
+        number of <strong>custom groups</strong> (curated tabs you create and
+        name yourself — see the Groups chip per sport, which also lets you
+        reorder the tabs). The storefront <strong>All</strong> tab is not
+        configurable — it just aggregates every market in its native order.
       </p>
 
       {sports.length === 0 ? (
@@ -59,38 +38,7 @@ export default async function MarketsOrderIndex() {
             </thead>
             <tbody className="divide-y divide-[var(--color-border)]">
               {sports.map((s) => (
-                <tr key={s.id}>
-                  <td className="px-5 py-3 align-top">{s.name}</td>
-                  <td className="px-5 py-3 align-top font-mono text-[var(--color-fg-muted)]">
-                    {s.slug}
-                  </td>
-                  <td className="px-5 py-3">
-                    <div className="flex flex-wrap gap-1.5">
-                      {scopeChips(s).map((chip) => {
-                        const count = s.configured[chip.scope] ?? 0;
-                        return (
-                          <Link
-                            key={chip.scope}
-                            href={`/admin/fe-settings/markets-order/${s.id}/${chip.scope}`}
-                            className={
-                              "inline-flex items-center gap-2 rounded border px-2 py-1 text-xs " +
-                              (count > 0
-                                ? "border-[var(--color-accent)] text-[var(--color-fg)] hover:bg-[var(--color-bg-elevated)]"
-                                : "border-[var(--color-border)] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]")
-                            }
-                          >
-                            <span className="uppercase tracking-[0.12em]">
-                              {chip.label}
-                            </span>
-                            <span className="font-mono text-[var(--color-fg-subtle)]">
-                              {count > 0 ? count : "—"}
-                            </span>
-                          </Link>
-                        );
-                      })}
-                    </div>
-                  </td>
-                </tr>
+                <SportRow key={s.id} sport={s} />
               ))}
             </tbody>
           </table>
