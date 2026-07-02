@@ -402,7 +402,7 @@
     "catAnalyticsTitle": "Análises",
     "catAnalyticsBody": "Estatísticas de uso próprias (páginas visitadas, cliques, duração da sessão) processadas apenas nos nossos servidores. Nunca compartilhadas com terceiros.",
     "embedsBlockedTitle": "Conteúdo de terceiros desativado",
-    "embedsBlockedBody": "As suas preferências de cookies mantêm streams e widgets incorporados desativados. Ao ativá-los, o provedor poderá definir os seus próprios cookies.",
+    "embedsBlockedBody": "Streams e widgets incorporados permanecem desativados até você aceitar os cookies. Ao aceitar, o provedor poderá definir os seus próprios cookies.",
     "embedsEnable": "Ativar mídia de terceiros"
   }
 }

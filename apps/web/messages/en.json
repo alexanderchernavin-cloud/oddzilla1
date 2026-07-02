@@ -402,7 +402,7 @@
     "catAnalyticsTitle": "Analytics",
     "catAnalyticsBody": "First-party usage statistics (pages visited, clicks, session length) processed only on our own servers. Never shared with third parties.",
     "embedsBlockedTitle": "Third-party content is off",
-    "embedsBlockedBody": "Your cookie preferences keep embedded streams and widgets disabled. Enabling them lets the provider set its own cookies.",
+    "embedsBlockedBody": "Embedded streams and widgets stay off until you accept cookies. Accepting lets the provider set its own cookies.",
     "embedsEnable": "Enable third-party media"
   }
 }

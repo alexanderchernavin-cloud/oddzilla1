@@ -402,7 +402,7 @@
     "catAnalyticsTitle": "Analytika",
     "catAnalyticsBody": "Vlastní statistiky používání (navštívené stránky, kliknutí, délka návštěvy) zpracovávané výhradně na našich serverech. Nikdy je nesdílíme s třetími stranami.",
     "embedsBlockedTitle": "Obsah třetích stran je vypnutý",
-    "embedsBlockedBody": "Vaše nastavení cookies ponechává vložené přenosy a widgety vypnuté. Jejich povolením umožníte poskytovateli ukládat vlastní cookies.",
+    "embedsBlockedBody": "Vložené přenosy a widgety zůstávají vypnuté, dokud nepřijmete cookies. Přijetím umožníte poskytovateli ukládat vlastní cookies.",
     "embedsEnable": "Povolit média třetích stran"
   }
 }
