@@ -24,10 +24,16 @@ import type {
   AnalyticsMouseWireBatch,
   AnalyticsWireEvent,
 } from "@oddzilla/types";
-import {
-  ANALYTICS_MAX_EVENTS_PER_REQUEST,
-  ANALYTICS_MAX_MOUSE_BATCHES_PER_REQUEST,
-} from "@oddzilla/types";
+
+// Mirrors ANALYTICS_MAX_EVENTS_PER_REQUEST / _MOUSE_BATCHES_PER_REQUEST
+// in packages/types/src/analytics.ts (the server-enforced caps). Kept as
+// local literals because apps/web may only `import type` from
+// @oddzilla/types — a value import makes Next's webpack bundle the whole
+// source barrel, whose `.js`-extension ESM imports it can't resolve
+// (tsc NodeNext maps .js → .ts; webpack doesn't). Every other web file
+// follows the same type-only rule.
+const MAX_EVENTS_PER_REQUEST = 200;
+const MAX_MOUSE_BATCHES_PER_REQUEST = 20;
 
 const RAW_API_URL = process.env.NEXT_PUBLIC_API_URL;
 // Same fallback logic as lib/api-client.ts — empty env means same-origin
@@ -314,7 +320,7 @@ function sendBeaconPayload(payload: AnalyticsCollectRequest): boolean {
 function flushBeacon(): void {
   closeSegment();
   if (events.length === 0 && mouseBatches.length === 0) return;
-  const evs = events.splice(0, ANALYTICS_MAX_EVENTS_PER_REQUEST);
+  const evs = events.splice(0, MAX_EVENTS_PER_REQUEST);
   // Beacon/keepalive bodies share a 64 KiB in-flight budget — keep the
   // final payload small; anything left beyond it is accepted loss.
   const mbs = mouseBatches.splice(0, 4);
@@ -330,8 +336,8 @@ async function flush(): Promise<void> {
     let rounds = 0;
     while ((events.length > 0 || mouseBatches.length > 0) && rounds < 3) {
       rounds += 1;
-      const evs = events.splice(0, ANALYTICS_MAX_EVENTS_PER_REQUEST);
-      const mbs = mouseBatches.splice(0, ANALYTICS_MAX_MOUSE_BATCHES_PER_REQUEST);
+      const evs = events.splice(0, MAX_EVENTS_PER_REQUEST);
+      const mbs = mouseBatches.splice(0, MAX_MOUSE_BATCHES_PER_REQUEST);
       if (evs.length === 0 && mbs.length === 0) break;
       const payload = buildPayload(evs, mbs);
 
