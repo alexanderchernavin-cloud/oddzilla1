@@ -1,37 +1,8 @@
-import Link from "next/link";
 import { serverApi } from "@/lib/server-fetch";
-
-interface SportSummary {
-  id: number;
-  slug: string;
-  name: string;
-  maxMapNumber: number;
-  // Keyed by scope value (match | top | map_<N> | custom_<key>).
-  // Missing keys = 0.
-  configured: Record<string, number>;
-  // Admin-created curated groups, in tab order.
-  customGroups: Array<{ scope: string; label: string | null }>;
-}
+import { SportRow, type SportSummary } from "./sport-row";
 
 interface SportListResponse {
   sports: SportSummary[];
-}
-
-interface ScopeChip {
-  scope: string;
-  label: string;
-}
-
-function scopeChips(sport: SportSummary): ScopeChip[] {
-  const chips: ScopeChip[] = [{ scope: "match", label: "Match" }];
-  for (let n = 1; n <= sport.maxMapNumber; n++) {
-    chips.push({ scope: `map_${n}`, label: `Map ${n}` });
-  }
-  chips.push({ scope: "top", label: "Top" });
-  for (const g of sport.customGroups) {
-    chips.push({ scope: g.scope, label: g.label ?? g.scope });
-  }
-  return chips;
 }
 
 export default async function MarketsOrderIndex() {
@@ -67,44 +38,7 @@ export default async function MarketsOrderIndex() {
             </thead>
             <tbody className="divide-y divide-[var(--color-border)]">
               {sports.map((s) => (
-                <tr key={s.id}>
-                  <td className="px-5 py-3 align-top">{s.name}</td>
-                  <td className="px-5 py-3 align-top font-mono text-[var(--color-fg-muted)]">
-                    {s.slug}
-                  </td>
-                  <td className="px-5 py-3">
-                    <div className="flex flex-wrap gap-1.5">
-                      {scopeChips(s).map((chip) => {
-                        const count = s.configured[chip.scope] ?? 0;
-                        return (
-                          <Link
-                            key={chip.scope}
-                            href={`/admin/fe-settings/markets-order/${s.id}/${chip.scope}`}
-                            className={
-                              "inline-flex items-center gap-2 rounded border px-2 py-1 text-xs " +
-                              (count > 0
-                                ? "border-[var(--color-accent)] text-[var(--color-fg)] hover:bg-[var(--color-bg-elevated)]"
-                                : "border-[var(--color-border)] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]")
-                            }
-                          >
-                            <span className="uppercase tracking-[0.12em]">
-                              {chip.label}
-                            </span>
-                            <span className="font-mono text-[var(--color-fg-subtle)]">
-                              {count > 0 ? count : "—"}
-                            </span>
-                          </Link>
-                        );
-                      })}
-                      <Link
-                        href={`/admin/fe-settings/markets-order/${s.id}/groups`}
-                        className="inline-flex items-center rounded border border-dashed border-[var(--color-border)] px-2 py-1 text-xs uppercase tracking-[0.12em] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]"
-                      >
-                        Groups
-                      </Link>
-                    </div>
-                  </td>
-                </tr>
+                <SportRow key={s.id} sport={s} />
               ))}
             </tbody>
           </table>
