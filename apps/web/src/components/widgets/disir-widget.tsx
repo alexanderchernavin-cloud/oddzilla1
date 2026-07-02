@@ -22,6 +22,7 @@ import {
 } from "react";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { useDocumentTheme } from "@/lib/use-theme";
+import { useEmbedsAllowed } from "@/lib/cookie-consent";
 
 type Variant = "prematch-match" | "prematch-tournament" | "live-scoreboard";
 
@@ -140,10 +141,22 @@ export function DisirWidget(props: DisirWidgetProps) {
     props.variant,
   ]);
 
+  // Disir widgets are cross-origin iframes (*.oddin.gg) that can set
+  // their own cookies — non-essential under ePrivacy, so they only
+  // mount after the cookie banner's "third-party media" consent. While
+  // consent is missing or declined we report "unavailable" so parents
+  // collapse their containers, exactly like the widget_disabled path.
+  const embedsAllowed = useEmbedsAllowed();
+
   // Fetch the iframe URL whenever the (variant, id, query) tuple
   // changes. The endpoint is rate-limited and Redis-cached server-side,
-  // so a quick remount during navigation is cheap.
+  // so a quick remount during navigation is cheap. Refires when the
+  // user grants embed consent, so widgets appear without a reload.
   useEffect(() => {
+    if (!embedsAllowed) {
+      onAvailabilityChange?.("unavailable");
+      return;
+    }
     if (!id) return;
     let cancelled = false;
     setUrl(null);
@@ -185,7 +198,7 @@ export function DisirWidget(props: DisirWidgetProps) {
     return () => {
       cancelled = true;
     };
-  }, [variant, id, querySig, hideUntilData, onAvailabilityChange]);
+  }, [variant, id, querySig, hideUntilData, onAvailabilityChange, embedsAllowed]);
 
   // Subscribe to the widget's postMessage events. Filter to messages
   // sourced from the rendered iframe so other iframes on the page
@@ -235,8 +248,10 @@ export function DisirWidget(props: DisirWidgetProps) {
     return () => window.removeEventListener("message", handler);
   }, [minHeight, hideUntilData, onClose, onAvailabilityChange]);
 
-  // Disabled or broken — render nothing. Parent decides whether to show
-  // an empty state via the onAvailabilityChange callback.
+  // Disabled, broken, or blocked by cookie consent — render nothing.
+  // Parent decides whether to show an empty state via the
+  // onAvailabilityChange callback.
+  if (!embedsAllowed) return null;
   if (error === "disabled" || error === "not_available") return null;
 
   if (!url && error) {

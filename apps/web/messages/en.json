@@ -73,7 +73,9 @@
     "moveSportDown": "Move down",
     "hideSport": "Hide",
     "showSport": "Show",
-    "hiddenSportsHeader": "Hidden"
+    "hiddenSportsHeader": "Hidden",
+    "privacyPolicy": "Privacy & Cookies Policy",
+    "cookiePreferences": "Cookie preferences"
   },
   "wallet": {
     "title": "Wallet",
@@ -384,5 +386,21 @@
     "pt": "Português",
     "ru": "Русский",
     "es": "Español"
+  },
+  "cookieConsent": {
+    "title": "Cookies on Oddzilla",
+    "body": "We use strictly necessary cookies to keep you signed in, secure your account, and remember your preferences. With your consent, we also load embedded third-party content (live streams and match statistics widgets) that can set its own cookies.",
+    "learnMore": "Privacy & Cookies Policy",
+    "acceptAll": "Accept all",
+    "necessaryOnly": "Necessary only",
+    "customize": "Customize",
+    "saveChoices": "Save choices",
+    "catNecessaryTitle": "Strictly necessary",
+    "catNecessaryBody": "Sign-in, security, and preference cookies. Always on.",
+    "catEmbedsTitle": "Third-party media",
+    "catEmbedsBody": "Live streams and statistics widgets from Twitch, YouTube, Kick, Gjirafa, and Oddin. These providers may set their own cookies.",
+    "embedsBlockedTitle": "Third-party content is off",
+    "embedsBlockedBody": "Your cookie preferences keep embedded streams and widgets disabled. Enabling them lets the provider set its own cookies.",
+    "embedsEnable": "Enable third-party media"
   }
 }
