@@ -389,7 +389,7 @@
   },
   "cookieConsent": {
     "title": "Cookies on Oddzilla",
-    "body": "We use strictly necessary cookies to keep you signed in, secure your account, and remember your preferences. With your consent, we also load embedded third-party content (live streams and match statistics widgets) that can set its own cookies.",
+    "body": "We use strictly necessary cookies to keep you signed in, secure your account, and remember your preferences. With your consent, we also load embedded third-party content (live streams and statistics widgets) that can set its own cookies, and collect first-party analytics about how the site is used.",
     "learnMore": "Privacy & Cookies Policy",
     "acceptAll": "Accept all",
     "necessaryOnly": "Necessary only",
@@ -399,6 +399,8 @@
     "catNecessaryBody": "Sign-in, security, and preference cookies. Always on.",
     "catEmbedsTitle": "Third-party media",
     "catEmbedsBody": "Live streams and statistics widgets from Twitch, YouTube, Kick, Gjirafa, and Oddin. These providers may set their own cookies.",
+    "catAnalyticsTitle": "Analytics",
+    "catAnalyticsBody": "First-party usage statistics (pages visited, clicks, session length) processed only on our own servers. Never shared with third parties.",
     "embedsBlockedTitle": "Third-party content is off",
     "embedsBlockedBody": "Your cookie preferences keep embedded streams and widgets disabled. Enabling them lets the provider set its own cookies.",
     "embedsEnable": "Enable third-party media"

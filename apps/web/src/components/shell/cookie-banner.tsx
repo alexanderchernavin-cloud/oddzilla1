@@ -31,17 +31,21 @@ export function CookieBanner() {
   // Checkbox state for the Customize panel; seeded from the stored
   // choice when re-opening so the user edits what's in force.
   const [embedsChecked, setEmbedsChecked] = useState(consent?.embeds ?? false);
+  const [analyticsChecked, setAnalyticsChecked] = useState(
+    consent?.analytics ?? false,
+  );
 
   useConsentReopenListener(() => {
     setEmbedsChecked(consent?.embeds ?? false);
+    setAnalyticsChecked(consent?.analytics ?? false);
     setReopened(true);
   });
 
   const open = ready && (consent === null || reopened);
   if (!open) return null;
 
-  function decide(embeds: boolean) {
-    writeConsent(embeds);
+  function decide(choice: { embeds: boolean; analytics: boolean }) {
+    writeConsent(choice);
     setReopened(false);
     setExpanded(false);
   }
@@ -164,13 +168,37 @@ export function CookieBanner() {
                 </span>
               </span>
             </label>
+            <label
+              style={{
+                display: "flex",
+                gap: 10,
+                alignItems: "flex-start",
+                fontSize: 12.5,
+                cursor: "pointer",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={analyticsChecked}
+                onChange={(e) => setAnalyticsChecked(e.target.checked)}
+                style={{ marginTop: 2 }}
+                aria-label={t("catAnalyticsTitle")}
+              />
+              <span>
+                <span style={{ fontWeight: 600 }}>{t("catAnalyticsTitle")}</span>
+                <br />
+                <span style={{ color: "var(--fg-muted)" }}>
+                  {t("catAnalyticsBody")}
+                </span>
+              </span>
+            </label>
           </div>
         )}
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button
             type="button"
-            onClick={() => decide(true)}
+            onClick={() => decide({ embeds: true, analytics: true })}
             style={{
               ...buttonBase,
               background: "var(--accent)",
@@ -182,7 +210,7 @@ export function CookieBanner() {
           </button>
           <button
             type="button"
-            onClick={() => decide(false)}
+            onClick={() => decide({ embeds: false, analytics: false })}
             style={{
               ...buttonBase,
               background: "var(--accent)",
@@ -195,7 +223,9 @@ export function CookieBanner() {
           {expanded ? (
             <button
               type="button"
-              onClick={() => decide(embedsChecked)}
+              onClick={() =>
+                decide({ embeds: embedsChecked, analytics: analyticsChecked })
+              }
               style={{
                 ...buttonBase,
                 background: "transparent",

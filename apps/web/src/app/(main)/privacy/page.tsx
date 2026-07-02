@@ -148,6 +148,13 @@ export default function PrivacyPage() {
             identifiers, and timestamps in server logs, used for security and
             troubleshooting.
           </Li>
+          <Li>
+            Usage analytics (only with your consent): pages visited, clicks,
+            session length, and sampled mouse movement, tied to a per-tab
+            session identifier and — if you are signed in — to your account.
+            Collected and processed exclusively on our own servers; no
+            third-party analytics vendor is involved.
+          </Li>
         </ul>
 
         <H3>3. Why we process it</H3>
@@ -166,9 +173,9 @@ export default function PrivacyPage() {
             platform security, and audit trails (art. 6(1)(f)).
           </Li>
           <Li>
-            With your consent — push notifications and third-party embedded
-            media cookies (art. 6(1)(a)). You can withdraw consent at any
-            time.
+            With your consent — push notifications, third-party embedded
+            media cookies, and first-party usage analytics (art. 6(1)(a)).
+            You can withdraw consent at any time.
           </Li>
         </ul>
 
@@ -198,7 +205,11 @@ export default function PrivacyPage() {
             Public authorities where the law requires it.
           </Li>
         </ul>
-        <P>We do not sell personal data and we run no advertising trackers.</P>
+        <P>
+          We do not sell personal data and we run no advertising or
+          third-party analytics trackers. Usage analytics, when you consent
+          to them, are collected first-party and stay on our own servers.
+        </P>
 
         <H3>5. International transfers</H3>
         <P>
@@ -217,6 +228,10 @@ export default function PrivacyPage() {
           <Li>Odds history: 90 days.</Li>
           <Li>Raw feed message logs: 7 days.</Li>
           <Li>Database backups: 14 days.</Li>
+          <Li>
+            Usage analytics (if consented): sessions and events 90 days,
+            mouse-movement samples 14 days.
+          </Li>
           <Li>
             Server logs: rotated automatically (approximately 50 MB per
             service).
@@ -259,11 +274,12 @@ export default function PrivacyPage() {
 
         <P>
           Cookies are small files stored on your device. We group them into
-          two categories. Strictly necessary cookies are required for the site
-          to function (signing in, security, remembering your language) and
-          are exempt from consent. Third-party media cookies are set by
+          three categories. Strictly necessary cookies are required for the
+          site to function (signing in, security, remembering your language)
+          and are exempt from consent. Third-party media cookies are set by
           external providers when you load embedded streams or statistics
-          widgets — those load only after you allow them in the cookie
+          widgets. First-party analytics storage supports our own usage
+          statistics. The last two are off until you allow them in the cookie
           banner.
         </P>
 
@@ -316,6 +332,18 @@ export default function PrivacyPage() {
           privacy policies. We block these embeds until you choose
           &ldquo;Accept all&rdquo; or enable the third-party media category —
           and if you decline, they stay off.
+        </P>
+
+        <H3>First-party analytics (consent required)</H3>
+        <P>
+          With your consent, we record how the site is used — pages visited,
+          clicks, session length, and sampled mouse movement — to improve the
+          product. A random session identifier (oz:analytics:session) is kept
+          in your browser&rsquo;s session storage for at most 30 minutes of
+          inactivity and is created only after you consent. The data is
+          processed exclusively on our own servers and is never shared with
+          or sold to anyone. Declining or withdrawing consent stops
+          collection immediately and removes the identifier.
         </P>
 
         <H3>Managing your preferences</H3>

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { I } from "@/components/ui/icons";
-import { useEmbedsAllowed, writeConsent } from "@/lib/cookie-consent";
+import { useEmbedsAllowed, grantEmbedsConsent } from "@/lib/cookie-consent";
 import { useTranslations } from "@/lib/i18n";
 
 export interface MatchStream {
@@ -256,7 +256,7 @@ function EmbedConsentPlaceholder() {
       </div>
       <button
         type="button"
-        onClick={() => writeConsent(true)}
+        onClick={grantEmbedsConsent}
         style={{
           marginTop: 4,
           padding: "8px 14px",

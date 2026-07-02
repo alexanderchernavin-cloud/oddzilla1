@@ -33,7 +33,14 @@ export interface CookieConsent {
   v: 1;
   // Third-party embedded media (streams + widgets) allowed.
   embeds: boolean;
+  // First-party analytics (fe-analytics tracker) allowed.
+  analytics: boolean;
   decidedAt: string;
+}
+
+export interface ConsentChoice {
+  embeds: boolean;
+  analytics: boolean;
 }
 
 export function readConsent(): CookieConsent | null {
@@ -42,9 +49,17 @@ export function readConsent(): CookieConsent | null {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as CookieConsent;
-    if (parsed && parsed.v === 1 && typeof parsed.embeds === "boolean") {
+    if (
+      parsed &&
+      parsed.v === 1 &&
+      typeof parsed.embeds === "boolean" &&
+      typeof parsed.analytics === "boolean"
+    ) {
       return parsed;
     }
+    // Unknown shape (e.g. a consent category was added since the
+    // choice was stored) — treat as undecided so the banner re-asks
+    // rather than assuming an answer the user never gave.
     return null;
   } catch {
     // localStorage may throw in restrictive contexts — treat as undecided.
@@ -52,11 +67,12 @@ export function readConsent(): CookieConsent | null {
   }
 }
 
-export function writeConsent(embeds: boolean): void {
+export function writeConsent(choice: ConsentChoice): void {
   if (typeof window === "undefined") return;
   const value: CookieConsent = {
     v: 1,
-    embeds,
+    embeds: choice.embeds,
+    analytics: choice.analytics,
     decidedAt: new Date().toISOString(),
   };
   try {
@@ -65,6 +81,14 @@ export function writeConsent(embeds: boolean): void {
     // ignore — the in-tab event below still updates the current session
   }
   window.dispatchEvent(new Event(CHANGED_EVENT));
+}
+
+// One-click affirmative opt-in used by the stream placeholder: allow
+// embeds while leaving the analytics answer exactly as it was (false
+// when the user never decided).
+export function grantEmbedsConsent(): void {
+  const current = readConsent();
+  writeConsent({ embeds: true, analytics: current?.analytics ?? false });
 }
 
 // Re-open the banner so the user can change or withdraw consent (GDPR
