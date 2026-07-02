@@ -62,7 +62,10 @@ const messageCountSql = sql<string>`(
    WHERE ${feedMessages.eventUrn} = ${matches.providerUrn}
 )`;
 
-const HISTORY_DAYS = 7;
+// Operator requirement (2026-07-02): 30 days of odds-tick history must be
+// browsable from the admin logs panel. The odds_history table holds 45
+// days (ODDS_RETENTION_DAYS cron), so the window has data behind it.
+const HISTORY_DAYS = 30;
 const HISTORY_MS = HISTORY_DAYS * 24 * 60 * 60 * 1000;
 
 export default async function adminLogsRoutes(app: FastifyInstance) {
@@ -196,7 +199,7 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
   // Outcome `result` ∈ {won, lost, void, half_won, half_lost} comes from
   // settlement; null means the market is unsettled. The chart payload is
   // limited to 24h of inline points to keep the page light — the full
-  // 7-day history lives behind the per-market history button.
+  // HISTORY_DAYS window lives behind the per-market history button.
   app.get("/admin/logs/matches/:id", async (request) => {
     request.requireRole("admin");
     const { id } = z
@@ -384,8 +387,8 @@ export default async function adminLogsRoutes(app: FastifyInstance) {
     };
 
     // Bound the chart payload to 24h to keep this page snappy. The
-    // per-market history endpoint serves the full 7-day window when the
-    // admin needs the long view.
+    // per-market history endpoint serves the full HISTORY_DAYS window
+    // when the admin needs the long view.
     //
     // We expand market_ids into an `IN (...)` list with sql.join rather
     // than `ANY(:::bigint[])` because postgres-js renders a JS array
