@@ -1,46 +1,39 @@
 "use client";
 
-// Cookie-consent store (GDPR / ePrivacy).
+// Cookie acknowledgment store.
 //
-// The storefront sets only strictly necessary first-party cookies
-// (auth session, locale) and localStorage preferences (theme, slip
-// currency) — those are exempt from consent under ePrivacy art. 5(3).
-// The single non-essential category is THIRD-PARTY EMBEDDED MEDIA:
-// live-stream players (Twitch / YouTube / Kick / Gjirafa) and Oddin
-// Disir statistics widgets, all cross-origin iframes that can set
-// their own cookies the moment they load. Consent therefore gates
-// whether those iframes mount at all — see `match-streams.tsx` and
-// `disir-widget.tsx`.
+// Operator decision (2026-07-02, UZ-market product call): the banner is
+// ACCEPTANCE-ONLY — it offers two "Accept all" buttons and no reject
+// path. Clicking either accepts every category. The store still gates
+// the two non-essential surfaces (third-party embedded media + the
+// fe-analytics tracker) until the visitor has clicked accept, so
+// nothing loads behind an unanswered banner.
 //
-// The stored choice is honest: "Necessary only" really disables the
-// embeds. Do NOT change a rejection into an implicit accept — a
-// consent record that doesn't match observable behaviour is the
-// canonical GDPR dark-pattern regulators fine for, and it would
-// invalidate every consent collected through this banner.
+// Guardrail for future edits: the buttons say "Accept all" and that is
+// exactly what they do — label and behaviour match. If a Reject /
+// "Necessary only" option is ever reintroduced, it MUST genuinely
+// disable the categories. A reject-labelled control that accepts is
+// deceptive design; do not wire one up.
 //
-// Storage: localStorage["oz:cookie-consent"], same `oz:` prefix as
-// the theme toggle. Cross-component sync via a window CustomEvent so
-// the banner, the footer button, and every gated embed re-render the
-// moment the user decides.
+// Storage: localStorage["oz:cookie-consent"], same `oz:` prefix as the
+// theme toggle. v bumped 1 → 2 when the banner went acceptance-only so
+// choices stored by the short-lived v1 banner (including declines) are
+// re-asked instead of silently carried forward. Cross-component sync
+// via a window event so the banner and every gated embed re-render the
+// moment the visitor accepts.
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 const STORAGE_KEY = "oz:cookie-consent";
 const CHANGED_EVENT = "oz:cookie-consent-changed";
-const REOPEN_EVENT = "oz:cookie-consent-reopen";
 
 export interface CookieConsent {
-  v: 1;
+  v: 2;
   // Third-party embedded media (streams + widgets) allowed.
   embeds: boolean;
   // First-party analytics (fe-analytics tracker) allowed.
   analytics: boolean;
   decidedAt: string;
-}
-
-export interface ConsentChoice {
-  embeds: boolean;
-  analytics: boolean;
 }
 
 export function readConsent(): CookieConsent | null {
@@ -51,28 +44,27 @@ export function readConsent(): CookieConsent | null {
     const parsed = JSON.parse(raw) as CookieConsent;
     if (
       parsed &&
-      parsed.v === 1 &&
+      parsed.v === 2 &&
       typeof parsed.embeds === "boolean" &&
       typeof parsed.analytics === "boolean"
     ) {
       return parsed;
     }
-    // Unknown shape (e.g. a consent category was added since the
-    // choice was stored) — treat as undecided so the banner re-asks
-    // rather than assuming an answer the user never gave.
+    // Unknown or older shape — treat as unanswered so the banner shows
+    // again rather than assuming an answer from a different regime.
     return null;
   } catch {
-    // localStorage may throw in restrictive contexts — treat as undecided.
+    // localStorage may throw in restrictive contexts — treat as unanswered.
     return null;
   }
 }
 
-export function writeConsent(choice: ConsentChoice): void {
+export function acceptAll(): void {
   if (typeof window === "undefined") return;
   const value: CookieConsent = {
-    v: 1,
-    embeds: choice.embeds,
-    analytics: choice.analytics,
+    v: 2,
+    embeds: true,
+    analytics: true,
     decidedAt: new Date().toISOString(),
   };
   try {
@@ -83,24 +75,8 @@ export function writeConsent(choice: ConsentChoice): void {
   window.dispatchEvent(new Event(CHANGED_EVENT));
 }
 
-// One-click affirmative opt-in used by the stream placeholder: allow
-// embeds while leaving the analytics answer exactly as it was (false
-// when the user never decided).
-export function grantEmbedsConsent(): void {
-  const current = readConsent();
-  writeConsent({ embeds: true, analytics: current?.analytics ?? false });
-}
-
-// Re-open the banner so the user can change or withdraw consent (GDPR
-// art. 7(3): withdrawing must be as easy as giving). The stored choice
-// stays in force until they pick again.
-export function requestConsentReopen(): void {
-  if (typeof window === "undefined") return;
-  window.dispatchEvent(new Event(REOPEN_EVENT));
-}
-
 /**
- * Hook: current consent state, hydration-safe.
+ * Hook: current stored acknowledgment, hydration-safe.
  * `ready` is false during SSR and the first client render, so consumers
  * can render nothing until the real value is known (avoids hydration
  * mismatches — same pattern as the email-verification banner).
@@ -117,7 +93,7 @@ export function useCookieConsent(): {
     sync();
     setReady(true);
     window.addEventListener(CHANGED_EVENT, sync);
-    // `storage` fires when another tab changes the choice.
+    // `storage` fires when another tab stores the acknowledgment.
     window.addEventListener("storage", sync);
     return () => {
       window.removeEventListener(CHANGED_EVENT, sync);
@@ -129,20 +105,11 @@ export function useCookieConsent(): {
 }
 
 /**
- * Hook: true only when the user has affirmatively allowed third-party
- * embedded media. Undecided (no banner answer yet) counts as NOT
- * allowed — no non-essential cookies before consent.
+ * Hook: true once the visitor has accepted (embeds allowed). Unanswered
+ * counts as NOT allowed — nothing non-essential loads behind an
+ * unanswered banner.
  */
 export function useEmbedsAllowed(): boolean {
   const { consent } = useCookieConsent();
   return consent?.embeds === true;
-}
-
-/** Hook used by the banner: fires `cb` when a reopen is requested. */
-export function useConsentReopenListener(cb: () => void): void {
-  const stable = useCallback(cb, [cb]);
-  useEffect(() => {
-    window.addEventListener(REOPEN_EVENT, stable);
-    return () => window.removeEventListener(REOPEN_EVENT, stable);
-  }, [stable]);
 }

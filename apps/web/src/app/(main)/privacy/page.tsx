@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { CookiePreferencesButton } from "@/components/shell/cookie-preferences-button";
 
 // Privacy & Cookies Policy. Legal text is intentionally maintained in
 // English only — translations of legal documents drift from the
@@ -100,10 +99,8 @@ export default function PrivacyPage() {
         <P>
           This page explains how Oddzilla (&ldquo;we&rdquo;, &ldquo;us&rdquo;)
           collects and uses personal data when you use oddzilla.cc, and which
-          cookies and similar technologies the site relies on. It is written to
-          meet the requirements of the EU General Data Protection Regulation
-          (GDPR) and the ePrivacy Directive. This document is provided in
-          English.
+          cookies and similar technologies the site relies on. This document
+          is provided in English.
         </P>
 
         <H2>Privacy Policy</H2>
@@ -149,11 +146,11 @@ export default function PrivacyPage() {
             troubleshooting.
           </Li>
           <Li>
-            Usage analytics (only with your consent): pages visited, clicks,
-            session length, and sampled mouse movement, tied to a per-tab
-            session identifier and — if you are signed in — to your account.
-            Collected and processed exclusively on our own servers; no
-            third-party analytics vendor is involved.
+            Usage analytics (only after you accept cookies): pages visited,
+            clicks, session length, and sampled mouse movement, tied to a
+            per-tab session identifier and — if you are signed in — to your
+            account. Collected and processed exclusively on our own servers;
+            no third-party analytics vendor is involved.
           </Li>
         </ul>
 
@@ -161,21 +158,22 @@ export default function PrivacyPage() {
         <ul style={{ paddingLeft: 20, margin: "0 0 12px" }}>
           <Li>
             To provide the service — account management, accepting and
-            settling bets, deposits and withdrawals (performance of a
-            contract, art. 6(1)(b) GDPR).
+            settling bets, deposits and withdrawals (performance of our
+            contract with you).
           </Li>
           <Li>
             To meet legal obligations — accounting, anti-money-laundering and
-            responsible-gambling duties where applicable (art. 6(1)(c)).
+            responsible-gambling duties where applicable.
           </Li>
           <Li>
             For our legitimate interests — fraud prevention, risk management,
-            platform security, and audit trails (art. 6(1)(f)).
+            platform security, and audit trails.
           </Li>
           <Li>
-            With your consent — push notifications, third-party embedded
-            media cookies, and first-party usage analytics (art. 6(1)(a)).
-            You can withdraw consent at any time.
+            With your acceptance — push notifications, third-party embedded
+            media cookies, and first-party usage analytics. These stay off
+            until you accept them (push notifications additionally require a
+            device-level permission you can revoke in your device settings).
           </Li>
         </ul>
 
@@ -199,7 +197,7 @@ export default function PrivacyPage() {
           </Li>
           <Li>
             Streaming platforms (Twitch, YouTube, Kick, Gjirafa) — only when
-            you consent to third-party media and load an embedded stream.
+            you accept cookies and load an embedded stream.
           </Li>
           <Li>
             Public authorities where the law requires it.
@@ -207,8 +205,8 @@ export default function PrivacyPage() {
         </ul>
         <P>
           We do not sell personal data and we run no advertising or
-          third-party analytics trackers. Usage analytics, when you consent
-          to them, are collected first-party and stay on our own servers.
+          third-party analytics trackers. Usage analytics, once you accept
+          cookies, are collected first-party and stay on our own servers.
         </P>
 
         <H3>5. International transfers</H3>
@@ -229,7 +227,7 @@ export default function PrivacyPage() {
           <Li>Raw feed message logs: 7 days.</Li>
           <Li>Database backups: 14 days.</Li>
           <Li>
-            Usage analytics (if consented): sessions and events 90 days,
+            Usage analytics (if accepted): sessions and events 90 days,
             mouse-movement samples 14 days.
           </Li>
           <Li>
@@ -240,13 +238,13 @@ export default function PrivacyPage() {
 
         <H3>7. Your rights</H3>
         <P>
-          Under the GDPR you can ask us for access to, rectification or
-          erasure of your personal data, restriction of processing, data
-          portability, and you can object to processing based on legitimate
-          interests. Where processing is based on consent you can withdraw it
-          at any time without affecting prior processing. Write to
-          privacy@oddzilla.cc — we respond within one month. You also have the
-          right to lodge a complaint with your local supervisory authority.
+          You can ask us for access to, correction of, or deletion of your
+          personal data, and for a copy of the data you gave us. Write to
+          privacy@oddzilla.cc — we respond within one month. Note that we
+          must retain some records (bets, payments) for accounting and
+          anti-fraud purposes even after an account is closed, and blockchain
+          transactions are public by design and cannot be erased from the
+          chain.
         </P>
 
         <H3>8. Security</H3>
@@ -276,11 +274,10 @@ export default function PrivacyPage() {
           Cookies are small files stored on your device. We group them into
           three categories. Strictly necessary cookies are required for the
           site to function (signing in, security, remembering your language)
-          and are exempt from consent. Third-party media cookies are set by
-          external providers when you load embedded streams or statistics
-          widgets. First-party analytics storage supports our own usage
-          statistics. The last two are off until you allow them in the cookie
-          banner.
+          and are always on. Third-party media cookies are set by external
+          providers when you load embedded streams or statistics widgets.
+          First-party analytics storage supports our own usage statistics.
+          The last two stay off until you accept cookies on the banner.
         </P>
 
         <H3>Strictly necessary cookies and storage</H3>
@@ -324,37 +321,34 @@ export default function PrivacyPage() {
           </table>
         </div>
 
-        <H3>Third-party media (consent required)</H3>
+        <H3>Third-party media</H3>
         <P>
           Match pages can embed live streams and statistics widgets from
           Twitch, YouTube, Kick, Gjirafa, and Oddin. These providers may set
           their own cookies and process your IP address under their own
-          privacy policies. We block these embeds until you choose
-          &ldquo;Accept all&rdquo; or enable the third-party media category —
-          and if you decline, they stay off.
+          privacy policies. These embeds stay off until you accept cookies on
+          the banner (or accept directly from a stream placeholder).
         </P>
 
-        <H3>First-party analytics (consent required)</H3>
+        <H3>First-party analytics</H3>
         <P>
-          With your consent, we record how the site is used — pages visited,
-          clicks, session length, and sampled mouse movement — to improve the
-          product. A random session identifier (oz:analytics:session) is kept
-          in your browser&rsquo;s session storage for at most 30 minutes of
-          inactivity and is created only after you consent. The data is
-          processed exclusively on our own servers and is never shared with
-          or sold to anyone. Declining or withdrawing consent stops
-          collection immediately and removes the identifier.
+          Once you accept cookies, we record how the site is used — pages
+          visited, clicks, session length, and sampled mouse movement — to
+          improve the product. A random session identifier
+          (oz:analytics:session) is kept in your browser&rsquo;s session
+          storage for at most 30 minutes of inactivity and is created only
+          after you accept. The data is processed exclusively on our own
+          servers and is never shared with or sold to anyone.
         </P>
 
-        <H3>Managing your preferences</H3>
+        <H3>Managing cookies</H3>
         <P>
-          You can change or withdraw your cookie consent at any time — use
-          the button below or the &ldquo;Cookie preferences&rdquo; link in the
-          footer. You can also delete cookies through your browser settings.
+          The cookie banner offers acceptance only. If you prefer not to use
+          these cookies, you can delete or block them at any time through
+          your browser settings (including site data and local storage for
+          oddzilla.cc). Blocking strictly necessary cookies will prevent
+          signing in from working.
         </P>
-        <div style={{ margin: "16px 0 8px" }}>
-          <CookiePreferencesButton />
-        </div>
       </article>
     </div>
   );

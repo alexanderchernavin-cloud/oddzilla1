@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { I } from "@/components/ui/icons";
-import { useEmbedsAllowed, grantEmbedsConsent } from "@/lib/cookie-consent";
+import { useEmbedsAllowed, acceptAll } from "@/lib/cookie-consent";
 import { useTranslations } from "@/lib/i18n";
 
 export interface MatchStream {
@@ -219,9 +219,9 @@ function StreamEmbed({
   );
 }
 
-// Rendered in place of the player while third-party media consent is
-// missing or declined. The button records embeds=true consent (an
-// explicit, specific opt-in) and the player mounts immediately.
+// Rendered in place of the player while the cookie banner is still
+// unanswered. The button is the same "Accept all" the banner offers —
+// clicking it stores the acceptance and the player mounts immediately.
 function EmbedConsentPlaceholder() {
   const t = useTranslations("cookieConsent");
   return (
@@ -256,7 +256,7 @@ function EmbedConsentPlaceholder() {
       </div>
       <button
         type="button"
-        onClick={grantEmbedsConsent}
+        onClick={acceptAll}
         style={{
           marginTop: 4,
           padding: "8px 14px",
@@ -269,7 +269,7 @@ function EmbedConsentPlaceholder() {
           cursor: "pointer",
         }}
       >
-        {t("embedsEnable")}
+        {t("acceptAll")}
       </button>
     </div>
   );
