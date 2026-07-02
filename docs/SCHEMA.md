@@ -423,11 +423,11 @@ Unique key
 `(event_urn, market_id, specifiers_hash, type, payload_hash)`
 where `payload_hash` is sha256 of the canonicalized XML. An `ON CONFLICT DO
 NOTHING` with `RETURNING id` tells the worker whether it actually inserted
-(do work) or it's a replay (skip). `payload_json` (nullable since 0085) is
-audit-only — write-only in code; the nightly `oddzilla-settlements-retention`
-cron NULLs it after 45 days and deletes `settle`/`cancel` rows after 365
-days (rollback rows are kept forever; markets with open tickets are
-skipped; bettor-facing ticket history in `tickets` / `wallet_ledger` is
+(do work) or it's a replay (skip). `payload_json` is audit-only —
+write-only in code. Retention: the nightly `oddzilla-settlements-retention`
+cron deletes `settle`/`cancel` rows after 45 days (rollback rows are kept
+forever; markets with open tickets are skipped; bettor-facing ticket
+history in `tickets` / `wallet_ledger` / `market_outcomes.result` is
 never deleted by anything). Deleting old dedup rows is safe because identical-payload replays
 only arrive via AMQP redelivery or the 24 h-clamped recovery window — see
 docs/OPERATIONS.md → "settlements retention" for the full argument.

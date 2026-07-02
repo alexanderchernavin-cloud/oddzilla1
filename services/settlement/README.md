@@ -43,12 +43,12 @@ RETURNING id;
 
 If no row returned → replay → ack AMQP, exit.
 
-`payload_json` is audit-only (write-only in code) and nullable since
-migration 0085: the nightly `oddzilla-settlements-retention` cron NULLs it
-after 45 days and deletes settle/cancel rows after 365 days — the dedup key
-columns are what the invariant rides on, and identical-payload replays only
-arrive via AMQP redelivery or the 24 h-clamped recovery window. Ticket
-history itself (`tickets` / `wallet_ledger`) is never deleted. See
+Retention: the nightly `oddzilla-settlements-retention` cron deletes
+settle/cancel rows after 45 days (rollback rows kept forever; markets with
+open tickets skipped) — identical-payload replays only arrive via AMQP
+redelivery or the 24 h-clamped recovery window, and the money paths above
+are independently idempotent. Ticket history itself (`tickets` /
+`wallet_ledger` / `market_outcomes.result`) is never deleted. See
 `docs/OPERATIONS.md` → "settlements retention".
 
 Else:

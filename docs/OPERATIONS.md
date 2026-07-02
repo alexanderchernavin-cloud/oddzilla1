@@ -396,25 +396,23 @@ growing ~90–110 MB/day. Measured breakdown: 6.2 GB heap — of which 4.3 GB is
 indexes (the 5-tuple dedup unique alone is 2.2 GB).
 
 [`infra/hetzner/backup/settlements_retention.sh`](../infra/hetzner/backup/settlements_retention.sh)
-(installed as `oddzilla-settlements-retention`, cron `45 3 * * *`) runs two
-batched phases nightly:
+(installed as `oddzilla-settlements-retention`, cron `45 3 * * *`) deletes
+`settle` / `cancel` rows older than `SETTLEMENTS_RETENTION_DAYS` (default
+**45** — operator decision 2026-07-03, same window as odds_history) in
+bounded batches, with two guards:
 
-1. **Strip** — `payload_json := NULL` on rows older than
-   `SETTLEMENTS_STRIP_DAYS` (default **45**). The payload is write-only in
-   code (nothing SELECTs it; it exists for manual debugging with Oddin
-   support), and the apply-once dedup key rides on `payload_hash`, so
-   stripping sheds ~70% of heap bytes with the replay guard fully intact.
-   Requires migration 0085 (`payload_json` DROP NOT NULL).
-2. **Delete** — drop `settle` / `cancel` rows older than
-   `SETTLEMENTS_RETENTION_DAYS` (default **365** — operator decision
-   2026-07-03: keep a full year of settlement history; only odds data
-   lives 45 days) whose market has no open (`pending_delay` /
-   `accepted`) ticket. `rollback_settle` / `rollback_cancel` rows are
-   never deleted (~300 rows total; a re-applied rollback is the one
-   replay class that would claw back a real payout). Bettor-facing bet
-   history (`tickets`, `ticket_selections`, `wallet_ledger`,
-   `market_outcomes.result`) is never deleted by anything — this cron
-   only touches the Oddin message journal.
+- the market must have no open (`pending_delay` / `accepted`) ticket —
+  covers combos with one leg settled and another on a far-future match;
+- `rollback_settle` / `rollback_cancel` rows are never deleted (~300 rows
+  total; a re-applied rollback is the one replay class that would claw
+  back a real payout, so those dedup rows are kept forever for free).
+
+The durable record of every bet does NOT live here: `tickets`,
+`ticket_selections`, `wallet_ledger`, and `market_outcomes.result` are
+never deleted by anything — this cron only prunes the raw Oddin message
+journal on top of that. Neither recovery-flush path deletes `markets`
+(both auto and admin `flushOdds=true` are SUSPEND-only), so pruning
+settlements rows cannot expose the markets/outcomes they referenced.
 
 Why deleting dedup rows is safe: the unique key only rejects
 **byte-identical** replays — a genuine late re-settlement from Oddin carries
@@ -426,21 +424,14 @@ months-late identical replay is money-safe: `maybeSettleTicket` skips every
 non-`accepted` ticket, terminal market status is sticky, outcome-result
 rewrites are idempotent, and `wallet_ledger`'s unique
 `(type, ref_type, ref_id)` index blocks residual double-credits
-(invariant #4). 365 days is therefore enormous margin over the real
-window — the retention length is a history-keeping choice, not a safety
-requirement.
+(invariant #4). 45 days is therefore ~45× margin over the real window.
 
-Same plateau caveat as odds_history: DELETE/UPDATE never return pages to
-the OS — with the install-time autovacuum reloptions the heap stabilises
-at roughly `45 d × full-row rate + 320 d × stripped-row rate` ≈ **25 GB**
-at 2026-07 volume (~111 MB/day full, ~63 MB/day stripped since the
-indexes + fixed row cost survive the strip). That is ~15 GB above the
-2026-07-02 size, reached gradually until the delete phase first finds
-eligible rows around 2027-04-18 (launch + 365 d); the strip phase bites
-on night one. Budget the disk accordingly — at the post-reclaim ~80%
-baseline this plateau needs headroom from somewhere (bigger volume, or a
-shorter `SETTLEMENTS_RETENTION_DAYS`, which is safe to lower any time;
-the replay window only needs days).
+Same plateau caveat as odds_history: a DELETE never returns pages to the
+OS — with the install-time autovacuum reloptions the heap stabilises at
+~45 d × ~111 MB/day ≈ **5 GB** of live data inside the existing ~10 GB
+high-water footprint (the rest is reusable free space; a one-time reclaim
+is not worth it for this table). The first run deletes the ~6M-row
+backlog older than 45 days; after that it's ~135K rows/night.
 
 ### Off-server copy — pull to operator workstation
 
@@ -598,8 +589,8 @@ Before accepting real money:
 3. Check AMQP for unacked messages (Oddin integration dashboard).
 4. If stuck on one bad message → look at the latest row in `settlements`,
    inspect `payload_json`, work with Oddin support to reproduce. Note
-   `payload_json` is NULL on rows older than 45 days (settlements
-   retention strips it; the dedup key columns stay).
+   settle/cancel rows older than 45 days are pruned by the nightly
+   settlements retention (rollback rows are kept forever).
 
 ### Wallet-watcher chain reorg
 
