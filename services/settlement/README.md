@@ -43,6 +43,13 @@ RETURNING id;
 
 If no row returned → replay → ack AMQP, exit.
 
+`payload_json` is audit-only (write-only in code) and nullable since
+migration 0085: the nightly `oddzilla-settlements-retention` cron NULLs it
+after 45 days and deletes settle/cancel rows after 120 days — the dedup key
+columns are what the invariant rides on, and identical-payload replays only
+arrive via AMQP redelivery or the 24 h-clamped recovery window. See
+`docs/OPERATIONS.md` → "settlements retention".
+
 Else:
 1. `UPDATE market_outcomes SET result=..., void_factor=...`
 2. `UPDATE ticket_selections ... WHERE market_id=$1 AND result IS NULL`

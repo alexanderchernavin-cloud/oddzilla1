@@ -30,7 +30,10 @@ export const settlements = pgTable(
     specifiersHash: bytea().notNull(),
     type: settlementTypeEnum().notNull(),
     payloadHash: bytea().notNull(),
-    payloadJson: jsonb().notNull(),
+    // Nullable since 0085: the nightly retention cron strips payloads older
+    // than 45 days (audit-only column; the apply-once dedup key rides on
+    // payload_hash, never on the payload body). Inserts always supply it.
+    payloadJson: jsonb(),
     processedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

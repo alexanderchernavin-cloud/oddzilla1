@@ -387,6 +387,48 @@ into the cron PID's `/proc/<pid>/environ`); it now reads only
 `POSTGRES_USER`, `POSTGRES_DB`, `POSTGRES_PASSWORD`, and
 `BACKUP_GPG_RECIPIENT`.
 
+### settlements retention
+
+`settlements` (the apply-once log behind CLAUDE.md invariant #3) was the
+next unbounded table after odds_history: 9.8 GB / 12.05M rows on 2026-07-02,
+growing ~90–110 MB/day. Measured breakdown: 6.2 GB heap — of which 4.3 GB is
+`payload_json` (avg 371 B/row, all inline, no TOAST) — plus 3.6 GB of
+indexes (the 5-tuple dedup unique alone is 2.2 GB).
+
+[`infra/hetzner/backup/settlements_retention.sh`](../infra/hetzner/backup/settlements_retention.sh)
+(installed as `oddzilla-settlements-retention`, cron `45 3 * * *`) runs two
+batched phases nightly:
+
+1. **Strip** — `payload_json := NULL` on rows older than
+   `SETTLEMENTS_STRIP_DAYS` (default **45**). The payload is write-only in
+   code (nothing SELECTs it; it exists for manual debugging with Oddin
+   support), and the apply-once dedup key rides on `payload_hash`, so
+   stripping sheds ~70% of heap bytes with the replay guard fully intact.
+   Requires migration 0085 (`payload_json` DROP NOT NULL).
+2. **Delete** — drop `settle` / `cancel` rows older than
+   `SETTLEMENTS_RETENTION_DAYS` (default **120**) whose market has no open
+   (`pending_delay` / `accepted`) ticket. `rollback_settle` /
+   `rollback_cancel` rows are never deleted (~300 rows total; a re-applied
+   rollback is the one replay class that would claw back a real payout).
+
+Why deleting dedup rows is safe: the unique key only rejects
+**byte-identical** replays — a genuine late re-settlement from Oddin carries
+a different `payload_hash` and is supposed to apply. Identical replays have
+two systematic sources, both bounded to ~1 day (AMQP redelivery, and feed
+recovery which `RecoveryWindowCap` clamps to now-24 h — snapshot recovery
+carries odds state, not settlement messages). Even a hypothetical
+months-late identical replay is money-safe: `maybeSettleTicket` skips every
+non-`accepted` ticket, terminal market status is sticky, outcome-result
+rewrites are idempotent, and `wallet_ledger`'s unique
+`(type, ref_type, ref_id)` index blocks residual double-credits
+(invariant #4). 120 days is therefore >100× margin over the real window.
+
+Same plateau caveat as odds_history: DELETE/UPDATE never return pages to
+the OS — with the install-time autovacuum reloptions the heap stabilises at
+roughly `45 d × full-row rate + 75 d × stripped-row rate` ≈ 9.5 GB at
+2026-07 volume. Note launch was 2026-04-18, so the delete phase first finds
+eligible rows around 2026-08-16; the strip phase bites on night one.
+
 ### Off-server copy — pull to operator workstation
 
 [`infra/local/pull-backup.ps1`](../infra/local/pull-backup.ps1) is a
@@ -542,7 +584,9 @@ Before accepting real money:
    `pg_stat_activity` (`state='active' AND query LIKE '%settlements%'`).
 3. Check AMQP for unacked messages (Oddin integration dashboard).
 4. If stuck on one bad message → look at the latest row in `settlements`,
-   inspect `payload_json`, work with Oddin support to reproduce.
+   inspect `payload_json`, work with Oddin support to reproduce. Note
+   `payload_json` is NULL on rows older than 45 days (settlements
+   retention strips it; the dedup key columns stay).
 
 ### Wallet-watcher chain reorg
 
