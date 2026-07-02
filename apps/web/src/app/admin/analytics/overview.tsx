@@ -87,9 +87,10 @@ export function AnalyticsOverview() {
     [days, q],
   );
 
+  // Intentionally keyed on the range only — the search input applies on
+  // submit, not per keystroke.
   useEffect(() => {
     void loadSessions(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [days]);
 
   return (
