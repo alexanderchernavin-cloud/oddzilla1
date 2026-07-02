@@ -342,6 +342,18 @@ permanently is an operator call — the 60-day window was chosen 2026-06-17.
 
 #### One-time reclaim (when you want the ~50 GB back)
 
+> **Executed 2026-07-02.** Adapted for low free disk (16 GB — not enough
+> to hold old + new copies of the full 45-day window): swapped in
+> `odds_history_default2` as the new DEFAULT partition (with the same
+> aggressive autovacuum reloptions), backfilled the **9 most recent days**
+> (~72.2M rows, row-count-verified against the source) newest-first with a
+> 6 GB free-disk guard, then dropped the old 68 GB default. Disk went
+> 95% → 50% (73 GB free). The table regrows ~1 GB/day back to its 45-day
+> plateau (~45 GB) over the following 5 weeks — steady state ≈ 65% used.
+> History older than 2026-06-24 exists only in the nightly dumps from
+> before the reclaim. The nightly DELETE cron continues to work unchanged
+> (it targets the parent table).
+
 A plain DELETE + `VACUUM` won't return disk; `VACUUM FULL` needs ~table-size
 temp and an `ACCESS EXCLUSIVE` lock (odds writes freeze for minutes), and
 `pg_repack` isn't in the image. The cheap, lock-light path exploits the

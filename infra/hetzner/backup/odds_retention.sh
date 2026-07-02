@@ -33,6 +33,9 @@
 #   set -a; . /home/team/oddzilla/.env; set +a
 #   docker exec oddzilla-postgres-1 psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
 #     "ALTER TABLE odds_history_default SET (autovacuum_vacuum_scale_factor=0, autovacuum_vacuum_threshold=2000000, autovacuum_vacuum_insert_scale_factor=0, autovacuum_vacuum_insert_threshold=2000000);"
+#   NB: since the 2026-07-02 one-time reclaim the live DEFAULT partition is
+#   odds_history_default2 (already carries these reloptions). Target whatever
+#   the current DEFAULT partition is if you ever redo this.
 #   sudo crontab -e
 #   # Add (after the 03:00 pg-backup so the dump captures pre-deletion state):
 #   # 30 3 * * * /usr/local/bin/oddzilla-odds-retention >> /var/log/oddzilla-odds-retention.log 2>&1
