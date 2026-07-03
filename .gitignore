@@ -25,6 +25,9 @@ bin/
 # Load-test artifacts (cookies contain valid session JWTs while a run is live)
 tests/load/*.json
 
+# Local server-access doc (SSH / connection details) — kept off the remote.
+CONNECT.md
+
 # Docker & data
 docker-data/
 postgres-data/
