@@ -87,7 +87,11 @@ function buildCsp(nonce: string, frameAncestors: "none" | "self"): string {
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: https:",
     "font-src 'self' data:",
-    `connect-src 'self' ${apiOrigins} ${wsOrigins} https://cdn.oddin.gg`,
+    // https://*.clarity.ms + https://c.bing.com are Microsoft Clarity's
+    // beacon/upload endpoints (loader in lib/analytics/clarity.tsx —
+    // consent-gated). The tag script itself needs no script-src entry:
+    // 'strict-dynamic' trusts scripts injected by our nonce'd bundle.
+    `connect-src 'self' ${apiOrigins} ${wsOrigins} https://cdn.oddin.gg https://*.clarity.ms https://c.bing.com`,
     "frame-src 'self' https://player.twitch.tv https://www.twitch.tv https://www.youtube.com https://www.youtube-nocookie.com https://player.kick.com https://video.gjirafa.com https://*.oddin.gg",
     `frame-ancestors '${frameAncestors}'`,
     "base-uri 'self'",
