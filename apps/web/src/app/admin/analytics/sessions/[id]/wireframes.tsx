@@ -9,6 +9,12 @@
 //   tablet 720-1099px : 60px top bar, 240px sidebar, main (no rail)
 //   mobile  < 720px   : 90px top bar, single column, 56px bet-slip bar
 //
+// CRITICAL: .oz-shell is `max-width: 1440px; margin-inline: auto`, and
+// the top bar is INSIDE the shell (grid area "top top top") — on wide
+// monitors the whole thing (top bar included) is a centered 1440px
+// band with page background either side. Every chrome + content
+// coordinate is therefore offset by shellX = (vw - 1440) / 2.
+//
 // The viewport-FIXED chrome (top bar / sidebar / rail) is exactly the
 // part of the real layout that viewport-relative trail coordinates
 // line up with, so those regions are faithful; the main-column content
@@ -22,7 +28,11 @@ const FILL = "var(--color-bg-card, #ffffff)";
 const BLOCK = "var(--color-bg-subtle, #e8e4da)";
 const STROKE = "var(--color-border, #d8d2c6)";
 
+const SHELL_MAX_W = 1440;
+
 type Chrome = {
+  shellX: number;
+  shellW: number;
   topH: number;
   sidebarW: number;
   railW: number;
@@ -32,17 +42,28 @@ type Chrome = {
 };
 
 function chromeFor(vw: number, isAuth: boolean): Chrome {
+  const shellW = Math.min(vw, SHELL_MAX_W);
+  const shellX = Math.max(0, (vw - shellW) / 2);
   if (isAuth) {
     // (auth) layout: minimal header, centered card, no shell chrome.
-    return { topH: 60, sidebarW: 0, railW: 0, bottomBarH: 0, mainX: 0, mainW: vw };
+    return { shellX: 0, shellW: vw, topH: 60, sidebarW: 0, railW: 0, bottomBarH: 0, mainX: 0, mainW: vw };
   }
   if (vw >= 1100) {
-    return { topH: 60, sidebarW: 240, railW: 300, bottomBarH: 0, mainX: 240, mainW: vw - 240 - 300 };
+    return {
+      shellX,
+      shellW,
+      topH: 60,
+      sidebarW: 240,
+      railW: 300,
+      bottomBarH: 0,
+      mainX: shellX + 240,
+      mainW: shellW - 240 - 300,
+    };
   }
   if (vw >= 720) {
-    return { topH: 60, sidebarW: 240, railW: 0, bottomBarH: 0, mainX: 240, mainW: vw - 240 };
+    return { shellX, shellW, topH: 60, sidebarW: 240, railW: 0, bottomBarH: 0, mainX: shellX + 240, mainW: shellW - 240 };
   }
-  return { topH: 90, sidebarW: 0, railW: 0, bottomBarH: 56, mainX: 0, mainW: vw };
+  return { shellX: 0, shellW: vw, topH: 90, sidebarW: 0, railW: 0, bottomBarH: 56, mainX: 0, mainW: vw };
 }
 
 function sectionOf(path: string): string {
@@ -110,19 +131,20 @@ function cardGrid(key: string, x: number, yStart: number, w: number, vh: number,
 // ── Chrome (viewport-fixed, faithful) ─────────────────────────────────
 
 function shellChrome(c: Chrome, vw: number, vh: number): ReactNode {
+  const railX = c.shellX + c.shellW - c.railW;
   return (
     <g key="chrome">
-      <rect x={0} y={0} width={vw} height={c.topH} fill={FILL} stroke={STROKE} strokeWidth={1} />
-      <rect x={16} y={c.topH / 2 - 10} width={110} height={20} rx={6} fill={BLOCK} />
-      <rect x={vw - 190} y={c.topH / 2 - 12} width={80} height={24} rx={12} fill={BLOCK} />
-      <rect x={vw - 100} y={c.topH / 2 - 12} width={80} height={24} rx={12} fill={BLOCK} />
+      <rect x={c.shellX} y={0} width={c.shellW} height={c.topH} fill={FILL} stroke={STROKE} strokeWidth={1} />
+      <rect x={c.shellX + 16} y={c.topH / 2 - 10} width={110} height={20} rx={6} fill={BLOCK} />
+      <rect x={c.shellX + c.shellW - 190} y={c.topH / 2 - 12} width={80} height={24} rx={12} fill={BLOCK} />
+      <rect x={c.shellX + c.shellW - 100} y={c.topH / 2 - 12} width={80} height={24} rx={12} fill={BLOCK} />
       {c.sidebarW > 0 && (
         <g>
-          <rect x={0} y={c.topH} width={c.sidebarW} height={vh - c.topH} fill={FILL} stroke={STROKE} strokeWidth={1} />
+          <rect x={c.shellX} y={c.topH} width={c.sidebarW} height={vh - c.topH} fill={FILL} stroke={STROKE} strokeWidth={1} />
           {Array.from({ length: Math.min(14, Math.floor((vh - c.topH - 24) / 38)) }, (_, i) => (
             <rect
               key={`side-${i}`}
-              x={14}
+              x={c.shellX + 14}
               y={c.topH + 18 + i * 38}
               width={c.sidebarW - 28}
               height={22}
@@ -134,10 +156,10 @@ function shellChrome(c: Chrome, vw: number, vh: number): ReactNode {
       )}
       {c.railW > 0 && (
         <g>
-          <rect x={vw - c.railW} y={c.topH} width={c.railW} height={vh - c.topH} fill={FILL} stroke={STROKE} strokeWidth={1} />
-          <rect x={vw - c.railW + 16} y={c.topH + 16} width={c.railW - 32} height={26} rx={8} fill={BLOCK} />
-          {box("rail-slip", vw - c.railW + 16, c.topH + 58, c.railW - 32, 130, 10)}
-          <rect x={vw - c.railW + 16} y={vh - 66} width={c.railW - 32} height={40} rx={10} fill={BLOCK} />
+          <rect x={railX} y={c.topH} width={c.railW} height={vh - c.topH} fill={FILL} stroke={STROKE} strokeWidth={1} />
+          <rect x={railX + 16} y={c.topH + 16} width={c.railW - 32} height={26} rx={8} fill={BLOCK} />
+          {box("rail-slip", railX + 16, c.topH + 58, c.railW - 32, 130, 10)}
+          <rect x={railX + 16} y={vh - 66} width={c.railW - 32} height={40} rx={10} fill={BLOCK} />
         </g>
       )}
       {c.bottomBarH > 0 && (
