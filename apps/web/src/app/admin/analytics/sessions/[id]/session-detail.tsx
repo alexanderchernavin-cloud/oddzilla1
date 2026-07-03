@@ -12,6 +12,7 @@ import type {
   AdminAnalyticsSessionDetail,
 } from "@oddzilla/types";
 import { clientApi } from "@/lib/api-client";
+import { WireframeBackdrop } from "./wireframes";
 
 function formatDuration(totalSeconds: number): string {
   const s = Math.max(0, Math.round(totalSeconds));
@@ -211,6 +212,7 @@ function MouseReplay({
   const [selected, setSelected] = useState<string | null>(paths[0]?.path ?? null);
   const [trails, setTrails] = useState<AdminAnalyticsMouseTrail[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const [showLayout, setShowLayout] = useState(true);
 
   useEffect(() => {
     if (!selected) return;
@@ -259,7 +261,17 @@ function MouseReplay({
 
   return (
     <section className="rounded-[14px] border border-[var(--color-border)] bg-[var(--color-bg-card)] p-4">
-      <h2 className="text-sm font-medium">Mouse trails</h2>
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-medium">Mouse trails</h2>
+        <label className="flex items-center gap-2 text-xs text-[var(--color-fg-muted)]">
+          <input
+            type="checkbox"
+            checked={showLayout}
+            onChange={(e) => setShowLayout(e.target.checked)}
+          />
+          layout
+        </label>
+      </div>
       <div className="mt-2 flex flex-wrap gap-1">
         {paths.map((p) => (
           <button
@@ -288,6 +300,9 @@ function MouseReplay({
             className="w-full rounded-lg border border-[var(--color-border)]"
             style={{ background: "var(--color-bg-subtle)", maxHeight: 480 }}
           >
+            {showLayout && selected && (
+              <WireframeBackdrop path={selected} vw={vw} vh={vh} />
+            )}
             {trails.map((t, ti) => {
               const pts = t.points.map(([, x, y]) => `${x},${y}`).join(" ");
               return (
@@ -330,7 +345,10 @@ function MouseReplay({
           <p className="mt-2 text-xs text-[var(--color-fg-subtle)]">
             {trails.length} trail segment{trails.length === 1 ? "" : "s"}, drawn light →
             dark in time order; red rings are clicks. Coordinates are viewport-relative
-            ({vw}×{vh}) — scroll position isn't replayed.
+            ({vw}×{vh}) — scroll position isn't replayed. The layout backdrop is a
+            schematic wireframe: the fixed chrome (top bar / sidebar / bet slip) is
+            positioned faithfully for this viewport; main-column content is
+            representative, not the real page.
           </p>
         </div>
       )}
