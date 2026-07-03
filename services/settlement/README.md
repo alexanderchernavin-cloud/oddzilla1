@@ -43,6 +43,14 @@ RETURNING id;
 
 If no row returned → replay → ack AMQP, exit.
 
+Retention: the nightly `oddzilla-settlements-retention` cron deletes
+settle/cancel rows after 45 days (rollback rows kept forever; markets with
+open tickets skipped) — identical-payload replays only arrive via AMQP
+redelivery or the 24 h-clamped recovery window, and the money paths above
+are independently idempotent. Ticket history itself (`tickets` /
+`wallet_ledger` / `market_outcomes.result`) is never deleted. See
+`docs/OPERATIONS.md` → "settlements retention".
+
 Else:
 1. `UPDATE market_outcomes SET result=..., void_factor=...`
 2. `UPDATE ticket_selections ... WHERE market_id=$1 AND result IS NULL`

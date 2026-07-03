@@ -29,6 +29,7 @@ only builds docker services — re-`cp` after editing any of them here).
 | --- | --- | --- |
 | `0 3 * * *`   | `oddzilla-pg-backup` (`backup/pg_backup.sh`) | Daily `pg_dump` → `/var/backups/oddzilla`. Count-based retention (`RETENTION_COUNT`, default **2**); prunes BEFORE dumping + atomic `.part` rename so a full disk can't block rotation. |
 | `30 3 * * *`  | `oddzilla-odds-retention` (`backup/odds_retention.sh`) | Caps `odds_history` at `ODDS_RETENTION_DAYS` (default **45**; was 60 until 2026-07-02) via batched DELETE. Stops the unbounded growth that filled the disk on 2026-04-22 / 05-09 / 06-09 / 06-17. See OPERATIONS.md → "odds_history retention". |
+| `45 3 * * *`  | `oddzilla-settlements-retention` (`backup/settlements_retention.sh`) | Caps `settlements` (9.8 GB on 2026-07-02) at `SETTLEMENTS_RETENTION_DAYS` (default **45**, matching odds_history) via batched DELETE of settle/cancel rows — open-ticket-guarded, rollback rows kept forever; ticket history itself (`tickets` / `wallet_ledger`) is never deleted. See OPERATIONS.md → "settlements retention". |
 | `0 4 * * *`   | `oddzilla-docker-prune` (`backup/docker_prune.sh`) | Build cache > `MAX_USED_SPACE_GB` (default 10), dangling images, long-stopped containers. |
 | `0 4 * * *`   | `oddzilla-audit-chain-check` (`backup/audit_chain_check.sh`) | Verifies the `admin_audit_log` SHA-256 hash chain. |
 | `*/15 * * * *`| `oddzilla-disk-fill-alert` (`backup/disk_fill_alert.sh`) | Emails the operator (via `oddzilla-alert-email`) when `/` crosses `DISK_FILL_THRESHOLD_PCT` (default 80). |
@@ -42,7 +43,7 @@ Install / refresh all of them:
 
 ```bash
 cd ~/oddzilla
-for s in pg_backup odds_retention docker_prune disk_fill_alert alert_email audit_chain_check; do
+for s in pg_backup odds_retention settlements_retention docker_prune disk_fill_alert alert_email audit_chain_check; do
   sudo cp "infra/hetzner/backup/${s}.sh" "/usr/local/bin/oddzilla-${s//_/-}"
 done
 sudo chmod 750 /usr/local/bin/oddzilla-*
@@ -51,6 +52,9 @@ sudo chmod 755 /usr/local/bin/oddzilla-alert-email /usr/local/bin/oddzilla-docke
 set -a; . ~/oddzilla/.env; set +a
 sudo docker exec oddzilla-postgres-1 psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
   "ALTER TABLE odds_history_default SET (autovacuum_vacuum_scale_factor=0, autovacuum_vacuum_threshold=2000000, autovacuum_vacuum_insert_scale_factor=0, autovacuum_vacuum_insert_threshold=2000000);"
+# one-time, after first installing settlements-retention:
+sudo docker exec oddzilla-postgres-1 psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
+  "ALTER TABLE settlements SET (autovacuum_vacuum_scale_factor=0, autovacuum_vacuum_threshold=300000, autovacuum_vacuum_insert_scale_factor=0, autovacuum_vacuum_insert_threshold=2000000);"
 sudo crontab -e   # add the rows above if not already present
 ```
 
