@@ -21,6 +21,8 @@ export interface BotConfig {
   temperature: number;
   maxTokens: number;
   requestTimeoutMs: number;
+  /** Wikipedia Action API endpoint backing the web_search tool. */
+  wikipediaApiBase: string;
 }
 
 function req(name: string): string {
@@ -62,5 +64,9 @@ export function loadConfig(): BotConfig {
     temperature: num("BOT_TEMPERATURE", 0.3),
     maxTokens: num("BOT_MAX_TOKENS", 1024),
     requestTimeoutMs: num("BOT_LM_TIMEOUT_MS", 60000),
+    wikipediaApiBase: opt(
+      "WIKIPEDIA_API_BASE",
+      "https://en.wikipedia.org/w/api.php",
+    ),
   };
 }
