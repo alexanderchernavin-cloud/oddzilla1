@@ -60,6 +60,25 @@ export const TOOLS: ToolSpec[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description:
+        "Look up general factual / background / historical information from the public web (Wikipedia) that is NOT in Oddzilla's own data — e.g. who won a past tournament, a Major's champion or results, background on a team / player / event, how a game or format works, definitions. Returns the top matching articles with a short extract and a source URL. Use this for facts Oddzilla's own tools (find_matches / match_markets / team_results) cannot provide. Do NOT use it for this bettor's account, Oddzilla schedule / odds, or to give betting tips.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description:
+              "a CONCISE KEYWORD query naming the subject — the event/team/person plus any year or qualifier — NOT a full question. Good: 'IEM Cologne Major 2026', 'Team Spirit Dota 2'. Bad: 'who won the IEM Cologne 2026?'.",
+          },
+        },
+        required: ["query"],
+      },
+    },
+  },
 ];
 
 const FETCH_TIMEOUT_MS = 15_000;
@@ -105,10 +124,28 @@ interface TeamResultsResponse {
   }>;
 }
 
-async function getJson(url: string): Promise<unknown> {
-  const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+async function getJson(
+  url: string,
+  headers?: Record<string, string>,
+): Promise<unknown> {
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    headers,
+  });
   if (!res.ok) throw new Error(`http_${res.status}`);
   return (await res.json()) as unknown;
+}
+
+// Wikipedia identifies API clients by User-Agent; send a descriptive one.
+const WEB_SEARCH_UA = "OddzillaSupportBot/1.0 (+https://oddzilla.cc)";
+
+interface WikiResponse {
+  query?: {
+    pages?: Record<
+      string,
+      { pageid?: number; index?: number; title: string; extract?: string }
+    >;
+  };
 }
 
 export async function executeTool(
@@ -181,6 +218,51 @@ export async function executeTool(
       if (sport) url += `&sport=${encodeURIComponent(sport)}`;
       const body = (await getJson(url)) as TeamResultsResponse;
       return JSON.stringify(body);
+    }
+
+    if (name === "web_search") {
+      const raw = String(args.query ?? "").slice(0, 200);
+      if (!raw.trim()) return JSON.stringify({ error: "invalid_query" });
+      // Wikipedia full-text search ranks keyword queries far better than
+      // question phrasings — "who won IEM Cologne 2026?" and even a trailing
+      // "winner" bury the actual tournament page (they pull the generic series
+      // article + player pages). So reduce the query to its subject: strip a
+      // leading question stem, a trailing run of answer-type words
+      // (winner/champion/result/…), and the trailing "?".
+      const q =
+        raw
+          .replace(
+            /^\s*(who|what|which|when|where|why|whom|whose|how)\b[\s,]*(won|win|wins|is|was|were|are|did|do|does|had|has|have)?\s+/i,
+            "",
+          )
+          .replace(/\?+\s*$/, "")
+          .replace(
+            /[\s,]*(?:\b(?:won|win|wins|winner|winners|champion|champions|result|results|mvp|outcome)\b[\s,]*)+$/i,
+            "",
+          )
+          .replace(/\s+/g, " ")
+          .trim() || raw.trim();
+      // One call: search Wikipedia and pull the intro extract of the top hits.
+      const url =
+        `${cfg.wikipediaApiBase}?action=query&format=json&redirects=1` +
+        `&generator=search&gsrsearch=${encodeURIComponent(q)}&gsrlimit=5` +
+        `&prop=extracts&exintro=1&explaintext=1&exlimit=5`;
+      const body = (await getJson(url, {
+        "user-agent": WEB_SEARCH_UA,
+        accept: "application/json",
+      })) as WikiResponse;
+      const results = Object.values(body.query?.pages ?? {})
+        .sort((a, b) => (a.index ?? 99) - (b.index ?? 99))
+        .map((p) => ({
+          title: p.title,
+          url: `https://en.wikipedia.org/wiki/${encodeURIComponent(
+            p.title.replace(/ /g, "_"),
+          )}`,
+          extract: (p.extract ?? "").replace(/\s+/g, " ").trim().slice(0, 1500),
+        }))
+        .filter((p) => p.extract)
+        .slice(0, 4);
+      return JSON.stringify({ query: q, source: "wikipedia", results });
     }
   } catch (err) {
     return JSON.stringify({ error: `tool_failed: ${(err as Error).message}` });

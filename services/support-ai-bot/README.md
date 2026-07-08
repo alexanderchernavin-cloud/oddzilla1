@@ -15,6 +15,21 @@ stack — and answers bettors in the existing live-support chat while the PC is 
   this PC is off the bot is simply silent and threads wait for a human — the
   admin shows "offline" within ~45s.
 
+## Tools (read-only)
+
+The model answers from the bettor's account snapshot and can call these
+look-up tools on demand — none of them can change anything:
+
+- `find_matches` / `match_markets` / `team_results` — Oddzilla's own data
+  (schedule, live odds, a team's recent results).
+- `web_search` — general real-world facts the platform doesn't have (past
+  tournament winners, a Major's champion, team / player / event background),
+  via the **keyless Wikipedia API**. Question phrasings are normalised to a
+  keyword query (`"who won IEM Cologne 2026?"` → `IEM Cologne 2026`) because
+  Wikipedia's full-text search ranks keywords far better than questions.
+  Language/mirror override: `WIKIPEDIA_API_BASE`. It's Wikipedia, not the open
+  web — great for factual/historical questions, not breaking news.
+
 ## Guardrails
 
 - The bot can **only reply or escalate** — it has no power to move money or
