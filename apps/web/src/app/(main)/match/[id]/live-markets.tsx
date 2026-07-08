@@ -782,6 +782,8 @@ function LineFamilyCard({
     [family.markets],
   );
 
+  const isHandicap = family.lineSpec === "handicap";
+
   // Identify the stable set of outcome "slots" across the family so each
   // row lines up vertically. Use the rendered outcome name (already
   // resolved: home team / away team / Over / Under / …) from the first
@@ -879,13 +881,23 @@ function LineFamilyCard({
           // a 2-column handicap ladder) sets the grid track wider than
           // the card and the rightmost outcome button visibly clips
           // past the card border on mobile.
-          gridTemplateColumns: `60px repeat(${slotNames.length}, minmax(0, 1fr))`,
+          //
+          // Handicap families carry the line value INSIDE each outcome
+          // button (per-team, sign-flipped for the away side — see
+          // LineRow) rather than in a shared leading column, because a
+          // handicap of `-1.5` for the home team is `+1.5` for the away
+          // team, so a single leading label would mislabel one column.
+          // Totals keep the leading threshold column (Under/Over share
+          // the same line value).
+          gridTemplateColumns: isHandicap
+            ? `repeat(${slotNames.length}, minmax(0, 1fr))`
+            : `60px repeat(${slotNames.length}, minmax(0, 1fr))`,
           gap: "6px 8px",
           alignItems: "center",
           fontSize: 13,
         }}
       >
-        <div />
+        {!isHandicap && <div />}
         {slotNames.map((name) => (
           <div
             key={name}
@@ -961,21 +973,36 @@ function LineRow({
     else tipsByOutcome.set(t.outcomeId, [t]);
   }
   const lineLabel = formatLineValue(m.lineValue, m.lineSpec);
+  const isHandicap = m.lineSpec === "handicap";
   return (
     <>
-      <div
-        className="mono tnum"
-        style={{
-          fontSize: 13,
-          fontWeight: 500,
-          color: "var(--fg)",
-          textAlign: "center",
-        }}
-      >
-        {lineLabel}
-      </div>
+      {/* Totals share one line value across Under/Over, so the value
+          lives in a leading column. Handicaps put the (sign-flipped
+          per team) value inside each button instead — see the button
+          label below. */}
+      {!isHandicap && (
+        <div
+          className="mono tnum"
+          style={{
+            fontSize: 13,
+            fontWeight: 500,
+            color: "var(--fg)",
+            textAlign: "center",
+          }}
+        >
+          {lineLabel}
+        </div>
+      )}
       {slotNames.map((slot, idx) => {
         const o = bySlot.get(slot);
+        // Per-outcome line label. For handicaps the feed's line value is
+        // the HOME team's handicap; the away team's is its negation
+        // (a home -1.5 is an away +1.5). `cellLine` is what both the
+        // button label and the recorded slip leg use so the displayed
+        // sign matches the bet placed.
+        const cellLine = isHandicap
+          ? handicapForSide(m.lineValue, slot === match.awayTeam)
+          : lineLabel;
         if (!o) {
           return (
             <OddButton
@@ -1019,12 +1046,12 @@ function LineRow({
             <OddButton
               size="md"
               price={flashEntry ? Number(flashEntry.boostedOdds) : price}
-              label=""
+              label={isHandicap ? cellLine : ""}
               selected={selected}
               locked={locked}
               boosted={!!flashEntry}
               onClick={() =>
-                toggle(slip, m, o, match, `${slot} ${lineLabel}`, flashEntry)
+                toggle(slip, m, o, match, `${slot} ${cellLine}`, flashEntry)
               }
               style={{ width: "100%" }}
             />
@@ -1050,17 +1077,17 @@ function LineRow({
                   tips={outcomeTips}
                   currentHome={match.homeTeam}
                   currentAway={match.awayTeam}
-                  label={`${familyBaseName} ${lineLabel} · ${slot}`}
+                  label={`${familyBaseName} ${cellLine} · ${slot}`}
                   onPick={
                     locked
                       ? undefined
-                      : () => toggle(slip, m, o, match, `${slot} ${lineLabel}`)
+                      : () => toggle(slip, m, o, match, `${slot} ${cellLine}`)
                   }
                   pickSelected={selected}
                   contexts={outcomeTips.map((t) => ({
                     marketId: t.marketId,
                     outcomeId: t.outcomeId,
-                    contextLabel: lineLabel,
+                    contextLabel: cellLine,
                     outcomeLabel: slot,
                   }))}
                   size="sm"
@@ -1198,6 +1225,19 @@ function formatLineValue(v: string | null, spec: MarketSnapshot["lineSpec"]): st
     if (Number.isFinite(n)) return n > 0 ? `+${n}` : `${n}`;
   }
   return v;
+}
+
+// The feed's handicap line value is expressed from the HOME team's
+// perspective (Oddin/UOF `hcp` specifier). The away team's handicap is
+// its negation — a home line of -1.5 means the away side is playing
+// +1.5. Render each team its own value with an explicit sign.
+function handicapForSide(v: string | null, isAway: boolean): string {
+  if (v == null) return "";
+  const n = Number.parseFloat(v);
+  if (!Number.isFinite(n)) return v;
+  const side = isAway ? -n : n;
+  // `-0` prints as "0" via template coercion, so no special case needed.
+  return side > 0 ? `+${side}` : `${side}`;
 }
 
 // Canonical ordering for common outcome slot names. Unknown labels
