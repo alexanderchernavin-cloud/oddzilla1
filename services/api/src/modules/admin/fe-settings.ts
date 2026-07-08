@@ -840,6 +840,18 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
       const existingCustom = new Set(
         groupRows.filter((g) => isCustomScope(g.scope)).map((g) => g.scope),
       );
+      // Custom groups carry a NOT NULL label (fe_market_groups_label_check);
+      // built-ins require label IS NULL. The reorder only touches
+      // display_order, but the INSERT below still supplies a label, and
+      // Postgres evaluates CHECK constraints on the proposed row BEFORE
+      // ON CONFLICT resolution — so inserting a custom scope with a null
+      // label aborts the whole tx even though the conflict path would
+      // never apply it. Carry each custom group's existing label through.
+      const customLabelByScope = new Map(
+        groupRows
+          .filter((g) => isCustomScope(g.scope))
+          .map((g) => [g.scope, g.label] as const),
+      );
       for (const s of body.order) {
         if (isCustomScope(s) && !existingCustom.has(s)) {
           throw new BadRequestError("unknown_group", `unknown_group_${s}`);
@@ -871,12 +883,18 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
         await tx.delete(feMarketGroups).where(and(...builtInDropConds));
 
         for (const [idx, scope] of body.order.entries()) {
+          // Preserve the custom group's label so the CHECK constraint is
+          // satisfied on the proposed row; built-ins stay label NULL. The
+          // conflict path only bumps display_order regardless.
+          const label = isCustomScope(scope)
+            ? (customLabelByScope.get(scope) ?? null)
+            : null;
           await tx
             .insert(feMarketGroups)
             .values({
               sportId: params.sportId,
               scope: scope as FeMarketScope,
-              label: null,
+              label,
               displayOrder: idx,
               updatedBy: admin.id,
             })
