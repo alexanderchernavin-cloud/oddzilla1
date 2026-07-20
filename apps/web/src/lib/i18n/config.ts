@@ -11,7 +11,7 @@
 // middleware does NOT touch the locale cookie — locale is a soft user
 // preference, not an auth signal.
 
-export const LOCALES = ["en", "cs", "pt", "ru", "es"] as const;
+export const LOCALES = ["en", "cs", "pt", "ru", "es", "hr"] as const;
 export type Locale = (typeof LOCALES)[number];
 
 export const DEFAULT_LOCALE: Locale = "en";
@@ -34,6 +34,7 @@ export const LOCALE_LABELS: Record<Locale, string> = {
   pt: "Português",
   ru: "Русский",
   es: "Español",
+  hr: "Hrvatski",
 };
 
 export function isLocale(value: string | null | undefined): value is Locale {
