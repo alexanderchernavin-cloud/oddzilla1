@@ -279,7 +279,7 @@ func oddinLangCode(storefrontLocale string) string {
 }
 
 // descriptionLangs returns the language codes feed-ingester should
-// pull descriptions for. Storefront ships en/cs/pt/ru/es so we fetch
+// pull descriptions for. Storefront ships en/cs/pt/ru/es/hr so we fetch
 // the same set; the operator's configured ODDIN_LANG always leads so
 // the legacy "fetch only one language" boot path keeps reporting the
 // same primary catalogue. Duplicates are stripped.
@@ -294,7 +294,7 @@ func descriptionLangs(primary string) []string {
 		out = append(out, lang)
 	}
 	add(primary)
-	for _, lang := range []string{"en", "cs", "pt", "ru", "es"} {
+	for _, lang := range []string{"en", "cs", "pt", "ru", "es", "hr"} {
 		add(lang)
 	}
 	return out

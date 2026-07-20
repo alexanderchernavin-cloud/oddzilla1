@@ -14,7 +14,7 @@ export function TodayLabel() {
   const t = useTranslations("common");
   const [label, setLabel] = useState<string | null>(null);
   useEffect(() => {
-    // Our locale slugs (en/cs/pt/ru/es) are valid BCP-47 primary
+    // Our locale slugs (en/cs/pt/ru/es/hr) are valid BCP-47 primary
     // subtags so Intl resolves them directly to the right calendar.
     setLabel(
       new Date().toLocaleDateString(locale, {

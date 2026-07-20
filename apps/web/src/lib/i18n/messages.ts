@@ -10,6 +10,7 @@ import cs from "../../../messages/cs.json";
 import pt from "../../../messages/pt.json";
 import ru from "../../../messages/ru.json";
 import es from "../../../messages/es.json";
+import hr from "../../../messages/hr.json";
 import { DEFAULT_LOCALE, type Locale } from "./config";
 
 // Strongly type Messages as the shape of the English dictionary — the
@@ -23,6 +24,7 @@ const DICTS: Record<Locale, Messages> = {
   pt: pt as Messages,
   ru: ru as Messages,
   es: es as Messages,
+  hr: hr as Messages,
 };
 
 export function getMessages(locale: Locale): Messages {

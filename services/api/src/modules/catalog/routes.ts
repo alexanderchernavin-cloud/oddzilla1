@@ -57,7 +57,7 @@ import {
 // so the API doesn't import the web bundle. If we ship a new locale
 // the list updates in both places. Anything not in the list (or
 // missing entirely) resolves to 'en'.
-const SUPPORTED_LOCALES = new Set(["en", "cs", "pt", "ru", "es"]);
+const SUPPORTED_LOCALES = new Set(["en", "cs", "pt", "ru", "es", "hr"]);
 const LOCALE_COOKIE = "oz_locale";
 
 function resolveLocale(cookies: Record<string, string | undefined>): string {
@@ -1397,6 +1397,19 @@ export default async function catalogRoutes(app: FastifyInstance) {
           resolvedName = competitorNameMap.get(r.outcomeId) ?? r.outcomeId;
         } else if (r.outcomeId.startsWith("od:player:")) {
           resolvedName = playerNameMap.get(r.outcomeId) ?? r.outcomeId;
+        } else if (
+          m.lineSpec === "handicap" &&
+          (r.outcomeId === "1" || r.outcomeId === "2")
+        ) {
+          // Handicap outcomes are keyed "1" = home / "2" = away. Oddin's
+          // English outcome template ("home"/"away") resolves to the team
+          // names via renderOutcomeLabel, but localized templates render a
+          // generic word ("Хозяева"/"Гости") that the home/away check never
+          // matches, so non-English ladders showed generic labels instead
+          // of the teams. Force the team name so every locale is consistent
+          // with English (headers, slip legs, tips, bet history all read
+          // the resolved name).
+          resolvedName = r.outcomeId === "1" ? match.homeTeam : match.awayTeam;
         } else {
           resolvedName = renderOutcomeLabel(
             outcomeTemplate,
