@@ -84,12 +84,24 @@ export const TOOLS: ToolSpec[] = [
 const FETCH_TIMEOUT_MS = 15_000;
 
 interface SearchResponse {
+  sports?: Array<{ slug: string; name: string }>;
   teams?: Array<{ id: number; name: string; sport?: { slug?: string } }>;
   matches?: Array<{
     id: string;
     homeTeam: string;
     awayTeam: string;
     sport?: { slug?: string };
+    tournament?: { name?: string };
+    scheduledAt: string;
+    status: string;
+  }>;
+}
+
+interface SportMatchesResponse {
+  matches?: Array<{
+    id: string;
+    homeTeam: string;
+    awayTeam: string;
     tournament?: { name?: string };
     scheduledAt: string;
     status: string;
@@ -166,7 +178,8 @@ export async function executeTool(
       const body = (await getJson(
         `${cfg.apiBase}/catalog/search?q=${encodeURIComponent(q)}`,
       )) as SearchResponse;
-      const matches = (body.matches ?? []).slice(0, 15).map((m) => ({
+      const sports = (body.sports ?? []).slice(0, 5);
+      let matches = (body.matches ?? []).slice(0, 15).map((m) => ({
         id: m.id,
         match: `${m.homeTeam} vs ${m.awayTeam}`,
         sport: m.sport?.slug ?? "",
@@ -174,12 +187,38 @@ export async function executeTool(
         scheduledAt: m.scheduledAt,
         status: m.status,
       }));
+      // The search endpoint's match facet only matches TEAM names — a sport
+      // query ("cs2", "valorant") hits the sports facet but returns zero
+      // matches. When that happens, pull each matched sport's actual
+      // upcoming/live schedule so schedule questions get real data.
+      if (matches.length === 0 && sports.length > 0) {
+        const lists = await Promise.all(
+          sports.slice(0, 3).map(async (s) => {
+            try {
+              const sportBody = (await getJson(
+                `${cfg.apiBase}/catalog/sports/${encodeURIComponent(s.slug)}`,
+              )) as SportMatchesResponse;
+              return (sportBody.matches ?? []).map((m) => ({
+                id: m.id,
+                match: `${m.homeTeam} vs ${m.awayTeam}`,
+                sport: s.slug,
+                tournament: m.tournament?.name ?? "",
+                scheduledAt: m.scheduledAt,
+                status: m.status,
+              }));
+            } catch {
+              return [];
+            }
+          }),
+        );
+        matches = lists.flat().slice(0, 15);
+      }
       const teams = (body.teams ?? []).slice(0, 10).map((t) => ({
         id: t.id,
         name: t.name,
         sport: t.sport?.slug ?? "",
       }));
-      return JSON.stringify({ teams, matches });
+      return JSON.stringify({ sports, teams, matches });
     }
 
     if (name === "match_markets") {
