@@ -997,11 +997,13 @@ function LineRow({
         const o = bySlot.get(slot);
         // Per-outcome line label. For handicaps the feed's line value is
         // the HOME team's handicap; the away team's is its negation
-        // (a home -1.5 is an away +1.5). `cellLine` is what both the
-        // button label and the recorded slip leg use so the displayed
-        // sign matches the bet placed.
+        // (a home -1.5 is an away +1.5). Side is resolved from the
+        // outcome id (see isAwayHandicapSide) — NOT the rendered name,
+        // which is a localized generic word outside English. `cellLine`
+        // is what both the button label and the recorded slip leg use so
+        // the displayed sign matches the bet placed.
         const cellLine = isHandicap
-          ? handicapForSide(m.lineValue, slot === match.awayTeam)
+          ? handicapForSide(m.lineValue, o ? isAwayHandicapSide(o, match) : false)
           : lineLabel;
         if (!o) {
           return (
@@ -1227,9 +1229,25 @@ function formatLineValue(v: string | null, spec: MarketSnapshot["lineSpec"]): st
   return v;
 }
 
+// Which side of a handicap an outcome represents, locale-independent.
+// Oddin keys handicap outcomes with the same numeric ids as the
+// match-winner: "1" = home, "2" = away. The rendered outcome name comes
+// from Oddin's (localized) description template — in English it resolves
+// to the actual team name, but in every other locale it's a generic word
+// ("Хозяева" / "Гости") that never equals `match.awayTeam`. Comparing the
+// rendered name to the team name therefore silently treated EVERY cell as
+// home outside English, so both columns showed the home sign. Key off the
+// stable outcome id instead; fall back to the name only for the rare
+// competitor-URN handicap outcomes, where the rendered name IS the team.
+function isAwayHandicapSide(o: MarketOutcome, match: MatchMeta): boolean {
+  if (o.outcomeId === "2") return true;
+  if (o.outcomeId === "1") return false;
+  return o.name === match.awayTeam || o.rawName === match.awayTeam;
+}
+
 // The feed's handicap line value is expressed from the HOME team's
-// perspective (Oddin/UOF `hcp` specifier). The away team's handicap is
-// its negation — a home line of -1.5 means the away side is playing
+// perspective (Oddin/UOF `handicap` specifier). The away team's handicap
+// is its negation — a home line of -1.5 means the away side is playing
 // +1.5. Render each team its own value with an explicit sign.
 function handicapForSide(v: string | null, isAway: boolean): string {
   if (v == null) return "";
