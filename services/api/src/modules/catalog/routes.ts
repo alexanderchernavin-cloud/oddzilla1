@@ -151,6 +151,23 @@ function stripLinePlaceholder(template: string, lineSpec: LineSpec): string {
   return template.replace(pattern, "").replace(/\s{2,}/g, " ").trim();
 }
 
+// Oddin's English outcome templates use the literal tokens "home",
+// "away" and "draw" to mark the team-side outcomes of two/three-way team
+// markets (match winner, map winner, handicap, …). Detect the side from
+// the English template so the caller can substitute the actual team name
+// in every locale — the localized templates render generic words
+// ("хозяева"/"гости") that no longer identify which team the outcome is.
+function homeAwaySideFromTemplate(
+  template: string | undefined,
+): "home" | "away" | "draw" | null {
+  if (!template) return null;
+  const s = template.trim().toLowerCase();
+  if (s === "home") return "home";
+  if (s === "away") return "away";
+  if (s === "draw") return "draw";
+  return null;
+}
+
 const matchListQuery = z.object({
   live: z.coerce.boolean().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -1306,16 +1323,24 @@ export default async function catalogRoutes(app: FastifyInstance) {
       marketDescMap.set(descKey(d.providerMarketId, d.variant), d.nameTemplate);
     }
     const outcomeDescMap = new Map<string, string>();
+    // English-only companion map. Oddin's EN outcome templates use the
+    // literal tokens "home" / "away" / "draw" for team-side outcomes; the
+    // localized templates render a generic word ("хозяева" / "гости") that
+    // no longer identifies the side. We consult the EN template as the
+    // language-neutral semantic anchor to decide whether an outcome is the
+    // home / away side, then substitute the actual team name so every
+    // locale reads the team (matching the English behaviour) instead of a
+    // generic "Home"/"Away" word. See the outcome loop below.
+    const outcomeDescMapEn = new Map<string, string>();
     const sortedOutcomeDescs = [...outcomeDescs].sort((a, b) => {
       const ap = a.language === locale ? 1 : 0;
       const bp = b.language === locale ? 1 : 0;
       return ap - bp;
     });
     for (const d of sortedOutcomeDescs) {
-      outcomeDescMap.set(
-        `${d.providerMarketId}:${d.variant ?? ""}:${d.outcomeId}`,
-        d.nameTemplate,
-      );
+      const k = `${d.providerMarketId}:${d.variant ?? ""}:${d.outcomeId}`;
+      outcomeDescMap.set(k, d.nameTemplate);
+      if (d.language === "en") outcomeDescMapEn.set(k, d.nameTemplate);
     }
 
     type MarketRow = {
@@ -1383,33 +1408,39 @@ export default async function catalogRoutes(app: FastifyInstance) {
         marketMap.set(key, m);
       }
       if (r.outcomeId) {
+        const outcomeKey = `${r.providerMarketId}:${m.variant}:${r.outcomeId}`;
+        const outcomeKeyNoVariant = `${r.providerMarketId}::${r.outcomeId}`;
         const outcomeTemplate =
-          outcomeDescMap.get(`${r.providerMarketId}:${m.variant}:${r.outcomeId}`) ??
-          outcomeDescMap.get(`${r.providerMarketId}::${r.outcomeId}`) ??
+          outcomeDescMap.get(outcomeKey) ??
+          outcomeDescMap.get(outcomeKeyNoVariant) ??
           r.outcomeName ??
           r.outcomeId;
+        const outcomeTemplateEn =
+          outcomeDescMapEn.get(outcomeKey) ??
+          outcomeDescMapEn.get(outcomeKeyNoVariant);
         // Player/competitor outcomes come off the feed as bare URNs —
         // prefer the cached profile name, fall back to whatever the
         // template resolved (which for team/player outcomes is usually
         // the same URN again). Non-URN outcome ids use the template.
+        // Team-side outcome (match winner, map winner, handicap, …)?
+        // Oddin's EN template is the literal "home"/"away", which
+        // renderOutcomeLabel maps to the team name — but the localized
+        // template is a generic word ("хозяева"/"гости") that the check
+        // never matches, so non-English surfaces showed the generic word
+        // instead of the team. Anchor on the EN template and substitute
+        // the team name so every locale reads the team consistently.
+        // (Draw falls through to the localized template so it stays
+        // translated, e.g. "Ничья".)
+        const enSide = homeAwaySideFromTemplate(outcomeTemplateEn);
         let resolvedName: string;
         if (r.outcomeId.startsWith("od:competitor:")) {
           resolvedName = competitorNameMap.get(r.outcomeId) ?? r.outcomeId;
         } else if (r.outcomeId.startsWith("od:player:")) {
           resolvedName = playerNameMap.get(r.outcomeId) ?? r.outcomeId;
-        } else if (
-          m.lineSpec === "handicap" &&
-          (r.outcomeId === "1" || r.outcomeId === "2")
-        ) {
-          // Handicap outcomes are keyed "1" = home / "2" = away. Oddin's
-          // English outcome template ("home"/"away") resolves to the team
-          // names via renderOutcomeLabel, but localized templates render a
-          // generic word ("Хозяева"/"Гости") that the home/away check never
-          // matches, so non-English ladders showed generic labels instead
-          // of the teams. Force the team name so every locale is consistent
-          // with English (headers, slip legs, tips, bet history all read
-          // the resolved name).
-          resolvedName = r.outcomeId === "1" ? match.homeTeam : match.awayTeam;
+        } else if (enSide === "home") {
+          resolvedName = match.homeTeam;
+        } else if (enSide === "away") {
+          resolvedName = match.awayTeam;
         } else {
           resolvedName = renderOutcomeLabel(
             outcomeTemplate,
