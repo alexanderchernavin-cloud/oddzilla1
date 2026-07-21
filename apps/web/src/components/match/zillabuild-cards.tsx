@@ -18,6 +18,7 @@ import type { ZillaBuildCard, ZillaBuildResponse } from "@oddzilla/types/zillabu
 import { useZillaBuild } from "@/lib/use-zillabuild";
 import { useBetSlip } from "@/lib/bet-slip";
 import { I } from "@/components/ui/icons";
+import { useTranslations } from "@/lib/i18n";
 
 export function ZillaBuildCards({
   matchId,
@@ -34,6 +35,8 @@ export function ZillaBuildCards({
   // fetch entirely for live/closed matches avoids a pointless round-trip.
   initialStatus: "not_started" | "live" | "closed" | "cancelled" | "suspended";
 }) {
+  const t = useTranslations("matchWidgets");
+  const tMatch = useTranslations("match");
   const enabled = initialStatus === "not_started";
   const { response, loaded } = useZillaBuild(enabled ? matchId : "");
 
@@ -46,7 +49,7 @@ export function ZillaBuildCards({
 
   return (
     <section
-      aria-label="ZillaBuild — pre-built BetBuilder combos"
+      aria-label={t("zillabuild.aria")}
       style={{ display: "flex", flexDirection: "column", gap: 12 }}
     >
       <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
@@ -70,7 +73,7 @@ export function ZillaBuildCards({
             letterSpacing: "0.08em",
           }}
         >
-          ready-made combos
+          {t("zillabuild.tagline")}
         </span>
       </div>
 
@@ -85,7 +88,7 @@ export function ZillaBuildCards({
               letterSpacing: "0.08em",
             }}
           >
-            Map {mapNumber}
+            {tMatch("mapTab", { n: mapNumber })}
           </span>
           <div className="oz-zillabuild-grid">
             {cards.map((card) => (
@@ -136,6 +139,8 @@ function BuildCard({
   sportSlug: string;
   eligibleMarketIds: string[];
 }) {
+  const t = useTranslations("matchWidgets");
+  const tSlip = useTranslations("betSlip");
   const slip = useBetSlip();
 
   // This exact build is "on the slip" when the slip is in BetBuilder mode
@@ -212,12 +217,14 @@ function BuildCard({
           }}
         >
           <I.Ticket size={11} />
-          <span className="mono">{card.legs.length} legs</span>
+          <span className="mono">
+            {tSlip("legs", { count: card.legs.length })}
+          </span>
         </span>
         <span
           className="mono tnum"
           style={{ fontSize: 15, fontWeight: 700, color: "var(--fg)" }}
-          title="Combined BetBuilder odds"
+          title={t("zillabuild.combinedOdds")}
         >
           {card.combinedOdds}
         </span>
@@ -277,7 +284,7 @@ function BuildCard({
         type="button"
         onClick={useBuild}
         disabled={onSlip}
-        aria-label={onSlip ? "Build on bet slip" : "Use this build"}
+        aria-label={onSlip ? t("zillabuild.buildOnSlip") : t("zillabuild.useBuild")}
         style={{
           width: "100%",
           height: 36,
@@ -294,7 +301,7 @@ function BuildCard({
           transition: "background 140ms var(--ease)",
         }}
       >
-        {onSlip ? "On bet slip" : "Use this build"}
+        {onSlip ? t("onBetSlip") : t("zillabuild.useBuild")}
       </button>
     </div>
   );

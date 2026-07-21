@@ -9,16 +9,22 @@ export function TierMark({
   tier,
   size = 12,
   style,
+  // Translated tooltip/aria text. Callers with i18n access pass
+  // t("topTournamentTitle") from the `match` namespace; the English
+  // default keeps translation-less surfaces (e.g. the embed page)
+  // rendering sensibly.
+  label = "Top tournament",
 }: {
   tier: number | null | undefined;
   size?: number;
   style?: CSSProperties;
+  label?: string;
 }) {
   if (!isFeaturedTier(tier)) return null;
   return (
     <span
-      title="Top tournament"
-      aria-label="Top tournament"
+      title={label}
+      aria-label={label}
       style={{
         display: "inline-flex",
         alignItems: "center",

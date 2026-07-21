@@ -17,12 +17,15 @@
 import Link from "next/link";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { I } from "@/components/ui/icons";
+import { useTranslations } from "@/lib/i18n";
 import { useSessionUserId } from "@/lib/session-user";
 import { useZillapass } from "@/lib/zillapass";
+import { useZillapassTaskText } from "@/lib/zillapass-i18n";
 import type { ZillapassActiveTaskDto, ZillapassMeResponse } from "@oddzilla/types";
 
 export function ZillapassIndicator() {
   const userId = useSessionUserId();
+  const t = useTranslations("zillapass");
   const { data } = useZillapass();
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -74,7 +77,7 @@ export function ZillapassIndicator() {
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="dialog"
         aria-expanded={open}
-        title="ZillaPass progress"
+        title={t("chipTitle")}
         className="oz-zillapass-chip-button"
         style={{
           display: "inline-flex",
@@ -110,13 +113,13 @@ export function ZillapassIndicator() {
             className="mono oz-zillapass-chip-label-wide"
             style={{ letterSpacing: "0.02em" }}
           >
-            ZillaPass Tasks
+            {t("chipLabel")}
           </span>
           <span
             className="mono oz-zillapass-chip-label-mobile"
             style={{ letterSpacing: "0.02em" }}
           >
-            Tasks
+            {t("chipLabelShort")}
           </span>
         </span>
         <span
@@ -178,11 +181,12 @@ function Popover({
   data: ZillapassMeResponse | null;
   onClose: () => void;
 }) {
+  const t = useTranslations("zillapass");
   const tasks = data?.tasks ?? [];
   return (
     <div
       role="dialog"
-      aria-label="ZillaPass tasks"
+      aria-label={t("popoverAria")}
       style={{
         position: "absolute",
         top: 44,
@@ -278,7 +282,7 @@ function Popover({
             fontWeight: 600,
           }}
         >
-          Open ZillaPass
+          {t("openZillaPass")}
         </Link>
       </div>
     </div>
@@ -286,6 +290,7 @@ function Popover({
 }
 
 function TaskRow({ task }: { task: ZillapassActiveTaskDto }) {
+  const taskText = useZillapassTaskText();
   const pct =
     task.targetCount === 0
       ? 0
@@ -321,7 +326,7 @@ function TaskRow({ task }: { task: ZillapassActiveTaskDto }) {
             whiteSpace: "nowrap",
           }}
         >
-          {task.title}
+          {taskText(task).title}
         </span>
         <span
           className="mono"
@@ -369,6 +374,7 @@ function RowBar({ pct }: { pct: number }) {
 }
 
 function EmptyState() {
+  const t = useTranslations("zillapass");
   return (
     <div
       style={{
@@ -378,7 +384,7 @@ function EmptyState() {
         fontSize: 12,
       }}
     >
-      No active tasks. Check back later.
+      {t("noActiveTasksShort")}
     </div>
   );
 }

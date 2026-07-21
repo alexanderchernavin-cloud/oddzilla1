@@ -22,6 +22,7 @@ import {
 import { useLiveMatchStatus } from "@/lib/use-live-odds";
 import { DisirWidget } from "./disir-widget";
 import { supportsLiveWidget } from "./supported-sports";
+import { useTranslations } from "@/lib/i18n";
 
 type MatchStatus = "not_started" | "live" | "closed" | "cancelled" | "suspended";
 
@@ -46,6 +47,8 @@ export function MatchLiveMedia({
   parentHost,
   initialStatus,
 }: Props) {
+  const t = useTranslations("matchWidgets");
+  const tMatch = useTranslations("match");
   // Subscribe to live lifecycle ticks so the live-stats widget hides
   // the moment the match finishes — otherwise the iframe stays mounted
   // showing its final state until the bettor reloads.
@@ -72,7 +75,7 @@ export function MatchLiveMedia({
         <div
           className="oz-live-media-tabs"
           role="tablist"
-          aria-label="Live media"
+          aria-label={t("liveMedia.aria")}
           style={{
             display: "none",
             gap: 4,
@@ -84,12 +87,12 @@ export function MatchLiveMedia({
           }}
         >
           <PillBtn
-            label="Stream"
+            label={tMatch("stream")}
             active={mobileTab === "stream"}
             onClick={() => setMobileTab("stream")}
           />
           <PillBtn
-            label="Stats"
+            label={tMatch("stats")}
             active={mobileTab === "stats"}
             onClick={() => setMobileTab("stats")}
           />
@@ -114,7 +117,10 @@ export function MatchLiveMedia({
           <DisirWidget
             variant="live-scoreboard"
             id={matchId}
-            title={`Live stats — ${homeTeam} vs ${awayTeam}`}
+            title={t("liveMedia.liveStatsTitle", {
+              home: homeTeam,
+              away: awayTeam,
+            })}
             minHeight={200}
             // hideUntilData defaults off so Oddin's iframe renders its
             // own "Live stats not available" empty state when data
@@ -133,6 +139,7 @@ function LiveStatsHeader({
 }: {
   sportSlug: string;
 }) {
+  const t = useTranslations("matchWidgets");
   return (
     <div
       style={{
@@ -152,7 +159,7 @@ function LiveStatsHeader({
           textTransform: "uppercase",
         }}
       >
-        Live stats
+        {t("liveMedia.liveStats")}
       </span>
       <span
         className="mono"

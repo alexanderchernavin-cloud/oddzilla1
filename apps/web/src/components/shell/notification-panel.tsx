@@ -235,7 +235,7 @@ export function NotificationPanel({ open, onClose, triggerRef }: PanelProps) {
               fontWeight: 600,
             }}
           >
-            {unreadCount} new
+            {tNot("newCount", { count: unreadCount })}
           </span>
         ) : null}
         <div style={{ flex: 1 }} />
@@ -306,6 +306,7 @@ function NotificationRow({
   item: NotificationItem;
   onClick: () => void;
 }) {
+  const tNot = useTranslations("notifications");
   const cfg = NOTIFICATION_DISPLAY[item.type];
   // `as keyof typeof I` resolves the icon component lazily so a
   // missing entry falls back gracefully to the bell.
@@ -313,8 +314,8 @@ function NotificationRow({
     (I as Record<string, (p: { size?: number }) => ReactElement>)[cfg.iconKey] ??
     I.Bell;
 
-  const headline = cfg.headline(item);
-  const ctx = cfg.context(item);
+  const headline = cfg.headline(item, tNot);
+  const ctx = cfg.context(item, tNot);
   const actor = item.actorNickname;
 
   return (
@@ -343,11 +344,11 @@ function NotificationRow({
         </span>
         {ctx ? <span style={ROW_CTX_STYLE}>{ctx}</span> : null}
         <span style={ROW_TIMESTAMP_STYLE}>
-          {formatRelativeTime(item.createdAt)}
+          {formatRelativeTime(item.createdAt, tNot)}
         </span>
       </span>
       {!item.read ? (
-        <span aria-label="Unread" style={ROW_UNREAD_DOT_STYLE} />
+        <span aria-label={tNot("unreadDot")} style={ROW_UNREAD_DOT_STYLE} />
       ) : null}
     </button>
   );

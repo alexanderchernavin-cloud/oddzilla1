@@ -7,6 +7,7 @@
 import { fromMicro } from "@oddzilla/types/money";
 import type { Currency, WalletSnapshot } from "@oddzilla/types";
 import { useBetSlip } from "@/lib/bet-slip";
+import { useTranslations } from "@/lib/i18n";
 
 export function CurrencyCard({
   wallet,
@@ -18,6 +19,8 @@ export function CurrencyCard({
   tag: string | null;
 }) {
   const slip = useBetSlip();
+  const t = useTranslations("wallet");
+  const tCommon = useTranslations("common");
   const active = slip.currency === currency;
 
   const balance = wallet ? fromMicro(BigInt(wallet.balanceMicro)) : "—";
@@ -49,7 +52,7 @@ export function CurrencyCard({
           </p>
           {tag ? (
             <span className="rounded-full border border-[var(--color-border-strong)] px-2 py-[1px] text-[10px] uppercase tracking-[0.12em] text-[var(--color-fg-muted)]">
-              {tag}
+              {tag === "demo" ? tCommon("demo") : tag}
             </span>
           ) : null}
         </div>
@@ -61,7 +64,7 @@ export function CurrencyCard({
               : "var(--color-fg-subtle, var(--fg-dim))",
           }}
         >
-          {active ? "Active" : "Switch"}
+          {active ? t("active") : t("switch")}
         </span>
       </div>
       <p className="mt-3 font-mono text-3xl text-[var(--color-accent)]">
@@ -71,9 +74,9 @@ export function CurrencyCard({
         </span>
       </p>
       <dl className="mt-4 grid grid-cols-2 gap-y-1 text-xs text-[var(--color-fg-muted)]">
-        <dt>Balance</dt>
+        <dt>{t("balance")}</dt>
         <dd className="text-right font-mono text-[var(--color-fg)]">{balance}</dd>
-        <dt>Locked</dt>
+        <dt>{t("locked")}</dt>
         <dd className="text-right font-mono text-[var(--color-fg)]">{locked}</dd>
       </dl>
     </button>

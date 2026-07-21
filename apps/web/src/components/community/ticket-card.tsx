@@ -1,6 +1,9 @@
+"use client";
+
 import Link from "next/link";
 import type { CommunityTicketSummary } from "@oddzilla/types";
 import { fromMicro } from "@oddzilla/types/money";
+import { useLocale, useTranslations } from "@/lib/i18n";
 import { CopyButton } from "./copy-button";
 import { ApplySamePlayButton } from "./apply-same-play-button";
 import { Avatar } from "./avatar";
@@ -20,6 +23,10 @@ import { Avatar } from "./avatar";
 // Money is rendered via fromMicro so we never lose precision converting
 // to Number — a winning combo can clear several thousand units in
 // micros, comfortably above MAX_SAFE_INTEGER on multi-leg.
+//
+// Client component: all user-facing copy resolves through the
+// `community.card` i18n namespace, so `sportsById` is a plain object
+// (a Map can't cross the RSC serialization boundary).
 
 interface SportEntry {
   id: number;
@@ -32,11 +39,13 @@ export function CommunityTicketCard({
   isHero = false,
 }: {
   ticket: CommunityTicketSummary;
-  sportsById: Map<number, SportEntry>;
+  sportsById: Record<number, SportEntry | undefined>;
   isHero?: boolean;
 }) {
+  const t = useTranslations("community");
+  const locale = useLocale();
   const sport = ticket.sportIds
-    .map((id) => sportsById.get(id))
+    .map((id) => sportsById[id])
     .filter((s): s is SportEntry => Boolean(s))[0];
 
   const stake = fromMicro(BigInt(ticket.stakeMicro));
@@ -47,14 +56,12 @@ export function CommunityTicketCard({
     BigInt(ticket.payoutMicro) > BigInt(ticket.stakeMicro);
   const isLive = ticket.status === "accepted";
 
-  const at = new Date(ticket.at).toLocaleString("en-US", {
+  const at = new Date(ticket.at).toLocaleString(locale, {
     month: "short",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
   });
-  // Accepted tickets show the *potential* payout, settled show actual.
-  const payoutLabel = isLive ? "to win" : "payout";
 
   // Gold border on the entire card when a Big Win renders. Sibling
   // Big-Win cards (non-hero) keep the standard slate border and only
@@ -71,13 +78,21 @@ export function CommunityTicketCard({
     ? "font-mono text-2xl text-[var(--color-positive)]"
     : "font-mono text-sm text-[var(--color-positive)]";
 
+  // Settled wins lead with actual payout; accepted tickets show the
+  // potential ("to win"), everything else the plain payout label.
+  const metaLine = isWin
+    ? t("card.metaWin", { payout, stake })
+    : isLive
+      ? t("card.metaToWin", { stake, currency: ticket.currency })
+      : t("card.metaPayout", { stake, currency: ticket.currency });
+
   return (
     <li className={cardCls}>
       <div className="flex items-start justify-between gap-4">
         <Link
           href={`/u/${encodeURIComponent(ticket.nickname)}`}
           className="shrink-0 hover:opacity-80"
-          aria-label={`${ticket.nickname}'s profile`}
+          aria-label={t("card.profileAria", { name: ticket.nickname })}
         >
           <Avatar
             imageUrl={ticket.avatarUrl}
@@ -100,7 +115,7 @@ export function CommunityTicketCard({
             {ticket.inspirationCount > 0 ? (
               <span
                 className="ml-auto inline-flex items-center gap-1 text-[10px] uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]"
-                title="Times this bet has been copied"
+                title={t("card.copiedTimes")}
               >
                 <span aria-hidden>🔥</span>
                 {ticket.inspirationCount}
@@ -116,7 +131,7 @@ export function CommunityTicketCard({
 
           <p className="mt-3 text-sm">
             <span className="text-[var(--color-fg-subtle)]">
-              {labelForBetType(ticket.betType, ticket.numLegs)}
+              <BetTypeLabel betType={ticket.betType} numLegs={ticket.numLegs} />
             </span>
             <span aria-hidden> · </span>
             <span className="font-mono">@{ticket.totalOdds}</span>
@@ -139,7 +154,7 @@ export function CommunityTicketCard({
             </p>
           )}
           <p className="font-mono text-xs text-[var(--color-fg-muted)]">
-            {isWin ? `payout ${payout} · stake ${stake}` : `${payoutLabel} · stake ${stake} ${ticket.currency}`}
+            {metaLine}
           </p>
         </div>
       </div>
@@ -166,10 +181,11 @@ export function CommunityTicketCard({
 // globals.css are different so we lean on the accent token (gold)
 // which carries the same Big Win identity.
 function BigWinBadge() {
+  const t = useTranslations("community");
   return (
     <span className="inline-flex items-center gap-1 rounded-full border border-[var(--color-accent)] bg-[var(--color-bg)] px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-[var(--color-accent)]">
       <span aria-hidden>🏆</span>
-      Big win
+      {t("card.bigWin")}
     </span>
   );
 }
@@ -194,24 +210,25 @@ function StatusPill({
   status: CommunityTicketSummary["status"];
   isWin: boolean;
 }) {
+  const t = useTranslations("community");
   if (status === "accepted") {
     return (
       <span className="inline-block rounded-full bg-[var(--color-accent)]/15 px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-[var(--color-accent)]">
-        Live
+        {t("card.live")}
       </span>
     );
   }
   if (status === "cashed_out") {
     return (
       <span className="inline-block rounded-full border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-[var(--color-fg-muted)]">
-        Cashed out
+        {t("card.cashedOut")}
       </span>
     );
   }
   if (status === "voided") {
     return (
       <span className="inline-block rounded-full border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-[var(--color-fg-muted)]">
-        Void
+        {t("card.void")}
       </span>
     );
   }
@@ -224,18 +241,22 @@ function StatusPill({
           : "bg-[var(--color-negative)]/15 text-[var(--color-negative)]")
       }
     >
-      {isWin ? "Won" : "Lost"}
+      {isWin ? t("card.won") : t("card.lost")}
     </span>
   );
 }
 
-function labelForBetType(
-  betType: CommunityTicketSummary["betType"],
-  numLegs: number,
-): string {
-  if (betType === "single") return "Single";
-  if (betType === "combo") return `Combo · ${numLegs} legs`;
-  if (betType === "tiple") return `Tiple · ${numLegs} legs`;
-  if (betType === "tippot") return `Tippot · ${numLegs} legs`;
-  return `System · ${numLegs} legs`;
+function BetTypeLabel({
+  betType,
+  numLegs,
+}: {
+  betType: CommunityTicketSummary["betType"];
+  numLegs: number;
+}) {
+  const t = useTranslations("community");
+  if (betType === "single") return <>{t("card.betTypeSingle")}</>;
+  if (betType === "combo") return <>{t("card.betTypeCombo", { count: numLegs })}</>;
+  if (betType === "tiple") return <>{t("card.betTypeTiple", { count: numLegs })}</>;
+  if (betType === "tippot") return <>{t("card.betTypeTippot", { count: numLegs })}</>;
+  return <>{t("card.betTypeSystem", { count: numLegs })}</>;
 }

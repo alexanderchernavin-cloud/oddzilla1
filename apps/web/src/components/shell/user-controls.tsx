@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { Button } from "@/components/ui/primitives";
+import { useTranslations } from "@/lib/i18n";
 import { ThemeToggle } from "./theme-toggle";
 import { NotificationBell } from "./notification-bell";
 import { WalletPill } from "./wallet-pill";
@@ -35,6 +36,7 @@ interface UserControlsProps {
 }
 
 export function UserControls({ signedIn, user, variant }: UserControlsProps) {
+  const t = useTranslations("shell");
   const isTopbar = variant === "topbar";
   return (
     <div
@@ -70,14 +72,14 @@ export function UserControls({ signedIn, user, variant }: UserControlsProps) {
       ) : (
         <>
           <Link href="/login" style={{ textDecoration: "none" }}>
-            <Button variant="ghost">Log in</Button>
+            <Button variant="ghost">{t("login")}</Button>
           </Link>
           <Link
             href="/signup"
             style={{ textDecoration: "none" }}
             className={isTopbar ? "oz-topbar-signup" : undefined}
           >
-            <Button variant="primary">Sign up</Button>
+            <Button variant="primary">{t("signup")}</Button>
           </Link>
         </>
       )}

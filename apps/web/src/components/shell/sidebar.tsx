@@ -801,6 +801,7 @@ function TournamentItem({
   tournament: Tournament;
   active: boolean;
 }) {
+  const tMatch = useTranslations("match");
   const tier = tournament.riskTier ?? null;
   const featured = isFeaturedTier(tier);
   const hasLive = tournament.liveCount > 0;
@@ -821,7 +822,7 @@ function TournamentItem({
         transition: "background 140ms var(--ease), color 140ms var(--ease)",
       }}
     >
-      <TierMark tier={tier} size={11} />
+      <TierMark tier={tier} size={11} label={tMatch("topTournamentTitle")} />
       <TournamentLogoMark logoUrl={tournament.logoUrl ?? null} name={tournament.name} />
       <span
         style={{

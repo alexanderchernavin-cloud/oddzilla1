@@ -15,7 +15,7 @@ import { SportGlyph } from "@/components/ui/sport-glyph";
 import { Pill, LiveDot, TeamMark } from "@/components/ui/primitives";
 import { TierMark } from "@/components/ui/tier-mark";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
-import { useTranslations } from "@/lib/i18n";
+import { useLocale, useTranslations } from "@/lib/i18n";
 
 interface SportHit {
   slug: string;
@@ -376,6 +376,8 @@ function ResultGroups({
   onPick: (href: string) => void;
 }) {
   const t = useTranslations("search");
+  const tMatch = useTranslations("match");
+  const locale = useLocale();
   // Track a running index across groups so keyboard highlight aligns
   // with the flat nav list built by buildNavItems. Section order is
   // Matches → Teams → Tournaments → Sports (most-actionable first).
@@ -389,7 +391,7 @@ function ResultGroups({
       const isLive = m.status === "live";
       const when =
         !isLive && m.scheduledAt
-          ? new Date(m.scheduledAt).toLocaleString("en-GB", {
+          ? new Date(m.scheduledAt).toLocaleString(locale, {
               month: "short",
               day: "numeric",
               hour: "2-digit",
@@ -407,7 +409,11 @@ function ResultGroups({
           primary={`${m.homeTeam} vs ${m.awayTeam}`}
           secondary={
             <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-              <TierMark tier={m.tournament.riskTier ?? null} size={10} />
+              <TierMark
+                tier={m.tournament.riskTier ?? null}
+                size={10}
+                label={tMatch("topTournamentTitle")}
+              />
               {`${m.sport.name} · ${m.tournament.name}`}
             </span>
           }
@@ -469,7 +475,11 @@ function ResultGroups({
           left={<SportGlyph sport={t.sport.slug} size={16} />}
           primary={
             <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-              <TierMark tier={t.riskTier ?? null} size={11} />
+              <TierMark
+                tier={t.riskTier ?? null}
+                size={11}
+                label={tMatch("topTournamentTitle")}
+              />
               {t.name}
             </span>
           }

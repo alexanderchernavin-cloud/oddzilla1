@@ -134,7 +134,7 @@ export default async function SportPage({
             className="mono tnum"
             style={{ fontSize: 12, color: "var(--fg-muted)", marginTop: 4 }}
           >
-            {data.matches.length} {data.matches.length === 1 ? "match" : "matches"}
+            {t("matchCount", { count: data.matches.length })}
           </div>
         </div>
       </header>

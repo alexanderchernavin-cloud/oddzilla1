@@ -1258,7 +1258,7 @@ export function BetSlipRail() {
           {pendingSuspendedConfirm ? (
             <div
               role="alertdialog"
-              aria-label="Confirm removing unavailable selections"
+              aria-label={t("confirmRemoveUnavailableAria")}
               style={{
                 display: "flex",
                 flexDirection: "column",
@@ -1612,10 +1612,11 @@ function CurrencyTabs({
   value: Currency;
   onChange: (c: Currency) => void;
 }) {
+  const t = useTranslations("betSlip");
   return (
     <div
       role="tablist"
-      aria-label="Wallet currency"
+      aria-label={t("walletCurrencyAria")}
       style={{
         display: "flex",
         gap: 4,
@@ -1770,10 +1771,12 @@ function ModeSelector({
 }) {
   // tippot defaults to ≥3 legs at the server; offer the toggle anyway
   // and let the server reject with a clear error if min_legs is unmet.
+  // Tiple/Tippot are product names and stay verbatim; Combo translates.
+  const t = useTranslations("betSlip");
   const opts: Array<{ id: SlipMode; label: string; disabled?: boolean }> = [
-    { id: "combo", label: "Combo" },
-    { id: "tiple", label: "Tiple" },
-    { id: "tippot", label: "Tippot", disabled: n < 3 },
+    { id: "combo", label: t("combo") },
+    { id: "tiple", label: t("tiple") },
+    { id: "tippot", label: t("tippot"), disabled: n < 3 },
   ];
   return (
     <div
@@ -2011,16 +2014,11 @@ function RailTabs({
   );
 }
 
-const HISTORY_STATUS_LABEL: Record<TicketStatus, string> = {
-  pending_delay: "Pending",
-  accepted: "Accepted",
-  rejected: "Rejected",
-  settled: "Settled",
-  voided: "Voided",
-  cashed_out: "Cashed out",
-};
-
-function resolveHistoryBadge(t: TicketSummary): {
+function resolveHistoryBadge(
+  t: TicketSummary,
+  tTicket: (key: string) => string,
+  tBets: (key: string) => string,
+): {
   label: string;
   color: string;
 } {
@@ -2032,14 +2030,15 @@ function resolveHistoryBadge(t: TicketSummary): {
     // a Lost (the bettor still came out behind).
     const payout = t.actualPayoutMicro ? BigInt(t.actualPayoutMicro) : 0n;
     const stake = BigInt(t.stakeMicro);
-    if (payout > stake) return { label: "Won", color: "var(--positive)" };
-    if (payout === stake) return { label: "Voided", color: "var(--fg-muted)" };
-    return { label: "Lost", color: "var(--negative)" };
+    if (payout > stake) return { label: tTicket("won"), color: "var(--positive)" };
+    if (payout === stake) return { label: tBets("voided"), color: "var(--fg-muted)" };
+    return { label: tTicket("lost"), color: "var(--negative)" };
   }
-  if (t.status === "rejected") return { label: "Rejected", color: "var(--negative)" };
-  if (t.status === "pending_delay") return { label: "Pending", color: "var(--warning, var(--fg-muted))" };
-  if (t.status === "accepted") return { label: "Accepted", color: "var(--fg)" };
-  return { label: HISTORY_STATUS_LABEL[t.status], color: "var(--fg-muted)" };
+  if (t.status === "rejected") return { label: tBets("rejected"), color: "var(--negative)" };
+  if (t.status === "pending_delay") return { label: tTicket("pending"), color: "var(--warning, var(--fg-muted))" };
+  if (t.status === "accepted") return { label: tBets("accepted"), color: "var(--fg)" };
+  if (t.status === "cashed_out") return { label: tBets("cashedOut"), color: "var(--fg-muted)" };
+  return { label: tBets("settled"), color: "var(--fg-muted)" };
 }
 
 // Success view for the slip body after a placement lands. Two visual
@@ -2224,6 +2223,7 @@ function RejectedPlacementBanner({
   reason: string | null;
   onDismiss: () => void;
 }) {
+  const t = useTranslations("betSlip");
   return (
     <div
       role="alert"
@@ -2283,7 +2283,7 @@ function RejectedPlacementBanner({
           cursor: "pointer",
           padding: 2,
         }}
-        aria-label="Dismiss"
+        aria-label={t("dismiss")}
       >
         <I.Close size={12} />
       </button>
@@ -2520,12 +2520,14 @@ function HistoryTicketCard({
   highlight: boolean;
 }) {
   const t = useTranslations("betSlip");
+  const tTicket = useTranslations("ticket");
+  const tBets = useTranslations("bets");
   const stake = fromMicro(BigInt(ticket.stakeMicro));
   const potential = fromMicro(BigInt(ticket.potentialPayoutMicro));
   const actual = ticket.actualPayoutMicro
     ? fromMicro(BigInt(ticket.actualPayoutMicro))
     : null;
-  const badge = resolveHistoryBadge(ticket);
+  const badge = resolveHistoryBadge(ticket, tTicket, tBets);
   const first = ticket.selections[0];
   const legCount = ticket.selections.length;
   const matchHref = first?.market ? `/match/${first.market.matchId}` : null;

@@ -10,6 +10,7 @@ import type {
 import { isCurrency, type Currency } from "@oddzilla/types/currencies";
 import { fromMicro } from "@oddzilla/types/money";
 import { serverApi } from "@/lib/server-fetch";
+import { getServerLocale, getTranslations } from "@/lib/i18n/server";
 import { CurrencyTabs } from "@/components/community/currency-tabs";
 import { CommunityTicketCard } from "@/components/community/ticket-card";
 import { CommunityAchievementsSection } from "@/components/community/achievements";
@@ -33,6 +34,8 @@ export default async function PublicProfilePage({
   const { currency: rawCurrency } = await searchParams;
   const currency: Currency =
     rawCurrency && isCurrency(rawCurrency) ? rawCurrency : "USDC";
+  const t = await getTranslations("profilePage");
+  const locale = await getServerLocale();
 
   const [profile, ticketsRes, sportsRes, analysesRes, analysisStats] =
     await Promise.all([
@@ -54,12 +57,12 @@ export default async function PublicProfilePage({
     ]);
   if (!profile) notFound();
 
-  const joined = new Date(profile.joinedAt).toLocaleDateString("en-US", {
+  const joined = new Date(profile.joinedAt).toLocaleDateString(locale, {
     month: "short",
     year: "numeric",
   });
   const tickets = ticketsRes?.tickets ?? [];
-  const sportsById = new Map(
+  const sportsById = Object.fromEntries(
     (sportsRes?.sports ?? []).map((s) => [s.id, s]),
   );
 
@@ -77,7 +80,7 @@ export default async function PublicProfilePage({
             {profile.nickname}
           </h1>
           <p className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-            Joined {joined}
+            {t("joined", { date: joined })}
           </p>
           {profile.bio ? (
             <p className="mt-2 max-w-prose text-sm">{profile.bio}</p>
@@ -86,15 +89,19 @@ export default async function PublicProfilePage({
       </header>
 
       <div className="mt-6">
-        <CurrencyTabs nickname={profile.nickname} active={currency} />
+        <CurrencyTabs
+          nickname={profile.nickname}
+          active={currency}
+          ariaLabel={t("currencyAria")}
+        />
       </div>
 
       <section className="mt-6 grid gap-3 sm:grid-cols-4">
-        <Stat label="Settled" value={String(profile.stats.settledTickets)} />
-        <Stat label="Wins" value={String(profile.stats.wins)} />
-        <Stat label="Win rate" value={`${profile.stats.winRatePct}%`} />
+        <Stat label={t("settled")} value={String(profile.stats.settledTickets)} />
+        <Stat label={t("wins")} value={String(profile.stats.wins)} />
+        <Stat label={t("winRate")} value={`${profile.stats.winRatePct}%`} />
         <Stat
-          label="ROI"
+          label={t("roi")}
           value={`${profile.stats.roiPct >= 0 ? "+" : ""}${profile.stats.roiPct}%`}
         />
       </section>
@@ -103,11 +110,11 @@ export default async function PublicProfilePage({
 
       <section className="mt-8">
         <h2 className="text-sm uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-          Recent tickets
+          {t("recentTickets")}
         </h2>
         {tickets.length === 0 ? (
           <div className="card mt-3 p-6 text-sm text-[var(--color-fg-muted)]">
-            No settled {currency} tickets yet.
+            {t("noTickets", { currency })}
           </div>
         ) : (
           <ul className="mt-3 space-y-3">
@@ -130,19 +137,19 @@ export default async function PublicProfilePage({
           reader is browsing in. */}
       <section className="mt-10">
         <h2 className="text-sm uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-          Analyses outcome tracker
+          {t("analysesTracker")}
         </h2>
         {analysisStats ? (
           <div className="mt-3 grid gap-3 sm:grid-cols-4">
-            <Stat label="Published" value={String(analysisStats.totalAnalyses)} />
+            <Stat label={t("published")} value={String(analysisStats.totalAnalyses)} />
             <Stat
-              label="Settled"
+              label={t("settled")}
               value={`${analysisStats.wins}–${analysisStats.losses}${
                 analysisStats.voids > 0 ? `–${analysisStats.voids}` : ""
               }`}
             />
             <Stat
-              label="Win rate"
+              label={t("winRate")}
               value={
                 analysisStats.winRatePct === null
                   ? "—"
@@ -150,14 +157,14 @@ export default async function PublicProfilePage({
               }
             />
             <Stat
-              label="Inspired turnover"
+              label={t("inspiredTurnover")}
               value={`${fromMicro(BigInt(analysisStats.inspiredTurnoverMicro))}`}
             />
           </div>
         ) : null}
 
         <h3 className="mt-6 text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-          Recent analyses
+          {t("recentAnalyses")}
         </h3>
         {analysesRes && analysesRes.analyses.length > 0 ? (
           <ul className="mt-3 space-y-3">
@@ -167,7 +174,7 @@ export default async function PublicProfilePage({
           </ul>
         ) : (
           <div className="card mt-3 p-6 text-sm text-[var(--color-fg-muted)]">
-            No published analyses yet.
+            {t("noAnalyses")}
           </div>
         )}
       </section>

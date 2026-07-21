@@ -1,4 +1,7 @@
+"use client";
+
 import Image from "next/image";
+import { useTranslations } from "@/lib/i18n";
 
 // Single avatar visual primitive used across community surfaces:
 // feed cards, profile hero, picker grid, topbar (future). Fallback
@@ -26,6 +29,7 @@ export function Avatar({
   className = "",
   priority = false,
 }: AvatarProps) {
+  const t = useTranslations("community");
   const initial = (name ?? "?").trim().charAt(0).toUpperCase() || "?";
   const wrapperCls =
     "inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full border border-[var(--color-border-strong)] " +
@@ -58,7 +62,7 @@ export function Avatar({
       className={wrapperCls}
       style={{ width: size, height: size, background: "#1a1a1c" }}
       role="img"
-      aria-label={name ? `${name}'s avatar` : "User avatar"}
+      aria-label={name ? t("avatarOf", { name }) : t("avatarGeneric")}
     >
       <Image
         src={imageUrl}

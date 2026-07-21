@@ -1,3 +1,5 @@
+"use client";
+
 // Community section tab strip. Shared by /community (Recent / Big wins
 // / Analyses / Competitions, all rendered in-place via ?tab=) and the
 // sibling sub-routes that live at their own paths (/community/leaderboard).
@@ -8,6 +10,7 @@
 // tabs is derived from the parent passing the right activeTab prop.
 
 import type { Currency } from "@oddzilla/types";
+import { useTranslations } from "@/lib/i18n";
 
 export type CommunityTabKind =
   | "recent"
@@ -39,6 +42,7 @@ export function CommunityTabs({
   ticketSort = "recent",
   analysisSort = "recommended",
 }: CommunityTabsProps) {
+  const t = useTranslations("community");
   // Query-driven tabs share the /community page and rebuild the query
   // string. Carrying currency + sport across tab switches is the
   // existing convention; sort is per-tab so it only rides along for
@@ -66,23 +70,23 @@ export function CommunityTabs({
   return (
     <div
       role="tablist"
-      aria-label="Section"
+      aria-label={t("sectionAria")}
       className="mt-5 inline-flex rounded-[10px] border border-[var(--color-border-strong)] p-1"
     >
       <Tab href={queryLink("recent")} active={activeTab === "recent"}>
-        Recent
+        {t("tabRecent")}
       </Tab>
       <Tab href={queryLink("bigWins")} active={activeTab === "bigWins"}>
-        Big wins
+        {t("tabBestWins")}
       </Tab>
       <Tab href={queryLink("analyses")} active={activeTab === "analyses"}>
-        Analyses
+        {t("tabAnalyses")}
       </Tab>
       <Tab href={queryLink("competitions")} active={activeTab === "competitions"}>
-        Competitions
+        {t("tabCompetitions")}
       </Tab>
       <Tab href={leaderboardLink} active={activeTab === "leaderboard"}>
-        Leaderboard
+        {t("tabLeaderboard")}
       </Tab>
     </div>
   );

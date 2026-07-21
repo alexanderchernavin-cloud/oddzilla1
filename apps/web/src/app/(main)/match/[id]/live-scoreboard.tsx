@@ -17,6 +17,7 @@ import {
   type LiveScorePeriod,
   type LiveScoreScoreboard,
 } from "@/lib/live-score";
+import { useTranslations } from "@/lib/i18n";
 
 type MatchStatus = "not_started" | "live" | "closed" | "cancelled" | "suspended";
 
@@ -112,6 +113,7 @@ function Scoreboard({
   isLive: boolean;
   sportSlug: string;
 }) {
+  const t = useTranslations("matchWidgets");
   const periods = (liveScore?.periods ?? []).filter((p) => p.number != null);
   const periodByNumber = new Map<number, LiveScorePeriod>();
   for (const p of periods) periodByNumber.set(p.number ?? 0, p);
@@ -158,7 +160,7 @@ function Scoreboard({
         {/* Header row */}
         <div role="row" style={{ display: "contents" }}>
           <div />
-          <ColHeader label="Score" />
+          <ColHeader label={t("scoreboard.score")} />
           {cols.map((n) => (
             <ColHeader
               key={n}
@@ -193,8 +195,8 @@ function Scoreboard({
             but smaller + dimmer so kills stays the primary metric. */}
         {extraRows.map((row, i) => (
           <ExtraRow
-            key={row.label}
-            label={row.label}
+            key={row.labelKey}
+            label={t(`scoreboard.${row.labelKey}`)}
             cols={cols}
             currentMap={currentMap}
             homeValue={row.homeValue}
@@ -445,14 +447,14 @@ function extraScoreRows(
   sb: LiveScoreScoreboard,
   sportSlug: string,
 ): {
-  label: string;
+  labelKey: "towers" | "turrets" | "gold";
   homeValue: number;
   awayValue: number;
   format: (n: number) => string;
 }[] {
   const slug = sportSlug.toLowerCase();
   const out: {
-    label: string;
+    labelKey: "towers" | "turrets" | "gold";
     homeValue: number;
     awayValue: number;
     format: (n: number) => string;
@@ -469,7 +471,7 @@ function extraScoreRows(
 
   if (sb.homeDestroyedTowers != null && sb.awayDestroyedTowers != null) {
     out.push({
-      label: "Towers",
+      labelKey: "towers",
       homeValue: sb.homeDestroyedTowers,
       awayValue: sb.awayDestroyedTowers,
       format: (n) => String(n),
@@ -477,7 +479,7 @@ function extraScoreRows(
   }
   if (sb.homeDestroyedTurrets != null && sb.awayDestroyedTurrets != null) {
     out.push({
-      label: "Turrets",
+      labelKey: "turrets",
       homeValue: sb.homeDestroyedTurrets,
       awayValue: sb.awayDestroyedTurrets,
       format: (n) => String(n),
@@ -485,7 +487,7 @@ function extraScoreRows(
   }
   if (sb.homeGold != null && sb.awayGold != null) {
     out.push({
-      label: "Gold",
+      labelKey: "gold",
       homeValue: sb.homeGold,
       awayValue: sb.awayGold,
       format: formatGold,

@@ -11,6 +11,12 @@ import type {
   WithdrawalSummary,
 } from "@oddzilla/types";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
+import { useLocale, useTranslations } from "@/lib/i18n";
+
+// Translator signature shared by the error mappers below — they resolve
+// API error codes to dictionary keys at the call site so the message
+// renders in the active locale.
+type Translator = (key: string, values?: Record<string, string | number>) => string;
 
 // NOTE: there is intentionally no "paste your tx hash" form. With one
 // shared receive address, on-chain Transfers are public — anyone
@@ -50,9 +56,6 @@ function getEthereum(): Eip1193Provider | null {
   const eth = (window as unknown as { ethereum?: Eip1193Provider }).ethereum;
   return eth ?? null;
 }
-
-const NO_WALLET_TEXT =
-  "No Ethereum wallet detected. Install MetaMask (or another browser wallet) to link a sending address.";
 
 export function WalletPanels({
   depositAddress,
@@ -104,15 +107,16 @@ function DepositCard({
   available: boolean;
   hasLinkedWallets: boolean;
 }) {
+  const t = useTranslations("wallet");
   return (
     <div className="card p-6">
       <h2 className="text-sm uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-        Deposit
+        {t("deposit")}
       </h2>
 
       {!available || !address ? (
         <p className="mt-5 text-sm text-[var(--color-fg-muted)]">
-          Deposits are temporarily unavailable. Please check back shortly.
+          {t("depositsUnavailable")}
         </p>
       ) : (
         <div className="mt-5 flex items-start gap-5">
@@ -122,7 +126,7 @@ function DepositCard({
           <div className="min-w-0 flex-1 space-y-3">
             <div>
               <p className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-                Send {address.currency} on {address.network}
+                {t("sendOn", { currency: address.currency, network: address.network })}
               </p>
               <p className="mt-1 break-all font-mono text-sm">
                 {address.address}
@@ -131,16 +135,11 @@ function DepositCard({
             <CopyButton text={address.address} />
             {hasLinkedWallets ? (
               <p className="text-xs text-[var(--color-fg-muted)]">
-                Send only USDC on Ethereum (ERC20). Tokens on the wrong
-                network or contract will be lost. Deposits from your
-                linked wallets are credited automatically after the
-                required confirmations.
+                {t("depositNoteLinked")}
               </p>
             ) : (
               <p className="text-xs text-[var(--color-warning)]">
-                Link your sending wallet below before depositing.
-                Deposits from unlinked addresses require manual review
-                and may be delayed.
+                {t("depositNoteUnlinked")}
               </p>
             )}
           </div>
@@ -158,6 +157,8 @@ function LinkedWalletsCard({
   linkedWallets: LinkedWalletAddress[];
 }) {
   const router = useRouter();
+  const t = useTranslations("wallet");
+  const locale = useLocale();
   const [pending, startTransition] = useTransition();
   const [address, setAddress] = useState("");
   const [label, setLabel] = useState("");
@@ -170,7 +171,7 @@ function LinkedWalletsCard({
     setMsg(null);
     const eth = getEthereum();
     if (!eth) {
-      setMsg({ kind: "err", text: NO_WALLET_TEXT });
+      setMsg({ kind: "err", text: t("noWalletDetected") });
       return;
     }
     try {
@@ -179,12 +180,12 @@ function LinkedWalletsCard({
       })) as string[];
       const account = accounts?.[0];
       if (!account) {
-        setMsg({ kind: "err", text: "No wallet account available." });
+        setMsg({ kind: "err", text: t("noWalletAccount") });
         return;
       }
       setAddress(account);
     } catch {
-      setMsg({ kind: "err", text: "Wallet connection was rejected." });
+      setMsg({ kind: "err", text: t("walletConnRejected") });
     }
   }
 
@@ -193,12 +194,12 @@ function LinkedWalletsCard({
     setMsg(null);
     const trimmed = address.trim();
     if (!/^0x[0-9a-fA-F]{40}$/.test(trimmed)) {
-      setMsg({ kind: "err", text: "Address must be 0x followed by 40 hex characters." });
+      setMsg({ kind: "err", text: t("addressFormat") });
       return;
     }
     const eth = getEthereum();
     if (!eth) {
-      setMsg({ kind: "err", text: NO_WALLET_TEXT });
+      setMsg({ kind: "err", text: t("noWalletDetected") });
       return;
     }
     startTransition(async () => {
@@ -209,13 +210,13 @@ function LinkedWalletsCard({
         })) as string[];
         const account = accounts?.[0];
         if (!account) {
-          setMsg({ kind: "err", text: "No wallet account available." });
+          setMsg({ kind: "err", text: t("noWalletAccount") });
           return;
         }
         if (account.toLowerCase() !== trimmed.toLowerCase()) {
           setMsg({
             kind: "err",
-            text: "Your wallet's active account doesn't match this address. Switch to it in your wallet, or use Connect wallet to fill it in.",
+            text: t("accountMismatch"),
           });
           return;
         }
@@ -237,12 +238,12 @@ function LinkedWalletsCard({
             issuedAt: challenge.issuedAt,
           }),
         });
-        setMsg({ kind: "ok", text: "Wallet verified and linked. Future deposits from it will credit automatically." });
+        setMsg({ kind: "ok", text: t("linkSuccess") });
         setAddress("");
         setLabel("");
         router.refresh();
       } catch (err) {
-        setMsg({ kind: "err", text: mapLinkError(err) });
+        setMsg({ kind: "err", text: mapLinkError(err, t) });
       }
     });
   }
@@ -257,7 +258,7 @@ function LinkedWalletsCard({
       } catch (err) {
         setMsg({
           kind: "err",
-          text: err instanceof ApiFetchError ? err.body.message : "Could not unlink.",
+          text: err instanceof ApiFetchError ? err.body.message : t("errUnlink"),
         });
       } finally {
         setRemovingId(null);
@@ -268,19 +269,15 @@ function LinkedWalletsCard({
   return (
     <div className="card p-6">
       <h2 className="text-sm uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-        Linked wallets
+        {t("linkedWallets")}
       </h2>
       <p className="mt-2 text-xs text-[var(--color-fg-muted)]">
-        Register the ERC20 address you send USDC from. You&apos;ll sign a
-        one-time message with that wallet to prove you control it; then
-        deposits arriving from it are auto-credited after confirmations —
-        no tx hash to paste. One address can only be linked to one Oddzilla
-        account.
+        {t("linkedWalletsIntro")}
       </p>
 
       {linkedWallets.length === 0 ? (
         <p className="mt-4 text-sm text-[var(--color-fg-muted)]">
-          No linked wallets yet.
+          {t("noLinkedWallets")}
         </p>
       ) : (
         <ul className="mt-4 divide-y divide-[var(--color-border)] rounded-[14px] border border-[var(--color-border)] bg-[var(--color-bg-card)]">
@@ -297,7 +294,10 @@ function LinkedWalletsCard({
                   {w.address}
                 </p>
                 <p className="mt-1 text-[10px] uppercase tracking-[0.12em] text-[var(--color-fg-subtle)]">
-                  {w.network} · linked {new Date(w.createdAt).toLocaleDateString()}
+                  {t("linkedMeta", {
+                    network: w.network,
+                    date: new Date(w.createdAt).toLocaleDateString(locale),
+                  })}
                 </p>
               </div>
               <button
@@ -306,7 +306,7 @@ function LinkedWalletsCard({
                 onClick={() => remove(w.id)}
                 className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-muted)] hover:text-[var(--color-negative)] disabled:opacity-50"
               >
-                {pending && removingId === w.id ? "Removing…" : "Unlink"}
+                {pending && removingId === w.id ? t("removing") : t("unlink")}
               </button>
             </li>
           ))}
@@ -320,11 +320,11 @@ function LinkedWalletsCard({
           disabled={pending}
           className="w-full rounded-[10px] border border-[var(--color-border-strong)] px-3 py-2 text-sm text-[var(--color-fg-muted)] hover:text-[var(--color-fg)] disabled:opacity-50"
         >
-          Connect wallet
+          {t("connectWallet")}
         </button>
         <label className="block">
           <span className="text-xs text-[var(--color-fg-subtle)]">
-            Sending address
+            {t("sendingAddress")}
           </span>
           <input
             type="text"
@@ -339,14 +339,14 @@ function LinkedWalletsCard({
         </label>
         <label className="block">
           <span className="text-xs text-[var(--color-fg-subtle)]">
-            Label (optional)
+            {t("labelOptional")}
           </span>
           <input
             type="text"
             maxLength={60}
             value={label}
             onChange={(e) => setLabel(e.target.value)}
-            placeholder="e.g. Coinbase, Ledger, MetaMask"
+            placeholder={t("labelPlaceholder")}
             className="mt-1 w-full rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)]"
           />
         </label>
@@ -364,30 +364,30 @@ function LinkedWalletsCard({
           </p>
         ) : null}
         <button type="submit" disabled={pending} className="btn btn-primary w-full">
-          {pending ? "Signing…" : "Sign & link wallet"}
+          {pending ? t("signing") : t("signAndLink")}
         </button>
       </form>
     </div>
   );
 }
 
-function mapLinkError(err: unknown): string {
+function mapLinkError(err: unknown, t: Translator): string {
   if (err instanceof ApiFetchError) {
     switch (err.body.error) {
       case "address_already_linked":
-        return "That address is already linked (possibly to another account).";
+        return t("errAlreadyLinked");
       case "address_is_internal":
-        return "That's the Oddzilla receive address — pick a sending wallet you control.";
+        return t("errInternalAddress");
       case "address_not_allowed":
-        return "That looks like an exchange/custodial address, which can't be linked. Use a self-custodial wallet you control.";
+        return t("errCustodialAddress");
       case "signature_address_mismatch":
-        return "The signature didn't match this address. Sign with the wallet that owns it.";
+        return t("errSignatureMismatch");
       case "invalid_signature":
-        return "Could not verify the signature. Please try signing again.";
+        return t("errInvalidSignature");
       case "challenge_expired":
-        return "The signing request expired. Please try again.";
+        return t("errChallengeExpired");
       case "invalid_address":
-        return "That doesn't look like a valid ERC20 address.";
+        return t("errInvalidAddress");
       default:
         return err.body.message;
     }
@@ -399,12 +399,13 @@ function mapLinkError(err: unknown): string {
     "code" in err &&
     (err as { code?: unknown }).code === 4001
   ) {
-    return "Signature request was rejected in your wallet.";
+    return t("errSignatureRejected");
   }
-  return "Could not link wallet.";
+  return t("errLinkGeneric");
 }
 
 function CopyButton({ text }: { text: string }) {
+  const t = useTranslations("wallet");
   const [copied, setCopied] = useState(false);
   return (
     <button
@@ -420,7 +421,7 @@ function CopyButton({ text }: { text: string }) {
       }}
       className="rounded-[8px] border border-[var(--color-border-strong)] px-3 py-1 text-xs uppercase tracking-[0.15em] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]"
     >
-      {copied ? "Copied" : "Copy address"}
+      {copied ? t("copied") : t("copyAddress")}
     </button>
   );
 }
@@ -429,6 +430,7 @@ function CopyButton({ text }: { text: string }) {
 
 function WithdrawCard({ availableMicro }: { availableMicro: string }) {
   const router = useRouter();
+  const t = useTranslations("wallet");
   const [pending, startTransition] = useTransition();
   const [amount, setAmount] = useState("");
   const [toAddress, setToAddress] = useState("");
@@ -444,12 +446,12 @@ function WithdrawCard({ availableMicro }: { availableMicro: string }) {
     try {
       const m = toMicro(amount);
       if (m <= 0n) {
-        setMsg({ kind: "err", text: "Amount must be positive." });
+        setMsg({ kind: "err", text: t("amountPositive") });
         return;
       }
       amountMicro = m.toString();
     } catch {
-      setMsg({ kind: "err", text: "Invalid amount." });
+      setMsg({ kind: "err", text: t("invalidAmount") });
       return;
     }
 
@@ -462,12 +464,12 @@ function WithdrawCard({ availableMicro }: { availableMicro: string }) {
             amountMicro,
           }),
         });
-        setMsg({ kind: "ok", text: "Withdrawal requested. Awaiting admin approval." });
+        setMsg({ kind: "ok", text: t("withdrawRequested") });
         setAmount("");
         setToAddress("");
         router.refresh();
       } catch (err) {
-        setMsg({ kind: "err", text: mapWithdrawError(err) });
+        setMsg({ kind: "err", text: mapWithdrawError(err, t) });
       }
     });
   }
@@ -475,15 +477,15 @@ function WithdrawCard({ availableMicro }: { availableMicro: string }) {
   return (
     <form className="card space-y-4 p-6" onSubmit={onSubmit}>
       <h2 className="text-sm uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-        Withdraw
+        {t("withdraw")}
       </h2>
 
       <p className="text-xs text-[var(--color-fg-muted)]">
-        USDC on Ethereum (ERC20). Manual review by an admin before payout.
+        {t("withdrawNote")}
       </p>
 
       <label className="block">
-        <span className="text-xs text-[var(--color-fg-subtle)]">Destination address</span>
+        <span className="text-xs text-[var(--color-fg-subtle)]">{t("destinationAddress")}</span>
         <input
           type="text"
           required
@@ -498,7 +500,7 @@ function WithdrawCard({ availableMicro }: { availableMicro: string }) {
 
       <label className="block">
         <span className="text-xs text-[var(--color-fg-subtle)]">
-          Amount (USDC) — available {available}
+          {t("amountAvailable", { amount: available })}
         </span>
         <input
           type="number"
@@ -526,46 +528,47 @@ function WithdrawCard({ availableMicro }: { availableMicro: string }) {
       ) : null}
 
       <p className="text-xs text-[var(--color-fg-muted)]">
-        Withdrawals are reviewed manually. The amount is locked while pending
-        and refunded if rejected. Cancel an unreviewed request below.
+        {t("withdrawReviewNote")}
       </p>
 
       <button type="submit" disabled={pending} className="btn btn-primary w-full">
-        {pending ? "Submitting…" : "Request withdrawal"}
+        {pending ? t("submitting") : t("requestWithdrawal")}
       </button>
     </form>
   );
 }
 
-function mapWithdrawError(err: unknown): string {
+function mapWithdrawError(err: unknown, t: Translator): string {
   if (err instanceof ApiFetchError) {
     switch (err.body.error) {
       case "insufficient_balance":
-        return "Not enough available balance.";
+        return t("errInsufficientBalance");
       case "invalid_erc20_address":
-        return "Destination is not a valid ERC20 address.";
+        return t("errInvalidDestination");
       case "to_address_is_internal":
-        return "That address belongs to Oddzilla — pick an external one.";
+        return t("errInternalDestination");
       case "amount_must_be_positive":
-        return "Amount must be greater than zero.";
+        return t("errAmountZero");
       default:
         return err.body.message;
     }
   }
-  return "Could not submit withdrawal.";
+  return t("errWithdrawGeneric");
 }
 
 // ─── Deposit list ──────────────────────────────────────────────────────────
 
 function DepositList({ deposits }: { deposits: DepositIntentSummary[] }) {
+  const t = useTranslations("wallet");
+  const locale = useLocale();
   return (
     <div>
       <h2 className="text-sm uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-        Deposits
+        {t("deposits")}
       </h2>
       {deposits.length === 0 ? (
         <p className="mt-4 text-sm text-[var(--color-fg-muted)]">
-          No deposits yet.
+          {t("noDeposits")}
         </p>
       ) : (
         <ul className="mt-4 divide-y divide-[var(--color-border)] rounded-[14px] border border-[var(--color-border)] bg-[var(--color-bg-card)]">
@@ -582,7 +585,7 @@ function DepositList({ deposits }: { deposits: DepositIntentSummary[] }) {
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <p className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-                      {d.network} · {new Date(d.submittedAt).toLocaleString()}
+                      {d.network} · {new Date(d.submittedAt).toLocaleString(locale)}
                     </p>
                     <p className="mt-1 break-all font-mono text-xs text-[var(--color-fg-muted)]">
                       {d.txHash}
@@ -608,7 +611,7 @@ function DepositList({ deposits }: { deposits: DepositIntentSummary[] }) {
                         (STATUS_COLOR[d.status] ?? "")
                       }
                     >
-                      {d.status}
+                      {t(`status.${d.status}`)}
                     </p>
                     <p className="mt-1 font-mono text-sm">
                       {d.amountMicro
@@ -635,6 +638,8 @@ function DepositList({ deposits }: { deposits: DepositIntentSummary[] }) {
 
 function WithdrawalList({ withdrawals }: { withdrawals: WithdrawalSummary[] }) {
   const router = useRouter();
+  const t = useTranslations("wallet");
+  const locale = useLocale();
   const [pending, startTransition] = useTransition();
   const [errorById, setErrorById] = useState<Record<string, string>>({});
 
@@ -651,7 +656,7 @@ function WithdrawalList({ withdrawals }: { withdrawals: WithdrawalSummary[] }) {
       } catch (err) {
         setErrorById((m) => ({
           ...m,
-          [id]: err instanceof ApiFetchError ? err.body.message : "Cancel failed.",
+          [id]: err instanceof ApiFetchError ? err.body.message : t("cancelFailed"),
         }));
       }
     });
@@ -660,11 +665,11 @@ function WithdrawalList({ withdrawals }: { withdrawals: WithdrawalSummary[] }) {
   return (
     <div>
       <h2 className="text-sm uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-        Withdrawals
+        {t("withdrawals")}
       </h2>
       {withdrawals.length === 0 ? (
         <p className="mt-4 text-sm text-[var(--color-fg-muted)]">
-          No withdrawals yet.
+          {t("noWithdrawals")}
         </p>
       ) : (
         <ul className="mt-4 divide-y divide-[var(--color-border)] rounded-[14px] border border-[var(--color-border)] bg-[var(--color-bg-card)]">
@@ -673,7 +678,7 @@ function WithdrawalList({ withdrawals }: { withdrawals: WithdrawalSummary[] }) {
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
                   <p className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-                    {w.network} · {new Date(w.requestedAt).toLocaleString()}
+                    {w.network} · {new Date(w.requestedAt).toLocaleString(locale)}
                   </p>
                   <p className="mt-1 break-all font-mono text-xs text-[var(--color-fg-muted)]">
                     {w.toAddress}
@@ -701,7 +706,7 @@ function WithdrawalList({ withdrawals }: { withdrawals: WithdrawalSummary[] }) {
                       (STATUS_COLOR[w.status] ?? "")
                     }
                   >
-                    {w.status}
+                    {t(`status.${w.status}`)}
                   </p>
                   <p className="mt-1 font-mono text-sm">
                     -{fromMicro(BigInt(w.amountMicro))} USDC
@@ -713,7 +718,7 @@ function WithdrawalList({ withdrawals }: { withdrawals: WithdrawalSummary[] }) {
                       onClick={() => cancel(w.id)}
                       className="mt-2 text-xs uppercase tracking-[0.15em] text-[var(--color-fg-muted)] hover:text-[var(--color-negative)] disabled:opacity-50"
                     >
-                      Cancel
+                      {t("cancel")}
                     </button>
                   ) : null}
                 </div>

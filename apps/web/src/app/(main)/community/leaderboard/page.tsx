@@ -6,8 +6,11 @@ import type {
   AnalysisOutcome,
 } from "@oddzilla/types";
 import { serverApi } from "@/lib/server-fetch";
+import { getTranslations, getServerLocale } from "@/lib/i18n/server";
 import { Avatar } from "@/components/community/avatar";
 import { CommunityTabs } from "@/components/community/tabs";
+
+type LeaderboardT = Awaited<ReturnType<typeof getTranslations>>;
 
 export const dynamic = "force-dynamic";
 
@@ -26,10 +29,10 @@ interface SportsResponse {
   sports: Array<{ id: number; slug: string; name: string }>;
 }
 
-const SORT_LABELS: Record<LeaderboardSort, string> = {
-  oz: "Most Oz",
-  roi: "Top ROI",
-  recent: "Recent",
+const SORT_LABEL_KEYS: Record<LeaderboardSort, string> = {
+  oz: "sortOz",
+  roi: "sortRoi",
+  recent: "sortRecent",
 };
 
 function parseSort(raw: string | undefined): LeaderboardSort {
@@ -55,6 +58,10 @@ export default async function LeaderboardPage({
   const params = await searchParams;
   const sport = parseSportSlug(params.sport);
   const sort = parseSort(params.sort);
+  const t = await getTranslations("leaderboardPage");
+  const tCommunity = await getTranslations("community");
+  const tTicket = await getTranslations("ticket");
+  const locale = await getServerLocale();
 
   const queryParts: string[] = [`sort=${sort}`];
   if (sport) queryParts.push(`sport=${sport}`);
@@ -73,9 +80,9 @@ export default async function LeaderboardPage({
   return (
     <div className="mx-auto max-w-3xl px-4 py-6">
       <header className="mb-4 flex items-baseline justify-between">
-        <h1 className="text-2xl font-semibold tracking-tight">Top authors</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">{t("title")}</h1>
         <span className="text-sm text-[var(--color-fg-muted)]">
-          Last 30 days
+          {t("window30d")}
         </span>
       </header>
 
@@ -87,11 +94,14 @@ export default async function LeaderboardPage({
 
       {/* Sport filter — chip row. "All" returns the unfiltered view;
           each sport slug toggles the ?sport= query param. */}
-      <nav className="mb-3 flex flex-wrap items-center gap-2" aria-label="Sport filter">
+      <nav
+        className="mb-3 flex flex-wrap items-center gap-2"
+        aria-label={t("sportFilterAria")}
+      >
         <SportChip
           href={leaderboardHref({ sport: null, sort })}
           active={sport === null}
-          label="All sports"
+          label={tCommunity("allSports")}
         />
         {sports.map((s) => (
           <SportChip
@@ -105,13 +115,13 @@ export default async function LeaderboardPage({
 
       {/* Sort pills — minimal nudge surface. Three discrete modes only;
           deliberately no "ranking algorithm" tunable here. */}
-      <nav className="mb-4 flex items-center gap-2" aria-label="Sort">
+      <nav className="mb-4 flex items-center gap-2" aria-label={t("sortAria")}>
         {(["oz", "roi", "recent"] as LeaderboardSort[]).map((opt) => (
           <SortPill
             key={opt}
             href={leaderboardHref({ sport, sort: opt })}
             active={sort === opt}
-            label={SORT_LABELS[opt]}
+            label={t(SORT_LABEL_KEYS[opt])}
           />
         ))}
       </nav>
@@ -120,7 +130,7 @@ export default async function LeaderboardPage({
           the minimalistic stance for v1. */}
       {rows.length === 0 ? (
         <p className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg-elevated)] p-6 text-center text-sm text-[var(--color-fg-muted)]">
-          No authors have earned Oz in this view yet.
+          {t("empty")}
         </p>
       ) : (
         <ol className="overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg-elevated)]">
@@ -129,6 +139,10 @@ export default async function LeaderboardPage({
               key={row.userId}
               row={row}
               prevIsCandidate={idx > 0 ? rows[idx - 1]!.isExpertCandidate : true}
+              t={t}
+              tWon={tTicket("won")}
+              tLost={tTicket("lost")}
+              locale={locale}
             />
           ))}
         </ol>
@@ -138,12 +152,19 @@ export default async function LeaderboardPage({
           inside the top-N. Same row chrome so the position reads as
           part of the same surface, not a separate widget. */}
       {viewerRow && !rows.some((r) => r.userId === viewerRow.userId) && (
-        <section className="mt-3" aria-label="Your rank">
+        <section className="mt-3" aria-label={t("yourRank")}>
           <p className="mb-1 text-xs uppercase tracking-wide text-[var(--color-fg-muted)]">
-            Your rank
+            {t("yourRank")}
           </p>
           <ol className="overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg-elevated)]">
-            <Row row={viewerRow} highlight />
+            <Row
+              row={viewerRow}
+              highlight
+              t={t}
+              tWon={tTicket("won")}
+              tLost={tTicket("lost")}
+              locale={locale}
+            />
           </ol>
         </section>
       )}
@@ -156,9 +177,17 @@ export default async function LeaderboardPage({
 function RowAndCutoff({
   row,
   prevIsCandidate,
+  t,
+  tWon,
+  tLost,
+  locale,
 }: {
   row: LeaderboardRow;
   prevIsCandidate: boolean;
+  t: LeaderboardT;
+  tWon: string;
+  tLost: string;
+  locale: string;
 }) {
   // The cut-off line appears between the last candidate and the first
   // non-candidate — i.e. between rank 5 and rank 6 under v1 rules.
@@ -172,17 +201,31 @@ function RowAndCutoff({
         >
           <span className="h-px flex-1 bg-[var(--color-accent)] opacity-40" />
           <span className="text-[10px] font-bold uppercase tracking-widest text-[var(--color-accent)]">
-            Expert cut-off
+            {t("expertCutoff")}
           </span>
           <span className="h-px flex-1 bg-[var(--color-accent)] opacity-40" />
         </li>
       )}
-      <Row row={row} />
+      <Row row={row} t={t} tWon={tWon} tLost={tLost} locale={locale} />
     </>
   );
 }
 
-function Row({ row, highlight = false }: { row: LeaderboardRow; highlight?: boolean }) {
+function Row({
+  row,
+  highlight = false,
+  t,
+  tWon,
+  tLost,
+  locale,
+}: {
+  row: LeaderboardRow;
+  highlight?: boolean;
+  t: LeaderboardT;
+  tWon: string;
+  tLost: string;
+  locale: string;
+}) {
   return (
     <li
       className={`flex items-center gap-3 border-b border-[var(--color-border)] px-3 py-2 last:border-b-0 ${
@@ -203,17 +246,17 @@ function Row({ row, highlight = false }: { row: LeaderboardRow; highlight?: bool
           </Link>
           {row.isExpert && (
             <span
-              title="Expert"
+              title={t("expert")}
               className="inline-flex shrink-0 items-center rounded-sm bg-[var(--color-accent)] px-1 py-0.5 text-[9px] font-bold uppercase tracking-wider text-[var(--color-accent-fg)]"
             >
-              Expert
+              {t("expert")}
             </span>
           )}
         </div>
         <div className="mt-0.5 flex items-center gap-2">
-          <WLBadges results={row.recentOutcomes} />
+          <WLBadges results={row.recentOutcomes} t={t} tWon={tWon} tLost={tLost} />
           <span className="text-xs text-[var(--color-fg-muted)]">
-            {row.settled} settled
+            {t("settledCount", { count: row.settled })}
           </span>
         </div>
       </div>
@@ -230,7 +273,7 @@ function Row({ row, highlight = false }: { row: LeaderboardRow; highlight?: bool
           {row.roiPct === null ? "—" : `${row.roiPct > 0 ? "+" : ""}${row.roiPct.toFixed(1)}%`}
         </span>
         <span className="font-bold text-[var(--color-accent)]">
-          {row.ozEarned.toLocaleString()} Oz
+          {t("ozEarned", { amount: row.ozEarned.toLocaleString(locale) })}
         </span>
       </div>
     </li>
@@ -240,10 +283,23 @@ function Row({ row, highlight = false }: { row: LeaderboardRow; highlight?: bool
 // Recent-outcomes mini badges. Five slots; missing slots render as
 // dim placeholders so the row height stays consistent regardless of
 // how many settled analyses the user has.
-function WLBadges({ results }: { results: AnalysisOutcome[] }) {
+function WLBadges({
+  results,
+  t,
+  tWon,
+  tLost,
+}: {
+  results: AnalysisOutcome[];
+  t: LeaderboardT;
+  tWon: string;
+  tLost: string;
+}) {
   const slots = [0, 1, 2, 3, 4];
   return (
-    <span className="inline-flex items-center gap-0.5" aria-label="Recent results">
+    <span
+      className="inline-flex items-center gap-0.5"
+      aria-label={t("recentResultsAria")}
+    >
       {slots.map((i) => {
         const r = results[i];
         if (!r) {
@@ -259,12 +315,12 @@ function WLBadges({ results }: { results: AnalysisOutcome[] }) {
         return (
           <span
             key={i}
-            title={isWin ? "Won" : "Lost"}
+            title={isWin ? tWon : tLost}
             className={`flex h-3 w-3 items-center justify-center rounded-sm text-[8px] font-bold leading-none text-white ${
               isWin ? "bg-[var(--color-success)]" : "bg-[var(--color-danger)]"
             }`}
           >
-            {isWin ? "W" : "L"}
+            {isWin ? t("winLetter") : t("lossLetter")}
           </span>
         );
       })}

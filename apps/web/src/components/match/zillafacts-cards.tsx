@@ -32,6 +32,7 @@ import { useZillaFacts } from "@/lib/use-zillafacts";
 import { useBetSlip } from "@/lib/bet-slip";
 import { TeamMark } from "@/components/ui/primitives";
 import { I } from "@/components/ui/icons";
+import { useTranslations } from "@/lib/i18n";
 
 // 2-3 letter abbreviation derived from a team's display name. Same
 // algorithm ZillaTips uses for its leg chips — kept local so the
@@ -103,6 +104,7 @@ function FactCard({
   awayTeam: string;
   sportSlug: string;
 }) {
+  const t = useTranslations("matchWidgets");
   const slip = useBetSlip();
   const tier = zillaFactTier(fact.score);
   const chrome = tierChrome(tier);
@@ -178,7 +180,7 @@ function FactCard({
             letterSpacing: "0.08em",
           }}
         >
-          {fact.streak} in a row
+          {t("zillafacts.streak", { n: fact.streak })}
         </span>
         <span
           style={{
@@ -319,8 +321,11 @@ function FactCard({
           disabled={!oddsClickable}
           aria-label={
             selected
-              ? `Remove ${fact.outcomeLabel} from bet slip`
-              : `Add ${fact.outcomeLabel} at ${oddsLabel} to bet slip`
+              ? t("zillafacts.removeAria", { outcome: fact.outcomeLabel })
+              : t("zillafacts.addAria", {
+                  outcome: fact.outcomeLabel,
+                  odds: oddsLabel,
+                })
           }
           style={{
             display: "inline-flex",
@@ -367,6 +372,7 @@ export function ZillaFactsCards({
   awayTeam: string;
   sportSlug: string;
 }) {
+  const t = useTranslations("matchWidgets");
   const { facts, loaded } = useZillaFacts(matchId);
   // Defensive cap mirrors the server's ZILLAFACT_MAX_CARDS so a
   // future v-bump that ships more rows doesn't accidentally overflow
@@ -376,7 +382,7 @@ export function ZillaFactsCards({
 
   return (
     <section
-      aria-label="ZillaFacts — historical streaks on this match"
+      aria-label={t("zillafacts.aria")}
       style={{
         display: "flex",
         flexDirection: "column",
@@ -410,7 +416,7 @@ export function ZillaFactsCards({
             letterSpacing: "0.08em",
           }}
         >
-          streaks worth knowing
+          {t("zillafacts.tagline")}
         </span>
       </div>
       <div className="oz-zillafacts-grid">

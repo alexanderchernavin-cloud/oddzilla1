@@ -1,12 +1,14 @@
+import { getTranslations } from "@/lib/i18n/server";
 import { LogosBrowser } from "./logos-browser";
 
 // Public team-logo browser — open to logged-out visitors too (not in the
 // middleware PROTECTED_PREFIXES). Logo assets are served publicly by Caddy.
-export default function LogosPage() {
+export default async function LogosPage() {
+  const t = await getTranslations("logos");
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Team logos</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">{t("title")}</h1>
         <p
           style={{
             fontSize: 13.5,
@@ -14,7 +16,7 @@ export default function LogosPage() {
             marginTop: 4,
           }}
         >
-          Browse the logo library by sport, category, and league.
+          {t("subtitle")}
         </p>
       </div>
       <LogosBrowser />

@@ -44,6 +44,7 @@ import {
 } from "@oddzilla/types/zillatips";
 import { I } from "@/components/ui/icons";
 import { TeamMark } from "@/components/ui/primitives";
+import { useLocale, useTranslations } from "@/lib/i18n";
 
 // ── Single-open coordination ──────────────────────────────────────────
 //
@@ -230,6 +231,7 @@ function legRoi(leg: ZillaTipLeg): number | null {
 // team name — desktop users see the HTML `title` on hover; this is
 // the mobile-friendly fallback.
 function LegChip({ leg }: { leg: ZillaTipLeg }) {
+  const t = useTranslations("matchWidgets");
   const [showTooltip, setShowTooltip] = useState(false);
   const palette = resultPalette(leg.result);
   const roi = legRoi(leg);
@@ -245,11 +247,14 @@ function LegChip({ leg }: { leg: ZillaTipLeg }) {
     roi != null
       ? `${roi >= 0 ? "+" : ""}${Math.round(roi * 100)}%`
       : leg.result === "void"
-        ? "VOID"
+        ? t("zillatips.void")
         : "—";
   return (
     <div
-      title={`vs ${leg.opponentLabel} @ ${oddsLabel}`}
+      title={t("zillatips.legTitle", {
+        opponent: leg.opponentLabel,
+        odds: oddsLabel,
+      })}
       onClick={(e) => {
         // Don't bubble — keeps the popover open and avoids the
         // ZillaTipsBadge's document-mousedown close handler firing
@@ -345,12 +350,12 @@ function tipContextKey(c: TipContext): string {
 }
 
 // Compact "DD MMM" formatter for the date strip above each chip.
-// en-GB gives DD MMM, which fits in ~50px chip columns without
-// wrapping; en-US would give "May 11" which exceeds the width.
-function formatChipDate(iso: string): string {
+// day-before-month keeps the label inside ~50px chip columns without
+// wrapping; the month name follows the active locale.
+function formatChipDate(iso: string, locale: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.valueOf())) return "";
-  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+  return d.toLocaleDateString(locale, { day: "2-digit", month: "short" });
 }
 
 // One row of chips inside a tip section — represents a single team's
@@ -370,6 +375,8 @@ function TipRow({
   teamLabel: string;
   showTeamName: boolean;
 }) {
+  const t = useTranslations("matchWidgets");
+  const locale = useLocale();
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
       {showTeamName && (
@@ -382,7 +389,7 @@ function TipRow({
             letterSpacing: "0.06em",
           }}
         >
-          {teamLabel} · last {row.legs.length}
+          {t("zillatips.teamLastN", { team: teamLabel, n: row.legs.length })}
         </span>
       )}
       <div
@@ -403,7 +410,7 @@ function TipRow({
               letterSpacing: "0.02em",
             }}
           >
-            {formatChipDate(leg.liveStartedAt)}
+            {formatChipDate(leg.liveStartedAt, locale)}
           </span>
         ))}
       </div>
@@ -437,6 +444,7 @@ function TipSection({
   currentAway: string;
   context: TipContext | undefined;
 }) {
+  const t = useTranslations("matchWidgets");
   const tier = zillaTipTier(tip.roi);
   const rawOutcomeLabel = context?.outcomeLabel ?? tip.outcomeId;
   // Substitute the literal "home"/"away" words Oddin's {side}
@@ -484,7 +492,7 @@ function TipSection({
               letterSpacing: "0.06em",
             }}
           >
-            last {tip.sampleSize}
+            {t("zillatips.lastN", { n: tip.sampleSize })}
           </span>
         </div>
         <span
@@ -570,6 +578,7 @@ export function ZillaTipsBadge({
   pickSelected?: boolean;
 }) {
   const compact = size === "sm";
+  const t = useTranslations("matchWidgets");
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
@@ -729,7 +738,7 @@ export function ZillaTipsBadge({
             ref={popoverRef}
             id={popoverId}
             role="dialog"
-            aria-label="ZillaTips historical ROI"
+            aria-label={t("zillatips.aria")}
             onMouseEnter={cancelClose}
             onMouseLeave={scheduleClose}
             style={{
@@ -779,7 +788,7 @@ export function ZillaTipsBadge({
                 letterSpacing: "0.06em",
               }}
             >
-              last 5 trail · sum of legs
+              {t("zillatips.trailNote")}
             </span>
           </div>
           {sortedTips.map((tip) => (
@@ -819,7 +828,7 @@ export function ZillaTipsBadge({
                 transition: "background 140ms var(--ease)",
               }}
             >
-              {pickSelected ? "On bet slip" : "Add to bet slip"}
+              {pickSelected ? t("onBetSlip") : t("addToBetSlip")}
             </button>
           )}
           <div
@@ -830,9 +839,7 @@ export function ZillaTipsBadge({
               paddingTop: 8,
             }}
           >
-            ROI is the sum of per-leg flat-stake returns (e.g. +90% + −100%
-            + +150% = +140%). Voided legs are shown grey and excluded
-            from the sum.
+            {t("zillatips.roiFooter")}
           </div>
         </div>,
           document.body,

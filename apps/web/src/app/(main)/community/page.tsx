@@ -159,6 +159,9 @@ export default async function CommunityFeedPage({
 
   const sports = sportsRes?.sports ?? [];
   const sportsById = new Map(sports.map((s) => [s.id, s]));
+  // Plain-object mirror for the client CommunityTicketCard — a Map
+  // can't cross the RSC serialization boundary.
+  const sportsByIdRecord = Object.fromEntries(sportsById);
 
   return (
     <div>
@@ -233,7 +236,7 @@ export default async function CommunityFeedPage({
             <CommunityTicketCard
               key={t.ticketId}
               ticket={t}
-              sportsById={sportsById}
+              sportsById={sportsByIdRecord}
               // Hero card only on Big Wins, only for the first row,
               // only on page 1. Subsequent pages render every card
               // at sibling size to avoid two heroes in the scroll

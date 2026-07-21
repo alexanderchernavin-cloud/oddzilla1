@@ -35,6 +35,7 @@ import type {
 import { REACTION_KINDS } from "@oddzilla/types/live-chat";
 import { useLiveChatRoom, type ReactionBurst } from "@/lib/use-live-chat-room";
 import { useWsConnected } from "@/lib/use-live-odds";
+import { useLocale, useTranslations } from "@/lib/i18n";
 
 const MESSAGE_LIMIT = 160;
 const CHAR_COUNTER_THRESHOLD = 140;
@@ -59,6 +60,7 @@ export interface MatchRoomProps {
 }
 
 export function MatchRoom({ matchId, viewer }: MatchRoomProps) {
+  const t = useTranslations("matchRoom");
   const room = useLiveChatRoom(matchId);
   const connected = useWsConnected();
   const authed = viewer != null;
@@ -66,14 +68,14 @@ export function MatchRoom({ matchId, viewer }: MatchRoomProps) {
   if (room.load.kind === "loading") {
     return (
       <div className="rounded-[10px] border border-[var(--color-border)] bg-[var(--color-surface)] p-6 text-sm text-[var(--color-fg-muted)]">
-        Loading match room…
+        {t("loading")}
       </div>
     );
   }
   if (room.load.kind === "error") {
     return (
       <div className="rounded-[10px] border border-[var(--color-negative)]/40 bg-[var(--color-negative)]/10 p-6 text-sm text-[var(--color-negative)]">
-        Couldn&rsquo;t load match room: {room.load.message}
+        {t("loadError", { message: room.load.message })}
       </div>
     );
   }
@@ -111,18 +113,19 @@ function MatchHeaderBar({
   match: LiveChatMatchSnapshot | null;
   viewerCount: number;
 }) {
+  const t = useTranslations("matchRoom");
   const score = match
     ? `${match.score.home}-${match.score.away}`
     : "0-0";
   const status =
     match?.status === "live"
-      ? "LIVE"
+      ? t("status.live")
       : match?.status === "fulltime"
-        ? "FT"
+        ? t("status.fulltime")
         : match?.status === "halftime"
-          ? "HT"
+          ? t("status.halftime")
           : match?.status === "suspended"
-            ? "SUSP"
+            ? t("status.suspended")
             : "—";
   const isLive = match?.status === "live";
   return (
@@ -147,10 +150,11 @@ function MatchHeaderBar({
 }
 
 function ViewerPill({ count }: { count: number }) {
+  const t = useTranslations("matchRoom");
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-border)] px-2.5 py-1 text-xs text-[var(--color-fg-muted)]">
       <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-fg-dim)]" />
-      {count.toLocaleString()} watching
+      {t("watching", { count })}
     </span>
   );
 }
@@ -195,6 +199,8 @@ function BetPinCard({
   betPin: LiveChatBetPin | null;
   match: LiveChatMatchSnapshot | null;
 }) {
+  const t = useTranslations("matchRoom");
+  const locale = useLocale();
   if (!betPin) return null;
   const liveStatus = deriveLiveStatus(betPin, match);
   const dot =
@@ -203,22 +209,23 @@ function BetPinCard({
       : betPin.status === "lost" || liveStatus === "at_risk"
         ? "bg-[var(--color-negative)]"
         : "bg-[var(--color-fg-dim)]";
-  const badge =
+  const badgeKey =
     betPin.status === "won"
-      ? "Won"
+      ? "won"
       : betPin.status === "lost"
-        ? "Lost"
+        ? "lost"
         : betPin.status === "void"
-          ? "Void"
+          ? "void"
           : betPin.status === "cashed_out"
-            ? "Cashed out"
+            ? "cashedOut"
             : liveStatus === "winning"
-              ? "Winning"
+              ? "winning"
               : liveStatus === "at_risk"
-                ? "At risk"
+                ? "atRisk"
                 : liveStatus === "level"
-                  ? "Level"
+                  ? "level"
                   : null;
+  const badge = badgeKey ? t(`badge.${badgeKey}`) : null;
   const badgeStyle =
     liveStatus === "winning" || betPin.status === "won"
       ? "bg-[var(--color-positive)]/15 text-[var(--color-positive)]"
@@ -232,7 +239,7 @@ function BetPinCard({
         <span className="flex items-center gap-2 text-[var(--color-fg-muted)]">
           <span className={`h-2 w-2 rounded-full ${dot}`} />
           <span className="uppercase tracking-wide text-[var(--color-fg-dim)]">
-            Your pick
+            {t("yourPick")}
           </span>
           <span className="font-medium text-[var(--color-fg)]">
             {betPin.outcomeLabel}
@@ -247,7 +254,7 @@ function BetPinCard({
           ) : null}
         </span>
         <span className="font-mono text-[var(--color-fg)]">
-          {formatMicroAmount(betPin.potentialWinMicro)} {betPin.currency}
+          {formatMicroAmount(betPin.potentialWinMicro, locale)} {betPin.currency}
         </span>
       </div>
     </div>
@@ -255,12 +262,6 @@ function BetPinCard({
 }
 
 // ─── Crowd picks ─────────────────────────────────────────────────────────
-
-const PICK_LABEL: Record<PickOutcome, string> = {
-  home: "Home",
-  draw: "Draw",
-  away: "Away",
-};
 
 function CrowdPicksRow({
   myPick,
@@ -275,6 +276,7 @@ function CrowdPicksRow({
     pick: PickOutcome,
   ) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
+  const t = useTranslations("matchRoom");
   const [submitting, setSubmitting] = useState<PickOutcome | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -292,9 +294,7 @@ function CrowdPicksRow({
     return (
       <div className="border-b border-[var(--color-hairline)] bg-[var(--color-surface)] px-4 py-2.5">
         <div className="mb-1.5 text-xs text-[var(--color-fg-muted)]">
-          {canVote
-            ? "Pick the winner to see the room"
-            : "Sign in to see who the room is backing"}
+          {canVote ? t("pickPrompt") : t("signInPrompt")}
         </div>
         <div className="grid grid-cols-3 gap-2">
           {(["home", "draw", "away"] as PickOutcome[]).map((p) => (
@@ -305,7 +305,7 @@ function CrowdPicksRow({
               onClick={() => handleVote(p)}
               className="rounded border border-[var(--color-border)] bg-[var(--color-bg-elevated)] px-3 py-1.5 text-xs font-medium text-[var(--color-fg)] transition-colors hover:bg-[var(--color-surface-2)] disabled:opacity-50"
             >
-              {submitting === p ? "…" : PICK_LABEL[p]}
+              {submitting === p ? "…" : t(`pick.${p}`)}
             </button>
           ))}
         </div>
@@ -325,17 +325,17 @@ function CrowdPicksRow({
     <div className="border-b border-[var(--color-hairline)] bg-[var(--color-surface)] px-4 py-2.5">
       <div className="mb-1.5 flex items-center justify-between text-xs text-[var(--color-fg-muted)]">
         <span>
-          Crowd picks · {crowdPicks.totalVotes.toLocaleString()} votes
+          {t("crowdPicks", { count: crowdPicks.totalVotes })}
         </span>
         <span className="text-[var(--color-fg-dim)]">
-          You picked {PICK_LABEL[myPick]}
+          {t("youPicked", { pick: t(`pick.${myPick}`) })}
         </span>
       </div>
       <div className="space-y-1">
         {(["home", "draw", "away"] as PickOutcome[]).map((p) => (
           <PickBar
             key={p}
-            label={PICK_LABEL[p]}
+            label={t(`pick.${p}`)}
             percent={pct[p]}
             highlighted={myPick === p}
           />
@@ -383,6 +383,7 @@ function MessageList({
   messages: LiveChatMessage[];
   bursts: ReactionBurst[];
 }) {
+  const t = useTranslations("matchRoom");
   const scrollerRef = useRef<HTMLDivElement>(null);
   const [pinnedToBottom, setPinnedToBottom] = useState(true);
   const [unread, setUnread] = useState(0);
@@ -436,7 +437,7 @@ function MessageList({
       >
         {messages.length === 0 ? (
           <div className="text-xs text-[var(--color-fg-dim)]">
-            No messages yet. Be the first to say something.
+            {t("noMessages")}
           </div>
         ) : (
           <ul className="space-y-2">
@@ -455,7 +456,7 @@ function MessageList({
           onClick={jump}
           className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 py-1 text-xs font-medium text-[var(--color-accent-fg)] shadow-[var(--shadow-md)]"
         >
-          {unread} new {unread === 1 ? "message" : "messages"} ↓
+          {t("newMessages", { count: unread })}
         </button>
       ) : null}
     </div>
@@ -558,6 +559,7 @@ function MessageInputBar({
     text: string,
   ) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
+  const t = useTranslations("matchRoom");
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -592,7 +594,7 @@ function MessageInputBar({
               void submit();
             }
           }}
-          placeholder={disabled ? "Reconnecting…" : "Say something"}
+          placeholder={disabled ? t("reconnecting") : t("sayPlaceholder")}
           maxLength={MESSAGE_LIMIT + 40}
           className={`min-w-0 flex-1 rounded border bg-[var(--color-bg-elevated)] px-3 py-1.5 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus:outline-none focus:ring-1 ${tooLong ? "border-[var(--color-negative)] focus:ring-[var(--color-negative)]" : "border-[var(--color-border)] focus:ring-[var(--color-accent)]"}`}
         />
@@ -602,7 +604,7 @@ function MessageInputBar({
           disabled={!canSend}
           className="rounded bg-[var(--color-accent)] px-3 py-1.5 text-xs font-semibold text-[var(--color-accent-fg)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
         >
-          {busy ? "…" : "Send"}
+          {busy ? "…" : t("send")}
         </button>
       </div>
       <div className="mt-1 flex items-center justify-between text-[11px]">
@@ -628,22 +630,23 @@ function MessageInputBar({
 // ─── Reconnect banner (Notion Epic 6) ────────────────────────────────────
 
 function ReconnectBanner() {
+  const t = useTranslations("matchRoom");
   return (
     <div className="border-t border-[var(--color-hairline)] bg-[var(--color-bg-elevated)] px-4 py-1.5 text-center text-xs text-[var(--color-fg-muted)]">
-      Reconnecting…
+      {t("reconnecting")}
     </div>
   );
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────
 
-function formatMicroAmount(micro: string): string {
+function formatMicroAmount(micro: string, locale: string): string {
   // bigint-as-decimal-string with 6 decimals → trimmed display value
   // (CLAUDE.md invariant 1). Skip BigInt for a cheap trim since we
   // only render two decimal places.
   const n = Number(micro);
   if (!Number.isFinite(n)) return "0.00";
-  return (n / 1_000_000).toLocaleString(undefined, {
+  return (n / 1_000_000).toLocaleString(locale, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });

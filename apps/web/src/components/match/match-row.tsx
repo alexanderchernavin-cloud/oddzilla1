@@ -224,7 +224,9 @@ export const MatchRow = memo(function MatchRow({
             {sportShort}
           </span>
           <span style={{ color: "var(--fg-dim)", flexShrink: 0 }}>·</span>
-          {featured && <TierMark tier={tier} size={11} />}
+          {featured && (
+            <TierMark tier={tier} size={11} label={tMatch("topTournamentTitle")} />
+          )}
           <span
             style={{
               color: featured ? "var(--fg)" : "var(--fg-muted)",

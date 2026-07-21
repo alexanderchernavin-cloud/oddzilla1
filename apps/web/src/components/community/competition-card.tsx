@@ -1,31 +1,23 @@
+"use client";
+
 import Link from "next/link";
 import type { CompetitionSummary } from "@oddzilla/types";
+import { useTranslations } from "@/lib/i18n";
 
 // Card row for the /community?tab=competitions list. Mirrors
 // competition-v2's CompetitionListRow visual structure (title +
 // chips + meta) trimmed to oddzilla's existing card chrome.
 
-const TYPE_LABEL: Record<CompetitionSummary["type"], string> = {
-  prediction: "Predictor",
-  tipping: "Tipping",
-  challenge: "Challenge",
-};
-
-const STATUS_LABEL: Record<CompetitionSummary["status"], string> = {
-  draft: "Draft",
-  scheduled: "Scheduled",
-  upcoming: "Upcoming",
-  live: "Live",
-  ended: "Ended",
-};
+type T = ReturnType<typeof useTranslations>;
 
 export function CompetitionCard({
   competition: c,
 }: {
   competition: CompetitionSummary;
 }) {
+  const t = useTranslations("competitions");
   const startsAt = new Date(c.matchStartAt);
-  const startsLabel = formatRelative(startsAt);
+  const startsLabel = formatRelative(startsAt, t);
 
   return (
     <li>
@@ -38,11 +30,11 @@ export function CompetitionCard({
             <div className="flex items-center gap-2">
               {c.featured ? (
                 <span className="rounded-full bg-[var(--color-accent-soft)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-[var(--color-accent)]">
-                  Featured
+                  {t("featured")}
                 </span>
               ) : null}
               <span className="text-[10px] font-semibold uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-                {TYPE_LABEL[c.type]}
+                {t(`type.${c.type}`)}
               </span>
               <span
                 className={
@@ -54,26 +46,29 @@ export function CompetitionCard({
                       : "text-[var(--color-fg-muted)]")
                 }
               >
-                {STATUS_LABEL[c.status]}
+                {t(`status.${c.status}`)}
               </span>
             </div>
             <h3 className="mt-2 truncate text-base font-semibold text-[var(--color-fg)]">
               {c.title}
             </h3>
             <p className="mt-1 text-xs text-[var(--color-fg-muted)]">
-              {[c.sportName, c.league].filter(Boolean).join(" · ") || "Multi-sport"}
+              {[c.sportName, c.league].filter(Boolean).join(" · ") ||
+                t("multiSport")}
             </p>
           </div>
           <div className="shrink-0 text-right text-xs text-[var(--color-fg-muted)]">
-            <div>{c.participantCount.toLocaleString()} joined</div>
-            <div className="mt-1">{c.matchCount} matches</div>
+            <div>{t("joinedCount", { count: c.participantCount })}</div>
+            <div className="mt-1">{t("matchesCount", { count: c.matchCount })}</div>
             <div className="mt-1">{startsLabel}</div>
           </div>
         </div>
         {c.viewerJoined ? (
           <div className="mt-3 inline-flex items-center gap-1 text-[11px] font-medium text-[var(--color-accent)]">
-            <span>● Joined</span>
-            {c.viewerRank !== null ? <span>· Rank #{c.viewerRank}</span> : null}
+            <span>{t("joinedBadge")}</span>
+            {c.viewerRank !== null ? (
+              <span>{t("rankBadge", { rank: c.viewerRank })}</span>
+            ) : null}
           </div>
         ) : null}
       </Link>
@@ -81,13 +76,17 @@ export function CompetitionCard({
   );
 }
 
-function formatRelative(d: Date): string {
+function formatRelative(d: Date, t: T): string {
   const ms = d.getTime() - Date.now();
   const abs = Math.abs(ms);
   const min = Math.round(abs / 60_000);
-  if (min < 60) return ms >= 0 ? `Starts in ${min}m` : `Started ${min}m ago`;
+  if (min < 60)
+    return ms >= 0
+      ? t("startsInMinutes", { n: min })
+      : t("startedMinutesAgo", { n: min });
   const h = Math.round(min / 60);
-  if (h < 24) return ms >= 0 ? `Starts in ${h}h` : `Started ${h}h ago`;
+  if (h < 24)
+    return ms >= 0 ? t("startsInHours", { n: h }) : t("startedHoursAgo", { n: h });
   const d2 = Math.round(h / 24);
-  return ms >= 0 ? `Starts in ${d2}d` : `${d2}d ago`;
+  return ms >= 0 ? t("startsInDays", { n: d2 }) : t("daysAgo", { n: d2 });
 }

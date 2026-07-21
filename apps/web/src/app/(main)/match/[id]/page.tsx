@@ -52,6 +52,7 @@ export default async function MatchPage({
   if (!data) notFound();
 
   const { match, markets, marketGroups } = data;
+  const tMatch = await getTranslations("match");
   const streams = match.streams ?? [];
   const parentHost = await resolveEmbedHost();
   const initialLiveScore = match.liveScore ?? null;
@@ -116,7 +117,7 @@ export default async function MatchPage({
           />
 
           {(match.tournament.riskTier === 1 || match.tournament.riskTier === 2) && (
-            <TopPill />
+            <TopPill title={tMatch("topTournamentTitle")} />
           )}
           <span
             className="mono"
@@ -130,7 +131,11 @@ export default async function MatchPage({
               gap: 6,
             }}
           >
-            <TierMark tier={match.tournament.riskTier ?? null} size={11} />
+            <TierMark
+              tier={match.tournament.riskTier ?? null}
+              size={11}
+              label={tMatch("topTournamentTitle")}
+            />
             {match.tournament.name}
             {match.bestOf ? ` · BO${match.bestOf}` : ""}
           </span>
@@ -246,8 +251,9 @@ async function resolveEmbedHost(): Promise<string | null> {
 
 // TopPill renders a filled gold "TOP" chip in the match-detail header
 // for any tournament Oddin marks risk_tier 1 or 2. Mono-uppercase to
-// match the LIVE/Upcoming pills next to it.
-function TopPill() {
+// match the LIVE/Upcoming pills next to it. `title` carries the
+// translated tooltip from the page's `match` namespace.
+function TopPill({ title }: { title: string }) {
   return (
     <span
       className="mono"
@@ -265,7 +271,7 @@ function TopPill() {
         background: "var(--tier-gold)",
         border: "1px solid var(--tier-gold)",
       }}
-      title="Top tournament"
+      title={title}
     >
       Top
     </span>

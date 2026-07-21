@@ -2,12 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { I } from "@/components/ui/icons";
+import { useTranslations } from "@/lib/i18n";
 
 // Storage key must match the inline pre-hydration script in
 // `apps/web/src/app/layout.tsx`.
 const STORAGE_KEY = "oz:theme";
 
 export function ThemeToggle() {
+  const t = useTranslations("shell");
   const [theme, setTheme] = useState<"dark" | "light">("light");
 
   useEffect(() => {
@@ -48,8 +50,8 @@ export function ThemeToggle() {
     <button
       type="button"
       onClick={toggle}
-      title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-      aria-label="Toggle theme"
+      title={theme === "dark" ? t("switchToLight") : t("switchToDark")}
+      aria-label={t("toggleTheme")}
       style={{
         width: 36,
         height: 36,

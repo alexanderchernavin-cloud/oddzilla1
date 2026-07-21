@@ -3,7 +3,9 @@
 import { useEffect } from "react";
 import Link from "next/link";
 import { I } from "@/components/ui/icons";
+import { useTranslations } from "@/lib/i18n";
 import { useZillapass } from "@/lib/zillapass";
+import { useZillapassTaskText } from "@/lib/zillapass-i18n";
 import type {
   ZillapassActiveTaskDto,
   ZillapassMeResponse,
@@ -26,6 +28,7 @@ export function ZillapassPageView({
   // Consume the shared context so the page updates in lockstep with
   // the chip whenever a tracker fires. The SSR-provided `initial`
   // seeds the first paint until the provider's own fetch lands.
+  const t = useTranslations("zillapass");
   const { data: ctxData, setData } = useZillapass();
   // Only seed once on mount; subsequent context updates win. Intentional
   // empty deps. The repo's ESLint config doesn't load react-hooks rules,
@@ -75,22 +78,22 @@ export function ZillapassPageView({
           gap: 12,
         }}
       >
-        <KpiCard label="Level" value={state.level} />
-        <KpiCard label="XP" value={state.xp} mono />
-        <KpiCard label="Streak (days)" value={state.activeStreakDays} />
+        <KpiCard label={t("level")} value={state.level} />
+        <KpiCard label={t("xp")} value={state.xp} mono />
+        <KpiCard label={t("streakDays")} value={state.activeStreakDays} />
         <KpiCard
-          label="Tasks"
+          label={t("tasksLabel")}
           value={`${completed}/${total}`}
           mono
         />
       </section>
 
       <section>
-        <SectionHeader title="Active tasks" />
+        <SectionHeader title={t("activeTasks")} />
         {tasks.length === 0 ? (
           <EmptyState
-            title="No active tasks"
-            body="An admin hasn't published any tasks yet. Once they're live, your progress will show here."
+            title={t("noTasksTitle")}
+            body={t("noTasksBody")}
           />
         ) : (
           <ul
@@ -113,10 +116,10 @@ export function ZillapassPageView({
       </section>
 
       <section>
-        <SectionHeader title="Past tasks" />
+        <SectionHeader title={t("pastTasks")} />
         <EmptyState
-          title="History coming soon"
-          body="Completed and expired tasks will land here once the predicate hooks ship."
+          title={t("historyTitle")}
+          body={t("historyBody")}
         />
       </section>
     </div>
@@ -186,6 +189,9 @@ function SectionHeader({ title }: { title: string }) {
 }
 
 function FullTaskCard({ task }: { task: ZillapassActiveTaskDto }) {
+  const t = useTranslations("zillapass");
+  const taskText = useZillapassTaskText();
+  const { title, description, ctaLabel } = taskText(task);
   const pct =
     task.targetCount === 0
       ? 0
@@ -222,9 +228,9 @@ function FullTaskCard({ task }: { task: ZillapassActiveTaskDto }) {
               textDecoration: done ? "line-through" : "none",
             }}
           >
-            {task.title}
+            {title}
           </div>
-          {task.description ? (
+          {description ? (
             <div
               style={{
                 marginTop: 2,
@@ -232,7 +238,7 @@ function FullTaskCard({ task }: { task: ZillapassActiveTaskDto }) {
                 color: "var(--fg-muted)",
               }}
             >
-              {task.description}
+              {description}
             </div>
           ) : null}
         </div>
@@ -272,7 +278,7 @@ function FullTaskCard({ task }: { task: ZillapassActiveTaskDto }) {
               color: "var(--fg-muted)",
             }}
           >
-            Reward: {task.rewardKind}
+            {t("reward", { kind: task.rewardKind })}
           </span>
         </div>
       ) : null}
@@ -294,7 +300,7 @@ function FullTaskCard({ task }: { task: ZillapassActiveTaskDto }) {
             opacity: done ? 0.7 : 1,
           }}
         >
-          {task.ctaLabel ?? "Open"}
+          {ctaLabel ?? t("openCta")}
           <span aria-hidden style={{ marginLeft: 6 }}>
             →
           </span>

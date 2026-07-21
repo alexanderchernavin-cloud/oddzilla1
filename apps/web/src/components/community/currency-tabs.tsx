@@ -11,14 +11,16 @@ import { SUPPORTED_CURRENCIES, type Currency } from "@oddzilla/types/currencies"
 export function CurrencyTabs({
   nickname,
   active,
+  ariaLabel = "Currency",
 }: {
   nickname: string;
   active: Currency;
+  ariaLabel?: string;
 }) {
   return (
     <div
       role="tablist"
-      aria-label="Currency"
+      aria-label={ariaLabel}
       className="inline-flex rounded-[10px] border border-[var(--color-border-strong)] p-1"
     >
       {SUPPORTED_CURRENCIES.map((c) => {

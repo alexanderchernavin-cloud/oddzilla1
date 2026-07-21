@@ -13,12 +13,15 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSessionUserId } from "@/lib/session-user";
+import { useTranslations } from "@/lib/i18n";
 import { ApplySamePlayModal } from "./apply-same-play-modal";
 
 export function ApplySamePlayButton({ ticketId }: { ticketId: string }) {
   const [open, setOpen] = useState(false);
   const router = useRouter();
   const userId = useSessionUserId();
+  // Same copy as the notification CTA — reuse the existing key.
+  const tNotifications = useTranslations("notifications");
 
   function onClick() {
     if (userId === null) {
@@ -35,7 +38,7 @@ export function ApplySamePlayButton({ ticketId }: { ticketId: string }) {
         onClick={onClick}
         className="rounded-full border border-[var(--color-accent)] px-3 py-1 text-[11px] uppercase tracking-[0.15em] text-[var(--color-accent)] transition hover:bg-[var(--color-accent)]/10"
       >
-        Apply same play
+        {tNotifications("applySamePlay")}
       </button>
       {open ? (
         <ApplySamePlayModal

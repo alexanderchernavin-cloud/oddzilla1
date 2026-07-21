@@ -14,6 +14,7 @@ import { useState } from "react";
 import { I } from "@/components/ui/icons";
 import { DisirWidget, type WidgetAvailability } from "./disir-widget";
 import { supportsPrematchWidget } from "./supported-sports";
+import { useTranslations } from "@/lib/i18n";
 
 interface Props {
   matchId: string;
@@ -23,6 +24,7 @@ interface Props {
 }
 
 export function MatchPrematchMobile({ matchId, sportSlug, homeTeam, awayTeam }: Props) {
+  const t = useTranslations("matchWidgets");
   const [open, setOpen] = useState(false);
   const [availability, setAvailability] = useState<WidgetAvailability>("loading");
 
@@ -33,7 +35,7 @@ export function MatchPrematchMobile({ matchId, sportSlug, homeTeam, awayTeam }: 
   return (
     <section
       className="oz-match-prematch-mobile"
-      aria-label="Match insights"
+      aria-label={t("insightsMobile.aria")}
       style={{
         flexDirection: "column",
         gap: 10,
@@ -62,7 +64,7 @@ export function MatchPrematchMobile({ matchId, sportSlug, homeTeam, awayTeam }: 
       >
         <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
           <I.Trophy size={14} />
-          {open ? "Hide match insights" : "Show match insights"}
+          {open ? t("insightsMobile.hide") : t("insightsMobile.show")}
         </span>
         <span
           style={{
@@ -81,7 +83,7 @@ export function MatchPrematchMobile({ matchId, sportSlug, homeTeam, awayTeam }: 
           <DisirWidget
             variant="prematch-match"
             id={matchId}
-            title={`Prematch insights — ${homeTeam} vs ${awayTeam}`}
+            title={t("railPanel.prematchTitle", { home: homeTeam, away: awayTeam })}
             onAvailabilityChange={setAvailability}
             minHeight={420}
           />
@@ -99,7 +101,7 @@ export function MatchPrematchMobile({ matchId, sportSlug, homeTeam, awayTeam }: 
             background: "var(--surface-2)",
           }}
         >
-          Match insights are not available for this match.
+          {t("insightsMobile.unavailable")}
         </div>
       ) : null}
     </section>
