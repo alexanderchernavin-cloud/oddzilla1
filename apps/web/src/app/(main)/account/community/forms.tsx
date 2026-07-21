@@ -9,8 +9,11 @@ import type {
 } from "@oddzilla/types";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { Avatar } from "@/components/community/avatar";
+import { useTranslations } from "@/lib/i18n";
 
 const NICKNAME_RE = /^[A-Za-z0-9_]{3,20}$/;
+
+type T = ReturnType<typeof useTranslations>;
 
 export function CommunitySettingsForms({
   initial,
@@ -49,6 +52,8 @@ function AvatarPicker({
   templates: AvatarTemplateSummary[];
 }) {
   const router = useRouter();
+  const t = useTranslations("accountCommunity");
+  const tProfile = useTranslations("publicProfile");
   const [equippedId, setEquippedId] = useState<string | null>(
     initial.avatarTemplateId,
   );
@@ -87,7 +92,7 @@ function AvatarPicker({
       setError(
         err instanceof ApiFetchError
           ? err.body.message
-          : "Couldn't save avatar.",
+          : t("avatarSaveFailed"),
       );
     } finally {
       setBusyId(null);
@@ -104,11 +109,10 @@ function AvatarPicker({
         />
         <div className="min-w-0 flex-1">
           <h2 className="text-sm uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-            Avatar
+            {tProfile("avatar")}
           </h2>
           <p className="mt-1 text-sm text-[var(--color-fg-muted)]">
-            Pick from the operator&apos;s avatar library. Tap your current
-            avatar to clear it and fall back to a monogram.
+            {t("avatarExplainer")}
           </p>
         </div>
         {equippedId ? (
@@ -118,7 +122,7 @@ function AvatarPicker({
             onClick={() => equip(null)}
             disabled={busyId !== null}
           >
-            {busyId === "__clear__" ? "…" : "Clear"}
+            {busyId === "__clear__" ? "…" : t("clear")}
           </button>
         ) : null}
       </header>
@@ -129,12 +133,12 @@ function AvatarPicker({
 
       {templates.length === 0 ? (
         <p className="mt-4 text-sm text-[var(--color-fg-muted)]">
-          The operator hasn&apos;t enabled any avatars yet.
+          {t("noAvatars")}
         </p>
       ) : (
         <ul
           role="radiogroup"
-          aria-label="Avatar"
+          aria-label={tProfile("avatar")}
           className="mt-4 grid grid-cols-4 gap-3 sm:grid-cols-6 md:grid-cols-8"
         >
           {templates.map((t) => {
@@ -174,6 +178,9 @@ function ProfileForm({
   initialBio: string;
 }) {
   const router = useRouter();
+  const t = useTranslations("accountCommunity");
+  const tProfile = useTranslations("publicProfile");
+  const tCommon = useTranslations("common");
   const [nickname, setNickname] = useState(initialNickname);
   const [bio, setBio] = useState(initialBio);
   const [submitting, setSubmitting] = useState(false);
@@ -190,7 +197,7 @@ function ProfileForm({
     if (trimmedNick && !NICKNAME_RE.test(trimmedNick)) {
       setMessage({
         kind: "err",
-        text: "Nickname must be 3–20 letters, numbers, or underscores.",
+        text: t("nicknameInvalid"),
       });
       setSubmitting(false);
       return;
@@ -204,10 +211,10 @@ function ProfileForm({
           bio: bio.trim() || null,
         }),
       });
-      setMessage({ kind: "ok", text: "Saved." });
+      setMessage({ kind: "ok", text: t("saved") });
       router.refresh();
     } catch (err) {
-      setMessage({ kind: "err", text: explainError(err) });
+      setMessage({ kind: "err", text: explainError(err, t) });
     } finally {
       setSubmitting(false);
     }
@@ -216,23 +223,27 @@ function ProfileForm({
   return (
     <form onSubmit={onSubmit} className="card space-y-4 p-6">
       <h2 className="text-sm uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-        Public profile
+        {tProfile("title")}
       </h2>
 
       <label className="block">
-        <span className="text-xs text-[var(--color-fg-subtle)]">Nickname</span>
+        <span className="text-xs text-[var(--color-fg-subtle)]">
+          {tProfile("nickname")}
+        </span>
         <input
           type="text"
           maxLength={20}
           value={nickname}
           onChange={(e) => setNickname(e.target.value)}
-          placeholder="e.g. midlaner_42"
+          placeholder={t("nicknamePlaceholder")}
           className="mt-1 w-full rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-3 py-2 outline-none focus:border-[var(--color-accent)]"
         />
       </label>
 
       <label className="block">
-        <span className="text-xs text-[var(--color-fg-subtle)]">Bio</span>
+        <span className="text-xs text-[var(--color-fg-subtle)]">
+          {tProfile("bio")}
+        </span>
         <textarea
           maxLength={280}
           rows={3}
@@ -260,22 +271,22 @@ function ProfileForm({
       ) : null}
 
       <button type="submit" disabled={submitting} className="btn btn-primary">
-        {submitting ? "Saving…" : "Save profile"}
+        {submitting ? tCommon("saving") : t("saveProfile")}
       </button>
     </form>
   );
 }
 
 
-function explainError(err: unknown): string {
+function explainError(err: unknown, t: T): string {
   if (err instanceof ApiFetchError) {
     if (err.body.error === "nickname_taken") {
-      return "That nickname is taken.";
+      return t("nicknameTaken");
     }
     if (err.body.error === "validation_error" || err.body.error === "nickname_invalid") {
-      return "Nickname must be 3–20 letters, numbers, or underscores.";
+      return t("nicknameInvalid");
     }
     return err.body.message;
   }
-  return "Save failed.";
+  return t("saveFailed");
 }

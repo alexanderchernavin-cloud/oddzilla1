@@ -5,23 +5,25 @@ import { fromMicro } from "@oddzilla/types/money";
 import type { CashoutQuote, TicketSummary } from "@oddzilla/types";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { useWallets } from "@/lib/wallets";
+import { useTranslations } from "@/lib/i18n";
 
 // 5s cadence balances offer freshness against backend load. With 1000+
 // concurrent open tickets that's 200 quotes/s — comfortable for one
 // api container hitting Postgres on the same box.
 const POLL_MS = 5000;
 
-const REASON_COPY: Record<string, string> = {
-  not_open: "Cashout is only available for open tickets.",
-  feature_disabled: "Cashout is currently disabled for this ticket.",
-  leg_inactive: "One leg is suspended. Cashout will return when odds resume.",
-  leg_no_probability:
-    "Live probability missing for one leg. Cashout will return shortly.",
-  leg_lost: "One leg has lost — cashout no longer available.",
-  below_minimum: "Current offer is below the minimum cashout amount.",
-  below_change_threshold:
-    "Probability hasn't moved enough yet — cashout will appear once it does.",
-};
+// Server reason codes that have a translated message under
+// `cashoutPanel.reasons.*`; anything else falls back to the generic
+// "not available" copy.
+const KNOWN_REASONS = new Set([
+  "not_open",
+  "feature_disabled",
+  "leg_inactive",
+  "leg_no_probability",
+  "leg_lost",
+  "below_minimum",
+  "below_change_threshold",
+]);
 
 interface Props {
   ticket: TicketSummary;
@@ -33,6 +35,7 @@ interface Props {
 }
 
 export function CashoutPanel({ ticket, onCashedOut }: Props) {
+  const t = useTranslations("cashoutPanel");
   const { refresh: refreshWallets } = useWallets();
   const [quote, setQuote] = useState<CashoutQuote | null>(null);
   const [accepting, setAccepting] = useState(false);
@@ -72,7 +75,7 @@ export function CashoutPanel({ ticket, onCashedOut }: Props) {
         if (e instanceof ApiFetchError) {
           setError(e.body.message);
         } else {
-          setError("Could not fetch cashout offer.");
+          setError(t("fetchError"));
         }
       } finally {
         if (!cancelRef.current && ticket.status === "accepted") {
@@ -94,15 +97,16 @@ export function CashoutPanel({ ticket, onCashedOut }: Props) {
   if (!quote) {
     return (
       <div className="mt-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface-2)] p-3 text-xs text-[var(--color-fg-muted)]">
-        Loading cashout offer…
+        {t("loading")}
       </div>
     );
   }
 
   if (!quote.available) {
     const message =
-      (quote.reason && REASON_COPY[quote.reason]) ??
-      "Cashout is not available right now.";
+      quote.reason && KNOWN_REASONS.has(quote.reason)
+        ? t(`reasons.${quote.reason}`)
+        : t("unavailable");
     return (
       <div className="mt-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface-2)] p-3 text-xs text-[var(--color-fg-muted)]">
         {message}
@@ -145,13 +149,13 @@ export function CashoutPanel({ ticket, onCashedOut }: Props) {
           e.body.error === "quote_amount_mismatch" ||
           e.body.error === "offer_drifted"
         ) {
-          setError("Offer changed. Refreshing…");
+          setError(t("offerChanged"));
           setQuote(null);
         } else {
           setError(e.body.message);
         }
       } else {
-        setError("Could not complete cashout.");
+        setError(t("completeError"));
       }
       setConfirming(false);
     } finally {
@@ -170,8 +174,8 @@ export function CashoutPanel({ ticket, onCashedOut }: Props) {
       <div className="flex items-center justify-between gap-3">
         <div>
           <div className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-            Cashout offer
-            {quote.fullPayback ? " · full stake" : null}
+            {t("offerLabel")}
+            {quote.fullPayback ? ` · ${t("fullStake")}` : null}
           </div>
           <div className="mt-1 font-mono text-base">
             {offer} {ticket.currency}
@@ -185,7 +189,7 @@ export function CashoutPanel({ ticket, onCashedOut }: Props) {
               disabled={accepting}
               className="btn btn-primary text-xs"
             >
-              Cash out
+              {t("cashOutCta")}
             </button>
           ) : (
             <div className="flex gap-1">
@@ -195,7 +199,7 @@ export function CashoutPanel({ ticket, onCashedOut }: Props) {
                 disabled={accepting}
                 className="btn btn-ghost text-xs"
               >
-                Cancel
+                {t("cancel")}
               </button>
               <button
                 type="button"
@@ -205,9 +209,9 @@ export function CashoutPanel({ ticket, onCashedOut }: Props) {
               >
                 {accepting
                   ? remainingSec > 0
-                    ? `Confirming… ${remainingSec}s`
-                    : "Confirming…"
-                  : `Confirm ${offer} ${ticket.currency}`}
+                    ? t("confirmingSeconds", { seconds: remainingSec })
+                    : t("confirming")
+                  : t("confirmCta", { amount: offer, currency: ticket.currency })}
               </button>
             </div>
           )}

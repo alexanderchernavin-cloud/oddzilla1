@@ -1,25 +1,28 @@
+"use client";
+
 import type {
   CompetitionLeaderboardEntry,
   CompetitionLeaderboardResponse,
 } from "@oddzilla/types";
+import { useTranslations } from "@/lib/i18n";
 
 export function CompetitionLeaderboard({
   data,
 }: {
   data: CompetitionLeaderboardResponse | null;
 }) {
+  const t = useTranslations("competitions");
   if (!data) {
     return (
       <p className="text-sm text-[var(--color-fg-muted)]">
-        Couldn't load leaderboard.
+        {t("leaderboardLoadFailed")}
       </p>
     );
   }
   if (data.entries.length === 0) {
     return (
       <p className="text-sm text-[var(--color-fg-muted)]">
-        Be the first to join — the leaderboard fills as participants make
-        predictions.
+        {t("leaderboardEmpty")}
       </p>
     );
   }
@@ -29,7 +32,7 @@ export function CompetitionLeaderboard({
       {data.viewerEntry ? (
         <div className="rounded-[10px] border border-[var(--color-accent)] bg-[var(--color-bg-elevated)] p-3">
           <div className="text-[10px] uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-            Your position
+            {t("yourPosition")}
           </div>
           <Row entry={data.viewerEntry} highlight />
         </div>
@@ -40,10 +43,10 @@ export function CompetitionLeaderboard({
           <thead>
             <tr className="bg-[var(--color-bg-elevated)] text-left text-[10px] uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
               <th className="px-3 py-2">#</th>
-              <th className="px-3 py-2">Bettor</th>
-              <th className="px-3 py-2 text-right">Pts</th>
-              <th className="px-3 py-2 text-right">Correct</th>
-              <th className="px-3 py-2 text-right">Streak</th>
+              <th className="px-3 py-2">{t("colBettor")}</th>
+              <th className="px-3 py-2 text-right">{t("colPts")}</th>
+              <th className="px-3 py-2 text-right">{t("colCorrect")}</th>
+              <th className="px-3 py-2 text-right">{t("colStreak")}</th>
             </tr>
           </thead>
           <tbody>
@@ -62,7 +65,7 @@ export function CompetitionLeaderboard({
                   </span>
                   {e.isYou ? (
                     <span className="ml-2 text-[10px] uppercase tracking-[0.15em] text-[var(--color-accent)]">
-                      You
+                      {t("you")}
                     </span>
                   ) : null}
                 </Cell>
@@ -81,7 +84,7 @@ export function CompetitionLeaderboard({
         </table>
       </div>
       <p className="text-[11px] text-[var(--color-fg-subtle)]">
-        {data.totalParticipants.toLocaleString()} total participants
+        {t("totalParticipants", { count: data.totalParticipants })}
       </p>
     </div>
   );
@@ -94,6 +97,7 @@ function Row({
   entry: CompetitionLeaderboardEntry;
   highlight?: boolean;
 }) {
+  const t = useTranslations("competitions");
   return (
     <div className="mt-2 flex items-center justify-between text-sm">
       <div>
@@ -102,7 +106,11 @@ function Row({
         </span>
       </div>
       <div className="font-mono text-xs text-[var(--color-fg-muted)]">
-        {entry.points} pts · {entry.correctCount}/{entry.totalSettled} correct
+        {t("pointsSummary", {
+          points: entry.points,
+          correct: entry.correctCount,
+          total: entry.totalSettled,
+        })}
       </div>
     </div>
   );

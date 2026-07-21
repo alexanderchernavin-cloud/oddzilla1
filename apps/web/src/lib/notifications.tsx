@@ -34,6 +34,7 @@ import type {
 // imports + the pattern used elsewhere in apps/web/.
 import { fromMicroMoney } from "@oddzilla/types/money";
 import { clientApi } from "./api-client";
+import type { FormatValues } from "./i18n/format";
 
 // 60s background refresh when the tab is visible. Tight enough to
 // feel live for the "someone copied your bet" moment without burning
@@ -209,6 +210,30 @@ export type NotificationCategory =
   | "Achievements & Rewards"
   | "Bet Settlements";
 
+// Translator bound to the `notifications` namespace — the shape
+// `useTranslations("notifications")` returns. Passed into the display
+// config so copy resolves against the viewer's locale at render time
+// (this module is a plain state layer with no i18n context of its own).
+export type NotificationT = (key: string, values?: FormatValues) => string;
+
+// Stable category → dictionary-key map so any surface that renders the
+// category (e.g. notification preference toggles) can translate it.
+export const NOTIFICATION_CATEGORY_KEYS: Record<NotificationCategory, string> = {
+  "Picks Copied": "categoryPicksCopied",
+  "New Followers": "categoryNewFollowers",
+  "Community Highlights": "categoryCommunityHighlights",
+  "Competition Updates": "categoryCompetitionUpdates",
+  "Achievements & Rewards": "categoryAchievements",
+  "Bet Settlements": "categoryBetSettlements",
+};
+
+export function notificationCategoryLabel(
+  category: NotificationCategory,
+  t: NotificationT,
+): string {
+  return t(NOTIFICATION_CATEGORY_KEYS[category]);
+}
+
 export interface NotificationDisplay {
   iconKey:
     | "Star"
@@ -223,52 +248,59 @@ export interface NotificationDisplay {
   color: string;
   // Headline format. {actor} interpolates the bold-actor name.
   // The renderer composes: <bold>{actor}</bold> + headline text.
-  headline: (item: NotificationItem) => string;
+  headline: (item: NotificationItem, t: NotificationT) => string;
   // Optional context line below the headline.
-  context: (item: NotificationItem) => string | null;
+  context: (item: NotificationItem, t: NotificationT) => string | null;
   category: NotificationCategory;
 }
 
-// PRD copy verbatim (per the notification-types table). When the
-// payload is missing fields we fall back to neutral phrasing rather
-// than rendering "undefined".
+// PRD copy (per the notification-types table), resolved through the
+// `notifications` dictionary namespace. When the payload is missing
+// fields we fall back to neutral phrasing rather than rendering
+// "undefined".
 export const NOTIFICATION_DISPLAY: Record<NotificationType, NotificationDisplay> = {
   pick_copied: {
     iconKey: "Star",
     color: "#06B6D4",
-    headline: (i) => (i.groupCount > 1 ? `+${i.groupCount - 1} more copied your bet` : "copied your bet"),
+    headline: (i, t) =>
+      i.groupCount > 1
+        ? t("pickCopiedMore", { count: i.groupCount - 1 })
+        : t("pickCopied"),
     context: (i) => (i.payload.context as string | undefined) ?? null,
     category: "Picks Copied",
   },
   bet_inspired: {
     iconKey: "Star",
     color: "#F59E0B",
-    headline: () => "was inspired by your bet",
+    headline: (_i, t) => t("betInspired"),
     context: (i) => (i.payload.context as string | undefined) ?? null,
     category: "Picks Copied",
   },
   new_follower: {
     iconKey: "User",
     color: "#3B82F6",
-    headline: () => "started following you",
+    headline: (_i, t) => t("newFollower"),
     context: () => null,
     category: "New Followers",
   },
   analysis_shared: {
     iconKey: "Star",
     color: "#8B5CF6",
-    headline: (i) => (i.groupCount > 1 ? `+${i.groupCount - 1} more liked your analysis` : "liked your analysis"),
+    headline: (i, t) =>
+      i.groupCount > 1
+        ? t("analysisLikedMore", { count: i.groupCount - 1 })
+        : t("analysisLiked"),
     context: (i) => (i.payload.context as string | undefined) ?? null,
     category: "Community Highlights",
   },
   leaderboard_move: {
     iconKey: "Trophy",
     color: "#F59E0B",
-    headline: (i) => {
+    headline: (i, t) => {
       const rank = i.payload.newRank as number | undefined;
       const dir = i.payload.direction as "up" | "down" | undefined;
-      const verb = dir === "down" ? "dropped to" : "moved up to";
-      return `You ${verb} #${rank ?? "?"}`;
+      const key = dir === "down" ? "leaderboardDropped" : "leaderboardMovedUp";
+      return t(key, { rank: rank ?? "?" });
     },
     context: (i) => (i.payload.competitionTitle as string | undefined) ?? null,
     category: "Competition Updates",
@@ -276,10 +308,12 @@ export const NOTIFICATION_DISPLAY: Record<NotificationType, NotificationDisplay>
   competition_deadline: {
     iconKey: "Clock",
     color: "#F97316",
-    headline: (i) => {
-      const t = i.payload.competitionTitle as string | undefined;
+    headline: (i, t) => {
+      const title = i.payload.competitionTitle as string | undefined;
       const h = i.payload.hoursRemaining as number | undefined;
-      return `${t ? `"${t}"` : "Competition"} closes in ${h ?? "?"} hours`;
+      return title
+        ? t("competitionCloses", { title, hours: h ?? 0 })
+        : t("competitionClosesGeneric", { hours: h ?? 0 });
     },
     context: () => null,
     category: "Competition Updates",
@@ -287,23 +321,26 @@ export const NOTIFICATION_DISPLAY: Record<NotificationType, NotificationDisplay>
   community_digest: {
     iconKey: "Star",
     color: "#EC4899",
-    headline: (i) => (i.payload.headline as string | undefined) ?? "This week in Community",
+    headline: (i, t) =>
+      (i.payload.headline as string | undefined) ?? t("communityDigest"),
     context: () => null,
     category: "Community Highlights",
   },
   challenge_completed: {
     iconKey: "Trophy",
     color: "#10B981",
-    headline: (i) => {
-      const t = i.payload.challengeTitle as string | undefined;
-      return t ? `Completed "${t}"` : "Challenge completed";
+    headline: (i, t) => {
+      const title = i.payload.challengeTitle as string | undefined;
+      return title
+        ? t("challengeCompleted", { title })
+        : t("challengeCompletedFallback");
     },
-    context: (i) => {
+    context: (i, t) => {
       const xp = i.payload.xp as number | undefined;
       const coins = i.payload.coins as number | undefined;
       const parts: string[] = [];
-      if (xp) parts.push(`+${xp} XP`);
-      if (coins) parts.push(`+${coins} Coins`);
+      if (xp) parts.push(t("xpGain", { xp }));
+      if (coins) parts.push(t("coinsGain", { coins }));
       return parts.length ? parts.join(" · ") : null;
     },
     category: "Achievements & Rewards",
@@ -311,23 +348,27 @@ export const NOTIFICATION_DISPLAY: Record<NotificationType, NotificationDisplay>
   achievement_unlocked: {
     iconKey: "Trophy",
     color: "#F59E0B",
-    headline: (i) => {
-      const t = i.payload.achievementTitle as string | undefined;
-      return t ? `Achievement: "${t}"` : "Achievement unlocked";
+    headline: (i, t) => {
+      const title = i.payload.achievementTitle as string | undefined;
+      return title
+        ? t("achievementUnlocked", { title })
+        : t("achievementUnlockedFallback");
     },
-    context: (i) => {
+    context: (i, t) => {
       const xp = i.payload.xp as number | undefined;
-      return xp ? `+${xp} XP` : null;
+      return xp ? t("xpGain", { xp }) : null;
     },
     category: "Achievements & Rewards",
   },
   level_up: {
     iconKey: "Arrow",
     color: "#6366F1",
-    headline: (i) => {
+    headline: (i, t) => {
       const lvl = i.payload.newLevel as number | undefined;
       const tier = i.payload.tierName as string | undefined;
-      return `Reached Level ${lvl ?? "?"}${tier ? ` — ${tier} Tier` : ""}`;
+      return tier
+        ? t("levelReachedTier", { level: lvl ?? "?", tier })
+        : t("levelReached", { level: lvl ?? "?" });
     },
     context: () => null,
     category: "Achievements & Rewards",
@@ -335,10 +376,11 @@ export const NOTIFICATION_DISPLAY: Record<NotificationType, NotificationDisplay>
   loot_acquired: {
     iconKey: "Ticket",
     color: "#D946EF",
-    headline: (i) => {
+    headline: (i, t) => {
       const name = i.payload.cosmeticName as string | undefined;
       const r = i.payload.rarity as string | undefined;
-      return `New cosmetic: ${name ?? "?"}${r ? ` (${r})` : ""}`;
+      // Rarity rides in a locale-neutral parenthetical suffix.
+      return `${t("newCosmetic", { name: name ?? "?" })}${r ? ` (${r})` : ""}`;
     },
     context: () => null,
     category: "Achievements & Rewards",
@@ -346,23 +388,25 @@ export const NOTIFICATION_DISPLAY: Record<NotificationType, NotificationDisplay>
   bet_won: {
     iconKey: "Trophy",
     color: "#10B981",
-    headline: (i) => {
+    headline: (i, t) => {
       const payout = formatMicroMoney(i.payload.actualPayoutMicro);
       const currency = (i.payload.currency as string | undefined) ?? "";
-      return `You won ${payout}${currency ? ` ${currency}` : ""}`;
+      return t("youWon", { amount: `${payout}${currency ? ` ${currency}` : ""}` });
     },
-    context: (i) => settlementContext(i.payload),
+    context: (i, t) => settlementContext(i.payload, t),
     category: "Bet Settlements",
   },
   bet_cashed_out: {
     iconKey: "Ticket",
     color: "#06B6D4",
-    headline: (i) => {
+    headline: (i, t) => {
       const payout = formatMicroMoney(i.payload.actualPayoutMicro);
       const currency = (i.payload.currency as string | undefined) ?? "";
-      return `Cashed out ${payout}${currency ? ` ${currency}` : ""}`;
+      return t("cashedOut", {
+        amount: `${payout}${currency ? ` ${currency}` : ""}`,
+      });
     },
-    context: (i) => settlementContext(i.payload),
+    context: (i, t) => settlementContext(i.payload, t),
     category: "Bet Settlements",
   },
   big_win_landed: {
@@ -375,12 +419,14 @@ export const NOTIFICATION_DISPLAY: Record<NotificationType, NotificationDisplay>
     // headline picks up immediately after it ("Carlos just won
     // +61 OZ"). Profit = payout − stake; we compute it client-side
     // rather than denormalise so the payload stays compact.
-    headline: (i) => {
+    headline: (i, t) => {
       const profit = formatProfit(i.payload.stakeMicro, i.payload.actualPayoutMicro);
       const currency = (i.payload.currency as string | undefined) ?? "";
-      return `just won +${profit}${currency ? ` ${currency}` : ""}`;
+      return t("justWon", {
+        amount: `${profit}${currency ? ` ${currency}` : ""}`,
+      });
     },
-    context: () => "Apply same play",
+    context: (_i, t) => t("applySamePlay"),
     category: "Community Highlights",
   },
 };
@@ -412,10 +458,13 @@ function formatMicroMoney(raw: unknown): string {
   }
 }
 
-// Secondary line for settlement notifications: "3-leg combo from a
-// 25 USDC stake" / "Single bet from 10 OZ". Bet type + leg count is
-// the disambiguator when a user has several tickets in flight.
-function settlementContext(payload: Record<string, unknown>): string | null {
+// Secondary line for settlement notifications: "3-leg combo · 25 USDC
+// stake" / "single bet · 10 OZ stake". Bet type + leg count is the
+// disambiguator when a user has several tickets in flight.
+function settlementContext(
+  payload: Record<string, unknown>,
+  t: NotificationT,
+): string | null {
   const numLegs = typeof payload.numLegs === "number" ? payload.numLegs : 1;
   const betType =
     typeof payload.betType === "string" ? payload.betType : "single";
@@ -423,34 +472,40 @@ function settlementContext(payload: Record<string, unknown>): string | null {
     typeof payload.currency === "string" ? payload.currency : "";
   const stake = formatMicroMoney(payload.stakeMicro);
   const noun =
-    numLegs > 1 ? `${numLegs}-leg ${prettyBetType(betType)}` : "single bet";
-  return `${noun} · ${stake}${currency ? ` ${currency}` : ""} stake`;
+    numLegs > 1
+      ? t("multiLegBet", { count: numLegs, type: prettyBetType(betType, t) })
+      : t("singleBet");
+  return t("stakeLine", {
+    bet: noun,
+    stake: `${stake}${currency ? ` ${currency}` : ""}`,
+  });
 }
 
-function prettyBetType(betType: string): string {
+function prettyBetType(betType: string, t: NotificationT): string {
   switch (betType) {
     case "combo":
-      return "combo";
+      return t("betTypeCombo");
+    // Brand names — never translated.
     case "tiple":
       return "Tiple";
     case "tippot":
       return "Tippot";
     case "betbuilder":
-      return "Bet Builder";
+      return t("betTypeBetBuilder");
     default:
-      return "bet";
+      return t("betTypeBet");
   }
 }
 
 // Coarse "X minutes ago" for the panel timestamp.
-export function formatRelativeTime(iso: string): string {
+export function formatRelativeTime(iso: string, t: NotificationT): string {
   const d = new Date(iso).getTime();
   const sec = Math.max(1, Math.round((Date.now() - d) / 1000));
-  if (sec < 60) return `${sec}s ago`;
+  if (sec < 60) return t("relSeconds", { n: sec });
   const m = Math.round(sec / 60);
-  if (m < 60) return `${m}m ago`;
+  if (m < 60) return t("relMinutes", { n: m });
   const h = Math.round(m / 60);
-  if (h < 24) return `${h}h ago`;
+  if (h < 24) return t("relHours", { n: h });
   const days = Math.round(h / 24);
-  return `${days}d ago`;
+  return t("relDays", { n: days });
 }

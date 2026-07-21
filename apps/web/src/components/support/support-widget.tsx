@@ -25,6 +25,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { useSessionUserId } from "@/lib/session-user";
+import { useLocale, useTranslations } from "@/lib/i18n";
 import { useSupportStream } from "@/lib/use-support-stream";
 import type {
   SupportAttachment,
@@ -63,6 +64,7 @@ function formatBytes(n: number): string {
 }
 
 export function SupportWidget() {
+  const t = useTranslations("supportChat");
   const userId = useSessionUserId();
   const [open, setOpen] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -87,12 +89,12 @@ export function SupportWidget() {
       setLoaded(true);
     } catch (e) {
       if (!(e instanceof ApiFetchError && e.status === 401)) {
-        setError("Could not load chat.");
+        setError(t("loadError"));
       }
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   const markRead = useCallback(async () => {
     try {
@@ -164,18 +166,21 @@ export function SupportWidget() {
         for (const f of list) {
           if (next.length >= SUPPORT_ATTACHMENT_MAX_PER_MESSAGE) {
             setError(
-              `You can attach up to ${SUPPORT_ATTACHMENT_MAX_PER_MESSAGE} files per message.`,
+              t("tooManyFiles", { count: SUPPORT_ATTACHMENT_MAX_PER_MESSAGE }),
             );
             break;
           }
           if (f.size > SUPPORT_ATTACHMENT_MAX_BYTES) {
             setError(
-              `${f.name} is over the ${formatBytes(SUPPORT_ATTACHMENT_MAX_BYTES)} limit.`,
+              t("fileTooLarge", {
+                name: f.name,
+                limit: formatBytes(SUPPORT_ATTACHMENT_MAX_BYTES),
+              }),
             );
             continue;
           }
           if (f.size === 0) {
-            setError(`${f.name} is empty.`);
+            setError(t("fileEmpty", { name: f.name }));
             continue;
           }
           next.push({ key: nextPendingKey(), file: f });
@@ -183,7 +188,7 @@ export function SupportWidget() {
         return next;
       });
     },
-    [],
+    [t],
   );
 
   const removePending = useCallback((key: string) => {
@@ -209,7 +214,7 @@ export function SupportWidget() {
         credentials: "include",
       });
       if (!res.ok) {
-        let msg = "Could not send.";
+        let msg = t("sendError");
         try {
           const body = (await res.json()) as {
             error?: string;
@@ -238,20 +243,20 @@ export function SupportWidget() {
       setPending([]);
       if (!thread) void refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not send.");
+      setError(e instanceof Error ? e.message : t("sendError"));
     } finally {
       setSending(false);
     }
-  }, [draft, pending, refresh, sending, thread]);
+  }, [draft, pending, refresh, sending, thread, t]);
 
   const buttonAria = useMemo(
     () =>
       open
-        ? "Close support chat"
+        ? t("closeAria")
         : unreadUser > 0
-          ? `Open support chat (${unreadUser} new)`
-          : "Open support chat",
-    [open, unreadUser],
+          ? t("openUnreadAria", { count: unreadUser })
+          : t("openAria"),
+    [open, unreadUser, t],
   );
 
   if (!userId) return null;
@@ -409,6 +414,7 @@ function SupportPanel({
   fileInputRef,
   onFilesPicked,
 }: PanelProps) {
+  const t = useTranslations("supportChat");
   const closed = threadStatus === "closed";
   const canSend = !sending && (draft.trim().length > 0 || pending.length > 0);
   const attachLimit = pending.length >= SUPPORT_ATTACHMENT_MAX_PER_MESSAGE;
@@ -416,7 +422,7 @@ function SupportPanel({
   return (
     <div
       role="dialog"
-      aria-label="Support chat"
+      aria-label={t("dialogAria")}
       style={{
         position: "fixed",
         right: 20,
@@ -446,7 +452,7 @@ function SupportPanel({
         }}
       >
         <div style={{ display: "flex", flexDirection: "column" }}>
-          <strong style={{ fontSize: 14 }}>Support</strong>
+          <strong style={{ fontSize: 14 }}>{t("title")}</strong>
           <span
             className="mono"
             style={{
@@ -456,13 +462,13 @@ function SupportPanel({
               color: "var(--color-fg-subtle, var(--fg-dim))",
             }}
           >
-            We usually reply within a few minutes
+            {t("subtitle")}
           </span>
         </div>
         <button
           type="button"
           onClick={onClose}
-          aria-label="Close support chat"
+          aria-label={t("closeAria")}
           style={{
             width: 28,
             height: 28,
@@ -491,9 +497,9 @@ function SupportPanel({
         }}
       >
         {!loaded && loading ? (
-          <EmptyState text="Loading…" />
+          <EmptyState text={t("loading")} />
         ) : messages.length === 0 ? (
-          <EmptyState text="Say hi — our team will get back to you here." />
+          <EmptyState text={t("emptyState")} />
         ) : (
           messages.map((m) => <MessageBubble key={m.id} message={m} />)
         )}
@@ -517,8 +523,7 @@ function SupportPanel({
               color: "var(--color-fg-muted, var(--fg-muted))",
             }}
           >
-            This conversation was closed. Send a new message to start a fresh
-            thread.
+            {t("closedNotice")}
           </div>
         ) : null}
         {error ? (
@@ -563,9 +568,9 @@ function SupportPanel({
               if (canSend) onSend();
             }
           }}
-          placeholder="Type your message…"
+          placeholder={t("messagePlaceholder")}
           rows={2}
-          aria-label="Message"
+          aria-label={t("messageAria")}
           style={{
             width: "100%",
             resize: "none",
@@ -605,11 +610,13 @@ function SupportPanel({
               type="button"
               onClick={onPickFiles}
               disabled={sending || attachLimit}
-              aria-label="Attach files"
+              aria-label={t("attachAria")}
               title={
                 attachLimit
-                  ? `Max ${SUPPORT_ATTACHMENT_MAX_PER_MESSAGE} files`
-                  : `Attach files (max ${formatBytes(SUPPORT_ATTACHMENT_MAX_BYTES)} each)`
+                  ? t("attachMax", { count: SUPPORT_ATTACHMENT_MAX_PER_MESSAGE })
+                  : t("attachHint", {
+                      limit: formatBytes(SUPPORT_ATTACHMENT_MAX_BYTES),
+                    })
               }
               style={{
                 display: "inline-flex",
@@ -654,7 +661,7 @@ function SupportPanel({
               opacity: canSend ? 1 : 0.5,
             }}
           >
-            {sending ? "Sending…" : "Send"}
+            {sending ? t("sending") : t("send")}
           </button>
         </div>
       </div>
@@ -671,6 +678,7 @@ function PendingChip({
   onRemove: () => void;
   disabled: boolean;
 }) {
+  const t = useTranslations("supportChat");
   const isImage = file.type.startsWith("image/");
   return (
     <li
@@ -717,7 +725,7 @@ function PendingChip({
         type="button"
         onClick={onRemove}
         disabled={disabled}
-        aria-label={`Remove ${file.name}`}
+        aria-label={t("removeAria", { name: file.name })}
         style={{
           marginLeft: 2,
           width: 18,
@@ -755,6 +763,8 @@ function EmptyState({ text }: { text: string }) {
 }
 
 function MessageBubble({ message }: { message: SupportMessage }) {
+  const t = useTranslations("supportChat");
+  const locale = useLocale();
   const fromUser = message.senderKind === "user";
   const fromSystem = message.senderKind === "system";
   const align = fromUser ? "flex-end" : "flex-start";
@@ -790,7 +800,7 @@ function MessageBubble({ message }: { message: SupportMessage }) {
             padding: "0 4px",
           }}
         >
-          {message.senderName ?? "Support"}
+          {message.senderName ?? t("senderFallback")}
         </span>
       ) : null}
       {message.body.length > 0 ? (
@@ -834,7 +844,7 @@ function MessageBubble({ message }: { message: SupportMessage }) {
           padding: "0 4px",
         }}
       >
-        {formatTime(message.createdAt)}
+        {formatTime(message.createdAt, locale)}
       </span>
     </div>
   );
@@ -936,7 +946,7 @@ function labelFor(mime: string): string {
   return "FILE";
 }
 
-function formatTime(iso: string): string {
+function formatTime(iso: string, locale: string): string {
   try {
     const d = new Date(iso);
     const now = new Date();
@@ -944,12 +954,16 @@ function formatTime(iso: string): string {
       d.getFullYear() === now.getFullYear() &&
       d.getMonth() === now.getMonth() &&
       d.getDate() === now.getDate();
-    const hh = String(d.getHours()).padStart(2, "0");
-    const mm = String(d.getMinutes()).padStart(2, "0");
-    if (sameDay) return `${hh}:${mm}`;
-    const day = String(d.getDate()).padStart(2, "0");
-    const month = String(d.getMonth() + 1).padStart(2, "0");
-    return `${day}.${month} ${hh}:${mm}`;
+    const time = d.toLocaleTimeString(locale, {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    if (sameDay) return time;
+    const date = d.toLocaleDateString(locale, {
+      day: "2-digit",
+      month: "2-digit",
+    });
+    return `${date} ${time}`;
   } catch {
     return "";
   }

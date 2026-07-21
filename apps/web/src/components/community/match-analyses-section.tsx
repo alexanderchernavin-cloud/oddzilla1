@@ -21,6 +21,7 @@
 import { useEffect, useState } from "react";
 import type { AnalysisFeedResponse, AnalysisSummary } from "@oddzilla/types";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
+import { useTranslations } from "@/lib/i18n";
 import { AnalysisCard } from "./analysis-card";
 import { WriteAnalysisButton } from "./write-analysis-button";
 
@@ -41,6 +42,7 @@ export function MatchAnalysesSection({
   matchStatus,
   loggedIn,
 }: Props) {
+  const t = useTranslations("analyses");
   const isPreMatch = matchStatus === "not_started";
   const isLiveOrClosed = matchStatus === "live" || matchStatus === "closed";
   const showWriteButton = loggedIn && isPreMatch;
@@ -100,12 +102,10 @@ export function MatchAnalysesSection({
       <header className="flex items-baseline justify-between gap-4">
         <div>
           <h2 className="text-sm uppercase tracking-[0.18em] text-[var(--color-fg-subtle)]">
-            Pre-match analyses
+            {t("section.heading")}
           </h2>
           <p className="mt-1 text-xs text-[var(--color-fg-muted)]">
-            {isPreMatch
-              ? "Skin-in-the-game takes from the community. 100–5000 chars; min odds 1.30."
-              : "Pre-match window closed — these were published before kickoff."}
+            {isPreMatch ? t("section.subtitleOpen") : t("section.subtitleClosed")}
           </p>
         </div>
         {showWriteButton ? (
@@ -193,15 +193,16 @@ function EmptyHint({
   isPreMatch: boolean;
   errored: boolean;
 }) {
+  const t = useTranslations("analyses");
   let body: string;
   if (errored) {
-    body = "Couldn't load analyses. Refresh to retry.";
+    body = t("section.loadError");
   } else if (isPreMatch && loggedIn) {
-    body = "No analyses on this match yet. Be the first.";
+    body = t("section.emptyLoggedIn");
   } else if (isPreMatch) {
-    body = "No analyses on this match yet. Log in and place a bet to publish one.";
+    body = t("section.emptyAnonymous");
   } else {
-    body = "No analyses landed before kickoff.";
+    body = t("section.emptyClosed");
   }
   return (
     <p className="mt-4 rounded-[12px] border border-dashed border-[var(--color-border-strong)] p-6 text-center text-sm text-[var(--color-fg-muted)]">

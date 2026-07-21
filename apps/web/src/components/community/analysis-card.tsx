@@ -19,7 +19,10 @@ import { fromMicro } from "@oddzilla/types/money";
 import { useRouter } from "next/navigation";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { useBetSlip } from "@/lib/bet-slip";
+import { useTranslations } from "@/lib/i18n";
 import { Avatar } from "./avatar";
+
+type Translator = ReturnType<typeof useTranslations>;
 
 interface Props {
   analysis: AnalysisSummary;
@@ -56,6 +59,8 @@ export function AnalysisCard({
   const router = useRouter();
   const slip = useBetSlip();
   const [_, startTransition] = useTransition();
+  const t = useTranslations("analyses");
+  const tCommunity = useTranslations("community");
 
   const isLong = analysis.body.length > COLLAPSE_LIMIT;
   const visibleBody = expanded || !isLong
@@ -137,7 +142,7 @@ export function AnalysisCard({
         message:
           err instanceof ApiFetchError
             ? err.body.message
-            : "Couldn't copy this bet.",
+            : tCommunity("card.copyFailed"),
       });
     }
   }
@@ -156,12 +161,12 @@ export function AnalysisCard({
         ) : null}
         {analysis.authorWinRate !== null ? (
           <span className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-            {analysis.authorWinRate}% win rate
+            {t("card.winRate", { rate: analysis.authorWinRate })}
           </span>
         ) : null}
         <OutcomeBadge outcome={analysis.outcome} />
         <span className="ml-auto text-xs text-[var(--color-fg-subtle)]">
-          {timeAgo(analysis.publishedAt)}
+          {timeAgo(analysis.publishedAt, t)}
         </span>
       </header>
 
@@ -170,8 +175,8 @@ export function AnalysisCard({
           href={`/match/${analysis.matchId}`}
           className="mt-2 block text-xs uppercase tracking-[0.15em] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]"
         >
-          {analysis.sportName} · {analysis.matchTitle} · kickoff{" "}
-          {kickoffLabel(analysis.scheduledAt)}
+          {analysis.sportName} · {analysis.matchTitle} ·{" "}
+          {t("card.kickoff", { when: kickoffLabel(analysis.scheduledAt, t) })}
         </Link>
       ) : null}
 
@@ -186,7 +191,7 @@ export function AnalysisCard({
           className="mt-1 text-xs uppercase tracking-[0.15em] text-[var(--color-accent)] hover:underline"
           onClick={() => setExpanded((e) => !e)}
         >
-          {expanded ? "Read less" : "Read more"}
+          {expanded ? t("card.readLess") : t("card.readMore")}
         </button>
       ) : null}
 
@@ -203,7 +208,7 @@ export function AnalysisCard({
                 : "border-[var(--color-border-strong)] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]")
             }
             aria-pressed={reacted ?? false}
-            aria-label="Thumbs up"
+            aria-label={t("card.thumbsUp")}
           >
             <span aria-hidden>👍</span>
             <span className="font-mono">{thumbsUp}</span>
@@ -214,7 +219,9 @@ export function AnalysisCard({
           </span>
           <span className="inline-flex items-center gap-1 text-[var(--color-fg-subtle)]">
             @{analysis.ticketTotalOdds}
-            {analysis.ticketLegCount > 1 ? ` · ${analysis.ticketLegCount} legs` : ""}
+            {analysis.ticketLegCount > 1
+              ? ` · ${t("legs", { count: analysis.ticketLegCount })}`
+              : ""}
           </span>
         </div>
         <div className="text-right">
@@ -224,7 +231,9 @@ export function AnalysisCard({
             disabled={copyStatus.kind === "loading"}
             className="rounded-full border border-[var(--color-accent)] px-3 py-1 text-[11px] uppercase tracking-[0.15em] text-[var(--color-accent)] transition hover:bg-[var(--color-accent)]/10 disabled:opacity-60"
           >
-            {copyStatus.kind === "loading" ? "Copying…" : "Copy bet"}
+            {copyStatus.kind === "loading"
+              ? tCommunity("card.copying")
+              : tCommunity("card.copyBet")}
           </button>
           <CopyStatusLine status={copyStatus} />
         </div>
@@ -234,25 +243,28 @@ export function AnalysisCard({
 }
 
 function CopyStatusLine({ status }: { status: CopyStatus }) {
+  const tCommunity = useTranslations("community");
   if (status.kind === "added") {
     if (status.dropped > 0) {
       return (
         <p className="mt-1 text-[10px] text-[var(--color-fg-muted)]">
-          Added {status.legs} leg{status.legs === 1 ? "" : "s"} ·{" "}
-          {status.dropped} closed
+          {tCommunity("card.addedLegs", {
+            count: status.legs,
+            dropped: status.dropped,
+          })}
         </p>
       );
     }
     return (
       <p className="mt-1 text-[10px] text-[var(--color-positive)]">
-        Added to slip
+        {tCommunity("card.addedToSlip")}
       </p>
     );
   }
   if (status.kind === "no_legs") {
     return (
       <p className="mt-1 text-[10px] text-[var(--color-fg-muted)]">
-        Markets closed
+        {tCommunity("card.marketsClosed")}
       </p>
     );
   }
@@ -267,10 +279,11 @@ function CopyStatusLine({ status }: { status: CopyStatus }) {
 }
 
 function OutcomeBadge({ outcome }: { outcome: AnalysisOutcome | null }) {
+  const t = useTranslations("analyses");
   if (outcome === null) {
     return (
       <span className="rounded-full border border-[var(--color-border-strong)] px-2 py-0.5 text-[10px] uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-        Pending
+        {t("card.pending")}
       </span>
     );
   }
@@ -282,12 +295,12 @@ function OutcomeBadge({ outcome }: { outcome: AnalysisOutcome | null }) {
         : "border-[var(--color-border-strong)] text-[var(--color-fg-muted)]";
   const label =
     outcome === "won"
-      ? "Won"
+      ? t("card.won")
       : outcome === "lost"
-        ? "Lost"
+        ? t("card.lost")
         : outcome === "void"
-          ? "Void"
-          : "Cashout (void)";
+          ? t("card.void")
+          : t("card.cashoutVoid");
   return (
     <span
       className={`rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-[0.15em] ${tone}`}
@@ -297,29 +310,29 @@ function OutcomeBadge({ outcome }: { outcome: AnalysisOutcome | null }) {
   );
 }
 
-function timeAgo(iso: string): string {
-  const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return "";
-  const diff = Date.now() - t;
+function timeAgo(iso: string, t: Translator): string {
+  const ts = new Date(iso).getTime();
+  if (!Number.isFinite(ts)) return "";
+  const diff = Date.now() - ts;
   const m = Math.round(diff / 60_000);
-  if (m < 1) return "just now";
-  if (m < 60) return `${m}m`;
+  if (m < 1) return t("card.timeJustNow");
+  if (m < 60) return t("card.timeMinutes", { minutes: m });
   const h = Math.round(m / 60);
-  if (h < 24) return `${h}h`;
+  if (h < 24) return t("card.timeHours", { hours: h });
   const d = Math.round(h / 24);
-  return `${d}d`;
+  return t("card.timeDays", { days: d });
 }
 
-function kickoffLabel(iso: string): string {
-  const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return "soon";
-  const diff = t - Date.now();
-  if (diff < 0) return "started";
+function kickoffLabel(iso: string, t: Translator): string {
+  const ts = new Date(iso).getTime();
+  if (!Number.isFinite(ts)) return t("card.kickoffSoon");
+  const diff = ts - Date.now();
+  if (diff < 0) return t("card.kickoffStarted");
   const h = Math.round(diff / 3_600_000);
-  if (h < 1) return "<1h";
-  if (h < 24) return `in ${h}h`;
+  if (h < 1) return t("card.kickoffUnderHour");
+  if (h < 24) return t("card.kickoffInHours", { hours: h });
   const d = Math.round(h / 24);
-  return `in ${d}d`;
+  return t("card.kickoffInDays", { days: d });
 }
 
 // Avoid an unused warning when fromMicro is referenced only by

@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { CompetitionStatus, JoinCompetitionResponse } from "@oddzilla/types";
+import { useTranslations } from "@/lib/i18n";
 
 export function CompetitionJoinButton({
   competitionId,
@@ -16,6 +17,7 @@ export function CompetitionJoinButton({
   status: CompetitionStatus;
 }) {
   const router = useRouter();
+  const t = useTranslations("competitions");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [joined, setJoined] = useState(Boolean(viewerJoined));
@@ -26,7 +28,7 @@ export function CompetitionJoinButton({
         href="/login"
         className="inline-flex items-center rounded-[10px] bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-accent-fg)] hover:opacity-90"
       >
-        Sign in to join
+        {t("signInToJoin")}
       </a>
     );
   }
@@ -34,7 +36,7 @@ export function CompetitionJoinButton({
   if (status === "ended") {
     return (
       <span className="inline-flex items-center rounded-[10px] border border-[var(--color-border-strong)] px-4 py-2 text-sm text-[var(--color-fg-muted)]">
-        Competition ended
+        {t("competitionEnded")}
       </span>
     );
   }
@@ -46,7 +48,7 @@ export function CompetitionJoinButton({
   if (joined) {
     return (
       <span className="inline-flex items-center gap-2 rounded-[10px] border border-[var(--color-border-strong)] px-4 py-2 text-sm font-semibold text-[var(--color-accent)]">
-        ● Joined
+        {t("joinedBadge")}
       </span>
     );
   }
@@ -68,7 +70,7 @@ export function CompetitionJoinButton({
               const body = (await res.json().catch(() => ({}))) as {
                 error?: string;
               };
-              setError(body.error ?? "Couldn't join right now");
+              setError(body.error ?? t("joinFailed"));
               return;
             }
             const data = (await res.json()) as JoinCompetitionResponse;
@@ -81,7 +83,7 @@ export function CompetitionJoinButton({
         }}
         className="inline-flex items-center rounded-[10px] bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-accent-fg)] hover:opacity-90 disabled:opacity-60"
       >
-        {pending ? "Joining…" : "Join competition"}
+        {pending ? t("joining") : t("join")}
       </button>
       {error ? (
         <p className="text-xs text-[var(--color-danger)]">{error}</p>

@@ -8,7 +8,7 @@ import type {
   WithdrawalListResponse,
 } from "@oddzilla/types";
 import { serverApi } from "@/lib/server-fetch";
-import { getTranslations } from "@/lib/i18n/server";
+import { getServerLocale, getTranslations } from "@/lib/i18n/server";
 import { WalletPanels } from "./wallet-panels";
 import { CurrencyCard } from "./currency-card";
 
@@ -45,6 +45,7 @@ export default async function WalletPage() {
       serverApi<LinkedWalletListResponse>("/wallet/addresses"),
       getTranslations("wallet"),
     ]);
+  const locale = await getServerLocale();
 
   const wallets = walletRes?.wallets ?? [];
   const usdc = wallets.find((w) => w.currency === "USDC");
@@ -99,21 +100,23 @@ export default async function WalletPage() {
                   className="flex items-center justify-between px-4 py-3 text-sm"
                 >
                   <div>
-                    <p className="font-medium capitalize">
-                      {e.type.replace(/_/g, " ")}
+                    <p className="font-medium">
+                      {t(`ledgerType.${e.type}`)}
                       <span className="ml-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-fg-muted)]">
                         {e.currency}
                       </span>
                     </p>
                     <p className="text-xs text-[var(--color-fg-subtle)]">
-                      {new Date(e.createdAt).toLocaleString()}
+                      {new Date(e.createdAt).toLocaleString(locale)}
                       {e.txHash ? ` · ${e.txHash.slice(0, 12)}…` : ""}
                     </p>
                     {cashout ? (
                       <p className="mt-0.5 font-mono text-[11px] text-[var(--color-fg-subtle)]">
-                        Stake {fromMicro(cashout.stake)} {e.currency}
-                        {" → "}
-                        Refund {fromMicro(cashout.refund)} {e.currency}
+                        {t("ledgerCashoutDetail", {
+                          stake: fromMicro(cashout.stake),
+                          refund: fromMicro(cashout.refund),
+                          currency: e.currency,
+                        })}
                       </p>
                     ) : null}
                   </div>

@@ -20,6 +20,9 @@ import type {
 } from "@oddzilla/types";
 import { fromMicro } from "@oddzilla/types/money";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
+import { useTranslations } from "@/lib/i18n";
+
+type Translator = ReturnType<typeof useTranslations>;
 
 interface Props {
   matchId: string;
@@ -40,6 +43,8 @@ export function AnalysisEditor({ matchId, matchTitle, onClose }: Props) {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const router = useRouter();
+  const t = useTranslations("analyses");
+  const tCommon = useTranslations("common");
 
   // Lock background scroll while open.
   useEffect(() => {
@@ -80,12 +85,12 @@ export function AnalysisEditor({ matchId, matchTitle, onClose }: Props) {
           router.push("/login");
           return;
         }
-        setLoadError("Couldn't load your tickets. Try again in a moment.");
+        setLoadError(t("editor.loadError"));
       });
     return () => {
       cancelled = true;
     };
-  }, [matchId, router]);
+  }, [matchId, router, t]);
 
   const perexLen = perex.length;
   const bodyLen = body.length;
@@ -123,7 +128,7 @@ export function AnalysisEditor({ matchId, matchTitle, onClose }: Props) {
     } catch (err) {
       const code =
         err instanceof ApiFetchError ? err.body.error : "unknown_error";
-      setSubmitError(serverErrorCopy(code));
+      setSubmitError(serverErrorCopy(code, t));
       setSubmitting(false);
     }
   }
@@ -133,7 +138,7 @@ export function AnalysisEditor({ matchId, matchTitle, onClose }: Props) {
       className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 sm:items-center"
       role="dialog"
       aria-modal="true"
-      aria-label="Write pre-match analysis"
+      aria-label={t("editor.title")}
       onClick={onClose}
     >
       <div
@@ -142,37 +147,37 @@ export function AnalysisEditor({ matchId, matchTitle, onClose }: Props) {
       >
         <header className="mb-4 flex items-start justify-between gap-4">
           <div>
-            <h2 className="text-base font-semibold tracking-tight">Write pre-match analysis</h2>
+            <h2 className="text-base font-semibold tracking-tight">{t("editor.title")}</h2>
             <p className="mt-1 text-xs text-[var(--color-fg-muted)]">{matchTitle}</p>
           </div>
-          <button type="button" className="btn btn-ghost text-xs" onClick={onClose} aria-label="Close">
-            Close
+          <button type="button" className="btn btn-ghost text-xs" onClick={onClose} aria-label={tCommon("close")}>
+            {tCommon("close")}
           </button>
         </header>
 
         {tickets === null && !loadError ? (
-          <p className="py-6 text-center text-sm text-[var(--color-fg-muted)]">Loading your tickets…</p>
+          <p className="py-6 text-center text-sm text-[var(--color-fg-muted)]">{t("editor.loadingTickets")}</p>
         ) : loadError ? (
           <p className="py-6 text-center text-sm text-[var(--color-negative)]">{loadError}</p>
         ) : tickets && tickets.length === 0 ? (
           <NoEligibleTickets />
         ) : (
           <div className="space-y-4">
-            <Field label="Attach your bet" hint="Min odds 1.30 prematch.">
+            <Field label={t("editor.attachBet")} hint={t("editor.minOddsHint")}>
               <ul className="space-y-1.5">
-                {tickets!.map((t) => (
-                  <li key={t.ticketId}>
+                {tickets!.map((ticket) => (
+                  <li key={ticket.ticketId}>
                     <label className="flex cursor-pointer items-center gap-3 rounded-[8px] border border-[var(--color-border-strong)] px-3 py-2 text-sm hover:border-[var(--color-accent)]/60">
                       <input
                         type="radio"
                         name="ticket"
-                        checked={ticketId === t.ticketId}
-                        onChange={() => setTicketId(t.ticketId)}
+                        checked={ticketId === ticket.ticketId}
+                        onChange={() => setTicketId(ticket.ticketId)}
                         className="accent-[var(--color-accent)]"
                       />
                       <span className="flex-1 font-mono text-xs">
-                        {t.legCount} leg{t.legCount === 1 ? "" : "s"} · @{t.totalOdds} ·{" "}
-                        {fromMicro(BigInt(t.stakeMicro))} {t.currency}
+                        {t("legs", { count: ticket.legCount })} · @{ticket.totalOdds} ·{" "}
+                        {fromMicro(BigInt(ticket.stakeMicro))} {ticket.currency}
                       </span>
                     </label>
                   </li>
@@ -181,7 +186,7 @@ export function AnalysisEditor({ matchId, matchTitle, onClose }: Props) {
             </Field>
 
             <Field
-              label="Headline"
+              label={t("editor.headline")}
               hint={`${perexLen}/${PEREX_MAX}`}
               hintTone={helperColor(perexLen, 1, PEREX_MAX)}
             >
@@ -190,21 +195,21 @@ export function AnalysisEditor({ matchId, matchTitle, onClose }: Props) {
                 maxLength={PEREX_MAX + 5}
                 value={perex}
                 onChange={(e) => setPerex(e.target.value)}
-                placeholder="One-line summary of your call."
+                placeholder={t("editor.headlinePlaceholder")}
                 className="w-full rounded-[8px] border border-[var(--color-border-strong)] bg-[var(--color-bg)] px-3 py-2 text-sm"
               />
             </Field>
 
             <Field
-              label="Reasoning"
-              hint={`${bodyLen}/${BODY_MAX}${bodyLen < BODY_MIN ? ` (need ${BODY_MIN - bodyLen} more)` : ""}`}
+              label={t("editor.reasoning")}
+              hint={`${bodyLen}/${BODY_MAX}${bodyLen < BODY_MIN ? ` ${t("editor.needMore", { count: BODY_MIN - bodyLen })}` : ""}`}
               hintTone={helperColor(bodyLen, BODY_MIN, BODY_MAX)}
             >
               <textarea
                 value={body}
                 onChange={(e) => setBody(e.target.value)}
                 rows={10}
-                placeholder="Form, head-to-head, key stats, injuries — what makes this call?"
+                placeholder={t("editor.reasoningPlaceholder")}
                 className="w-full rounded-[8px] border border-[var(--color-border-strong)] bg-[var(--color-bg)] px-3 py-2 text-sm leading-relaxed"
               />
             </Field>
@@ -220,7 +225,7 @@ export function AnalysisEditor({ matchId, matchTitle, onClose }: Props) {
                 className="btn btn-ghost text-xs"
                 disabled={submitting}
               >
-                Cancel
+                {tCommon("cancel")}
               </button>
               <button
                 type="button"
@@ -233,7 +238,7 @@ export function AnalysisEditor({ matchId, matchTitle, onClose }: Props) {
                     : "cursor-not-allowed border-[var(--color-border-strong)] text-[var(--color-fg-subtle)]")
                 }
               >
-                {submitting ? "Publishing…" : "Publish"}
+                {submitting ? t("editor.publishing") : t("editor.publish")}
               </button>
             </div>
           </div>
@@ -268,27 +273,25 @@ function Field({
 }
 
 function NoEligibleTickets() {
+  const t = useTranslations("analyses");
   return (
     <div className="py-10 text-center text-sm text-[var(--color-fg-muted)]">
-      <p>You need an open bet on this match before you can publish an analysis.</p>
-      <p className="mt-1 text-xs">
-        Min odds 1.30. One published analysis per match. Tickets that already back
-        a published analysis are excluded.
-      </p>
+      <p>{t("editor.noTicketsTitle")}</p>
+      <p className="mt-1 text-xs">{t("editor.noTicketsHint")}</p>
     </div>
   );
 }
 
-function serverErrorCopy(code: string): string {
+function serverErrorCopy(code: string, t: Translator): string {
   const map: Record<string, string> = {
-    match_not_eligible: "Match has already started — analyses are pre-match only.",
-    ticket_not_owned: "That ticket isn't yours.",
-    ticket_match_mismatch: "That ticket has legs on a different match.",
-    ticket_not_eligible: "Ticket isn't eligible (status or odds floor).",
-    analysis_exists: "You already have a published analysis on this match.",
-    perex_invalid: "Headline length is off.",
-    body_invalid: "Body length is off (100–5000 chars).",
-    rate_limit_monthly: "You've hit the monthly cap of 100 analyses.",
+    match_not_eligible: t("editor.errors.matchNotEligible"),
+    ticket_not_owned: t("editor.errors.ticketNotOwned"),
+    ticket_match_mismatch: t("editor.errors.ticketMatchMismatch"),
+    ticket_not_eligible: t("editor.errors.ticketNotEligible"),
+    analysis_exists: t("editor.errors.analysisExists"),
+    perex_invalid: t("editor.errors.perexInvalid"),
+    body_invalid: t("editor.errors.bodyInvalid"),
+    rate_limit_monthly: t("editor.errors.rateLimitMonthly"),
   };
-  return map[code] ?? "Couldn't publish. Try again in a moment.";
+  return map[code] ?? t("editor.errors.fallback");
 }

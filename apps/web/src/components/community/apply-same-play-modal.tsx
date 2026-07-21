@@ -27,6 +27,7 @@ import type {
 import { fromMicro } from "@oddzilla/types/money";
 import { useBetSlip } from "@/lib/bet-slip";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
+import { useTranslations } from "@/lib/i18n";
 import {
   adaptStake,
   defaultMinOdds,
@@ -37,6 +38,8 @@ import {
   type SamePlayReasonKind,
   type SamePlayScoreResult,
 } from "@/lib/same-play-scorer";
+
+type Translator = ReturnType<typeof useTranslations>;
 
 interface Props {
   ticketId: string;
@@ -53,6 +56,9 @@ export function ApplySamePlayModal({ ticketId, onClose }: Props) {
   const [mode, setMode] = useState<ApplySamePlayMode>("analogical");
   const [stakeMode, setStakeMode] = useState<ApplySamePlayStakeMode>("suggest");
   const [minOdds, setMinOdds] = useState<string>("1.10");
+  const t = useTranslations("analyses");
+  const tCommon = useTranslations("common");
+  const tNotifications = useTranslations("notifications");
 
   // Lock background scroll while open, restore on unmount. Avoids the
   // standard "modal scrolls the page underneath" smell on long feeds.
@@ -91,20 +97,20 @@ export function ApplySamePlayModal({ ticketId, onClose }: Props) {
           err instanceof ApiFetchError ? err.body.error : "unknown_error";
         setState({
           kind: "error",
-          message: errorCopy(code),
+          message: errorCopy(code, t),
         });
       });
     return () => {
       cancelled = true;
     };
-  }, [ticketId]);
+  }, [ticketId, t]);
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 sm:items-center"
       role="dialog"
       aria-modal="true"
-      aria-label="Apply same play"
+      aria-label={tNotifications("applySamePlay")}
       onClick={onClose}
     >
       <div
@@ -114,19 +120,19 @@ export function ApplySamePlayModal({ ticketId, onClose }: Props) {
         <header className="mb-4 flex items-start justify-between gap-4">
           <div>
             <h2 className="text-base font-semibold tracking-tight">
-              Apply same play
+              {tNotifications("applySamePlay")}
             </h2>
             <p className="mt-1 text-xs text-[var(--color-fg-muted)]">
-              Find an upcoming match where the same play makes sense.
+              {t("samePlay.subtitle")}
             </p>
           </div>
           <button
             type="button"
             className="btn btn-ghost text-xs"
             onClick={onClose}
-            aria-label="Close"
+            aria-label={tCommon("close")}
           >
-            Close
+            {tCommon("close")}
           </button>
         </header>
 
@@ -152,9 +158,10 @@ export function ApplySamePlayModal({ ticketId, onClose }: Props) {
 }
 
 function Loading() {
+  const t = useTranslations("analyses");
   return (
     <p className="py-12 text-center text-sm text-[var(--color-fg-muted)]">
-      Looking for matches…
+      {t("samePlay.loading")}
     </p>
   );
 }
@@ -231,18 +238,23 @@ function Body({
 }
 
 function OriginatorRecap({ data }: { data: ApplySamePlayResponse }) {
+  const t = useTranslations("analyses");
   const { originator } = data;
   const stake = fromMicro(BigInt(originator.stakeMicro));
   return (
     <section className="card mb-4 border-[var(--color-accent)]/40 p-3 text-xs">
-      <p className="text-[var(--color-fg-subtle)]">Original bet</p>
+      <p className="text-[var(--color-fg-subtle)]">{t("samePlay.originalBet")}</p>
       <p className="mt-1 font-medium text-[var(--color-fg)]">
         {originator.teams.home} vs {originator.teams.away}
         <span className="text-[var(--color-fg-muted)]"> · </span>
         {originator.play.outcomeLabel}
       </p>
       <p className="mt-1 text-[var(--color-fg-muted)]">
-        @{originator.originalOdds} · stake {stake} {originator.currency}
+        {t("samePlay.oddsStakeLine", {
+          odds: originator.originalOdds,
+          stake,
+          currency: originator.currency,
+        })}
       </p>
     </section>
   );
@@ -265,37 +277,38 @@ function Controls({
   minOdds,
   setMinOdds,
 }: ControlProps) {
+  const t = useTranslations("analyses");
   return (
     <div className="flex flex-wrap gap-4 border-y border-[var(--color-border-strong)] py-3 text-xs">
-      <ControlGroup label="Mode">
+      <ControlGroup label={t("samePlay.mode")}>
         <SegmentedControl<ApplySamePlayMode>
           value={mode}
           onChange={setMode}
           options={[
-            { value: "literal", label: "Literal" },
-            { value: "analogical", label: "Analogical" },
+            { value: "literal", label: t("samePlay.literal") },
+            { value: "analogical", label: t("samePlay.analogical") },
           ]}
         />
       </ControlGroup>
-      <ControlGroup label="Stake">
+      <ControlGroup label={t("samePlay.stake")}>
         <SegmentedControl<ApplySamePlayStakeMode>
           value={stakeMode}
           onChange={setStakeMode}
           options={[
-            { value: "same", label: "Same" },
-            { value: "target", label: "Target profit" },
-            { value: "suggest", label: "Suggested" },
+            { value: "same", label: t("samePlay.stakeSame") },
+            { value: "target", label: t("samePlay.stakeTarget") },
+            { value: "suggest", label: t("samePlay.stakeSuggested") },
           ]}
         />
       </ControlGroup>
-      <ControlGroup label="Min odds">
+      <ControlGroup label={t("samePlay.minOdds")}>
         <input
           type="text"
           inputMode="decimal"
           className="w-20 rounded-[8px] border border-[var(--color-border-strong)] bg-[var(--color-bg)] px-2 py-1 font-mono text-xs"
           value={minOdds}
           onChange={(e) => setMinOdds(e.target.value)}
-          aria-label="Minimum odds"
+          aria-label={t("samePlay.minOddsAria")}
         />
       </ControlGroup>
     </div>
@@ -366,17 +379,18 @@ function EmptyCandidates({
   mode: ApplySamePlayMode;
   setMode: (m: ApplySamePlayMode) => void;
 }) {
+  const t = useTranslations("analyses");
   if (mode === "literal") {
     return (
       <div className="card mt-5 p-6 text-center text-sm text-[var(--color-fg-muted)]">
-        <p>No upcoming fixtures share these teams yet.</p>
+        <p>{t("samePlay.emptyLiteral")}</p>
         <p className="mt-1">
           <button
             type="button"
             className="btn btn-ghost text-xs"
             onClick={() => setMode("analogical")}
           >
-            Switch to Analogical →
+            {t("samePlay.switchToAnalogical")}
           </button>
         </p>
       </div>
@@ -384,7 +398,7 @@ function EmptyCandidates({
   }
   return (
     <p className="card mt-5 p-6 text-center text-sm text-[var(--color-fg-muted)]">
-      No comparable plays in the next few days. Check back closer to kickoff.
+      {t("samePlay.emptyAnalogical")}
     </p>
   );
 }
@@ -405,6 +419,7 @@ function CandidateRow({
   minOddsNum,
 }: RowProps) {
   const slip = useBetSlip();
+  const t = useTranslations("analyses");
   const [showBreakdown, setShowBreakdown] = useState(false);
   // Track whether this row was added by the user in *this* modal session.
   // Distinguishes "Added ✓" (just-clicked confirmation) from the
@@ -496,12 +511,15 @@ function CandidateRow({
             className="rounded-full border border-[var(--color-border-strong)] px-2 py-0.5 text-[11px] uppercase tracking-[0.15em] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
             onClick={() => setShowBreakdown((b) => !b)}
             aria-expanded={showBreakdown}
-            aria-label="Score breakdown"
+            aria-label={t("samePlay.scoreBreakdownAria")}
           >
-            Score {result.score}
+            {t("samePlay.score", { score: result.score })}
           </button>
           <p className="mt-2 font-mono text-xs text-[var(--color-fg-muted)]">
-            stake {fromMicro(BigInt(adaptedStake))} {originator.currency}
+            {t("samePlay.rowStake", {
+              stake: fromMicro(BigInt(adaptedStake)),
+              currency: originator.currency,
+            })}
           </p>
           <button
             type="button"
@@ -516,7 +534,11 @@ function CandidateRow({
                   : "border-[var(--color-accent)] text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10")
             }
           >
-            {inSlip ? (justAdded ? "Added ✓" : "Already in slip") : "Apply"}
+            {inSlip
+              ? justAdded
+                ? t("samePlay.added")
+                : t("samePlay.alreadyInSlip")
+              : t("samePlay.apply")}
           </button>
         </div>
       </div>
@@ -524,17 +546,16 @@ function CandidateRow({
       {showBreakdown ? <ScoreBreakdown reasons={result.reasons} /> : null}
 
       {candidate.suspended ? (
-        <Banner tone="negative">
-          Market suspended. Re-quote when it reopens.
-        </Banner>
+        <Banner tone="negative">{t("samePlay.bannerSuspended")}</Banner>
       ) : belowFloor ? (
         <Banner tone="muted">
-          Below your minimum odds ({minOddsNum.toFixed(2)}).
+          {t("samePlay.bannerBelowFloor", { min: minOddsNum.toFixed(2) })}
         </Banner>
       ) : kickoffImminent ? (
         <Banner tone="accent">
-          Starts in {Math.max(1, Math.ceil(candidate.hoursToKickoff))} h. Odds may move
-          before Apply lands.
+          {t("samePlay.bannerKickoff", {
+            hours: Math.max(1, Math.ceil(candidate.hoursToKickoff)),
+          })}
         </Banner>
       ) : null}
     </li>
@@ -542,16 +563,17 @@ function CandidateRow({
 }
 
 function KickoffLine({ hours, imminent }: { hours: number; imminent: boolean }) {
-  if (hours < 0) return <>started</>;
-  if (hours < 1) return <>{`<1 h to kickoff`}</>;
+  const t = useTranslations("analyses");
+  if (hours < 0) return <>{t("samePlay.kickoffStarted")}</>;
+  if (hours < 1) return <>{t("samePlay.kickoffUnderHour")}</>;
   if (hours < 24) {
     return (
       <span className={imminent ? "text-[var(--color-accent)]" : undefined}>
-        {Math.round(hours)} h to kickoff
+        {t("samePlay.kickoffHours", { hours: Math.round(hours) })}
       </span>
     );
   }
-  return <>{Math.round(hours / 24)} d to kickoff</>;
+  return <>{t("samePlay.kickoffDays", { days: Math.round(hours / 24) })}</>;
 }
 
 function ReasonChips({ reasons }: { reasons: SamePlayReason[] }) {
@@ -566,6 +588,7 @@ function ReasonChips({ reasons }: { reasons: SamePlayReason[] }) {
 }
 
 function Chip({ reason }: { reason: SamePlayReason }) {
+  const t = useTranslations("analyses");
   const tone =
     reason.sentiment === "positive"
       ? "border-[var(--color-positive)]/40 text-[var(--color-positive)]"
@@ -576,20 +599,21 @@ function Chip({ reason }: { reason: SamePlayReason }) {
     <span
       className={`rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-[0.1em] ${tone}`}
     >
-      {chipLabel(reason)}
+      {chipLabel(reason, t)}
     </span>
   );
 }
 
 function ScoreBreakdown({ reasons }: { reasons: SamePlayReason[] }) {
+  const t = useTranslations("analyses");
   return (
     <ul className="mt-3 space-y-1.5 border-t border-[var(--color-border-strong)] pt-3 text-xs text-[var(--color-fg-muted)]">
       {reasons.map((r, i) => (
         <li key={`${r.kind}-${i}`} className="flex items-start gap-2">
           <span className="font-medium text-[var(--color-fg)]">
-            {chipLabel(r)}
+            {chipLabel(r, t)}
           </span>
-          <span>— {chipExplanation(r)}</span>
+          <span>— {chipExplanation(r, t)}</span>
         </li>
       ))}
     </ul>
@@ -614,74 +638,80 @@ function Banner({
 
 // ─── Reason copy ───────────────────────────────────────────────────────────
 //
-// Static labels per kind. Kept in this file (not i18n keys) for V1
-// — the PRD calls out localisation as a follow-up that will move
-// these into community.bigWins.applySamePlay.reasons.* when the
-// next-i18next setup lands.
+// Labels per kind, resolved through the `analyses.samePlay` i18n
+// namespace. The translator is passed in from the calling component
+// (these are plain functions, not hooks).
 
-function chipLabel(r: SamePlayReason): string {
+function chipLabel(r: SamePlayReason, t: Translator): string {
   const labels: Record<SamePlayReasonKind, string> = {
-    same_market: "Same market",
-    different_market: "Different market",
-    same_team: "Same team",
-    same_tier: r.payload?.tier ? `Same tier (${r.payload.tier})` : "Same tier",
-    tier_gap: "Lower tier league",
-    role_match: roleMatchLabel(r),
-    role_mismatch: "Different role",
+    same_market: t("samePlay.reasons.sameMarket"),
+    different_market: t("samePlay.reasons.differentMarket"),
+    same_team: t("samePlay.reasons.sameTeam"),
+    same_tier: r.payload?.tier
+      ? t("samePlay.reasons.sameTierWith", { tier: r.payload.tier })
+      : t("samePlay.reasons.sameTier"),
+    tier_gap: t("samePlay.reasons.tierGap"),
+    role_match: roleMatchLabel(r, t),
+    role_mismatch: t("samePlay.reasons.roleMismatch"),
     odds_close: r.payload?.percent
-      ? `Odds within ${r.payload.percent}%`
-      : "Odds close",
+      ? t("samePlay.reasons.oddsWithin", { percent: r.payload.percent })
+      : t("samePlay.reasons.oddsClose"),
     odds_drift: r.payload
-      ? `Odds ${r.payload.direction === "up" ? "up" : "down"} ${r.payload.percent}%`
-      : "Odds drift",
-    kickoff_soon: "Starts soon",
-    suspended: "Market suspended",
+      ? t(
+          r.payload.direction === "up"
+            ? "samePlay.reasons.oddsUp"
+            : "samePlay.reasons.oddsDown",
+          { percent: r.payload.percent ?? "" },
+        )
+      : t("samePlay.reasons.oddsDrift"),
+    kickoff_soon: t("samePlay.reasons.kickoffSoon"),
+    suspended: t("samePlay.reasons.suspended"),
   };
   return labels[r.kind];
 }
 
-function chipExplanation(r: SamePlayReason): string {
+function chipExplanation(r: SamePlayReason, t: Translator): string {
   switch (r.kind) {
     case "same_market":
-      return "The market and selection line up exactly with the original bet.";
+      return t("samePlay.explanations.sameMarket");
     case "different_market":
-      return "Different market or selection — the play maps loosely.";
+      return t("samePlay.explanations.differentMarket");
     case "same_team":
-      return "One of the original teams is on the field.";
+      return t("samePlay.explanations.sameTeam");
     case "same_tier":
-      return "Tournament risk tier matches the original.";
+      return t("samePlay.explanations.sameTier");
     case "tier_gap":
-      return "Tournament risk tier is at least two steps from the original.";
+      return t("samePlay.explanations.tierGap");
     case "role_match":
-      return "Both selections sit on the same side of the price (favorites, underdogs, or evens).";
+      return t("samePlay.explanations.roleMatch");
     case "role_mismatch":
-      return "The picked side flips role — favorite became underdog, or vice versa.";
+      return t("samePlay.explanations.roleMismatch");
     case "odds_close":
-      return "Live price is within touching distance of the original.";
+      return t("samePlay.explanations.oddsClose");
     case "odds_drift":
-      return "Live price has moved significantly since the original bet.";
+      return t("samePlay.explanations.oddsDrift");
     case "kickoff_soon":
-      return "Kickoff is within the next two hours; odds can move before the bet lands.";
+      return t("samePlay.explanations.kickoffSoon");
     case "suspended":
-      return "The market isn't taking action right now.";
+      return t("samePlay.explanations.suspended");
   }
 }
 
-function roleMatchLabel(r: SamePlayReason): string {
+function roleMatchLabel(r: SamePlayReason, t: Translator): string {
   const role = r.payload?.role;
-  if (role === "favorite") return "Both favorites";
-  if (role === "underdog") return "Both underdogs";
-  if (role === "even") return "Both even";
-  return "Same role";
+  if (role === "favorite") return t("samePlay.reasons.roleFavorites");
+  if (role === "underdog") return t("samePlay.reasons.roleUnderdogs");
+  if (role === "even") return t("samePlay.reasons.roleEven");
+  return t("samePlay.reasons.roleSame");
 }
 
-function errorCopy(code: string): string {
+function errorCopy(code: string, t: Translator): string {
   if (code === "combo_unsupported") {
-    return "Apply Same Play isn't available for combo bets yet.";
+    return t("samePlay.errors.comboUnsupported");
   }
   if (code === "not_a_win") {
-    return "This bet didn't win, so there's no play to apply.";
+    return t("samePlay.errors.notAWin");
   }
-  if (code === "Not Found") return "We couldn't find that bet.";
-  return "Couldn't load matches. Try again in a moment.";
+  if (code === "Not Found") return t("samePlay.errors.notFound");
+  return t("samePlay.errors.loadFailed");
 }

@@ -26,6 +26,7 @@ import { useEffect, useRef, useState } from "react";
 import type { BetBuilderAvailableMarketsResponse } from "@oddzilla/types";
 import { useBetSlip } from "@/lib/bet-slip";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
+import { useTranslations } from "@/lib/i18n";
 
 const SUPPORTED_SLUGS = new Set([
   "cs2",
@@ -106,6 +107,7 @@ interface PillProps {
  * responsible for the visibility gate (via useBetBuilderProbe).
  */
 export function BetBuilderTogglePill({ matchId, eligibleMarketIds }: PillProps) {
+  const t = useTranslations("matchWidgets");
   const slip = useBetSlip();
   const isOn =
     slip.mode === "betbuilder" && slip.betbuilderMatchId === matchId;
@@ -141,11 +143,7 @@ export function BetBuilderTogglePill({ matchId, eligibleMarketIds }: PillProps) 
       role="switch"
       aria-checked={isOn}
       onClick={onToggle}
-      title={
-        isOn
-          ? "Turn BetBuilder off — same-match combos disabled"
-          : "Turn BetBuilder on — combine multiple selections from this match"
-      }
+      title={isOn ? t("betbuilderOff") : t("betbuilderOn")}
       style={{
         height: 28,
         padding: "0 12px",

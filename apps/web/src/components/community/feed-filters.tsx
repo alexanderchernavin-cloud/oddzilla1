@@ -1,9 +1,12 @@
+"use client";
+
 import Link from "next/link";
 // Runtime imports must come from the /currencies subpath.
 import {
   SUPPORTED_CURRENCIES,
   type Currency,
 } from "@oddzilla/types/currencies";
+import { useTranslations } from "@/lib/i18n";
 
 // Filter pills for /community. Server-rendered as <Link> rows so the
 // active filter is encoded in the URL. The same pattern handles state
@@ -24,11 +27,12 @@ export function FeedFilters({
   activeSportId: number | null;
   activeCurrency: Currency | null;
 }) {
+  const t = useTranslations("community");
   return (
     <div className="mt-6 space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <CurrencyPill href={pillHref(null, activeSportId)} active={activeCurrency === null}>
-          All currencies
+          {t("allCurrencies")}
         </CurrencyPill>
         {SUPPORTED_CURRENCIES.map((c) => (
           <CurrencyPill
@@ -43,7 +47,7 @@ export function FeedFilters({
 
       <div className="flex flex-wrap items-center gap-2">
         <SportPill href={pillHref(activeCurrency, null)} active={activeSportId === null}>
-          All sports
+          {t("allSports")}
         </SportPill>
         {sports.map((s) => (
           <SportPill

@@ -7,9 +7,12 @@ import type {
 } from "@oddzilla/types";
 import { getSessionUser } from "@/lib/auth";
 import { serverApi } from "@/lib/server-fetch";
+import { getTranslations, getServerLocale } from "@/lib/i18n/server";
 import { CompetitionJoinButton } from "@/components/community/competition-join-button";
 import { CompetitionMatchesList } from "@/components/community/competition-matches-list";
 import { CompetitionLeaderboard } from "@/components/community/competition-leaderboard";
+
+type CompetitionsT = Awaited<ReturnType<typeof getTranslations>>;
 
 export const dynamic = "force-dynamic";
 
@@ -32,6 +35,8 @@ export default async function CompetitionDetailPage({
   const view = parseView(rawView);
 
   const sessionUser = await getSessionUser();
+  const t = await getTranslations("competitions");
+  const locale = await getServerLocale();
 
   // Detail call powers the header on every view; matches/leaderboard
   // load on demand per active sub-tab.
@@ -61,26 +66,27 @@ export default async function CompetitionDetailPage({
         href="/community?tab=competitions"
         className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)]"
       >
-        ← Competitions
+        {t("back")}
       </Link>
       <header className="mt-3">
         <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-          <span>{detail.type}</span>
+          <span>{t(`type.${detail.type}`)}</span>
           <span>·</span>
-          <span>{detail.status}</span>
+          <span>{t(`status.${detail.status}`)}</span>
           {detail.featured ? (
             <>
               <span>·</span>
-              <span className="text-[var(--color-accent)]">Featured</span>
+              <span className="text-[var(--color-accent)]">{t("featured")}</span>
             </>
           ) : null}
         </div>
         <h1 className="mt-2 text-2xl font-semibold tracking-tight">{detail.title}</h1>
         <p className="mt-2 text-sm text-[var(--color-fg-muted)]">
           {[detail.sportName, detail.league].filter(Boolean).join(" · ") ||
-            "Multi-sport"}
+            t("multiSport")}
           {" · "}
-          {detail.participantCount.toLocaleString()} joined · {detail.matchCount} matches
+          {t("joinedCount", { count: detail.participantCount })} ·{" "}
+          {t("matchesCount", { count: detail.matchCount })}
         </p>
       </header>
 
@@ -93,11 +99,11 @@ export default async function CompetitionDetailPage({
         />
       </div>
 
-      <SubTabs id={detail.id} view={view} />
+      <SubTabs id={detail.id} view={view} t={t} />
 
       <div className="mt-6">
         {view === "overview" ? (
-          <OverviewView detail={detail} startsAt={startsAt} />
+          <OverviewView detail={detail} startsAt={startsAt} t={t} locale={locale} />
         ) : view === "matches" ? (
           <CompetitionMatchesList
             competitionId={detail.id}
@@ -114,7 +120,7 @@ export default async function CompetitionDetailPage({
   );
 }
 
-function SubTabs({ id, view }: { id: string; view: View }) {
+function SubTabs({ id, view, t }: { id: string; view: View; t: CompetitionsT }) {
   const link = (v: View) =>
     v === "overview"
       ? `/community/competitions/${id}`
@@ -127,17 +133,17 @@ function SubTabs({ id, view }: { id: string; view: View }) {
   return (
     <div
       role="tablist"
-      aria-label="Section"
+      aria-label={t("sectionAria")}
       className="mt-5 inline-flex rounded-[10px] border border-[var(--color-border-strong)] p-1"
     >
       <a role="tab" href={link("overview")} className={cls(view === "overview")}>
-        Overview
+        {t("tabOverview")}
       </a>
       <a role="tab" href={link("matches")} className={cls(view === "matches")}>
-        Matches
+        {t("tabMatches")}
       </a>
       <a role="tab" href={link("leaderboard")} className={cls(view === "leaderboard")}>
-        Leaderboard
+        {t("tabLeaderboard")}
       </a>
     </div>
   );
@@ -146,9 +152,13 @@ function SubTabs({ id, view }: { id: string; view: View }) {
 function OverviewView({
   detail,
   startsAt,
+  t,
+  locale,
 }: {
   detail: CompetitionDetail;
   startsAt: Date;
+  t: CompetitionsT;
+  locale: string;
 }) {
   return (
     <div className="space-y-6">
@@ -160,23 +170,23 @@ function OverviewView({
 
       <section>
         <h2 className="text-xs font-semibold uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-          Schedule
+          {t("schedule")}
         </h2>
         <dl className="mt-2 grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
-          <ScheduleCell label="Launch" value={detail.launchAt} />
-          <ScheduleCell label="Picks close" value={detail.betCloseAt} />
-          <ScheduleCell label="Match start" value={detail.matchStartAt} />
-          <ScheduleCell label="Stops showing" value={detail.stopShowAt} />
+          <ScheduleCell label={t("launch")} value={detail.launchAt} locale={locale} />
+          <ScheduleCell label={t("picksClose")} value={detail.betCloseAt} locale={locale} />
+          <ScheduleCell label={t("matchStart")} value={detail.matchStartAt} locale={locale} />
+          <ScheduleCell label={t("stopsShowing")} value={detail.stopShowAt} locale={locale} />
         </dl>
       </section>
 
       <section>
         <h2 className="text-xs font-semibold uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-          Rules
+          {t("rules")}
         </h2>
         {detail.rules.length === 0 ? (
           <p className="mt-2 text-xs text-[var(--color-fg-muted)]">
-            No rules configured yet.
+            {t("noRules")}
           </p>
         ) : (
           <ul className="mt-2 space-y-1 text-sm text-[var(--color-fg)]">
@@ -192,7 +202,7 @@ function OverviewView({
       {detail.markets.length > 0 ? (
         <section>
           <h2 className="text-xs font-semibold uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-            Markets
+            {t("markets")}
           </h2>
           <div className="mt-2 flex flex-wrap gap-2">
             {detail.markets.map((m) => (
@@ -214,14 +224,22 @@ function OverviewView({
   );
 }
 
-function ScheduleCell({ label, value }: { label: string; value: string }) {
+function ScheduleCell({
+  label,
+  value,
+  locale,
+}: {
+  label: string;
+  value: string;
+  locale: string;
+}) {
   return (
     <div className="rounded-[8px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] p-3">
       <dt className="text-[10px] uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
         {label}
       </dt>
       <dd className="mt-1 text-xs text-[var(--color-fg)]">
-        {new Date(value).toLocaleString()}
+        {new Date(value).toLocaleString(locale)}
       </dd>
     </div>
   );

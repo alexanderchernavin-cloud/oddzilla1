@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { I } from "@/components/ui/icons";
+import { useTranslations } from "@/lib/i18n";
 
 export interface MatchStream {
   platform: "twitch" | "youtube" | "kick" | "gjirafa" | "other";
@@ -21,6 +22,7 @@ interface Props {
 }
 
 export function MatchStreams({ streams, parentHost }: Props) {
+  const t = useTranslations("matchWidgets");
   const embeddable = streams.filter(
     (s) =>
       (s.platform === "twitch" && s.embedId && parentHost) ||
@@ -60,7 +62,7 @@ export function MatchStreams({ streams, parentHost }: Props) {
             textTransform: "uppercase",
           }}
         >
-          Live stream
+          {t("streams.liveStream")}
         </span>
         {embeddable.length > 1 ? (
           <div role="tablist" style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
@@ -148,8 +150,9 @@ function StreamEmbed({
   stream: MatchStream;
   parentHost: string | null;
 }) {
+  const t = useTranslations("matchWidgets");
   let src: string | null = null;
-  let title = "Live stream";
+  let title = t("streams.liveStream");
   if (stream.platform === "twitch" && stream.embedId && parentHost) {
     const params = new URLSearchParams({
       channel: stream.embedId,

@@ -7,6 +7,7 @@ import type {
 } from "@oddzilla/types";
 import { getSessionUser } from "@/lib/auth";
 import { serverApi } from "@/lib/server-fetch";
+import { getTranslations } from "@/lib/i18n/server";
 import { CommunitySettingsForms } from "./forms";
 import { PreferencesForms } from "./preferences-forms";
 
@@ -36,6 +37,9 @@ export default async function CommunitySettingsPage() {
   const user = await getSessionUser();
   if (!user) redirect("/login");
 
+  const t = await getTranslations("accountCommunity");
+  const tCommunity = await getTranslations("community");
+
   const [me, avatars, prefs] = await Promise.all([
     serverApi<CommunityMe>("/community/me"),
     serverApi<AvatarTemplateListResponse>("/community/avatars"),
@@ -56,16 +60,17 @@ export default async function CommunitySettingsPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-semibold tracking-tight">Community</h1>
+      <h1 className="text-2xl font-semibold tracking-tight">
+        {tCommunity("title")}
+      </h1>
       <p className="mt-2 text-sm text-[var(--color-fg-muted)]">
-        Pick a public handle, write a short bio, choose your avatar, and
-        decide whether your settled tickets show up in the community feed.
+        {t("intro")}
       </p>
 
       {initial.nickname ? (
         <div className="mt-4 flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-4 py-3 text-sm">
           <span className="text-[var(--color-fg-subtle)]">
-            Your public profile:
+            {t("yourPublicProfile")}
           </span>
           <Link
             href={`/u/${encodeURIComponent(initial.nickname)}`}

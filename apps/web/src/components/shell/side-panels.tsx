@@ -19,6 +19,7 @@
 
 import { I } from "@/components/ui/icons";
 import { useSidePanels, type PanelSide } from "@/lib/side-panel";
+import { useTranslations } from "@/lib/i18n";
 
 export function SidePanels() {
   const { left, right, close } = useSidePanels();
@@ -39,6 +40,7 @@ function SidePanel({
   matchId: string | null;
   onClose: () => void;
 }) {
+  const t = useTranslations("shell");
   const empty = matchId == null;
   return (
     <aside
@@ -51,14 +53,14 @@ function SidePanel({
         <>
           <div className="oz-side-panel-header">
             <span className="mono" style={{ fontSize: 10.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--fg-dim)" }}>
-              {side === "left" ? "Left panel" : "Right panel"}
+              {side === "left" ? t("leftPanel") : t("rightPanel")}
             </span>
             <button
               type="button"
               className="oz-side-panel-close"
               onClick={onClose}
-              aria-label="Close panel"
-              title="Close panel"
+              aria-label={t("closePanel")}
+              title={t("closePanel")}
             >
               <I.Close size={14} />
             </button>
@@ -66,7 +68,7 @@ function SidePanel({
           <iframe
             className="oz-side-panel-frame"
             src={`/embed/match/${matchId}`}
-            title={`Match ${matchId}`}
+            title={t("matchFrameTitle", { id: matchId })}
             // Same-origin: no sandbox attribute so cookies + storage
             // work normally. The embed route emits its own minimal
             // chrome; we only host the close button + container.

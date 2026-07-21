@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useTranslations } from "@/lib/i18n";
 
 // ── Manifest shape (emitted by sync-to-web.py) ──────────────────────────────
 // n=name, s/logo/flag/icon = url-encoded paths under /logos/
@@ -15,6 +16,8 @@ const ALL = "__all__"; // sentinel for the "All Leagues" selection
 type Selection = { sport: string; category: string; league: string } | null;
 
 export function LogosBrowser() {
+  const t = useTranslations("logos");
+  const tCommon = useTranslations("common");
   const [manifest, setManifest] = useState<Manifest | null>(null);
   const [error, setError] = useState(false);
   const [expSports, setExpSports] = useState<Set<string>>(new Set());
@@ -56,14 +59,14 @@ export function LogosBrowser() {
     return {
       title:
         sel.league === ALL
-          ? `${sel.sport} · ${sel.category} · All Leagues`
+          ? `${sel.sport} · ${sel.category} · ${t("allLeagues")}`
           : `${sel.sport} · ${sel.category} · ${sel.league}`,
       img: single?.logo ?? cat.flag, // league badge, or country flag for "All Leagues"
       round: !single, // flags render with rounded corners, badges square
       total: teams.length,
       teams: filtered,
     };
-  }, [manifest, sel, query]);
+  }, [manifest, sel, query, t]);
 
   if (error) {
     return (
@@ -74,7 +77,11 @@ export function LogosBrowser() {
     );
   }
   if (!manifest) {
-    return <div style={{ color: "var(--fg-muted)", padding: "24px 0" }}>Loading…</div>;
+    return (
+      <div style={{ color: "var(--fg-muted)", padding: "24px 0" }}>
+        {tCommon("loading")}
+      </div>
+    );
   }
 
   return (
@@ -124,7 +131,7 @@ export function LogosBrowser() {
                         <>
                           <Row
                             depth={2}
-                            label="All Leagues"
+                            label={t("allLeagues")}
                             count={cat.count}
                             emphasis
                             active={
@@ -175,8 +182,7 @@ export function LogosBrowser() {
       <section style={{ flex: 1, minWidth: 0 }}>
         {!view ? (
           <div style={{ color: "var(--fg-muted)", padding: "48px 0", fontSize: 14 }}>
-            Pick a sport, then a category, then a league (or “All Leagues”) on the
-            left to view its team logos.
+            {t("pickHint")}
           </div>
         ) : (
           <>
@@ -212,15 +218,18 @@ export function LogosBrowser() {
                   <div style={{ fontSize: 15, fontWeight: 600 }}>{view.title}</div>
                   <div style={{ fontSize: 12.5, color: "var(--fg-muted)", marginTop: 2 }}>
                     {view.teams.length === view.total
-                      ? `${view.total} teams`
-                      : `${view.teams.length} of ${view.total} teams`}
+                      ? t("teamsCount", { count: view.total })
+                      : t("teamsOfCount", {
+                          shown: view.teams.length,
+                          total: view.total,
+                        })}
                   </div>
                 </div>
               </div>
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Filter teams…"
+                placeholder={t("filterPlaceholder")}
                 style={{
                   height: 34,
                   width: 200,

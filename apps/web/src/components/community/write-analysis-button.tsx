@@ -6,6 +6,7 @@
 // the CTA copy and visibility logic.
 
 import { useState } from "react";
+import { useTranslations } from "@/lib/i18n";
 import { AnalysisEditor } from "./analysis-editor";
 
 export function WriteAnalysisButton({
@@ -16,6 +17,7 @@ export function WriteAnalysisButton({
   matchTitle: string;
 }) {
   const [open, setOpen] = useState(false);
+  const t = useTranslations("analyses");
   return (
     <>
       <button
@@ -23,7 +25,7 @@ export function WriteAnalysisButton({
         onClick={() => setOpen(true)}
         className="rounded-full border border-[var(--color-accent)] px-3 py-1 text-[11px] uppercase tracking-[0.15em] text-[var(--color-accent)] transition hover:bg-[var(--color-accent)]/10"
       >
-        Write analysis
+        {t("section.write")}
       </button>
       {open ? (
         <AnalysisEditor

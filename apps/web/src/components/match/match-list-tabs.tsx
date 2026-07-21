@@ -15,6 +15,7 @@ import {
 import { useSessionUserId } from "@/lib/session-user";
 import { useViewerCountsForMatches } from "@/lib/use-viewer-counts";
 import type { LiveScore } from "@/lib/live-score";
+import { useTranslations } from "@/lib/i18n";
 
 type ColCount = 1 | 2;
 
@@ -218,15 +219,16 @@ function ColsToggle({
   cols: ColCount;
   onChange: (c: ColCount) => void;
 }) {
+  const t = useTranslations("matchWidgets");
   return (
-    <div className="oz-match-list-cols" role="group" aria-label="Match list columns">
+    <div className="oz-match-list-cols" role="group" aria-label={t("listCols.aria")}>
       <button
         type="button"
         className="oz-match-cols-btn"
         data-active={cols === 1 ? "true" : "false"}
         aria-pressed={cols === 1}
-        aria-label="Single column"
-        title="Single column"
+        aria-label={t("listCols.one")}
+        title={t("listCols.one")}
         onClick={() => onChange(1)}
       >
         <I.Rows1 size={14} />
@@ -236,8 +238,8 @@ function ColsToggle({
         className="oz-match-cols-btn"
         data-active={cols === 2 ? "true" : "false"}
         aria-pressed={cols === 2}
-        aria-label="Two columns"
-        title="Two columns"
+        aria-label={t("listCols.two")}
+        title={t("listCols.two")}
         onClick={() => onChange(2)}
       >
         <I.Columns2 size={14} />

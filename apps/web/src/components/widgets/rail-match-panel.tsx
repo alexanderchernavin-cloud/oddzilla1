@@ -34,6 +34,7 @@ import { DisirWidget, type WidgetAvailability } from "./disir-widget";
 import { supportsPrematchWidget } from "./supported-sports";
 import { MatchRoom } from "@/components/match-room/match-room";
 import { MatchAnalysesSection } from "@/components/community/match-analyses-section";
+import { useTranslations } from "@/lib/i18n";
 
 type Tab = "insights" | "chat" | "analyses";
 
@@ -47,6 +48,7 @@ export function RailMatchPanel() {
 }
 
 function RailMatchPanelInner({ active }: { active: ActiveMatch }) {
+  const t = useTranslations("matchWidgets");
   const insightsSupported = supportsPrematchWidget(active.sportSlug);
   // Analyses is gated by match status — same logic the section's own
   // null-render uses. Cancelled and suspended don't surface analyses.
@@ -91,7 +93,7 @@ function RailMatchPanelInner({ active }: { active: ActiveMatch }) {
 
   return (
     <section
-      aria-label="Match panel"
+      aria-label={t("railPanel.aria")}
       style={{
         borderTop: "1px solid var(--hairline)",
         padding: "14px 16px 18px",
@@ -102,15 +104,15 @@ function RailMatchPanelInner({ active }: { active: ActiveMatch }) {
     >
       <div
         role="tablist"
-        aria-label="Match panel tabs"
+        aria-label={t("railPanel.tabsAria")}
         className="flex w-full overflow-hidden rounded-[10px] border border-[var(--color-border)]"
       >
-        {tabs.map((t) => (
+        {tabs.map((tabId) => (
           <RailTab
-            key={t}
-            active={activeTab === t}
-            label={LABELS[t]}
-            onClick={() => setTab(t)}
+            key={tabId}
+            active={activeTab === tabId}
+            label={t(`railPanel.${tabId}`)}
+            onClick={() => setTab(tabId)}
           />
         ))}
       </div>
@@ -126,7 +128,10 @@ function RailMatchPanelInner({ active }: { active: ActiveMatch }) {
             <DisirWidget
               variant="prematch-match"
               id={active.matchId}
-              title={`Prematch insights — ${active.homeTeam} vs ${active.awayTeam}`}
+              title={t("railPanel.prematchTitle", {
+                home: active.homeTeam,
+                away: active.awayTeam,
+              })}
               onAvailabilityChange={setInsightsAvailability}
               minHeight={280}
               // theme prop omitted: DisirWidget tracks <html data-theme>
@@ -154,12 +159,6 @@ function RailMatchPanelInner({ active }: { active: ActiveMatch }) {
     </section>
   );
 }
-
-const LABELS: Record<Tab, string> = {
-  insights: "Insights",
-  chat: "Chat",
-  analyses: "Analyses",
-};
 
 function RailTab({
   active,

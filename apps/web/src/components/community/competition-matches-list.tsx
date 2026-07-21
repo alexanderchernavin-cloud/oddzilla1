@@ -8,6 +8,7 @@ import type {
   CreatePredictionResponse,
   ViewerPrediction,
 } from "@oddzilla/types";
+import { useLocale, useTranslations } from "@/lib/i18n";
 
 export function CompetitionMatchesList({
   competitionId,
@@ -22,10 +23,11 @@ export function CompetitionMatchesList({
   isAuthed: boolean;
   viewerJoined: boolean;
 }) {
+  const t = useTranslations("competitions");
   if (matches.length === 0) {
     return (
       <p className="text-sm text-[var(--color-fg-muted)]">
-        No matches added to this competition yet.
+        {t("noMatches")}
       </p>
     );
   }
@@ -58,6 +60,8 @@ function MatchRow({
   isAuthed: boolean;
   viewerJoined: boolean;
 }) {
+  const t = useTranslations("competitions");
+  const locale = useLocale();
   const locked = isPredictionLocked(m);
   const canPredict = isAuthed && viewerJoined && !locked && !m.cancelled;
   return (
@@ -65,7 +69,7 @@ function MatchRow({
       <div className="flex items-baseline justify-between gap-3">
         <div className="min-w-0">
           <div className="text-[10px] uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-            {m.league || "—"} · {new Date(m.kickoffAt).toLocaleString()}
+            {m.league || "—"} · {new Date(m.kickoffAt).toLocaleString(locale)}
           </div>
           <div className="mt-1 text-sm font-medium text-[var(--color-fg)]">
             {m.teamA} <span className="text-[var(--color-fg-subtle)]">vs</span>{" "}
@@ -84,11 +88,11 @@ function MatchRow({
         <ViewerPredictionRow prediction={m.viewerPrediction} />
       ) : !isAuthed ? (
         <p className="mt-2 text-xs text-[var(--color-fg-subtle)]">
-          Sign in to make predictions.
+          {t("signInToPredict")}
         </p>
       ) : !viewerJoined ? (
         <p className="mt-2 text-xs text-[var(--color-fg-subtle)]">
-          Join the competition to predict this match.
+          {t("joinToPredict")}
         </p>
       ) : null}
     </li>
@@ -96,23 +100,25 @@ function MatchRow({
 }
 
 function MatchStatusPill({ match }: { match: CompetitionMatchRow }) {
+  const t = useTranslations("competitions");
+  const tCommon = useTranslations("common");
   if (match.cancelled) {
-    return <Pill tone="muted">Cancelled</Pill>;
+    return <Pill tone="muted">{tCommon("cancelled")}</Pill>;
   }
   if (match.suspended) {
-    return <Pill tone="muted">Suspended</Pill>;
+    return <Pill tone="muted">{tCommon("suspended")}</Pill>;
   }
   if (match.status === "live") {
-    return <Pill tone="accent">Live</Pill>;
+    return <Pill tone="accent">{tCommon("live")}</Pill>;
   }
   if (match.status === "done") {
     return (
       <Pill tone="muted">
-        Final {match.scoreA ?? "-"}–{match.scoreB ?? "-"}
+        {t("final", { a: match.scoreA ?? "-", b: match.scoreB ?? "-" })}
       </Pill>
     );
   }
-  return <Pill tone="default">Upcoming</Pill>;
+  return <Pill tone="default">{t("upcoming")}</Pill>;
 }
 
 function Pill({
@@ -142,6 +148,9 @@ function PredictionForm({
   match: CompetitionMatchRow;
 }) {
   const router = useRouter();
+  const t = useTranslations("competitions");
+  const tCommon = useTranslations("common");
+  const locale = useLocale();
   const initial = match.viewerPrediction;
   const [scoreA, setScoreA] = useState<string>(
     initial ? String(initial.predictedScoreA) : "",
@@ -155,7 +164,7 @@ function PredictionForm({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(
-    initial ? new Date(initial.placedAt).toLocaleTimeString() : null,
+    initial ? new Date(initial.placedAt).toLocaleTimeString(locale) : null,
   );
 
   const showTip = competitionType !== "prediction";
@@ -171,11 +180,11 @@ function PredictionForm({
           const a = parseInt(scoreA, 10);
           const b = parseInt(scoreB, 10);
           if (!Number.isFinite(a) || !Number.isFinite(b) || a < 0 || b < 0) {
-            setError("Scores must be 0 or higher");
+            setError(t("scoresInvalid"));
             return;
           }
           if (competitionType === "tipping" && !tip) {
-            setError("Pick 1, X, or 2");
+            setError(t("tipRequired"));
             return;
           }
           const res = await fetch(
@@ -196,11 +205,11 @@ function PredictionForm({
             const body = (await res.json().catch(() => ({}))) as {
               error?: string;
             };
-            setError(body.error ?? "Couldn't save prediction");
+            setError(body.error ?? t("savePredictionFailed"));
             return;
           }
           const data = (await res.json()) as CreatePredictionResponse;
-          setSavedAt(new Date(data.prediction.placedAt).toLocaleTimeString());
+          setSavedAt(new Date(data.prediction.placedAt).toLocaleTimeString(locale));
           router.refresh();
         } finally {
           setPending(false);
@@ -234,11 +243,11 @@ function PredictionForm({
         disabled={pending}
         className="rounded-[8px] bg-[var(--color-accent)] px-3 py-1.5 text-xs font-semibold text-[var(--color-accent-fg)] hover:opacity-90 disabled:opacity-60"
       >
-        {pending ? "Saving…" : initial ? "Update" : "Predict"}
+        {pending ? tCommon("saving") : initial ? t("update") : t("predict")}
       </button>
       {savedAt && !error ? (
         <span className="text-[11px] text-[var(--color-fg-subtle)]">
-          Saved {savedAt}
+          {t("savedAt", { time: savedAt })}
         </span>
       ) : null}
       {error ? (
@@ -274,22 +283,24 @@ function ScoreInput({
 }
 
 function ViewerPredictionRow({ prediction: p }: { prediction: ViewerPrediction }) {
+  const t = useTranslations("competitions");
+  const tTicket = useTranslations("ticket");
   const settled = p.settledAt !== null;
   const outcomeLabel =
     p.outcome === "correct"
-      ? `+${p.pointsAwarded ?? 0} pts`
+      ? t("points", { points: p.pointsAwarded ?? 0 })
       : p.outcome === "partial"
-        ? `+${p.pointsAwarded ?? 0} pts`
+        ? t("points", { points: p.pointsAwarded ?? 0 })
         : p.outcome === "wrong"
-          ? "0 pts"
+          ? t("zeroPoints")
           : p.outcome === "void"
-            ? "Void"
-            : "Pending";
+            ? tTicket("void")
+            : tTicket("pending");
   return (
     <p className="mt-2 text-xs text-[var(--color-fg-muted)]">
-      Your pick: <strong>{p.predictedScoreA}</strong>–
+      {t("yourPick")} <strong>{p.predictedScoreA}</strong>–
       <strong>{p.predictedScoreB}</strong>
-      {p.tip ? <> · Tip <strong>{p.tip}</strong></> : null}
+      {p.tip ? <> · {t("tip")} <strong>{p.tip}</strong></> : null}
       <span className="ml-2 text-[var(--color-fg-subtle)]">·</span>
       <span
         className={

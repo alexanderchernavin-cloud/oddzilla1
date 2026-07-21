@@ -19,6 +19,9 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { PreferencesResponse } from "@oddzilla/types";
 import { ApiFetchError, clientApi } from "@/lib/api-client";
+import { useTranslations } from "@/lib/i18n";
+
+type T = ReturnType<typeof useTranslations>;
 
 interface PreferencesFormsProps {
   initial: PreferencesResponse;
@@ -76,6 +79,8 @@ function ToggleRow({
 
 function NotificationSettingsForm({ initial }: { initial: PreferencesResponse }) {
   const router = useRouter();
+  const t = useTranslations("accountCommunity");
+  const tNotif = useTranslations("notifications");
   const [prefs, setPrefs] = useState(initial.notifications);
   const [message, setMessage] = useState<
     { kind: "ok" | "err"; text: string } | null
@@ -103,7 +108,7 @@ function NotificationSettingsForm({ initial }: { initial: PreferencesResponse })
       router.refresh();
     } catch (err) {
       setPrefs((p) => ({ ...p, [key]: prior }));
-      setMessage({ kind: "err", text: explain(err) });
+      setMessage({ kind: "err", text: explain(err, t) });
     }
   }
 
@@ -111,46 +116,46 @@ function NotificationSettingsForm({ initial }: { initial: PreferencesResponse })
     <section className="card space-y-1 p-6">
       <header className="flex items-center justify-between">
         <h2 className="text-sm uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-          Notification Settings
+          {t("notificationSettings")}
         </h2>
       </header>
       <ToggleRow
-        label="Picks Copied"
-        description="Someone copies or is inspired by your bet"
+        label={tNotif("categoryPicksCopied")}
+        description={t("descPicksCopied")}
         checked={prefs.picksCopied}
         onChange={(v) => void patch("picksCopied", v)}
       />
       <ToggleRow
-        label="New Followers"
-        description="Someone starts following you"
+        label={tNotif("categoryNewFollowers")}
+        description={t("descNewFollowers")}
         checked={prefs.newFollowers}
         onChange={(v) => void patch("newFollowers", v)}
       />
       <ToggleRow
-        label="Competition Updates"
+        label={tNotif("categoryCompetitionUpdates")}
         description={
           prefs.competitionUpdatesManuallySet
-            ? "Leaderboard changes and deadlines"
-            : "Auto-enables on your first competition join"
+            ? t("descCompetitionUpdates")
+            : t("descCompetitionUpdatesAuto")
         }
         checked={prefs.competitionUpdates}
         onChange={(v) => void patch("competitionUpdates", v)}
       />
       <ToggleRow
-        label="Community Highlights"
-        description="Likes on your analyses, weekly digests"
+        label={tNotif("categoryCommunityHighlights")}
+        description={t("descCommunityHighlights")}
         checked={prefs.communityHighlights}
         onChange={(v) => void patch("communityHighlights", v)}
       />
       <ToggleRow
-        label="Achievements & Rewards"
-        description="Challenge completions, achievements, level ups"
+        label={tNotif("categoryAchievements")}
+        description={t("descAchievements")}
         checked={prefs.achievementsRewards}
         onChange={(v) => void patch("achievementsRewards", v)}
       />
       <ToggleRow
-        label="Bet Settlements"
-        description="When your bet wins or you cash out"
+        label={tNotif("categoryBetSettlements")}
+        description={t("descBetSettlements")}
         checked={prefs.betSettlements}
         onChange={(v) => void patch("betSettlements", v)}
       />
@@ -175,6 +180,7 @@ function NotificationSettingsForm({ initial }: { initial: PreferencesResponse })
 
 function PrivacySharingForm({ initial }: { initial: PreferencesResponse }) {
   const router = useRouter();
+  const t = useTranslations("accountCommunity");
   const [priv, setPriv] = useState(initial.privacy);
   const [message, setMessage] = useState<
     { kind: "ok" | "err"; text: string } | null
@@ -199,7 +205,7 @@ function PrivacySharingForm({ initial }: { initial: PreferencesResponse }) {
       router.refresh();
     } catch (err) {
       setPriv((p) => ({ ...p, [key]: prior }));
-      setMessage({ kind: "err", text: explain(err) });
+      setMessage({ kind: "err", text: explain(err, t) });
     }
   }
 
@@ -207,24 +213,24 @@ function PrivacySharingForm({ initial }: { initial: PreferencesResponse }) {
     <section className="card space-y-1 p-6">
       <header className="flex items-center justify-between">
         <h2 className="text-sm uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-          Privacy &amp; Sharing
+          {t("privacySharing")}
         </h2>
       </header>
       <ToggleRow
-        label="Share to Community"
-        description="Make your settled tickets visible in the community feed"
+        label={t("shareToCommunity")}
+        description={t("descShareToCommunity")}
         checked={priv.sharePublicly}
         onChange={(v) => void patch("sharePublicly", v)}
       />
       <ToggleRow
-        label="Show Win/Loss Record"
-        description="Display W/L badges on your public profile"
+        label={t("showWinLoss")}
+        description={t("descShowWinLoss")}
         checked={priv.showWinLossRecord}
         onChange={(v) => void patch("showWinLossRecord", v)}
       />
       <ToggleRow
-        label="Allow Profile Discovery"
-        description="Let other users find you via search"
+        label={t("allowDiscovery")}
+        description={t("descAllowDiscovery")}
         checked={priv.allowProfileDiscovery}
         onChange={(v) => void patch("allowProfileDiscovery", v)}
       />
@@ -247,10 +253,10 @@ function PrivacySharingForm({ initial }: { initial: PreferencesResponse }) {
 
 // ─── Error helper ───────────────────────────────────────────────────────────
 
-function explain(err: unknown): string {
+function explain(err: unknown, t: T): string {
   if (err instanceof ApiFetchError) {
-    if (err.body.error === "preference_invalid") return "No changes to save.";
-    return err.body.message || "Save failed.";
+    if (err.body.error === "preference_invalid") return t("noChanges");
+    return err.body.message || t("saveFailed");
   }
-  return "Network error. Try again.";
+  return t("networkError");
 }

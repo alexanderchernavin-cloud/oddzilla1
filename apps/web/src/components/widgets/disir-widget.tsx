@@ -22,6 +22,7 @@ import {
 } from "react";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { useDocumentTheme } from "@/lib/use-theme";
+import { useTranslations } from "@/lib/i18n";
 
 type Variant = "prematch-match" | "prematch-tournament" | "live-scoreboard";
 
@@ -114,6 +115,7 @@ export function DisirWidget(props: DisirWidgetProps) {
     style,
   } = props;
 
+  const t = useTranslations("matchWidgets");
   // Follow the storefront theme unless the caller pinned one explicitly.
   // The hook returns a fresh value whenever <html data-theme> changes,
   // so toggling theme triggers a new querySig → re-fetch → new iframe URL.
@@ -254,7 +256,7 @@ export function DisirWidget(props: DisirWidgetProps) {
         }}
         className={className}
       >
-        Could not load widget. Please try again later.
+        {t("widget.loadError")}
       </div>
     );
   }
@@ -295,7 +297,7 @@ export function DisirWidget(props: DisirWidgetProps) {
             textTransform: "uppercase",
           }}
         >
-          Loading widget…
+          {t("widget.loading")}
         </div>
       ) : null}
       {url ? (
@@ -312,7 +314,7 @@ export function DisirWidget(props: DisirWidgetProps) {
           // domains a widget URL can resolve to.
           allow="autoplay; clipboard-read; clipboard-write"
           loading="lazy"
-          title={title ?? "Match widget"}
+          title={title ?? t("widget.fallbackTitle")}
           style={{
             display: "block",
             width: "100%",

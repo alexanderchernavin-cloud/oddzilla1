@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import type { CommunityCopyResponse } from "@oddzilla/types";
 import { useBetSlip } from "@/lib/bet-slip";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
+import { useTranslations } from "@/lib/i18n";
 
 // Copy-to-bet on a community feed card. Calls the backend's
 // /community/copy endpoint, drops every still-available leg into the
@@ -26,6 +27,7 @@ type Status =
 
 export function CopyButton({ ticketId }: CopyButtonProps) {
   const router = useRouter();
+  const t = useTranslations("community");
   const slip = useBetSlip();
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [pending, startTransition] = useTransition();
@@ -85,7 +87,7 @@ export function CopyButton({ ticketId }: CopyButtonProps) {
         message:
           err instanceof ApiFetchError
             ? err.body.message
-            : "Couldn't copy this bet.",
+            : t("card.copyFailed"),
       });
     }
   }
@@ -98,7 +100,7 @@ export function CopyButton({ ticketId }: CopyButtonProps) {
         disabled={status.kind === "loading" || pending}
         className="btn btn-ghost text-xs"
       >
-        {status.kind === "loading" ? "Copying…" : "Copy this bet"}
+        {status.kind === "loading" ? t("card.copying") : t("card.copyBet")}
       </button>
       <StatusLine status={status} />
     </div>
@@ -106,25 +108,25 @@ export function CopyButton({ ticketId }: CopyButtonProps) {
 }
 
 function StatusLine({ status }: { status: Status }) {
+  const t = useTranslations("community");
   if (status.kind === "added") {
     if (status.dropped > 0) {
       return (
         <p className="mt-1 text-[10px] text-[var(--color-fg-muted)]">
-          Added {status.legs} leg{status.legs === 1 ? "" : "s"} ·{" "}
-          {status.dropped} closed
+          {t("card.addedLegs", { count: status.legs, dropped: status.dropped })}
         </p>
       );
     }
     return (
       <p className="mt-1 text-[10px] text-[var(--color-positive)]">
-        Added to slip
+        {t("card.addedToSlip")}
       </p>
     );
   }
   if (status.kind === "no_legs") {
     return (
       <p className="mt-1 text-[10px] text-[var(--color-fg-muted)]">
-        Markets closed
+        {t("card.marketsClosed")}
       </p>
     );
   }
