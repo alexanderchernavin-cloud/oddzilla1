@@ -320,11 +320,15 @@ These rules are load-bearing. Breaking them causes money or data loss.
   chain RPC) must boot cleanly when those creds are absent — log a warning
   and serve health only. Pattern is well-established in feed-ingester,
   settlement, wallet-watcher.
-- **Docs stay in sync on every merge.** Before a PR lands, check whether
+- **Docs stay in sync on every commit and deploy.** Before ANY commit
+  lands (not just PR merges — direct commits too), check whether
   CLAUDE.md, the relevant `docs/*.md`, the root `README.md`, and any
   affected `services/*/README.md` still describe reality, and update
-  them in the *same* PR — never "in a follow-up". Stale docs are worse
-  than missing ones: they mislead the next agent. Trigger map:
+  them in the *same* commit or PR — never "in a follow-up". And before
+  running `make deploy`, confirm the docs for everything being shipped
+  are already up to date — a deploy of code whose docs are stale is an
+  incomplete deploy. Stale docs are worse than missing ones: they
+  mislead the next agent. Trigger map:
   - New service, data flow, or invariant → CLAUDE.md (`## Architecture
     map`, `## Invariants`, `## Where things live`) + `docs/ARCHITECTURE.md`.
   - Schema migration → CLAUDE.md migration list under `## Where things
@@ -344,7 +348,9 @@ These rules are load-bearing. Breaking them causes money or data loss.
 
   If a doc claim is no longer true, fix it in the same merge. When
   reviewing, treat "diff touches code but no doc" as a smell — ask
-  whether one of the triggers above applies before approving.
+  whether one of the triggers above applies before approving. The same
+  smell applies at deploy time: if `make deploy-status` shows commits
+  whose docs were never checked, do the doc pass before deploying.
 
 ## Hard limits
 
