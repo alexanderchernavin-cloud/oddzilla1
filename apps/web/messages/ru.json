@@ -372,6 +372,14 @@
     "boostedTagLong": "ZillaFlash буст",
     "openMatch": "Открыть матч"
   },
+  "zillaboost": {
+    "kicker": "Бустнутые коэффициенты",
+    "subtitle": "Бусты, выбранные вручную",
+    "openTournament": "Открыть турнир",
+    "openMatch": "К матчу",
+    "openMatchForPrices": "Откройте матч, чтобы увидеть бустнутые коэффициенты",
+    "matchesCount": "{count, plural, one {# матч} few {# матча} other {# матчей}}"
+  },
   "sport": {
     "all": "Все",
     "live": "Live",

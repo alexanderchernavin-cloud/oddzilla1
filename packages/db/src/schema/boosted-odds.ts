@@ -9,6 +9,7 @@
 
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   pgTable,
   pgEnum,
   uuid,
@@ -58,6 +59,11 @@ export const boostedOddsConfig = pgTable(
     boostPct: numeric("boost_pct", { precision: 5, scale: 2 }).notNull(),
     endsAt: timestamp("ends_at", { withTimezone: true }),
     minRiskScore: numeric("min_risk_score", { precision: 4, scale: 3 }),
+    // Promo banner on the storefront home page (migration 0086):
+    // market -> ZillaFlash-style card, match -> scoreless match card
+    // with original + boosted prices, tournament -> ZillaBoost banner
+    // linking to its match list, sport -> boost icon in the sidebar.
+    banner: boolean().notNull().default(false),
     updatedBy: uuid("updated_by").references(() => users.id, {
       onDelete: "set null",
     }),

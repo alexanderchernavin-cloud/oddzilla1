@@ -55,6 +55,75 @@ export interface CustomBoostedOddsResponse {
   serverNow: string;
 }
 
+// ── ZillaBoost promo banners (migration 0086) ────────────────────────
+// Rules with banner=true surface on the storefront home page per
+// scope. Served by GET /catalog/zillaboost-banners, RS-gated per
+// viewer like the per-match rules endpoint.
+
+export interface ZillaBoostBannerOutcome {
+  outcomeId: string;
+  label: string;
+  originalOdds: string;
+  boostedOdds: string;
+}
+
+/** market-scope rule → ZillaFlash-style offer card. */
+export interface ZillaBoostMarketBanner {
+  ruleId: string;
+  boostPct: number;
+  endsAt: string | null;
+  matchId: string;
+  homeTeam: string;
+  awayTeam: string;
+  sportSlug: string;
+  status: string;
+  marketId: string;
+  marketLabel: string;
+  outcomes: ZillaBoostBannerOutcome[];
+}
+
+/** match-scope rule → scoreless match card with old + boosted winner prices. */
+export interface ZillaBoostMatchBanner {
+  ruleId: string;
+  boostPct: number;
+  endsAt: string | null;
+  matchId: string;
+  homeTeam: string;
+  awayTeam: string;
+  homeLogoUrl: string | null;
+  awayLogoUrl: string | null;
+  sportSlug: string;
+  status: string;
+  scheduledAt: string | null;
+  tournamentName: string;
+  bestOf: number | null;
+  /** Match-winner market when it is currently priced; null hides the odds column. */
+  marketId: string | null;
+  outcomes: ZillaBoostBannerOutcome[];
+}
+
+/** tournament-scope rule → ZillaBoost tournament banner linking to its match list. */
+export interface ZillaBoostTournamentBanner {
+  ruleId: string;
+  boostPct: number;
+  endsAt: string | null;
+  tournamentId: number;
+  name: string;
+  sportSlug: string;
+  logoUrl: string | null;
+  brandColor: string | null;
+  matchCount: number;
+}
+
+export interface ZillaBoostBannersResponse {
+  /** sport-scope rules → boost icon next to these sports in the sidebar. */
+  sports: Array<{ sportId: number; slug: string; boostPct: number }>;
+  tournaments: ZillaBoostTournamentBanner[];
+  matches: ZillaBoostMatchBanner[];
+  markets: ZillaBoostMarketBanner[];
+  serverNow: string;
+}
+
 /**
  * Canonical formatting for boosted prices — floor to 2 decimals, the
  * same quoting shape ZillaFlash uses. MUST stay byte-identical between

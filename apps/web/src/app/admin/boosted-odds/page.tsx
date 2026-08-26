@@ -23,14 +23,14 @@ export default async function AdminBoostedOddsPage() {
   if (!sportsData || !rulesData) {
     return (
       <p style={{ color: "var(--color-fg-muted)" }}>
-        Couldn&apos;t load Boosted Odds configuration.
+        Couldn&apos;t load ZillaBoost configuration.
       </p>
     );
   }
   return (
     <>
       <h1 style={{ fontSize: 20, fontWeight: 600, marginBottom: 6 }}>
-        Boosted Odds
+        ZillaBoost
       </h1>
       <p style={{ fontSize: 13, color: "var(--color-fg-muted)", marginBottom: 16 }}>
         Operator-curated odds boosts. Attach a boost to any sport, tournament,

@@ -372,6 +372,14 @@
     "boostedTagLong": "ZillaFlash boost",
     "openMatch": "Open match"
   },
+  "zillaboost": {
+    "kicker": "Boosted odds",
+    "subtitle": "Hand-picked boosts from the house",
+    "openTournament": "Open tournament",
+    "openMatch": "Open match",
+    "openMatchForPrices": "Open the match to see boosted prices",
+    "matchesCount": "{count, plural, one {# match} other {# matches}}"
+  },
   "sport": {
     "all": "All",
     "live": "Live",

@@ -11,6 +11,7 @@ import { LiveDot } from "@/components/ui/primitives";
 import { I } from "@/components/ui/icons";
 import { ThreeFoldCards } from "@/components/lobby/three-fold-cards";
 import { ZillaFlashRow } from "@/components/lobby/zillaflash-row";
+import { ZillaBoostBanners } from "@/components/lobby/zillaboost-banners";
 import { TodayLabel } from "@/components/lobby/today-label";
 import { buildThreeFoldSuggestions } from "@/lib/three-fold-builder";
 import {
@@ -122,6 +123,8 @@ export default async function HomePage() {
       </header>
 
       <ThreeFoldCards suggestions={threeFoldSuggestions} />
+
+      <ZillaBoostBanners />
 
       <ZillaFlashRow />
 

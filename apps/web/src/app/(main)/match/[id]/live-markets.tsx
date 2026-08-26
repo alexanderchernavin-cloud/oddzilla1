@@ -355,8 +355,12 @@ export function LiveMarkets({
   // Filter parity with the server-side quoteBoostedMarket /
   // validateCustomBoostForBet: active markets only, outcomes that are
   // active with a price > 1, at least 2 priced outcomes, and drop
-  // no-op adjustments (fair-book clamp) plus per-outcome "boosted ==
-  // original" cells so a crossed-out 1.95 -> 1.95 never renders.
+  // whole-market no-op adjustments (fair-book clamp). Individual
+  // outcomes whose FLOORED price didn't move still get an entry —
+  // hiding the boost styling on just the favorite (a 1% boost on 1.40
+  // is sub-cent) made one side of a boosted market look unboosted and
+  // flicker with live ticks. Same rule ZillaFlash follows: the whole
+  // market wears the boost.
   const boostByOutcome = useMemo<Map<string, AnyBoostEntry>>(() => {
     const map = new Map<string, AnyBoostEntry>();
     if (customBoost.byMarket.size > 0) {
@@ -376,9 +380,6 @@ export function LiveMarkets({
           );
           if (adjusted.effectiveKeyDelta <= 0) continue;
           priced.forEach((o, i) => {
-            const originalOdds = formatBoostedOdds(Number(o.publishedOdds));
-            const boostedOdds = formatBoostedOdds(adjusted.adjustedOdds[i]!);
-            if (boostedOdds === originalOdds) return;
             map.set(`${m.id}:${o.outcomeId}`, {
               kind: "custom",
               entry: {
@@ -386,8 +387,8 @@ export function LiveMarkets({
                 marketId: m.id,
                 boostPct: rule.boostPct,
                 endsAt: rule.endsAt,
-                originalOdds,
-                boostedOdds,
+                originalOdds: formatBoostedOdds(Number(o.publishedOdds)),
+                boostedOdds: formatBoostedOdds(adjusted.adjustedOdds[i]!),
               },
             });
           });
@@ -770,6 +771,14 @@ function SingleMarketCard({
                       )
                     : price
                 }
+                originalPrice={
+                  boostByOutcome.get(`${m.id}:${o.outcomeId}`)
+                    ? Number(
+                        boostByOutcome.get(`${m.id}:${o.outcomeId}`)!.entry
+                          .originalOdds,
+                      )
+                    : null
+                }
                 label={label}
                 selected={selected}
                 locked={locked}
@@ -1144,6 +1153,9 @@ function LineRow({
             <OddButton
               size="md"
               price={boostEntry ? Number(boostEntry.entry.boostedOdds) : price}
+              originalPrice={
+                boostEntry ? Number(boostEntry.entry.originalOdds) : null
+              }
               label={isHandicap ? cellLine : ""}
               selected={selected}
               locked={locked}

@@ -372,6 +372,14 @@
     "boostedTagLong": "ZillaFlash boost",
     "openMatch": "Otvori meč"
   },
+  "zillaboost": {
+    "kicker": "Pojačane kvote",
+    "subtitle": "Boostovi koje je odabrala kuća",
+    "openTournament": "Otvori turnir",
+    "openMatch": "Otvori meč",
+    "openMatchForPrices": "Otvorite meč za pojačane kvote",
+    "matchesCount": "{count, plural, one {# meč} few {# meča} other {# mečeva}}"
+  },
   "sport": {
     "all": "Sve",
     "live": "Uživo",

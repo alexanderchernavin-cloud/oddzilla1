@@ -391,8 +391,12 @@ it; `min_risk_score NUMERIC(4,3)` NULL means every bettor receives it,
 otherwise `users.risk_score >= min_risk_score` gates delivery (anonymous
 viewers count as the 1.000 default). Resolution per market when rules
 overlap: market > match > competitor > tournament > sport; two competitor
-rules on the same match resolve to the higher pct. Managed at
-`/admin/boosted-odds`; every mutation is audit-logged.
+rules on the same match resolve to the higher pct. `banner` (migration 0086)
+marks the rule for a storefront home-page promo banner (market →
+ZillaFlash-style card, match → scoreless match card, tournament →
+ZillaBoost banner, sport → sidebar bolt icon; no surface for
+competitor scope). Managed at `/admin/boosted-odds` (operator-facing
+name: ZillaBoost); every mutation is audit-logged.
 
 ### Tickets
 

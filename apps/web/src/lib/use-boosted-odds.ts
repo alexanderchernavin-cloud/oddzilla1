@@ -117,7 +117,12 @@ export function useCustomBoostedOdds(matchId: string): CustomBoostRulesSnapshot 
   }, [data, tick]);
 }
 
-/** "0:08"-style remaining time, or null when the entry has no end time. */
+/**
+ * Remaining time for the boost chip, ZillaFlash-style: whenever the
+ * rule carries an end time the countdown is shown — "m:ss" under an
+ * hour (ticking every second), "Xh Ym" above it. Null only when the
+ * boost has no end time (open-ended — no timer) or already expired.
+ */
 export function formatBoostRemaining(
   entry: Pick<CustomBoostEntry, "endsAt">,
   nowMs: number,
@@ -128,8 +133,11 @@ export function formatBoostRemaining(
     Math.ceil((new Date(entry.endsAt).getTime() - nowMs) / 1000),
   );
   if (remaining <= 0) return null;
-  // Beyond an hour a mm:ss countdown is noise — show the plain chip.
-  if (remaining > 3600) return null;
+  if (remaining >= 3600) {
+    const h = Math.floor(remaining / 3600);
+    const m = Math.floor((remaining % 3600) / 60);
+    return `${h}h ${m.toString().padStart(2, "0")}m`;
+  }
   const m = Math.floor(remaining / 60);
   const s = remaining % 60;
   return `${m}:${s.toString().padStart(2, "0")}`;
