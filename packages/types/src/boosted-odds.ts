@@ -97,8 +97,20 @@ export interface ZillaBoostMatchBanner {
   scheduledAt: string | null;
   tournamentName: string;
   bestOf: number | null;
-  /** Match-winner market when it is currently priced; null hides the odds column. */
+  /**
+   * The match's MAIN priced market: match winner when active, else the
+   * current map winner, else the first remaining active market. Null
+   * only when nothing on the match is priced.
+   */
   marketId: string | null;
+  /** Display label of that market ("Match winner", "Map 3 winner", ...). */
+  marketLabel: string | null;
+  /**
+   * True when outcomes 1/2 are the teams themselves (match / map
+   * winner) — the card attaches the prices to the team rows. False =
+   * arbitrary market; the card renders labeled outcome rows instead.
+   */
+  teamShaped: boolean;
   outcomes: ZillaBoostBannerOutcome[];
 }
 

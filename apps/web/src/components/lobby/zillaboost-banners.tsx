@@ -250,7 +250,7 @@ function MatchBannerCard({
       odds: o.boostedOdds,
       homeTeam: b.homeTeam,
       awayTeam: b.awayTeam,
-      marketLabel: "Match winner",
+      marketLabel: b.marketLabel ?? "Match winner",
       outcomeLabel: o.label,
       sportSlug: b.sportSlug,
       active: true,
@@ -262,9 +262,9 @@ function MatchBannerCard({
   const rowFor = (team: "home" | "away") => {
     const name = team === "home" ? b.homeTeam : b.awayTeam;
     const logo = team === "home" ? b.homeLogoUrl : b.awayLogoUrl;
-    const outcome = b.outcomes.find(
-      (o) => o.outcomeId === (team === "home" ? "1" : "2"),
-    );
+    const outcome = b.teamShaped
+      ? b.outcomes.find((o) => o.outcomeId === (team === "home" ? "1" : "2"))
+      : undefined;
     return (
       <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
         <TeamMark tag={name.slice(0, 2).toUpperCase()} name={name} logoUrl={logo} size={20} />
@@ -387,6 +387,76 @@ function MatchBannerCard({
       </div>
       {rowFor("home")}
       {rowFor("away")}
+      {!b.teamShaped && b.outcomes.length > 0 && (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+            borderTop: "1px solid var(--hairline)",
+            paddingTop: 6,
+          }}
+        >
+          <span
+            style={{ fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.2 }}
+          >
+            {b.marketLabel}
+          </span>
+          {b.outcomes.map((entry) => (
+            <button
+              key={entry.outcomeId}
+              type="button"
+              onClick={(e) => pick(entry, e)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                minWidth: 0,
+                padding: "3px 6px 3px 8px",
+                background: "var(--surface-2)",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                cursor: "pointer",
+                color: "var(--fg)",
+                fontFamily: "inherit",
+                textAlign: "left",
+              }}
+            >
+              <span
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+                title={entry.label}
+              >
+                {entry.label}
+              </span>
+              <span
+                className="mono tnum"
+                style={{
+                  fontSize: 10.5,
+                  color: "var(--fg-dim)",
+                  textDecoration: "line-through",
+                  flexShrink: 0,
+                }}
+              >
+                {entry.originalOdds}
+              </span>
+              <span
+                className="mono tnum"
+                style={{ fontSize: 13, fontWeight: 700, color: GREEN, flexShrink: 0 }}
+              >
+                {entry.boostedOdds}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
       {b.outcomes.length === 0 && (
         <span style={{ fontSize: 11.5, color: "var(--fg-muted)" }}>
           {t("openMatchForPrices")}
