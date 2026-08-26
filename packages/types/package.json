@@ -18,6 +18,8 @@
     "./zillatips": "./src/zillatips.ts",
     "./zillafacts": "./src/zillafacts.ts",
     "./zillabuild": "./src/zillabuild.ts",
+    "./netwinstable": "./src/netwinstable.ts",
+    "./boosted-odds": "./src/boosted-odds.ts",
     "./live-chat": "./src/live-chat.ts",
     "./support": "./src/support.ts"
   },
