@@ -372,6 +372,14 @@
     "boostedTagLong": "Mejora ZillaFlash",
     "openMatch": "Abrir partido"
   },
+  "zillaboost": {
+    "kicker": "Cuotas mejoradas",
+    "subtitle": "Mejoras seleccionadas por la casa",
+    "openTournament": "Abrir torneo",
+    "openMatch": "Abrir partido",
+    "openMatchForPrices": "Abre el partido para ver las cuotas mejoradas",
+    "matchesCount": "{count, plural, one {# partido} other {# partidos}}"
+  },
   "sport": {
     "all": "Todos",
     "live": "En vivo",

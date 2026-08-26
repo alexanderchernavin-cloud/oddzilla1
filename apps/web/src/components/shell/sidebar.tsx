@@ -13,6 +13,7 @@ import { SportGlyph } from "@/components/ui/sport-glyph";
 import { Wordmark } from "@/components/ui/monogram";
 import { I } from "@/components/ui/icons";
 import { LiveDot } from "@/components/ui/primitives";
+import { useZillaBoostSportSet } from "@/lib/use-zillaboost-banners";
 import { TierMark, isFeaturedTier } from "@/components/ui/tier-mark";
 import { clientApi } from "@/lib/api-client";
 import {
@@ -376,6 +377,8 @@ function SportsSection({
 }) {
   const tShell = useTranslations("shell");
   const [editing, setEditing] = useState(false);
+  // ZillaBoost sport banners (migration 0086) — slugs wearing the bolt.
+  const boostedSports = useZillaBoostSportSet();
 
   // Local override of the user's saved order + hidden set. Initialized
   // from the server props, and updated optimistically when the user
@@ -609,6 +612,7 @@ function SportsSection({
               active={sportActive && activeTournamentId == null}
               label={s.name}
               liveCount={liveCounts[s.slug] ?? 0}
+              boosted={boostedSports.has(s.slug)}
             />
             {expanded && tournaments && tournaments.length > 0 && (
               <div
@@ -952,6 +956,7 @@ function Item({
   active,
   tag,
   liveCount,
+  boosted,
 }: {
   href: string;
   icon: ReactNode;
@@ -959,6 +964,9 @@ function Item({
   active?: boolean;
   tag?: string;
   liveCount?: number;
+  // ZillaBoost sport banner (migration 0086): a banner-enabled
+  // sport-scope boost renders a small green bolt next to the sport.
+  boosted?: boolean;
 }) {
   const hasLive = (liveCount ?? 0) > 0;
   return (
@@ -984,6 +992,18 @@ function Item({
     >
       {icon}
       <span style={{ flex: 1 }}>{label}</span>
+      {boosted && (
+        <svg
+          width={11}
+          height={11}
+          viewBox="0 0 24 24"
+          fill="var(--positive, #16a34a)"
+          aria-label="ZillaBoost"
+          style={{ flexShrink: 0 }}
+        >
+          <path d="M13 2 4.5 13.5H11L9.5 22 19 10h-6.5L13 2z" />
+        </svg>
+      )}
       {hasLive && (
         <span
           className="mono tnum"

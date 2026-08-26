@@ -26,6 +26,7 @@ export interface RuleDto {
   boostPct: number;
   endsAt: string | null;
   minRiskScore: number | null;
+  banner: boolean;
   updatedAt: string;
 }
 
@@ -1031,6 +1032,7 @@ function RuleBadge({ rule }: { rule: RuleDto }) {
     );
   }
   if (rule.minRiskScore != null) bits.push(`RS ≥ ${rule.minRiskScore}`);
+  if (rule.banner) bits.push("banner");
   return (
     <span
       className="mono tnum"
@@ -1177,13 +1179,32 @@ function BoostModal({
   onChanged: () => void;
 }) {
   const [pct, setPct] = useState(rule ? String(rule.boostPct) : "3");
+  // End modes: open-ended, a duration from now (quick presets or a
+  // custom amount in minutes/hours), or an exact end time.
+  const [endMode, setEndMode] = useState<"none" | "duration" | "at">(
+    rule?.endsAt ? "at" : "none",
+  );
   const [endsAt, setEndsAt] = useState(
     rule?.endsAt ? toLocalInputValue(rule.endsAt) : "",
   );
+  const [durationN, setDurationN] = useState("1");
+  const [durationUnit, setDurationUnit] = useState<"minutes" | "hours">("hours");
   const [minRs, setMinRs] = useState(
     rule?.minRiskScore != null ? String(rule.minRiskScore) : "",
   );
+  const [banner, setBanner] = useState(rule?.banner ?? false);
   const [busy, setBusy] = useState(false);
+
+  const applyPreset = (minutes: number) => {
+    setEndMode("duration");
+    if (minutes % 60 === 0) {
+      setDurationN(String(minutes / 60));
+      setDurationUnit("hours");
+    } else {
+      setDurationN(String(minutes));
+      setDurationUnit("minutes");
+    }
+  };
 
   const save = async () => {
     const pctNum = Number.parseFloat(pct);
@@ -1192,7 +1213,23 @@ function BoostModal({
       return;
     }
     let endsIso: string | null = null;
-    if (endsAt.trim() !== "") {
+    if (endMode === "duration") {
+      const n = Number.parseFloat(durationN);
+      if (!Number.isFinite(n) || n <= 0) {
+        onError("Duration must be a positive number.");
+        return;
+      }
+      const minutes = durationUnit === "hours" ? n * 60 : n;
+      if (minutes > 60 * 24 * 90) {
+        onError("Duration is too long (max 90 days).");
+        return;
+      }
+      endsIso = new Date(Date.now() + minutes * 60_000).toISOString();
+    } else if (endMode === "at") {
+      if (endsAt.trim() === "") {
+        onError("Pick an end time, or switch to No end / Duration.");
+        return;
+      }
       const d = new Date(endsAt);
       if (Number.isNaN(d.getTime())) {
         onError("End time is not a valid date.");
@@ -1222,6 +1259,7 @@ function BoostModal({
           boostPct: pctNum,
           endsAt: endsIso,
           minRiskScore: minRsNum,
+          banner,
         }),
       });
       onChanged();
@@ -1290,7 +1328,7 @@ function BoostModal({
               color: "var(--color-fg-muted)",
             }}
           >
-            Boosted odds · {SCOPE_LABEL[scope]}
+            ZillaBoost · {SCOPE_LABEL[scope]}
           </div>
           <div style={{ fontSize: 15, fontWeight: 600, marginTop: 2 }}>
             {entityLabel}
@@ -1315,18 +1353,119 @@ function BoostModal({
           </span>
         </label>
 
-        <label style={fieldStyle}>
-          <span style={labelStyle}>End time (optional)</span>
-          <input
-            type="datetime-local"
-            value={endsAt}
-            onChange={(e) => setEndsAt(e.currentTarget.value)}
-            style={inputStyle}
-          />
-          <span style={hintStyle}>
-            Empty = boost runs until removed (no countdown on the storefront).
-          </span>
-        </label>
+        <div style={fieldStyle}>
+          <span style={labelStyle}>Ends</span>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {(
+              [
+                ["none", "No end"],
+                ["duration", "Duration"],
+                ["at", "Exact time"],
+              ] as const
+            ).map(([mode, label]) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => setEndMode(mode)}
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  padding: "4px 12px",
+                  borderRadius: 999,
+                  border: `1px solid ${endMode === mode ? "var(--color-fg)" : "var(--color-border)"}`,
+                  background:
+                    endMode === mode ? "var(--color-bg-subtle)" : "transparent",
+                  color: "var(--color-fg)",
+                  cursor: "pointer",
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {endMode === "duration" && (
+            <>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                {(
+                  [
+                    ["15m", 15],
+                    ["30m", 30],
+                    ["1h", 60],
+                    ["3h", 180],
+                    ["24h", 1440],
+                  ] as const
+                ).map(([label, minutes]) => {
+                  const active =
+                    (durationUnit === "minutes" &&
+                      Number(durationN) === minutes) ||
+                    (durationUnit === "hours" &&
+                      Number(durationN) * 60 === minutes);
+                  return (
+                    <button
+                      key={label}
+                      type="button"
+                      onClick={() => applyPreset(minutes)}
+                      style={{
+                        fontSize: 11.5,
+                        padding: "3px 10px",
+                        borderRadius: 6,
+                        border: `1px solid ${active ? "#16a34a" : "var(--color-border)"}`,
+                        background: active
+                          ? "color-mix(in oklab, #16a34a 14%, transparent)"
+                          : "transparent",
+                        color: active ? "#15803d" : "var(--color-fg)",
+                        cursor: "pointer",
+                      }}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={durationN}
+                  onChange={(e) => setDurationN(e.currentTarget.value)}
+                  style={{ ...inputStyle, width: 80 }}
+                />
+                <select
+                  value={durationUnit}
+                  onChange={(e) =>
+                    setDurationUnit(e.currentTarget.value as "minutes" | "hours")
+                  }
+                  style={inputStyle}
+                >
+                  <option value="minutes">minutes</option>
+                  <option value="hours">hours</option>
+                </select>
+              </div>
+              <span style={hintStyle}>
+                Boost switches off this long after saving. The storefront
+                shows a ZillaFlash-style countdown on boosted prices.
+              </span>
+            </>
+          )}
+          {endMode === "at" && (
+            <>
+              <input
+                type="datetime-local"
+                value={endsAt}
+                onChange={(e) => setEndsAt(e.currentTarget.value)}
+                style={inputStyle}
+              />
+              <span style={hintStyle}>
+                The storefront shows a ZillaFlash-style countdown on boosted
+                prices.
+              </span>
+            </>
+          )}
+          {endMode === "none" && (
+            <span style={hintStyle}>
+              Boost runs until removed - no countdown on the storefront.
+            </span>
+          )}
+        </div>
 
         <label style={fieldStyle}>
           <span style={labelStyle}>Min Risk Score (optional)</span>
@@ -1343,6 +1482,33 @@ function BoostModal({
           <span style={hintStyle}>
             Bettors with a risk score below this don&apos;t receive the boost.
             Default bettor RS is 1.000.
+          </span>
+        </label>
+
+        <label
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 8,
+            cursor: scope === "competitor" ? "not-allowed" : "pointer",
+            opacity: scope === "competitor" ? 0.55 : 1,
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={banner}
+            disabled={scope === "competitor"}
+            onChange={(e) => setBanner(e.currentTarget.checked)}
+            style={{ accentColor: "#16a34a", marginTop: 2 }}
+          />
+          <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <span style={labelStyle}>Create promo banner</span>
+            <span style={hintStyle}>
+              Shows on the storefront home page: market &rarr; ZillaFlash-style
+              card, match &rarr; match card with old + boosted winner prices,
+              tournament &rarr; ZillaBoost banner opening its match list,
+              sport &rarr; boost icon in the sidebar. Not available for teams.
+            </span>
           </span>
         </label>
 

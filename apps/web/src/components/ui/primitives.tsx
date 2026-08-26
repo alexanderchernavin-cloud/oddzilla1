@@ -258,6 +258,12 @@ export function OddButton({
   // boost so the whole cell signals "great option" at a glance
   // instead of relying on the small BOOST chip alone.
   boosted = false,
+  // Pre-boost price for boosted outcomes (ZillaFlash / ZillaBoost).
+  // Rendered as a small struck-through value before the boosted price
+  // so the bettor sees what the boost is worth — same presentation the
+  // ZillaFlash lobby card uses. Hidden when it equals the shown price
+  // (a sub-cent boost floors to the same 2dp figure).
+  originalPrice = null,
   style,
 }: {
   price?: number | null;
@@ -268,6 +274,7 @@ export function OddButton({
   size?: OddSize;
   locked?: boolean;
   boosted?: boolean;
+  originalPrice?: number | null;
   style?: CSSProperties;
 }) {
   const H = { sm: 36, md: 44, lg: 52 }[size];
@@ -388,6 +395,23 @@ export function OddButton({
           justifyContent: "space-between",
         }}
       >
+        {showBoost &&
+          !locked &&
+          price != null &&
+          originalPrice != null &&
+          originalPrice.toFixed(2) !== price.toFixed(2) && (
+            <span
+              className="mono tnum"
+              style={{
+                fontSize: 11,
+                color: "var(--fg-muted)",
+                textDecoration: "line-through",
+                letterSpacing: "-0.01em",
+              }}
+            >
+              {originalPrice.toFixed(2)}
+            </span>
+          )}
         <span
           className="mono tnum"
           style={{

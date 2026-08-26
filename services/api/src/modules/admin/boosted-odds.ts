@@ -35,6 +35,7 @@ interface RuleDto {
   boostPct: number;
   endsAt: string | null;
   minRiskScore: number | null;
+  banner: boolean;
   updatedAt: string;
 }
 
@@ -45,6 +46,7 @@ function toRuleDto(r: typeof boostedOddsConfig.$inferSelect): RuleDto {
     boostPct: Number(r.boostPct),
     endsAt: r.endsAt?.toISOString() ?? null,
     minRiskScore: r.minRiskScore !== null ? Number(r.minRiskScore) : null,
+    banner: r.banner,
     updatedAt: r.updatedAt.toISOString(),
   };
 }
@@ -59,6 +61,9 @@ const putBody = z.object({
   boostPct: z.number().gt(0).max(50),
   endsAt: z.string().datetime({ offset: true }).nullable().optional(),
   minRiskScore: z.number().min(0.01).max(10).nullable().optional(),
+  // Promo banner on the storefront home page (migration 0086). No
+  // banner surface for competitor scope — accepted, stored, unused.
+  banner: z.boolean().optional(),
 });
 
 function scopeColumn(scope: z.infer<typeof scopeSchema>) {
@@ -583,6 +588,7 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
         endsAt,
         minRiskScore:
           body.minRiskScore != null ? body.minRiskScore.toFixed(3) : null,
+        banner: body.banner ?? false,
         updatedBy: admin.id,
         updatedAt: new Date(),
       };
