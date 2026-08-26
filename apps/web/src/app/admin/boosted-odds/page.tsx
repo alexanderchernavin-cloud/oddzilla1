@@ -1,6 +1,6 @@
 import { serverApi } from "@/lib/server-fetch";
 import {
-  BoostedOddsTree,
+  BoostedOddsBoard,
   type RuleDto,
   type RuleWithLabel,
   type SportRow,
@@ -43,7 +43,7 @@ export default async function AdminBoostedOddsPage() {
         <code> team </code>&rarr;<code> tournament </code>&rarr;
         <code> sport</code>.
       </p>
-      <BoostedOddsTree
+      <BoostedOddsBoard
         initialSports={sportsData.entries}
         initialRules={rulesData.rules}
       />

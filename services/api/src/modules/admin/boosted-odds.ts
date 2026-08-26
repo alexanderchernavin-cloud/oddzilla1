@@ -12,6 +12,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { and, asc, desc, eq, ilike, inArray, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import {
   adminAuditLog,
   boostedOddsConfig,
@@ -74,6 +75,9 @@ function scopeColumn(scope: z.infer<typeof scopeSchema>) {
       return boostedOddsConfig.marketId;
   }
 }
+
+const homeCompetitor = alias(competitors, "home_competitor");
+const awayCompetitor = alias(competitors, "away_competitor");
 
 export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
   // ── Active rules overview ──────────────────────────────────────────
@@ -180,70 +184,165 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
     };
   });
 
-  // ── Tree: sports ───────────────────────────────────────────────────
+  // ── Sports rail ────────────────────────────────────────────────────
+  // Mirrors the storefront sidebar: every active sport with live +
+  // upcoming counts of matches that actually have something to bet on
+  // (>= 1 active market) — the client orders them with the same
+  // TOP-pinned comparator the storefront uses.
   app.get("/admin/boosted-odds/sports", async (request) => {
     request.requireRole("admin");
-    const rows = await app.db
-      .select({
-        id: sports.id,
-        slug: sports.slug,
-        name: sports.name,
-        ruleRow: boostedOddsConfig,
-      })
-      .from(sports)
-      .leftJoin(
-        boostedOddsConfig,
-        and(
-          eq(boostedOddsConfig.scope, "sport"),
-          eq(boostedOddsConfig.sportId, sports.id),
-        ),
-      )
-      .where(eq(sports.active, true))
-      .orderBy(asc(sports.name));
+    const [rows, countRows] = await Promise.all([
+      app.db
+        .select({
+          id: sports.id,
+          slug: sports.slug,
+          name: sports.name,
+          ruleRow: boostedOddsConfig,
+        })
+        .from(sports)
+        .leftJoin(
+          boostedOddsConfig,
+          and(
+            eq(boostedOddsConfig.scope, "sport"),
+            eq(boostedOddsConfig.sportId, sports.id),
+          ),
+        )
+        .where(eq(sports.active, true))
+        .orderBy(asc(sports.name)),
+      app.db
+        .select({
+          sportId: categories.sportId,
+          status: matches.status,
+          n: sql<number>`count(*)::int`,
+        })
+        .from(matches)
+        .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
+        .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+        .where(
+          and(
+            inArray(matches.status, ["not_started", "live"]),
+            sql`EXISTS (SELECT 1 FROM markets mk WHERE mk.match_id = ${matches.id} AND mk.status = 1)`,
+          ),
+        )
+        .groupBy(categories.sportId, matches.status),
+    ]);
+    const counts = new Map<number, { live: number; upcoming: number }>();
+    for (const c of countRows) {
+      const cur = counts.get(c.sportId) ?? { live: 0, upcoming: 0 };
+      if (c.status === "live") cur.live += c.n;
+      else cur.upcoming += c.n;
+      counts.set(c.sportId, cur);
+    }
     return {
       entries: rows.map((r) => ({
         id: r.id,
         slug: r.slug,
         name: r.name,
+        liveCount: counts.get(r.id)?.live ?? 0,
+        upcomingCount: counts.get(r.id)?.upcoming ?? 0,
         rule: r.ruleRow ? toRuleDto(r.ruleRow) : null,
       })),
     };
   });
 
-  // ── Tree: tournaments under a sport ────────────────────────────────
-  app.get("/admin/boosted-odds/sports/:sportId/tournaments", async (request) => {
+  // ── Sport board: the storefront-shaped match list ──────────────────
+  // Everything the right pane needs in one round-trip: the bettable
+  // matches of a sport (>= 1 active market, live first then by
+  // scheduled time — the storefront sport-page ordering) with team
+  // logos + tournament labels, plus the tournaments that actually have
+  // matches (for the boost-a-tournament chip strip). Rules for match +
+  // tournament scopes ride along.
+  app.get("/admin/boosted-odds/sports/:sportId/board", async (request) => {
     request.requireRole("admin");
     const { sportId } = z
       .object({ sportId: z.coerce.number().int().positive() })
       .parse(request.params);
+
+    const tournamentRule = alias(boostedOddsConfig, "tournament_rule");
     const rows = await app.db
       .select({
-        id: tournaments.id,
-        name: tournaments.name,
+        id: matches.id,
+        homeTeam: matches.homeTeam,
+        awayTeam: matches.awayTeam,
+        homeLogoUrl: homeCompetitor.logoUrl,
+        awayLogoUrl: awayCompetitor.logoUrl,
+        scheduledAt: matches.scheduledAt,
+        status: matches.status,
+        tournamentId: tournaments.id,
+        tournamentName: tournaments.name,
         riskTier: tournaments.riskTier,
-        startAt: tournaments.startAt,
-        endAt: tournaments.endAt,
-        ruleRow: boostedOddsConfig,
+        matchRule: boostedOddsConfig,
+        tournamentRuleRow: tournamentRule,
       })
-      .from(tournaments)
+      .from(matches)
+      .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
       .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+      .leftJoin(homeCompetitor, eq(homeCompetitor.id, matches.homeCompetitorId))
+      .leftJoin(awayCompetitor, eq(awayCompetitor.id, matches.awayCompetitorId))
       .leftJoin(
         boostedOddsConfig,
         and(
-          eq(boostedOddsConfig.scope, "tournament"),
-          eq(boostedOddsConfig.tournamentId, tournaments.id),
+          eq(boostedOddsConfig.scope, "match"),
+          eq(boostedOddsConfig.matchId, matches.id),
         ),
       )
-      .where(and(eq(categories.sportId, sportId), eq(tournaments.active, true)))
-      .orderBy(asc(tournaments.name));
+      .leftJoin(
+        tournamentRule,
+        and(
+          eq(tournamentRule.scope, "tournament"),
+          eq(tournamentRule.tournamentId, tournaments.id),
+        ),
+      )
+      .where(
+        and(
+          eq(categories.sportId, sportId),
+          inArray(matches.status, ["not_started", "live"]),
+          sql`EXISTS (SELECT 1 FROM markets mk WHERE mk.match_id = ${matches.id} AND mk.status = 1)`,
+        ),
+      )
+      .orderBy(
+        sql`CASE WHEN ${matches.status} = 'live' THEN 0 ELSE 1 END`,
+        asc(matches.scheduledAt),
+      )
+      .limit(500);
+
+    const tournamentsOut = new Map<
+      number,
+      {
+        id: number;
+        name: string;
+        riskTier: number | null;
+        rule: RuleDto | null;
+        matchCount: number;
+      }
+    >();
+    for (const r of rows) {
+      const t = tournamentsOut.get(r.tournamentId);
+      if (t) t.matchCount += 1;
+      else
+        tournamentsOut.set(r.tournamentId, {
+          id: r.tournamentId,
+          name: r.tournamentName,
+          riskTier: r.riskTier,
+          rule: r.tournamentRuleRow ? toRuleDto(r.tournamentRuleRow) : null,
+          matchCount: 1,
+        });
+    }
+
     return {
-      entries: rows.map((r) => ({
-        id: r.id,
-        name: r.name,
+      tournaments: Array.from(tournamentsOut.values()),
+      matches: rows.map((r) => ({
+        id: r.id.toString(),
+        homeTeam: r.homeTeam,
+        awayTeam: r.awayTeam,
+        homeLogoUrl: r.homeLogoUrl,
+        awayLogoUrl: r.awayLogoUrl,
+        scheduledAt: r.scheduledAt?.toISOString() ?? null,
+        status: r.status,
+        tournamentId: r.tournamentId,
+        tournamentName: r.tournamentName,
         riskTier: r.riskTier,
-        startAt: r.startAt?.toISOString() ?? null,
-        endAt: r.endAt?.toISOString() ?? null,
-        rule: r.ruleRow ? toRuleDto(r.ruleRow) : null,
+        rule: r.matchRule ? toRuleDto(r.matchRule) : null,
       })),
     };
   });
@@ -290,52 +389,6 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
       })),
     };
   });
-
-  // ── Tree: matches under a tournament ───────────────────────────────
-  app.get(
-    "/admin/boosted-odds/tournaments/:tournamentId/matches",
-    async (request) => {
-      request.requireRole("admin");
-      const { tournamentId } = z
-        .object({ tournamentId: z.coerce.number().int().positive() })
-        .parse(request.params);
-      const rows = await app.db
-        .select({
-          id: matches.id,
-          homeTeam: matches.homeTeam,
-          awayTeam: matches.awayTeam,
-          scheduledAt: matches.scheduledAt,
-          status: matches.status,
-          ruleRow: boostedOddsConfig,
-        })
-        .from(matches)
-        .leftJoin(
-          boostedOddsConfig,
-          and(
-            eq(boostedOddsConfig.scope, "match"),
-            eq(boostedOddsConfig.matchId, matches.id),
-          ),
-        )
-        .where(
-          and(
-            eq(matches.tournamentId, tournamentId),
-            inArray(matches.status, ["not_started", "live"]),
-          ),
-        )
-        .orderBy(asc(matches.scheduledAt))
-        .limit(300);
-      return {
-        entries: rows.map((r) => ({
-          id: r.id.toString(),
-          homeTeam: r.homeTeam,
-          awayTeam: r.awayTeam,
-          scheduledAt: r.scheduledAt?.toISOString() ?? null,
-          status: r.status,
-          rule: r.ruleRow ? toRuleDto(r.ruleRow) : null,
-        })),
-      };
-    },
-  );
 
   // ── Tree: markets under a match ────────────────────────────────────
   // Labels resolve through the same market_descriptions templates the
