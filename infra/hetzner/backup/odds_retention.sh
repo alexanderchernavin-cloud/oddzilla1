@@ -1,67 +1,60 @@
 #!/usr/bin/env bash
-# Nightly odds_history retention. Deletes rows older than RETENTION_DAYS in
-# bounded batches so a single run can't spike WAL on a disk that is already
-# tight. Runs from root's crontab after the daily pg-backup.
+# Nightly odds_history partition maintenance. Since the 2026-08-26
+# partition-swap the table runs on DAILY dated partitions
+# (odds_history_pYYYYMMDD, UTC-midnight bounds) plus a safety DEFAULT
+# (odds_history_default3) for stray timestamps. This script:
 #
-# Why this exists
-#   odds_history is declared PARTITION BY RANGE (ts) (migrations 0000 +
-#   0001), but the partitioning was supposed to be driven by pg_partman OR
-#   by a "Phase 3" partition-maintenance cron. pg_partman was never
-#   installed in the postgres image and that cron was never built, so every
-#   row since launch (2026-04-18) fell into the catch-all odds_history_default
-#   partition. By 2026-06-17 it was 64 GB / 560M rows, growing ~1 GB/day,
-#   and nothing ever pruned it. The disk filled to 100% and crash-looped
-#   postgres on 2026-04-22, 2026-05-09, 2026-06-09 and 2026-06-17.
+#   1. creates dated partitions ahead (today .. today+CREATE_AHEAD) so
+#      inserts never fall through to the DEFAULT;
+#   2. drops dated partitions older than RETENTION_DAYS — a partition
+#      DROP is instant and returns space to the OS immediately, so the
+#      table carries ZERO bloat and no high-water mark, ever (the
+#      pre-2026-08-26 model was a batched DELETE that plateaued the
+#      heap at ~60 GB without shrinking it);
+#   3. sweeps the safety DEFAULT with a small batched DELETE — it
+#      should stay empty (recovery replays reach back <= 24 h and land
+#      in dated partitions), so a non-trivial row count there is logged
+#      as a warning worth investigating.
 #
-# What it does / does not do
-#   • Caps the table at RETENTION_DAYS of history. Paired with the aggressive
-#     per-table autovacuum set at install time (below), the space freed by
-#     each night's delete is returned to the table's free-space map and
-#     reused by new inserts, so the heap PLATEAUS instead of growing without
-#     bound.
-#   • It does NOT shrink the heap on disk — a plain DELETE never returns
-#     pages to the OS. To actually reclaim the existing backlog, do the
-#     one-time partition swap documented in docs/OPERATIONS.md ("odds_history
-#     reclaim"). This script's job is to stop the bleeding, not to reclaim.
+# History
+#   odds_history was declared PARTITION BY RANGE (ts) from migration
+#   0000 but ran on a single catch-all DEFAULT partition until
+#   2026-07-02 (first reclaim: 95% -> 50% disk) and then again until
+#   2026-08-26 (second reclaim: export -> drop -> restore into dated
+#   partitions, window 45 -> 35 days; see docs/OPERATIONS.md).
 #
 # Install
 #   sudo cp infra/hetzner/backup/odds_retention.sh /usr/local/bin/oddzilla-odds-retention
 #   sudo chmod 750 /usr/local/bin/oddzilla-odds-retention
-#   # one-time: make autovacuum keep up with the nightly deletes so freed
-#   # space is reused (default autovacuum would not trigger for ~12 days on
-#   # a table this large, letting dead tuples — and the heap — accumulate).
-#   set -a; . /home/team/oddzilla/.env; set +a
-#   docker exec oddzilla-postgres-1 psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
-#     "ALTER TABLE odds_history_default SET (autovacuum_vacuum_scale_factor=0, autovacuum_vacuum_threshold=2000000, autovacuum_vacuum_insert_scale_factor=0, autovacuum_vacuum_insert_threshold=2000000);"
-#   NB: since the 2026-07-02 one-time reclaim the live DEFAULT partition is
-#   odds_history_default2 (already carries these reloptions). Target whatever
-#   the current DEFAULT partition is if you ever redo this.
 #   sudo crontab -e
-#   # Add (after the 03:00 pg-backup so the dump captures pre-deletion state):
 #   # 30 3 * * * /usr/local/bin/oddzilla-odds-retention >> /var/log/oddzilla-odds-retention.log 2>&1
 #
 # Tunables (env overrides):
-#   ODDS_RETENTION_DAYS   days of history to keep         (default 45; was 60 until 2026-07-02 — daily odds volume grew ~17.5M rows/day and the 60-day window pushed dumps past 8 GB)
-#   ODDS_RETENTION_BATCH  rows deleted per statement      (default 1000000)
+#   ODDS_RETENTION_DAYS   days of history to keep      (default 35; admin
+#                         odds charts look back 30, ZillaTips reads the
+#                         permanent prematch_odds snapshot, settlement
+#                         never reads history)
+#   ODDS_CREATE_AHEAD     days of partitions pre-created (default 7 — a
+#                         week of missed cron runs before inserts start
+#                         landing in the DEFAULT, which is safe anyway)
+#   ODDS_RETENTION_BATCH  rows per DELETE on the DEFAULT sweep (default 100000)
 
 set -euo pipefail
 
 ENV_FILE="${ENV_FILE:-/home/team/oddzilla/.env}"
 CONTAINER="${ODDS_RETENTION_CONTAINER:-oddzilla-postgres-1}"
-RETENTION_DAYS="${ODDS_RETENTION_DAYS:-45}"
-BATCH="${ODDS_RETENTION_BATCH:-1000000}"
+RETENTION_DAYS="${ODDS_RETENTION_DAYS:-35}"
+CREATE_AHEAD="${ODDS_CREATE_AHEAD:-7}"
+BATCH="${ODDS_RETENTION_BATCH:-100000}"
 ALERT_CMD="${ALERT_CMD:-/usr/local/bin/oddzilla-alert-email}"
-TABLE="odds_history"
 
-# Page the operator on any failure (container down, auth failure, runaway
-# delete). Best-effort: a failed page must not mask the original error.
 alert_failure() {
     local rc="$?"
     [ "${rc}" -eq 0 ] && return 0
     printf '{"service":"odds-retention","event":"failed","exit":%d}\n' "${rc}" >&2
     if [ -x "${ALERT_CMD}" ]; then
         "${ALERT_CMD}" "odds-retention FAILED (exit ${rc})" \
-            "Nightly odds_history retention failed on $(hostname) with exit ${rc}. See /var/log/oddzilla-odds-retention.log." \
+            "Nightly odds_history partition maintenance failed on $(hostname) with exit ${rc}. See /var/log/oddzilla-odds-retention.log." \
             || true
     fi
 }
@@ -89,34 +82,72 @@ psql_q() {
         psql -U "${PGUSER}" -d "${PGDB}" -X -A -t -q -c "$1"
 }
 
-eligible=$(psql_q "SELECT count(*) FROM ${TABLE} WHERE ts < now() - interval '${RETENTION_DAYS} days';" | tr -d '[:space:]')
-printf '{"service":"odds-retention","event":"start","retention_days":%d,"batch":%d,"eligible_rows":%s}\n' \
-    "${RETENTION_DAYS}" "${BATCH}" "${eligible:-0}"
+printf '{"service":"odds-retention","event":"start","retention_days":%d,"create_ahead":%d}\n' \
+    "${RETENTION_DAYS}" "${CREATE_AHEAD}"
 
-# Batched delete: each statement is its own transaction, so WAL is recycled
-# at the next checkpoint and row locks are held only briefly — a single
-# giant DELETE on a catch-up (missed-cron) night could otherwise spike WAL
-# and re-fill the very disk we are protecting. The LIMIT subquery stops
-# scanning as soon as it has collected a batch of eligible (oldest, heap-
-# front) rows, so it does not seq-scan the whole table.
-deleted_total=0
+# ── 1. Create partitions ahead ──────────────────────────────────────────
+# IF NOT EXISTS makes re-runs (and overlap with days the swap already
+# created) a no-op. Bounds are UTC midnights, matching the swap.
+created=0
+i=0
+while [ "${i}" -le "${CREATE_AHEAD}" ]; do
+    d=$(date -u -d "+${i} days" +%F)
+    next=$(date -u -d "+$((i + 1)) days" +%F)
+    pname="odds_history_p$(date -u -d "${d}" +%Y%m%d)"
+    out=$(psql_q "CREATE TABLE IF NOT EXISTS ${pname} PARTITION OF odds_history FOR VALUES FROM ('${d}') TO ('${next}');" 2>&1) || {
+        echo "odds-retention: create ${pname} failed: ${out}" >&2
+        exit 1
+    }
+    created=$((created + 1))
+    i=$((i + 1))
+done
+
+# ── 2. Drop dated partitions past the window ────────────────────────────
+# DETACH CONCURRENTLY first so the parent lock stays share-level (feed
+# inserts don't stall), then DROP the standalone table (instant, returns
+# space to the OS).
+cutoff=$(date -u -d "-${RETENTION_DAYS} days" +%Y%m%d)
+old_parts=$(psql_q "SELECT c.relname
+  FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+ WHERE i.inhparent = 'odds_history'::regclass
+   AND c.relname ~ '^odds_history_p[0-9]{8}\$'
+   AND substring(c.relname from 16) < '${cutoff}'
+ ORDER BY c.relname;")
+dropped=0
+for p in ${old_parts}; do
+    psql_q "ALTER TABLE odds_history DETACH PARTITION ${p} CONCURRENTLY;" >/dev/null
+    psql_q "DROP TABLE ${p};" >/dev/null
+    printf '{"service":"odds-retention","event":"partition_dropped","partition":"%s"}\n' "${p}"
+    dropped=$((dropped + 1))
+done
+
+# ── 3. Safety-DEFAULT sweep ─────────────────────────────────────────────
+# odds_history_default3 should be empty; anything landing there has a
+# timestamp outside every dated partition (clock skew, replay older than
+# the create-ahead window). Trim rows past the retention window in small
+# batches and surface the count.
+default_deleted=0
 while :; do
     n=$(psql_q "WITH del AS (
-            DELETE FROM ${TABLE}
+            DELETE FROM odds_history_default3
             WHERE ctid IN (
-                SELECT ctid FROM ${TABLE}
+                SELECT ctid FROM odds_history_default3
                 WHERE ts < now() - interval '${RETENTION_DAYS} days'
                 LIMIT ${BATCH}
             )
             RETURNING 1
         ) SELECT count(*) FROM del;" | tr -d '[:space:]')
     n=${n:-0}
-    deleted_total=$((deleted_total + n))
+    default_deleted=$((default_deleted + n))
     [ "${n}" -lt "${BATCH}" ] && break
     sleep 2
 done
+default_rows=$(psql_q "SELECT count(*) FROM odds_history_default3;" | tr -d '[:space:]')
+if [ "${default_rows:-0}" -gt 10000 ]; then
+    printf '{"service":"odds-retention","event":"default_not_empty","rows":%s}\n' "${default_rows}" >&2
+fi
 
 unset PGPASSWORD
 
-printf '{"service":"odds-retention","event":"complete","deleted":%d,"retention_days":%d}\n' \
-    "${deleted_total}" "${RETENTION_DAYS}"
+printf '{"service":"odds-retention","event":"complete","partitions_ensured":%d,"partitions_dropped":%d,"default_deleted":%d,"default_rows":%s}\n' \
+    "${created}" "${dropped}" "${default_deleted}" "${default_rows:-0}"

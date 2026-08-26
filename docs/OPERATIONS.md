@@ -302,7 +302,10 @@ The daily dump is wired up via root cron at 03:00 UTC, running
 The script `docker exec`s into the postgres container and writes
 `/var/backups/oddzilla/oddzilla-<TS>.sql.gz` (root:team mode 640).
 Retention is **count-based** — keep the newest `RETENTION_COUNT` dumps
-(default **2**, lowered from 4 on 2026-06-17). At ~5.5 GB/dump (the dump
+(script default **2**; the production cron line pins `RETENTION_COUNT=1`
+since 2026-08-26, when the off-host pull below went live — the durable
+history line is the workstation copy, the on-box dump only has to survive
+until the next pull). At ~5.5 GB/dump (the dump
 size tracks the DB; see odds_history retention below) two dumps hard-bound
 the local footprint to ~11 GB. The script prunes to `RETENTION_COUNT-1`
 **before** dumping and writes to a `.part` temp with an atomic rename, so a
@@ -323,22 +326,27 @@ catch-all `odds_history_default` partition and nothing pruned it — by
 cause of the repeat disk-full outages (2026-04-22, 05-09, 06-09, 06-17);
 trimming backups only ever delayed an unbounded table.
 
+**Since 2026-08-26 the table runs on daily dated partitions**
+(`odds_history_pYYYYMMDD`, UTC-midnight bounds) plus a safety DEFAULT
+(`odds_history_default3`, expected empty).
 [`infra/hetzner/backup/odds_retention.sh`](../infra/hetzner/backup/odds_retention.sh)
-(installed as `oddzilla-odds-retention`, cron `30 3 * * *`) caps the table at
-`ODDS_RETENTION_DAYS` (default **45**; was 60 until 2026-07-02 — daily odds
-volume grew to ~17.5M rows/day and the 60-day window pushed pg dumps past
-8 GB) with a batched DELETE
-(`ODDS_RETENTION_BATCH` rows/statement, default 1 M) so one run can't spike
-WAL on a tight disk. Paired with the per-table autovacuum set once at install
-(`autovacuum_vacuum_scale_factor=0, *_threshold=2000000` on
-`odds_history_default`), freed space is reused by new inserts and the heap
-**plateaus** instead of growing without bound.
+(installed as `oddzilla-odds-retention`, cron `30 3 * * *`) now does
+partition maintenance instead of DELETEs: pre-creates partitions
+`today..today+ODDS_CREATE_AHEAD` (default 7), DETACH CONCURRENTLY + DROPs
+dated partitions older than `ODDS_RETENTION_DAYS` (default **35**; admin
+odds charts look back 30 days, ZillaTips reads the permanent
+`prematch_odds` snapshot, settlement never reads history), and sweeps the
+safety DEFAULT with a small batched DELETE (a non-trivial row count there
+is logged as a warning — it means inserts are falling outside every dated
+partition). A partition DROP is instant and returns space to the OS, so
+the table carries **zero bloat and no high-water mark** — the disk cost is
+exactly the live window (~35 GB at current volume) plus the day being
+written.
 
-Note: a DELETE never returns pages to the OS, so this **stops growth but
-does not shrink** the existing 64 GB heap. The disk stays at its current ~78%
-until the backlog is reclaimed. What's safe to keep at 60 days while admin
-odds charts only look back 7 days and ZillaTips snapshots `prematch_odds`
-permanently is an operator call — the 60-day window was chosen 2026-06-17.
+The pre-2026-08-26 model was a nightly batched DELETE against a single
+catch-all DEFAULT partition: it plateaued the heap (~60 GB at the 45-day
+window) but never returned pages to the OS — the reason both one-time
+reclaims below were needed.
 
 #### One-time reclaim (when you want the ~50 GB back)
 
@@ -353,6 +361,19 @@ permanently is an operator call — the 60-day window was chosen 2026-06-17.
 > History older than 2026-06-24 exists only in the nightly dumps from
 > before the reclaim. The nightly DELETE cron continues to work unchanged
 > (it targets the parent table).
+
+> **Second reclaim + dated-partition conversion executed 2026-08-26.**
+> Window narrowed 45 -> 35 days. Disk couldn't hold old + new copies
+> side-by-side, so the swap ran as export -> drop -> restore: (1) one tx
+> DETACHed `odds_history_default2` and created daily partitions
+> `2026-07-23..2026-09-02` plus safety DEFAULT `odds_history_default3` —
+> inserts rerouted instantly, zero loss; (2) the 35-day keep-window
+> (~380 M rows) was exported from the detached table in one seq scan to
+> line-aligned gzip chunks (~5 GB), row-count-verified; (3) the 60 GB old
+> heap was DROPped (disk 90% -> 55%); (4) chunks were restored through the
+> parent into the dated partitions with CHECKPOINTs between. The retention
+> cron was rewritten to the partition model in the same change (see above)
+> — no third reclaim will ever be needed.
 
 A plain DELETE + `VACUUM` won't return disk; `VACUUM FULL` needs ~table-size
 temp and an `ACCESS EXCLUSIVE` lock (odds writes freeze for minutes), and
@@ -545,10 +566,14 @@ the whole file — so secrets never enter the cron/child-process environment.
 
 Before accepting real money:
 
-1. ~~Off-host copy~~ — solved via the PC pull script
-   ([`infra/local/pull-backup.ps1`](../infra/local/pull-backup.ps1)).
-   Once the operator workstation's Task Scheduler is wired up, dumps
-   land off-server within an hour of the server-side cron.
+1. ~~Off-host copy~~ — **wired 2026-08-26**. Operator workstation runs
+   Task Scheduler job `OddzillaBackupPull` (daily 09:00 local,
+   StartWhenAvailable) executing `D:\AI\OddzillaBackups\pull.ps1` — a
+   sha256-verified variant of
+   [`infra/local/pull-backup.ps1`](../infra/local/pull-backup.ps1) that
+   pulls the newest dump into `D:\AI\OddzillaBackups\`, verifies the
+   hash against the box, and keeps the newest 7 locally (~40 GB). With
+   this in place the on-box cron pins `RETENTION_COUNT=1`.
 2. Continuous WAL archiving (`archive_mode=on`, `archive_command` to
    a Hetzner Storage Box or S3 bucket). Enables point-in-time recovery.
 3. Weekly restore drill on a sandbox box. A backup you haven't
