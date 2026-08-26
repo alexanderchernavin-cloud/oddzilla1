@@ -379,6 +379,21 @@ older partitions are dropped (or, in production, detached and archived).
 `market_type → tournament → sport → global`; first match wins. Edited by
 admins; every change is also written to `admin_audit_log`.
 
+**`boosted_odds_config`** — Custom Boosted Odds rules (migration 0085).
+One row per (scope, ref): `scope IN (sport, tournament, match, competitor,
+market)` with a typed FK per tier (ON DELETE CASCADE) and a partial unique
+index per scope so an entity carries at most one rule. `boost_pct
+NUMERIC(5,2)` is a Netwinstable key delta in percentage points (same math
+as ZillaFlash — `boostMarketKey` in `packages/types/src/netwinstable.ts`),
+recomputed against live `published_odds` on every read: nothing is frozen
+in the row. `ends_at` NULL means the boost runs until the operator removes
+it; `min_risk_score NUMERIC(4,3)` NULL means every bettor receives it,
+otherwise `users.risk_score >= min_risk_score` gates delivery (anonymous
+viewers count as the 1.000 default). Resolution per market when rules
+overlap: market > match > competitor > tournament > sport; two competitor
+rules on the same match resolve to the higher pct. Managed at
+`/admin/boosted-odds`; every mutation is audit-logged.
+
 ### Tickets
 
 **`tickets`** — one per bet submission. `idempotency_key` is a unique
@@ -414,7 +429,12 @@ without reconstructing it from odds (NUMERIC(8,7); null when the feed
 hadn't shipped a probability for that outcome yet — falls back to
 `1/oddsCurrent` inside the cashout engine). Partial index `WHERE result
 IS NULL` gives settlement a tight index to scan when it needs to find
-unresolved selections for a market.
+unresolved selections for a market. `boost_rule_id` (migration 0085, FK
+`boosted_odds_config` ON DELETE SET NULL) records the Custom Boosted Odds
+rule that priced the leg — the bet-delay worker skips the per-leg drift
+tripwire for stamped legs because `odds_at_placement` is deliberately
+above the raw published price; settlement is unaffected (payout reads
+`odds_at_placement` regardless).
 
 ### Settlement
 

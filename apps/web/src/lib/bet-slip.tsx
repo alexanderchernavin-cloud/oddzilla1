@@ -40,6 +40,19 @@ export type SlipMode = "single" | "combo" | "tiple" | "tippot" | "betbuilder";
 
 const ALL_MODES: SlipMode[] = ["single", "combo", "tiple", "tippot", "betbuilder"];
 
+// True when two odds strings quote the same price. Compared numerically
+// so a formatting difference ("7" vs "7.00") never reads as drift, and
+// with a half-of-the-last-NUMERIC(10,4)-digit epsilon so float parse
+// noise doesn't either. Real movement is >= 1e-4 by construction —
+// published_odds is NUMERIC(10,4).
+export function sameOdds(a: string, b: string): boolean {
+  if (a === b) return true;
+  const na = Number.parseFloat(a);
+  const nb = Number.parseFloat(b);
+  if (!Number.isFinite(na) || !Number.isFinite(nb)) return false;
+  return Math.abs(na - nb) < 5e-5;
+}
+
 interface SlipState {
   selections: SlipSelection[];
   mode: SlipMode;
@@ -514,19 +527,42 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
           // it differs, stash the new odds + probability as pending —
           // the rail will surface them and require an explicit accept
           // before Place bet.
+          //
+          // Drift is a PRICE concept and nothing else. Oddin re-publishes
+          // the implied probability on essentially every odds_change, so
+          // a tick routinely carries a new `probability` at an unchanged
+          // `publishedOdds`. Gating the accept step on probability too
+          // (the pre-2026-08 condition) made the button flip Place bet →
+          // Accept a beat after every click, with an identical "old →
+          // new" price on the card — a phantom drift prompt. Probability
+          // is purely a client-side preview input for tiple / tippot
+          // (POST /bets never carries it; the server reads its own copy
+          // from market_outcomes), so it refreshes in place like
+          // `active` does instead of waiting on the user.
           const incomingProb =
             probability !== undefined && probability !== "" ? probability : null;
-          const tickEqualsAccepted =
-            odds === s.odds &&
-            ((incomingProb ?? s.probability ?? null) === (s.probability ?? null));
+          // Numeric compare, not string: every producer in the pipeline
+          // (odds-publisher formatPublishedOdds, the api formatOdds, the
+          // bettor-adjustment formatter) is documented to emit the same
+          // shape, but a future divergence like "7" vs "7.00" must not
+          // read as drift.
+          const oddsEqualsAccepted = sameOdds(odds, s.odds);
           const prevPendingOdds = s.pendingOdds ?? null;
           const prevPendingProb = s.pendingProbability ?? null;
-          const nextPendingOdds = tickEqualsAccepted ? null : odds;
-          const nextPendingProb = tickEqualsAccepted ? null : incomingProb;
+          const nextPendingOdds = oddsEqualsAccepted ? null : odds;
+          const nextPendingProb = oddsEqualsAccepted ? null : incomingProb;
+          // While the accepted price still holds, the fresh probability
+          // lands directly. Once the price has drifted it rides along in
+          // pendingProbability and is promoted by acceptPendingOdds().
+          const prevProb = s.probability ?? null;
+          const nextProb = oddsEqualsAccepted
+            ? (incomingProb ?? prevProb)
+            : prevProb;
           if (
             prevActive === nextActive &&
             prevPendingOdds === nextPendingOdds &&
-            prevPendingProb === nextPendingProb
+            prevPendingProb === nextPendingProb &&
+            prevProb === nextProb
           ) {
             return s;
           }
@@ -534,6 +570,7 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
           return {
             ...s,
             active: nextActive,
+            ...(nextProb !== null ? { probability: nextProb } : null),
             pendingOdds: nextPendingOdds,
             pendingProbability: nextPendingProb,
           };

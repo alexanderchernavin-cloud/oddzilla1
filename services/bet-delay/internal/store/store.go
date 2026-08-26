@@ -97,6 +97,11 @@ type Selection struct {
 	// clamp. Nil for legacy markets that don't ship one (OBB, very old
 	// rows); apply path degrades gracefully.
 	Probability *string
+	// Custom Boosted Odds rule that priced this leg (migration 0085).
+	// Non-nil means odds_at_placement is a Netwinstable-boosted price
+	// deliberately above the raw published odds — the drift tripwire is
+	// skipped for the leg (market/outcome activity still gates).
+	BoostRuleID *string
 }
 
 // LoadSelections runs under the ticket's SELECT FOR UPDATE lock.
@@ -111,7 +116,8 @@ SELECT ts.market_id,
        mt.id,
        t.id,
        c.sport_id,
-       mo.probability::text
+       mo.probability::text,
+       ts.boost_rule_id::text
   FROM ticket_selections ts
   JOIN markets         mk ON mk.id = ts.market_id
   JOIN matches         mt ON mt.id = mk.match_id
@@ -129,17 +135,18 @@ SELECT ts.market_id,
 	out := make([]Selection, 0, 4)
 	for rows.Next() {
 		var s Selection
-		var published, probability *string
+		var published, probability, boostRuleID *string
 		if err := rows.Scan(
 			&s.MarketID, &s.OutcomeID, &s.OddsAtPlacement,
 			&published, &s.OutcomeActive, &s.MarketStatus,
 			&s.MatchID, &s.TournamentID, &s.SportID,
-			&probability,
+			&probability, &boostRuleID,
 		); err != nil {
 			return nil, err
 		}
 		s.CurrentPublished = published
 		s.Probability = probability
+		s.BoostRuleID = boostRuleID
 		out = append(out, s)
 	}
 	return out, rows.Err()

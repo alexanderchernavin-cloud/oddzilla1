@@ -21,7 +21,7 @@ import type {
   BetBuilderQuoteAcceptedResponse,
   BetBuilderQuoteResponse,
 } from "@oddzilla/types";
-import { useBetSlip, type SlipMode } from "@/lib/bet-slip";
+import { sameOdds, useBetSlip, type SlipMode } from "@/lib/bet-slip";
 import {
   useLiveMarketStatusForMatches,
   useLiveOddsForMatches,
@@ -277,6 +277,20 @@ export function BetSlipRail() {
       const tick = liveTicks[`${s.marketId}:${s.outcomeId}`];
       if (!tick) continue;
       const prevActive = s.active ?? true;
+      // Custom Boosted Odds legs freeze at the boosted price: the raw
+      // WS tick is the UNBOOSTED published price and would otherwise
+      // permanently register as drift (the accept prompt would demand
+      // downgrading to the standard price). Only the `active` flag
+      // flows through — suspension must still lock the leg. The server
+      // recomputes the boosted price at placement within ±0.01; real
+      // drift beyond that surfaces as boosted_odds_drift on submit.
+      if (s.customBoostRuleId) {
+        if ((s.active ?? true) !== tick.active) {
+          slip.updateOdds(s.marketId, s.outcomeId, s.odds, undefined, tick.active);
+          appliedAny = true;
+        }
+        continue;
+      }
       const nextProb = tick.probability ?? s.probability;
       // Skip the update only when EVERY tracked field matches. Under the
       // old condition (odds + probability) an outcome could flip
@@ -357,7 +371,17 @@ export function BetSlipRail() {
   // from the user-accepted price), the Place-bet button is replaced by
   // an explicit "Accept odds change" step. Clicking it copies pending
   // → odds and the button reverts to Place bet.
-  const hasPendingOdds = selections.some((s) => s.pendingOdds != null);
+  //
+  // Compared numerically via sameOdds() — matching what SelectionCard
+  // already does before it draws the "old → new" delta. Without it, a
+  // leg restored from localStorage that was persisted with a
+  // numerically-equal pendingOdds (or any future formatting divergence
+  // between producers) puts the button in the accept state while the
+  // card shows no change at all: an accept prompt for a price that
+  // didn't move.
+  const hasPendingOdds = selections.some(
+    (s) => s.pendingOdds != null && !sameOdds(s.pendingOdds, s.odds),
+  );
 
   // Live-delay countdown surfaced ON the Place bet button (no separate
   // banner / footer — slip stays untouched until acceptance). Disables
@@ -643,6 +667,12 @@ export function BetSlipRail() {
             // and shaves -2 s off the live-bet acceptance delay.
             ...(s.zillaFlashOfferId
               ? { zillaFlashOfferId: s.zillaFlashOfferId }
+              : null),
+            // Forward the Custom Boosted Odds rule id (migration 0085);
+            // server re-validates the rule + recomputes the boosted
+            // price before debiting.
+            ...(s.customBoostRuleId
+              ? { boostedOddsRuleId: s.customBoostRuleId }
               : null),
           })),
           // Bettor opt-in for the bet-delay window. Server gates the
@@ -1334,12 +1364,12 @@ export function BetSlipRail() {
               >
                 {pendingPlacement
                   ? pendingSecondsLeft != null && pendingSecondsLeft > 0
-                    ? t("acceptingIn", { seconds: pendingSecondsLeft })
+                    ? t("placeBetIn", { seconds: pendingSecondsLeft })
                     : t("placing")
                   : submitting
                     ? t("placing")
                     : hasPendingOdds
-                      ? t("accept")
+                      ? t("acceptNewOdds")
                       : t("placeBet")}
               </Button>
             </>
@@ -1373,9 +1403,17 @@ export function BetSlipRail() {
             </label>
           )}
 
-          <div style={{ fontSize: 10, color: "var(--fg-dim)", textAlign: "center" }}>
-            {t("oddsChanged")}
-          </div>
+          {/* Drift hint for the accept step. Gated on hasPendingOdds —
+              it used to render unconditionally, so the slip permanently
+              claimed the odds had changed, including under a Place-bet
+              button in its normal state and under the live-delay
+              countdown of an already-submitted ticket (nothing left to
+              confirm at that point). */}
+          {hasPendingOdds && !pendingPlacement ? (
+            <div style={{ fontSize: 10, color: "var(--fg-dim)", textAlign: "center" }}>
+              {t("oddsChanged")}
+            </div>
+          ) : null}
         </form>
       )}
         </>

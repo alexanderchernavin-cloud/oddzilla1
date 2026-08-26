@@ -516,11 +516,12 @@ export class BetsService {
         }
         // Resolve the server-authoritative price for this leg.
         //
-        // ZillaFlash legs are the one case where a price ABOVE the raw
-        // published odds is legitimate: routes.ts already re-validated the
-        // offer and OVERWROTE sel.odds with the engine's authoritative
-        // boosted value (within the engine's own ±0.01 tolerance), so for
-        // these legs the submitted odds IS the server's number.
+        // ZillaFlash legs and Custom Boosted Odds legs are the cases
+        // where a price ABOVE the raw published odds is legitimate:
+        // routes.ts already re-validated the offer / rule and OVERWROTE
+        // sel.odds with the authoritative boosted value (within a ±0.01
+        // tolerance), so for these legs the submitted odds IS the
+        // server's number.
         //
         // Every other leg is priced at the bettor's *adjusted* current
         // published odds — the exact value the catalog rendered. We never
@@ -528,7 +529,7 @@ export class BetsService {
         // feeds the drift tripwire below.
         let authStr = outcome.publishedOdds;
         let authNum = currentOdds;
-        if (sel.zillaFlashOfferId) {
+        if (sel.zillaFlashOfferId || sel.boostedOddsRuleId) {
           authStr = sel.odds;
           authNum = submittedOdds;
         } else if (bettorCascade && !bettorCascade.empty) {
@@ -1112,6 +1113,11 @@ export class BetsService {
             outcomeId: s.outcomeId,
             oddsAtPlacement: authoritativeOddsBySel.get(selKey(s))!.str,
             probabilityAtPlacement: outcome.probability ?? null,
+            // Custom Boosted Odds rule that priced this leg (routes.ts
+            // validated it). The bet-delay worker skips per-leg drift
+            // for legs carrying it — odds_at_placement is deliberately
+            // above the raw published price.
+            boostRuleId: s.boostedOddsRuleId ?? null,
           };
         }),
       );

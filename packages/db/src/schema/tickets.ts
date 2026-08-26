@@ -81,6 +81,15 @@ export const ticketSelections = pgTable(
     outcomeId: text().notNull(),
     oddsAtPlacement: numeric({ precision: 10, scale: 4 }).notNull(),
     probabilityAtPlacement: numeric({ precision: 8, scale: 7 }),
+    // Custom Boosted Odds rule that priced this leg (migration 0085).
+    // NULL for ordinary legs. Set at placement after the server
+    // re-validated the rule + recomputed the boosted price; the
+    // bet-delay worker skips per-leg drift for legs carrying it
+    // (odds_at_placement is deliberately above the raw published
+    // price). No FK helper import — plain uuid, constraint lives in
+    // the migration (referencing boosted_odds_config would create a
+    // schema-file import cycle with markets).
+    boostRuleId: uuid("boost_rule_id"),
     result: outcomeResultEnum(),
     voidFactor: numeric({ precision: 4, scale: 3 }),
     settledAt: timestamp({ withTimezone: true }),

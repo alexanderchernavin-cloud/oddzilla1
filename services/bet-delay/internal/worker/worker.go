@@ -382,7 +382,14 @@ func (w *Worker) evaluate(p store.PendingTicket, selections []store.Selection, b
 			}
 		}
 		drifted := false
-		if !skipDrift {
+		// Custom Boosted Odds legs (ticket_selections.boost_rule_id,
+		// migration 0085) skip the drift tripwire: odds_at_placement is
+		// a Netwinstable-boosted price deliberately above the raw
+		// published odds, so |current - placed| would false-reject any
+		// boost bigger than the tolerance. Placement already
+		// re-validated the boosted price against the live book; market
+		// status + outcome activity above still gate the leg.
+		if !skipDrift && s.BoostRuleID == nil {
 			drift := math.Abs(current-placed) / placed
 			if drift > w.driftTolerance {
 				drifted = true
