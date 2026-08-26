@@ -93,6 +93,79 @@ async function loadPricedOutcomes(
   return priced;
 }
 
+// Market + outcome display labels via the same description templates
+// the storefront catalog resolves (English). Shared by the match
+// banner's main-market fallback and the market-scope cards.
+async function buildMarketLabels(
+  app: FastifyInstance,
+  args: {
+    providerMarketId: number;
+    specifiersJson: unknown;
+    homeTeam: string;
+    awayTeam: string;
+  },
+): Promise<{
+  marketLabel: string;
+  labelFor: (outcomeId: string, rawName: string) => string;
+}> {
+  const specs = (args.specifiersJson ?? {}) as Record<string, string>;
+  const variant = typeof specs.variant === "string" ? specs.variant : "";
+  const teams = { homeTeam: args.homeTeam, awayTeam: args.awayTeam };
+  const [descRows, outcomeDescRows] = await Promise.all([
+    app.db
+      .select({
+        variant: marketDescriptions.variant,
+        nameTemplate: marketDescriptions.nameTemplate,
+      })
+      .from(marketDescriptions)
+      .where(
+        and(
+          eq(marketDescriptions.providerMarketId, args.providerMarketId),
+          eq(marketDescriptions.language, "en"),
+        ),
+      ),
+    app.db
+      .select({
+        variant: outcomeDescriptions.variant,
+        outcomeId: outcomeDescriptions.outcomeId,
+        nameTemplate: outcomeDescriptions.nameTemplate,
+      })
+      .from(outcomeDescriptions)
+      .where(
+        and(
+          eq(outcomeDescriptions.providerMarketId, args.providerMarketId),
+          eq(outcomeDescriptions.language, "en"),
+        ),
+      ),
+  ]);
+  const template =
+    descRows.find((d) => d.variant === variant)?.nameTemplate ??
+    descRows.find((d) => d.variant === "")?.nameTemplate ??
+    `Market #${args.providerMarketId}`;
+  const marketLabel = substituteTemplate(template, specs, teams);
+  const labelFor = (outcomeId: string, rawName: string): string => {
+    if (rawName) return rawName;
+    const tpl =
+      outcomeDescRows.find((d) => d.variant === variant && d.outcomeId === outcomeId)
+        ?.nameTemplate ??
+      outcomeDescRows.find((d) => d.variant === "" && d.outcomeId === outcomeId)
+        ?.nameTemplate ??
+      null;
+    if (tpl) {
+      const rendered = renderOutcomeLabel(tpl, specs, args.homeTeam, args.awayTeam);
+      if (rendered) return rendered;
+    }
+    return outcomeId === "1"
+      ? args.homeTeam
+      : outcomeId === "2"
+        ? args.awayTeam
+        : outcomeId === "3"
+          ? "Draw"
+          : outcomeId;
+  };
+  return { marketLabel, labelFor };
+}
+
 export default async function zillaboostBannersRoutes(app: FastifyInstance) {
   app.get("/catalog/zillaboost-banners", async (request, reply) => {
     reply.header("cache-control", "no-store");
@@ -213,27 +286,48 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
         );
       const byId = new Map(rows.map((r) => [r.id.toString(), r]));
 
-      // Match-winner market per match (provider id 1, active). One
-      // query for all banner matches; ties broken by lowest market id.
-      const winnerRows = await app.db
+      // Main-market candidates per match. Preference order mirrors what
+      // a bettor calls the main market right now: match winner (1) when
+      // still active, else the CURRENT map winner (4, highest map
+      // number among active), else the first remaining active market.
+      // Deep-live matches often have 1 and 4 settled away entirely —
+      // the banner still shows something bettable.
+      const candidateRows = await app.db
         .select({
           id: markets.id,
           matchId: markets.matchId,
+          providerMarketId: markets.providerMarketId,
+          specifiersJson: markets.specifiersJson,
         })
         .from(markets)
-        .where(
-          and(
-            inArray(markets.matchId, ids),
-            eq(markets.providerMarketId, 1),
-            eq(markets.status, 1),
-          ),
-        )
-        .orderBy(markets.matchId, markets.id);
-      const winnerByMatch = new Map<string, bigint>();
-      for (const w of winnerRows) {
-        const key = w.matchId.toString();
-        if (!winnerByMatch.has(key)) winnerByMatch.set(key, w.id);
+        .where(and(inArray(markets.matchId, ids), eq(markets.status, 1)))
+        .orderBy(markets.matchId, markets.providerMarketId, markets.id);
+      const candidatesByMatch = new Map<string, typeof candidateRows>();
+      for (const c of candidateRows) {
+        const key = c.matchId.toString();
+        const list = candidatesByMatch.get(key);
+        if (list) list.push(c);
+        else candidatesByMatch.set(key, [c]);
       }
+      const mapNumber = (specifiersJson: unknown): number => {
+        const specs = (specifiersJson ?? {}) as Record<string, string>;
+        const n = Number.parseInt(specs.map ?? "", 10);
+        return Number.isFinite(n) ? n : 0;
+      };
+      const rankCandidates = (list: typeof candidateRows) =>
+        [...list].sort((a, b) => {
+          const pref = (c: (typeof list)[number]) =>
+            c.providerMarketId === 1 ? 0 : c.providerMarketId === 4 ? 1 : 2;
+          if (pref(a) !== pref(b)) return pref(a) - pref(b);
+          if (a.providerMarketId === 4 && b.providerMarketId === 4) {
+            // Current map = highest active map number.
+            return mapNumber(b.specifiersJson) - mapNumber(a.specifiersJson);
+          }
+          if (a.providerMarketId !== b.providerMarketId) {
+            return a.providerMarketId - b.providerMarketId;
+          }
+          return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+        });
 
       for (const r of matchRules) {
         const m = byId.get(r.matchId!.toString());
@@ -251,26 +345,48 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
           minRiskScore: null,
         };
         let marketId: string | null = null;
+        let marketLabel: string | null = null;
+        let teamShaped = false;
         let outcomes: ZillaBoostBannerOutcome[] = [];
-        const winnerId = winnerByMatch.get(m.id.toString());
-        if (winnerId) {
-          const priced = await loadPricedOutcomes(app, winnerId);
+        const candidates = rankCandidates(
+          candidatesByMatch.get(m.id.toString()) ?? [],
+        );
+        // Bounded probe: the first few candidates cover every realistic
+        // shape; a match where none of them price has nothing bettable
+        // worth a banner odds column.
+        for (const cand of candidates.slice(0, 6)) {
+          const priced = await loadPricedOutcomes(app, cand.id);
           const quote = quoteBoostedMarket(rule, priced);
-          if (quote) {
-            marketId = winnerId.toString();
-            outcomes = quote.map((q) => {
-              const label =
-                q.outcomeId === "1"
-                  ? m.homeTeam
-                  : q.outcomeId === "2"
-                    ? m.awayTeam
-                    : q.outcomeId === "3"
-                      ? "Draw"
-                      : (priced.find((p) => p.outcomeId === q.outcomeId)?.rawName ??
-                        q.outcomeId);
-              return { ...q, label };
-            });
-          }
+          if (!quote) continue;
+          teamShaped =
+            cand.providerMarketId === 1 || cand.providerMarketId === 4;
+          const labels = await buildMarketLabels(app, {
+            providerMarketId: cand.providerMarketId,
+            specifiersJson: cand.specifiersJson,
+            homeTeam: m.homeTeam,
+            awayTeam: m.awayTeam,
+          });
+          marketId = cand.id.toString();
+          marketLabel = labels.marketLabel;
+          outcomes = quote.map((q) => ({
+            ...q,
+            label: teamShaped
+              ? q.outcomeId === "1"
+                ? m.homeTeam
+                : q.outcomeId === "2"
+                  ? m.awayTeam
+                  : q.outcomeId === "3"
+                    ? "Draw"
+                    : labels.labelFor(
+                        q.outcomeId,
+                        priced.find((p) => p.outcomeId === q.outcomeId)?.rawName ?? "",
+                      )
+              : labels.labelFor(
+                  q.outcomeId,
+                  priced.find((p) => p.outcomeId === q.outcomeId)?.rawName ?? "",
+                ),
+          }));
+          break;
         }
         out.matches.push({
           ruleId: r.id,
@@ -287,6 +403,8 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
           tournamentName: m.tournamentName,
           bestOf: m.bestOf,
           marketId,
+          marketLabel,
+          teamShaped,
           outcomes,
         } satisfies ZillaBoostMatchBanner);
       }
@@ -338,49 +456,12 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
       const quote = quoteBoostedMarket(rule, priced);
       if (!quote) continue;
 
-      // Market + outcome labels through the same description templates
-      // the storefront catalog resolves (English).
-      const specs = (row.specifiersJson ?? {}) as Record<string, string>;
-      const variant = typeof specs.variant === "string" ? specs.variant : "";
-      const teams = { homeTeam: row.homeTeam, awayTeam: row.awayTeam };
-      const [descRows, outcomeDescRows] = await Promise.all([
-        app.db
-          .select({
-            variant: marketDescriptions.variant,
-            nameTemplate: marketDescriptions.nameTemplate,
-          })
-          .from(marketDescriptions)
-          .where(
-            and(
-              eq(marketDescriptions.providerMarketId, row.providerMarketId),
-              eq(marketDescriptions.language, "en"),
-            ),
-          ),
-        app.db
-          .select({
-            variant: outcomeDescriptions.variant,
-            outcomeId: outcomeDescriptions.outcomeId,
-            nameTemplate: outcomeDescriptions.nameTemplate,
-          })
-          .from(outcomeDescriptions)
-          .where(
-            and(
-              eq(outcomeDescriptions.providerMarketId, row.providerMarketId),
-              eq(outcomeDescriptions.language, "en"),
-            ),
-          ),
-      ]);
-      const template =
-        descRows.find((d) => d.variant === variant)?.nameTemplate ??
-        descRows.find((d) => d.variant === "")?.nameTemplate ??
-        `Market #${row.providerMarketId}`;
-      const marketLabel = substituteTemplate(template, specs, teams);
-      const outcomeTemplate = (outcomeId: string): string | null =>
-        outcomeDescRows.find((d) => d.variant === variant && d.outcomeId === outcomeId)
-          ?.nameTemplate ??
-        outcomeDescRows.find((d) => d.variant === "" && d.outcomeId === outcomeId)
-          ?.nameTemplate ??
-        null;
+      const labels = await buildMarketLabels(app, {
+        providerMarketId: row.providerMarketId,
+        specifiersJson: row.specifiersJson,
+        homeTeam: row.homeTeam,
+        awayTeam: row.awayTeam,
+      });
 
       out.markets.push({
         ruleId: r.id,
@@ -392,28 +473,14 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
         sportSlug: row.sportSlug,
         status: row.matchStatus,
         marketId: row.id.toString(),
-        marketLabel,
-        outcomes: quote.map((q) => {
-          const raw = priced.find((p) => p.outcomeId === q.outcomeId);
-          let label = raw?.rawName ?? "";
-          if (!label) {
-            const tpl = outcomeTemplate(q.outcomeId);
-            if (tpl) {
-              label = renderOutcomeLabel(tpl, specs, row.homeTeam, row.awayTeam);
-            }
-          }
-          if (!label) {
-            label =
-              q.outcomeId === "1"
-                ? row.homeTeam
-                : q.outcomeId === "2"
-                  ? row.awayTeam
-                  : q.outcomeId === "3"
-                    ? "Draw"
-                    : q.outcomeId;
-          }
-          return { ...q, label };
-        }),
+        marketLabel: labels.marketLabel,
+        outcomes: quote.map((q) => ({
+          ...q,
+          label: labels.labelFor(
+            q.outcomeId,
+            priced.find((p) => p.outcomeId === q.outcomeId)?.rawName ?? "",
+          ),
+        })),
       } satisfies ZillaBoostMarketBanner);
     }
 

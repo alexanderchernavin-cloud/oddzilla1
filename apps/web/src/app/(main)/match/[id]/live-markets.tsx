@@ -957,18 +957,17 @@ function LineFamilyCard({
     );
   }
 
-  // Boost chip once in the family header when EVERY visible line is
-  // boosted (a match / tournament / sport rule covers all of them).
-  // A partial boost (single market-scope rule on one line) keeps the
-  // per-cell chips so the boosted line is still identifiable.
+  // Boost chip once in the family header when ANY visible line is
+  // boosted. Never per-cell chips in ladders — a handicap family
+  // rendered dozens of them. The green cell styling + the struck
+  // original price already identify exactly which lines carry the
+  // boost (a line can drop out individually via the fair-book clamp
+  // or its own suspension even under a match-wide rule).
   const rowBoost = (mk: MarketSnapshot): AnyBoostEntry | undefined =>
     mk.outcomes
       .map((o) => boostByOutcome.get(`${mk.id}:${o.outcomeId}`))
       .find(Boolean);
-  const familyBoosts = visibleMarkets.map(rowBoost);
-  const allRowsBoosted =
-    familyBoosts.length > 0 && familyBoosts.every(Boolean);
-  const headerBoost = allRowsBoosted ? familyBoosts[0] : undefined;
+  const headerBoost = visibleMarkets.map(rowBoost).find(Boolean);
 
   return (
     <div className="card" style={{ padding: 16, borderRadius: "var(--r-md)" }}>
@@ -1056,10 +1055,6 @@ function LineFamilyCard({
             tips={tipsByMarket.get(m.id) ?? EMPTY_TIPS}
             familyBaseName={family.baseName}
             boostByOutcome={boostByOutcome}
-            flashNowMs={flashNowMs}
-            customNowMs={customNowMs}
-            flashKickerShort={flashKickerShort}
-            showCellChips={!allRowsBoosted}
           />
         ))}
       </div>
@@ -1077,10 +1072,6 @@ function LineRow({
   tips,
   familyBaseName,
   boostByOutcome,
-  flashNowMs,
-  customNowMs,
-  flashKickerShort,
-  showCellChips,
 }: {
   market: MarketSnapshot;
   match: MatchMeta;
@@ -1091,11 +1082,6 @@ function LineRow({
   tips: ZillaTip[];
   familyBaseName: string;
   boostByOutcome: Map<string, AnyBoostEntry>;
-  flashNowMs: number;
-  customNowMs: number;
-  flashKickerShort: string;
-  // False when the family header already wears the single boost chip.
-  showCellChips: boolean;
 }) {
   const bySlot = new Map<string, MarketOutcome>();
   for (const o of m.outcomes) {
@@ -1198,14 +1184,6 @@ function LineRow({
               }
               style={{ width: "100%" }}
             />
-            {showCellChips && (
-              <BoostChip
-                boost={boostEntry}
-                flashNowMs={flashNowMs}
-                customNowMs={customNowMs}
-                kickerShort={flashKickerShort}
-              />
-            )}
             {outcomeTips.length > 0 && (
               <div
                 style={{
