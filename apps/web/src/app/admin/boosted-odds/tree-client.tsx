@@ -657,6 +657,9 @@ function MatchCard({
   const [expanded, setExpanded] = useState(false);
   const [markets, setMarkets] = useState<MarketRow[] | null>(null);
   const [loadingMarkets, setLoadingMarkets] = useState(false);
+  // Multiselect for bulk market boosts — checked market ids.
+  const [checked, setChecked] = useState<Set<string>>(() => new Set());
+  const [bulkOpen, setBulkOpen] = useState(false);
   const live = m.status === "live";
 
   const loadMarkets = useCallback(async () => {
@@ -807,6 +810,69 @@ function MatchCard({
           {!loadingMarkets && markets && markets.length === 0 && (
             <Note>No active markets on this match.</Note>
           )}
+          {checked.size > 0 && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                padding: "6px 12px 6px 98px",
+                fontSize: 12.5,
+              }}
+            >
+              <span style={{ color: "var(--color-fg-muted)" }}>
+                {checked.size} selected
+              </span>
+              <button
+                type="button"
+                onClick={() => setBulkOpen(true)}
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  padding: "3px 12px",
+                  borderRadius: 6,
+                  border: "none",
+                  background: GREEN,
+                  color: "#fff",
+                  cursor: "pointer",
+                }}
+              >
+                Boost selected
+              </button>
+              <button
+                type="button"
+                onClick={() => setChecked(new Set())}
+                style={{
+                  fontSize: 12,
+                  padding: "3px 10px",
+                  borderRadius: 6,
+                  border: "1px solid var(--color-border)",
+                  background: "transparent",
+                  color: "var(--color-fg-muted)",
+                  cursor: "pointer",
+                }}
+              >
+                Clear
+              </button>
+            </div>
+          )}
+          {bulkOpen && (
+            <BoostModal
+              targets={[...checked].map((id) => ({
+                scope: "market" as const,
+                refId: id,
+              }))}
+              entityLabel={`${checked.size} markets — ${m.homeTeam} vs ${m.awayTeam}`}
+              rule={null}
+              onClose={() => setBulkOpen(false)}
+              onError={onError}
+              onChanged={() => {
+                setChecked(new Set());
+                onChanged();
+                void loadMarkets();
+              }}
+            />
+          )}
           {markets?.map((mk) => (
             <div
               key={mk.id}
@@ -814,10 +880,24 @@ function MatchCard({
                 display: "flex",
                 alignItems: "center",
                 gap: 8,
-                padding: "5px 12px 5px 98px",
+                padding: "5px 12px 5px 78px",
                 fontSize: 12.5,
               }}
             >
+              <input
+                type="checkbox"
+                checked={checked.has(mk.id)}
+                onChange={(e) => {
+                  const on = e.currentTarget.checked;
+                  setChecked((prev) => {
+                    const next = new Set(prev);
+                    if (on) next.add(mk.id);
+                    else next.delete(mk.id);
+                    return next;
+                  });
+                }}
+                style={{ accentColor: "#16a34a", flexShrink: 0 }}
+              />
               <span
                 style={{
                   flex: 1,
@@ -1159,8 +1239,7 @@ function BoostControl({
       </button>
       {open && (
         <BoostModal
-          scope={scope}
-          refId={refId}
+          targets={[{ scope, refId }]}
           entityLabel={entityLabel}
           rule={rule}
           onClose={() => setOpen(false)}
@@ -1180,22 +1259,23 @@ function toLocalInputValue(iso: string): string {
 }
 
 function BoostModal({
-  scope,
-  refId,
+  targets,
   entityLabel,
   rule,
   onClose,
   onError,
   onChanged,
 }: {
-  scope: Scope;
-  refId: string;
+  // One rule is upserted per target — a single entity from a Boost
+  // button, or a checked set of markets from the multiselect.
+  targets: Array<{ scope: Scope; refId: string }>;
   entityLabel: string;
   rule: RuleDto | null;
   onClose: () => void;
   onError: (msg: string) => void;
   onChanged: () => void;
 }) {
+  const scope = targets[0]?.scope ?? "market";
   const [pct, setPct] = useState(rule ? String(rule.boostPct) : "3");
   // End modes: open-ended, a duration from now (quick presets or a
   // custom amount in minutes/hours), or an exact end time.
@@ -1269,17 +1349,19 @@ function BoostModal({
     }
     setBusy(true);
     try {
-      await clientApi("/admin/boosted-odds/rules", {
-        method: "PUT",
-        body: JSON.stringify({
-          scope,
-          refId,
-          boostPct: pctNum,
-          endsAt: endsIso,
-          minRiskScore: minRsNum,
-          banner,
-        }),
-      });
+      for (const target of targets) {
+        await clientApi("/admin/boosted-odds/rules", {
+          method: "PUT",
+          body: JSON.stringify({
+            scope: target.scope,
+            refId: target.refId,
+            boostPct: pctNum,
+            endsAt: endsIso,
+            minRiskScore: minRsNum,
+            banner,
+          }),
+        });
+      }
       onChanged();
       onClose();
     } catch (err) {
