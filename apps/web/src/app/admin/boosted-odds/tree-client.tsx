@@ -1,18 +1,24 @@
 "use client";
 
-// Boosted Odds admin tree (migration 0085). Mirrors the storefront's
-// catalog hierarchy — sports at the top, expanding into tournaments
-// AND teams, tournaments into matches, matches into markets — with a
-// green Boost button on every row. Clicking it opens the assignment
-// popup: boost % (Netwinstable key delta, same math as ZillaFlash),
-// optional end time, optional Min Risk Score.
+// Boosted Odds admin board (migration 0085). Laid out like the
+// storefront, not like a config tree: a sports rail on the left (same
+// TOP-pinned order + live counts the oddzilla.cc sidebar shows) and
+// the selected sport's MATCH LIST on the right — the same flat card
+// list the sport page renders (live first, then upcoming by time,
+// team logos, tournament label with the gold star on Tier 1-2). Only
+// matches with something to bet on appear; tournaments without
+// matches don't exist here.
 //
-// Levels lazy-load on expand (same pattern as the RiskZilla live-delay
-// tree). After every save / remove, the branch reloads so rule badges
-// stay accurate, and the summary table re-fetches.
+// Every entity keeps its green Boost button: the sport (rail + board
+// header), each tournament (chip strip above the list, doubles as a
+// filter), each match card, each market (expand a card), and each team
+// (Teams tab with search). The popup assigns boost % / end time / Min
+// Risk Score.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
+import { orderSportsForSidebar } from "@/lib/sport-order";
+import { isFeaturedTier } from "@/components/ui/tier-mark";
 
 export interface RuleDto {
   id: string;
@@ -32,31 +38,42 @@ export interface SportRow {
   id: number;
   slug: string;
   name: string;
+  liveCount: number;
+  upcomingCount: number;
   rule: RuleDto | null;
 }
 
-interface TournamentRow {
+interface BoardTournament {
   id: number;
   name: string;
   riskTier: number | null;
-  startAt: string | null;
-  endAt: string | null;
   rule: RuleDto | null;
+  matchCount: number;
+}
+
+interface BoardMatch {
+  id: string;
+  homeTeam: string;
+  awayTeam: string;
+  homeLogoUrl: string | null;
+  awayLogoUrl: string | null;
+  scheduledAt: string | null;
+  status: string;
+  tournamentId: number;
+  tournamentName: string;
+  riskTier: number | null;
+  rule: RuleDto | null;
+}
+
+interface BoardPayload {
+  tournaments: BoardTournament[];
+  matches: BoardMatch[];
 }
 
 interface TeamRow {
   id: number;
   name: string;
   abbreviation: string | null;
-  rule: RuleDto | null;
-}
-
-interface MatchRow {
-  id: string;
-  homeTeam: string;
-  awayTeam: string;
-  scheduledAt: string | null;
-  status: string;
   rule: RuleDto | null;
 }
 
@@ -77,9 +94,11 @@ const SCOPE_LABEL: Record<Scope, string> = {
   market: "Market",
 };
 
+const GREEN = "#16a34a";
+
 // ─── Root ───────────────────────────────────────────────────────────────
 
-export function BoostedOddsTree({
+export function BoostedOddsBoard({
   initialSports,
   initialRules,
 }: {
@@ -89,6 +108,16 @@ export function BoostedOddsTree({
   const [error, setError] = useState<string | null>(null);
   const [rules, setRules] = useState<RuleWithLabel[]>(initialRules);
   const [sports, setSports] = useState<SportRow[]>(initialSports);
+  // Storefront order: CS2 / Dota 2 / LoL / Valorant pinned, the rest
+  // alphabetical, bot sports hidden — identical to the sidebar.
+  const orderedSports = useMemo(
+    () => orderSportsForSidebar(sports, null, null),
+    [sports],
+  );
+  const [selectedId, setSelectedId] = useState<number | null>(
+    () => orderSportsForSidebar(initialSports, null, null)[0]?.id ?? null,
+  );
+  const selected = orderedSports.find((s) => s.id === selectedId) ?? null;
 
   const onError = useCallback((msg: string) => {
     setError(msg);
@@ -97,8 +126,6 @@ export function BoostedOddsTree({
     }
   }, []);
 
-  // Refresh the summary + the sports level after any mutation. Deeper
-  // levels each reload their own branch via their `bump` counters.
   const refreshSummary = useCallback(async () => {
     try {
       const [r, s] = await Promise.all([
@@ -125,7 +152,7 @@ export function BoostedOddsTree({
   );
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       {error && (
         <div
           role="alert"
@@ -143,36 +170,127 @@ export function BoostedOddsTree({
 
       <ActiveRulesTable rules={rules} onRemove={removeRule} />
 
-      <section style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <SectionHeader>Catalog</SectionHeader>
-        <div
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "230px minmax(0, 1fr)",
+          gap: 14,
+          alignItems: "start",
+        }}
+      >
+        {/* ── Sports rail (storefront sidebar shape) ────────────────── */}
+        <nav
           style={{
             border: "1px solid var(--color-border)",
-            borderRadius: 8,
+            borderRadius: 10,
             overflow: "hidden",
+            position: "sticky",
+            top: 12,
           }}
         >
-          {sports.map((s) => (
-            <SportNode
-              key={s.id}
-              sport={s}
-              onError={onError}
-              onChanged={refreshSummary}
-            />
-          ))}
-          {sports.length === 0 && (
-            <div
-              style={{
-                padding: "16px 14px",
-                fontSize: 13,
-                color: "var(--color-fg-muted)",
-              }}
-            >
-              No active sports.
-            </div>
-          )}
-        </div>
-      </section>
+          {orderedSports.map((s) => {
+            const active = s.id === selectedId;
+            return (
+              <div
+                key={s.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "7px 10px",
+                  borderBottom: "1px solid var(--color-border)",
+                  background: active ? "var(--color-bg-subtle)" : "transparent",
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => setSelectedId(s.id)}
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    background: "transparent",
+                    border: "none",
+                    cursor: "pointer",
+                    padding: 0,
+                    fontSize: 13,
+                    fontWeight: active ? 650 : 450,
+                    color: "var(--color-fg)",
+                    textAlign: "left",
+                  }}
+                >
+                  <span
+                    style={{
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {s.name}
+                  </span>
+                  {s.liveCount > 0 && (
+                    <span
+                      className="mono tnum"
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 4,
+                        fontSize: 10.5,
+                        color: "#dc2626",
+                        fontWeight: 700,
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: 5,
+                          height: 5,
+                          borderRadius: 999,
+                          background: "#dc2626",
+                        }}
+                      />
+                      {s.liveCount}
+                    </span>
+                  )}
+                  {s.upcomingCount > 0 && (
+                    <span
+                      className="mono tnum"
+                      style={{ fontSize: 10.5, color: "var(--color-fg-muted)" }}
+                    >
+                      {s.upcomingCount}
+                    </span>
+                  )}
+                </button>
+                {s.rule && <MiniRuleDot rule={s.rule} />}
+                <BoostControl
+                  scope="sport"
+                  refId={String(s.id)}
+                  entityLabel={s.name}
+                  rule={s.rule}
+                  compact
+                  onError={onError}
+                  onChanged={refreshSummary}
+                />
+              </div>
+            );
+          })}
+        </nav>
+
+        {/* ── Sport board ───────────────────────────────────────────── */}
+        {selected ? (
+          <SportBoard
+            key={selected.id}
+            sport={selected}
+            onError={onError}
+            onChanged={refreshSummary}
+          />
+        ) : (
+          <div style={{ fontSize: 13, color: "var(--color-fg-muted)" }}>
+            No active sports.
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -190,7 +308,7 @@ function ActiveRulesTable({
     return (
       <section
         style={{
-          padding: "12px 14px",
+          padding: "10px 14px",
           border: "1px solid var(--color-border)",
           borderRadius: 8,
           background: "var(--color-bg-subtle)",
@@ -198,8 +316,8 @@ function ActiveRulesTable({
           color: "var(--color-fg-muted)",
         }}
       >
-        No boost rules yet. Pick any entity below and press{" "}
-        <span style={{ color: "#16a34a", fontWeight: 600 }}>Boost</span>.
+        No boost rules yet. Pick any sport, tournament, team, match or market
+        below and press <span style={{ color: GREEN, fontWeight: 600 }}>Boost</span>.
       </section>
     );
   }
@@ -238,7 +356,15 @@ function ActiveRulesTable({
             >
               {SCOPE_LABEL[r.scope]}
             </span>
-            <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            <span
+              style={{
+                flex: 1,
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
               {r.label}
             </span>
             <RuleBadge rule={r} />
@@ -264,9 +390,9 @@ function ActiveRulesTable({
   );
 }
 
-// ─── Sport node ─────────────────────────────────────────────────────────
+// ─── Sport board (right pane) ───────────────────────────────────────────
 
-function SportNode({
+function SportBoard({
   sport,
   onError,
   onChanged,
@@ -275,27 +401,527 @@ function SportNode({
   onError: (msg: string) => void;
   onChanged: () => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const [tournaments, setTournaments] = useState<TournamentRow[] | null>(null);
-  const [teams, setTeams] = useState<TeamRow[] | null>(null);
-  const [teamQuery, setTeamQuery] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [showTeams, setShowTeams] = useState(false);
+  const [board, setBoard] = useState<BoardPayload | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState<"matches" | "teams">("matches");
+  const [tournamentFilter, setTournamentFilter] = useState<number | null>(null);
 
-  const loadTournaments = useCallback(async () => {
+  const loadBoard = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await clientApi<{ entries: TournamentRow[] }>(
-        `/admin/boosted-odds/sports/${sport.id}/tournaments`,
+      const data = await clientApi<BoardPayload>(
+        `/admin/boosted-odds/sports/${sport.id}/board`,
       );
-      setTournaments(data.entries);
+      setBoard(data);
     } catch (err) {
       onError(err instanceof ApiFetchError ? err.message : "load failed");
-      setTournaments([]);
+      setBoard({ tournaments: [], matches: [] });
     } finally {
       setLoading(false);
     }
   }, [sport.id, onError]);
+
+  useEffect(() => {
+    void loadBoard();
+  }, [loadBoard]);
+
+  const reload = useCallback(() => {
+    onChanged();
+    void loadBoard();
+  }, [onChanged, loadBoard]);
+
+  const visibleMatches = useMemo(() => {
+    if (!board) return [];
+    if (tournamentFilter === null) return board.matches;
+    return board.matches.filter((m) => m.tournamentId === tournamentFilter);
+  }, [board, tournamentFilter]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
+      {/* Header: sport name + sport-level Boost */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 650, margin: 0, flex: 1 }}>
+          {sport.name}
+        </h2>
+        <div
+          role="tablist"
+          style={{
+            display: "inline-flex",
+            border: "1px solid var(--color-border)",
+            borderRadius: 999,
+            overflow: "hidden",
+          }}
+        >
+          {(["matches", "teams"] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              role="tab"
+              aria-selected={tab === t}
+              onClick={() => setTab(t)}
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                padding: "4px 14px",
+                border: "none",
+                cursor: "pointer",
+                background: tab === t ? "var(--color-fg)" : "transparent",
+                color: tab === t ? "var(--color-bg)" : "var(--color-fg-muted)",
+              }}
+            >
+              {t === "matches" ? "Matches" : "Teams"}
+            </button>
+          ))}
+        </div>
+        <BoostControl
+          scope="sport"
+          refId={String(sport.id)}
+          entityLabel={sport.name}
+          rule={sport.rule}
+          onError={onError}
+          onChanged={reload}
+        />
+      </div>
+
+      {tab === "teams" ? (
+        <TeamsPane sport={sport} onError={onError} onChanged={reload} />
+      ) : (
+        <>
+          {/* Tournament chip strip — boost a whole tournament, or click
+              to filter the match list down to it. */}
+          {board && board.tournaments.length > 0 && (
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 6,
+              }}
+            >
+              <TournamentChip
+                label="All"
+                active={tournamentFilter === null}
+                onClick={() => setTournamentFilter(null)}
+              />
+              {board.tournaments.map((t) => (
+                <TournamentChip
+                  key={t.id}
+                  label={t.name}
+                  count={t.matchCount}
+                  featured={isFeaturedTier(t.riskTier)}
+                  rule={t.rule}
+                  active={tournamentFilter === t.id}
+                  onClick={() =>
+                    setTournamentFilter((cur) => (cur === t.id ? null : t.id))
+                  }
+                  boost={
+                    <BoostControl
+                      scope="tournament"
+                      refId={String(t.id)}
+                      entityLabel={t.name}
+                      rule={t.rule}
+                      compact
+                      onError={onError}
+                      onChanged={reload}
+                    />
+                  }
+                />
+              ))}
+            </div>
+          )}
+
+          {loading && <Note>Loading matches…</Note>}
+          {!loading && visibleMatches.length === 0 && (
+            <Note>No live or upcoming matches with active markets.</Note>
+          )}
+          {!loading && visibleMatches.length > 0 && (
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+              }}
+            >
+              {visibleMatches.map((m) => (
+                <MatchCard key={m.id} match={m} onError={onError} onChanged={reload} />
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function TournamentChip({
+  label,
+  count,
+  featured,
+  rule,
+  active,
+  onClick,
+  boost,
+}: {
+  label: string;
+  count?: number;
+  featured?: boolean;
+  rule?: RuleDto | null;
+  active: boolean;
+  onClick: () => void;
+  boost?: React.ReactNode;
+}) {
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "3px 6px 3px 10px",
+        borderRadius: 999,
+        border: `1px solid ${active ? "var(--color-fg)" : "var(--color-border)"}`,
+        background: active ? "var(--color-bg-subtle)" : "transparent",
+        fontSize: 12,
+        maxWidth: 340,
+      }}
+    >
+      <button
+        type="button"
+        onClick={onClick}
+        style={{
+          background: "transparent",
+          border: "none",
+          cursor: "pointer",
+          padding: 0,
+          fontSize: 12,
+          fontWeight: active ? 650 : 450,
+          color: "var(--color-fg)",
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 5,
+          minWidth: 0,
+        }}
+        title={label}
+      >
+        {featured && <span style={{ color: "#eab308" }}>★</span>}
+        <span
+          style={{
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            maxWidth: 220,
+          }}
+        >
+          {label}
+        </span>
+        {count !== undefined && (
+          <span className="mono tnum" style={{ color: "var(--color-fg-muted)", fontSize: 10.5 }}>
+            {count}
+          </span>
+        )}
+      </button>
+      {rule && <MiniRuleDot rule={rule} />}
+      {boost}
+    </span>
+  );
+}
+
+// ─── Match card (storefront match-row shape) ────────────────────────────
+
+function MatchCard({
+  match: m,
+  onError,
+  onChanged,
+}: {
+  match: BoardMatch;
+  onError: (msg: string) => void;
+  onChanged: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [markets, setMarkets] = useState<MarketRow[] | null>(null);
+  const [loadingMarkets, setLoadingMarkets] = useState(false);
+  const live = m.status === "live";
+
+  const loadMarkets = useCallback(async () => {
+    setLoadingMarkets(true);
+    try {
+      const data = await clientApi<{ entries: MarketRow[] }>(
+        `/admin/boosted-odds/matches/${m.id}/markets`,
+      );
+      setMarkets(data.entries);
+    } catch (err) {
+      onError(err instanceof ApiFetchError ? err.message : "load failed");
+      setMarkets([]);
+    } finally {
+      setLoadingMarkets(false);
+    }
+  }, [m.id, onError]);
+
+  const toggleMarkets = () => {
+    const next = !expanded;
+    setExpanded(next);
+    if (next && markets === null) void loadMarkets();
+  };
+
+  return (
+    <div
+      style={{
+        border: "1px solid var(--color-border)",
+        borderRadius: 10,
+        background: "var(--color-bg)",
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          padding: "10px 12px",
+        }}
+      >
+        {/* When / LIVE — same left column the storefront card leads with */}
+        <div
+          style={{
+            width: 74,
+            flexShrink: 0,
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+          }}
+        >
+          {live ? (
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                fontSize: 11,
+                fontWeight: 700,
+                color: "#dc2626",
+                letterSpacing: "0.08em",
+              }}
+            >
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: 999,
+                  background: "#dc2626",
+                }}
+              />
+              LIVE
+            </span>
+          ) : (
+            <MatchWhen iso={m.scheduledAt} />
+          )}
+        </div>
+
+        {/* Teams, stacked like the storefront row */}
+        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
+          <TeamLine name={m.homeTeam} logoUrl={m.homeLogoUrl} />
+          <TeamLine name={m.awayTeam} logoUrl={m.awayLogoUrl} />
+        </div>
+
+        {/* Tournament label + tier star */}
+        <div
+          style={{
+            width: 200,
+            flexShrink: 0,
+            fontSize: 11.5,
+            color: "var(--color-fg-muted)",
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+            overflow: "hidden",
+          }}
+          title={m.tournamentName}
+        >
+          {isFeaturedTier(m.riskTier) && <span style={{ color: "#eab308" }}>★</span>}
+          <span
+            style={{
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {m.tournamentName}
+          </span>
+        </div>
+
+        {m.rule && <RuleBadge rule={m.rule} />}
+        <BoostControl
+          scope="match"
+          refId={m.id}
+          entityLabel={`${m.homeTeam} vs ${m.awayTeam}`}
+          rule={m.rule}
+          onError={onError}
+          onChanged={onChanged}
+        />
+        <button
+          type="button"
+          onClick={toggleMarkets}
+          aria-expanded={expanded}
+          title="Boost a single market"
+          style={{
+            fontSize: 11.5,
+            padding: "3px 9px",
+            borderRadius: 6,
+            border: "1px solid var(--color-border)",
+            background: "transparent",
+            color: "var(--color-fg-muted)",
+            cursor: "pointer",
+            flexShrink: 0,
+          }}
+        >
+          Markets {expanded ? "▾" : "▸"}
+        </button>
+      </div>
+
+      {expanded && (
+        <div
+          style={{
+            borderTop: "1px solid var(--color-border)",
+            background: "var(--color-bg-subtle)",
+            padding: "4px 0",
+          }}
+        >
+          {loadingMarkets && <Note>Loading markets…</Note>}
+          {!loadingMarkets && markets && markets.length === 0 && (
+            <Note>No active markets on this match.</Note>
+          )}
+          {markets?.map((mk) => (
+            <div
+              key={mk.id}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "5px 12px 5px 98px",
+                fontSize: 12.5,
+              }}
+            >
+              <span
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+                title={mk.label}
+              >
+                {mk.label}
+                <span
+                  className="mono"
+                  style={{ marginLeft: 8, fontSize: 10.5, color: "var(--color-fg-muted)" }}
+                >
+                  #{mk.providerMarketId}
+                </span>
+              </span>
+              {mk.rule && <RuleBadge rule={mk.rule} />}
+              <BoostControl
+                scope="market"
+                refId={mk.id}
+                entityLabel={`${mk.label} — ${m.homeTeam} vs ${m.awayTeam}`}
+                rule={mk.rule}
+                compact
+                onError={onError}
+                onChanged={() => {
+                  onChanged();
+                  void loadMarkets();
+                }}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TeamLine({ name, logoUrl }: { name: string; logoUrl: string | null }) {
+  const [broken, setBroken] = useState(false);
+  return (
+    <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+      {logoUrl && !broken ? (
+        <img
+          src={logoUrl}
+          alt=""
+          width={18}
+          height={18}
+          style={{ borderRadius: 4, objectFit: "contain", flexShrink: 0 }}
+          onError={() => setBroken(true)}
+        />
+      ) : (
+        <span
+          style={{
+            width: 18,
+            height: 18,
+            borderRadius: 4,
+            background: "var(--color-bg-subtle)",
+            border: "1px solid var(--color-border)",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 8.5,
+            fontWeight: 700,
+            color: "var(--color-fg-muted)",
+            flexShrink: 0,
+          }}
+        >
+          {name.slice(0, 2).toUpperCase()}
+        </span>
+      )}
+      <span
+        style={{
+          fontSize: 13.5,
+          fontWeight: 550,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {name}
+      </span>
+    </span>
+  );
+}
+
+function MatchWhen({ iso }: { iso: string | null }) {
+  if (!iso) {
+    return (
+      <span style={{ fontSize: 11.5, color: "var(--color-fg-muted)" }}>TBD</span>
+    );
+  }
+  const d = new Date(iso);
+  const today = new Date();
+  const sameDay = d.toDateString() === today.toDateString();
+  return (
+    <>
+      <span className="mono tnum" style={{ fontSize: 13, fontWeight: 650 }}>
+        {d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+      </span>
+      <span style={{ fontSize: 10.5, color: "var(--color-fg-muted)" }}>
+        {sameDay
+          ? "Today"
+          : d.toLocaleDateString([], { day: "numeric", month: "short" })}
+      </span>
+    </>
+  );
+}
+
+// ─── Teams pane ─────────────────────────────────────────────────────────
+
+function TeamsPane({
+  sport,
+  onError,
+  onChanged,
+}: {
+  sport: SportRow;
+  onError: (msg: string) => void;
+  onChanged: () => void;
+}) {
+  const [teams, setTeams] = useState<TeamRow[] | null>(null);
+  const [query, setQuery] = useState("");
 
   const loadTeams = useCallback(
     async (q: string) => {
@@ -312,399 +938,88 @@ function SportNode({
     [sport.id, onError],
   );
 
-  // Debounced team search once the Teams branch is open.
   useEffect(() => {
-    if (!showTeams) return;
-    const t = window.setTimeout(() => void loadTeams(teamQuery), 250);
+    const t = window.setTimeout(() => void loadTeams(query), 250);
     return () => window.clearTimeout(t);
-  }, [showTeams, teamQuery, loadTeams]);
-
-  const toggle = () => {
-    const next = !expanded;
-    setExpanded(next);
-    if (next) void loadTournaments();
-  };
-
-  const reload = useCallback(() => {
-    onChanged();
-    if (expanded) void loadTournaments();
-    if (showTeams) void loadTeams(teamQuery);
-  }, [onChanged, expanded, showTeams, teamQuery, loadTournaments, loadTeams]);
+  }, [query, loadTeams]);
 
   return (
-    <div style={{ borderBottom: "1px solid var(--color-border)" }}>
-      <TreeRow
-        depth={0}
-        expanded={expanded}
-        onToggle={toggle}
-        title={sport.name}
-        rule={sport.rule}
-        boost={
-          <BoostControl
-            scope="sport"
-            refId={String(sport.id)}
-            entityLabel={sport.name}
-            rule={sport.rule}
-            onError={onError}
-            onChanged={reload}
-          />
-        }
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <input
+        value={query}
+        onChange={(e) => setQuery(e.currentTarget.value)}
+        placeholder="Search teams…"
+        style={{
+          fontSize: 13,
+          padding: "6px 10px",
+          borderRadius: 8,
+          border: "1px solid var(--color-border)",
+          background: "var(--color-bg)",
+          color: "var(--color-fg)",
+          maxWidth: 300,
+        }}
       />
-      {expanded && (
-        <div style={{ padding: "4px 0 10px 0" }}>
-          {loading && <LoadingNote>Loading tournaments…</LoadingNote>}
-          {!loading && tournaments && tournaments.length === 0 && (
-            <LoadingNote>No active tournaments under this sport.</LoadingNote>
-          )}
-          {tournaments?.map((t) => (
-            <TournamentNode
-              key={t.id}
-              tournament={t}
-              onError={onError}
-              onChanged={reload}
-            />
-          ))}
-
-          {/* Teams branch — collapsed by default, has its own search
-              because a sport can carry thousands of competitors. */}
-          <div style={{ padding: "6px 0 0 26px" }}>
-            <button
-              type="button"
-              onClick={() => setShowTeams((v) => !v)}
+      <div
+        style={{
+          border: "1px solid var(--color-border)",
+          borderRadius: 10,
+          overflow: "hidden",
+        }}
+      >
+        {teams === null && <Note>Loading teams…</Note>}
+        {teams !== null && teams.length === 0 && <Note>No teams found.</Note>}
+        {teams?.map((team) => (
+          <div
+            key={team.id}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "7px 12px",
+              borderBottom: "1px solid var(--color-border)",
+              fontSize: 13,
+            }}
+          >
+            <span
               style={{
-                fontSize: 12,
-                fontWeight: 600,
-                letterSpacing: "0.06em",
-                textTransform: "uppercase",
-                color: "var(--color-fg-muted)",
-                background: "transparent",
-                border: "none",
-                cursor: "pointer",
-                padding: "4px 0",
+                flex: 1,
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
               }}
             >
-              {showTeams ? "▾" : "▸"} Teams
-            </button>
-            {showTeams && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                <input
-                  value={teamQuery}
-                  onChange={(e) => setTeamQuery(e.currentTarget.value)}
-                  placeholder="Search teams…"
+              {team.name}
+              {team.abbreviation && (
+                <span
+                  className="mono"
                   style={{
-                    fontSize: 12.5,
-                    padding: "5px 8px",
-                    borderRadius: 6,
-                    border: "1px solid var(--color-border)",
-                    background: "var(--color-bg)",
-                    color: "var(--color-fg)",
-                    maxWidth: 260,
-                    marginBottom: 4,
+                    marginLeft: 8,
+                    fontSize: 10.5,
+                    color: "var(--color-fg-muted)",
                   }}
-                />
-                {teams === null && <LoadingNote>Loading teams…</LoadingNote>}
-                {teams !== null && teams.length === 0 && (
-                  <LoadingNote>No teams found.</LoadingNote>
-                )}
-                {teams?.map((team) => (
-                  <TreeRow
-                    key={team.id}
-                    depth={1}
-                    title={team.name}
-                    subtitle={team.abbreviation ?? undefined}
-                    rule={team.rule}
-                    boost={
-                      <BoostControl
-                        scope="competitor"
-                        refId={String(team.id)}
-                        entityLabel={team.name}
-                        rule={team.rule}
-                        onError={onError}
-                        onChanged={reload}
-                      />
-                    }
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Tournament node ────────────────────────────────────────────────────
-
-function TournamentNode({
-  tournament,
-  onError,
-  onChanged,
-}: {
-  tournament: TournamentRow;
-  onError: (msg: string) => void;
-  onChanged: () => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const [matches, setMatches] = useState<MatchRow[] | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  const loadMatches = useCallback(async () => {
-    setLoading(true);
-    try {
-      const data = await clientApi<{ entries: MatchRow[] }>(
-        `/admin/boosted-odds/tournaments/${tournament.id}/matches`,
-      );
-      setMatches(data.entries);
-    } catch (err) {
-      onError(err instanceof ApiFetchError ? err.message : "load failed");
-      setMatches([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [tournament.id, onError]);
-
-  const toggle = () => {
-    const next = !expanded;
-    setExpanded(next);
-    if (next) void loadMatches();
-  };
-
-  const reload = useCallback(() => {
-    onChanged();
-    if (expanded) void loadMatches();
-  }, [onChanged, expanded, loadMatches]);
-
-  return (
-    <div>
-      <TreeRow
-        depth={1}
-        expanded={expanded}
-        onToggle={toggle}
-        title={tournament.name}
-        subtitle={
-          tournament.riskTier != null ? `Tier ${tournament.riskTier}` : undefined
-        }
-        rule={tournament.rule}
-        boost={
-          <BoostControl
-            scope="tournament"
-            refId={String(tournament.id)}
-            entityLabel={tournament.name}
-            rule={tournament.rule}
-            onError={onError}
-            onChanged={reload}
-          />
-        }
-      />
-      {expanded && (
-        <div style={{ padding: "2px 0 6px 0" }}>
-          {loading && <LoadingNote>Loading matches…</LoadingNote>}
-          {!loading && matches && matches.length === 0 && (
-            <LoadingNote>No upcoming or live matches.</LoadingNote>
-          )}
-          {matches?.map((m) => (
-            <MatchNode key={m.id} match={m} onError={onError} onChanged={reload} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Match node ─────────────────────────────────────────────────────────
-
-function MatchNode({
-  match,
-  onError,
-  onChanged,
-}: {
-  match: MatchRow;
-  onError: (msg: string) => void;
-  onChanged: () => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const [markets, setMarkets] = useState<MarketRow[] | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  const loadMarkets = useCallback(async () => {
-    setLoading(true);
-    try {
-      const data = await clientApi<{ entries: MarketRow[] }>(
-        `/admin/boosted-odds/matches/${match.id}/markets`,
-      );
-      setMarkets(data.entries);
-    } catch (err) {
-      onError(err instanceof ApiFetchError ? err.message : "load failed");
-      setMarkets([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [match.id, onError]);
-
-  const toggle = () => {
-    const next = !expanded;
-    setExpanded(next);
-    if (next) void loadMarkets();
-  };
-
-  const reload = useCallback(() => {
-    onChanged();
-    if (expanded) void loadMarkets();
-  }, [onChanged, expanded, loadMarkets]);
-
-  const title = `${match.homeTeam} vs ${match.awayTeam}`;
-  const when = match.scheduledAt
-    ? new Date(match.scheduledAt).toLocaleString()
-    : "";
-
-  return (
-    <div>
-      <TreeRow
-        depth={2}
-        expanded={expanded}
-        onToggle={toggle}
-        title={title}
-        subtitle={`${match.status === "live" ? "LIVE" : when}`}
-        rule={match.rule}
-        boost={
-          <BoostControl
-            scope="match"
-            refId={match.id}
-            entityLabel={title}
-            rule={match.rule}
-            onError={onError}
-            onChanged={reload}
-          />
-        }
-      />
-      {expanded && (
-        <div style={{ padding: "2px 0 6px 0" }}>
-          {loading && <LoadingNote>Loading markets…</LoadingNote>}
-          {!loading && markets && markets.length === 0 && (
-            <LoadingNote>No active markets on this match.</LoadingNote>
-          )}
-          {markets?.map((mk) => (
-            <TreeRow
-              key={mk.id}
-              depth={3}
-              title={mk.label}
-              subtitle={`#${mk.providerMarketId}`}
-              rule={mk.rule}
-              boost={
-                <BoostControl
-                  scope="market"
-                  refId={mk.id}
-                  entityLabel={`${mk.label} — ${title}`}
-                  rule={mk.rule}
-                  onError={onError}
-                  onChanged={reload}
-                />
-              }
+                >
+                  {team.abbreviation}
+                </span>
+              )}
+            </span>
+            {team.rule && <RuleBadge rule={team.rule} />}
+            <BoostControl
+              scope="competitor"
+              refId={String(team.id)}
+              entityLabel={team.name}
+              rule={team.rule}
+              onError={onError}
+              onChanged={onChanged}
             />
-          ))}
-        </div>
-      )}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
 
-// ─── Shared row chrome ──────────────────────────────────────────────────
-
-function TreeRow({
-  depth,
-  expanded,
-  onToggle,
-  title,
-  subtitle,
-  rule,
-  boost,
-}: {
-  depth: number;
-  expanded?: boolean;
-  onToggle?: () => void;
-  title: string;
-  subtitle?: string;
-  rule: RuleDto | null;
-  boost: React.ReactNode;
-}) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        padding: `6px 12px 6px ${12 + depth * 18}px`,
-        fontSize: 13,
-      }}
-    >
-      {onToggle ? (
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-expanded={expanded}
-          style={{
-            width: 18,
-            flexShrink: 0,
-            background: "transparent",
-            border: "none",
-            cursor: "pointer",
-            color: "var(--color-fg-muted)",
-            fontSize: 11,
-            padding: 0,
-          }}
-        >
-          {expanded ? "▾" : "▸"}
-        </button>
-      ) : (
-        <span style={{ width: 18, flexShrink: 0 }} />
-      )}
-      <span
-        style={{
-          flex: 1,
-          minWidth: 0,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-        }}
-        title={title}
-      >
-        {onToggle ? (
-          <button
-            type="button"
-            onClick={onToggle}
-            style={{
-              background: "transparent",
-              border: "none",
-              cursor: "pointer",
-              color: "var(--color-fg)",
-              fontSize: 13,
-              padding: 0,
-              textAlign: "left",
-            }}
-          >
-            {title}
-          </button>
-        ) : (
-          title
-        )}
-        {subtitle && (
-          <span
-            style={{
-              marginLeft: 8,
-              fontSize: 11.5,
-              color: "var(--color-fg-muted)",
-            }}
-          >
-            {subtitle}
-          </span>
-        )}
-      </span>
-      {rule && <RuleBadge rule={rule} />}
-      {boost}
-    </div>
-  );
-}
+// ─── Shared chrome ──────────────────────────────────────────────────────
 
 function RuleBadge({ rule }: { rule: RuleDto }) {
   const expired =
@@ -712,9 +1027,7 @@ function RuleBadge({ rule }: { rule: RuleDto }) {
   const bits = [`+${rule.boostPct}%`];
   if (rule.endsAt) {
     bits.push(
-      expired
-        ? "ended"
-        : `until ${new Date(rule.endsAt).toLocaleString()}`,
+      expired ? "ended" : `until ${new Date(rule.endsAt).toLocaleString()}`,
     );
   }
   if (rule.minRiskScore != null) bits.push(`RS ≥ ${rule.minRiskScore}`);
@@ -728,7 +1041,7 @@ function RuleBadge({ rule }: { rule: RuleDto }) {
         flexShrink: 0,
         background: expired
           ? "color-mix(in oklab, #dc2626 12%, transparent)"
-          : "color-mix(in oklab, #16a34a 14%, transparent)",
+          : `color-mix(in oklab, ${GREEN} 14%, transparent)`,
         color: expired ? "#dc2626" : "#15803d",
         whiteSpace: "nowrap",
       }}
@@ -736,6 +1049,26 @@ function RuleBadge({ rule }: { rule: RuleDto }) {
     >
       {bits.join(" · ")}
     </span>
+  );
+}
+
+// Tiny green dot for tight rows (sports rail, tournament chips) where a
+// full badge doesn't fit — the badge shows in the summary + on hover
+// via the Boost popup.
+function MiniRuleDot({ rule }: { rule: RuleDto }) {
+  const expired =
+    rule.endsAt !== null && new Date(rule.endsAt).getTime() <= Date.now();
+  return (
+    <span
+      title={`+${rule.boostPct}%${rule.endsAt ? ` until ${new Date(rule.endsAt).toLocaleString()}` : ""}${rule.minRiskScore != null ? ` · RS ≥ ${rule.minRiskScore}` : ""}`}
+      style={{
+        width: 7,
+        height: 7,
+        borderRadius: 999,
+        flexShrink: 0,
+        background: expired ? "#dc2626" : GREEN,
+      }}
+    />
   );
 }
 
@@ -755,15 +1088,9 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
   );
 }
 
-function LoadingNote({ children }: { children: React.ReactNode }) {
+function Note({ children }: { children: React.ReactNode }) {
   return (
-    <div
-      style={{
-        padding: "6px 12px 6px 44px",
-        fontSize: 12.5,
-        color: "var(--color-fg-muted)",
-      }}
-    >
+    <div style={{ padding: "10px 12px", fontSize: 12.5, color: "var(--color-fg-muted)" }}>
       {children}
     </div>
   );
@@ -776,6 +1103,7 @@ function BoostControl({
   refId,
   entityLabel,
   rule,
+  compact,
   onError,
   onChanged,
 }: {
@@ -783,6 +1111,7 @@ function BoostControl({
   refId: string;
   entityLabel: string;
   rule: RuleDto | null;
+  compact?: boolean;
   onError: (msg: string) => void;
   onChanged: () => void;
 }) {
@@ -793,13 +1122,15 @@ function BoostControl({
         type="button"
         onClick={() => setOpen(true)}
         style={{
-          fontSize: 12,
+          fontSize: compact ? 11 : 12,
           fontWeight: 600,
-          padding: "3px 12px",
+          padding: compact ? "2px 8px" : "3px 12px",
           borderRadius: 6,
           border: "none",
           flexShrink: 0,
-          background: rule ? "color-mix(in oklab, #16a34a 18%, transparent)" : "#16a34a",
+          background: rule
+            ? `color-mix(in oklab, ${GREEN} 18%, transparent)`
+            : GREEN,
           color: rule ? "#15803d" : "#fff",
           cursor: "pointer",
         }}
@@ -979,8 +1310,8 @@ function BoostModal({
           />
           <span style={hintStyle}>
             Netwinstable key delta in percentage points — same math as
-            ZillaFlash (3 = its baseline). Clamped so the book never goes
-            to or below fair.
+            ZillaFlash (3 = its baseline). Clamped so the book never goes to
+            or below fair.
           </span>
         </label>
 
@@ -993,8 +1324,7 @@ function BoostModal({
             style={inputStyle}
           />
           <span style={hintStyle}>
-            Empty = boost runs until removed (no countdown on the
-            storefront).
+            Empty = boost runs until removed (no countdown on the storefront).
           </span>
         </label>
 
@@ -1011,8 +1341,8 @@ function BoostModal({
             style={inputStyle}
           />
           <span style={hintStyle}>
-            Bettors with a risk score below this don&apos;t receive the
-            boost. Default bettor RS is 1.000.
+            Bettors with a risk score below this don&apos;t receive the boost.
+            Default bettor RS is 1.000.
           </span>
         </label>
 
@@ -1062,7 +1392,7 @@ function BoostModal({
               padding: "6px 14px",
               borderRadius: 6,
               border: "none",
-              background: "#16a34a",
+              background: GREEN,
               color: "#fff",
               cursor: "pointer",
               opacity: busy ? 0.6 : 1,
