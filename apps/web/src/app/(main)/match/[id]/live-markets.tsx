@@ -673,6 +673,13 @@ function SingleMarketCard({
     if (bucket) bucket.push(t);
     else tipsByOutcome.set(t.outcomeId, [t]);
   }
+  // A boost covers the whole market by construction, so the chip
+  // renders ONCE in the card header (operator feedback: a chip on
+  // every cell was noise). Cells keep the green boost styling + the
+  // struck-through original price.
+  const cardBoost = m.outcomes
+    .map((o) => boostByOutcome.get(`${m.id}:${o.outcomeId}`))
+    .find(Boolean);
   return (
     <div
       className="card"
@@ -685,7 +692,7 @@ function SingleMarketCard({
       <div
         style={{
           display: "flex",
-          alignItems: "baseline",
+          alignItems: "center",
           gap: 10,
           marginBottom: 12,
         }}
@@ -693,6 +700,13 @@ function SingleMarketCard({
         <div style={{ fontSize: 14, fontWeight: 500, letterSpacing: "-0.005em" }}>
           {m.name}
         </div>
+        <BoostChip
+          boost={cardBoost}
+          flashNowMs={flashNowMs}
+          customNowMs={customNowMs}
+          kickerShort={flashKickerShort}
+          inline
+        />
         <div style={{ flex: 1 }} />
         {suspended && <SuspendedPill />}
       </div>
@@ -795,22 +809,17 @@ function SingleMarketCard({
                 }
                 style={{ width: "100%" }}
               />
-              <BoostChip
-                boost={boostByOutcome.get(`${m.id}:${o.outcomeId}`)}
-                flashNowMs={flashNowMs}
-                customNowMs={customNowMs}
-                kickerShort={flashKickerShort}
-              />
               {outcomeTips.length > 0 && (
                 <div
                   style={{
                     position: "absolute",
-                    // Inset into the top-right corner of the OddButton
-                    // frame (per the latest design ask). 6px on each
-                    // axis keeps the chip clear of the button's
-                    // rounded corner radius.
-                    top: 6,
-                    right: 6,
+                    // Overhang the top-right corner (half outside the
+                    // frame, mirroring the BOOST chip's top-left
+                    // overhang) so the badge never covers the price —
+                    // boosted cells right-align a struck original +
+                    // green price exactly where the old inset landed.
+                    top: -6,
+                    right: -4,
                     pointerEvents: "auto",
                   }}
                   // Stop click propagation so a tap on the chip's edge
@@ -948,12 +957,25 @@ function LineFamilyCard({
     );
   }
 
+  // Boost chip once in the family header when EVERY visible line is
+  // boosted (a match / tournament / sport rule covers all of them).
+  // A partial boost (single market-scope rule on one line) keeps the
+  // per-cell chips so the boosted line is still identifiable.
+  const rowBoost = (mk: MarketSnapshot): AnyBoostEntry | undefined =>
+    mk.outcomes
+      .map((o) => boostByOutcome.get(`${mk.id}:${o.outcomeId}`))
+      .find(Boolean);
+  const familyBoosts = visibleMarkets.map(rowBoost);
+  const allRowsBoosted =
+    familyBoosts.length > 0 && familyBoosts.every(Boolean);
+  const headerBoost = allRowsBoosted ? familyBoosts[0] : undefined;
+
   return (
     <div className="card" style={{ padding: 16, borderRadius: "var(--r-md)" }}>
       <div
         style={{
           display: "flex",
-          alignItems: "baseline",
+          alignItems: "center",
           gap: 10,
           marginBottom: 12,
         }}
@@ -972,6 +994,13 @@ function LineFamilyCard({
         >
           {family.lineSpec === "handicap" ? "Handicap" : "Total"}
         </span>
+        <BoostChip
+          boost={headerBoost}
+          flashNowMs={flashNowMs}
+          customNowMs={customNowMs}
+          kickerShort={flashKickerShort}
+          inline
+        />
         <div style={{ flex: 1 }} />
       </div>
       <div
@@ -1030,6 +1059,7 @@ function LineFamilyCard({
             flashNowMs={flashNowMs}
             customNowMs={customNowMs}
             flashKickerShort={flashKickerShort}
+            showCellChips={!allRowsBoosted}
           />
         ))}
       </div>
@@ -1050,6 +1080,7 @@ function LineRow({
   flashNowMs,
   customNowMs,
   flashKickerShort,
+  showCellChips,
 }: {
   market: MarketSnapshot;
   match: MatchMeta;
@@ -1063,6 +1094,8 @@ function LineRow({
   flashNowMs: number;
   customNowMs: number;
   flashKickerShort: string;
+  // False when the family header already wears the single boost chip.
+  showCellChips: boolean;
 }) {
   const bySlot = new Map<string, MarketOutcome>();
   for (const o of m.outcomes) {
@@ -1165,21 +1198,23 @@ function LineRow({
               }
               style={{ width: "100%" }}
             />
-            <BoostChip
-              boost={boostEntry}
-              flashNowMs={flashNowMs}
-              customNowMs={customNowMs}
-              kickerShort={flashKickerShort}
-            />
+            {showCellChips && (
+              <BoostChip
+                boost={boostEntry}
+                flashNowMs={flashNowMs}
+                customNowMs={customNowMs}
+                kickerShort={flashKickerShort}
+              />
+            )}
             {outcomeTips.length > 0 && (
               <div
                 style={{
                   position: "absolute",
-                  // Inset into the top-right corner of the OddButton.
-                  // Tighter inset (4px) than the SingleMarketCard
-                  // version because md buttons are 44px vs 52px tall.
-                  top: 4,
-                  right: 4,
+                  // Overhang the top-right corner (see the lg-cell
+                  // variant above) so the badge stays clear of the
+                  // right-aligned price row on boosted cells.
+                  top: -6,
+                  right: -4,
                   pointerEvents: "auto",
                 }}
                 onClick={(e) => e.stopPropagation()}
@@ -1240,12 +1275,12 @@ function ZillaFlashChip({
   offer,
   nowMs,
   kickerShort,
+  inline = false,
 }: {
   offer: ZillaFlashOffer | undefined;
   nowMs: number;
   kickerShort: string;
-  // `size` (md / lg) is no longer needed — the chip floats above
-  // the button frame, identical position for both sizes.
+  inline?: boolean;
 }) {
   if (!offer) return null;
   const remainingMs = Math.max(
@@ -1261,29 +1296,7 @@ function ZillaFlashChip({
   // the button; the surrounding outcome-grid row gap (≥ 6 px) absorbs
   // the overhang cleanly.
   return (
-    <div
-      style={{
-        position: "absolute",
-        top: -9,
-        left: 6,
-        pointerEvents: "none",
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 4,
-        padding: "1px 6px",
-        borderRadius: 5,
-        background: urgent
-          ? "rgba(185, 28, 28, 0.92)"
-          : "var(--positive, #16a34a)",
-        color: "#fff",
-        fontSize: 9.5,
-        fontWeight: 700,
-        letterSpacing: "0.08em",
-        textTransform: "uppercase",
-        lineHeight: 1.1,
-        boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
-      }}
-    >
+    <div style={boostChipBase(urgent, inline)}>
       <span>{kickerShort}</span>
       <span className="mono tnum" style={{ letterSpacing: 0 }}>
         {formatRemaining(offer, nowMs)}
@@ -1343,11 +1356,17 @@ function BoostChip({
   flashNowMs,
   customNowMs,
   kickerShort,
+  inline = false,
 }: {
   boost: AnyBoostEntry | undefined;
   flashNowMs: number;
   customNowMs: number;
   kickerShort: string;
+  // inline=true renders in normal flow (market-card header, once per
+  // market) instead of floating over an outcome cell. Per operator
+  // feedback: a whole-market boost wears ONE chip in the header — a
+  // chip on every ladder cell was noise.
+  inline?: boolean;
 }) {
   if (!boost) return null;
   if (boost.kind === "flash") {
@@ -1356,6 +1375,7 @@ function BoostChip({
         offer={boost.entry.offer}
         nowMs={flashNowMs}
         kickerShort={kickerShort}
+        inline={inline}
       />
     );
   }
@@ -1364,9 +1384,33 @@ function BoostChip({
       entry={boost.entry}
       nowMs={customNowMs}
       kickerShort={kickerShort}
+      inline={inline}
     />
   );
 }
+
+// Shared chip frame — floating (over a cell) or inline (card header).
+const boostChipBase = (urgent: boolean, inline: boolean) =>
+  ({
+    ...(inline
+      ? { position: "relative" as const, top: -1 }
+      : { position: "absolute" as const, top: -9, left: 6 }),
+    pointerEvents: "none" as const,
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+    padding: "1px 5px",
+    borderRadius: 5,
+    background: urgent ? "rgba(185, 28, 28, 0.92)" : "var(--positive, #16a34a)",
+    color: "#fff",
+    fontSize: 8.5,
+    fontWeight: 700,
+    letterSpacing: "0.07em",
+    textTransform: "uppercase" as const,
+    lineHeight: 1.2,
+    boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
+    flexShrink: 0,
+  }) as const;
 
 // Custom Boosted Odds chip. Same visual as the ZillaFlash chip, but the
 // countdown renders only when the rule carries an end time within the
@@ -1376,39 +1420,19 @@ function CustomBoostChip({
   entry,
   nowMs,
   kickerShort,
+  inline = false,
 }: {
   entry: CustomBoostEntry;
   nowMs: number;
   kickerShort: string;
+  inline?: boolean;
 }) {
   const remaining = formatBoostRemaining(entry, nowMs);
   const urgent =
     entry.endsAt !== null &&
     new Date(entry.endsAt).getTime() - nowMs <= 5_000;
   return (
-    <div
-      style={{
-        position: "absolute",
-        top: -9,
-        left: 6,
-        pointerEvents: "none",
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 4,
-        padding: "1px 6px",
-        borderRadius: 5,
-        background: urgent
-          ? "rgba(185, 28, 28, 0.92)"
-          : "var(--positive, #16a34a)",
-        color: "#fff",
-        fontSize: 9.5,
-        fontWeight: 700,
-        letterSpacing: "0.08em",
-        textTransform: "uppercase",
-        lineHeight: 1.1,
-        boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
-      }}
-    >
+    <div style={boostChipBase(urgent, inline)}>
       <span>{kickerShort}</span>
       {remaining !== null && (
         <span className="mono tnum" style={{ letterSpacing: 0 }}>
