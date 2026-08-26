@@ -169,7 +169,12 @@ export function BoostedOddsBoard({
         </div>
       )}
 
-      <ActiveRulesTable rules={rules} onRemove={removeRule} />
+      <ActiveRulesTable
+        rules={rules}
+        onRemove={removeRule}
+        onError={onError}
+        onChanged={refreshSummary}
+      />
 
       <div
         style={{
@@ -301,9 +306,13 @@ export function BoostedOddsBoard({
 function ActiveRulesTable({
   rules,
   onRemove,
+  onError,
+  onChanged,
 }: {
   rules: RuleWithLabel[];
   onRemove: (id: string) => void;
+  onError: (msg: string) => void;
+  onChanged: () => void;
 }) {
   if (rules.length === 0) {
     return (
@@ -369,6 +378,15 @@ function ActiveRulesTable({
               {r.label}
             </span>
             <RuleBadge rule={r} />
+            <BoostControl
+              scope={r.scope}
+              refId={r.refId}
+              entityLabel={r.label}
+              rule={r}
+              compact
+              onError={onError}
+              onChanged={onChanged}
+            />
             <button
               type="button"
               onClick={() => onRemove(r.id)}
