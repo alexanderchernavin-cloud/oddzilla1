@@ -49,8 +49,26 @@ export interface CustomBoostedMarket {
   endsAt: string | null;
 }
 
+/** A rule that covers EVERY market of the match (match / competitor /
+ * tournament / sport scope, already cascade-resolved server-side). */
+export interface CustomBoostMatchWideRule {
+  ruleId: string;
+  boostPct: number;
+  endsAt: string | null;
+}
+
 export interface CustomBoostedOddsResponse {
+  /**
+   * Market-scope rules only — one entry per explicitly boosted market.
+   * Match-wide coverage rides `matchWide` instead of being flattened
+   * per market: live ladders CREATE new market rows on odds updates
+   * (new handicap/total lines) and suspend/reactivate lines between
+   * rounds, so a per-market flattening was stale the moment it was
+   * built and every fresh line rendered unboosted until the next poll.
+   */
   entries: CustomBoostedMarket[];
+  /** Cascade-resolved match-wide rule (match > competitor > tournament > sport), or null. */
+  matchWide: CustomBoostMatchWideRule | null;
   /** Server-time at response build so clients can correct clock skew. */
   serverNow: string;
 }

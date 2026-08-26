@@ -45,13 +45,23 @@ export interface CustomBoostEntry {
 }
 
 export interface CustomBoostRulesSnapshot {
-  /** Keyed by marketId. Empty map = no boosts for this viewer. */
+  /** Market-scope rules, keyed by marketId. */
   byMarket: Map<string, CustomBoostRule>;
+  /**
+   * Cascade-resolved match-wide rule (match / team / tournament /
+   * sport scope) — applies to EVERY market the page renders, including
+   * ladder lines created after the last poll. Null = none.
+   */
+  matchWide: CustomBoostRule | null;
   /** Server-corrected ms-since-epoch for the countdown chips. */
   nowMs: number;
 }
 
-const EMPTY: CustomBoostRulesSnapshot = { byMarket: new Map(), nowMs: 0 };
+const EMPTY: CustomBoostRulesSnapshot = {
+  byMarket: new Map(),
+  matchWide: null,
+  nowMs: 0,
+};
 
 export function useCustomBoostedOdds(matchId: string): CustomBoostRulesSnapshot {
   const [data, setData] = useState<CustomBoostedOddsResponse | null>(null);
@@ -87,7 +97,9 @@ export function useCustomBoostedOdds(matchId: string): CustomBoostRulesSnapshot 
   }, [matchId]);
 
   // Countdown re-render tick — only when a rule actually expires.
-  const hasTimed = (data?.entries ?? []).some((e) => e.endsAt !== null);
+  const hasTimed =
+    (data?.entries ?? []).some((e) => e.endsAt !== null) ||
+    (data?.matchWide?.endsAt ?? null) !== null;
   useEffect(() => {
     if (!hasTimed) return;
     const t = setInterval(() => {
@@ -99,21 +111,31 @@ export function useCustomBoostedOdds(matchId: string): CustomBoostRulesSnapshot 
   void tick;
 
   return useMemo(() => {
-    if (!data || data.entries.length === 0) return EMPTY;
+    if (!data || (data.entries.length === 0 && !data.matchWide)) return EMPTY;
     const nowMs = Date.now() + skewMs.current;
+    // Client-side expiry guard between polls — once endsAt passes,
+    // drop the rule immediately instead of waiting for the next
+    // fetch (placement would 400 boosted_odds_rule_expired anyway).
+    const fresh = (endsAt: string | null) =>
+      endsAt === null || new Date(endsAt).getTime() > nowMs;
     const byMarket = new Map<string, CustomBoostRule>();
     for (const e of data.entries) {
-      // Client-side expiry guard between polls — once endsAt passes,
-      // drop the rule immediately instead of waiting for the next
-      // fetch (placement would 400 boosted_odds_rule_expired anyway).
-      if (e.endsAt !== null && new Date(e.endsAt).getTime() <= nowMs) continue;
+      if (!fresh(e.endsAt)) continue;
       byMarket.set(e.marketId, {
         ruleId: e.ruleId,
         boostPct: e.boostPct,
         endsAt: e.endsAt,
       });
     }
-    return { byMarket, nowMs };
+    const matchWide =
+      data.matchWide && fresh(data.matchWide.endsAt)
+        ? {
+            ruleId: data.matchWide.ruleId,
+            boostPct: data.matchWide.boostPct,
+            endsAt: data.matchWide.endsAt,
+          }
+        : null;
+    return { byMarket, matchWide, nowMs };
   }, [data, tick]);
 }
 

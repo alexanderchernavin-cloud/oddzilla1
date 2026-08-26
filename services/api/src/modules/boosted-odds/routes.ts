@@ -15,20 +15,20 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { and, eq } from "drizzle-orm";
-import { categories, markets, matches, tournaments } from "@oddzilla/db";
+import { eq } from "drizzle-orm";
+import { categories, matches, tournaments } from "@oddzilla/db";
 import type { CustomBoostedMarket, CustomBoostedOddsResponse } from "@oddzilla/types";
 import {
   loadBoostRulesForMatch,
   loadViewerRiskScore,
   passesRiskGate,
-  resolveBoostForMarket,
 } from "../../lib/boosted-odds.js";
 
 const paramsSchema = z.object({ matchId: z.coerce.bigint() });
 
 const EMPTY = (): CustomBoostedOddsResponse => ({
   entries: [],
+  matchWide: null,
   serverNow: new Date().toISOString(),
 });
 
@@ -68,26 +68,58 @@ export default async function boostedOddsRoutes(app: FastifyInstance) {
     const eligible = rules.filter((r) => passesRiskGate(r, riskScore));
     if (eligible.length === 0) return EMPTY();
 
-    // Resolve the winning rule per active market. No outcome loading —
-    // the client prices against its own live outcome state.
-    const marketRows = await app.db
-      .select({ id: markets.id })
-      .from(markets)
-      .where(and(eq(markets.matchId, matchId), eq(markets.status, 1)));
+    // No market enumeration AT ALL. Live matches churn market rows
+    // constantly — Oddin creates NEW ladder lines on odds updates and
+    // suspends/reactivates the whole book between rounds — so any
+    // per-market flattening of a match-wide rule is stale the moment
+    // it's built (fresh lines rendered unboosted until the next poll;
+    // a poll during the between-round suspension flashed EVERY boost
+    // off). Instead the cascade-resolved match-wide rule ships as one
+    // object the client applies to whatever markets it currently
+    // renders; explicit market-scope rules ship per market (those ids
+    // are stable — the rule pins the row).
+    let matchRule: (typeof eligible)[number] | null = null;
+    let competitorBest: (typeof eligible)[number] | null = null;
+    let tournamentRule: (typeof eligible)[number] | null = null;
+    let sportRule: (typeof eligible)[number] | null = null;
     const entries: CustomBoostedMarket[] = [];
-    for (const m of marketRows) {
-      const rule = resolveBoostForMarket(eligible, m.id);
-      if (!rule) continue;
-      entries.push({
-        ruleId: rule.id,
-        marketId: m.id.toString(),
-        boostPct: rule.boostPct,
-        endsAt: rule.endsAt?.toISOString() ?? null,
-      });
+    for (const r of eligible) {
+      switch (r.scope) {
+        case "market":
+          entries.push({
+            ruleId: r.id,
+            marketId: r.marketId!.toString(),
+            boostPct: r.boostPct,
+            endsAt: r.endsAt?.toISOString() ?? null,
+          });
+          break;
+        case "match":
+          matchRule = r;
+          break;
+        case "competitor":
+          if (!competitorBest || r.boostPct > competitorBest.boostPct) {
+            competitorBest = r;
+          }
+          break;
+        case "tournament":
+          tournamentRule = r;
+          break;
+        case "sport":
+          sportRule = r;
+          break;
+      }
     }
+    const wide = matchRule ?? competitorBest ?? tournamentRule ?? sportRule;
 
     return {
       entries,
+      matchWide: wide
+        ? {
+            ruleId: wide.id,
+            boostPct: wide.boostPct,
+            endsAt: wide.endsAt?.toISOString() ?? null,
+          }
+        : null,
       serverNow: new Date().toISOString(),
     } satisfies CustomBoostedOddsResponse;
   });

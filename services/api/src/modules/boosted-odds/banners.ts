@@ -81,7 +81,8 @@ async function loadPricedOutcomes(
       rawName: r.name,
       publishedOdds: Number(r.publishedOdds),
     }))
-    .filter((r) => Number.isFinite(r.publishedOdds) && r.publishedOdds > 1);
+    // >= 1 in parity with the match-page compute + placement validator.
+    .filter((r) => Number.isFinite(r.publishedOdds) && r.publishedOdds >= 1);
   const weight = (id: string): number => {
     const n = Number.parseInt(id, 10);
     if (!Number.isFinite(n) || String(n) !== id) return 1000;
