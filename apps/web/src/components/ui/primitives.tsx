@@ -310,6 +310,16 @@ export function OddButton({
   // boost stays greyed out so a suspended outcome isn't masquerading
   // as a great option.
   const showBoost = boosted && !selected && !locked;
+  // Struck-through pre-boost price visibility — also drives the label
+  // alignment below: with the boosted price right-aligned (space-
+  // between against the struck original), the line label ("-9.5")
+  // moves right too so the specifier sits OVER the active price
+  // instead of over the crossed-out one.
+  const showStrike =
+    showBoost &&
+    price != null &&
+    originalPrice != null &&
+    originalPrice.toFixed(2) !== price.toFixed(2);
   return (
     <button
       ref={flashRef}
@@ -362,6 +372,7 @@ export function OddButton({
         <span
           style={{
             fontSize: 11,
+            textAlign: showStrike ? "right" : "left",
             // Locked labels stay readable too — fg-muted is grey
             // enough that 0.65 opacity above doesn't push them into
             // unreadable territory.
@@ -395,23 +406,19 @@ export function OddButton({
           justifyContent: "space-between",
         }}
       >
-        {showBoost &&
-          !locked &&
-          price != null &&
-          originalPrice != null &&
-          originalPrice.toFixed(2) !== price.toFixed(2) && (
-            <span
-              className="mono tnum"
-              style={{
-                fontSize: 11,
-                color: "var(--fg-muted)",
-                textDecoration: "line-through",
-                letterSpacing: "-0.01em",
-              }}
-            >
-              {originalPrice.toFixed(2)}
-            </span>
-          )}
+        {showStrike && (
+          <span
+            className="mono tnum"
+            style={{
+              fontSize: 11,
+              color: "var(--fg-muted)",
+              textDecoration: "line-through",
+              letterSpacing: "-0.01em",
+            }}
+          >
+            {originalPrice!.toFixed(2)}
+          </span>
+        )}
         <span
           className="mono tnum"
           style={{
