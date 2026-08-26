@@ -12,6 +12,10 @@ import { markets, matches, tournaments, categories } from "@oddzilla/db";
 import { BetsService } from "./service.js";
 import { NotFoundError } from "../../lib/errors.js";
 import { validateOfferForBet } from "../zillaflash/engine.js";
+import {
+  loadViewerRiskScore,
+  validateCustomBoostForBet,
+} from "../../lib/boosted-odds.js";
 import { BadRequestError } from "../../lib/errors.js";
 import { nudgeBetPlaced } from "../zillapass/writer.js";
 import {
@@ -38,6 +42,13 @@ const placeBody = z.object({
         // boosted odds for this leg and applies a -2 s shave to the
         // effective live-bet acceptance delay if the offer was live.
         zillaFlashOfferId: z.string().uuid().optional(),
+        // Optional Custom Boosted Odds rule id (migration 0085). The
+        // server re-validates the rule (active, covers this market,
+        // bettor passes the Min Risk Score gate), recomputes the
+        // boosted price from current published_odds, and replaces the
+        // client-supplied `odds` with the authoritative value. Ignored
+        // when zillaFlashOfferId is also present (the offer wins).
+        boostedOddsRuleId: z.string().uuid().optional(),
       }),
     )
     .min(1)
@@ -106,6 +117,41 @@ export default async function betsRoutes(app: FastifyInstance) {
       s.odds = v.authoritativeOdds!;
       if (v.kind === "live") zillaFlashLiveBoost = true;
       zillaFlashMarketIds.push(BigInt(s.marketId));
+    }
+
+    // ── Custom Boosted Odds re-validation (migration 0085) ───────────
+    // Same shape as the ZillaFlash block: validate the rule against the
+    // live catalog, then OVERWRITE the client-supplied `odds` with the
+    // recomputed boosted value so downstream math (RiskZilla, payout,
+    // ticket_selections.odds_at_placement) all see the same number.
+    // A leg carrying both ids keeps the ZillaFlash offer (its odds were
+    // already locked above) and drops the custom rule.
+    const hasCustomBoost = body.selections.some(
+      (s) => s.boostedOddsRuleId && !s.zillaFlashOfferId,
+    );
+    if (hasCustomBoost) {
+      const riskScore = await loadViewerRiskScore(app.db, u.id);
+      for (const s of body.selections) {
+        if (!s.boostedOddsRuleId) continue;
+        if (s.zillaFlashOfferId) {
+          delete s.boostedOddsRuleId;
+          continue;
+        }
+        const v = await validateCustomBoostForBet(app, {
+          ruleId: s.boostedOddsRuleId,
+          marketId: s.marketId,
+          outcomeId: s.outcomeId,
+          quotedOdds: s.odds,
+          riskScore,
+        });
+        if (!v.ok) {
+          // 400 carries the reason; the slip drops the boost tag and
+          // re-fetches /catalog/matches/:id/boosted-odds for a fresh
+          // quote.
+          throw new BadRequestError(v.reason, v.reason);
+        }
+        s.odds = v.authoritativeOdds;
+      }
     }
 
     // Per-bettor promo visibility cascade (migration 0071). If the

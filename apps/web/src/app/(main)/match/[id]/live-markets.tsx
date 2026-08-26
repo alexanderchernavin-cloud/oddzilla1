@@ -11,7 +11,16 @@ import {
   useZillaFlash,
   type OutcomeBoostEntry,
 } from "@/lib/use-zillaflash";
-import type { ZillaFlashOffer } from "@oddzilla/types";
+import {
+  formatBoostRemaining,
+  useCustomBoostedOdds,
+  type CustomBoostEntry,
+} from "@/lib/use-boosted-odds";
+import {
+  boostMarketKey,
+  formatBoostedOdds,
+  type ZillaFlashOffer,
+} from "@oddzilla/types";
 import { useTranslations } from "@/lib/i18n";
 import type { ZillaTip } from "@oddzilla/types/zillatips";
 import { OddButton } from "@/components/ui/primitives";
@@ -26,6 +35,15 @@ import {
   type TipContext,
 } from "@/components/match/zillatips-widget";
 import { useMarketTabChangeTracker } from "@/lib/zillapass-track";
+
+// One boosted price on an outcome cell, from either promo source.
+// ZillaFlash entries carry the rotating offer (id + countdown); custom
+// entries carry the operator rule id (+ optional end time). The cell
+// renders identically (boosted OddButton + green chip) — only the chip
+// countdown and the id forwarded into the slip differ.
+export type AnyBoostEntry =
+  | { kind: "flash"; entry: OutcomeBoostEntry }
+  | { kind: "custom"; entry: CustomBoostEntry };
 
 export interface MarketOutcome {
   outcomeId: string;
@@ -210,6 +228,12 @@ export function LiveMarkets({
     return indexOffers(offers);
   }, [flashSnapshot, matchId]);
   const flashNowMs = flashSnapshot.nowMs;
+  // Custom Boosted Odds RULES (operator config, migration 0085) for
+  // this match. Only the rules ride the poll — prices are computed
+  // below, client-side, from the live outcome set, so a boosted price
+  // moves in the same render as the WS tick that moved the raw odds.
+  const customBoost = useCustomBoostedOdds(matchId);
+  const customNowMs = customBoost.nowMs;
   const tMatch = useTranslations("match");
   const tSport = useTranslations("sport");
   const tFlash = useTranslations("zillaflash");
@@ -315,6 +339,63 @@ export function LiveMarkets({
       }),
     }));
   }, [initialGroups, ticks, marketStatusTicks]);
+
+  // Boosted prices, computed from the LIVE outcome set (mergedGroups
+  // already carries every WS tick) with the same shared boostMarketKey
+  // + formatBoostedOdds the api uses at placement — realtime by
+  // construction: the boosted price re-derives in the same render as
+  // the tick that moved the underlying odds. Then merged with the
+  // ZillaFlash entries into one per-outcome lookup — a flash offer wins
+  // when both cover the same outcome (it's the scarcer, countdown-
+  // driven promo and its offer id gets the -2 s delay shave).
+  //
+  // Filter parity with the server-side quoteBoostedMarket /
+  // validateCustomBoostForBet: active markets only, outcomes that are
+  // active with a price > 1, at least 2 priced outcomes, and drop
+  // no-op adjustments (fair-book clamp) plus per-outcome "boosted ==
+  // original" cells so a crossed-out 1.95 -> 1.95 never renders.
+  const boostByOutcome = useMemo<Map<string, AnyBoostEntry>>(() => {
+    const map = new Map<string, AnyBoostEntry>();
+    if (customBoost.byMarket.size > 0) {
+      for (const g of mergedGroups) {
+        for (const m of g.markets) {
+          const rule = customBoost.byMarket.get(m.id);
+          if (!rule || m.status !== 1) continue;
+          const priced = m.outcomes.filter((o) => {
+            if (!o.active || !o.publishedOdds) return false;
+            const n = Number(o.publishedOdds);
+            return Number.isFinite(n) && n > 1;
+          });
+          if (priced.length < 2) continue;
+          const adjusted = boostMarketKey(
+            priced.map((o) => Number(o.publishedOdds)),
+            rule.boostPct,
+          );
+          if (adjusted.effectiveKeyDelta <= 0) continue;
+          priced.forEach((o, i) => {
+            const originalOdds = formatBoostedOdds(Number(o.publishedOdds));
+            const boostedOdds = formatBoostedOdds(adjusted.adjustedOdds[i]!);
+            if (boostedOdds === originalOdds) return;
+            map.set(`${m.id}:${o.outcomeId}`, {
+              kind: "custom",
+              entry: {
+                ruleId: rule.ruleId,
+                marketId: m.id,
+                boostPct: rule.boostPct,
+                endsAt: rule.endsAt,
+                originalOdds,
+                boostedOdds,
+              },
+            });
+          });
+        }
+      }
+    }
+    for (const [key, entry] of flashByOutcome) {
+      map.set(key, { kind: "flash", entry });
+    }
+    return map;
+  }, [mergedGroups, customBoost.byMarket, flashByOutcome]);
 
   const [scope, setScope] = useState<string>("all");
   const trackTabChange = useMarketTabChangeTracker();
@@ -479,8 +560,9 @@ export function LiveMarkets({
                   slip={slip}
                   builderLocked={builderLocked}
                   tips={tipsByMarket.get(entry.market.id) ?? EMPTY_TIPS}
-                  flashByOutcome={flashByOutcome}
+                  boostByOutcome={boostByOutcome}
                   flashNowMs={flashNowMs}
+                  customNowMs={customNowMs}
                   flashKickerShort={tFlash("boostedTagShort")}
                 />
               ) : (
@@ -491,8 +573,9 @@ export function LiveMarkets({
                   slip={slip}
                   builderLocked={builderLocked}
                   tipsByMarket={tipsByMarket}
-                  flashByOutcome={flashByOutcome}
+                  boostByOutcome={boostByOutcome}
                   flashNowMs={flashNowMs}
+                  customNowMs={customNowMs}
                   flashKickerShort={tFlash("boostedTagShort")}
                 />
               ),
@@ -559,8 +642,9 @@ function SingleMarketCard({
   slip,
   builderLocked,
   tips,
-  flashByOutcome,
+  boostByOutcome,
   flashNowMs,
+  customNowMs,
   flashKickerShort,
 }: {
   market: MarketSnapshot;
@@ -568,8 +652,9 @@ function SingleMarketCard({
   slip: ReturnType<typeof useBetSlip>;
   builderLocked: BuilderLockFn;
   tips: ZillaTip[];
-  flashByOutcome: Map<string, OutcomeBoostEntry>;
+  boostByOutcome: Map<string, AnyBoostEntry>;
   flashNowMs: number;
+  customNowMs: number;
   flashKickerShort: string;
 }) {
   const suspended = !isMarketBettable(m);
@@ -666,24 +751,26 @@ function SingleMarketCard({
             >
               <OddButton
                 size="lg"
-                // ZillaFlash boost: when an entry exists for this
+                // Boosted price (ZillaFlash offer or Custom Boosted
+                // Odds rule): when an entry exists for this
                 // (marketId, outcomeId), the OddButton renders the
                 // BOOSTED price, the cell paints with a green border
                 // + soft green tint via `boosted`, and a small chip
                 // overlay anchors the top-left corner. Click handler
                 // routes through toggle() with the entry so the slip
-                // leg carries the offer id + per-outcome boosted odds.
+                // leg carries the offer/rule id + boosted odds.
                 price={
-                  flashByOutcome.get(`${m.id}:${o.outcomeId}`)
+                  boostByOutcome.get(`${m.id}:${o.outcomeId}`)
                     ? Number(
-                        flashByOutcome.get(`${m.id}:${o.outcomeId}`)!.boostedOdds,
+                        boostByOutcome.get(`${m.id}:${o.outcomeId}`)!.entry
+                          .boostedOdds,
                       )
                     : price
                 }
                 label={label}
                 selected={selected}
                 locked={locked}
-                boosted={!!flashByOutcome.get(`${m.id}:${o.outcomeId}`)}
+                boosted={!!boostByOutcome.get(`${m.id}:${o.outcomeId}`)}
                 onClick={() =>
                   toggle(
                     slip,
@@ -691,14 +778,15 @@ function SingleMarketCard({
                     o,
                     match,
                     label,
-                    flashByOutcome.get(`${m.id}:${o.outcomeId}`),
+                    boostByOutcome.get(`${m.id}:${o.outcomeId}`),
                   )
                 }
                 style={{ width: "100%" }}
               />
-              <ZillaFlashChip
-                offer={flashByOutcome.get(`${m.id}:${o.outcomeId}`)?.offer}
-                nowMs={flashNowMs}
+              <BoostChip
+                boost={boostByOutcome.get(`${m.id}:${o.outcomeId}`)}
+                flashNowMs={flashNowMs}
+                customNowMs={customNowMs}
                 kickerShort={flashKickerShort}
               />
               {outcomeTips.length > 0 && (
@@ -754,8 +842,9 @@ function LineFamilyCard({
   slip,
   builderLocked,
   tipsByMarket,
-  flashByOutcome,
+  boostByOutcome,
   flashNowMs,
+  customNowMs,
   flashKickerShort,
 }: {
   family: LineFamily;
@@ -763,8 +852,9 @@ function LineFamilyCard({
   slip: ReturnType<typeof useBetSlip>;
   builderLocked: BuilderLockFn;
   tipsByMarket: Map<string, ZillaTip[]>;
-  flashByOutcome: Map<string, OutcomeBoostEntry>;
+  boostByOutcome: Map<string, AnyBoostEntry>;
   flashNowMs: number;
+  customNowMs: number;
   flashKickerShort: string;
 }) {
   // Drop deactivated lines (status=0; Oddin closed them and they're
@@ -924,8 +1014,9 @@ function LineFamilyCard({
             builderLocked={builderLocked}
             tips={tipsByMarket.get(m.id) ?? EMPTY_TIPS}
             familyBaseName={family.baseName}
-            flashByOutcome={flashByOutcome}
+            boostByOutcome={boostByOutcome}
             flashNowMs={flashNowMs}
+            customNowMs={customNowMs}
             flashKickerShort={flashKickerShort}
           />
         ))}
@@ -943,8 +1034,9 @@ function LineRow({
   builderLocked,
   tips,
   familyBaseName,
-  flashByOutcome,
+  boostByOutcome,
   flashNowMs,
+  customNowMs,
   flashKickerShort,
 }: {
   market: MarketSnapshot;
@@ -955,8 +1047,9 @@ function LineRow({
   builderLocked: BuilderLockFn;
   tips: ZillaTip[];
   familyBaseName: string;
-  flashByOutcome: Map<string, OutcomeBoostEntry>;
+  boostByOutcome: Map<string, AnyBoostEntry>;
   flashNowMs: number;
+  customNowMs: number;
   flashKickerShort: string;
 }) {
   const bySlot = new Map<string, MarketOutcome>();
@@ -1042,24 +1135,25 @@ function LineRow({
         // badge paints on top naturally. No z-index on the wrapper
         // so it doesn't trap the popover in a local stacking
         // context (popover z-index 200 then beats sibling chips).
-        const flashEntry = flashByOutcome.get(`${m.id}:${o.outcomeId}`);
+        const boostEntry = boostByOutcome.get(`${m.id}:${o.outcomeId}`);
         return (
           <div key={slot} style={{ position: "relative", minWidth: 0 }}>
             <OddButton
               size="md"
-              price={flashEntry ? Number(flashEntry.boostedOdds) : price}
+              price={boostEntry ? Number(boostEntry.entry.boostedOdds) : price}
               label={isHandicap ? cellLine : ""}
               selected={selected}
               locked={locked}
-              boosted={!!flashEntry}
+              boosted={!!boostEntry}
               onClick={() =>
-                toggle(slip, m, o, match, `${slot} ${cellLine}`, flashEntry)
+                toggle(slip, m, o, match, `${slot} ${cellLine}`, boostEntry)
               }
               style={{ width: "100%" }}
             />
-            <ZillaFlashChip
-              offer={flashEntry?.offer}
-              nowMs={flashNowMs}
+            <BoostChip
+              boost={boostEntry}
+              flashNowMs={flashNowMs}
+              customNowMs={customNowMs}
               kickerShort={flashKickerShort}
             />
             {outcomeTips.length > 0 && (
@@ -1189,7 +1283,7 @@ function toggle(
   o: MarketOutcome,
   match: MatchMeta,
   outcomeLabel: string,
-  flashEntry?: OutcomeBoostEntry | null,
+  boost?: AnyBoostEntry | null,
 ) {
   const suspended = !isMarketBettable(m);
   if (!o.publishedOdds || !o.active || suspended) return;
@@ -1200,11 +1294,12 @@ function toggle(
       matchId: match.id,
       marketId: m.id,
       outcomeId: o.outcomeId,
-      // ZillaFlash boost: when a per-outcome entry exists for this
-      // (marketId, outcomeId), pick the BOOSTED price. The server
-      // re-validates the offer id + boosted odds before debiting, and
-      // shaves -2 s off the effective live-bet acceptance delay.
-      odds: flashEntry ? flashEntry.boostedOdds : o.publishedOdds,
+      // Boosted price (ZillaFlash offer or Custom Boosted Odds rule):
+      // when a per-outcome entry exists for this (marketId, outcomeId),
+      // pick the BOOSTED price. The server re-validates the offer /
+      // rule id + boosted odds before debiting; live flash offers also
+      // shave -2 s off the effective live-bet acceptance delay.
+      odds: boost ? boost.entry.boostedOdds : o.publishedOdds,
       probability: o.probability ?? undefined,
       // Click only reaches here when suspended/!o.active gates above
       // pass — record the stamp so the slip rail starts in the
@@ -1215,9 +1310,98 @@ function toggle(
       marketLabel: m.name,
       outcomeLabel,
       sportSlug: match.sportSlug,
-      ...(flashEntry ? { zillaFlashOfferId: flashEntry.offer.id } : null),
+      ...(boost?.kind === "flash"
+        ? { zillaFlashOfferId: boost.entry.offer.id }
+        : null),
+      ...(boost?.kind === "custom"
+        ? { customBoostRuleId: boost.entry.ruleId }
+        : null),
     });
   }
+}
+
+// Chip router — renders the ZillaFlash chip (offer countdown) or the
+// Custom Boosted Odds chip (optional end-time countdown, plain BOOST
+// tag otherwise) depending on which promo priced the cell.
+function BoostChip({
+  boost,
+  flashNowMs,
+  customNowMs,
+  kickerShort,
+}: {
+  boost: AnyBoostEntry | undefined;
+  flashNowMs: number;
+  customNowMs: number;
+  kickerShort: string;
+}) {
+  if (!boost) return null;
+  if (boost.kind === "flash") {
+    return (
+      <ZillaFlashChip
+        offer={boost.entry.offer}
+        nowMs={flashNowMs}
+        kickerShort={kickerShort}
+      />
+    );
+  }
+  return (
+    <CustomBoostChip
+      entry={boost.entry}
+      nowMs={customNowMs}
+      kickerShort={kickerShort}
+    />
+  );
+}
+
+// Custom Boosted Odds chip. Same visual as the ZillaFlash chip, but the
+// countdown renders only when the rule carries an end time within the
+// next hour — an open-ended boost shows the plain BOOST tag (per the
+// product ask: no timer when not applicable).
+function CustomBoostChip({
+  entry,
+  nowMs,
+  kickerShort,
+}: {
+  entry: CustomBoostEntry;
+  nowMs: number;
+  kickerShort: string;
+}) {
+  const remaining = formatBoostRemaining(entry, nowMs);
+  const urgent =
+    entry.endsAt !== null &&
+    new Date(entry.endsAt).getTime() - nowMs <= 5_000;
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: -9,
+        left: 6,
+        pointerEvents: "none",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        padding: "1px 6px",
+        borderRadius: 5,
+        background: urgent
+          ? "rgba(185, 28, 28, 0.92)"
+          : "var(--positive, #16a34a)",
+        color: "#fff",
+        fontSize: 9.5,
+        fontWeight: 700,
+        letterSpacing: "0.08em",
+        textTransform: "uppercase",
+        lineHeight: 1.1,
+        boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
+      }}
+    >
+      <span>{kickerShort}</span>
+      {remaining !== null && (
+        <span className="mono tnum" style={{ letterSpacing: 0 }}>
+          {remaining}
+        </span>
+      )}
+    </div>
+  );
 }
 
 function formatLineValue(v: string | null, spec: MarketSnapshot["lineSpec"]): string {

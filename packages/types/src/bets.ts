@@ -70,6 +70,13 @@ export interface SlipSelection {
   // acceptance delay when the offer is a live one. Unknown / expired
   // offer ids 400 the placement — the slip refreshes the price.
   zillaFlashOfferId?: string;
+  // Set when the leg was picked at a Custom Boosted Odds price
+  // (boosted_odds_config rule, migration 0085). The server re-validates
+  // the rule (active, covers this market, bettor passes the Min Risk
+  // Score gate) and recomputes the boosted price from live
+  // published_odds before debiting; the slip rail also freezes WS odds
+  // ticks for these legs — the boosted price is the accepted price.
+  customBoostRuleId?: string;
 }
 
 export interface PlaceBetRequest {
@@ -98,6 +105,14 @@ export interface PlaceBetRequest {
     // client refreshes. Set automatically by the slip when the leg was
     // added from a ZillaFlash card or chip — never plumbed by hand.
     zillaFlashOfferId?: string;
+    // Optional opt-in to a Custom Boosted Odds rule for this leg
+    // (boosted_odds_config, migration 0085). The server re-validates
+    // the rule (active, covers this market, bettor's risk_score passes
+    // the Min Risk Score gate), recomputes the boosted price from
+    // current published_odds within CUSTOM_BOOST_PLACEMENT_TOLERANCE,
+    // and overwrites `odds` with its authoritative value. Ignored when
+    // zillaFlashOfferId is also present (the flash offer wins).
+    boostedOddsRuleId?: string;
   }>;
   /**
    * BetBuilder placement payload. Required when betType="betbuilder".
