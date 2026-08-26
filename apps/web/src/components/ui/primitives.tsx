@@ -372,7 +372,7 @@ export function OddButton({
         <span
           style={{
             fontSize: 11,
-            textAlign: showStrike ? "right" : "left",
+            textAlign: showBoost ? "right" : "left",
             // Locked labels stay readable too — fg-muted is grey
             // enough that 0.65 opacity above doesn't push them into
             // unreadable territory.
@@ -423,6 +423,11 @@ export function OddButton({
           className="mono tnum"
           style={{
             fontSize: 14,
+            // Boosted cells right-align the price even when the struck
+            // original is hidden (floored price unchanged) — sibling
+            // ladder cells show [struck | boosted-right], so a lone
+            // left price breaks the column line.
+            ...(showBoost && !showStrike ? { marginLeft: "auto" } : null),
             // Always 700 so the digits stay punchy through every
             // state transition — selection accent flip, boost
             // green tint, odds-change flash, and locked dim all
