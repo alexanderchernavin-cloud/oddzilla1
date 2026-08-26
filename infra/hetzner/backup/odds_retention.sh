@@ -103,20 +103,41 @@ while [ "${i}" -le "${CREATE_AHEAD}" ]; do
 done
 
 # ── 2. Drop dated partitions past the window ────────────────────────────
-# DETACH CONCURRENTLY first so the parent lock stays share-level (feed
-# inserts don't stall), then DROP the standalone table (instant, returns
-# space to the OS).
+# Plain transactional DETACH + DROP. DETACH ... CONCURRENTLY is not an
+# option here — Postgres refuses it while a DEFAULT partition exists
+# (ours is the odds_history_default3 safety net). The plain form takes
+# ACCESS EXCLUSIVE on the parent for milliseconds per partition, which
+# at 03:30 UTC is a non-event; lock_timeout bounds the wait so a busy
+# feed night can't wedge the cron behind a long-running query.
 cutoff=$(date -u -d "-${RETENTION_DAYS} days" +%Y%m%d)
+# Date extraction via the anchored regex capture — NEVER positional
+# substring. The first install of this script used `substring(relname
+# from 16)` with an off-by-one prefix length: every partition matched
+# the `< cutoff` compare and the 2026-08-26 run dropped all 42 of them,
+# restored history included (recovered from the pre-swap deploy dump;
+# ~95 min of odds ticks lost). Hence also the MAX_DROPS fuse below.
 old_parts=$(psql_q "SELECT c.relname
   FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
  WHERE i.inhparent = 'odds_history'::regclass
    AND c.relname ~ '^odds_history_p[0-9]{8}\$'
-   AND substring(c.relname from 16) < '${cutoff}'
+   AND substring(c.relname from 'p([0-9]{8})\$') < '${cutoff}'
  ORDER BY c.relname;")
+# Fuse: a healthy night drops exactly 1 partition; a catch-up after a
+# few missed crons drops a handful. A list bigger than MAX_DROPS means
+# the selection itself is broken — abort and page instead of dropping.
+MAX_DROPS="${ODDS_RETENTION_MAX_DROPS:-10}"
+n_old=$(echo "${old_parts}" | grep -c . || true)
+if [ "${n_old}" -gt "${MAX_DROPS}" ]; then
+    echo "odds-retention: refusing to drop ${n_old} partitions (fuse=${MAX_DROPS}): ${old_parts}" >&2
+    exit 1
+fi
 dropped=0
 for p in ${old_parts}; do
-    psql_q "ALTER TABLE odds_history DETACH PARTITION ${p} CONCURRENTLY;" >/dev/null
-    psql_q "DROP TABLE ${p};" >/dev/null
+    psql_q "BEGIN;
+        SET LOCAL lock_timeout = '10s';
+        ALTER TABLE odds_history DETACH PARTITION ${p};
+        DROP TABLE ${p};
+        COMMIT;" >/dev/null
     printf '{"service":"odds-retention","event":"partition_dropped","partition":"%s"}\n' "${p}"
     dropped=$((dropped + 1))
 done
