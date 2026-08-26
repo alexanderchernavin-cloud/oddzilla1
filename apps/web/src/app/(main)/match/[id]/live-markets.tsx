@@ -363,15 +363,25 @@ export function LiveMarkets({
   // market wears the boost.
   const boostByOutcome = useMemo<Map<string, AnyBoostEntry>>(() => {
     const map = new Map<string, AnyBoostEntry>();
-    if (customBoost.byMarket.size > 0) {
+    if (customBoost.byMarket.size > 0 || customBoost.matchWide) {
       for (const g of mergedGroups) {
         for (const m of g.markets) {
-          const rule = customBoost.byMarket.get(m.id);
+          // Market-scope rule wins; otherwise the match-wide rule
+          // covers EVERY rendered market — including ladder lines
+          // created after the last rules poll (live line churn).
+          const rule = customBoost.byMarket.get(m.id) ?? customBoost.matchWide;
           if (!rule || m.status !== 1) continue;
+          // >= 1, NOT > 1: a live favorite ticking through 1.00-1.01
+          // must stay in the priced set — dropping it left the market
+          // with a single priced outcome and the WHOLE market's boost
+          // flickered off and on with the ticks. boostMarketKey handles
+          // odds of exactly 1.00 correctly (c_i = 0 — the outcome just
+          // doesn't move; the delta lands on the other side). Kept in
+          // parity with validateCustomBoostForBet on the api.
           const priced = m.outcomes.filter((o) => {
             if (!o.active || !o.publishedOdds) return false;
             const n = Number(o.publishedOdds);
-            return Number.isFinite(n) && n > 1;
+            return Number.isFinite(n) && n >= 1;
           });
           if (priced.length < 2) continue;
           const adjusted = boostMarketKey(
@@ -399,7 +409,7 @@ export function LiveMarkets({
       map.set(key, { kind: "flash", entry });
     }
     return map;
-  }, [mergedGroups, customBoost.byMarket, flashByOutcome]);
+  }, [mergedGroups, customBoost.byMarket, customBoost.matchWide, flashByOutcome]);
 
   const [scope, setScope] = useState<string>("all");
   const trackTabChange = useMarketTabChangeTracker();

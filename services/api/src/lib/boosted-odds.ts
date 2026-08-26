@@ -310,7 +310,10 @@ export async function validateCustomBoostForBet(
       outcomeId: o.outcomeId,
       publishedOdds: Number(o.publishedOdds),
     }))
-    .filter((o) => Number.isFinite(o.publishedOdds) && o.publishedOdds > 1);
+    // >= 1 in parity with the client compute: a favorite at exactly
+    // 1.00 stays in the set (boostMarketKey leaves it unchanged) so a
+    // live near-decided market doesn't lose its boost on every tick.
+    .filter((o) => Number.isFinite(o.publishedOdds) && o.publishedOdds >= 1);
   const quote = quoteBoostedMarket(rule, priced);
   if (!quote) return { ok: false, reason: "boosted_odds_not_applicable" };
   const snap = quote.find((q) => q.outcomeId === args.outcomeId);
