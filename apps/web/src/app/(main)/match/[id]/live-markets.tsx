@@ -16,11 +16,14 @@ import {
   useCustomBoostedOdds,
   type CustomBoostEntry,
 } from "@/lib/use-boosted-odds";
-import {
-  boostMarketKey,
-  formatBoostedOdds,
-  type ZillaFlashOffer,
-} from "@oddzilla/types";
+// Value imports from @oddzilla/types go through subpath exports —
+// pulling values through the barrel drags the whole index graph into
+// the client bundle and its `./ws.js`-suffixed re-exports don't
+// resolve under the web build's webpack (type-only barrel imports are
+// erased and never hit this).
+import { boostMarketKey } from "@oddzilla/types/netwinstable";
+import { formatBoostedOdds } from "@oddzilla/types/boosted-odds";
+import type { ZillaFlashOffer } from "@oddzilla/types";
 import { useTranslations } from "@/lib/i18n";
 import type { ZillaTip } from "@oddzilla/types/zillatips";
 import { OddButton } from "@/components/ui/primitives";
