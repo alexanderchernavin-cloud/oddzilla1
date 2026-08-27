@@ -4,6 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode, MouseEvent } from "react";
 
 import { useOddsFlash } from "@/lib/use-odds-flash";
+// Value import via the subpath, never the barrel — see the note in
+// packages/types/src/odds.ts.
+import { formatOddsDisplay } from "@oddzilla/types/odds";
 
 // ── Button ──────────────────────────────────────────────────────────────
 type ButtonVariant = "primary" | "secondary" | "ghost" | "outline" | "danger";
@@ -264,6 +267,17 @@ export function OddButton({
   // ZillaFlash lobby card uses. Hidden when it equals the shown price
   // (a sub-cent boost floors to the same 2dp figure).
   originalPrice = null,
+  // Set when the parent floats an overlay chip over this button's
+  // top-RIGHT corner (today: the ZillaTips ROI badge). Reserves room on
+  // the label row so the two can't collide. Needed because `boosted`
+  // right-aligns the label to sit over the active price — which is
+  // exactly where that badge is anchored, so a boosted cell WITH a tip
+  // rendered the badge on top of its own outcome label.
+  //
+  // Pass the overlay's width in px — the caller owns that number, since
+  // only it knows what it's floating (ZILLATIPS_SM_BADGE_WIDTH_PX for
+  // the tips chip). `true` falls back to a conservative default.
+  badgeOverlay = false,
   style,
 }: {
   price?: number | null;
@@ -275,8 +289,18 @@ export function OddButton({
   locked?: boolean;
   boosted?: boolean;
   originalPrice?: number | null;
+  badgeOverlay?: boolean | number;
   style?: CSSProperties;
 }) {
+  // Width to keep the label row clear of. 60 is the ZillaTips compact
+  // badge's bound — the only overlay in use today — so a bare `true`
+  // still clears it.
+  const badgeReservePx =
+    badgeOverlay === false
+      ? 0
+      : badgeOverlay === true
+        ? 60
+        : badgeOverlay;
   const H = { sm: 36, md: 44, lg: 52 }[size];
   const arrow = trend === "up" ? "↑" : trend === "down" ? "↓" : null;
   const arrowColor =
@@ -315,11 +339,14 @@ export function OddButton({
   // between against the struck original), the line label ("-9.5")
   // moves right too so the specifier sits OVER the active price
   // instead of over the crossed-out one.
+  // Compared at DISPLAY precision, not a fixed 2dp: a boost that moves
+  // 1.003 -> 1.004 is visible now that both render at 4dp, so hiding
+  // the struck original there would drop a real price change.
   const showStrike =
     showBoost &&
     price != null &&
     originalPrice != null &&
-    originalPrice.toFixed(2) !== price.toFixed(2);
+    formatOddsDisplay(originalPrice) !== formatOddsDisplay(price);
   return (
     <button
       ref={flashRef}
@@ -373,6 +400,12 @@ export function OddButton({
           style={{
             fontSize: 11,
             textAlign: showBoost ? "right" : "left",
+            // Clear the overlay badge's footprint. Only the label row
+            // needs it — the chip is 17px tall and the price row sits
+            // below it. Applies at any alignment, so it holds for both
+            // the left-aligned (unboosted) and right-aligned (boosted)
+            // label.
+            paddingRight: badgeReservePx || undefined,
             // Locked labels stay readable too — fg-muted is grey
             // enough that 0.65 opacity above doesn't push them into
             // unreadable territory.
@@ -416,7 +449,7 @@ export function OddButton({
               letterSpacing: "-0.01em",
             }}
           >
-            {originalPrice!.toFixed(2)}
+            {formatOddsDisplay(originalPrice!)}
           </span>
         )}
         <span
@@ -444,7 +477,7 @@ export function OddButton({
                 : "var(--fg)",
           }}
         >
-          {locked || price == null ? "—" : price.toFixed(2)}
+          {locked || price == null ? "—" : formatOddsDisplay(price)}
         </span>
         {arrow && (
           <span

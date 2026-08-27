@@ -379,24 +379,66 @@ older partitions are dropped (or, in production, detached and archived).
 `market_type → tournament → sport → global`; first match wins. Edited by
 admins; every change is also written to `admin_audit_log`.
 
-**`boosted_odds_config`** — Custom Boosted Odds rules (migration 0085).
-One row per (scope, ref): `scope IN (sport, tournament, match, competitor,
-market)` with a typed FK per tier (ON DELETE CASCADE) and a partial unique
-index per scope so an entity carries at most one rule. `boost_pct
-NUMERIC(5,2)` is a Netwinstable key delta in percentage points (same math
-as ZillaFlash — `boostMarketKey` in `packages/types/src/netwinstable.ts`),
+**`boosted_odds_config`** — Custom Boosted Odds rules (migration 0085;
+`outcome` scope added in 0087-0088). One row per (scope, ref): `scope IN
+(sport, tournament, match, competitor, market, outcome)` with a typed FK
+per tier (ON DELETE CASCADE) and a partial unique index per scope so an
+entity carries at most one rule. `boost_pct NUMERIC(5,2)` is a
+Netwinstable key delta in percentage points (same math as ZillaFlash),
 recomputed against live `published_odds` on every read: nothing is frozen
 in the row. `ends_at` NULL means the boost runs until the operator removes
 it; `min_risk_score NUMERIC(4,3)` NULL means every bettor receives it,
 otherwise `users.risk_score >= min_risk_score` gates delivery (anonymous
-viewers count as the 1.000 default). Resolution per market when rules
-overlap: market > match > competitor > tournament > sport; two competitor
-rules on the same match resolve to the higher pct. `banner` (migration 0086)
+viewers count as the 1.000 default). `banner` (migration 0086)
 marks the rule for a storefront home-page promo banner (market →
 ZillaFlash-style card, match → scoreless match card, tournament →
 ZillaBoost banner, sport → sidebar bolt icon; no surface for
-competitor scope). Managed at `/admin/boosted-odds` (operator-facing
-name: ZillaBoost); every mutation is audit-logged.
+competitor or outcome scope). Managed at `/admin/boosted-odds`
+(operator-facing name: ZillaBoost); every mutation is audit-logged.
+
+Resolution per market when rules overlap:
+`outcome > market > match > competitor > tournament > sport`. Two
+competitor rules on the same match resolve to the higher pct.
+
+**Selection scope (`outcome`)** targets ONE cell instead of a whole
+market, keyed by `(market_id, outcome_id)` — the `market_outcomes`
+primary key — so it reuses the existing `market_id` column and adds
+`outcome_id text` beside it. That keeps the `market_id` FK doing the
+cleanup when a market row disappears, and leaves `boosted_odds_market_uniq`
+untouched: a market rule and any number of selection rules on the same
+market live in different partial indexes. There is deliberately **no FK
+on `(market_id, outcome_id)`** — validating one would take SHARE ROW
+EXCLUSIVE on `market_outcomes`, which the feed writes to continuously,
+and the lock queue that builds behind it is the failure mode migration
+0023 was added to fix. The admin route verifies the outcome row exists on
+write; an outcome that later leaves the market simply stops resolving.
+
+Two things differ from the market-wide scopes:
+
+- **Math.** The key delta comes out of the boosted outcome's own implied
+  probability (`1/odds' = 1/odds − delta`) rather than being spread
+  across the outcome set, so its siblings keep their raw price. See
+  `boostSelectionKeys` in `packages/types/src/netwinstable.ts`. Two
+  clamps bound it: the market key still can never reach fair (1.0), and
+  no single outcome may lose more than `SELECTION_BOOST_MAX_PROB_SHARE`
+  (half) of its own probability — the fair-book clamp alone doesn't
+  bound one cell, since a market's headroom can exceed a longshot's
+  entire probability and drive its price to infinity. When several
+  selections in one market are boosted and their combined request
+  exceeds the headroom, all deltas scale by the same factor (order
+  independent, so the client's live compute and the api's placement
+  re-validation agree exactly).
+- **Precedence is replacement, not ranking.** A market carrying any
+  eligible selection rule is priced by its selection rules ALONE — the
+  market / match / competitor / tournament / sport rule stops applying
+  to it. Composing them would double-dip: the market-wide pass already
+  takes the key to its fair-book floor, and a selection delta on top
+  would push the book past fair. Enforced in one place
+  (`quoteMarketBoost`, `netwinstable.ts`) that the match page, the
+  banners endpoint, and `POST /bets` all call; `/catalog/matches/:id/
+  boosted-odds` also omits the market-scope entry for such a market, and
+  the banner endpoint skips those markets so it never advertises a price
+  placement would reject.
 
 ### Tickets
 
@@ -435,7 +477,8 @@ hadn't shipped a probability for that outcome yet — falls back to
 IS NULL` gives settlement a tight index to scan when it needs to find
 unresolved selections for a market. `boost_rule_id` (migration 0085, FK
 `boosted_odds_config` ON DELETE SET NULL) records the Custom Boosted Odds
-rule that priced the leg — the bet-delay worker skips the per-leg drift
+rule that priced the leg — of any scope, including a selection rule from
+0087-0088 — the bet-delay worker skips the per-leg drift
 tripwire for stamped legs because `odds_at_placement` is deliberately
 above the raw published price; settlement is unaffected (payout reads
 `odds_at_placement` regardless).

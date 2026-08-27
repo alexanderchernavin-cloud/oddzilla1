@@ -20,6 +20,7 @@
     "./zillabuild": "./src/zillabuild.ts",
     "./netwinstable": "./src/netwinstable.ts",
     "./boosted-odds": "./src/boosted-odds.ts",
+    "./odds": "./src/odds.ts",
     "./live-chat": "./src/live-chat.ts",
     "./support": "./src/support.ts"
   },

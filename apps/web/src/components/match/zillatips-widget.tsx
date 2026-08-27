@@ -90,6 +90,23 @@ export function ZillaTipsProvider({ children }: { children: ReactNode }) {
 // without flicker; short enough that moving past doesn't feel sticky.
 const HOVER_CLOSE_DELAY_MS = 140;
 
+/**
+ * Width the compact (`size="sm"`) badge occupies when floated over an
+ * outcome cell's top-right corner. A cell that renders one passes this
+ * to OddButton's `badgeOverlay` so its label row stays clear — boosted
+ * cells right-align the label to sit over the active price, which is
+ * exactly where this badge is anchored, so without the reservation the
+ * badge covers the outcome's own label.
+ *
+ * Arithmetic at fontSize 9.5 / fontWeight 700 / letterSpacing 0.04em:
+ *   10 (icon) + 2 (gap) + 10 (padding "0 5px") + ~6.1px per ROI char.
+ * `fmtRoi` is unbounded, so the realistic worst case is a 4-digit ROI
+ * ("+1250%", 6 chars) at ~59px. The badge carries this as a hard
+ * maxWidth too, so a pathological ROI clips instead of growing past
+ * what the cell reserved.
+ */
+export const ZILLATIPS_SM_BADGE_WIDTH_PX = 60;
+
 // Map outcome_result enum → semantic colour. Void / null result / unknown
 // all fall back to grey per the user spec.
 function resultPalette(result: ZillaTipResult | null): {
@@ -727,6 +744,12 @@ export function ZillaTipsBadge({
           // Keep the badge on one line — sits at the right of the
           // market header (lg) or pinned over an outcome cell (sm).
           whiteSpace: "nowrap",
+          // Bound the compact badge to the width the host cell reserved
+          // for it, so an extreme ROI clips rather than spilling back
+          // over the outcome label the reservation was protecting.
+          ...(compact
+            ? { maxWidth: ZILLATIPS_SM_BADGE_WIDTH_PX, overflow: "hidden" }
+            : null),
         }}
       >
         {palette.icon}

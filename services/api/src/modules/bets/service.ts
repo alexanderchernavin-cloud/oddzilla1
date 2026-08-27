@@ -549,6 +549,33 @@ export class BetsService {
             authNum = parsed;
           }
         }
+        // A leg must be able to profit. Odds of exactly 1.00 pay the
+        // stake back on a win, so the bettor carries the full loss and
+        // void risk for zero upside — and in a combo such a leg
+        // contributes nothing to the payout while still being able to
+        // kill the whole ticket. Below 1.00 a winning bet pays LESS than
+        // the stake, which is simply broken.
+        //
+        // Both are reachable today. Oddin quotes 1.00 on a deeply
+        // in-the-money outcome and nothing upstream floors it (the
+        // publisher's 1.01 floor was deliberately removed in a9bcf44 so
+        // the storefront shows Oddin's true precision), and a non-zero
+        // `odds_config.payback_margin_bp` on any scope divides near-1.0
+        // odds straight below 1.0 — publisher_test.go pins "5% margin on
+        // 1.003" at 0.9552. The pre-existing guard above only rejects
+        // `<= 0`, so both fell through to pricing.
+        //
+        // Checked on `authNum` (the price this ticket will actually be
+        // priced at) rather than the raw published value, so it covers
+        // the per-bettor-adjusted price and boosted legs too — a boost
+        // on a 1.00 book no-ops via the fair-book clamp, so it can't
+        // rescue the leg either. This is the one chokepoint every
+        // product and client converges on; RiskZilla's netwin-share math
+        // assumes at engine.ts:377 that an all-odds-1.0 ticket "can't
+        // physically place a bet", which is only true once this exists.
+        if (authNum <= 1) {
+          throw new BadRequestError("outcome_odds_too_low", "outcome_odds_too_low");
+        }
         if (!isBetBuilder) {
           // BetBuilder skips per-leg drift: the agreed odds is the OBB
           // session combined odds. Per-leg movements may not reflect a
@@ -618,8 +645,13 @@ export class BetsService {
       if (betType === "tiple") {
         const quote = priceTiple(probabilities, effectiveMarginBp);
         if (Number(quote.offeredOdds) < 1.01) {
-          // Refuse offered < 1.01 — bettor would lose money on a winning
-          // ticket. Mirrors the floor odds-publisher applies elsewhere.
+          // Refuse offered < 1.01 — the bettor would make nothing (or
+          // lose) on a winning ticket. This is a product-level floor on
+          // the COMBINED Tiple quote; there is no longer any floor on
+          // the per-outcome published price (the publisher's 1.01 clamp
+          // was removed in a9bcf44 so the storefront shows Oddin's true
+          // precision). The per-leg equivalent is the `authNum <= 1`
+          // guard in the selection loop above.
           throw new BadRequestError("tiple_odds_too_low", "tiple_odds_too_low");
         }
         potentialPayoutMicro = multiplyMicroByOdds(stake, quote.offeredOdds);

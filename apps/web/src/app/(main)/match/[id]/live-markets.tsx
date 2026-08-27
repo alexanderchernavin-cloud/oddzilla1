@@ -21,8 +21,10 @@ import {
 // the client bundle and its `./ws.js`-suffixed re-exports don't
 // resolve under the web build's webpack (type-only barrel imports are
 // erased and never hit this).
-import { boostMarketKey } from "@oddzilla/types/netwinstable";
-import { formatBoostedOdds } from "@oddzilla/types/boosted-odds";
+import {
+  isQuotableOutcomeOdds,
+  quoteMarketBoost,
+} from "@oddzilla/types/netwinstable";
 import type { ZillaFlashOffer } from "@oddzilla/types";
 import { useTranslations } from "@/lib/i18n";
 import type { ZillaTip } from "@oddzilla/types/zillatips";
@@ -35,6 +37,7 @@ import {
 import {
   ZillaTipsBadge,
   ZillaTipsProvider,
+  ZILLATIPS_SM_BADGE_WIDTH_PX,
   type TipContext,
 } from "@/components/match/zillatips-widget";
 import { useMarketTabChangeTracker } from "@/lib/zillapass-track";
@@ -344,64 +347,67 @@ export function LiveMarkets({
   }, [initialGroups, ticks, marketStatusTicks]);
 
   // Boosted prices, computed from the LIVE outcome set (mergedGroups
-  // already carries every WS tick) with the same shared boostMarketKey
-  // + formatBoostedOdds the api uses at placement — realtime by
+  // already carries every WS tick) through the same shared
+  // quoteMarketBoost the api uses at placement — realtime by
   // construction: the boosted price re-derives in the same render as
-  // the tick that moved the underlying odds. Then merged with the
-  // ZillaFlash entries into one per-outcome lookup — a flash offer wins
-  // when both cover the same outcome (it's the scarcer, countdown-
-  // driven promo and its offer id gets the -2 s delay shave).
+  // the tick that moved the underlying odds, and the ±0.01 placement
+  // tolerance only ever absorbs real tick drift, never a divergence
+  // between two copies of the math. Then merged with the ZillaFlash
+  // entries into one per-outcome lookup — a flash offer wins when both
+  // cover the same outcome (it's the scarcer, countdown-driven promo
+  // and its offer id gets the -2 s delay shave).
   //
-  // Filter parity with the server-side quoteBoostedMarket /
-  // validateCustomBoostForBet: active markets only, outcomes that are
-  // active with a price > 1, at least 2 priced outcomes, and drop
-  // whole-market no-op adjustments (fair-book clamp). Individual
-  // outcomes whose FLOORED price didn't move still get an entry —
-  // hiding the boost styling on just the favorite (a 1% boost on 1.40
-  // is sub-cent) made one side of a boosted market look unboosted and
-  // flicker with live ticks. Same rule ZillaFlash follows: the whole
-  // market wears the boost.
+  // quoteMarketBoost owns every pricing decision: selection rules take
+  // over their market (so match-wide coverage is skipped for it), the
+  // fair-book clamp, and which cells get an entry. Notably a
+  // market-wide boost gives EVERY priced cell an entry even when its
+  // floored price didn't move — hiding the styling on just the favorite
+  // (a 1% boost on 1.40 is sub-cent) made one side of a boosted market
+  // look unboosted and flicker with live ticks.
   const boostByOutcome = useMemo<Map<string, AnyBoostEntry>>(() => {
     const map = new Map<string, AnyBoostEntry>();
-    if (customBoost.byMarket.size > 0 || customBoost.matchWide) {
+    if (
+      customBoost.byMarket.size > 0 ||
+      customBoost.selectionsByMarket.size > 0 ||
+      customBoost.matchWide
+    ) {
       for (const g of mergedGroups) {
         for (const m of g.markets) {
-          // Market-scope rule wins; otherwise the match-wide rule
-          // covers EVERY rendered market — including ladder lines
-          // created after the last rules poll (live line churn).
-          const rule = customBoost.byMarket.get(m.id) ?? customBoost.matchWide;
-          if (!rule || m.status !== 1) continue;
-          // >= 1, NOT > 1: a live favorite ticking through 1.00-1.01
-          // must stay in the priced set — dropping it left the market
-          // with a single priced outcome and the WHOLE market's boost
-          // flickered off and on with the ticks. boostMarketKey handles
-          // odds of exactly 1.00 correctly (c_i = 0 — the outcome just
-          // doesn't move; the delta lands on the other side). Kept in
-          // parity with validateCustomBoostForBet on the api.
-          const priced = m.outcomes.filter((o) => {
-            if (!o.active || !o.publishedOdds) return false;
-            const n = Number(o.publishedOdds);
-            return Number.isFinite(n) && n >= 1;
-          });
-          if (priced.length < 2) continue;
-          const adjusted = boostMarketKey(
-            priced.map((o) => Number(o.publishedOdds)),
-            rule.boostPct,
+          if (m.status !== 1) continue;
+          const selections = customBoost.selectionsByMarket.get(m.id) ?? null;
+          // Market-scope rule wins over the match-wide rule, which
+          // otherwise covers EVERY rendered market — including ladder
+          // lines created after the last rules poll (live line churn).
+          const marketWide =
+            customBoost.byMarket.get(m.id) ?? customBoost.matchWide;
+          if (!marketWide && !selections) continue;
+          const priced = m.outcomes.filter(
+            (o) =>
+              o.active &&
+              !!o.publishedOdds &&
+              isQuotableOutcomeOdds(Number(o.publishedOdds)),
           );
-          if (adjusted.effectiveKeyDelta <= 0) continue;
-          priced.forEach((o, i) => {
-            map.set(`${m.id}:${o.outcomeId}`, {
+          const cells = quoteMarketBoost({
+            outcomes: priced.map((o) => ({
+              outcomeId: o.outcomeId,
+              publishedOdds: Number(o.publishedOdds),
+            })),
+            marketWide: marketWide ?? null,
+            selections,
+          });
+          for (const cell of cells) {
+            map.set(`${m.id}:${cell.outcomeId}`, {
               kind: "custom",
               entry: {
-                ruleId: rule.ruleId,
+                ruleId: cell.ruleId,
                 marketId: m.id,
-                boostPct: rule.boostPct,
-                endsAt: rule.endsAt,
-                originalOdds: formatBoostedOdds(Number(o.publishedOdds)),
-                boostedOdds: formatBoostedOdds(adjusted.adjustedOdds[i]!),
+                boostPct: cell.boostPct,
+                endsAt: cell.endsAt,
+                originalOdds: cell.originalOdds,
+                boostedOdds: cell.boostedOdds,
               },
             });
-          });
+          }
         }
       }
     }
@@ -409,7 +415,13 @@ export function LiveMarkets({
       map.set(key, { kind: "flash", entry });
     }
     return map;
-  }, [mergedGroups, customBoost.byMarket, customBoost.matchWide, flashByOutcome]);
+  }, [
+    mergedGroups,
+    customBoost.byMarket,
+    customBoost.selectionsByMarket,
+    customBoost.matchWide,
+    flashByOutcome,
+  ]);
 
   const [scope, setScope] = useState<string>("all");
   const trackTabChange = useMarketTabChangeTracker();
@@ -807,6 +819,11 @@ function SingleMarketCard({
                 selected={selected}
                 locked={locked}
                 boosted={!!boostByOutcome.get(`${m.id}:${o.outcomeId}`)}
+                // Reserve room on the label row for the ZillaTips chip
+                // floated over this cell's top-right corner below.
+                badgeOverlay={
+                  outcomeTips.length > 0 ? ZILLATIPS_SM_BADGE_WIDTH_PX : false
+                }
                 onClick={() =>
                   toggle(
                     slip,
@@ -1189,6 +1206,11 @@ function LineRow({
               selected={selected}
               locked={locked}
               boosted={!!boostEntry}
+              // Handicap ladders carry the line value IN the label, so
+              // the ZillaTips chip above would sit on top of it.
+              badgeOverlay={
+                outcomeTips.length > 0 ? ZILLATIPS_SM_BADGE_WIDTH_PX : false
+              }
               onClick={() =>
                 toggle(slip, m, o, match, `${slot} ${cellLine}`, boostEntry)
               }

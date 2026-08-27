@@ -15,7 +15,7 @@
 // the sidebar (see shell/sidebar.tsx). Countdown chips appear only on
 // rules with an end time, ZillaFlash-style.
 
-import type { MouseEvent } from "react";
+import type { CSSProperties, MouseEvent } from "react";
 import Link from "next/link";
 import { useBetSlip } from "@/lib/bet-slip";
 import {
@@ -33,6 +33,40 @@ import type {
 } from "@oddzilla/types";
 
 const GREEN = "var(--positive, #16a34a)";
+
+// A banner price that's currently in the slip wears the same accent fill
+// a match-row OddButton does, so a pick made from the lobby reads as
+// picked in the place it was made — without it the click looked like it
+// did nothing even though the slip had filled in.
+//
+// The green boost treatment steps aside while selected (same rule
+// OddButton follows): "it's in your slip" is the more important signal,
+// and the green price is unreadable on the accent fill.
+function pickedStyle(selected: boolean): CSSProperties {
+  return selected
+    ? {
+        background: "var(--accent)",
+        borderColor: "var(--accent)",
+        color: "var(--accent-fg)",
+      }
+    : {
+        background: "var(--surface-2)",
+        borderColor: "var(--border)",
+        color: "var(--fg)",
+      };
+}
+
+/** Struck-through pre-boost price colour, per selected state. */
+function strikeColor(selected: boolean): string {
+  return selected
+    ? "color-mix(in oklab, var(--accent-fg) 60%, transparent)"
+    : "var(--fg-dim)";
+}
+
+/** Boosted price colour, per selected state. */
+function boostedColor(selected: boolean): string {
+  return selected ? "var(--accent-fg)" : GREEN;
+}
 
 export function ZillaBoostBanners() {
   const snap = useZillaBoostBanners();
@@ -237,10 +271,21 @@ function MatchBannerCard({
   const t = useTranslations("zillaboost");
   const live = b.status === "live";
 
+  // Is this cell the one currently in the slip?
+  const isPicked = (o: ZillaBoostBannerOutcome) =>
+    b.marketId != null && slip.has(b.marketId, o.outcomeId);
+
   const pick = (o: ZillaBoostBannerOutcome, e: MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     if (!b.marketId) return;
+    // Clicking the pick that's already in the slip takes it back out,
+    // matching a match-row odd button. Without the toggle the only way
+    // to undo a banner pick was the slip's own remove control.
+    if (slip.has(b.marketId, o.outcomeId)) {
+      slip.remove(b.marketId, o.outcomeId);
+      return;
+    }
     slip.clear();
     slip.setMode("single");
     slip.add({
@@ -285,24 +330,26 @@ function MatchBannerCard({
           <button
             type="button"
             onClick={(e) => pick(outcome, e)}
+            aria-pressed={isPicked(outcome)}
             style={{
               display: "inline-flex",
               alignItems: "baseline",
               gap: 6,
               padding: "3px 8px",
-              background: "var(--surface-2)",
-              border: "1px solid var(--border)",
+              border: "1px solid",
               borderRadius: 8,
               cursor: "pointer",
               fontFamily: "inherit",
               flexShrink: 0,
+              transition: "all 140ms var(--ease)",
+              ...pickedStyle(isPicked(outcome)),
             }}
           >
             <span
               className="mono tnum"
               style={{
                 fontSize: 10.5,
-                color: "var(--fg-dim)",
+                color: strikeColor(isPicked(outcome)),
                 textDecoration: "line-through",
               }}
             >
@@ -310,7 +357,11 @@ function MatchBannerCard({
             </span>
             <span
               className="mono tnum"
-              style={{ fontSize: 13, fontWeight: 700, color: GREEN }}
+              style={{
+                fontSize: 13,
+                fontWeight: 700,
+                color: boostedColor(isPicked(outcome)),
+              }}
             >
               {o(outcome).boosted}
             </span>
@@ -402,24 +453,27 @@ function MatchBannerCard({
           >
             {b.marketLabel}
           </span>
-          {b.outcomes.map((entry) => (
+          {b.outcomes.map((entry) => {
+            const picked = isPicked(entry);
+            return (
             <button
               key={entry.outcomeId}
               type="button"
               onClick={(e) => pick(entry, e)}
+              aria-pressed={picked}
               style={{
                 display: "flex",
                 alignItems: "center",
                 gap: 8,
                 minWidth: 0,
                 padding: "3px 6px 3px 8px",
-                background: "var(--surface-2)",
-                border: "1px solid var(--border)",
+                border: "1px solid",
                 borderRadius: 8,
                 cursor: "pointer",
-                color: "var(--fg)",
                 fontFamily: "inherit",
                 textAlign: "left",
+                transition: "all 140ms var(--ease)",
+                ...pickedStyle(picked),
               }}
             >
               <span
@@ -440,7 +494,7 @@ function MatchBannerCard({
                 className="mono tnum"
                 style={{
                   fontSize: 10.5,
-                  color: "var(--fg-dim)",
+                  color: strikeColor(picked),
                   textDecoration: "line-through",
                   flexShrink: 0,
                 }}
@@ -449,12 +503,18 @@ function MatchBannerCard({
               </span>
               <span
                 className="mono tnum"
-                style={{ fontSize: 13, fontWeight: 700, color: GREEN, flexShrink: 0 }}
+                style={{
+                  fontSize: 13,
+                  fontWeight: 700,
+                  color: boostedColor(picked),
+                  flexShrink: 0,
+                }}
               >
                 {entry.boostedOdds}
               </span>
             </button>
-          ))}
+            );
+          })}
         </div>
       )}
       {b.outcomes.length === 0 && (
@@ -483,7 +543,15 @@ function MarketBannerCard({
   const slip = useBetSlip();
   const t = useTranslations("zillaboost");
 
+  const isPicked = (entry: ZillaBoostBannerOutcome) =>
+    slip.has(b.marketId, entry.outcomeId);
+
   const pick = (entry: ZillaBoostBannerOutcome) => {
+    // Re-clicking the picked cell removes it, same as a match-row odd.
+    if (slip.has(b.marketId, entry.outcomeId)) {
+      slip.remove(b.marketId, entry.outcomeId);
+      return;
+    }
     slip.clear();
     slip.setMode("single");
     slip.add({
@@ -550,24 +618,27 @@ function MarketBannerCard({
         {b.marketLabel}
       </span>
       <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 2 }}>
-        {b.outcomes.map((entry) => (
+        {b.outcomes.map((entry) => {
+          const picked = isPicked(entry);
+          return (
           <button
             key={entry.outcomeId}
             type="button"
             onClick={() => pick(entry)}
+            aria-pressed={picked}
             style={{
               display: "flex",
               alignItems: "center",
               gap: 8,
               minWidth: 0,
               padding: "4px 6px 4px 8px",
-              background: "var(--surface-2)",
-              border: "1px solid var(--border)",
+              border: "1px solid",
               borderRadius: 8,
               cursor: "pointer",
-              color: "var(--fg)",
               fontFamily: "inherit",
               textAlign: "left",
+              transition: "all 140ms var(--ease)",
+              ...pickedStyle(picked),
             }}
           >
             <span
@@ -588,7 +659,7 @@ function MarketBannerCard({
               className="mono tnum"
               style={{
                 fontSize: 11.5,
-                color: "var(--fg-dim)",
+                color: strikeColor(picked),
                 textDecoration: "line-through",
                 flexShrink: 0,
               }}
@@ -600,9 +671,12 @@ function MarketBannerCard({
               style={{
                 fontSize: 13.5,
                 fontWeight: 700,
-                color: GREEN,
-                background: "var(--bg)",
-                border: "1px solid var(--border)",
+                color: boostedColor(picked),
+                // The inset price chip reads as a raised tile on an
+                // unpicked row; on the accent fill it would look like a
+                // hole punched in the button, so it goes flat instead.
+                background: picked ? "transparent" : "var(--bg)",
+                border: `1px solid ${picked ? "transparent" : "var(--border)"}`,
                 borderRadius: 6,
                 padding: "2px 8px",
                 flexShrink: 0,
@@ -611,7 +685,8 @@ function MarketBannerCard({
               {entry.boostedOdds}
             </span>
           </button>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
