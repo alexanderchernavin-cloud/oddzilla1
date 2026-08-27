@@ -314,6 +314,14 @@ a truncated dump masquerading as valid. Set `BACKUP_GPG_RECIPIENT` in `.env`
 to GPG-encrypt the dump in addition to gzipping; the extension becomes
 `.sql.gz.gpg`. Older history lives off-host (pull-to-workstation, below).
 
+Watch the **pre-deploy dumps** after a failed deploy: `make deploy`
+writes its dump BEFORE building, and a deploy that dies mid-build
+leaves that ~8 GB dump stranded in `.deploy/backups/` next to the
+previous one. Two failed attempts back-to-back filled the disk to 100%
+on 2026-08-26 and crash-looped postgres for ~40 s (WAL redo recovered
+cleanly). After any failed deploy, prune the stranded dump before
+retrying.
+
 ### odds_history retention
 
 `odds_history` is `PARTITION BY RANGE (ts)` (migrations 0000 + 0001), but
@@ -374,6 +382,21 @@ reclaims below were needed.
 > parent into the dated partitions with CHECKPOINTs between. The retention
 > cron was rewritten to the partition model in the same change (see above)
 > — no third reclaim will ever be needed.
+
+> **Incident during the conversion (same evening):** the first cut of
+> the partition-drop cron extracted the partition date with a
+> positional substring carrying an off-by-one prefix length — every
+> partition compared below the cutoff and a test run dropped ALL 42
+> dated partitions, freshly restored history included. Recovered from
+> the pre-swap full deploy dump (`.deploy/backups/`); permanent loss
+> was only the ~85 min of odds ticks between that dump's snapshot and
+> the moment the safety DEFAULT started catching inserts (18:30–19:55
+> UTC — chart/audit data only; money paths never read odds_history).
+> Two guards now sit in the script: the date is extracted with an
+> anchored regex capture (`p([0-9]{8})$`), and a fuse refuses to drop
+> more than `ODDS_RETENTION_MAX_DROPS` (default 10) partitions in one
+> run — a healthy night drops exactly one, so a longer list means the
+> selection itself is broken and the script aborts + pages instead.
 
 A plain DELETE + `VACUUM` won't return disk; `VACUUM FULL` needs ~table-size
 temp and an `ACCESS EXCLUSIVE` lock (odds writes freeze for minutes), and
