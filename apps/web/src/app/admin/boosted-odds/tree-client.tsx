@@ -11,9 +11,9 @@
 //
 // Every entity keeps its green Boost button: the sport (rail + board
 // header), each tournament (chip strip above the list, doubles as a
-// filter), each match card, each market (expand a card), and each team
-// (Teams tab with search). The popup assigns boost % / end time / Min
-// Risk Score.
+// filter), each match card, each market (expand a card), each SELECTION
+// (expand a market row), and each team (Teams tab with search). The
+// popup assigns boost % / end time / Min Risk Score.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
@@ -22,7 +22,9 @@ import { isFeaturedTier } from "@/components/ui/tier-mark";
 
 export interface RuleDto {
   id: string;
-  scope: "sport" | "tournament" | "match" | "competitor" | "market";
+  scope: "sport" | "tournament" | "match" | "competitor" | "market" | "outcome";
+  /** scope='outcome' only — the boosted cell within the rule's market. */
+  outcomeId: string | null;
   boostPct: number;
   endsAt: string | null;
   minRiskScore: number | null;
@@ -83,6 +85,39 @@ interface MarketRow {
   providerMarketId: number;
   label: string;
   rule: RuleDto | null;
+  /** How many of this market's selections carry their own boost. */
+  selectionRuleCount: number;
+}
+
+interface SelectionRow {
+  outcomeId: string;
+  label: string;
+  /**
+   * Current bettor-facing price as stored — NUMERIC(10,4), so it
+   * arrives padded ("1.9100"). Rendered through trimOdds below.
+   */
+  publishedOdds: string | null;
+  active: boolean;
+  rule: RuleDto | null;
+}
+
+// Trailing zeros trimmed down to a 2dp floor, matching how the
+// storefront quotes odds (1.9100 -> 1.91, 1.0030 -> 1.003, 2.0000 -> 2.00).
+function trimOdds(raw: string): string {
+  return /^\d+\.\d{3,}$/.test(raw)
+    ? raw.replace(/(\.\d{2})(\d*?)0+$/, "$1$2")
+    : raw;
+}
+
+interface SelectionsPayload {
+  market: {
+    id: string;
+    status: number;
+    homeTeam: string;
+    awayTeam: string;
+    hasMarketRule: boolean;
+  };
+  entries: SelectionRow[];
 }
 
 type Scope = RuleDto["scope"];
@@ -93,6 +128,7 @@ const SCOPE_LABEL: Record<Scope, string> = {
   match: "Match",
   competitor: "Team",
   market: "Market",
+  outcome: "Selection",
 };
 
 const GREEN = "#16a34a";
@@ -326,8 +362,9 @@ function ActiveRulesTable({
           color: "var(--color-fg-muted)",
         }}
       >
-        No boost rules yet. Pick any sport, tournament, team, match or market
-        below and press <span style={{ color: GREEN, fontWeight: 600 }}>Boost</span>.
+        No boost rules yet. Pick any sport, tournament, team, match, market or
+        selection below and press{" "}
+        <span style={{ color: GREEN, fontWeight: 600 }}>Boost</span>.
       </section>
     );
   }
@@ -381,6 +418,7 @@ function ActiveRulesTable({
             <BoostControl
               scope={r.scope}
               refId={r.refId}
+              outcomeId={r.outcomeId}
               entityLabel={r.label}
               rule={r}
               compact
@@ -816,7 +854,7 @@ function MatchCard({
                 display: "flex",
                 alignItems: "center",
                 gap: 10,
-                padding: "6px 12px 6px 98px",
+                padding: "6px 12px 6px 84px",
                 fontSize: 12.5,
               }}
             >
@@ -874,30 +912,211 @@ function MatchCard({
             />
           )}
           {markets?.map((mk) => (
-            <div
+            <MarketRowItem
               key={mk.id}
+              market={mk}
+              matchLabel={`${m.homeTeam} vs ${m.awayTeam}`}
+              checked={checked.has(mk.id)}
+              onToggleChecked={(on) =>
+                setChecked((prev) => {
+                  const next = new Set(prev);
+                  if (on) next.add(mk.id);
+                  else next.delete(mk.id);
+                  return next;
+                })
+              }
+              onError={onError}
+              onChanged={() => {
+                onChanged();
+                void loadMarkets();
+              }}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Market row (inside an expanded match card) ─────────────────────────
+// Carries its own expand state for the SELECTIONS beneath it, so opening
+// one market's cells doesn't re-fetch or collapse its siblings.
+
+function MarketRowItem({
+  market: mk,
+  matchLabel,
+  checked,
+  onToggleChecked,
+  onError,
+  onChanged,
+}: {
+  market: MarketRow;
+  matchLabel: string;
+  checked: boolean;
+  onToggleChecked: (on: boolean) => void;
+  onError: (msg: string) => void;
+  onChanged: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [payload, setPayload] = useState<SelectionsPayload | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const loadSelections = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await clientApi<SelectionsPayload>(
+        `/admin/boosted-odds/markets/${mk.id}/selections`,
+      );
+      setPayload(data);
+    } catch (err) {
+      onError(err instanceof ApiFetchError ? err.message : "load failed");
+      setPayload(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [mk.id, onError]);
+
+  const toggle = () => {
+    const next = !expanded;
+    setExpanded(next);
+    if (next && payload === null) void loadSelections();
+  };
+
+  // A selection boost takes over its market's pricing, so a market rule
+  // sitting underneath it is inert. Say so where the operator can see
+  // it rather than letting them wonder why the market % isn't showing.
+  const overridden = mk.rule !== null && mk.selectionRuleCount > 0;
+
+  return (
+    <div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "5px 12px 5px 60px",
+          fontSize: 12.5,
+        }}
+      >
+        <button
+          type="button"
+          onClick={toggle}
+          aria-expanded={expanded}
+          aria-label={
+            expanded
+              ? `Hide selections for ${mk.label}`
+              : `Show selections for ${mk.label}`
+          }
+          title="Boost a single selection"
+          style={{
+            width: 16,
+            flexShrink: 0,
+            background: "transparent",
+            border: "none",
+            padding: 0,
+            cursor: "pointer",
+            color: "var(--color-fg-muted)",
+            fontSize: 10,
+            lineHeight: 1,
+          }}
+        >
+          {expanded ? "▾" : "▸"}
+        </button>
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(e) => onToggleChecked(e.currentTarget.checked)}
+          style={{ accentColor: GREEN, flexShrink: 0 }}
+        />
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={mk.label}
+        >
+          {mk.label}
+          <span
+            className="mono"
+            style={{ marginLeft: 8, fontSize: 10.5, color: "var(--color-fg-muted)" }}
+          >
+            #{mk.providerMarketId}
+          </span>
+        </span>
+        {mk.selectionRuleCount > 0 && (
+          <span
+            className="mono tnum"
+            title={
+              overridden
+                ? `${mk.selectionRuleCount} boosted selection(s) — these price the market, the market-level boost below is inactive`
+                : `${mk.selectionRuleCount} boosted selection(s)`
+            }
+            style={{
+              fontSize: 10.5,
+              padding: "2px 7px",
+              borderRadius: 999,
+              flexShrink: 0,
+              whiteSpace: "nowrap",
+              background: `color-mix(in oklab, ${GREEN} 14%, transparent)`,
+              color: "#15803d",
+            }}
+          >
+            {mk.selectionRuleCount} sel
+          </span>
+        )}
+        {mk.rule && <RuleBadge rule={mk.rule} muted={overridden} />}
+        <BoostControl
+          scope="market"
+          refId={mk.id}
+          entityLabel={`${mk.label} — ${matchLabel}`}
+          rule={mk.rule}
+          compact
+          onError={onError}
+          onChanged={onChanged}
+        />
+      </div>
+
+      {expanded && (
+        <div
+          style={{
+            borderTop: "1px solid var(--color-border)",
+            borderBottom: "1px solid var(--color-border)",
+            background: "var(--color-bg)",
+            padding: "2px 0",
+          }}
+        >
+          {loading && <Note>Loading selections…</Note>}
+          {!loading && payload && payload.entries.length === 0 && (
+            <Note>No selections on this market.</Note>
+          )}
+          {!loading && overridden && (
+            <div
+              style={{
+                padding: "4px 12px 4px 96px",
+                fontSize: 11.5,
+                color: "var(--color-fg-muted)",
+                lineHeight: 1.4,
+              }}
+            >
+              Boosted selections price this market on their own — the
+              market-level boost above is inactive while any of them exists.
+            </div>
+          )}
+          {payload?.entries.map((sel) => (
+            <div
+              key={sel.outcomeId}
               style={{
                 display: "flex",
                 alignItems: "center",
                 gap: 8,
-                padding: "5px 12px 5px 78px",
+                padding: "4px 12px 4px 96px",
                 fontSize: 12.5,
+                opacity: sel.active && sel.publishedOdds ? 1 : 0.55,
               }}
             >
-              <input
-                type="checkbox"
-                checked={checked.has(mk.id)}
-                onChange={(e) => {
-                  const on = e.currentTarget.checked;
-                  setChecked((prev) => {
-                    const next = new Set(prev);
-                    if (on) next.add(mk.id);
-                    else next.delete(mk.id);
-                    return next;
-                  });
-                }}
-                style={{ accentColor: "#16a34a", flexShrink: 0 }}
-              />
               <span
                 style={{
                   flex: 1,
@@ -906,27 +1125,58 @@ function MatchCard({
                   textOverflow: "ellipsis",
                   whiteSpace: "nowrap",
                 }}
-                title={mk.label}
+                title={sel.label}
               >
-                {mk.label}
+                {sel.label}
+              </span>
+              {sel.publishedOdds ? (
+                <span
+                  className="mono tnum"
+                  style={{ fontSize: 12, flexShrink: 0 }}
+                  title="Current bettor-facing price"
+                >
+                  {trimOdds(sel.publishedOdds)}
+                </span>
+              ) : (
                 <span
                   className="mono"
-                  style={{ marginLeft: 8, fontSize: 10.5, color: "var(--color-fg-muted)" }}
+                  style={{
+                    fontSize: 10.5,
+                    color: "var(--color-fg-muted)",
+                    flexShrink: 0,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.08em",
+                  }}
                 >
-                  #{mk.providerMarketId}
+                  no price
                 </span>
-              </span>
-              {mk.rule && <RuleBadge rule={mk.rule} />}
+              )}
+              {!sel.active && (
+                <span
+                  className="mono"
+                  style={{
+                    fontSize: 10.5,
+                    color: "var(--color-fg-muted)",
+                    flexShrink: 0,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.08em",
+                  }}
+                >
+                  inactive
+                </span>
+              )}
+              {sel.rule && <RuleBadge rule={sel.rule} />}
               <BoostControl
-                scope="market"
+                scope="outcome"
                 refId={mk.id}
-                entityLabel={`${mk.label} — ${m.homeTeam} vs ${m.awayTeam}`}
-                rule={mk.rule}
+                outcomeId={sel.outcomeId}
+                entityLabel={`${sel.label} — ${mk.label} — ${matchLabel}`}
+                rule={sel.rule}
                 compact
                 onError={onError}
                 onChanged={() => {
                   onChanged();
-                  void loadMarkets();
+                  void loadSelections();
                 }}
               />
             </div>
@@ -1120,7 +1370,16 @@ function TeamsPane({
 
 // ─── Shared chrome ──────────────────────────────────────────────────────
 
-function RuleBadge({ rule }: { rule: RuleDto }) {
+function RuleBadge({
+  rule,
+  // muted=true: the rule exists but isn't pricing anything right now
+  // (a market rule under boosted selections). Rendering it in the
+  // normal green would claim a boost the storefront isn't showing.
+  muted = false,
+}: {
+  rule: RuleDto;
+  muted?: boolean;
+}) {
   const expired =
     rule.endsAt !== null && new Date(rule.endsAt).getTime() <= Date.now();
   const bits = [`+${rule.boostPct}%`];
@@ -1131,6 +1390,8 @@ function RuleBadge({ rule }: { rule: RuleDto }) {
   }
   if (rule.minRiskScore != null) bits.push(`RS ≥ ${rule.minRiskScore}`);
   if (rule.banner) bits.push("banner");
+  if (muted) bits.push("inactive");
+  const text = bits.join(" · ");
   return (
     <span
       className="mono tnum"
@@ -1141,13 +1402,23 @@ function RuleBadge({ rule }: { rule: RuleDto }) {
         flexShrink: 0,
         background: expired
           ? "color-mix(in oklab, #dc2626 12%, transparent)"
-          : `color-mix(in oklab, ${GREEN} 14%, transparent)`,
-        color: expired ? "#dc2626" : "#15803d",
+          : muted
+            ? "var(--color-bg-subtle)"
+            : `color-mix(in oklab, ${GREEN} 14%, transparent)`,
+        color: expired
+          ? "#dc2626"
+          : muted
+            ? "var(--color-fg-muted)"
+            : "#15803d",
         whiteSpace: "nowrap",
       }}
-      title={bits.join(" · ")}
+      title={
+        muted
+          ? `${text} — overridden by this market's boosted selections`
+          : text
+      }
     >
-      {bits.join(" · ")}
+      {text}
     </span>
   );
 }
@@ -1201,6 +1472,7 @@ function Note({ children }: { children: React.ReactNode }) {
 function BoostControl({
   scope,
   refId,
+  outcomeId,
   entityLabel,
   rule,
   compact,
@@ -1208,7 +1480,9 @@ function BoostControl({
   onChanged,
 }: {
   scope: Scope;
+  /** For scope="outcome" this is the MARKET id; outcomeId names the cell. */
   refId: string;
+  outcomeId?: string | null;
   entityLabel: string;
   rule: RuleDto | null;
   compact?: boolean;
@@ -1239,7 +1513,13 @@ function BoostControl({
       </button>
       {open && (
         <BoostModal
-          targets={[{ scope, refId }]}
+          targets={[
+            {
+              scope,
+              refId,
+              ...(scope === "outcome" && outcomeId ? { outcomeId } : null),
+            },
+          ]}
           entityLabel={entityLabel}
           rule={rule}
           onClose={() => setOpen(false)}
@@ -1267,8 +1547,9 @@ function BoostModal({
   onChanged,
 }: {
   // One rule is upserted per target — a single entity from a Boost
-  // button, or a checked set of markets from the multiselect.
-  targets: Array<{ scope: Scope; refId: string }>;
+  // button, or a checked set of markets from the multiselect. For
+  // scope="outcome" `refId` is the market id and `outcomeId` the cell.
+  targets: Array<{ scope: Scope; refId: string; outcomeId?: string }>;
   entityLabel: string;
   rule: RuleDto | null;
   onClose: () => void;
@@ -1292,6 +1573,8 @@ function BoostModal({
   );
   const [banner, setBanner] = useState(rule?.banner ?? false);
   const [busy, setBusy] = useState(false);
+  // Neither a team nor a single selection has a home-page banner shape.
+  const bannerDisabled = scope === "competitor" || scope === "outcome";
 
   const applyPreset = (minutes: number) => {
     setEndMode("duration");
@@ -1355,10 +1638,13 @@ function BoostModal({
           body: JSON.stringify({
             scope: target.scope,
             refId: target.refId,
+            ...(target.outcomeId !== undefined
+              ? { outcomeId: target.outcomeId }
+              : null),
             boostPct: pctNum,
             endsAt: endsIso,
             minRiskScore: minRsNum,
-            banner,
+            banner: bannerDisabled ? false : banner,
           }),
         });
       }
@@ -1447,9 +1733,22 @@ function BoostModal({
             style={inputStyle}
           />
           <span style={hintStyle}>
-            Netwinstable key delta in percentage points — same math as
-            ZillaFlash (3 = its baseline). Clamped so the book never goes to
-            or below fair.
+            {scope === "outcome" ? (
+              <>
+                Netwinstable key delta in percentage points, taken out of this
+                selection alone — the other prices in the market don&apos;t
+                move. Clamped so the book never goes to or below fair, and so
+                no single price more than doubles. A boosted selection prices
+                its market on its own: any market / match / tournament / sport
+                boost covering it stops applying.
+              </>
+            ) : (
+              <>
+                Netwinstable key delta in percentage points — same math as
+                ZillaFlash (3 = its baseline). Clamped so the book never goes
+                to or below fair.
+              </>
+            )}
           </span>
         </label>
 
@@ -1590,14 +1889,14 @@ function BoostModal({
             display: "flex",
             alignItems: "flex-start",
             gap: 8,
-            cursor: scope === "competitor" ? "not-allowed" : "pointer",
-            opacity: scope === "competitor" ? 0.55 : 1,
+            cursor: bannerDisabled ? "not-allowed" : "pointer",
+            opacity: bannerDisabled ? 0.55 : 1,
           }}
         >
           <input
             type="checkbox"
-            checked={banner}
-            disabled={scope === "competitor"}
+            checked={banner && !bannerDisabled}
+            disabled={bannerDisabled}
             onChange={(e) => setBanner(e.currentTarget.checked)}
             style={{ accentColor: "#16a34a", marginTop: 2 }}
           />
@@ -1607,7 +1906,8 @@ function BoostModal({
               Shows on the storefront home page: market &rarr; ZillaFlash-style
               card, match &rarr; match card with old + boosted winner prices,
               tournament &rarr; ZillaBoost banner opening its match list,
-              sport &rarr; boost icon in the sidebar. Not available for teams.
+              sport &rarr; boost icon in the sidebar. Not available for teams
+              or single selections — a banner advertises a whole market.
             </span>
           </span>
         </label>

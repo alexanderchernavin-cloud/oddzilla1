@@ -38,7 +38,9 @@ import type {
   ZillaBoostMatchBanner,
   ZillaBoostTournamentBanner,
 } from "@oddzilla/types";
+import { isQuotableOutcomeOdds } from "@oddzilla/types";
 import {
+  loadSelectionBoostedMarketIds,
   loadViewerRiskScore,
   quoteBoostedMarket,
   type BoostRule,
@@ -81,8 +83,9 @@ async function loadPricedOutcomes(
       rawName: r.name,
       publishedOdds: Number(r.publishedOdds),
     }))
-    // >= 1 in parity with the match-page compute + placement validator.
-    .filter((r) => Number.isFinite(r.publishedOdds) && r.publishedOdds >= 1);
+    // Shared predicate — parity with the match-page compute + the
+    // placement validator is what keeps the ±0.01 tolerance honest.
+    .filter((r) => isQuotableOutcomeOdds(r.publishedOdds));
   const weight = (id: string): number => {
     const n = Number.parseInt(id, 10);
     if (!Number.isFinite(n) || String(n) !== id) return 1000;
@@ -310,6 +313,14 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
         if (list) list.push(c);
         else candidatesByMatch.set(key, [c]);
       }
+      // Markets whose pricing is owned by selection rules — a
+      // match-wide banner rule is suppressed on those, so the candidate
+      // probe below has to skip them and quote the next market instead.
+      const selectionOwned = await loadSelectionBoostedMarketIds(
+        app.db,
+        candidateRows.map((c) => c.id),
+        riskScore,
+      );
       const mapNumber = (specifiersJson: unknown): number => {
         const specs = (specifiersJson ?? {}) as Record<string, string>;
         const n = Number.parseInt(specs.map ?? "", 10);
@@ -341,6 +352,7 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
           matchId: r.matchId,
           competitorId: null,
           marketId: null,
+          outcomeId: null,
           boostPct: Number(r.boostPct),
           endsAt: r.endsAt,
           minRiskScore: null,
@@ -356,6 +368,7 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
         // shape; a match where none of them price has nothing bettable
         // worth a banner odds column.
         for (const cand of candidates.slice(0, 6)) {
+          if (selectionOwned.has(cand.id.toString())) continue;
           const priced = await loadPricedOutcomes(app, cand.id);
           const quote = quoteBoostedMarket(rule, priced);
           if (!quote) continue;
@@ -370,7 +383,9 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
           marketId = cand.id.toString();
           marketLabel = labels.marketLabel;
           outcomes = quote.map((q) => ({
-            ...q,
+            outcomeId: q.outcomeId,
+            originalOdds: q.originalOdds,
+            boostedOdds: q.boostedOdds,
             label: teamShaped
               ? q.outcomeId === "1"
                 ? m.homeTeam
@@ -412,8 +427,19 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
     }
 
     // ── market scope → ZillaFlash-style cards ───────────────────────
+    // Outcome-scope rules have no banner surface of their own: the card
+    // shape is "this whole market is boosted", which a single-cell rule
+    // isn't. A market-scope banner is likewise skipped when the market
+    // carries selection rules, since those own its pricing and the
+    // banner's quote would 400 at placement.
     const marketRules = rules.filter((r) => r.scope === "market");
+    const marketSelectionOwned = await loadSelectionBoostedMarketIds(
+      app.db,
+      marketRules.map((r) => r.marketId!),
+      riskScore,
+    );
     for (const r of marketRules) {
+      if (marketSelectionOwned.has(r.marketId!.toString())) continue;
       const [row] = await app.db
         .select({
           id: markets.id,
@@ -449,6 +475,7 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
         matchId: null,
         competitorId: null,
         marketId: r.marketId,
+        outcomeId: null,
         boostPct: Number(r.boostPct),
         endsAt: r.endsAt,
         minRiskScore: null,
@@ -476,7 +503,9 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
         marketId: row.id.toString(),
         marketLabel: labels.marketLabel,
         outcomes: quote.map((q) => ({
-          ...q,
+          outcomeId: q.outcomeId,
+          originalOdds: q.originalOdds,
+          boostedOdds: q.boostedOdds,
           label: labels.labelFor(
             q.outcomeId,
             priced.find((p) => p.outcomeId === q.outcomeId)?.rawName ?? "",

@@ -1,12 +1,13 @@
 // GET /catalog/matches/:matchId/boosted-odds — Custom Boosted Odds
-// RULES for one match (migration 0085), resolved per market for the
-// viewer. Prices are intentionally NOT in this payload: the match page
-// computes boosted prices client-side with the shared boostMarketKey
-// over the outcome set it already tracks via WS ticks, so the boost
-// moves in the same render as the raw odds (true realtime). This
-// endpoint only propagates admin rule changes and applies the
-// per-viewer Min Risk Score gate — which can't ride the shared
-// odds:match:{id} pub/sub channel precisely because it's per-user.
+// RULES for one match (migration 0085; outcome scope 0087-0088),
+// resolved per market for the viewer. Prices are intentionally NOT in
+// this payload: the match page computes boosted prices client-side with
+// the shared quoteMarketBoost over the outcome set it already tracks via
+// WS ticks, so the boost moves in the same render as the raw odds (true
+// realtime). This endpoint only propagates admin rule changes and
+// applies the per-viewer Min Risk Score gate — which can't ride the
+// shared odds:match:{id} pub/sub channel precisely because it's
+// per-user.
 //
 // Anonymous tolerated — the RS gate treats logged-out viewers as the
 // default risk score (1.000), so a rule with minRiskScore <= 1 is
@@ -17,7 +18,11 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { categories, matches, tournaments } from "@oddzilla/db";
-import type { CustomBoostedMarket, CustomBoostedOddsResponse } from "@oddzilla/types";
+import type {
+  CustomBoostedMarket,
+  CustomBoostedOddsResponse,
+  CustomBoostedSelection,
+} from "@oddzilla/types";
 import {
   loadBoostRulesForMatch,
   loadViewerRiskScore,
@@ -28,6 +33,7 @@ const paramsSchema = z.object({ matchId: z.coerce.bigint() });
 
 const EMPTY = (): CustomBoostedOddsResponse => ({
   entries: [],
+  selections: [],
   matchWide: null,
   serverNow: new Date().toISOString(),
 });
@@ -82,13 +88,23 @@ export default async function boostedOddsRoutes(app: FastifyInstance) {
     let competitorBest: (typeof eligible)[number] | null = null;
     let tournamentRule: (typeof eligible)[number] | null = null;
     let sportRule: (typeof eligible)[number] | null = null;
-    const entries: CustomBoostedMarket[] = [];
+    const marketEntries: CustomBoostedMarket[] = [];
+    const selections: CustomBoostedSelection[] = [];
     for (const r of eligible) {
       switch (r.scope) {
         case "market":
-          entries.push({
+          marketEntries.push({
             ruleId: r.id,
             marketId: r.marketId!.toString(),
+            boostPct: r.boostPct,
+            endsAt: r.endsAt?.toISOString() ?? null,
+          });
+          break;
+        case "outcome":
+          selections.push({
+            ruleId: r.id,
+            marketId: r.marketId!.toString(),
+            outcomeId: r.outcomeId!,
             boostPct: r.boostPct,
             endsAt: r.endsAt?.toISOString() ?? null,
           });
@@ -111,8 +127,16 @@ export default async function boostedOddsRoutes(app: FastifyInstance) {
     }
     const wide = matchRule ?? competitorBest ?? tournamentRule ?? sportRule;
 
+    // A selection boost takes over its market's pricing, so drop any
+    // market-scope entry for the same market. The client applies the
+    // same precedence to `matchWide` (which stays unflattened — see
+    // above), so both sides agree without the server enumerating
+    // markets.
+    const selectionMarkets = new Set(selections.map((s) => s.marketId));
+
     return {
-      entries,
+      entries: marketEntries.filter((e) => !selectionMarkets.has(e.marketId)),
+      selections,
       matchWide: wide
         ? {
             ruleId: wide.id,

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { fromMicro, toMicro } from "@oddzilla/types/money";
+import { formatOddsDisplay } from "@oddzilla/types/odds";
 import { SUPPORTED_CURRENCIES, type Currency } from "@oddzilla/types/currencies";
 // Runtime imports MUST come from the /products subpath (mirrors the
 // currencies workaround) — Next.js webpack can't resolve ".js" imports
@@ -1458,11 +1459,15 @@ function SelectionCard({
   const acceptedNum = Number(selection.odds);
   const pendingNum =
     selection.pendingOdds != null ? Number(selection.pendingOdds) : null;
+  // Compared at DISPLAY precision so the tag matches what's on screen:
+  // odds carry up to 4dp, and a 1.003 -> 1.004 move is a real change the
+  // bettor can now see. A fixed 2dp comparison called that "unchanged"
+  // while both values rendered identically as "1.00".
   const pendingChanged =
     pendingNum != null &&
     Number.isFinite(pendingNum) &&
     Number.isFinite(acceptedNum) &&
-    pendingNum.toFixed(2) !== acceptedNum.toFixed(2);
+    formatOddsDisplay(pendingNum) !== formatOddsDisplay(acceptedNum);
   const pendingDir: "up" | "down" | null = pendingChanged
     ? pendingNum! > acceptedNum
       ? "up"
@@ -1603,7 +1608,7 @@ function SelectionCard({
               color: pendingChanged ? "var(--fg-muted)" : undefined,
             }}
           >
-            {acceptedNum.toFixed(2)}
+            {formatOddsDisplay(acceptedNum)}
           </span>
           {pendingChanged && pendingNum != null ? (
             <>
@@ -1622,7 +1627,7 @@ function SelectionCard({
                   color: pendingDir === "up" ? "var(--positive)" : "var(--negative)",
                 }}
               >
-                {pendingNum.toFixed(2)}
+                {formatOddsDisplay(pendingNum)}
               </span>
             </>
           ) : null}
@@ -1761,6 +1766,8 @@ function mapError(err: ApiFetchError): string {
       return "Too many selections for this product.";
     case "tiple_odds_too_low":
       return "Your Tiple is too likely — pick longer-shot selections.";
+    case "outcome_odds_too_low":
+      return "One of your selections is priced too low to return a profit. Remove it and try another.";
     case "bet_product_disabled":
       return "This product is currently disabled.";
     case "bet_product_unconfigured":
@@ -2668,7 +2675,7 @@ function HistoryTicketCard({
             const legHref = m ? `/match/${m.matchId}` : null;
             const legOdds = Number(s.oddsAtPlacement);
             const oddsLabel = Number.isFinite(legOdds)
-              ? legOdds.toFixed(2)
+              ? formatOddsDisplay(legOdds)
               : s.oddsAtPlacement;
             const isWon = s.result === "won" || s.result === "half_won";
             const isLost = s.result === "lost" || s.result === "half_lost";

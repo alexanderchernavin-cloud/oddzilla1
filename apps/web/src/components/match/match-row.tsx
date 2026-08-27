@@ -14,6 +14,9 @@ import { useOddsFlash, useValueFlash } from "@/lib/use-odds-flash";
 import { useTranslations } from "@/lib/i18n";
 import { LocalDateTime } from "./local-datetime";
 import type { SlipSelection } from "@oddzilla/types";
+// Value import via the subpath, never the barrel — see the note in
+// packages/types/src/odds.ts.
+import { formatOddsDisplay } from "@oddzilla/types/odds";
 
 export interface ListMatch {
   id: string;
@@ -777,7 +780,7 @@ function RowOddBtn({
           color: selected ? "var(--accent-fg)" : "var(--fg)",
         }}
       >
-        {locked || price == null ? "—" : price.toFixed(2)}
+        {locked || price == null ? "—" : formatOddsDisplay(price)}
       </span>
     </button>
   );

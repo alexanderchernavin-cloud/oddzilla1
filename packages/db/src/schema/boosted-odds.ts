@@ -1,11 +1,13 @@
 // Custom Boosted Odds — operator-curated Netwinstable boosts pinned to
-// any catalog entity (migration 0085). One rule per (scope, ref);
-// resolution per market is most-specific-wins:
-//     market > match > competitor > tournament > sport
+// any catalog entity (migration 0085; 'outcome' scope added in
+// 0087-0088). One rule per (scope, ref); resolution per market is
+// most-specific-wins:
+//     outcome > market > match > competitor > tournament > sport
 // boost_pct is a key delta in percentage points, applied at read /
-// placement time via boostMarketKey — the boosted price is never
-// stored. min_risk_score gates delivery per bettor (users.risk_score
-// below the threshold sees the standard price).
+// placement time via boostMarketKey (whole market) or
+// boostSelectionKeys ('outcome' scope — one cell) — the boosted price
+// is never stored. min_risk_score gates delivery per bettor
+// (users.risk_score below the threshold sees the standard price).
 
 import { sql } from "drizzle-orm";
 import {
@@ -16,6 +18,7 @@ import {
   integer,
   bigint,
   numeric,
+  text,
   timestamp,
   check,
   uniqueIndex,
@@ -30,6 +33,7 @@ export const boostedOddsScopeEnum = pgEnum("boosted_odds_scope", [
   "match",
   "competitor",
   "market",
+  "outcome",
 ]);
 
 export const boostedOddsConfig = pgTable(
@@ -56,6 +60,11 @@ export const boostedOddsConfig = pgTable(
       () => markets.id,
       { onDelete: "cascade" },
     ),
+    // scope='outcome' only: the market_outcomes.outcome_id half of the
+    // (market_id, outcome_id) key. Intentionally NOT an FK — validating
+    // one would lock market_outcomes against the live feed (see
+    // migration 0088). The admin route checks the row exists on write.
+    outcomeId: text("outcome_id"),
     boostPct: numeric("boost_pct", { precision: 5, scale: 2 }).notNull(),
     endsAt: timestamp("ends_at", { withTimezone: true }),
     minRiskScore: numeric("min_risk_score", { precision: 4, scale: 3 }),
@@ -83,6 +92,10 @@ export const boostedOddsConfig = pgTable(
       "boosted_odds_min_rs_range",
       sql`${t.minRiskScore} IS NULL OR (${t.minRiskScore} >= 0.01 AND ${t.minRiskScore} <= 10)`,
     ),
+    check(
+      "boosted_odds_outcome_id_len",
+      sql`${t.outcomeId} IS NULL OR (length(${t.outcomeId}) BETWEEN 1 AND 64)`,
+    ),
     uniqueIndex("boosted_odds_sport_uniq")
       .on(t.sportId)
       .where(sql`${t.scope} = 'sport'`),
@@ -98,6 +111,13 @@ export const boostedOddsConfig = pgTable(
     uniqueIndex("boosted_odds_market_uniq")
       .on(t.marketId)
       .where(sql`${t.scope} = 'market'`),
+    // Selection rules share market_id with market rules but live in
+    // their own partial index, so a market can carry a market-scope
+    // rule AND per-outcome rules simultaneously (the pricing path picks
+    // one — selections win, see quoteMarketBoost).
+    uniqueIndex("boosted_odds_outcome_uniq")
+      .on(t.marketId, t.outcomeId)
+      .where(sql`${t.scope} = 'outcome'`),
   ],
 );
 

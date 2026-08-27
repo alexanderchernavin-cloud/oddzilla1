@@ -34,14 +34,18 @@ export default async function AdminBoostedOddsPage() {
       </h1>
       <p style={{ fontSize: 13, color: "var(--color-fg-muted)", marginBottom: 16 }}>
         Operator-curated odds boosts. Attach a boost to any sport, tournament,
-        team, match, or single market — every market it covers renders the
-        boosted price on the storefront (same Netwinstable key-delta math as
-        ZillaFlash) and pays out at it. Optional end time stops the boost
-        automatically; optional Min Risk Score hides it from bettors whose
-        risk score is below the threshold. Most specific rule wins:
-        <code> market </code>&rarr;<code> match </code>&rarr;
-        <code> team </code>&rarr;<code> tournament </code>&rarr;
-        <code> sport</code>.
+        team, match, single market, or a single selection — every market it
+        covers renders the boosted price on the storefront (same Netwinstable
+        key-delta math as ZillaFlash) and pays out at it. Optional end time
+        stops the boost automatically; optional Min Risk Score hides it from
+        bettors whose risk score is below the threshold. Most specific rule
+        wins:
+        <code> selection </code>&rarr;<code> market </code>&rarr;
+        <code> match </code>&rarr;<code> team </code>&rarr;
+        <code> tournament </code>&rarr;<code> sport</code>. Expand a market
+        row to boost one selection: the delta comes out of that price alone,
+        its siblings stay where they are, and any coarser boost on that market
+        steps aside while the selection boost exists.
       </p>
       <BoostedOddsBoard
         initialSports={sportsData.entries}

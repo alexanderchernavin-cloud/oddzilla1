@@ -1,11 +1,11 @@
 "use client";
 
 // useCustomBoostedOdds — syncs the Custom Boosted Odds RULES for one
-// match (migration 0085). Prices are NOT fetched here: the match page
-// computes boosted prices client-side with the shared boostMarketKey
-// over the live outcome set it already tracks via WS ticks, so a
-// boosted price moves in the exact same render as the raw odds — no
-// polling lag on the price path.
+// match (migration 0085; outcome-scope selections 0087-0088). Prices
+// are NOT fetched here: the match page computes boosted prices
+// client-side with the shared quoteMarketBoost over the live outcome set
+// it already tracks via WS ticks, so a boosted price moves in the exact
+// same render as the raw odds — no polling lag on the price path.
 //
 // The poll below only propagates ADMIN rule changes (create / edit /
 // delete) and the per-viewer Min Risk Score gate, both of which change
@@ -48,6 +48,13 @@ export interface CustomBoostRulesSnapshot {
   /** Market-scope rules, keyed by marketId. */
   byMarket: Map<string, CustomBoostRule>;
   /**
+   * Outcome-scope rules — `marketId` -> `outcomeId` -> rule. A market
+   * present here is priced by its SELECTION boosts alone: neither its
+   * market-scope rule nor `matchWide` applies to it (composing them
+   * would take the book past fair — see quoteMarketBoost).
+   */
+  selectionsByMarket: Map<string, Map<string, CustomBoostRule>>;
+  /**
    * Cascade-resolved match-wide rule (match / team / tournament /
    * sport scope) — applies to EVERY market the page renders, including
    * ladder lines created after the last poll. Null = none.
@@ -59,6 +66,7 @@ export interface CustomBoostRulesSnapshot {
 
 const EMPTY: CustomBoostRulesSnapshot = {
   byMarket: new Map(),
+  selectionsByMarket: new Map(),
   matchWide: null,
   nowMs: 0,
 };
@@ -99,6 +107,7 @@ export function useCustomBoostedOdds(matchId: string): CustomBoostRulesSnapshot 
   // Countdown re-render tick — only when a rule actually expires.
   const hasTimed =
     (data?.entries ?? []).some((e) => e.endsAt !== null) ||
+    (data?.selections ?? []).some((e) => e.endsAt !== null) ||
     (data?.matchWide?.endsAt ?? null) !== null;
   useEffect(() => {
     if (!hasTimed) return;
@@ -111,7 +120,14 @@ export function useCustomBoostedOdds(matchId: string): CustomBoostRulesSnapshot 
   void tick;
 
   return useMemo(() => {
-    if (!data || (data.entries.length === 0 && !data.matchWide)) return EMPTY;
+    if (
+      !data ||
+      (data.entries.length === 0 &&
+        (data.selections ?? []).length === 0 &&
+        !data.matchWide)
+    ) {
+      return EMPTY;
+    }
     const nowMs = Date.now() + skewMs.current;
     // Client-side expiry guard between polls — once endsAt passes,
     // drop the rule immediately instead of waiting for the next
@@ -127,6 +143,20 @@ export function useCustomBoostedOdds(matchId: string): CustomBoostRulesSnapshot 
         endsAt: e.endsAt,
       });
     }
+    const selectionsByMarket = new Map<string, Map<string, CustomBoostRule>>();
+    for (const e of data.selections ?? []) {
+      if (!fresh(e.endsAt)) continue;
+      let cells = selectionsByMarket.get(e.marketId);
+      if (!cells) {
+        cells = new Map();
+        selectionsByMarket.set(e.marketId, cells);
+      }
+      cells.set(e.outcomeId, {
+        ruleId: e.ruleId,
+        boostPct: e.boostPct,
+        endsAt: e.endsAt,
+      });
+    }
     const matchWide =
       data.matchWide && fresh(data.matchWide.endsAt)
         ? {
@@ -135,7 +165,7 @@ export function useCustomBoostedOdds(matchId: string): CustomBoostRulesSnapshot 
             endsAt: data.matchWide.endsAt,
           }
         : null;
-    return { byMarket, matchWide, nowMs };
+    return { byMarket, selectionsByMarket, matchWide, nowMs };
   }, [data, tick]);
 }
 

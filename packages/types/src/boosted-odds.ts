@@ -1,22 +1,35 @@
 // Custom Boosted Odds — operator-curated boosts pinned to a sport /
-// tournament / match / competitor (team) / single market (migration
-// 0085). Boost math is the same Netwinstable key delta ZillaFlash uses
-// (netwinstable.ts boostMarketKey): boost_pct percentage points shaved
-// off the market's key, recomputed from live published_odds on every
-// read, clamped so the book never reaches fair.
+// tournament / match / competitor (team) / single market / single
+// selection (migrations 0085 + 0087-0088). Boost math is the same
+// Netwinstable key delta ZillaFlash uses: boost_pct percentage points
+// shaved off the key, recomputed from live published_odds on every read,
+// clamped so the book never reaches fair.
 //
 // Delivery is gated per bettor by the rule's optional minRiskScore —
 // users.risk_score below the threshold sees the standard price.
 // Resolution per market when several rules overlap:
-//     market > match > competitor > tournament > sport
+//     outcome > market > match > competitor > tournament > sport
 // (two competitor rules on the same match resolve to the higher pct).
+//
+// `outcome` scope is special: it prices ONE cell rather than the whole
+// market, so it doesn't merely out-rank the coarser rules — it replaces
+// them for that market entirely. See quoteMarketBoost (netwinstable.ts)
+// for why.
+//
+// This module deliberately holds NO relative imports: it is consumed as
+// a VALUE subpath (`@oddzilla/types/boosted-odds`) by apps/web, and the
+// package is authored for NodeNext, so any relative import here would
+// carry a `.js` suffix that webpack can't resolve to the `.ts` file —
+// green under tsc, fatal at `next build`. The pricing helpers therefore
+// live in netwinstable.ts alongside the math they call.
 
 export type BoostedOddsScope =
   | "sport"
   | "tournament"
   | "match"
   | "competitor"
-  | "market";
+  | "market"
+  | "outcome";
 
 /**
  * Tolerance for "did the user click the price we compute now" at bet
@@ -32,12 +45,12 @@ export const CUSTOM_BOOST_DEFAULT_RISK_SCORE = 1.0;
 /**
  * One boosted market on a match, as served by
  * GET /catalog/matches/:id/boosted-odds. Carries only the RULE — no
- * prices. Boosted prices are computed client-side with boostMarketKey
+ * prices. Boosted prices are computed client-side with quoteMarketBoost
  * over the live outcome set the page already tracks via WS ticks, so
  * the boost moves in the same render as the raw odds (true realtime);
  * this endpoint only propagates admin rule changes and the per-viewer
- * Min Risk Score gate. The server recomputes the same math at
- * placement and compares within CUSTOM_BOOST_PLACEMENT_TOLERANCE.
+ * Min Risk Score gate. The server calls the same function at placement
+ * and compares within CUSTOM_BOOST_PLACEMENT_TOLERANCE.
  */
 export interface CustomBoostedMarket {
   /** boosted_odds_config.id — round-trips through POST /bets per leg. */
@@ -57,6 +70,21 @@ export interface CustomBoostMatchWideRule {
   endsAt: string | null;
 }
 
+/**
+ * One boosted SELECTION — a rule pinned to a single (market, outcome)
+ * cell rather than a whole market. Like CustomBoostedMarket this carries
+ * only the rule; the price is computed client-side from the live outcome
+ * set via quoteMarketBoost.
+ */
+export interface CustomBoostedSelection {
+  ruleId: string;
+  marketId: string;
+  /** market_outcomes.outcome_id — Oddin's id ("1" / "2" / "3" / a URN). */
+  outcomeId: string;
+  boostPct: number;
+  endsAt: string | null;
+}
+
 export interface CustomBoostedOddsResponse {
   /**
    * Market-scope rules only — one entry per explicitly boosted market.
@@ -65,8 +93,17 @@ export interface CustomBoostedOddsResponse {
    * (new handicap/total lines) and suspend/reactivate lines between
    * rounds, so a per-market flattening was stale the moment it was
    * built and every fresh line rendered unboosted until the next poll.
+   *
+   * Markets that carry at least one entry in `selections` are omitted
+   * here — a selection boost takes over its market's pricing (see
+   * quoteMarketBoost).
    */
   entries: CustomBoostedMarket[];
+  /**
+   * Outcome-scope rules. Market ids ARE stable here (the rule pins the
+   * row), so unlike match-wide coverage these are safe to ship flat.
+   */
+  selections: CustomBoostedSelection[];
   /** Cascade-resolved match-wide rule (match > competitor > tournament > sport), or null. */
   matchWide: CustomBoostMatchWideRule | null;
   /** Server-time at response build so clients can correct clock skew. */
@@ -152,17 +189,4 @@ export interface ZillaBoostBannersResponse {
   matches: ZillaBoostMatchBanner[];
   markets: ZillaBoostMarketBanner[];
   serverNow: string;
-}
-
-/**
- * Canonical formatting for boosted prices — floor to 2 decimals, the
- * same quoting shape ZillaFlash uses. MUST stay byte-identical between
- * the client (live recompute from WS ticks) and the api (placement
- * re-validation): both sides format through this one function so the
- * ±0.01 placement tolerance only ever absorbs real tick drift, never
- * formatting skew.
- */
-export function formatBoostedOdds(n: number): string {
-  if (!Number.isFinite(n)) return "0.00";
-  return (Math.floor(n * 100) / 100).toFixed(2);
 }

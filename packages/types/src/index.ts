@@ -17,6 +17,7 @@ export * from "./zillafacts.js";
 export * from "./live-chat.js";
 export * from "./support.js";
 export * from "./netwinstable.js";
+export * from "./odds.js";
 export * from "./zillaflash.js";
 export * from "./boosted-odds.js";
 export * from "./zillabuild.js";

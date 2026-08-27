@@ -1,10 +1,12 @@
-// /admin/boosted-odds — Custom Boosted Odds management (migration 0085).
+// /admin/boosted-odds — Custom Boosted Odds management (migration 0085;
+// 'outcome' scope added in 0087-0088).
 //
-// The backoffice renders the same sport → tournament → match → market
-// hierarchy the storefront shows (plus a Teams branch per sport) and
-// lets an operator attach a boost rule to any node: boost % (Netwinstable
-// key delta, same math as ZillaFlash), optional end time, optional Min
-// Risk Score (bettors below the threshold see standard prices).
+// The backoffice renders the same sport → tournament → match → market →
+// selection hierarchy the storefront shows (plus a Teams branch per
+// sport) and lets an operator attach a boost rule to any node: boost %
+// (Netwinstable key delta, same math as ZillaFlash), optional end time,
+// optional Min Risk Score (bettors below the threshold see standard
+// prices).
 //
 // One rule per (scope, ref) — PUT upserts, DELETE removes. Every
 // mutation writes admin_audit_log.
@@ -20,18 +22,26 @@ import {
   competitorProfiles,
   competitors,
   marketDescriptions,
+  marketOutcomes,
   markets,
   matches,
+  outcomeDescriptions,
   playerProfiles,
   sports,
   tournaments,
 } from "@oddzilla/db";
 import { BadRequestError, NotFoundError } from "../../lib/errors.js";
-import { substituteTemplate, type OutcomeProfiles } from "../../lib/market-naming.js";
+import {
+  renderOutcomeLabel,
+  substituteTemplate,
+  type OutcomeProfiles,
+} from "../../lib/market-naming.js";
 
 interface RuleDto {
   id: string;
-  scope: "sport" | "tournament" | "match" | "competitor" | "market";
+  scope: "sport" | "tournament" | "match" | "competitor" | "market" | "outcome";
+  /** scope='outcome' only — the boosted cell within the rule's market. */
+  outcomeId: string | null;
   boostPct: number;
   endsAt: string | null;
   minRiskScore: number | null;
@@ -43,6 +53,7 @@ function toRuleDto(r: typeof boostedOddsConfig.$inferSelect): RuleDto {
   return {
     id: r.id,
     scope: r.scope,
+    outcomeId: r.outcomeId,
     boostPct: Number(r.boostPct),
     endsAt: r.endsAt?.toISOString() ?? null,
     minRiskScore: r.minRiskScore !== null ? Number(r.minRiskScore) : null,
@@ -51,20 +62,35 @@ function toRuleDto(r: typeof boostedOddsConfig.$inferSelect): RuleDto {
   };
 }
 
-const scopeSchema = z.enum(["sport", "tournament", "match", "competitor", "market"]);
+const scopeSchema = z.enum([
+  "sport",
+  "tournament",
+  "match",
+  "competitor",
+  "market",
+  "outcome",
+]);
 
-const putBody = z.object({
-  scope: scopeSchema,
-  // sport/tournament/competitor ids are integers; match/market are
-  // bigints — accept a digit string and coerce per scope below.
-  refId: z.string().regex(/^\d+$/),
-  boostPct: z.number().gt(0).max(50),
-  endsAt: z.string().datetime({ offset: true }).nullable().optional(),
-  minRiskScore: z.number().min(0.01).max(10).nullable().optional(),
-  // Promo banner on the storefront home page (migration 0086). No
-  // banner surface for competitor scope — accepted, stored, unused.
-  banner: z.boolean().optional(),
-});
+const putBody = z
+  .object({
+    scope: scopeSchema,
+    // sport/tournament/competitor ids are integers; match/market are
+    // bigints — accept a digit string and coerce per scope below. For
+    // outcome scope this is the MARKET id; `outcomeId` names the cell.
+    refId: z.string().regex(/^\d+$/),
+    outcomeId: z.string().trim().min(1).max(64).optional(),
+    boostPct: z.number().gt(0).max(50),
+    endsAt: z.string().datetime({ offset: true }).nullable().optional(),
+    minRiskScore: z.number().min(0.01).max(10).nullable().optional(),
+    // Promo banner on the storefront home page (migration 0086). No
+    // banner surface for competitor or outcome scope — accepted,
+    // stored, unused.
+    banner: z.boolean().optional(),
+  })
+  .refine((b) => (b.scope === "outcome") === (b.outcomeId !== undefined), {
+    message: "outcomeId is required for outcome scope and forbidden otherwise",
+    path: ["outcomeId"],
+  });
 
 function scopeColumn(scope: z.infer<typeof scopeSchema>) {
   switch (scope) {
@@ -77,6 +103,7 @@ function scopeColumn(scope: z.infer<typeof scopeSchema>) {
     case "competitor":
       return boostedOddsConfig.competitorId;
     case "market":
+    case "outcome":
       return boostedOddsConfig.marketId;
   }
 }
@@ -104,7 +131,11 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
     const competitorIds = rows
       .filter((r) => r.scope === "competitor")
       .map((r) => r.competitorId!);
-    const marketIds = rows.filter((r) => r.scope === "market").map((r) => r.marketId!);
+    // Market and outcome rules share the market_id column, so one
+    // lookup covers both label sets.
+    const marketIds = rows
+      .filter((r) => r.scope === "market" || r.scope === "outcome")
+      .map((r) => r.marketId!);
 
     const [sportRows, tournamentRows, matchRows, competitorRows, marketRows] =
       await Promise.all([
@@ -161,6 +192,50 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
         `Market #${r.providerMarketId} — ${r.homeTeam} vs ${r.awayTeam}`,
       ]),
     );
+    // Selection rules name the cell too. market_outcomes.name is
+    // Oddin's raw label (often the team name); fall back to the
+    // conventional numeric ids so a rule is never labelled with a bare
+    // "1" the operator has to decode.
+    const outcomeRules = rows.filter((r) => r.scope === "outcome");
+    const outcomeNameRows = outcomeRules.length
+      ? await app.db
+          .select({
+            marketId: marketOutcomes.marketId,
+            outcomeId: marketOutcomes.outcomeId,
+            name: marketOutcomes.name,
+            homeTeam: matches.homeTeam,
+            awayTeam: matches.awayTeam,
+          })
+          .from(marketOutcomes)
+          .innerJoin(markets, eq(markets.id, marketOutcomes.marketId))
+          .innerJoin(matches, eq(matches.id, markets.matchId))
+          .where(
+            inArray(
+              marketOutcomes.marketId,
+              outcomeRules.map((r) => r.marketId!),
+            ),
+          )
+      : [];
+    const outcomeName = new Map(
+      outcomeNameRows.map((r) => [
+        `${r.marketId.toString()}:${r.outcomeId}`,
+        r.name ||
+          (r.outcomeId === "1"
+            ? r.homeTeam
+            : r.outcomeId === "2"
+              ? r.awayTeam
+              : r.outcomeId === "3"
+                ? "Draw"
+                : r.outcomeId),
+      ]),
+    );
+    const selectionLabel = (r: (typeof rows)[number]): string => {
+      const key = `${r.marketId!.toString()}:${r.outcomeId}`;
+      const cell = outcomeName.get(key) ?? r.outcomeId ?? "?";
+      const market =
+        marketName.get(r.marketId!.toString()) ?? `Market row #${r.marketId}`;
+      return `${cell} · ${market}`;
+    };
 
     return {
       rules: rows.map((r) => ({
@@ -184,7 +259,10 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
                 ? (matchName.get(r.matchId!.toString()) ?? `Match #${r.matchId}`)
                 : r.scope === "competitor"
                   ? (competitorName.get(r.competitorId!) ?? `Team #${r.competitorId}`)
-                  : (marketName.get(r.marketId!.toString()) ?? `Market row #${r.marketId}`),
+                  : r.scope === "outcome"
+                    ? selectionLabel(r)
+                    : (marketName.get(r.marketId!.toString()) ??
+                      `Market row #${r.marketId}`),
       })),
     };
   });
@@ -424,6 +502,13 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
         specifiersJson: markets.specifiersJson,
         status: markets.status,
         ruleRow: boostedOddsConfig,
+        // How many of this market's selections carry their own boost.
+        // Surfaced on the collapsed row so an operator can see which
+        // markets are priced per-cell without expanding each one.
+        selectionRuleCount: sql<number>`(
+          SELECT count(*)::int FROM boosted_odds_config sel
+           WHERE sel.scope = 'outcome' AND sel.market_id = ${markets.id}
+        )`,
       })
       .from(markets)
       .leftJoin(
@@ -508,8 +593,145 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
           providerMarketId: m.providerMarketId,
           label: substituteTemplate(template, specs, teams, profiles),
           rule: m.ruleRow ? toRuleDto(m.ruleRow) : null,
+          selectionRuleCount: m.selectionRuleCount,
         };
       }),
+    };
+  });
+
+  // ── Tree: selections (outcomes) under a market ─────────────────────
+  // Backs the per-market expand row in the board: the market's live
+  // selections with the price the bettor currently sees, so an operator
+  // can boost one side of a market without moving the other.
+  //
+  // Inactive / unpriced outcomes are returned too (flagged), not hidden
+  // — Oddin drops individual outcomes inactive for a few seconds mid-
+  // round, and a row vanishing under the cursor is worse than a row
+  // marked unavailable. A rule may be attached either way; it simply
+  // doesn't price until the outcome comes back.
+  app.get("/admin/boosted-odds/markets/:marketId/selections", async (request) => {
+    request.requireRole("admin");
+    const { marketId } = z
+      .object({ marketId: z.coerce.bigint() })
+      .parse(request.params);
+
+    const [market] = await app.db
+      .select({
+        id: markets.id,
+        providerMarketId: markets.providerMarketId,
+        specifiersJson: markets.specifiersJson,
+        status: markets.status,
+        homeTeam: matches.homeTeam,
+        awayTeam: matches.awayTeam,
+        marketRule: boostedOddsConfig,
+      })
+      .from(markets)
+      .innerJoin(matches, eq(matches.id, markets.matchId))
+      .leftJoin(
+        boostedOddsConfig,
+        and(
+          eq(boostedOddsConfig.scope, "market"),
+          eq(boostedOddsConfig.marketId, markets.id),
+        ),
+      )
+      .where(eq(markets.id, marketId))
+      .limit(1);
+    if (!market) throw new NotFoundError("market_not_found", "market_not_found");
+
+    const specs = (market.specifiersJson ?? {}) as Record<string, string>;
+    const variant = typeof specs.variant === "string" ? specs.variant : "";
+
+    const [outcomeRows, descRows] = await Promise.all([
+      app.db
+        .select({
+          outcomeId: marketOutcomes.outcomeId,
+          name: marketOutcomes.name,
+          publishedOdds: marketOutcomes.publishedOdds,
+          active: marketOutcomes.active,
+          ruleRow: boostedOddsConfig,
+        })
+        .from(marketOutcomes)
+        .leftJoin(
+          boostedOddsConfig,
+          and(
+            eq(boostedOddsConfig.scope, "outcome"),
+            eq(boostedOddsConfig.marketId, marketOutcomes.marketId),
+            eq(boostedOddsConfig.outcomeId, marketOutcomes.outcomeId),
+          ),
+        )
+        .where(eq(marketOutcomes.marketId, marketId))
+        .orderBy(asc(marketOutcomes.outcomeId)),
+      app.db
+        .select({
+          variant: outcomeDescriptions.variant,
+          outcomeId: outcomeDescriptions.outcomeId,
+          nameTemplate: outcomeDescriptions.nameTemplate,
+        })
+        .from(outcomeDescriptions)
+        .where(
+          and(
+            eq(outcomeDescriptions.providerMarketId, market.providerMarketId),
+            eq(outcomeDescriptions.language, "en"),
+          ),
+        ),
+    ]);
+
+    // Same label resolution the storefront catalog uses: Oddin's raw
+    // name when it has one, else the outcome_descriptions template with
+    // specifiers + teams substituted, else the conventional numeric ids.
+    const labelFor = (outcomeId: string, rawName: string): string => {
+      if (rawName) return rawName;
+      const tpl =
+        descRows.find((d) => d.variant === variant && d.outcomeId === outcomeId)
+          ?.nameTemplate ??
+        descRows.find((d) => d.variant === "" && d.outcomeId === outcomeId)
+          ?.nameTemplate ??
+        null;
+      if (tpl) {
+        const rendered = renderOutcomeLabel(
+          tpl,
+          specs,
+          market.homeTeam,
+          market.awayTeam,
+        );
+        if (rendered) return rendered;
+      }
+      return outcomeId === "1"
+        ? market.homeTeam
+        : outcomeId === "2"
+          ? market.awayTeam
+          : outcomeId === "3"
+            ? "Draw"
+            : outcomeId;
+    };
+
+    // Numeric ids first in feed order (1 / draw / 2), then URN-keyed
+    // outcomes — the order the storefront renders the cells in.
+    const weight = (id: string): number => {
+      const n = Number.parseInt(id, 10);
+      if (!Number.isFinite(n) || String(n) !== id) return 1000;
+      return n === 3 ? 1.5 : n;
+    };
+    const entries = outcomeRows
+      .map((o) => ({
+        outcomeId: o.outcomeId,
+        label: labelFor(o.outcomeId, o.name),
+        publishedOdds: o.publishedOdds,
+        active: o.active,
+        rule: o.ruleRow ? toRuleDto(o.ruleRow) : null,
+      }))
+      .sort((a, b) => weight(a.outcomeId) - weight(b.outcomeId));
+
+    return {
+      market: {
+        id: market.id.toString(),
+        status: market.status,
+        homeTeam: market.homeTeam,
+        awayTeam: market.awayTeam,
+        /** True when a market-scope rule also exists — selections win. */
+        hasMarketRule: market.marketRule !== null,
+      },
+      entries,
     };
   });
 
@@ -567,6 +789,21 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
             .limit(1);
           return !!r;
         }
+        case "outcome": {
+          // Stands in for the FK migration 0088 deliberately omits (it
+          // would lock market_outcomes against the live feed).
+          const [r] = await app.db
+            .select({ outcomeId: marketOutcomes.outcomeId })
+            .from(marketOutcomes)
+            .where(
+              and(
+                eq(marketOutcomes.marketId, refIdBig),
+                eq(marketOutcomes.outcomeId, body.outcomeId!),
+              ),
+            )
+            .limit(1);
+          return !!r;
+        }
       }
     };
     if (!(await exists())) {
@@ -575,20 +812,35 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
 
     const col = scopeColumn(body.scope);
     const refValue: number | bigint =
-      body.scope === "match" || body.scope === "market" ? refIdBig : refIdInt;
+      body.scope === "match" || body.scope === "market" || body.scope === "outcome"
+        ? refIdBig
+        : refIdInt;
+    // Outcome rules are keyed by (market_id, outcome_id), so the
+    // uniqueness probe needs both halves — market_id alone would match
+    // a sibling selection's rule and overwrite it.
+    const refMatch =
+      body.scope === "outcome"
+        ? and(
+            eq(col, refValue as never),
+            eq(boostedOddsConfig.outcomeId, body.outcomeId!),
+          )
+        : eq(col, refValue as never);
 
     const result = await app.db.transaction(async (tx) => {
       const [before] = await tx
         .select()
         .from(boostedOddsConfig)
-        .where(and(eq(boostedOddsConfig.scope, body.scope), eq(col, refValue as never)))
+        .where(and(eq(boostedOddsConfig.scope, body.scope), refMatch))
         .limit(1);
       const values = {
         boostPct: body.boostPct.toFixed(2),
         endsAt,
         minRiskScore:
           body.minRiskScore != null ? body.minRiskScore.toFixed(3) : null,
-        banner: body.banner ?? false,
+        // No banner surface for a single selection (the card shape is
+        // "this whole market is boosted"), so the flag is forced off
+        // rather than stored and silently ignored.
+        banner: body.scope === "outcome" ? false : (body.banner ?? false),
         updatedBy: admin.id,
         updatedAt: new Date(),
       };
@@ -606,7 +858,11 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
               tournamentId: body.scope === "tournament" ? refIdInt : null,
               matchId: body.scope === "match" ? refIdBig : null,
               competitorId: body.scope === "competitor" ? refIdInt : null,
-              marketId: body.scope === "market" ? refIdBig : null,
+              marketId:
+                body.scope === "market" || body.scope === "outcome"
+                  ? refIdBig
+                  : null,
+              outcomeId: body.scope === "outcome" ? body.outcomeId! : null,
               ...values,
             })
             .returning();
@@ -615,7 +871,10 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
         actorUserId: admin.id,
         action: before ? "boosted_odds.rule_update" : "boosted_odds.rule_create",
         targetType: "boosted_odds_config",
-        targetId: `${body.scope}:${body.refId}`,
+        targetId:
+          body.scope === "outcome"
+            ? `${body.scope}:${body.refId}:${body.outcomeId}`
+            : `${body.scope}:${body.refId}`,
         beforeJson: before
           ? (toRuleDto(before) as unknown as Record<string, unknown>)
           : null,

@@ -1,10 +1,12 @@
 // Custom Boosted Odds engine helpers (migration 0085).
 //
 // Rules live in boosted_odds_config — one row per (scope, ref) pinned
-// to a sport / tournament / match / competitor / market. Boost math is
-// the same Netwinstable key delta ZillaFlash uses (boostMarketKey):
-// the boosted price is recomputed from live published_odds on every
-// read, never stored.
+// to a sport / tournament / match / competitor / market / single
+// selection (migrations 0087-0088). Boost math is the same Netwinstable
+// key delta ZillaFlash uses; the boosted price is recomputed from live
+// published_odds on every read, never stored. All three consumers route
+// through the shared quoteMarketBoost so the match page's realtime
+// compute, the banners endpoint, and placement can't drift apart.
 //
 // Two consumers:
 //   - GET /catalog/matches/:id/boosted-odds (modules/boosted-odds) —
@@ -25,11 +27,13 @@ import {
   users,
 } from "@oddzilla/db";
 import {
-  boostMarketKey,
-  formatBoostedOdds,
+  isQuotableOutcomeOdds,
+  quoteMarketBoost,
   CUSTOM_BOOST_DEFAULT_RISK_SCORE,
   CUSTOM_BOOST_PLACEMENT_TOLERANCE,
   type BoostedOddsScope,
+  type BoostQuoteCell,
+  type BoostQuoteRule,
 } from "@oddzilla/types";
 
 export interface BoostRule {
@@ -40,9 +44,20 @@ export interface BoostRule {
   matchId: bigint | null;
   competitorId: number | null;
   marketId: bigint | null;
+  /** scope='outcome' only — the boosted cell within `marketId`. */
+  outcomeId: string | null;
   boostPct: number;
   endsAt: Date | null;
   minRiskScore: number | null;
+}
+
+/** BoostRule -> the subset quoteMarketBoost needs. */
+export function toQuoteRule(rule: BoostRule): BoostQuoteRule {
+  return {
+    ruleId: rule.id,
+    boostPct: rule.boostPct,
+    endsAt: rule.endsAt?.toISOString() ?? null,
+  };
 }
 
 export interface MatchBoostContext {
@@ -64,6 +79,7 @@ function rowToRule(
     matchId: r.matchId,
     competitorId: r.competitorId,
     marketId: r.marketId,
+    outcomeId: r.outcomeId,
     boostPct: Number(r.boostPct),
     endsAt: r.endsAt,
     minRiskScore: r.minRiskScore !== null ? Number(r.minRiskScore) : null,
@@ -72,9 +88,9 @@ function rowToRule(
 
 /**
  * Every non-expired rule that could apply to any market of this match.
- * Market-scope rules are matched via a subquery over the match's
- * markets so one round-trip covers all five tiers. The Min Risk Score
- * gate is applied by the caller (per viewer), not here.
+ * Market- and outcome-scope rules are matched via a subquery over the
+ * match's markets so one round-trip covers all six tiers. The Min Risk
+ * Score gate is applied by the caller (per viewer), not here.
  */
 export async function loadBoostRulesForMatch(
   db: FastifyInstance["db"],
@@ -110,7 +126,7 @@ export async function loadBoostRulesForMatch(
               )
             : sql`false`,
           and(
-            eq(boostedOddsConfig.scope, "market"),
+            inArray(boostedOddsConfig.scope, ["market", "outcome"]),
             inArray(
               boostedOddsConfig.marketId,
               db
@@ -135,11 +151,16 @@ export function passesRiskGate(
 }
 
 /**
- * Resolve which rule prices a given market. Most specific wins:
- * market > match > competitor > tournament > sport. Two competitor
+ * Resolve which MARKET-WIDE rule prices a given market. Most specific
+ * wins: market > match > competitor > tournament > sport. Two competitor
  * rules covering the same match (both teams boosted) resolve to the
  * higher boost_pct. Rules failing the caller-side RS gate must be
  * filtered out BEFORE calling this.
+ *
+ * Outcome-scope rules are NOT considered here — they price a single cell
+ * and are resolved by selectionRulesForMarket. When a market has any,
+ * they take over its pricing entirely and this result is ignored (see
+ * quoteMarketBoost).
  */
 export function resolveBoostForMarket(
   rules: readonly BoostRule[],
@@ -168,6 +189,8 @@ export function resolveBoostForMarket(
       case "sport":
         sportRule = r;
         break;
+      case "outcome":
+        break;
     }
   }
   return matchRule ?? competitorBest ?? tournamentRule ?? sportRule;
@@ -193,41 +216,120 @@ export async function loadViewerRiskScore(
   return Number.isFinite(n) ? n : CUSTOM_BOOST_DEFAULT_RISK_SCORE;
 }
 
-export interface BoostedMarketQuote {
-  ruleId: string;
-  boostPct: number;
-  endsAt: Date | null;
-  outcomes: Array<{
-    outcomeId: string;
-    originalOdds: string;
-    boostedOdds: string;
-  }>;
+/**
+ * Apply a market-wide rule and/or the market's selection rules to its
+ * active outcome set. Returns null when nothing ends up boosted — the
+ * book is already at/below fair (fair-book clamp), the market has fewer
+ * than 2 priced outcomes on the market-wide path, or the move is
+ * invisible at 2-decimal display precision.
+ *
+ * Thin wrapper over the shared quoteMarketBoost so the api, the match
+ * page, and the banners endpoint can never drift apart on the math.
+ */
+export function quoteBoostedMarket(
+  rule: BoostRule | null,
+  outcomes: ReadonlyArray<{ outcomeId: string; publishedOdds: number }>,
+  selections?: ReadonlyMap<string, BoostRule> | null,
+): BoostQuoteCell[] | null {
+  const selectionQuotes = selections
+    ? new Map(
+        Array.from(selections, ([outcomeId, r]) => [outcomeId, toQuoteRule(r)]),
+      )
+    : null;
+  const cells = quoteMarketBoost({
+    outcomes,
+    marketWide: rule ? toQuoteRule(rule) : null,
+    selections: selectionQuotes,
+  });
+  return cells.length > 0 ? cells : null;
+}
+
+/** Priced + active outcome set of one market, in stored order. */
+export async function loadQuotableOutcomes(
+  db: FastifyInstance["db"],
+  marketId: bigint,
+): Promise<Array<{ outcomeId: string; publishedOdds: number }>> {
+  const rows = await db
+    .select({
+      outcomeId: marketOutcomes.outcomeId,
+      publishedOdds: marketOutcomes.publishedOdds,
+      active: marketOutcomes.active,
+    })
+    .from(marketOutcomes)
+    .where(eq(marketOutcomes.marketId, marketId));
+  return rows
+    .filter((o) => o.active && o.publishedOdds !== null)
+    .map((o) => ({
+      outcomeId: o.outcomeId,
+      publishedOdds: Number(o.publishedOdds),
+    }))
+    .filter((o) => isQuotableOutcomeOdds(o.publishedOdds));
 }
 
 /**
- * Apply a rule to one market's active outcome set. Returns null when
- * the boost is a no-op (book already at/below fair — boostMarketKey's
- * clamp) or the market has fewer than 2 priced outcomes.
+ * Which of these markets are priced by SELECTION boosts for this
+ * viewer. Banner surfaces quote server-side against a market-wide rule,
+ * so they need this to skip any market the match page and placement
+ * would both price by its selection rules instead — otherwise the
+ * banner advertises a price that 400s the moment it reaches the slip.
  */
-export function quoteBoostedMarket(
-  rule: BoostRule,
-  outcomes: ReadonlyArray<{ outcomeId: string; publishedOdds: number }>,
-): BoostedMarketQuote["outcomes"] | null {
-  if (outcomes.length < 2) return null;
-  const adjusted = boostMarketKey(
-    outcomes.map((o) => o.publishedOdds),
-    rule.boostPct,
-  );
-  if (adjusted.effectiveKeyDelta <= 0) return null;
-  const rows = outcomes.map((o, i) => ({
-    outcomeId: o.outcomeId,
-    originalOdds: formatBoostedOdds(o.publishedOdds),
-    boostedOdds: formatBoostedOdds(adjusted.adjustedOdds[i]!),
-  }));
-  // Drop when nothing visibly moved (fmtOdds floors to 2dp) — a
-  // crossed-out "1.95 → 1.95" reads as a bug, not a promo.
-  if (rows.every((r) => r.boostedOdds === r.originalOdds)) return null;
-  return rows;
+export async function loadSelectionBoostedMarketIds(
+  db: FastifyInstance["db"],
+  marketIds: readonly bigint[],
+  riskScore: number,
+): Promise<Set<string>> {
+  if (marketIds.length === 0) return new Set();
+  const rows = await db
+    .select({
+      marketId: boostedOddsConfig.marketId,
+      minRiskScore: boostedOddsConfig.minRiskScore,
+    })
+    .from(boostedOddsConfig)
+    .where(
+      and(
+        eq(boostedOddsConfig.scope, "outcome"),
+        inArray(boostedOddsConfig.marketId, [...marketIds]),
+        or(isNull(boostedOddsConfig.endsAt), gt(boostedOddsConfig.endsAt, sql`now()`)),
+      ),
+    );
+  const out = new Set<string>();
+  for (const r of rows) {
+    if (r.marketId === null) continue;
+    if (r.minRiskScore !== null && riskScore < Number(r.minRiskScore)) continue;
+    out.add(r.marketId.toString());
+  }
+  return out;
+}
+
+/**
+ * Every non-expired outcome-scope rule on one market, RS-gated for the
+ * viewer. Needed even when validating a market-wide leg: a market that
+ * has selection rules is priced by them alone, so a coarser rule must
+ * not validate against it.
+ */
+async function loadSelectionRules(
+  db: FastifyInstance["db"],
+  marketId: bigint,
+  riskScore: number,
+): Promise<Map<string, BoostRule>> {
+  const rows = await db
+    .select()
+    .from(boostedOddsConfig)
+    .where(
+      and(
+        eq(boostedOddsConfig.scope, "outcome"),
+        eq(boostedOddsConfig.marketId, marketId),
+        or(isNull(boostedOddsConfig.endsAt), gt(boostedOddsConfig.endsAt, sql`now()`)),
+      ),
+    );
+  const out = new Map<string, BoostRule>();
+  for (const row of rows) {
+    const rule = rowToRule(row);
+    if (rule.outcomeId === null) continue;
+    if (!passesRiskGate(rule, riskScore)) continue;
+    out.set(rule.outcomeId, rule);
+  }
+  return out;
 }
 
 export type CustomBoostValidation =
@@ -286,6 +388,9 @@ export async function validateCustomBoostForBet(
   if (!market) return { ok: false, reason: "boosted_odds_not_applicable" };
 
   const covers =
+    (rule.scope === "outcome" &&
+      rule.marketId === market.id &&
+      rule.outcomeId === args.outcomeId) ||
     (rule.scope === "market" && rule.marketId === market.id) ||
     (rule.scope === "match" && rule.matchId === market.matchId) ||
     (rule.scope === "competitor" &&
@@ -296,28 +401,35 @@ export async function validateCustomBoostForBet(
     (rule.scope === "sport" && rule.sportId === market.sportId);
   if (!covers) return { ok: false, reason: "boosted_odds_not_applicable" };
 
-  const outcomeRows = await app.db
-    .select({
-      outcomeId: marketOutcomes.outcomeId,
-      publishedOdds: marketOutcomes.publishedOdds,
-      active: marketOutcomes.active,
-    })
-    .from(marketOutcomes)
-    .where(eq(marketOutcomes.marketId, marketIdBig));
-  const priced = outcomeRows
-    .filter((o) => o.active && o.publishedOdds !== null)
-    .map((o) => ({
-      outcomeId: o.outcomeId,
-      publishedOdds: Number(o.publishedOdds),
-    }))
-    // >= 1 in parity with the client compute: a favorite at exactly
-    // 1.00 stays in the set (boostMarketKey leaves it unchanged) so a
-    // live near-decided market doesn't lose its boost on every tick.
-    .filter((o) => Number.isFinite(o.publishedOdds) && o.publishedOdds >= 1);
-  const quote = quoteBoostedMarket(rule, priced);
+  // Selection rules on this market are needed either way: on the
+  // outcome path they set the joint fair-book scaling, and on the
+  // market-wide path their mere existence means the coarser rule was
+  // suppressed for the viewer (quoteMarketBoost's precedence), so it
+  // must not price a leg here.
+  const selections = await loadSelectionRules(
+    app.db,
+    marketIdBig,
+    args.riskScore,
+  );
+  if (rule.scope !== "outcome" && selections.size > 0) {
+    return { ok: false, reason: "boosted_odds_not_applicable" };
+  }
+
+  const priced = await loadQuotableOutcomes(app.db, marketIdBig);
+  const quote = quoteBoostedMarket(
+    rule.scope === "outcome" ? null : rule,
+    priced,
+    rule.scope === "outcome" ? selections : null,
+  );
   if (!quote) return { ok: false, reason: "boosted_odds_not_applicable" };
   const snap = quote.find((q) => q.outcomeId === args.outcomeId);
   if (!snap) return { ok: false, reason: "boosted_odds_not_applicable" };
+  // The cell must be priced by the rule the leg claims. On the outcome
+  // path `selections` may carry several rules; a leg quoting rule A's
+  // id against outcome B's price is a client bug, not a boost.
+  if (snap.ruleId !== rule.id) {
+    return { ok: false, reason: "boosted_odds_not_applicable" };
+  }
 
   const quoted = Number.parseFloat(args.quotedOdds);
   const auth = Number.parseFloat(snap.boostedOdds);

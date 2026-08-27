@@ -5,6 +5,8 @@ import {
   applyNetwinstableKey,
   bookKey,
   boostMarketKey,
+  boostSelectionKeys,
+  SELECTION_BOOST_MAX_PROB_SHARE,
 } from "./netwinstable.js";
 
 const close = (a: number, b: number, eps = 1e-6) => Math.abs(a - b) <= eps;
@@ -84,4 +86,86 @@ test("monotonic: lowering the key strictly raises every outcome", () => {
     assert.ok(r1.adjustedOdds[i]! > original[i]!);
     assert.ok(r3.adjustedOdds[i]! > r1.adjustedOdds[i]!);
   }
+});
+
+// ── boostSelectionKeys (per-selection boosts) ───────────────────────
+
+test("boostSelectionKeys moves only the boosted outcome", () => {
+  const original = [1.91, 1.91];
+  const r = boostSelectionKeys(original, [2, 0]);
+  assert.ok(r.adjustedOdds[0]! > original[0]!);
+  assert.equal(r.adjustedOdds[1], original[1]);
+  assert.equal(r.effectiveDeltas[1], 0);
+  // The delta comes straight out of the boosted leg's probability.
+  assert.ok(close(1 / original[0]! - 1 / r.adjustedOdds[0]!, 0.02, 1e-9));
+  assert.ok(close(r.keyAdjusted, r.keyOriginal - 0.02, 1e-9));
+});
+
+test("boostSelectionKeys no-ops on a fair or better book", () => {
+  const r = boostSelectionKeys([2.0, 2.0], [3, 0]);
+  assert.equal(r.effectiveKeyDelta, 0);
+  assert.deepEqual(r.adjustedOdds, [2.0, 2.0]);
+});
+
+test("boostSelectionKeys never takes the book past fair", () => {
+  // Key 1.02 — asking 5pp out of one leg would leave a player-positive
+  // book, so the applied delta is clamped to the 0.02 of headroom.
+  const original = [1.96, 2.04];
+  const keyOriginal = bookKey(original);
+  const r = boostSelectionKeys(original, [5, 0]);
+  assert.ok(close(r.keyAdjusted, 1.0, 1e-9));
+  assert.ok(close(r.effectiveKeyDelta, keyOriginal - 1.0, 1e-9));
+  assert.ok(
+    close(1 / r.adjustedOdds[0]! + 1 / r.adjustedOdds[1]!, 1.0, 1e-9),
+  );
+});
+
+test("boostSelectionKeys caps a longshot at the probability share", () => {
+  // Key 1.05, so 5pp of headroom is available — but the boosted leg's
+  // own probability is only 0.05. Without the per-outcome cap a 5pp
+  // request would zero it out and send the price to infinity.
+  const original = [1.5, 3.0, 20.0];
+  const r = boostSelectionKeys(original, [0, 0, 5]);
+  const p = 1 / original[2]!;
+  assert.ok(
+    close(r.effectiveDeltas[2]!, p * SELECTION_BOOST_MAX_PROB_SHARE, 1e-9),
+  );
+  assert.ok(Number.isFinite(r.adjustedOdds[2]!));
+  // Half the probability shaved <=> exactly double the price.
+  assert.ok(
+    close(
+      r.adjustedOdds[2]!,
+      original[2]! / SELECTION_BOOST_MAX_PROB_SHARE,
+      1e-6,
+    ),
+  );
+  // Still a positive-margin book.
+  assert.ok(r.keyAdjusted > 1.0);
+});
+
+test("boostSelectionKeys shares scarce headroom proportionally", () => {
+  // Two 5pp requests against ~4.7pp of headroom: both scale by the
+  // same factor rather than the first one consuming it all.
+  const original = [1.91, 1.91];
+  const keyOriginal = bookKey(original);
+  const r = boostSelectionKeys(original, [5, 5]);
+  assert.ok(close(r.effectiveKeyDelta, keyOriginal - 1.0, 1e-9));
+  assert.ok(close(r.effectiveDeltas[0]!, r.effectiveDeltas[1]!, 1e-12));
+});
+
+test("boostSelectionKeys is order-independent across selections", () => {
+  const original = [1.4, 4.5, 6.0];
+  const a = boostSelectionKeys(original, [2, 3, 0]);
+  const b = boostSelectionKeys([...original].reverse(), [0, 3, 2]);
+  assert.ok(close(a.effectiveKeyDelta, b.effectiveKeyDelta, 1e-12));
+  assert.ok(close(a.adjustedOdds[0]!, b.adjustedOdds[2]!, 1e-12));
+  assert.ok(close(a.adjustedOdds[1]!, b.adjustedOdds[1]!, 1e-12));
+});
+
+test("boostSelectionKeys skips outcomes at exactly 1.00", () => {
+  // A live favorite ticking through 1.00 carries no key to give back;
+  // it must pass through untouched rather than produce a bad price.
+  const r = boostSelectionKeys([1.0, 3.0], [3, 0]);
+  assert.equal(r.adjustedOdds[0], 1.0);
+  assert.equal(r.effectiveKeyDelta, 0);
 });
