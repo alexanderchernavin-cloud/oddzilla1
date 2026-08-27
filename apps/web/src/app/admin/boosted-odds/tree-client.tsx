@@ -35,6 +35,11 @@ export interface RuleDto {
 export interface RuleWithLabel extends RuleDto {
   refId: string;
   label: string;
+  /**
+   * Oddin risk tier — present only on tournament-scope rules, where the
+   * overview shows it beside the name. Undefined for every other scope.
+   */
+  riskTier?: number | null;
 }
 
 export interface SportRow {
@@ -414,6 +419,7 @@ function ActiveRulesTable({
             >
               {r.label}
             </span>
+            {r.scope === "tournament" && <TierBadge tier={r.riskTier ?? null} />}
             <RuleBadge rule={r} />
             <BoostControl
               scope={r.scope}
@@ -565,6 +571,8 @@ function SportBoard({
                   label={t.name}
                   count={t.matchCount}
                   featured={isFeaturedTier(t.riskTier)}
+                  riskTier={t.riskTier}
+                  showTier
                   rule={t.rule}
                   active={tournamentFilter === t.id}
                   onClick={() =>
@@ -613,6 +621,8 @@ function TournamentChip({
   label,
   count,
   featured,
+  riskTier,
+  showTier = false,
   rule,
   active,
   onClick,
@@ -621,6 +631,10 @@ function TournamentChip({
   label: string;
   count?: number;
   featured?: boolean;
+  riskTier?: number | null;
+  // Only the tournament chips carry a tier — the "All tournaments" chip
+  // reuses this component and has none to show.
+  showTier?: boolean;
   rule?: RuleDto | null;
   active: boolean;
   onClick: () => void;
@@ -675,6 +689,7 @@ function TournamentChip({
           </span>
         )}
       </button>
+      {showTier && <TierBadge tier={riskTier ?? null} />}
       {rule && <MiniRuleDot rule={rule} />}
       {boost}
     </span>
@@ -781,7 +796,7 @@ function MatchCard({
           <TeamLine name={m.awayTeam} logoUrl={m.awayLogoUrl} />
         </div>
 
-        {/* Tournament label + tier star */}
+        {/* Tournament label + tier star + numeric risk tier */}
         <div
           style={{
             width: 200,
@@ -805,6 +820,10 @@ function MatchCard({
           >
             {m.tournamentName}
           </span>
+          {/* The per-match boost popup opens from this row, and the
+              tournament's tier is what sets the match liability cap the
+              boost will price into — so it belongs on the row itself. */}
+          <TierBadge tier={m.riskTier} />
         </div>
 
         {m.rule && <RuleBadge rule={m.rule} />}
@@ -1426,6 +1445,44 @@ function RuleBadge({
 // Tiny green dot for tight rows (sports rail, tournament chips) where a
 // full badge doesn't fit — the badge shows in the summary + on hover
 // via the Boost popup.
+// Oddin tournament risk tier, surfaced next to the tournament name so the
+// operator can see what they're boosting into before they set a pct.
+// Tier drives RiskZilla's per-tier match liability cap (tier 1 is the
+// tightest, 10 the loosest; tier 0 is the global fallback), so a big
+// boost on a tier-1 final carries very different exposure than the same
+// boost on a tier-9 qualifier.
+//
+// NULL renders as an explicit "T—" rather than being omitted: "no tier
+// set" is itself information the operator wants, and a silently absent
+// badge is indistinguishable from a rendering bug.
+function TierBadge({ tier }: { tier: number | null }) {
+  const unset = tier == null;
+  return (
+    <span
+      className="mono tnum"
+      title={
+        unset
+          ? "No Oddin risk tier on this tournament"
+          : `Risk tier ${tier}${tier <= 2 ? " (top)" : ""}`
+      }
+      style={{
+        flexShrink: 0,
+        fontSize: 9.5,
+        fontWeight: 700,
+        letterSpacing: "0.02em",
+        lineHeight: 1.5,
+        padding: "0 4px",
+        borderRadius: 4,
+        border: "1px solid var(--color-border)",
+        color: unset ? "var(--color-fg-muted)" : "var(--color-fg)",
+        background: unset ? "transparent" : "var(--color-bg-subtle)",
+      }}
+    >
+      T{unset ? "—" : tier}
+    </span>
+  );
+}
+
 function MiniRuleDot({ rule }: { rule: RuleDto }) {
   const expired =
     rule.endsAt !== null && new Date(rule.endsAt).getTime() <= Date.now();
