@@ -147,7 +147,14 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
           : [],
         tournamentIds.length
           ? app.db
-              .select({ id: tournaments.id, name: tournaments.name })
+              .select({
+                id: tournaments.id,
+                name: tournaments.name,
+                // Surfaced in the overview so the operator can see what
+                // tier an existing tournament boost sits on — tier
+                // drives RiskZilla's per-tier match liability cap.
+                riskTier: tournaments.riskTier,
+              })
               .from(tournaments)
               .where(inArray(tournaments.id, tournamentIds))
           : [],
@@ -182,6 +189,7 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
       ]);
     const sportName = new Map(sportRows.map((r) => [r.id, r.name]));
     const tournamentName = new Map(tournamentRows.map((r) => [r.id, r.name]));
+    const tournamentTier = new Map(tournamentRows.map((r) => [r.id, r.riskTier]));
     const matchName = new Map(
       matchRows.map((r) => [r.id.toString(), `${r.homeTeam} vs ${r.awayTeam}`]),
     );
@@ -263,6 +271,14 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
                     ? selectionLabel(r)
                     : (marketName.get(r.marketId!.toString()) ??
                       `Market row #${r.marketId}`),
+        // Only meaningful for tournament-scope rules — the overview
+        // renders a tier badge beside the name so the operator can see
+        // the liability tier an existing boost sits on. Undefined for
+        // every other scope; the client renders nothing then.
+        riskTier:
+          r.scope === "tournament"
+            ? (tournamentTier.get(r.tournamentId!) ?? null)
+            : undefined,
       })),
     };
   });
