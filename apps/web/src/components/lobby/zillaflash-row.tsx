@@ -186,6 +186,12 @@ function ZillaFlashCard({
   }, [offer.marketSnapshot]);
 
   const handleOutcome = (entry: ZillaFlashOffer["marketSnapshot"][number]) => {
+    // Re-clicking the pick that's already in the slip takes it back
+    // out, matching a match-row odd button (and the ZillaBoost banner).
+    if (slip.has(offer.marketId, entry.outcomeId)) {
+      slip.remove(offer.marketId, entry.outcomeId);
+      return;
+    }
     slip.clear();
     slip.setMode("single");
     slip.add({
@@ -316,6 +322,7 @@ function ZillaFlashCard({
             <OutcomeRow
               key={o.outcomeId}
               entry={o}
+              selected={slip.has(offer.marketId, o.outcomeId)}
               onPick={(e) => {
                 e.preventDefault();
                 handleOutcome(o);
@@ -335,43 +342,62 @@ function ZillaFlashCard({
 
 function OutcomeRow({
   entry,
+  selected,
   onPick,
   ariaLabel,
 }: {
   entry: ZillaFlashOffer["marketSnapshot"][number];
+  // This outcome is currently in the bet slip. Wears the same accent
+  // fill a match-row OddButton does, so a pick made from the lobby
+  // reads as picked where it was made — without it the click looked
+  // like it did nothing even though the slip had filled in. The green
+  // boost treatment steps aside while selected (same rule OddButton
+  // follows): green on the accent fill is unreadable, and "it's in your
+  // slip" is the more important signal.
+  selected: boolean;
   onPick: (e: MouseEvent<HTMLButtonElement>) => void;
   ariaLabel: string;
 }) {
   const oddsRef = useRef<HTMLSpanElement | null>(null);
   const boostedNum = Number.parseFloat(entry.boostedOdds);
-  useOddsFlash(Number.isFinite(boostedNum) ? boostedNum : null, oddsRef);
+  // Suppress the price flash while selected — the tween would paint over
+  // the accent background and hide the selected state.
+  useOddsFlash(
+    selected || !Number.isFinite(boostedNum) ? null : boostedNum,
+    oddsRef,
+  );
+  // Resting border, so the hover handlers below have something to
+  // restore to that doesn't clobber the selected accent.
+  const restingBorder = selected ? "var(--accent)" : "var(--border)";
   return (
     <button
       type="button"
       onClick={onPick}
       aria-label={ariaLabel}
+      aria-pressed={selected}
       style={{
         display: "flex",
         alignItems: "center",
         gap: 8,
         minWidth: 0,
         padding: "4px 6px 4px 8px",
-        background: "var(--surface-2)",
-        border: "1px solid var(--border)",
+        background: selected ? "var(--accent)" : "var(--surface-2)",
+        border: `1px solid ${restingBorder}`,
         borderRadius: 8,
         cursor: "pointer",
-        color: "var(--fg)",
+        color: selected ? "var(--accent-fg)" : "var(--fg)",
         fontFamily: "inherit",
         textAlign: "left",
         transition: "border-color 140ms var(--ease), background 140ms var(--ease)",
       }}
       onMouseEnter={(e) => {
-        (e.currentTarget as HTMLButtonElement).style.borderColor =
-          "var(--positive, #16a34a)";
+        (e.currentTarget as HTMLButtonElement).style.borderColor = selected
+          ? "var(--accent)"
+          : "var(--positive, #16a34a)";
       }}
       onMouseLeave={(e) => {
         (e.currentTarget as HTMLButtonElement).style.borderColor =
-          "var(--border)";
+          restingBorder;
       }}
     >
       <span
@@ -380,7 +406,7 @@ function OutcomeRow({
           minWidth: 0,
           fontSize: 13,
           fontWeight: 600,
-          color: "var(--fg)",
+          color: selected ? "var(--accent-fg)" : "var(--fg)",
           lineHeight: 1.2,
           overflow: "hidden",
           textOverflow: "ellipsis",
@@ -394,7 +420,9 @@ function OutcomeRow({
         className="mono tnum"
         style={{
           fontSize: 11.5,
-          color: "var(--fg-dim)",
+          color: selected
+            ? "color-mix(in oklab, var(--accent-fg) 60%, transparent)"
+            : "var(--fg-dim)",
           textDecoration: "line-through",
           flexShrink: 0,
         }}
@@ -407,9 +435,12 @@ function OutcomeRow({
         style={{
           fontSize: 13.5,
           fontWeight: 700,
-          color: "var(--positive, #16a34a)",
-          background: "var(--bg)",
-          border: "1px solid var(--border)",
+          color: selected ? "var(--accent-fg)" : "var(--positive, #16a34a)",
+          // The inset price chip reads as a raised tile on an unpicked
+          // row; on the accent fill it would look like a hole punched in
+          // the button, so it goes flat instead.
+          background: selected ? "transparent" : "var(--bg)",
+          border: `1px solid ${selected ? "transparent" : "var(--border)"}`,
           borderRadius: 6,
           padding: "2px 8px",
           flexShrink: 0,
