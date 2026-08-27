@@ -6,7 +6,7 @@ import type { CSSProperties, ReactNode, MouseEvent } from "react";
 import { useOddsFlash } from "@/lib/use-odds-flash";
 // Value import via the subpath, never the barrel — see the note in
 // packages/types/src/odds.ts.
-import { formatOddsDisplay } from "@oddzilla/types/odds";
+import { formatOddsDisplay, isBettableOdds } from "@oddzilla/types/odds";
 
 // ── Button ──────────────────────────────────────────────────────────────
 type ButtonVariant = "primary" | "secondary" | "ghost" | "outline" | "danger";
@@ -254,7 +254,7 @@ export function OddButton({
   selected,
   onClick,
   size = "md",
-  locked = false,
+  locked: lockedProp = false,
   // When true the button paints as a ZillaFlash boosted outcome:
   // green border, soft green tint background, positive-coloured
   // price. The match page sets this for any outcome with a current
@@ -301,6 +301,12 @@ export function OddButton({
       : badgeOverlay === true
         ? 60
         : badgeOverlay;
+  // A price at or below 1.00 can't return a profit, so the cell is shown
+  // but not offered — greyed with an em dash, exactly like a suspended
+  // outcome. Sub-1.01 prices above 1.00 (1.003 and friends) are
+  // bettable and unaffected. Mirrors the `authNum <= 1` reject in
+  // POST /bets so the UI never offers what placement would refuse.
+  const locked = lockedProp || (price != null && !isBettableOdds(price));
   const H = { sm: 36, md: 44, lg: 52 }[size];
   const arrow = trend === "up" ? "↑" : trend === "down" ? "↓" : null;
   const arrowColor =

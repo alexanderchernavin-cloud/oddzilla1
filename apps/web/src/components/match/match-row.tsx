@@ -16,7 +16,7 @@ import { LocalDateTime } from "./local-datetime";
 import type { SlipSelection } from "@oddzilla/types";
 // Value import via the subpath, never the barrel — see the note in
 // packages/types/src/odds.ts.
-import { formatOddsDisplay } from "@oddzilla/types/odds";
+import { formatOddsDisplay, isBettableOdds } from "@oddzilla/types/odds";
 
 export interface ListMatch {
   id: string;
@@ -699,7 +699,7 @@ function RowOddBtn({
   label,
   price,
   selected,
-  locked,
+  locked: lockedProp,
   onClick,
   keepLabelOnMobile = false,
 }: {
@@ -715,6 +715,12 @@ function RowOddBtn({
   // only cue that this is the draw.
   keepLabelOnMobile?: boolean;
 }) {
+  // A price at or below 1.00 can't return a profit, so the cell is
+  // shown but not offered — greyed with an em dash, same as a suspended
+  // outcome. Sub-1.01 prices above 1.00 (1.003 and friends) are
+  // bettable and unaffected. Mirrors OddButton and the `authNum <= 1`
+  // reject in POST /bets.
+  const locked = lockedProp || (price != null && !isBettableOdds(price));
   // Same green/red flash as OddButton. Skipped while locked so an
   // inactive→active transition doesn't flash on resume.
   const flashRef = useRef<HTMLButtonElement | null>(null);

@@ -40,6 +40,32 @@ const ODDS_SCALE = 10_000;
 export const ODDS_PLACEHOLDER = "—";
 
 /**
+ * Lowest decimal odds that can return a profit.
+ *
+ * Sub-1.01 prices are fully supported and bettable — Oddin quotes a
+ * near-certain live favorite at e.g. 1.003, and that renders and places
+ * normally. This is the floor at exactly 1.00, where a winning bet hands
+ * back precisely the stake while still carrying full loss and void risk,
+ * and below which (reachable the moment a non-zero `payback_margin_bp`
+ * lands on any scope) a winning bet pays LESS than the stake.
+ *
+ * Such a price is DISPLAYED, not hidden — the cell just renders greyed
+ * with an em dash the way a suspended outcome does. Mirrors the
+ * `authNum <= 1` reject in POST /bets, so the UI never offers a price
+ * placement would refuse. Oddin does not appear to send 1.00 in
+ * practice; this is the defensive floor.
+ */
+export const MIN_BETTABLE_ODDS = 1;
+
+/**
+ * True when a price can actually return a profit, i.e. is worth
+ * offering as a clickable cell. Null / non-finite / <= 1.00 are not.
+ */
+export function isBettableOdds(n: number | null | undefined): boolean {
+  return n != null && Number.isFinite(n) && n > MIN_BETTABLE_ODDS;
+}
+
+/**
  * Format a decimal odds value for display: up to 4dp, trailing zeros
  * trimmed to a 2dp minimum. Non-finite or negative input returns
  * ODDS_PLACEHOLDER rather than a fabricated number.

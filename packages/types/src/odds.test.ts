@@ -1,7 +1,46 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { formatOddsDisplay, ODDS_PLACEHOLDER } from "./odds.js";
+import {
+  formatOddsDisplay,
+  isBettableOdds,
+  ODDS_PLACEHOLDER,
+} from "./odds.js";
+
+test("sub-1.01 odds above 1.00 are bettable", () => {
+  // The operator's call: no 1.01 floor. Oddin quotes a near-certain
+  // live favorite this thin and it must render AND place.
+  assert.equal(isBettableOdds(1.003), true);
+  assert.equal(isBettableOdds(1.001), true);
+  assert.equal(isBettableOdds(1.0001), true);
+  assert.equal(isBettableOdds(1.01), true);
+  assert.equal(isBettableOdds(12), true);
+});
+
+test("1.00 and below are displayed but not bettable", () => {
+  // Exactly 1.00 returns the stake on a win while carrying full loss
+  // and void risk; below 1.00 a winning bet pays less than the stake.
+  assert.equal(isBettableOdds(1), false);
+  assert.equal(isBettableOdds(0.9552), false);
+  assert.equal(isBettableOdds(0), false);
+  assert.equal(isBettableOdds(-2), false);
+});
+
+test("absent or non-finite prices are not bettable", () => {
+  assert.equal(isBettableOdds(null), false);
+  assert.equal(isBettableOdds(undefined), false);
+  assert.equal(isBettableOdds(Number.NaN), false);
+  // Infinity is a pipeline bug, not a 100% payout — refuse it.
+  assert.equal(isBettableOdds(Number.POSITIVE_INFINITY), false);
+});
+
+test("a locked 1.00 cell still has a formattable price to show", () => {
+  // Locked cells render an em dash, but the value must not be mangled
+  // if a surface chooses to display it — 1.00 stays "1.00".
+  assert.equal(formatOddsDisplay(1), "1.00");
+  assert.equal(isBettableOdds(Number.parseFloat("1.00")), false);
+  assert.equal(isBettableOdds(Number.parseFloat("1.003")), true);
+});
 
 test("trims trailing zeros down to a 2dp floor", () => {
   assert.equal(formatOddsDisplay(1.91), "1.91");
