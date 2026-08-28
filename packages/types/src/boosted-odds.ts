@@ -115,6 +115,58 @@ export interface CustomBoostedOddsResponse {
 // scope. Served by GET /catalog/zillaboost-banners, RS-gated per
 // viewer like the per-match rules endpoint.
 
+/**
+ * AI-generated banner graphic (migration 0089), present on any banner
+ * shape whose rule has one. `imageUrl` points at the byte-serve route
+ * with a `?v=` stamp so a regenerated image busts the browser cache.
+ */
+export interface ZillaBoostBannerImage {
+  imageUrl: string;
+}
+
+// ── Graphics-banner generation (migration 0089) ──────────────────────
+// Wire shapes between the api's /webhooks/banner-gen/:secret/* routes
+// and the operator-PC worker (services/zillaboost-banner-gen). Pull
+// model: the worker polls /pending over outbound HTTPS; while the PC is
+// off, jobs accumulate server-side and drain when it returns.
+
+/** One claimed generation job, with everything the prompt needs. */
+export interface BannerGenJob {
+  ruleId: string;
+  scope: BoostedOddsScope;
+  boostPct: number;
+  endsAt: string | null;
+  attempts: number;
+  /**
+   * Entity context for research + prompt authoring. Fields are filled
+   * per scope: sport rules carry sportName/sportSlug; tournament rules
+   * add tournamentName; match / market / outcome rules add the teams;
+   * competitor rules carry competitorName. Never all at once.
+   */
+  context: {
+    sportName: string | null;
+    sportSlug: string | null;
+    tournamentName: string | null;
+    homeTeam: string | null;
+    awayTeam: string | null;
+    competitorName: string | null;
+  };
+}
+
+export interface BannerGenPendingResponse {
+  jobs: BannerGenJob[];
+  serverNow: string;
+}
+
+/** Upload cap for the finished graphic (base64 payload decodes to this). */
+export const BANNER_GEN_MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+
+export const BANNER_GEN_ALLOWED_MIMES = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+] as const;
+
 export interface ZillaBoostBannerOutcome {
   outcomeId: string;
   label: string;
@@ -127,6 +179,8 @@ export interface ZillaBoostMarketBanner {
   ruleId: string;
   boostPct: number;
   endsAt: string | null;
+  /** AI-generated graphic, when the rule has one (migration 0089). */
+  imageUrl?: string | null;
   matchId: string;
   homeTeam: string;
   awayTeam: string;
@@ -142,6 +196,8 @@ export interface ZillaBoostMatchBanner {
   ruleId: string;
   boostPct: number;
   endsAt: string | null;
+  /** AI-generated graphic, when the rule has one (migration 0089). */
+  imageUrl?: string | null;
   matchId: string;
   homeTeam: string;
   awayTeam: string;
@@ -182,6 +238,8 @@ export interface ZillaBoostSportBanner {
   ruleId: string;
   boostPct: number;
   endsAt: string | null;
+  /** AI-generated graphic, when the rule has one (migration 0089). */
+  imageUrl?: string | null;
   sportId: number;
   slug: string;
   name: string;
@@ -196,6 +254,8 @@ export interface ZillaBoostTournamentBanner {
   ruleId: string;
   boostPct: number;
   endsAt: string | null;
+  /** AI-generated graphic, when the rule has one (migration 0089). */
+  imageUrl?: string | null;
   tournamentId: number;
   name: string;
   sportSlug: string;

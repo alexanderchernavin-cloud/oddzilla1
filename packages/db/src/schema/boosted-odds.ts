@@ -22,10 +22,21 @@ import {
   timestamp,
   check,
   uniqueIndex,
+  index,
+  customType,
 } from "drizzle-orm/pg-core";
 import { users } from "./users.js";
 import { competitors, matches, sports, tournaments } from "./catalog.js";
 import { markets } from "./markets.js";
+
+// Postgres BYTEA mapped to Buffer in/out — same local-copy convention as
+// catalog.ts / admin.ts (each schema file keeps its own to avoid a
+// cross-file util import).
+const bytea = customType<{ data: Buffer; default: false }>({
+  dataType() {
+    return "bytea";
+  },
+});
 
 export const boostedOddsScopeEnum = pgEnum("boosted_odds_scope", [
   "sport",
@@ -73,6 +84,12 @@ export const boostedOddsConfig = pgTable(
     // with original + boosted prices, tournament -> ZillaBoost banner
     // linking to its match list, sport -> boost icon in the sidebar.
     banner: boolean().notNull().default(false),
+    // AI-generated graphic for the banner (migration 0089). Ticking the
+    // option enqueues a zillaboost_banner_image_jobs row for the
+    // operator-PC worker; the image BYTES live on the job row, not
+    // here — the pricing paths full-row-select this table on hot
+    // catalog requests and must not drag a BYTEA along.
+    graphicsBanner: boolean("graphics_banner").notNull().default(false),
     updatedBy: uuid("updated_by").references(() => users.id, {
       onDelete: "set null",
     }),
@@ -122,3 +139,54 @@ export const boostedOddsConfig = pgTable(
 );
 
 export type BoostedOddsConfigRow = typeof boostedOddsConfig.$inferSelect;
+
+// AI-generated banner graphics queue + storage (migration 0089). One row
+// per rule: re-generating resets the SAME row to pending, and the previous
+// image stays until the replacement lands so the storefront banner never
+// blanks mid-regenerate. Drained by the operator-PC worker
+// (services/zillaboost-banner-gen) via /webhooks/banner-gen/:secret/* —
+// pull model, the production box never dials the operator's LAN, so "PC
+// off" just means rows accumulate here.
+export const zillaboostBannerImageJobs = pgTable(
+  "zillaboost_banner_image_jobs",
+  {
+    ruleId: uuid("rule_id")
+      .primaryKey()
+      .references(() => boostedOddsConfig.id, { onDelete: "cascade" }),
+    status: text().notNull().default("pending"),
+    attempts: integer().notNull().default(0),
+    lastError: text("last_error"),
+    // Claim lease — a handed-out job is invisible to further /pending
+    // polls until this expires, so a crashed worker's job self-returns.
+    leasedUntil: timestamp("leased_until", { withTimezone: true }),
+    // Generation-failure backoff: pending, but not offered before this.
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    imageData: bytea("image_data"),
+    imageMime: text("image_mime"),
+    generatedAt: timestamp("generated_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    check(
+      "zillaboost_banner_image_jobs_status",
+      sql`${t.status} IN ('pending', 'done', 'failed')`,
+    ),
+    check(
+      "zillaboost_banner_image_jobs_mime",
+      sql`(${t.imageData} IS NULL AND ${t.imageMime} IS NULL) OR (${t.imageData} IS NOT NULL AND ${t.imageMime} IN ('image/png', 'image/jpeg', 'image/webp'))`,
+    ),
+    index("zillaboost_banner_image_jobs_pending_idx")
+      .on(t.nextAttemptAt)
+      .where(sql`${t.status} = 'pending'`),
+  ],
+);
+
+export type ZillaboostBannerImageJobRow =
+  typeof zillaboostBannerImageJobs.$inferSelect;

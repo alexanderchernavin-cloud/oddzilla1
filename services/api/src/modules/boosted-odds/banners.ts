@@ -17,6 +17,7 @@
 // viewer).
 
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import { and, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import {
@@ -30,6 +31,7 @@ import {
   outcomeDescriptions,
   sports,
   tournaments,
+  zillaboostBannerImageJobs,
 } from "@oddzilla/db";
 import type {
   ZillaBoostBannerOutcome,
@@ -50,6 +52,7 @@ import {
   renderOutcomeLabel,
   substituteTemplate,
 } from "../../lib/market-naming.js";
+import { NotFoundError } from "../../lib/errors.js";
 
 const homeCompetitor = alias(competitors, "home_competitor");
 const awayCompetitor = alias(competitors, "away_competitor");
@@ -196,6 +199,37 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
     );
     if (rules.length === 0) return EMPTY();
 
+    // AI-generated graphics (migration 0089): map ruleId -> imageUrl for
+    // rules whose job has a finished image. generated_at rides as ?v= so
+    // a regenerated image busts the browser cache; the /api prefix is
+    // literal because these URLs land in <img src>, which goes through
+    // Caddy without the clientApi prefixing.
+    const graphicsIds = rules
+      .filter((r) => r.graphicsBanner)
+      .map((r) => r.id);
+    const imageStampRows = graphicsIds.length
+      ? await app.db
+          .select({
+            ruleId: zillaboostBannerImageJobs.ruleId,
+            generatedAt: zillaboostBannerImageJobs.generatedAt,
+          })
+          .from(zillaboostBannerImageJobs)
+          .where(
+            and(
+              inArray(zillaboostBannerImageJobs.ruleId, graphicsIds),
+              sql`${zillaboostBannerImageJobs.imageData} IS NOT NULL`,
+            ),
+          )
+      : [];
+    const imageUrlByRule = new Map(
+      imageStampRows.map((r) => [
+        r.ruleId,
+        `/api/catalog/zillaboost-banners/${r.ruleId}/image?v=${r.generatedAt?.getTime() ?? 0}`,
+      ]),
+    );
+    const imageUrlFor = (ruleId: string): string | null =>
+      imageUrlByRule.get(ruleId) ?? null;
+
     const out = EMPTY();
 
     // ── sport scope → home banner + sidebar icon ────────────────────
@@ -248,6 +282,7 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
             ruleId: rule.id,
             boostPct: Number(rule.boostPct),
             endsAt: rule.endsAt?.toISOString() ?? null,
+            imageUrl: imageUrlFor(rule.id),
             sportId: s.id,
             slug: s.slug,
             name: s.name,
@@ -290,6 +325,7 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
             ruleId: r.id,
             boostPct: Number(r.boostPct),
             endsAt: r.endsAt?.toISOString() ?? null,
+            imageUrl: imageUrlFor(r.id),
             tournamentId: t.id,
             name: t.name,
             sportSlug: t.sportSlug,
@@ -450,6 +486,7 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
           ruleId: r.id,
           boostPct: Number(r.boostPct),
           endsAt: r.endsAt?.toISOString() ?? null,
+          imageUrl: imageUrlFor(r.id),
           matchId: m.id.toString(),
           homeTeam: m.homeTeam,
           awayTeam: m.awayTeam,
@@ -537,6 +574,7 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
         ruleId: r.id,
         boostPct: Number(r.boostPct),
         endsAt: r.endsAt?.toISOString() ?? null,
+        imageUrl: imageUrlFor(r.id),
         matchId: row.matchId.toString(),
         homeTeam: row.homeTeam,
         awayTeam: row.awayTeam,
@@ -557,5 +595,36 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
     }
 
     return out;
+  });
+
+  // ── AI banner graphic byte-serve (migration 0089) ──────────────────
+  // Bytes live on the job row so the hot rule-table selects never drag
+  // a BYTEA along. Immutable long cache: the URL carries ?v=<generated
+  // ms>, so a regenerated image is a NEW url and the old cache entry is
+  // simply never requested again. Public like the sports/competitors
+  // logo byte-serves — the image itself is promo art, the RS gate
+  // governs the offer, not the picture.
+  app.get("/catalog/zillaboost-banners/:ruleId/image", async (request, reply) => {
+    const parsed = z
+      .object({ ruleId: z.string().uuid() })
+      .safeParse(request.params);
+    if (!parsed.success) {
+      throw new NotFoundError("image_not_found", "image_not_found");
+    }
+    const [row] = await app.db
+      .select({
+        imageData: zillaboostBannerImageJobs.imageData,
+        imageMime: zillaboostBannerImageJobs.imageMime,
+      })
+      .from(zillaboostBannerImageJobs)
+      .where(eq(zillaboostBannerImageJobs.ruleId, parsed.data.ruleId))
+      .limit(1);
+    if (!row?.imageData || !row.imageMime) {
+      throw new NotFoundError("image_not_found", "image_not_found");
+    }
+    reply
+      .header("content-type", row.imageMime)
+      .header("cache-control", "public, max-age=31536000, immutable");
+    return reply.send(row.imageData);
   });
 }

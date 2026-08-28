@@ -3,4 +3,5 @@ packages:
   - "services/api"
   - "services/ws-gateway"
   - "services/support-ai-bot"
+  - "services/zillaboost-banner-gen"
   - "packages/*"
