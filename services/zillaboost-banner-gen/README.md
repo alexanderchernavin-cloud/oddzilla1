@@ -1,17 +1,25 @@
 # zillaboost-banner-gen
 
-Worker that generates AI graphics for ZillaBoost promo banners.
+Operator-PC worker that generates AI graphics for ZillaBoost promo
+banners. NOT part of the docker stack — it runs ON the machine that
+hosts ComfyUI and dials OUT to the production API over HTTPS, exactly
+like `services/support-ai-bot`. The server never connects inbound.
 
-**Primary deployment (since the tailnet): the `banner-gen` compose
-service on the production box.** tailscaled runs on the HOST and joins
-the operator's tailnet; the container reaches the model PC's LM Studio +
-image server through it (containers route to `100.64.0.0/10` via the
-host, no extra network config). Set `LM_STUDIO_BASE_URL` /
-`IMAGE_API_BASE` in the server `.env` to the PC's tailnet name and
-`make recreate banner-gen`.
+**ComfyUI stays bound to 127.0.0.1 — non-negotiable.** It has no
+authentication, executes workflow graphs as the (Administrator) user
+running it, and `--enable-manager` can install arbitrary custom nodes:
+network exposure is remote code execution as admin. A server-side
+variant of this worker briefly existed (2026-08-28, reaching the PC
+over tailscale) and was reverted the same day for exactly that reason —
+the sportsbook only needs "make me an image from this text", never a
+route to port 8188.
 
-It can equally run straight on any PC (`pnpm start` with a local
-`.env`) — the queue's claim leases make concurrent workers safe.
+```
+worker (this PC) ──outbound HTTPS──> https://oddzilla.cc/api/webhooks/banner-gen/<secret>/...
+   │
+   ├──> ComfyUI    http://127.0.0.1:8188   (never leaves the box)
+   └──> LM Studio  http://127.0.0.1:1234   (prompt authoring)
+```
 
 ## Flow
 
@@ -55,10 +63,17 @@ Server side: set the SAME `BANNER_GEN_TOKEN` in `/home/team/oddzilla/.env`
 (`openssl rand -hex 24`) and `make recreate api`. Until then the webhook
 routes 503 `banner_gen_disabled` — jobs still enqueue and wait.
 
-The image backend is ComfyUI (must listen beyond loopback:
-`--listen 0.0.0.0`). Checkpoint auto-discovery prefers an SD3-family
-model; a FLUX pick drops cfg to 1.0 automatically. A different backend
-is a one-file swap in `src/imagegen.ts`.
+The image backend is ComfyUI on loopback (`127.0.0.1:8188` — do NOT
+launch it with `--listen`). Keep `IMAGE_MODEL` pinned to FLUX on the
+RX 7900 XTX box (SD3.5-fp8 crashes its ROCm kernels); a FLUX pick uses
+the box-verified graph (EmptyLatentImage, cfg 1.0, 20 steps)
+automatically. A different backend is a one-file swap in
+`src/imagegen.ts`.
+
+The worker also POSTs `/heartbeat` every 30 s (fire-and-forget, keeps
+beating through long renders) — it drives the "Image worker online"
+dot + queue counts on `/admin/boosted-odds`, mirroring the support
+assistant's indicator.
 
 ## Guardrails baked into the prompt
 

@@ -32,6 +32,7 @@ import {
   zillaboostBannerImageJobs,
 } from "@oddzilla/db";
 import { BadRequestError, NotFoundError } from "../../lib/errors.js";
+import { BANNER_GEN_ONLINE_KEY } from "../boosted-odds/banner-gen.js";
 import {
   renderOutcomeLabel,
   substituteTemplate,
@@ -274,7 +275,35 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
       : [];
     const jobByRule = new Map(jobRows.map((j) => [j.ruleId, j]));
 
+    // Image-worker liveness (heartbeat key, TTL 90 s) + queue totals for
+    // the status strip above the rules table. Best-effort: a Redis blip
+    // just reads as offline.
+    let workerLastSeen: string | null = null;
+    try {
+      workerLastSeen = await app.redis.get(BANNER_GEN_ONLINE_KEY);
+    } catch {
+      workerLastSeen = null;
+    }
+    const queueTotals = { pending: 0, done: 0, failed: 0 };
+    const totalRows = await app.db
+      .select({
+        status: zillaboostBannerImageJobs.status,
+        n: sql<number>`count(*)::int`,
+      })
+      .from(zillaboostBannerImageJobs)
+      .groupBy(zillaboostBannerImageJobs.status);
+    for (const r of totalRows) {
+      if (r.status === "pending") queueTotals.pending = r.n;
+      else if (r.status === "done") queueTotals.done = r.n;
+      else if (r.status === "failed") queueTotals.failed = r.n;
+    }
+
     return {
+      imageWorker: {
+        online: workerLastSeen !== null,
+        lastSeen: workerLastSeen,
+        queue: queueTotals,
+      },
       rules: rows.map((r) => ({
         ...toRuleDto(r),
         graphics: (() => {

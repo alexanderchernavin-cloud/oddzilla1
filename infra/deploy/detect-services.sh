@@ -30,7 +30,7 @@ declare -A SEEN
 
 # Order all services see in compose so the output is stable + tests
 # can do exact-string assertions.
-ORDER=(api ws-gateway web1 banner-gen signer feed-ingester odds-publisher settlement bet-delay wallet-watcher metrics-collector mail-receiver caddy)
+ORDER=(api ws-gateway web1 signer feed-ingester odds-publisher settlement bet-delay wallet-watcher metrics-collector mail-receiver caddy)
 
 mark() {
   for s in "$@"; do
@@ -39,7 +39,7 @@ mark() {
 }
 
 mark_all_built_services() {
-  mark api ws-gateway web1 banner-gen signer feed-ingester odds-publisher settlement bet-delay wallet-watcher metrics-collector mail-receiver
+  mark api ws-gateway web1 signer feed-ingester odds-publisher settlement bet-delay wallet-watcher metrics-collector mail-receiver
 }
 
 while IFS= read -r path; do
@@ -68,11 +68,11 @@ while IFS= read -r path; do
     services/mail-receiver/*)
       mark mail-receiver ;;
     services/zillaboost-banner-gen/*)
-      mark banner-gen ;;
+      : ;;  # operator-PC worker, not a compose service — nothing to build
     packages/auth/*)
       mark api ws-gateway web1 ;;
     packages/types/*)
-      mark api ws-gateway web1 banner-gen ;;
+      mark api ws-gateway web1 ;;
     packages/config/*)
       mark api ws-gateway ;;
     packages/db/migrations/*)
@@ -88,7 +88,7 @@ while IFS= read -r path; do
       # subtle "old config, new docker-compose.yml" drift.
       mark_all_built_services ;;
     pnpm-lock.yaml|package.json|pnpm-workspace.yaml|turbo.json)
-      mark api ws-gateway web1 banner-gen ;;
+      mark api ws-gateway web1 ;;
     *)
       : ;;
   esac

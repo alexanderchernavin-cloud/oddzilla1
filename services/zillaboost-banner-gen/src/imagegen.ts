@@ -63,13 +63,16 @@ async function resolveCheckpoint(cfg: WorkerConfig): Promise<string> {
 }
 
 /**
- * Minimal txt2img graph. EmptySD3LatentImage covers the 16-channel
- * latent space both installed checkpoint families (SD3.5, FLUX) use;
- * an SD1.5/SDXL checkpoint would need EmptyLatentImage instead — swap
- * here if one ever lands on the box.
+ * Minimal txt2img graph — the exact node shape of the FLUX workflow
+ * verified end-to-end on the operator's box (RX 7900 XTX / ROCm),
+ * parameterised. Latent node per family: the verified FLUX run used
+ * EmptyLatentImage; SD3-family checkpoints take EmptySD3LatentImage.
+ * (SD3.5-large-fp8 currently hipErrorLaunchFailure-crashes that GPU —
+ * keep IMAGE_MODEL pinned to FLUX there.)
  */
 function buildWorkflow(args: {
   checkpoint: string;
+  latentClass: "EmptyLatentImage" | "EmptySD3LatentImage";
   prompt: string;
   negative: string;
   width: number;
@@ -93,7 +96,7 @@ function buildWorkflow(args: {
       inputs: { text: args.negative, clip: ["1", 1] },
     },
     "4": {
-      class_type: "EmptySD3LatentImage",
+      class_type: args.latentClass,
       inputs: { width: args.width, height: args.height, batch_size: 1 },
     },
     "5": {
@@ -137,24 +140,28 @@ export async function generateImage(
 ): Promise<{ imageBase64: string; mime: "image/png" }> {
   const checkpoint = await resolveCheckpoint(cfg);
   const isFlux = /flux/i.test(checkpoint);
-  // FLUX ignores the negative branch and needs cfg 1.0; honour an
-  // explicit operator override, otherwise adapt per family.
+  // FLUX ignores the negative branch and needs cfg 1.0, and the
+  // verified box workflow ran 20 steps; honour explicit operator
+  // overrides, otherwise adapt per family.
   const cfgScale =
     process.env.IMAGE_CFG_SCALE?.trim()
       ? cfg.imageCfgScale
       : isFlux
         ? 1.0
         : cfg.imageCfgScale;
+  const steps =
+    process.env.IMAGE_STEPS?.trim() ? cfg.imageSteps : isFlux ? 20 : cfg.imageSteps;
   const seed = randomBytes(4).readUInt32BE(0);
   const workflow = buildWorkflow({
     checkpoint,
+    latentClass: isFlux ? "EmptyLatentImage" : "EmptySD3LatentImage",
     prompt,
     negative: cfg.imageNegativeExtra
       ? `${NEGATIVE_BASE}, ${cfg.imageNegativeExtra}`
       : NEGATIVE_BASE,
     width: cfg.imageWidth,
     height: cfg.imageHeight,
-    steps: cfg.imageSteps,
+    steps,
     cfgScale,
     sampler: cfg.imageSampler,
     seed,
