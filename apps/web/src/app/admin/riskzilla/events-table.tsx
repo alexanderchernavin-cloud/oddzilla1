@@ -223,6 +223,13 @@ export function useColumnLayout(storageKey: string): ColumnLayout {
 // `services/api/src/modules/admin/riskzilla/events.ts` from
 // `tickets.status` + `actual_payout_micro` so the column flips off
 // "ACCEPTED" once the ticket actually settles.
+//
+// `rejected_delay` is distinct from every `rejected_*` above: those are
+// RiskZilla gates that fired at placement, this one is the bet-delay
+// worker killing an already-risk-accepted ticket at the end of its
+// acceptance window (odds drift / market suspended / outcome inactive).
+// The stake was refunded. Coloured amber rather than red — nothing was
+// wrong with the bettor or the book, the price just moved away.
 
 const DECISION_COLOR: Record<string, string> = {
   accepted: "#16a34a",
@@ -233,6 +240,7 @@ const DECISION_COLOR: Record<string, string> = {
   rejected_bank_limit: "#dc2626",
   rejected_user_blocked: "#94a3b8",
   rejected_market_factor: "#dc2626",
+  rejected_delay: "#f59e0b",
   won: "#16a34a",
   partial: "#22c55e",
   lost: "#ef4444",
@@ -250,6 +258,7 @@ const DECISION_LABEL: Record<string, string> = {
   rejected_bank_limit: "BANK",
   rejected_user_blocked: "USER BLOCKED",
   rejected_market_factor: "MARKET FACTOR",
+  rejected_delay: "REJECTED · DELAY",
   won: "WON",
   partial: "WON · PARTIAL",
   lost: "LOST",

@@ -46,11 +46,25 @@ import {
 //   tickets.status = 'settled' & payout > 0      → partial
 //   tickets.status = 'settled' & payout = 0      → lost
 //   tickets.status = 'pending_delay'             → pending_delay
-//   otherwise (no ticket / still accepted / rejected_*) → el.decision
+//   tickets.status = 'rejected'                  → rejected_delay
+//   otherwise (no ticket / still accepted)       → el.decision
 //
-// Filtering (`q.decision`, `q.status`) still keys on
-// `el.decision::riskzilla_decision` so the rejection filters keep
-// working — the derived value only affects the column the UI renders.
+// `rejected_delay` is the bet-delay worker's rejection (drift /
+// suspension / inactive outcome at the end of the acceptance window),
+// which is a DIFFERENT event from a RiskZilla `rejected_*` decision.
+// RiskZilla can accept a bet on risk grounds and bet-delay kill it
+// 5 s later; `el.decision` stays 'accepted' forever because that is
+// what the engine decided. Without this branch such a ticket rendered
+// as ACCEPTED next to a LOST leg (the settle cascade stamps
+// ticket_selections.result for any leg on a settled market regardless
+// of ticket status), which reads as an unpaid winner. The stake was
+// refunded at rejection — see `reason_message` for the reason.
+//
+// The `accepted` / `rejected` status filters below overlay the same
+// ticket state so a bet-delay rejection files under Rejected rather
+// than hiding under Accepted. The per-reason `q.decision` pills stay
+// keyed purely on `el.decision` — they name RiskZilla gates, and a
+// bet-delay rejection tripped none of them.
 // Aliased `t` is the `LEFT JOIN tickets ON t.id = el.ticket_id` in
 // the USDC path, or the `tickets t` row directly in the OZ path.
 const decisionFromTicketSql = sql`
@@ -62,6 +76,7 @@ const decisionFromTicketSql = sql`
     WHEN t.status = 'settled' AND COALESCE(t.actual_payout_micro, 0) > 0 THEN 'partial'
     WHEN t.status = 'settled' THEN 'lost'
     WHEN t.status = 'pending_delay' THEN 'pending_delay'
+    WHEN t.status = 'rejected' THEN 'rejected_delay'
     ELSE el.decision::text
   END
 `;
@@ -77,6 +92,7 @@ const decisionFromTicketOzSql = sql`
     WHEN t.status = 'settled' AND COALESCE(t.actual_payout_micro, 0) > 0 THEN 'partial'
     WHEN t.status = 'settled' THEN 'lost'
     WHEN t.status = 'pending_delay' THEN 'pending_delay'
+    WHEN t.status = 'rejected' THEN 'rejected_delay'
     ELSE 'accepted'
   END
 `;
@@ -498,8 +514,27 @@ async function queryEventLog(
 ): Promise<PathResult> {
   const conditions: ReturnType<typeof sql>[] = [];
   if (q.decision) conditions.push(sql`el.decision = ${q.decision}::riskzilla_decision`);
-  if (q.status === "accepted") conditions.push(sql`el.decision = 'accepted'::riskzilla_decision`);
-  if (q.status === "rejected") conditions.push(sql`el.decision <> 'accepted'::riskzilla_decision`);
+  // Overlay ticket state so a bet-delay rejection (el.decision stays
+  // 'accepted') files under Rejected instead of Accepted. Expressed as a
+  // correlated subquery, NOT via the `t` alias: this `conditions` array
+  // also feeds the COUNT(*) query below, whose FROM is `riskzilla_event_log`
+  // alone with no tickets join — referencing `t` there is a runtime
+  // "missing FROM-clause entry" that no typecheck would catch.
+  // NOT EXISTS also covers ticket_id IS NULL (a RiskZilla rejection never
+  // created a ticket row), so those keep landing under Rejected via the
+  // decision half of the OR.
+  const ticketRejectedSql = sql`EXISTS (
+    SELECT 1 FROM tickets tk
+     WHERE tk.id = el.ticket_id AND tk.status = 'rejected'
+  )`;
+  if (q.status === "accepted")
+    conditions.push(
+      sql`el.decision = 'accepted'::riskzilla_decision AND NOT ${ticketRejectedSql}`,
+    );
+  if (q.status === "rejected")
+    conditions.push(
+      sql`(el.decision <> 'accepted'::riskzilla_decision OR ${ticketRejectedSql})`,
+    );
   if (q.userId) conditions.push(sql`el.user_id = ${q.userId}::uuid`);
   if (q.sportId !== undefined) conditions.push(sql`el.sport_id = ${q.sportId}`);
   if (q.matchId !== undefined)
@@ -543,7 +578,14 @@ async function queryEventLog(
       -- and post-settlement lifecycle into one cell so old tickets stop
       -- reading ACCEPTED after they actually settled.
       ${decisionFromTicketSql}                      AS decision,
-      el.reason_message                             AS reason_message,
+      -- A bet-delay rejection has no RiskZilla reason (the engine
+      -- accepted it), so surface tickets.reject_reason instead —
+      -- 'market_suspended' / 'odds_drift_exceeded' / etc. The UI
+      -- already renders reasonMessage in the expanded row.
+      COALESCE(
+        el.reason_message,
+        CASE WHEN t.status = 'rejected' THEN t.reject_reason END
+      )                                             AS reason_message,
       el.currency                                   AS currency,
       el.stake_micro::text                          AS stake_micro,
       el.potential_payout_micro::text               AS potential_payout_micro,
@@ -647,12 +689,16 @@ async function queryTicketsForOz(
   app: FastifyInstance,
   q: ListQuery,
 ): Promise<PathResult> {
-  // Rejection filters never match — OZ tickets are all accepted.
-  if (q.status === "rejected" || (q.decision && q.decision !== "accepted")) {
+  // Per-reason RiskZilla pills never match — the engine bypasses OZ, so
+  // no OZ ticket ever tripped a named gate. The generic Rejected filter
+  // DOES match: bet-delay rejects OZ tickets too (drift / suspension).
+  if (q.decision && q.decision !== "accepted") {
     return { entries: [], total: 0 };
   }
 
   const conditions: ReturnType<typeof sql>[] = [sql`t.currency = 'OZ'`];
+  if (q.status === "accepted") conditions.push(sql`t.status <> 'rejected'`);
+  if (q.status === "rejected") conditions.push(sql`t.status = 'rejected'`);
   if (q.userId) conditions.push(sql`t.user_id = ${q.userId}::uuid`);
   if (q.fromTs)
     conditions.push(sql`t.placed_at >= ${q.fromTs.toISOString()}::timestamptz`);
@@ -725,7 +771,8 @@ async function queryTicketsForOz(
       u.email                                       AS user_email,
       u.nickname                                    AS user_nickname,
       ${decisionFromTicketOzSql}                    AS decision,
-      NULL::text                                    AS reason_message,
+      CASE WHEN t.status = 'rejected' THEN t.reject_reason END::text
+                                                    AS reason_message,
       t.currency                                    AS currency,
       t.stake_micro::text                           AS stake_micro,
       t.potential_payout_micro::text                AS potential_payout_micro,
