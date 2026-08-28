@@ -289,6 +289,17 @@ export default async function bannerGenRoutes(app: FastifyInstance) {
   // ── Upload the finished graphic ────────────────────────────────────
   app.post(
     "/webhooks/banner-gen/:secret/jobs/:ruleId/complete",
+    {
+      // The body is JSON.stringify({imageBase64, mime}): the 4 MiB
+      // decoded image cap becomes ~5.6 MiB of base64 plus envelope.
+      // 8 MiB covers the worst legal payload with headroom; the zod
+      // length cap below still rejects anything over the real limit
+      // before decoding. Global bodyLimit (server.ts) is 64 KiB —
+      // without this override a ~600 KB PNG 413s (found the hard way
+      // on the first live render, 2026-08-28). Caddy needs the
+      // matching edge carve-out too (@banner_gen_uploads).
+      bodyLimit: 8 * 1024 * 1024,
+    },
     async (request) => {
       assertAuth(request);
       const ruleId = parseRuleId(request);
