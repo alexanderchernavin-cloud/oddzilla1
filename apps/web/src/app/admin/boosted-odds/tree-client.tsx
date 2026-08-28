@@ -26,6 +26,8 @@ export interface RuleDto {
   /** scope='outcome' only — the boosted cell within the rule's market. */
   outcomeId: string | null;
   boostPct: number;
+  /** Scheduled activation; null = live immediately (migration 0092). */
+  startsAt: string | null;
   endsAt: string | null;
   minRiskScore: number | null;
   banner: boolean;
@@ -39,8 +41,10 @@ export interface RuleGraphicsState {
   status: "pending" | "done" | "failed";
   attempts: number;
   lastError: string | null;
-  /** Diffusion prompt this image came from — hover the chip to read it. */
+  /** Diffusion prompt this image came from — expand the chip to read it. */
   lastPrompt: string | null;
+  /** Render params behind it: checkpoint / cfg / steps / seed / size. */
+  lastRenderMeta: Record<string, unknown> | null;
   generatedAt: string | null;
 }
 
@@ -386,6 +390,10 @@ function ActiveRulesTable({
   onError: (msg: string) => void;
   onChanged: () => void;
 }) {
+  // Which rule's graphics-troubleshooting panel is open (one at a time —
+  // the panel is tall, and comparing two prompts side by side isn't the
+  // job; comparing a prompt to ITS image is).
+  const [expandedGraphics, setExpandedGraphics] = useState<string | null>(null);
   if (rules.length === 0) {
     return (
       <section
@@ -415,14 +423,13 @@ function ActiveRulesTable({
         }}
       >
         {rules.map((r) => (
+          <div key={r.id} style={{ borderBottom: "1px solid var(--color-border)" }}>
           <div
-            key={r.id}
             style={{
               display: "flex",
               alignItems: "center",
               gap: 10,
               padding: "8px 12px",
-              borderBottom: "1px solid var(--color-border)",
               fontSize: 13,
             }}
           >
@@ -451,7 +458,15 @@ function ActiveRulesTable({
               {r.label}
             </span>
             {r.scope === "tournament" && <TierBadge tier={r.riskTier ?? null} />}
-            {r.graphics && <GraphicsChip state={r.graphics} />}
+            {r.graphics && (
+              <GraphicsChip
+                state={r.graphics}
+                expanded={expandedGraphics === r.id}
+                onToggle={() =>
+                  setExpandedGraphics((cur) => (cur === r.id ? null : r.id))
+                }
+              />
+            )}
             <RuleBadge rule={r} />
             <BoostControl
               scope={r.scope}
@@ -479,9 +494,176 @@ function ActiveRulesTable({
               Remove
             </button>
           </div>
+          {r.graphics && expandedGraphics === r.id && (
+            <GraphicsDetail ruleId={r.id} state={r.graphics} />
+          )}
+          </div>
         ))}
       </div>
     </section>
+  );
+}
+
+/**
+ * Expanded troubleshooting panel for one rule's banner graphic: the
+ * rendered image beside the exact prompt it came from, plus job state.
+ *
+ * Seeing the prompt AND its output together is the whole point — the
+ * Dota-rendered-as-soldiers bug was a prompt problem that was invisible
+ * from the backoffice (the prompt lived only in the operator PC's worker
+ * log). The prompt is selectable with a copy button so it can be pasted
+ * straight into ComfyUI to iterate by hand.
+ */
+function GraphicsDetail({
+  ruleId,
+  state,
+}: {
+  ruleId: string;
+  state: RuleGraphicsState;
+}) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    if (!state.lastPrompt) return;
+    try {
+      await navigator.clipboard.writeText(state.lastPrompt);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard blocked (non-HTTPS / permissions) — the text is
+      // selectable anyway, so this is a convenience, not the mechanism.
+    }
+  };
+  return (
+    <div
+      style={{
+        display: "flex",
+        gap: 12,
+        alignItems: "flex-start",
+        padding: "10px 12px 12px",
+        background: "var(--color-bg-subtle)",
+        borderTop: "1px solid var(--color-border)",
+      }}
+    >
+      {state.status === "done" && (
+        // Cache-busted per generation so a regenerate shows the NEW
+        // image instead of the browser's immutable-cached old one.
+        <img
+          src={`/api/catalog/zillaboost-banners/${ruleId}/image?v=${
+            state.generatedAt ? new Date(state.generatedAt).getTime() : 0
+          }`}
+          alt=""
+          style={{
+            width: 260,
+            aspectRatio: "3 / 1",
+            objectFit: "cover",
+            borderRadius: 6,
+            border: "1px solid var(--color-border)",
+            flexShrink: 0,
+            background: "var(--color-bg)",
+          }}
+        />
+      )}
+      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontSize: 11.5,
+            color: "var(--color-fg-muted)",
+          }}
+        >
+          <span>
+            {state.status === "done"
+              ? `Generated ${state.generatedAt ? new Date(state.generatedAt).toLocaleString() : "—"}`
+              : state.status === "failed"
+                ? `Failed after ${state.attempts} attempts`
+                : `Queued${state.attempts > 0 ? ` — ${state.attempts} failed attempts` : ""}`}
+          </span>
+          {state.lastPrompt && (
+            <button
+              type="button"
+              onClick={copy}
+              style={{
+                marginLeft: "auto",
+                fontSize: 11,
+                padding: "2px 8px",
+                borderRadius: 5,
+                border: "1px solid var(--color-border)",
+                background: "transparent",
+                color: "var(--color-fg)",
+                cursor: "pointer",
+              }}
+            >
+              {copied ? "Copied" : "Copy prompt"}
+            </button>
+          )}
+        </div>
+        {state.lastError && (
+          <div
+            style={{
+              fontSize: 11.5,
+              color: "#dc2626",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+            }}
+          >
+            {state.lastError}
+          </div>
+        )}
+        {state.lastRenderMeta && (
+          <div
+            className="mono"
+            style={{
+              fontSize: 10.5,
+              color: "var(--color-fg-muted)",
+              display: "flex",
+              flexWrap: "wrap",
+              gap: "2px 10px",
+            }}
+          >
+            {/* Seed + checkpoint are the reproducibility handle: with
+                these and the prompt the render can be repeated by hand
+                in ComfyUI. */}
+            {Object.entries(state.lastRenderMeta)
+              .filter(([k]) => k !== "negative")
+              .map(([k, v]) => (
+                <span key={k}>
+                  {k}=<span style={{ color: "var(--color-fg)" }}>{String(v)}</span>
+                </span>
+              ))}
+          </div>
+        )}
+        {state.lastPrompt ? (
+          <pre
+            style={{
+              margin: 0,
+              fontSize: 11.5,
+              lineHeight: 1.45,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+              fontFamily: "var(--font-mono, monospace)",
+              color: "var(--color-fg)",
+              background: "var(--color-bg)",
+              border: "1px solid var(--color-border)",
+              borderRadius: 6,
+              padding: "8px 10px",
+              maxHeight: 180,
+              overflowY: "auto",
+              userSelect: "text",
+            }}
+          >
+            {state.lastPrompt}
+          </pre>
+        ) : (
+          <span style={{ fontSize: 11.5, color: "var(--color-fg-muted)" }}>
+            No prompt recorded. Images generated before the prompt was
+            captured (migration 0090), or by a worker build that predates
+            it, have none — regenerate to capture one.
+          </span>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -1433,7 +1615,16 @@ function RuleBadge({
 }) {
   const expired =
     rule.endsAt !== null && new Date(rule.endsAt).getTime() <= Date.now();
+  // Scheduled but not live yet (migration 0092) — the storefront shows
+  // nothing for it, so the badge must not read as an active boost.
+  const scheduled =
+    !expired &&
+    rule.startsAt !== null &&
+    new Date(rule.startsAt).getTime() > Date.now();
   const bits = [`+${rule.boostPct}%`];
+  if (scheduled) {
+    bits.push(`from ${new Date(rule.startsAt!).toLocaleString()}`);
+  }
   if (rule.endsAt) {
     bits.push(
       expired ? "ended" : `until ${new Date(rule.endsAt).toLocaleString()}`,
@@ -1453,12 +1644,12 @@ function RuleBadge({
         flexShrink: 0,
         background: expired
           ? "color-mix(in oklab, #dc2626 12%, transparent)"
-          : muted
+          : scheduled || muted
             ? "var(--color-bg-subtle)"
             : `color-mix(in oklab, ${GREEN} 14%, transparent)`,
         color: expired
           ? "#dc2626"
-          : muted
+          : scheduled || muted
             ? "var(--color-fg-muted)"
             : "#15803d",
         whiteSpace: "nowrap",
@@ -1466,7 +1657,9 @@ function RuleBadge({
       title={
         muted
           ? `${text} — overridden by this market's boosted selections`
-          : text
+          : scheduled
+            ? `${text} — scheduled, not live yet: no boosted prices and no banner until it starts`
+            : text
       }
     >
       {text}
@@ -1561,7 +1754,15 @@ function ImageWorkerStrip({ status }: { status: ImageWorkerStatus }) {
 // Graphics-banner job state on an active-rules row. Pending is the
 // normal long-lived state while the operator PC is off — the queue is
 // pull-based, so "queued" can legitimately mean hours.
-function GraphicsChip({ state }: { state: RuleGraphicsState }) {
+function GraphicsChip({
+  state,
+  expanded,
+  onToggle,
+}: {
+  state: RuleGraphicsState;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
   const palette =
     state.status === "done"
       ? { label: "img ready", color: "#15803d", border: "#16a34a" }
@@ -1569,17 +1770,17 @@ function GraphicsChip({ state }: { state: RuleGraphicsState }) {
         ? { label: "img failed", color: "#dc2626", border: "#dc2626" }
         : { label: "img queued", color: "var(--color-fg-muted)", border: "var(--color-border)" };
   return (
-    <span
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={expanded}
       className="mono"
-      title={
-        state.status === "failed"
-          ? `Generation failed after ${state.attempts} attempts: ${state.lastError ?? "unknown error"}. Untick + re-tick the graphics option to retry.`
-          : state.status === "done"
-            ? `Generated ${state.generatedAt ? new Date(state.generatedAt).toLocaleString() : ""}${state.lastPrompt ? `\n\nPrompt:\n${state.lastPrompt}` : ""}`
-            : `Waiting for the image worker${state.attempts > 0 ? ` (${state.attempts} failed attempts so far${state.lastError ? `; last: ${state.lastError}` : ""})` : ""} — jobs are processed when the operator PC is online.`
-      }
+      title="Show the image + the prompt it was generated from"
       style={{
         flexShrink: 0,
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
         fontSize: 9.5,
         fontWeight: 700,
         letterSpacing: "0.04em",
@@ -1589,25 +1790,39 @@ function GraphicsChip({ state }: { state: RuleGraphicsState }) {
         borderRadius: 999,
         border: `1px solid ${palette.border}`,
         color: palette.color,
+        background: expanded ? "var(--color-bg-subtle)" : "transparent",
+        cursor: "pointer",
+        fontFamily: "inherit",
       }}
     >
       {palette.label}
-    </span>
+      <span aria-hidden style={{ fontSize: 8 }}>{expanded ? "▾" : "▸"}</span>
+    </button>
   );
 }
 
 function MiniRuleDot({ rule }: { rule: RuleDto }) {
   const expired =
     rule.endsAt !== null && new Date(rule.endsAt).getTime() <= Date.now();
+  // Hollow/grey dot for a scheduled-but-not-live rule so the rail
+  // doesn't claim a boost the storefront isn't showing yet.
+  const scheduled =
+    !expired &&
+    rule.startsAt !== null &&
+    new Date(rule.startsAt).getTime() > Date.now();
   return (
     <span
-      title={`+${rule.boostPct}%${rule.endsAt ? ` until ${new Date(rule.endsAt).toLocaleString()}` : ""}${rule.minRiskScore != null ? ` · RS ≥ ${rule.minRiskScore}` : ""}`}
+      title={`+${rule.boostPct}%${scheduled ? ` — scheduled from ${new Date(rule.startsAt!).toLocaleString()}` : ""}${rule.endsAt ? ` until ${new Date(rule.endsAt).toLocaleString()}` : ""}${rule.minRiskScore != null ? ` · RS ≥ ${rule.minRiskScore}` : ""}`}
       style={{
         width: 7,
         height: 7,
         borderRadius: 999,
         flexShrink: 0,
-        background: expired ? "#dc2626" : GREEN,
+        background: expired
+          ? "#dc2626"
+          : scheduled
+            ? "var(--color-fg-muted)"
+            : GREEN,
       }}
     />
   );
@@ -1741,6 +1956,15 @@ function BoostModal({
   const [minRs, setMinRs] = useState(
     rule?.minRiskScore != null ? String(rule.minRiskScore) : "",
   );
+  // Scheduling: "now" = live on save, "at" = activate at a chosen time.
+  // datetime-local wants "YYYY-MM-DDTHH:mm" in LOCAL time, so an
+  // existing ISO start is converted through the local-offset shift.
+  const [startMode, setStartMode] = useState<"now" | "at">(
+    rule?.startsAt ? "at" : "now",
+  );
+  const [startsAt, setStartsAt] = useState(() =>
+    rule?.startsAt ? toLocalInputValue(rule.startsAt) : "",
+  );
   const [banner, setBanner] = useState(rule?.banner ?? false);
   const [graphics, setGraphics] = useState(rule?.graphicsBanner ?? false);
   const [busy, setBusy] = useState(false);
@@ -1793,6 +2017,33 @@ function BoostModal({
       }
       endsIso = d.toISOString();
     }
+    // Scheduled start. Note a "Duration" end is measured from SAVE time,
+    // not from the scheduled start — so a scheduled boost with a
+    // duration end would begin already-expired. Reject that combination
+    // rather than silently producing a dead rule.
+    let startsIso: string | null = null;
+    if (startMode === "at") {
+      if (startsAt.trim() === "") {
+        onError("Pick a start time, or switch to Immediately.");
+        return;
+      }
+      const d = new Date(startsAt);
+      if (Number.isNaN(d.getTime())) {
+        onError("Start time is not a valid date.");
+        return;
+      }
+      startsIso = d.toISOString();
+      if (endMode === "duration") {
+        onError(
+          "A duration end is measured from now, so it can't be combined with a scheduled start. Use an exact end time.",
+        );
+        return;
+      }
+      if (endsIso && new Date(endsIso).getTime() <= d.getTime()) {
+        onError("End time must be after the start time.");
+        return;
+      }
+    }
     let minRsNum: number | null = null;
     if (minRs.trim() !== "") {
       minRsNum = Number.parseFloat(minRs);
@@ -1813,6 +2064,7 @@ function BoostModal({
               ? { outcomeId: target.outcomeId }
               : null),
             boostPct: pctNum,
+            startsAt: startsIso,
             endsAt: endsIso,
             minRiskScore: minRsNum,
             // Ticking the graphics option implies the banner itself —
@@ -1925,6 +2177,55 @@ function BoostModal({
             )}
           </span>
         </label>
+
+        <div style={fieldStyle}>
+          <span style={labelStyle}>Starts</span>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {(
+              [
+                ["now", "Immediately"],
+                ["at", "Schedule"],
+              ] as const
+            ).map(([mode, label]) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => setStartMode(mode)}
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  padding: "4px 12px",
+                  borderRadius: 999,
+                  border: `1px solid ${startMode === mode ? "var(--color-fg)" : "var(--color-border)"}`,
+                  background:
+                    startMode === mode ? "var(--color-bg-subtle)" : "transparent",
+                  color: "var(--color-fg)",
+                  cursor: "pointer",
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {startMode === "at" ? (
+            <>
+              <input
+                type="datetime-local"
+                value={startsAt}
+                onChange={(e) => setStartsAt(e.currentTarget.value)}
+                style={inputStyle}
+              />
+              <span style={hintStyle}>
+                The boost is saved now but stays invisible and unbettable
+                until this time — no boosted prices, no promo banner. A
+                graphics banner still generates in advance, so the artwork
+                is ready when it goes live.
+              </span>
+            </>
+          ) : (
+            <span style={hintStyle}>Boost goes live as soon as you save.</span>
+          )}
+        </div>
 
         <div style={fieldStyle}>
           <span style={labelStyle}>Ends</span>

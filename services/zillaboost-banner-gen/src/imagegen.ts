@@ -133,11 +133,24 @@ interface HistoryImage {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Render one banner. Returns PNG bytes as base64. */
+/** Render params echoed back to the api for backoffice troubleshooting. */
+export interface RenderMeta {
+  checkpoint: string;
+  latentClass: string;
+  cfgScale: number;
+  steps: number;
+  sampler: string;
+  width: number;
+  height: number;
+  seed: number;
+  negative: string;
+}
+
+/** Render one banner. Returns PNG bytes as base64 + the params used. */
 export async function generateImage(
   cfg: WorkerConfig,
   prompt: string,
-): Promise<{ imageBase64: string; mime: "image/png" }> {
+): Promise<{ imageBase64: string; mime: "image/png"; meta: RenderMeta }> {
   const checkpoint = await resolveCheckpoint(cfg);
   const isFlux = /flux/i.test(checkpoint);
   // FLUX ignores the negative branch and needs cfg 1.0, and the
@@ -152,13 +165,26 @@ export async function generateImage(
   const steps =
     process.env.IMAGE_STEPS?.trim() ? cfg.imageSteps : isFlux ? 20 : cfg.imageSteps;
   const seed = randomBytes(4).readUInt32BE(0);
+  const latentClass = isFlux ? "EmptyLatentImage" : "EmptySD3LatentImage";
+  const negative = cfg.imageNegativeExtra
+    ? `${NEGATIVE_BASE}, ${cfg.imageNegativeExtra}`
+    : NEGATIVE_BASE;
+  const meta: RenderMeta = {
+    checkpoint,
+    latentClass,
+    cfgScale,
+    steps,
+    sampler: cfg.imageSampler,
+    width: cfg.imageWidth,
+    height: cfg.imageHeight,
+    seed,
+    negative,
+  };
   const workflow = buildWorkflow({
     checkpoint,
-    latentClass: isFlux ? "EmptyLatentImage" : "EmptySD3LatentImage",
+    latentClass,
     prompt,
-    negative: cfg.imageNegativeExtra
-      ? `${NEGATIVE_BASE}, ${cfg.imageNegativeExtra}`
-      : NEGATIVE_BASE,
+    negative,
     width: cfg.imageWidth,
     height: cfg.imageHeight,
     steps,
@@ -220,5 +246,5 @@ export async function generateImage(
   if (!view.ok) throw new Error(`comfyui /view HTTP ${view.status}`);
   const bytes = Buffer.from(await view.arrayBuffer());
   if (bytes.length === 0) throw new Error("comfyui returned an empty image");
-  return { imageBase64: bytes.toString("base64"), mime: "image/png" };
+  return { imageBase64: bytes.toString("base64"), mime: "image/png", meta };
 }

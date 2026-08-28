@@ -39,21 +39,24 @@ async function processJob(
     { ruleId: job.ruleId, scope: job.scope, context: job.context },
     "job start",
   );
+  // Hoisted so the catch can report the prompt that failed — a failed
+  // render's prompt is the most useful thing the backoffice can show.
+  let prompt: string | undefined;
   try {
     const notes = await researchEntities(cfg, entitiesOf(job));
-    const prompt = await authorPrompt(cfg, job, notes);
+    prompt = await authorPrompt(cfg, job, notes);
     log.info({ ruleId: job.ruleId, prompt }, "prompt authored");
-    const { imageBase64, mime } = await generateImage(cfg, prompt);
-    await api.complete(job.ruleId, imageBase64, mime, prompt);
+    const { imageBase64, mime, meta } = await generateImage(cfg, prompt);
+    await api.complete(job.ruleId, imageBase64, mime, prompt, { ...meta });
     log.info(
-      { ruleId: job.ruleId, ms: Date.now() - started },
+      { ruleId: job.ruleId, ms: Date.now() - started, seed: meta.seed },
       "job complete — image uploaded",
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error({ ruleId: job.ruleId, err }, "job failed");
     try {
-      await api.fail(job.ruleId, message);
+      await api.fail(job.ruleId, message, prompt);
     } catch (reportErr) {
       // Even the failure report failed (API blip mid-job). The claim
       // lease expires server-side and the job re-offers itself — safe

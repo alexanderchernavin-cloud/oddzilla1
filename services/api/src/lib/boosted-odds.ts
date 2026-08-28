@@ -15,7 +15,7 @@
 //     leg's rule + recomputes the authoritative boosted price before
 //     the placement debits stake.
 
-import { and, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import {
   boostedOddsConfig,
@@ -47,6 +47,7 @@ export interface BoostRule {
   /** scope='outcome' only — the boosted cell within `marketId`. */
   outcomeId: string | null;
   boostPct: number;
+  startsAt: Date | null;
   endsAt: Date | null;
   minRiskScore: number | null;
 }
@@ -58,6 +59,35 @@ export function toQuoteRule(rule: BoostRule): BoostQuoteRule {
     boostPct: rule.boostPct,
     endsAt: rule.endsAt?.toISOString() ?? null,
   };
+}
+
+/**
+ * SQL predicate for "this rule is live right now" — inside its
+ * scheduling window (migration 0092).
+ *
+ * Shared by every reader on purpose. A reader that checked only
+ * `ends_at` would price, display, and PAY OUT a boost the operator
+ * scheduled for a future date, so the two halves must never be written
+ * out by hand at a call site again.
+ */
+export function boostWindowIsOpen() {
+  return and(
+    or(
+      isNull(boostedOddsConfig.startsAt),
+      lte(boostedOddsConfig.startsAt, sql`now()`),
+    ),
+    or(isNull(boostedOddsConfig.endsAt), gt(boostedOddsConfig.endsAt, sql`now()`)),
+  );
+}
+
+/** In-memory twin of boostWindowIsOpen, for an already-loaded rule. */
+export function ruleWindowIsOpen(
+  rule: Pick<BoostRule, "startsAt" | "endsAt">,
+  nowMs = Date.now(),
+): boolean {
+  if (rule.startsAt !== null && rule.startsAt.getTime() > nowMs) return false;
+  if (rule.endsAt !== null && rule.endsAt.getTime() <= nowMs) return false;
+  return true;
 }
 
 export interface MatchBoostContext {
@@ -81,6 +111,7 @@ function rowToRule(
     marketId: r.marketId,
     outcomeId: r.outcomeId,
     boostPct: Number(r.boostPct),
+    startsAt: r.startsAt,
     endsAt: r.endsAt,
     minRiskScore: r.minRiskScore !== null ? Number(r.minRiskScore) : null,
   };
@@ -105,7 +136,7 @@ export async function loadBoostRulesForMatch(
     .from(boostedOddsConfig)
     .where(
       and(
-        or(isNull(boostedOddsConfig.endsAt), gt(boostedOddsConfig.endsAt, sql`now()`)),
+        boostWindowIsOpen(),
         or(
           and(
             eq(boostedOddsConfig.scope, "sport"),
@@ -203,7 +234,7 @@ export async function loadBoostRulesForMatches(
     .from(boostedOddsConfig)
     .where(
       and(
-        or(isNull(boostedOddsConfig.endsAt), gt(boostedOddsConfig.endsAt, sql`now()`)),
+        boostWindowIsOpen(),
         or(
           and(
             eq(boostedOddsConfig.scope, "sport"),
@@ -446,7 +477,7 @@ export async function loadSelectionBoostedMarketIds(
       and(
         eq(boostedOddsConfig.scope, "outcome"),
         inArray(boostedOddsConfig.marketId, [...marketIds]),
-        or(isNull(boostedOddsConfig.endsAt), gt(boostedOddsConfig.endsAt, sql`now()`)),
+        boostWindowIsOpen(),
       ),
     );
   const out = new Set<string>();
@@ -476,7 +507,7 @@ async function loadSelectionRules(
       and(
         eq(boostedOddsConfig.scope, "outcome"),
         eq(boostedOddsConfig.marketId, marketId),
-        or(isNull(boostedOddsConfig.endsAt), gt(boostedOddsConfig.endsAt, sql`now()`)),
+        boostWindowIsOpen(),
       ),
     );
   const out = new Map<string, BoostRule>();
@@ -518,8 +549,16 @@ export async function validateCustomBoostForBet(
     .limit(1);
   if (!row) return { ok: false, reason: "boosted_odds_unknown_rule" };
   const rule = rowToRule(row);
-  if (rule.endsAt !== null && rule.endsAt.getTime() <= Date.now()) {
-    return { ok: false, reason: "boosted_odds_rule_expired" };
+  // Outside its scheduling window: expired, or scheduled for later and
+  // not live yet (migration 0092). Either way it must not price a bet.
+  if (!ruleWindowIsOpen(rule)) {
+    return {
+      ok: false,
+      reason:
+        rule.startsAt !== null && rule.startsAt.getTime() > Date.now()
+          ? "boosted_odds_not_started"
+          : "boosted_odds_rule_expired",
+    };
   }
   if (!passesRiskGate(rule, args.riskScore)) {
     return { ok: false, reason: "boosted_odds_not_eligible" };
