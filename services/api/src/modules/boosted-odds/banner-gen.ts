@@ -25,6 +25,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { and, eq, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { loadEnv } from "@oddzilla/config";
 import {
   boostedOddsConfig,
@@ -55,6 +56,10 @@ import {
  * flicker the dot, while a powered-off PC still reads offline within
  * a couple of minutes.
  */
+// Both sides of a match join `competitors` for their brand colour.
+const homeCompetitor = alias(competitors, "home_competitor");
+const awayCompetitor = alias(competitors, "away_competitor");
+
 export const BANNER_GEN_ONLINE_KEY = "bannergen:worker:online";
 const ONLINE_TTL_SECONDS = 90;
 
@@ -81,6 +86,10 @@ const completeBody = z.object({
     .min(1)
     .max(Math.ceil((BANNER_GEN_MAX_IMAGE_BYTES * 4) / 3) + 4),
   mime: z.enum(BANNER_GEN_ALLOWED_MIMES),
+  // The diffusion prompt this render came from (migration 0090), stored
+  // so the backoffice can see WHY an image looks the way it does.
+  // Optional: an older worker build that doesn't send it still completes.
+  prompt: z.string().trim().max(4000).optional(),
 });
 
 const failBody = z.object({
@@ -107,9 +116,13 @@ async function buildJobContext(
     sportName: null,
     sportSlug: null,
     tournamentName: null,
+    tournamentBrandColor: null,
     homeTeam: null,
+    homeBrandColor: null,
     awayTeam: null,
+    awayBrandColor: null,
     competitorName: null,
+    competitorBrandColor: null,
   };
   switch (rule.scope) {
     case "sport": {
@@ -124,6 +137,7 @@ async function buildJobContext(
       const [t] = await app.db
         .select({
           name: tournaments.name,
+          brandColor: tournaments.brandColor,
           sportName: sports.name,
           sportSlug: sports.slug,
         })
@@ -136,6 +150,7 @@ async function buildJobContext(
         ? {
             ...empty,
             tournamentName: t.name,
+            tournamentBrandColor: t.brandColor,
             sportName: t.sportName,
             sportSlug: t.sportSlug,
           }
@@ -145,6 +160,7 @@ async function buildJobContext(
       const [c] = await app.db
         .select({
           name: competitors.name,
+          brandColor: competitors.brandColor,
           sportName: sports.name,
           sportSlug: sports.slug,
         })
@@ -156,6 +172,7 @@ async function buildJobContext(
         ? {
             ...empty,
             competitorName: c.name,
+            competitorBrandColor: c.brandColor,
             sportName: c.sportName,
             sportSlug: c.sportSlug,
           }
@@ -175,7 +192,10 @@ async function buildJobContext(
         .select({
           homeTeam: matches.homeTeam,
           awayTeam: matches.awayTeam,
+          homeBrandColor: homeCompetitor.brandColor,
+          awayBrandColor: awayCompetitor.brandColor,
           tournamentName: tournaments.name,
+          tournamentBrandColor: tournaments.brandColor,
           sportName: sports.name,
           sportSlug: sports.slug,
         })
@@ -183,16 +203,21 @@ async function buildJobContext(
         .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
         .innerJoin(categories, eq(categories.id, tournaments.categoryId))
         .innerJoin(sports, eq(sports.id, categories.sportId))
+        .leftJoin(homeCompetitor, eq(homeCompetitor.id, matches.homeCompetitorId))
+        .leftJoin(awayCompetitor, eq(awayCompetitor.id, matches.awayCompetitorId))
         .where(matchIdExpr)
         .limit(1);
       return m
         ? {
+            ...empty,
             sportName: m.sportName,
             sportSlug: m.sportSlug,
             tournamentName: m.tournamentName,
+            tournamentBrandColor: m.tournamentBrandColor,
             homeTeam: m.homeTeam,
+            homeBrandColor: m.homeBrandColor,
             awayTeam: m.awayTeam,
-            competitorName: null,
+            awayBrandColor: m.awayBrandColor,
           }
         : empty;
     }
@@ -315,6 +340,7 @@ export default async function bannerGenRoutes(app: FastifyInstance) {
           status: "done",
           imageData: bytes,
           imageMime: body.mime,
+          lastPrompt: body.prompt ?? null,
           generatedAt: new Date(),
           leasedUntil: null,
           lastError: null,

@@ -165,6 +165,10 @@ export const zillaboostBannerImageJobs = pgTable(
       .defaultNow(),
     imageData: bytea("image_data"),
     imageMime: text("image_mime"),
+    // The diffusion prompt this image was rendered from (migration
+    // 0090) — image quality is iterated by changing prompts, so the
+    // backoffice needs to see what was actually asked for.
+    lastPrompt: text("last_prompt"),
     generatedAt: timestamp("generated_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

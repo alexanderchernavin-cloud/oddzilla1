@@ -191,7 +191,17 @@ function BannerArtBackdrop({
   );
 }
 
-/** Top image strip for the card-shaped (match / market) banners. */
+/**
+ * Top image strip for the card-shaped (match / market) banners. Bleeds
+ * to the card edges by cancelling the card's 10px/12px padding with
+ * negative margins.
+ *
+ * `flexShrink: 0` is load-bearing: the card is a column flex container,
+ * so this img is a flex item, and a flex item whose width exceeds the
+ * line (100% + 24px does, by design) gets SHRUNK back by the default
+ * flex-shrink: 1 — while the -12px left margin still applies. Result
+ * was an image visibly shifted left with a gap down the right edge.
+ */
 function BannerArtStrip({ url, onFail }: { url: string; onFail: () => void }) {
   return (
     <img
@@ -200,9 +210,11 @@ function BannerArtStrip({ url, onFail }: { url: string; onFail: () => void }) {
       onError={onFail}
       style={{
         width: "calc(100% + 24px)",
+        flexShrink: 0,
         margin: "-10px -12px 0",
         aspectRatio: "3 / 1",
         objectFit: "cover",
+        objectPosition: "center",
         borderRadius: "var(--r-md) var(--r-md) 0 0",
         display: "block",
       }}

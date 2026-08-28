@@ -44,7 +44,7 @@ async function processJob(
     const prompt = await authorPrompt(cfg, job, notes);
     log.info({ ruleId: job.ruleId, prompt }, "prompt authored");
     const { imageBase64, mime } = await generateImage(cfg, prompt);
-    await api.complete(job.ruleId, imageBase64, mime);
+    await api.complete(job.ruleId, imageBase64, mime, prompt);
     log.info(
       { ruleId: job.ruleId, ms: Date.now() - started },
       "job complete — image uploaded",
