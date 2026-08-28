@@ -63,6 +63,8 @@ Each service has its own local README:
 - [services/settlement](services/settlement/README.md)
 - [services/bet-delay](services/bet-delay/README.md)
 - [services/wallet-watcher](services/wallet-watcher/README.md)
+- [services/support-ai-bot](services/support-ai-bot/README.md) — operator-PC worker (local LLM), not in the docker stack
+- [services/zillaboost-banner-gen](services/zillaboost-banner-gen/README.md) — operator-PC worker (local image models), not in the docker stack
 - [apps/web](apps/web/README.md)
 - [packages/db](packages/db/README.md)
 - [packages/types](packages/types/README.md)

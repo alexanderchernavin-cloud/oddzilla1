@@ -30,10 +30,40 @@ worker (this PC) ──outbound HTTPS──> https://oddzilla.cc/api/webhooks/ba
 3. Per job: research the boosted entities on Wikipedia (keyless Action
    API) → author a diffusion prompt on LM Studio
    (`/v1/chat/completions`) → render on ComfyUI (POST `/prompt` with a
-   minimal txt2img graph, poll `/history`, fetch via `/view`) → upload
-   via `POST .../jobs/:ruleId/complete` (base64 PNG, 4 MB cap).
+   fixed txt2img graph, poll `/history`, fetch via `/view`) → upload via
+   `POST .../jobs/:ruleId/complete` (base64 PNG, 4 MB cap) together with
+   the prompt and render params.
 4. The storefront's banner endpoint starts serving the image on its
    next poll; banners upgrade in place.
+
+Also `POST /heartbeat` every 30 s on its own timer (fire-and-forget, so
+it keeps beating through multi-minute renders) — drives the "Image worker
+online" dot and queue counts on `/admin/boosted-odds`.
+
+## Prompt quality
+
+The prompt is where image quality lives, and two things make it work:
+
+- **[`game-vocab.ts`](src/game-vocab.ts) supplies each game's look as
+  ground truth**, keyed by sport slug. The local LLM does NOT reliably
+  know what these titles look like — left to its own knowledge it
+  rendered a DOTA 2 match as tactical-shooter soldiers holding melee
+  weapons (2026-08-28), because the "esports arena + soldiers" attractor
+  swallows everything. The system prompt now forbids genre substitution
+  outright. Adding a sport means adding an entry here, not hoping.
+- **Team identity comes from `brand_color`**, carried on the job
+  context. The prompt demands a versus composition built from the two
+  teams' actual hex colours. Teams with no colour set produce generic
+  art — fix that at `/admin/competitors`, not in the prompt.
+
+Diffusion cannot render logos or readable text, so "make it about the
+teams" means colours, region and game world. The storefront card renders
+the real names and logos beneath the image.
+
+Every render's prompt + params (checkpoint, cfg, steps, sampler, size,
+**seed**, negative) are stored server-side and shown by expanding the
+`img` chip in the admin overview. `seed` + `checkpoint` + prompt
+reproduce a render by hand in ComfyUI.
 
 ## Availability semantics
 
@@ -59,9 +89,17 @@ pnpm install
 pnpm start
 ```
 
+Run it under Task Scheduler ("At log on" / "At startup") so booting the
+PC IS the retry.
+
 Server side: set the SAME `BANNER_GEN_TOKEN` in `/home/team/oddzilla/.env`
 (`openssl rand -hex 24`) and `make recreate api`. Until then the webhook
 routes 503 `banner_gen_disabled` — jobs still enqueue and wait.
+
+Two server-side limits must both be in place or a successful render
+still 413s on upload: the `/complete` route's own `bodyLimit` (8 MiB —
+the 4 MiB decoded cap is ~5.6 MiB as base64) and Caddy's
+`@banner_gen_uploads` carve-out above its 1 MiB default.
 
 The image backend is ComfyUI on loopback (`127.0.0.1:8188` — do NOT
 launch it with `--listen`). Keep `IMAGE_MODEL` pinned to FLUX on the

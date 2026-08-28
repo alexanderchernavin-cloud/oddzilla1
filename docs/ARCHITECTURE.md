@@ -108,6 +108,14 @@ Deep dive on how Oddzilla's services fit together. For quick reference see
        │
 ```
 
+Not shown above because they are **not in the stack**: two workers run
+on an operator PC beside the local models and dial OUT only —
+`support-ai-bot` (support chat, LM Studio) and `zillaboost-banner-gen`
+(ZillaBoost banner art, LM Studio + ComfyUI). Both poll
+`api /webhooks/<name>/<secret>/…` over outbound HTTPS and reach their
+models on `127.0.0.1`; the production box never connects inward. See
+**Security boundaries** below for why that direction is mandatory.
+
 (news-scraper was scoped for Phase 8 but cancelled mid-phase; the
 service and `news_articles` table were removed via migration 0003.)
 
@@ -537,6 +545,30 @@ deployment. The `bus` adapter was designed exactly for this day.
   moves into a dedicated signer container with a minimal signing API
   (documented as a Phase 7 exit criterion in
   [`PHASES.md`](./PHASES.md)).
+- **Local-model workers are pull-only, and that IS the boundary.**
+  [`support-ai-bot`](../services/support-ai-bot/) (LLM) and
+  [`zillaboost-banner-gen`](../services/zillaboost-banner-gen/) (image
+  generation) run on an operator PC, NOT in the stack. They poll
+  `/webhooks/<name>/<secret>/…` over outbound HTTPS; the production box
+  never connects to them or to the model servers. Their auth is a
+  path-segment secret, constant-time compared, 404 on miss, and
+  CSRF-exempt because they are server-to-server.
+
+  This shape is a security control, not a convenience. ComfyUI (port
+  8188) has no authentication, executes workflow graphs as the
+  Administrator account running it, and with `--enable-manager` installs
+  custom nodes from arbitrary git URLs — so a reachable 8188 is remote
+  code execution as admin on the operator's home machine, and both model
+  servers share one GPU, making an unauthenticated queue a trivial DoS.
+  Both must stay bound to `127.0.0.1`.
+
+  A server-side container reaching the model PC over tailscale existed
+  for a few hours on 2026-08-28 and was reverted the same day; tailscale
+  was purged from the box. The chain it would have created —
+  compromise any internet-facing sportsbook process → reach 8188 → admin
+  on a home machine — is not worth "make me an image from this text",
+  which the pull queue already delivers. **Do not reintroduce a network
+  path from the sportsbook to the model PC.**
 
 ## Observability
 
