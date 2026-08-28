@@ -18,6 +18,28 @@ import type { SlipSelection } from "@oddzilla/types";
 // packages/types/src/odds.ts.
 import { formatOddsDisplay, isBettableOdds } from "@oddzilla/types/odds";
 
+/**
+ * One inline match-winner price on a list card.
+ *
+ * `price` is ALREADY the boosted value when `boost` is set — the list
+ * endpoints apply ZillaBoost server-side (the match page recomputes it
+ * client-side per WS tick, but a card has no per-outcome subscription).
+ * `boost.originalPrice` is the pre-boost figure for the struck-through
+ * display, and `boost.ruleId` must ride into the slip so placement
+ * prices the leg at the boosted number rather than the raw one.
+ */
+export interface ListMatchOutcome {
+  outcomeId: string;
+  price: string | null;
+  probability?: string | null;
+  boost?: {
+    ruleId: string;
+    boostPct: number;
+    endsAt: string | null;
+    originalPrice: string;
+  } | null;
+}
+
 export interface ListMatch {
   id: string;
   homeTeam: string;
@@ -31,11 +53,22 @@ export interface ListMatch {
   tournament: { id: number; name: string; riskTier?: number | null };
   matchWinner: {
     marketId: string;
-    home: { outcomeId: string; price: string | null; probability?: string | null };
-    away: { outcomeId: string; price: string | null; probability?: string | null };
+    home: ListMatchOutcome;
+    away: ListMatchOutcome;
     // Set when the underlying market is 3-way (BO2 esports, 1X2 sports).
     // The card grows a "Draw" row between home and away when present.
-    draw?: { outcomeId: string; price: string | null; probability?: string | null } | null;
+    draw?: ListMatchOutcome | null;
+    /**
+     * Resolved ZillaBoost inputs for this market, so the live merge can
+     * re-price the row from WS ticks instead of reverting to raw odds.
+     * Present whenever a rule COVERS the market, even if it currently
+     * prices to no visible change — a tick can make it materialise.
+     */
+    boostRule?: { ruleId: string; boostPct: number; endsAt: string | null } | null;
+    boostSelections?: Record<
+      string,
+      { ruleId: string; boostPct: number; endsAt: string | null }
+    > | null;
   } | null;
 }
 
@@ -106,6 +139,12 @@ export const MatchRow = memo(function MatchRow({
       // reaching this code path means the outcome was bettable when the
       // user clicked. The slip rail re-derives active from later ticks.
       active: true,
+      // Carry the ZillaBoost rule so placement prices this leg at the
+      // boosted number shown on the card. Without it POST /bets would
+      // fall back to the raw published price — and since a typical
+      // boost sits inside the 5% drift tolerance, the bet would be
+      // silently ACCEPTED at the lower raw price rather than rejected.
+      customBoostRuleId: o.boost?.ruleId,
     };
     if (slip.has(selection.marketId, selection.outcomeId)) {
       slip.remove(selection.marketId, selection.outcomeId);
@@ -140,12 +179,23 @@ export const MatchRow = memo(function MatchRow({
     : null;
   const hasDraw = !!match.matchWinner?.draw;
 
+  // ZillaBoost, priced server-side for list cards (the match page
+  // recomputes client-side per WS tick, but a card has no per-outcome
+  // subscription). `price` above is ALREADY the boosted value when a
+  // boost applies; these carry the pre-boost original for the struck
+  // -through figure, mirroring the match page's boosted cells.
+  const homeOriginal = match.matchWinner?.home.boost?.originalPrice ?? null;
+  const awayOriginal = match.matchWinner?.away.boost?.originalPrice ?? null;
+  const drawOriginal = match.matchWinner?.draw?.boost?.originalPrice ?? null;
+
   const homeOdds = (
     <RowOddBtn
       label="1"
       price={homePrice}
       selected={homePicked}
       locked={!homePrice}
+      boosted={!!match.matchWinner?.home.boost}
+      originalPrice={homeOriginal ? Number(homeOriginal) : null}
       onClick={(e) => handlePick("home", e)}
     />
   );
@@ -155,6 +205,8 @@ export const MatchRow = memo(function MatchRow({
       price={awayPrice}
       selected={awayPicked}
       locked={!awayPrice}
+      boosted={!!match.matchWinner?.away.boost}
+      originalPrice={awayOriginal ? Number(awayOriginal) : null}
       onClick={(e) => handlePick("away", e)}
     />
   );
@@ -167,6 +219,8 @@ export const MatchRow = memo(function MatchRow({
       // independent of home/away so a suspended draw doesn't pretend
       // the whole market is unavailable.
       locked={!drawPrice}
+      boosted={!!match.matchWinner?.draw?.boost}
+      originalPrice={drawOriginal ? Number(drawOriginal) : null}
       onClick={(e) => handlePick("draw", e)}
       // Keep the "X" visible on mobile — without a team name on its
       // row, the label is the only cue this is the draw outcome.
@@ -702,6 +756,8 @@ function RowOddBtn({
   locked: lockedProp,
   onClick,
   keepLabelOnMobile = false,
+  boosted = false,
+  originalPrice = null,
 }: {
   label: string;
   price: number | null;
@@ -714,6 +770,10 @@ function RowOddBtn({
   // team name on the left to identify the outcome — the label is the
   // only cue that this is the draw.
   keepLabelOnMobile?: boolean;
+  /** ZillaBoost applies to this cell — green tint + struck original. */
+  boosted?: boolean;
+  /** Pre-boost price, shown struck through beside the boosted one. */
+  originalPrice?: number | null;
 }) {
   // A price at or below 1.00 can't return a profit, so the cell is
   // shown but not offered — greyed with an em dash, same as a suspended
@@ -721,6 +781,17 @@ function RowOddBtn({
   // bettable and unaffected. Mirrors OddButton and the `authNum <= 1`
   // reject in POST /bets.
   const locked = lockedProp || (price != null && !isBettableOdds(price));
+  // Boost styling yields to both selection and lock, exactly as
+  // OddButton does: a picked cell must keep the accent affordance, and
+  // a suspended one must not masquerade as a great price.
+  const showBoost = boosted && !selected && !locked;
+  // Compared at display precision — a boost that moves 1.003 -> 1.004 is
+  // visible now that both render at 4dp.
+  const showStrike =
+    showBoost &&
+    price != null &&
+    originalPrice != null &&
+    formatOddsDisplay(originalPrice) !== formatOddsDisplay(price);
   // Same green/red flash as OddButton. Skipped while locked so an
   // inactive→active transition doesn't flash on resume.
   const flashRef = useRef<HTMLButtonElement | null>(null);
@@ -733,10 +804,18 @@ function RowOddBtn({
     width: "100%",
     height: 30,
     padding: "0 9px",
-    background: selected ? "var(--accent)" : "var(--surface-2)",
+    background: selected
+      ? "var(--accent)"
+      : showBoost
+        ? "color-mix(in oklab, var(--positive, #16a34a) 12%, var(--surface-2))"
+        : "var(--surface-2)",
     color: selected ? "var(--accent-fg)" : "var(--fg)",
     border: "1px solid",
-    borderColor: selected ? "var(--accent)" : "var(--border)",
+    borderColor: selected
+      ? "var(--accent)"
+      : showBoost
+        ? "var(--positive, #16a34a)"
+        : "var(--border)",
     borderRadius: 8,
     cursor: locked ? "not-allowed" : "pointer",
     fontFamily: "inherit",
@@ -771,6 +850,25 @@ function RowOddBtn({
       >
         {label}
       </span>
+      {showStrike && (
+        <span
+          className="mono tnum"
+          style={{
+            fontSize: 10,
+            color: "var(--fg-muted)",
+            textDecoration: "line-through",
+            letterSpacing: "-0.01em",
+            // The row cell is only 30px tall and already carries a
+            // label; let the struck original be the first thing to go
+            // when the track is tight rather than squeezing the price.
+            flexShrink: 1,
+            minWidth: 0,
+            overflow: "hidden",
+          }}
+        >
+          {formatOddsDisplay(originalPrice!)}
+        </span>
+      )}
       <span
         className="mono tnum"
         style={{
@@ -780,10 +878,15 @@ function RowOddBtn({
           // the price strongly readable.
           fontWeight: 700,
           letterSpacing: "-0.01em",
+          flexShrink: 0,
           // Pin per-state colour so the inherited `color` on the
           // button (which transitions over 140 ms on selection
           // swap) never washes the digit out mid-flip.
-          color: selected ? "var(--accent-fg)" : "var(--fg)",
+          color: showBoost
+            ? "var(--positive, #16a34a)"
+            : selected
+              ? "var(--accent-fg)"
+              : "var(--fg)",
         }}
       >
         {locked || price == null ? "—" : formatOddsDisplay(price)}

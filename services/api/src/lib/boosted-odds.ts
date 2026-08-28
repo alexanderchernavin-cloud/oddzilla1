@@ -141,6 +141,163 @@ export async function loadBoostRulesForMatch(
   return rows.map(rowToRule);
 }
 
+/**
+ * Batched sibling of loadBoostRulesForMatch, for the storefront LIST
+ * endpoints (sport page, lobby, /live, /upcoming) which price one
+ * market per match across up to a few hundred matches. One round-trip
+ * covers every tier for the whole page; resolution then happens in
+ * memory per match.
+ *
+ * `marketIds` scopes the market- and outcome-tier lookup to the markets
+ * the caller will actually price (the match-winner row, the Top market
+ * cell) rather than every market on every match — a live CS2 match
+ * carries hundreds of ladder rows we'd never render on a list card.
+ *
+ * The RS gate is applied here (the caller passes the viewer's score), so
+ * every rule the returned resolver hands back is already deliverable.
+ */
+export interface BatchedMatchBoosts {
+  /** True when nothing in the batch is boosted — lets callers skip work. */
+  readonly empty: boolean;
+  /**
+   * Market-wide rule pricing `marketId` on this match, or null.
+   * Precedence market > match > competitor > tournament > sport. Pass
+   * the result to quoteMarketBoost as `marketWide`; when the market also
+   * has selection rules, quoteMarketBoost ignores this and prices from
+   * those alone (a selection rule REPLACES coarser ones).
+   */
+  marketWide(ctx: MatchBoostContext, marketId: bigint): BoostRule | null;
+  /** outcomeId -> rule for outcome-scope rules on this market, or null. */
+  selections(marketId: bigint): Map<string, BoostRule> | null;
+}
+
+export async function loadBoostRulesForMatches(
+  db: FastifyInstance["db"],
+  contexts: readonly MatchBoostContext[],
+  marketIds: readonly bigint[],
+  riskScore: number,
+): Promise<BatchedMatchBoosts> {
+  const emptyResult: BatchedMatchBoosts = {
+    empty: true,
+    marketWide: () => null,
+    selections: () => null,
+  };
+  if (contexts.length === 0) return emptyResult;
+
+  const sportIds = [...new Set(contexts.map((c) => c.sportId))];
+  const tournamentIds = [...new Set(contexts.map((c) => c.tournamentId))];
+  const matchIds = [...new Set(contexts.map((c) => c.matchId))];
+  const competitorIds = [
+    ...new Set(
+      contexts.flatMap((c) =>
+        [c.homeCompetitorId, c.awayCompetitorId].filter(
+          (v): v is number => v !== null,
+        ),
+      ),
+    ),
+  ];
+  const marketIdSet = [...new Set(marketIds)];
+
+  const rows = await db
+    .select()
+    .from(boostedOddsConfig)
+    .where(
+      and(
+        or(isNull(boostedOddsConfig.endsAt), gt(boostedOddsConfig.endsAt, sql`now()`)),
+        or(
+          and(
+            eq(boostedOddsConfig.scope, "sport"),
+            inArray(boostedOddsConfig.sportId, sportIds),
+          ),
+          and(
+            eq(boostedOddsConfig.scope, "tournament"),
+            inArray(boostedOddsConfig.tournamentId, tournamentIds),
+          ),
+          and(
+            eq(boostedOddsConfig.scope, "match"),
+            inArray(boostedOddsConfig.matchId, matchIds),
+          ),
+          competitorIds.length > 0
+            ? and(
+                eq(boostedOddsConfig.scope, "competitor"),
+                inArray(boostedOddsConfig.competitorId, competitorIds),
+              )
+            : sql`false`,
+          marketIdSet.length > 0
+            ? and(
+                inArray(boostedOddsConfig.scope, ["market", "outcome"]),
+                inArray(boostedOddsConfig.marketId, marketIdSet),
+              )
+            : sql`false`,
+        ),
+      ),
+    );
+
+  const rules = rows.map(rowToRule).filter((r) => passesRiskGate(r, riskScore));
+  if (rules.length === 0) return emptyResult;
+
+  const bySport = new Map<number, BoostRule>();
+  const byTournament = new Map<number, BoostRule>();
+  const byMatch = new Map<string, BoostRule>();
+  const byCompetitor = new Map<number, BoostRule>();
+  const byMarket = new Map<string, BoostRule>();
+  const selectionsByMarket = new Map<string, Map<string, BoostRule>>();
+  for (const r of rules) {
+    switch (r.scope) {
+      case "sport":
+        if (r.sportId !== null) bySport.set(r.sportId, r);
+        break;
+      case "tournament":
+        if (r.tournamentId !== null) byTournament.set(r.tournamentId, r);
+        break;
+      case "match":
+        if (r.matchId !== null) byMatch.set(r.matchId.toString(), r);
+        break;
+      case "competitor":
+        if (r.competitorId !== null) byCompetitor.set(r.competitorId, r);
+        break;
+      case "market":
+        if (r.marketId !== null) byMarket.set(r.marketId.toString(), r);
+        break;
+      case "outcome": {
+        if (r.marketId === null || r.outcomeId === null) break;
+        const key = r.marketId.toString();
+        const m = selectionsByMarket.get(key) ?? new Map<string, BoostRule>();
+        m.set(r.outcomeId, r);
+        selectionsByMarket.set(key, m);
+        break;
+      }
+    }
+  }
+
+  return {
+    empty: false,
+    marketWide(ctx, marketId) {
+      const market = byMarket.get(marketId.toString());
+      if (market) return market;
+      const match = byMatch.get(ctx.matchId.toString());
+      if (match) return match;
+      // Both teams boosted -> the higher pct wins, same tie-break
+      // resolveBoostForMarket uses.
+      let competitorBest: BoostRule | null = null;
+      for (const id of [ctx.homeCompetitorId, ctx.awayCompetitorId]) {
+        if (id === null) continue;
+        const r = byCompetitor.get(id);
+        if (r && (!competitorBest || r.boostPct > competitorBest.boostPct)) {
+          competitorBest = r;
+        }
+      }
+      if (competitorBest) return competitorBest;
+      return (
+        byTournament.get(ctx.tournamentId) ?? bySport.get(ctx.sportId) ?? null
+      );
+    },
+    selections(marketId) {
+      return selectionsByMarket.get(marketId.toString()) ?? null;
+    },
+  };
+}
+
 /** True when the viewer's risk score clears the rule's gate. */
 export function passesRiskGate(
   rule: BoostRule,

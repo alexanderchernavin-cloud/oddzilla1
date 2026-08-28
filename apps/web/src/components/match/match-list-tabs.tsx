@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { MatchRow, type ListMatch } from "./match-row";
+import { MatchRow, type ListMatch, type ListMatchOutcome } from "./match-row";
+// Subpath, never the barrel — see packages/types/src/odds.ts.
+import {
+  isQuotableOutcomeOdds,
+  quoteMarketBoost,
+} from "@oddzilla/types/netwinstable";
 import { I } from "@/components/ui/icons";
 import {
   useLiveOddsForMatches,
@@ -290,48 +295,84 @@ function mergeMatchWithLive(
     const marketLocked =
       marketStatusTick != null && marketStatusTick.status !== 1;
     if (homeTick || awayTick || drawTick || marketLocked) {
+      // RAW (pre-boost) price per outcome after this tick.
+      //
+      // The no-tick fallback deliberately reaches for the pre-boost
+      // original rather than `o.price`: the SSR price IS the boosted
+      // figure when a boost applied, and feeding that back into the
+      // boost math below would compound the boost on every tick.
+      const rawOf = (
+        o: { price: string | null; boost?: { originalPrice: string } | null },
+        tick: LiveOddsTick | undefined,
+      ): string | null => {
+        if (marketLocked) return null;
+        if (tick) return tick.active ? tick.publishedOdds : null;
+        return o.boost?.originalPrice ?? o.price;
+      };
+      const homeRaw = rawOf(mw.home, homeTick);
+      const awayRaw = rawOf(mw.away, awayTick);
+      const drawRaw = mw.draw ? rawOf(mw.draw, drawTick) : null;
+
+      // Re-apply ZillaBoost over the ticked book. A match-winner market
+      // is 1/2 (or 1/2/3), and the card subscribes to exactly those, so
+      // the ticked set IS the whole book the key math needs.
+      const hasRule =
+        !!mw.boostRule ||
+        (!!mw.boostSelections && Object.keys(mw.boostSelections).length > 0);
+      const quoteOutcomes = (
+        [
+          [mw.home.outcomeId, homeRaw] as const,
+          [mw.away.outcomeId, awayRaw] as const,
+          ...(mw.draw ? [[mw.draw.outcomeId, drawRaw] as const] : []),
+        ]
+          .map(([outcomeId, raw]) => ({
+            outcomeId,
+            publishedOdds: raw != null ? Number(raw) : Number.NaN,
+          }))
+          .filter((o) => isQuotableOutcomeOdds(o.publishedOdds))
+      );
+      const cells =
+        hasRule && quoteOutcomes.length >= 2
+          ? quoteMarketBoost({
+              outcomes: quoteOutcomes,
+              marketWide: mw.boostRule ?? null,
+              selections: mw.boostSelections
+                ? new Map(Object.entries(mw.boostSelections))
+                : null,
+            })
+          : [];
+      const cellFor = (outcomeId: string) =>
+        cells.find((c) => c.outcomeId === outcomeId);
+
+      const merged = (
+        o: ListMatchOutcome,
+        raw: string | null,
+        tick: LiveOddsTick | undefined,
+      ): ListMatchOutcome => {
+        const cell = raw != null ? cellFor(o.outcomeId) : undefined;
+        return {
+          outcomeId: o.outcomeId,
+          price: cell ? cell.boostedOdds : raw,
+          probability: tick?.probability ?? o.probability ?? null,
+          boost: cell
+            ? {
+                ruleId: cell.ruleId,
+                boostPct: cell.boostPct,
+                endsAt: cell.endsAt,
+                originalPrice: cell.originalOdds,
+              }
+            : null,
+        };
+      };
+
       next = {
         ...next,
         matchWinner: {
+          ...mw,
           marketId: mw.marketId,
-          home: homeTick
-            ? {
-                outcomeId: mw.home.outcomeId,
-                price:
-                  marketLocked || !homeTick.active
-                    ? null
-                    : homeTick.publishedOdds,
-                probability: homeTick.probability ?? mw.home.probability ?? null,
-              }
-            : marketLocked
-              ? { outcomeId: mw.home.outcomeId, price: null, probability: mw.home.probability ?? null }
-              : mw.home,
-          away: awayTick
-            ? {
-                outcomeId: mw.away.outcomeId,
-                price:
-                  marketLocked || !awayTick.active
-                    ? null
-                    : awayTick.publishedOdds,
-                probability: awayTick.probability ?? mw.away.probability ?? null,
-              }
-            : marketLocked
-              ? { outcomeId: mw.away.outcomeId, price: null, probability: mw.away.probability ?? null }
-              : mw.away,
-          draw:
-            mw.draw && drawTick
-              ? {
-                  outcomeId: mw.draw.outcomeId,
-                  price:
-                    marketLocked || !drawTick.active
-                      ? null
-                      : drawTick.publishedOdds,
-                  probability:
-                    drawTick.probability ?? mw.draw.probability ?? null,
-                }
-              : mw.draw && marketLocked
-                ? { outcomeId: mw.draw.outcomeId, price: null, probability: mw.draw.probability ?? null }
-                : mw.draw ?? null,
+          home: merged(mw.home, homeRaw, homeTick),
+          away: merged(mw.away, awayRaw, awayTick),
+          draw: mw.draw ? merged(mw.draw, drawRaw, drawTick) : null,
         },
       };
     }
