@@ -90,7 +90,13 @@ pnpm start
 ```
 
 Run it under Task Scheduler ("At log on" / "At startup") so booting the
-PC IS the retry.
+PC IS the retry. On the current GPU box (`DESKTOP-IO524Q2`, `ssh
+localserver`) that task is **`ZillaboostWorker`**, launcher
+`D:\AI\zillaboost-worker.cmd`, log `D:\AI\zillaboost-worker.log`.
+Updating it is NOT `git pull` — that box has no usable git credentials;
+see "Updating the worker on the GPU box" in
+[`docs/OPERATIONS.md`](../../docs/OPERATIONS.md) for the git-bundle
+procedure.
 
 Server side: set the SAME `BANNER_GEN_TOKEN` in `/home/team/oddzilla/.env`
 (`openssl rand -hex 24`) and `make recreate api`. Until then the webhook

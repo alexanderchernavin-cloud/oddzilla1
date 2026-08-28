@@ -1022,6 +1022,53 @@ Run it under Task Scheduler ("At log on") so booting the PC IS the
 retry. Keep `IMAGE_MODEL=flux1-dev-fp8.safetensors` pinned on the
 RX 7900 XTX box (see below).
 
+### Updating the worker on the GPU box
+
+The box is `DESKTOP-IO524Q2`, reachable as `ssh localserver` from the
+operator workstation (key `~/.ssh/localserver_ed25519`). Checkout at
+`D:\AI\Oddzilla` on branch `main`; the worker runs as the
+**`ZillaboostWorker` scheduled task** (launcher `D:\AI\zillaboost-worker.cmd`,
+log `D:\AI\zillaboost-worker.log`) — a scheduled task rather than a bare
+process so it survives the SSH session that started it.
+
+**`git pull` does NOT work on that box**: `origin` is HTTPS and there is
+no usable credential helper (`could not read Password …`, and the prompt
+script needs a TTY the SSH session lacks). Ship the delta as a git
+bundle instead — proper git objects, no credential handling:
+
+```sh
+# on the workstation, from any checkout
+git fetch origin main
+git bundle create delta.bundle "<box-HEAD-sha>..origin/main"
+scp delta.bundle localserver:D:/AI/delta.bundle
+```
+
+then on the box (the checkout is normally clean and at an ancestor of
+main, so this fast-forwards):
+
+```powershell
+git fetch D:\AI\delta.bundle "refs/remotes/origin/main:refs/remotes/origin/bundlemain"
+git merge --ff-only refs/remotes/origin/bundlemain
+pnpm install
+Stop-ScheduledTask -TaskName ZillaboostWorker
+Start-ScheduledTask  -TaskName ZillaboostWorker
+git update-ref -d refs/remotes/origin/bundlemain   # tidy the temp ref
+Remove-Item D:\AI\delta.bundle
+```
+
+Verify the restart actually took new code by checking the heartbeat key
+rather than trusting the task state:
+
+```sh
+ssh team@178.104.174.24 "sudo -n docker exec oddzilla-redis-1 redis-cli GET bannergen:worker:online"
+```
+
+Two PowerShell-over-SSH gotchas that will waste your time otherwise: the
+remote shell is **PowerShell, not bash**, and piping a script into
+`ssh localserver 'powershell -NoProfile -Command -'` prepends a BOM that
+breaks the FIRST line — so make line 1 a comment. Complex quoting inline
+after `ssh` gets mangled; pipe a script file.
+
 ### Availability model
 
 - **PC off** → nothing polls; jobs sit `pending` and drain on boot. No
@@ -1042,7 +1089,8 @@ image beside the exact prompt (Copy button) and the render params.
 | Symptom | Cause |
 | --- | --- |
 | Wrong game entirely (MOBA rendered as soldiers) | The prompt lost its game clause. `game-vocab.ts` supplies each sport slug's scene as ground truth; check the stored prompt starts from it. |
-| Generic art, no team identity | The teams have no `brand_color`. Set them at `/admin/competitors` — the prompt builds its versus composition from those hex values. |
+| Generic art, no team identity | The teams have no `brand_color`. Set them at `/admin/competitors` — the prompt builds its versus composition from those hex values. With none set the prompt falls back to "two strongly contrasting accents", which still yields a versus image but not the teams' real colours. |
+| Panel says "No prompt recorded" | The worker predates migration 0090/0091 (it only stores what the worker sends). Update the worker — see "Updating the worker on the GPU box" — then regenerate. |
 | Legible text / logo shapes in the image | Diffusion limitation. FLUX ignores negative prompts, so the no-text terms only bite on SD3-family checkpoints. |
 | `hipErrorLaunchFailure`, then ComfyUI 500s on every request | `sd3.5_large_fp8_scaled` crashes ROCm on the RX 7900 XTX and wedges the GPU context. Restart the ComfyUI process (`D:\AI\comfyui-server.cmd`) and keep `IMAGE_MODEL` on FLUX. |
 | Upload 413s after a successful render | A body-limit regression. The `/complete` route needs its own `bodyLimit` (8 MiB) AND Caddy needs the `@banner_gen_uploads` carve-out above its 1 MiB default. Both must be present. |
