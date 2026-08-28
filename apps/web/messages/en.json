@@ -377,6 +377,7 @@
     "subtitle": "Hand-picked boosts from the house",
     "openTournament": "Open tournament",
     "openMatch": "Open match",
+    "openSport": "Open sport",
     "openMatchForPrices": "Open the match to see boosted prices",
     "matchesCount": "{count, plural, one {# match} other {# matches}}"
   },

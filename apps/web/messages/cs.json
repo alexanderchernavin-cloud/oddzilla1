@@ -377,6 +377,7 @@
     "subtitle": "Boosty vybrané sázkovkou",
     "openTournament": "Otevřít turnaj",
     "openMatch": "Otevřít zápas",
+    "openSport": "Otevřít sport",
     "openMatchForPrices": "Otevřete zápas a uvidíte navýšené kurzy",
     "matchesCount": "{count, plural, one {# zápas} few {# zápasy} other {# zápasů}}"
   },

@@ -377,6 +377,7 @@
     "subtitle": "Mejoras seleccionadas por la casa",
     "openTournament": "Abrir torneo",
     "openMatch": "Abrir partido",
+    "openSport": "Abrir deporte",
     "openMatchForPrices": "Abre el partido para ver las cuotas mejoradas",
     "matchesCount": "{count, plural, one {# partido} other {# partidos}}"
   },

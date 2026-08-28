@@ -29,6 +29,7 @@ import type {
   ZillaBoostBannerOutcome,
   ZillaBoostMarketBanner,
   ZillaBoostMatchBanner,
+  ZillaBoostSportBanner,
   ZillaBoostTournamentBanner,
 } from "@oddzilla/types";
 
@@ -72,8 +73,15 @@ export function ZillaBoostBanners() {
   const snap = useZillaBoostBanners();
   const t = useTranslations("zillaboost");
   if (!snap.loaded) return null;
+  // Sport banners count toward the section being worth rendering. They
+  // used to be excluded (sport scope only lit the sidebar bolt), so a
+  // sport-wide boost with "create promo banner" ticked rendered nothing
+  // at all here.
   const total =
-    snap.tournaments.length + snap.matches.length + snap.markets.length;
+    snap.sports.length +
+    snap.tournaments.length +
+    snap.matches.length +
+    snap.markets.length;
   if (total === 0) return null;
 
   return (
@@ -108,6 +116,10 @@ export function ZillaBoostBanners() {
           {t("subtitle")}
         </span>
       </header>
+
+      {snap.sports.map((b) => (
+        <SportBanner key={b.ruleId} banner={b} nowMs={snap.nowMs} />
+      ))}
 
       {snap.tournaments.map((b) => (
         <TournamentBanner key={b.ruleId} banner={b} nowMs={snap.nowMs} />
@@ -168,6 +180,85 @@ function BoostTag({
         </span>
       )}
     </span>
+  );
+}
+
+// ── Sport banner ────────────────────────────────────────────────────────
+// A sport-wide boost covers every market of every match under the sport,
+// so there is no single price to quote — the banner is a signpost into
+// the sport's match list, where each card carries its own boosted odds.
+// Same shape as the tournament banner for the same reason.
+
+function SportBanner({
+  banner: b,
+  nowMs,
+}: {
+  banner: ZillaBoostSportBanner;
+  nowMs: number;
+}) {
+  const t = useTranslations("zillaboost");
+  const accent = b.brandColor || undefined;
+  return (
+    <Link
+      href={`/sport/${b.slug}`}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "14px 16px",
+        borderRadius: "var(--r-md)",
+        border: `1px solid ${accent ?? "var(--border)"}`,
+        background: accent
+          ? `color-mix(in oklab, ${accent} 8%, var(--surface))`
+          : `color-mix(in oklab, ${GREEN} 6%, var(--surface))`,
+        textDecoration: "none",
+        color: "var(--fg)",
+      }}
+    >
+      {/* SportGlyph already resolves the admin-uploaded logo, the
+          bundled SVG, and the initials fallback in that order, so it
+          covers b.logoUrl without a second <img> chain. */}
+      <SportGlyph sport={b.slug} size={26} />
+      <span style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0, flex: 1 }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <BoostTag endsAt={b.endsAt} nowMs={nowMs} />
+          <span
+            className="mono tnum"
+            style={{ fontSize: 11, fontWeight: 700, color: GREEN }}
+          >
+            +{b.boostPct}%
+          </span>
+        </span>
+        <span
+          style={{
+            fontSize: 16,
+            fontWeight: 650,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {b.name}
+        </span>
+        <span style={{ fontSize: 11.5, color: "var(--fg-muted)" }}>
+          {t("matchesCount", { count: b.matchCount })}
+        </span>
+      </span>
+      <span
+        style={{
+          fontSize: 12,
+          fontWeight: 600,
+          color: "var(--fg)",
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 6,
+          flexShrink: 0,
+        }}
+      >
+        {t("openSport")}
+        <span aria-hidden style={{ color: "var(--fg-dim)" }}>→</span>
+      </span>
+    </Link>
   );
 }
 

@@ -377,6 +377,7 @@
     "subtitle": "Boostovi koje je odabrala kuća",
     "openTournament": "Otvori turnir",
     "openMatch": "Otvori meč",
+    "openSport": "Otvori sport",
     "openMatchForPrices": "Otvorite meč za pojačane kvote",
     "matchesCount": "{count, plural, one {# meč} few {# meča} other {# mečeva}}"
   },

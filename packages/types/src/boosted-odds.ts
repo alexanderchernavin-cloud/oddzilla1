@@ -169,6 +169,28 @@ export interface ZillaBoostMatchBanner {
   outcomes: ZillaBoostBannerOutcome[];
 }
 
+/**
+ * sport-scope rule → ZillaBoost sport banner linking to the sport's
+ * match list, plus the bolt icon beside that sport in the sidebar.
+ *
+ * Carries no odds: a sport-wide boost covers every market of every match
+ * under it, so there is no single price to quote. Same shape as the
+ * tournament banner for exactly that reason — both are "a boost is
+ * running across this whole scope, go look" rather than an offer.
+ */
+export interface ZillaBoostSportBanner {
+  ruleId: string;
+  boostPct: number;
+  endsAt: string | null;
+  sportId: number;
+  slug: string;
+  name: string;
+  logoUrl: string | null;
+  brandColor: string | null;
+  /** Bettable matches (live + upcoming with >= 1 active market). */
+  matchCount: number;
+}
+
 /** tournament-scope rule → ZillaBoost tournament banner linking to its match list. */
 export interface ZillaBoostTournamentBanner {
   ruleId: string;
@@ -183,8 +205,13 @@ export interface ZillaBoostTournamentBanner {
 }
 
 export interface ZillaBoostBannersResponse {
-  /** sport-scope rules → boost icon next to these sports in the sidebar. */
-  sports: Array<{ sportId: number; slug: string; boostPct: number }>;
+  /**
+   * sport-scope rules → a home-page banner AND the bolt icon next to
+   * the sport in the sidebar. (Before 2026-08-28 this was the bolt only,
+   * so ticking "create promo banner" on a sport-wide boost appeared to
+   * do nothing.)
+   */
+  sports: ZillaBoostSportBanner[];
   tournaments: ZillaBoostTournamentBanner[];
   matches: ZillaBoostMatchBanner[];
   markets: ZillaBoostMarketBanner[];
