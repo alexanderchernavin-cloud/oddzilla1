@@ -15,6 +15,7 @@
 // the sidebar (see shell/sidebar.tsx). Countdown chips appear only on
 // rules with an end time, ZillaFlash-style.
 
+import { useState } from "react";
 import type { CSSProperties, MouseEvent } from "react";
 import Link from "next/link";
 import { useBetSlip } from "@/lib/bet-slip";
@@ -145,6 +146,70 @@ export function ZillaBoostBanners() {
   );
 }
 
+// ── AI banner art (migration 0089) ──────────────────────────────────────
+
+/**
+ * Full-bleed background graphic for the wide (sport / tournament)
+ * banners. The image sits behind a left-to-right scrim so the text keeps
+ * contrast whatever the picture is; the content column above it flips to
+ * light-on-dark. onError unmounts the layer so a broken image degrades
+ * to the plain banner rather than a broken-image glyph.
+ */
+function BannerArtBackdrop({
+  url,
+  onFail,
+}: {
+  url: string;
+  onFail: () => void;
+}) {
+  return (
+    <>
+      <img
+        src={url}
+        alt=""
+        onError={onFail}
+        style={{
+          position: "absolute",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          objectFit: "cover",
+          zIndex: 0,
+        }}
+      />
+      <span
+        aria-hidden
+        style={{
+          position: "absolute",
+          inset: 0,
+          zIndex: 1,
+          background:
+            "linear-gradient(90deg, rgba(10, 14, 12, 0.82) 0%, rgba(10, 14, 12, 0.55) 55%, rgba(10, 14, 12, 0.25) 100%)",
+        }}
+      />
+    </>
+  );
+}
+
+/** Top image strip for the card-shaped (match / market) banners. */
+function BannerArtStrip({ url, onFail }: { url: string; onFail: () => void }) {
+  return (
+    <img
+      src={url}
+      alt=""
+      onError={onFail}
+      style={{
+        width: "calc(100% + 24px)",
+        margin: "-10px -12px 0",
+        aspectRatio: "3 / 1",
+        objectFit: "cover",
+        borderRadius: "var(--r-md) var(--r-md) 0 0",
+        display: "block",
+      }}
+    />
+  );
+}
+
 // ── Shared chip ─────────────────────────────────────────────────────────
 
 function BoostTag({
@@ -197,34 +262,59 @@ function SportBanner({
   nowMs: number;
 }) {
   const t = useTranslations("zillaboost");
+  const [artFailed, setArtFailed] = useState(false);
+  const art = !artFailed && b.imageUrl ? b.imageUrl : null;
   const accent = b.brandColor || undefined;
   return (
     <Link
       href={`/sport/${b.slug}`}
       style={{
+        position: "relative",
+        overflow: "hidden",
         display: "flex",
         alignItems: "center",
         gap: 12,
-        padding: "14px 16px",
+        padding: art ? "18px 16px" : "14px 16px",
         borderRadius: "var(--r-md)",
         border: `1px solid ${accent ?? "var(--border)"}`,
         background: accent
           ? `color-mix(in oklab, ${accent} 8%, var(--surface))`
           : `color-mix(in oklab, ${GREEN} 6%, var(--surface))`,
         textDecoration: "none",
-        color: "var(--fg)",
+        // Over the AI art + scrim the content is always light-on-dark,
+        // whatever the theme.
+        color: art ? "#fff" : "var(--fg)",
       }}
     >
+      {art && <BannerArtBackdrop url={art} onFail={() => setArtFailed(true)} />}
       {/* SportGlyph already resolves the admin-uploaded logo, the
           bundled SVG, and the initials fallback in that order, so it
           covers b.logoUrl without a second <img> chain. */}
-      <SportGlyph sport={b.slug} size={26} />
-      <span style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0, flex: 1 }}>
+      <span style={{ position: "relative", zIndex: 2, display: "inline-flex", flexShrink: 0 }}>
+        <SportGlyph sport={b.slug} size={26} />
+      </span>
+      <span
+        style={{
+          position: "relative",
+          zIndex: 2,
+          display: "flex",
+          flexDirection: "column",
+          gap: 3,
+          minWidth: 0,
+          flex: 1,
+        }}
+      >
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <BoostTag endsAt={b.endsAt} nowMs={nowMs} />
           <span
             className="mono tnum"
-            style={{ fontSize: 11, fontWeight: 700, color: GREEN }}
+            style={{
+              fontSize: 11,
+              fontWeight: 700,
+              // The brand green vanishes into dark art — over the scrim
+              // the pct rides a lighter tint of it.
+              color: art ? "#7ee2a0" : GREEN,
+            }}
           >
             +{b.boostPct}%
           </span>
@@ -240,15 +330,22 @@ function SportBanner({
         >
           {b.name}
         </span>
-        <span style={{ fontSize: 11.5, color: "var(--fg-muted)" }}>
+        <span
+          style={{
+            fontSize: 11.5,
+            color: art ? "rgba(255, 255, 255, 0.75)" : "var(--fg-muted)",
+          }}
+        >
           {t("matchesCount", { count: b.matchCount })}
         </span>
       </span>
       <span
         style={{
+          position: "relative",
+          zIndex: 2,
           fontSize: 12,
           fontWeight: 600,
-          color: "var(--fg)",
+          color: art ? "#fff" : "var(--fg)",
           display: "inline-flex",
           alignItems: "center",
           gap: 6,
@@ -256,7 +353,12 @@ function SportBanner({
         }}
       >
         {t("openSport")}
-        <span aria-hidden style={{ color: "var(--fg-dim)" }}>→</span>
+        <span
+          aria-hidden
+          style={{ color: art ? "rgba(255, 255, 255, 0.7)" : "var(--fg-dim)" }}
+        >
+          →
+        </span>
       </span>
     </Link>
   );
@@ -272,46 +374,67 @@ function TournamentBanner({
   nowMs: number;
 }) {
   const t = useTranslations("zillaboost");
+  const [artFailed, setArtFailed] = useState(false);
+  const art = !artFailed && b.imageUrl ? b.imageUrl : null;
   const accent = b.brandColor || undefined;
   return (
     <Link
       href={`/sport/${b.sportSlug}?tournament=${b.tournamentId}`}
       style={{
+        position: "relative",
+        overflow: "hidden",
         display: "flex",
         alignItems: "center",
         gap: 12,
-        padding: "14px 16px",
+        padding: art ? "18px 16px" : "14px 16px",
         borderRadius: "var(--r-md)",
         border: `1px solid ${accent ?? "var(--border)"}`,
         background: accent
           ? `color-mix(in oklab, ${accent} 8%, var(--surface))`
           : `color-mix(in oklab, ${GREEN} 6%, var(--surface))`,
         textDecoration: "none",
-        color: "var(--fg)",
+        color: art ? "#fff" : "var(--fg)",
       }}
     >
-      {b.logoUrl ? (
-        // Tournament logo with silent fallback — same convention the
-        // sidebar tournament sub-tree uses.
-        <img
-          src={b.logoUrl}
-          alt=""
-          width={28}
-          height={28}
-          style={{ objectFit: "contain", flexShrink: 0 }}
-          onError={(e) => {
-            (e.currentTarget as HTMLImageElement).style.display = "none";
-          }}
-        />
-      ) : (
-        <SportGlyph sport={b.sportSlug} size={22} />
-      )}
-      <span style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0, flex: 1 }}>
+      {art && <BannerArtBackdrop url={art} onFail={() => setArtFailed(true)} />}
+      <span style={{ position: "relative", zIndex: 2, display: "inline-flex", flexShrink: 0 }}>
+        {b.logoUrl ? (
+          // Tournament logo with silent fallback — same convention the
+          // sidebar tournament sub-tree uses.
+          <img
+            src={b.logoUrl}
+            alt=""
+            width={28}
+            height={28}
+            style={{ objectFit: "contain", flexShrink: 0 }}
+            onError={(e) => {
+              (e.currentTarget as HTMLImageElement).style.display = "none";
+            }}
+          />
+        ) : (
+          <SportGlyph sport={b.sportSlug} size={22} />
+        )}
+      </span>
+      <span
+        style={{
+          position: "relative",
+          zIndex: 2,
+          display: "flex",
+          flexDirection: "column",
+          gap: 3,
+          minWidth: 0,
+          flex: 1,
+        }}
+      >
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <BoostTag endsAt={b.endsAt} nowMs={nowMs} />
           <span
             className="mono tnum"
-            style={{ fontSize: 11, fontWeight: 700, color: GREEN }}
+            style={{
+              fontSize: 11,
+              fontWeight: 700,
+              color: art ? "#7ee2a0" : GREEN,
+            }}
           >
             +{b.boostPct}%
           </span>
@@ -327,15 +450,22 @@ function TournamentBanner({
         >
           {b.name}
         </span>
-        <span style={{ fontSize: 11.5, color: "var(--fg-muted)" }}>
+        <span
+          style={{
+            fontSize: 11.5,
+            color: art ? "rgba(255, 255, 255, 0.75)" : "var(--fg-muted)",
+          }}
+        >
           {t("matchesCount", { count: b.matchCount })}
         </span>
       </span>
       <span
         style={{
+          position: "relative",
+          zIndex: 2,
           fontSize: 12,
           fontWeight: 600,
-          color: "var(--fg)",
+          color: art ? "#fff" : "var(--fg)",
           display: "inline-flex",
           alignItems: "center",
           gap: 6,
@@ -343,7 +473,12 @@ function TournamentBanner({
         }}
       >
         {t("openTournament")}
-        <span aria-hidden style={{ color: "var(--fg-dim)" }}>→</span>
+        <span
+          aria-hidden
+          style={{ color: art ? "rgba(255, 255, 255, 0.7)" : "var(--fg-dim)" }}
+        >
+          →
+        </span>
       </span>
     </Link>
   );
@@ -360,6 +495,8 @@ function MatchBannerCard({
 }) {
   const slip = useBetSlip();
   const t = useTranslations("zillaboost");
+  const [artFailed, setArtFailed] = useState(false);
+  const art = !artFailed && b.imageUrl ? b.imageUrl : null;
   const live = b.status === "live";
 
   // Is this cell the one currently in the slip?
@@ -476,8 +613,10 @@ function MatchBannerCard({
         textDecoration: "none",
         color: "var(--fg)",
         minWidth: 0,
+        overflow: "hidden",
       }}
     >
+      {art && <BannerArtStrip url={art} onFail={() => setArtFailed(true)} />}
       <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
         <SportGlyph sport={b.sportSlug} size={13} />
         <span
@@ -633,6 +772,8 @@ function MarketBannerCard({
 }) {
   const slip = useBetSlip();
   const t = useTranslations("zillaboost");
+  const [artFailed, setArtFailed] = useState(false);
+  const art = !artFailed && b.imageUrl ? b.imageUrl : null;
 
   const isPicked = (entry: ZillaBoostBannerOutcome) =>
     slip.has(b.marketId, entry.outcomeId);
@@ -672,8 +813,10 @@ function MarketBannerCard({
         border: `1px solid color-mix(in oklab, ${GREEN} 40%, var(--border))`,
         borderRadius: "var(--r-md)",
         minWidth: 0,
+        overflow: "hidden",
       }}
     >
+      {art && <BannerArtStrip url={art} onFail={() => setArtFailed(true)} />}
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <SportGlyph sport={b.sportSlug} size={13} />
         <BoostTag endsAt={b.endsAt} nowMs={nowMs} />

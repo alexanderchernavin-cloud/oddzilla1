@@ -176,6 +176,17 @@ const EnvSchema = z.object({
     (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
     z.string().min(16).optional(),
   ),
+
+  // ZillaBoost graphics-banner worker token (migration 0089). The image
+  // worker (services/zillaboost-banner-gen, runs on an operator PC with
+  // local LLM + image models) authenticates to /webhooks/banner-gen/<secret>
+  // with this value. Unset → those routes return 503 banner_gen_disabled;
+  // jobs still enqueue and wait — graceful-idle, same shape as
+  // SUPPORT_AI_BOT_TOKEN. Generate with: openssl rand -hex 24
+  BANNER_GEN_TOKEN: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.string().min(16).optional(),
+  ),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

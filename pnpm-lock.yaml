@@ -328,6 +328,31 @@ importers:
         specifier: ^5.7.2
         version: 5.9.3
 
+  services/zillaboost-banner-gen:
+    dependencies:
+      '@oddzilla/types':
+        specifier: workspace:*
+        version: link:../../packages/types
+      dotenv:
+        specifier: ^16.4.5
+        version: 16.6.1
+      pino:
+        specifier: ^9.5.0
+        version: 9.14.0
+    devDependencies:
+      '@oddzilla/tsconfig':
+        specifier: workspace:*
+        version: link:../../packages/tsconfig
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.19.17
+      tsx:
+        specifier: ^4.19.2
+        version: 4.21.0
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+
 packages:
 
   '@adraffy/ens-normalize@1.10.1':

@@ -440,6 +440,44 @@ Two things differ from the market-wide scopes:
   the banner endpoint skips those markets so it never advertises a price
   placement would reject.
 
+`graphics_banner BOOLEAN` (migration 0089) marks a rule whose promo
+banner gets an AI-generated graphic. Only the FLAG lives here — the
+image bytes and the generation queue live in
+`zillaboost_banner_image_jobs`, because the pricing paths
+(`loadBoostRulesForMatch` / `loadBoostRulesForMatches`) full-row-select
+this table on hot catalog requests and must not drag a BYTEA along.
+
+**`zillaboost_banner_image_jobs`** — pull queue + storage for AI banner
+graphics (migration 0089). One row per rule (`rule_id` PK, FK
+`boosted_odds_config` ON DELETE CASCADE): re-generating resets the SAME
+row to `pending`, and the previous `image_data` stays in place until the
+replacement lands, so the storefront banner never blanks mid-regenerate.
+Drained by the operator-PC worker (`services/zillaboost-banner-gen`)
+through `/webhooks/banner-gen/:secret/*` — the production box never
+dials the operator's LAN, so a powered-off PC simply leaves rows at
+`pending` until the worker returns and drains the backlog.
+
+Columns of note:
+- `status` — `pending` / `done` / `failed` (CHECK-constrained).
+  "Processing" is not a status: a claimed job is a pending row with a
+  live `leased_until`.
+- `leased_until` — 15-minute claim lease stamped by `/pending`; a
+  crashed worker's job self-returns when it expires. `/complete`
+  requires the caller to still be inside its lease.
+- `next_attempt_at` — generation-failure backoff (1 h per failed
+  attempt). Partial index `(next_attempt_at) WHERE status='pending'`
+  makes the claim query a tiny scan.
+- `attempts` / `last_error` — real generation failures only; the worker
+  doesn't claim (and burns nothing) while its local image backend is
+  down. At 24 attempts the row flips to `failed` — surfaced as a red
+  chip in the admin rules overview; unticking + re-ticking the graphics
+  option resets it.
+- `image_data BYTEA` + `image_mime` (paired CHECK, png/jpeg/webp
+  allowlist) + `generated_at` — the finished graphic, served by
+  `GET /catalog/zillaboost-banners/:ruleId/image` with an immutable
+  cache header; `generated_at` rides the URL as `?v=` so a regenerated
+  image is a new URL.
+
 ### Tickets
 
 **`tickets`** — one per bet submission. `idempotency_key` is a unique

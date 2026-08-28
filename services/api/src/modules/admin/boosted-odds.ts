@@ -29,6 +29,7 @@ import {
   playerProfiles,
   sports,
   tournaments,
+  zillaboostBannerImageJobs,
 } from "@oddzilla/db";
 import { BadRequestError, NotFoundError } from "../../lib/errors.js";
 import {
@@ -46,6 +47,8 @@ interface RuleDto {
   endsAt: string | null;
   minRiskScore: number | null;
   banner: boolean;
+  /** AI-generated banner graphic requested (migration 0089). */
+  graphicsBanner: boolean;
   updatedAt: string;
 }
 
@@ -58,6 +61,7 @@ function toRuleDto(r: typeof boostedOddsConfig.$inferSelect): RuleDto {
     endsAt: r.endsAt?.toISOString() ?? null,
     minRiskScore: r.minRiskScore !== null ? Number(r.minRiskScore) : null,
     banner: r.banner,
+    graphicsBanner: r.graphicsBanner,
     updatedAt: r.updatedAt.toISOString(),
   };
 }
@@ -86,6 +90,11 @@ const putBody = z
     // banner surface for competitor or outcome scope — accepted,
     // stored, unused.
     banner: z.boolean().optional(),
+    // AI-generated graphic for the banner (migration 0089). Turning it
+    // on (or re-ticking after a failure) enqueues a generation job for
+    // the operator-PC worker; the image lands asynchronously and the
+    // banner upgrades in place on the storefront's next poll.
+    graphicsBanner: z.boolean().optional(),
   })
   .refine((b) => (b.scope === "outcome") === (b.outcomeId !== undefined), {
     message: "outcomeId is required for outcome scope and forbidden otherwise",
@@ -245,9 +254,42 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
       return `${cell} · ${market}`;
     };
 
+    // Graphics-banner job state for the overview chips (pending /
+    // ready / failed). Deliberately does NOT select image_data — only
+    // the byte-serve route pulls the BYTEA.
+    const graphicsRuleIds = rows
+      .filter((r) => r.graphicsBanner)
+      .map((r) => r.id);
+    const jobRows = graphicsRuleIds.length
+      ? await app.db
+          .select({
+            ruleId: zillaboostBannerImageJobs.ruleId,
+            status: zillaboostBannerImageJobs.status,
+            attempts: zillaboostBannerImageJobs.attempts,
+            lastError: zillaboostBannerImageJobs.lastError,
+            generatedAt: zillaboostBannerImageJobs.generatedAt,
+          })
+          .from(zillaboostBannerImageJobs)
+          .where(inArray(zillaboostBannerImageJobs.ruleId, graphicsRuleIds))
+      : [];
+    const jobByRule = new Map(jobRows.map((j) => [j.ruleId, j]));
+
     return {
       rules: rows.map((r) => ({
         ...toRuleDto(r),
+        graphics: (() => {
+          if (!r.graphicsBanner) return null;
+          const j = jobByRule.get(r.id);
+          // Flag on but no job row: legacy rule from before 0089 or a
+          // manual DB edit — render as pending-shaped "queued" anyway.
+          if (!j) return { status: "pending" as const, attempts: 0, lastError: null, generatedAt: null };
+          return {
+            status: j.status as "pending" | "done" | "failed",
+            attempts: j.attempts,
+            lastError: j.lastError,
+            generatedAt: j.generatedAt?.toISOString() ?? null,
+          };
+        })(),
         refId:
           r.scope === "sport"
             ? String(r.sportId)
@@ -857,6 +899,12 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
         // "this whole market is boosted"), so the flag is forced off
         // rather than stored and silently ignored.
         banner: body.scope === "outcome" ? false : (body.banner ?? false),
+        // A graphic only exists ON a banner, so it follows the same
+        // scope restriction and implies banner=true is sensible — but
+        // it is stored independently so unticking the graphic doesn't
+        // tear down the plain banner.
+        graphicsBanner:
+          body.scope === "outcome" ? false : (body.graphicsBanner ?? false),
         updatedBy: admin.id,
         updatedAt: new Date(),
       };
@@ -897,6 +945,31 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
         afterJson: toRuleDto(row) as unknown as Record<string, unknown>,
         ipInet: request.ip ?? null,
       });
+
+      // Enqueue image generation when the option turns ON (create with
+      // it ticked, or off -> on edit). One job row per rule: re-enqueue
+      // resets the SAME row to pending with attempts zeroed — that is
+      // also the operator's "regenerate / retry a failed one" gesture
+      // (untick, save, re-tick). The previous image stays on the row
+      // until the replacement lands, so the storefront banner never
+      // blanks mid-regenerate. The worker drains the queue whenever the
+      // operator PC is on; while it's off, rows just wait here.
+      if (values.graphicsBanner && !before?.graphicsBanner) {
+        await tx
+          .insert(zillaboostBannerImageJobs)
+          .values({ ruleId: row.id })
+          .onConflictDoUpdate({
+            target: zillaboostBannerImageJobs.ruleId,
+            set: {
+              status: "pending",
+              attempts: 0,
+              lastError: null,
+              leasedUntil: null,
+              nextAttemptAt: new Date(),
+              updatedAt: new Date(),
+            },
+          });
+      }
       return row;
     });
 

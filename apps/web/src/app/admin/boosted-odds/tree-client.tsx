@@ -29,7 +29,17 @@ export interface RuleDto {
   endsAt: string | null;
   minRiskScore: number | null;
   banner: boolean;
+  /** AI-generated banner graphic requested (migration 0089). */
+  graphicsBanner: boolean;
   updatedAt: string;
+}
+
+/** Graphics-banner job state, on rules-overview rows only. */
+export interface RuleGraphicsState {
+  status: "pending" | "done" | "failed";
+  attempts: number;
+  lastError: string | null;
+  generatedAt: string | null;
 }
 
 export interface RuleWithLabel extends RuleDto {
@@ -40,6 +50,8 @@ export interface RuleWithLabel extends RuleDto {
    * overview shows it beside the name. Undefined for every other scope.
    */
   riskTier?: number | null;
+  /** Graphics-banner job state; null when the option is off. */
+  graphics?: RuleGraphicsState | null;
 }
 
 export interface SportRow {
@@ -420,6 +432,7 @@ function ActiveRulesTable({
               {r.label}
             </span>
             {r.scope === "tournament" && <TierBadge tier={r.riskTier ?? null} />}
+            {r.graphics && <GraphicsChip state={r.graphics} />}
             <RuleBadge rule={r} />
             <BoostControl
               scope={r.scope}
@@ -1483,6 +1496,44 @@ function TierBadge({ tier }: { tier: number | null }) {
   );
 }
 
+// Graphics-banner job state on an active-rules row. Pending is the
+// normal long-lived state while the operator PC is off — the queue is
+// pull-based, so "queued" can legitimately mean hours.
+function GraphicsChip({ state }: { state: RuleGraphicsState }) {
+  const palette =
+    state.status === "done"
+      ? { label: "img ready", color: "#15803d", border: "#16a34a" }
+      : state.status === "failed"
+        ? { label: "img failed", color: "#dc2626", border: "#dc2626" }
+        : { label: "img queued", color: "var(--color-fg-muted)", border: "var(--color-border)" };
+  return (
+    <span
+      className="mono"
+      title={
+        state.status === "failed"
+          ? `Generation failed after ${state.attempts} attempts: ${state.lastError ?? "unknown error"}. Untick + re-tick the graphics option to retry.`
+          : state.status === "done"
+            ? `Generated ${state.generatedAt ? new Date(state.generatedAt).toLocaleString() : ""}`
+            : `Waiting for the image worker${state.attempts > 0 ? ` (${state.attempts} failed attempts so far${state.lastError ? `; last: ${state.lastError}` : ""})` : ""} — jobs are processed when the operator PC is online.`
+      }
+      style={{
+        flexShrink: 0,
+        fontSize: 9.5,
+        fontWeight: 700,
+        letterSpacing: "0.04em",
+        textTransform: "uppercase",
+        lineHeight: 1.6,
+        padding: "0 6px",
+        borderRadius: 999,
+        border: `1px solid ${palette.border}`,
+        color: palette.color,
+      }}
+    >
+      {palette.label}
+    </span>
+  );
+}
+
 function MiniRuleDot({ rule }: { rule: RuleDto }) {
   const expired =
     rule.endsAt !== null && new Date(rule.endsAt).getTime() <= Date.now();
@@ -1629,6 +1680,7 @@ function BoostModal({
     rule?.minRiskScore != null ? String(rule.minRiskScore) : "",
   );
   const [banner, setBanner] = useState(rule?.banner ?? false);
+  const [graphics, setGraphics] = useState(rule?.graphicsBanner ?? false);
   const [busy, setBusy] = useState(false);
   // Neither a team nor a single selection has a home-page banner shape.
   const bannerDisabled = scope === "competitor" || scope === "outcome";
@@ -1701,7 +1753,10 @@ function BoostModal({
             boostPct: pctNum,
             endsAt: endsIso,
             minRiskScore: minRsNum,
-            banner: bannerDisabled ? false : banner,
+            // Ticking the graphics option implies the banner itself —
+            // the image only exists ON a banner surface.
+            banner: bannerDisabled ? false : banner || graphics,
+            graphicsBanner: bannerDisabled ? false : graphics,
           }),
         });
       }
@@ -1963,8 +2018,47 @@ function BoostModal({
               Shows on the storefront home page: market &rarr; ZillaFlash-style
               card, match &rarr; match card with old + boosted winner prices,
               tournament &rarr; ZillaBoost banner opening its match list,
-              sport &rarr; boost icon in the sidebar. Not available for teams
-              or single selections — a banner advertises a whole market.
+              sport &rarr; home banner + boost icon in the sidebar. Not
+              available for teams or single selections — a banner advertises
+              a whole market.
+            </span>
+          </span>
+        </label>
+
+        <label
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 8,
+            cursor: bannerDisabled ? "not-allowed" : "pointer",
+            opacity: bannerDisabled ? 0.55 : 1,
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={graphics && !bannerDisabled}
+            disabled={bannerDisabled}
+            onChange={(e) => {
+              const on = e.currentTarget.checked;
+              setGraphics(on);
+              // The image only exists ON a banner — mirror that in the
+              // UI immediately rather than silently at save time.
+              if (on) setBanner(true);
+            }}
+            style={{ accentColor: "#16a34a", marginTop: 2 }}
+          />
+          <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <span style={labelStyle}>Generate graphics banner</span>
+            <span style={hintStyle}>
+              Queues an AI-generated promo graphic for this banner. The image
+              worker on the operator PC researches the boosted sport / teams /
+              tournament, renders the image on local models, and uploads it —
+              the banner upgrades in place when it lands. If the PC is off,
+              the job waits in the queue and is processed when it comes back.
+              Implies the promo banner.
+              {rule?.graphicsBanner
+                ? " Re-generating: untick, save, tick again, save."
+                : ""}
             </span>
           </span>
         </label>
