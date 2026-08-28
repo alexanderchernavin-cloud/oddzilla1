@@ -21,9 +21,9 @@ It can equally run straight on any PC (`pnpm start` with a local
    claiming due jobs under a 15-minute lease.
 3. Per job: research the boosted entities on Wikipedia (keyless Action
    API) → author a diffusion prompt on LM Studio
-   (`/v1/chat/completions`) → render on the local image server
-   (`/sdapi/v1/txt2img`, AUTOMATIC1111/Forge-compatible) → upload via
-   `POST .../jobs/:ruleId/complete` (base64 PNG, 4 MB cap).
+   (`/v1/chat/completions`) → render on ComfyUI (POST `/prompt` with a
+   minimal txt2img graph, poll `/history`, fetch via `/view`) → upload
+   via `POST .../jobs/:ruleId/complete` (base64 PNG, 4 MB cap).
 4. The storefront's banner endpoint starts serving the image on its
    next poll; banners upgrade in place.
 
@@ -55,9 +55,10 @@ Server side: set the SAME `BANNER_GEN_TOKEN` in `/home/team/oddzilla/.env`
 (`openssl rand -hex 24`) and `make recreate api`. Until then the webhook
 routes 503 `banner_gen_disabled` — jobs still enqueue and wait.
 
-The image server must expose the A1111 `sdapi` (launch sd-webui / Forge
-with `--api`). A different backend (ComfyUI, etc.) is a one-file swap in
-`src/imagegen.ts`.
+The image backend is ComfyUI (must listen beyond loopback:
+`--listen 0.0.0.0`). Checkpoint auto-discovery prefers an SD3-family
+model; a FLUX pick drops cfg to 1.0 automatically. A different backend
+is a one-file swap in `src/imagegen.ts`.
 
 ## Guardrails baked into the prompt
 
