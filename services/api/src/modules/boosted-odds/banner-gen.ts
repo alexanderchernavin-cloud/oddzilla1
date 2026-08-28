@@ -47,6 +47,17 @@ import {
   ServiceUnavailableError,
 } from "../../lib/errors.js";
 
+/**
+ * Redis key stamped by the worker's /heartbeat — drives the "image
+ * worker online" indicator on the admin boosted-odds page, same shape
+ * as the support bot's AI_ONLINE_KEY. TTL is generous relative to the
+ * worker's 30 s heartbeat interval so one dropped request doesn't
+ * flicker the dot, while a powered-off PC still reads offline within
+ * a couple of minutes.
+ */
+export const BANNER_GEN_ONLINE_KEY = "bannergen:worker:online";
+const ONLINE_TTL_SECONDS = 90;
+
 const LEASE_MINUTES = 15;
 // A job that failed generation this many times flips to 'failed' and
 // stops being offered — visible in the admin overview; re-ticking the
@@ -213,6 +224,18 @@ export default async function bannerGenRoutes(app: FastifyInstance) {
     }
     return parsed.data.ruleId;
   }
+
+  // ── Heartbeat — drives the admin "image worker online" indicator ──
+  app.post("/webhooks/banner-gen/:secret/heartbeat", async (request) => {
+    assertAuth(request);
+    const now = new Date().toISOString();
+    try {
+      await app.redis.set(BANNER_GEN_ONLINE_KEY, now, "EX", ONLINE_TTL_SECONDS);
+    } catch {
+      // Best-effort — the indicator just shows offline if Redis blips.
+    }
+    return { ok: true, lastSeen: now };
+  });
 
   // ── Claim due jobs ─────────────────────────────────────────────────
   app.get(

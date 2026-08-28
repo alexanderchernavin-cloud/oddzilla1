@@ -1,6 +1,7 @@
 import { serverApi } from "@/lib/server-fetch";
 import {
   BoostedOddsBoard,
+  type ImageWorkerStatus,
   type RuleDto,
   type RuleWithLabel,
   type SportRow,
@@ -13,6 +14,7 @@ interface SportsResponse {
 }
 interface RulesResponse {
   rules: RuleWithLabel[];
+  imageWorker?: ImageWorkerStatus | null;
 }
 
 export default async function AdminBoostedOddsPage() {
@@ -50,6 +52,7 @@ export default async function AdminBoostedOddsPage() {
       <BoostedOddsBoard
         initialSports={sportsData.entries}
         initialRules={rulesData.rules}
+        initialImageWorker={rulesData.imageWorker ?? null}
       />
     </>
   );

@@ -356,31 +356,14 @@ services:
       <<: *hc
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${WS_GATEWAY_PORT:-3002}/healthz"]
 
-  # ZillaBoost graphics-banner worker (migration 0089). Polls the api's
-  # /webhooks/banner-gen queue and renders images on the operator's
-  # model PC, reached over the box's TAILNET (tailscaled runs on the
-  # HOST; containers route to 100.64.0.0/10 through it, no extra
-  # network config). PC off / models down = the worker probes hourly
-  # and jobs wait in the queue — a WAITING worker is healthy by design.
-  # LM_STUDIO_BASE_URL + IMAGE_API_BASE ride in via env_file (.env);
-  # BANNER_GEN_TOKEN too. Empty token = parked (health only), same
-  # graceful-idle convention as every credential-gated service.
-  banner-gen:
-    <<: *ts-service
-    mem_limit: 128m
-    cpus: 0.25
-    build:
-      context: .
-      dockerfile: services/zillaboost-banner-gen/Dockerfile
-    environment:
-      SERVICE_NAME: banner-gen
-      # Internal API base — Caddy's /api strip doesn't apply inside the
-      # compose network, so the path prefix is empty.
-      ODDZILLA_API_BASE: http://api:${API_PORT:-3001}
-      HEALTH_PORT: ${BANNER_GEN_HEALTH_PORT:-9091}
-    healthcheck:
-      <<: *hc
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${BANNER_GEN_HEALTH_PORT:-9091}/healthz"]
+  # NOTE: the ZillaBoost graphics-banner worker
+  # (services/zillaboost-banner-gen) is deliberately NOT a compose
+  # service. It runs on the operator PC next to ComfyUI — which is
+  # bound to 127.0.0.1 and must stay that way (unauthenticated
+  # admin-level code execution if exposed) — and dials OUT to
+  # /webhooks/banner-gen/* like services/support-ai-bot does. A
+  # server-side container briefly existed (2026-08-28, via tailscale)
+  # and was reverted the same day for exactly that reason.
 
   web1:
     <<: *web-base

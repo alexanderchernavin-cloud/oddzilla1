@@ -75,6 +75,19 @@ export async function runWorker(cfg: WorkerConfig): Promise<never> {
   );
 
   healthState.mode = "running";
+
+  // Heartbeat on its own timer, fire-and-forget, so the admin "image
+  // worker online" dot stays lit THROUGH long renders — the render is
+  // await-based fetches, so the event loop is free. TTL server-side is
+  // 90 s against this 30 s cadence.
+  const beat = () => {
+    api.heartbeat().catch((err) => {
+      log.debug({ err }, "heartbeat failed");
+    });
+  };
+  beat();
+  setInterval(beat, 30_000);
+
   for (;;) {
     // Image backend gate FIRST — never claim what we can't render.
     const up = await backendUp(cfg);

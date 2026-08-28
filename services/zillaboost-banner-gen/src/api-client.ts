@@ -48,6 +48,10 @@ export class WorkerApi {
     return (await res.json()) as T;
   }
 
+  heartbeat(): Promise<{ ok: boolean; lastSeen: string }> {
+    return this.call("/heartbeat", { method: "POST" });
+  }
+
   pending(limit: number): Promise<BannerGenPendingResponse> {
     return this.call(`/pending?limit=${limit}`, { method: "GET" });
   }

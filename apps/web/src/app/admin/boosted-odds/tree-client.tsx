@@ -42,6 +42,13 @@ export interface RuleGraphicsState {
   generatedAt: string | null;
 }
 
+/** Image-worker liveness + queue totals from /admin/boosted-odds/rules. */
+export interface ImageWorkerStatus {
+  online: boolean;
+  lastSeen: string | null;
+  queue: { pending: number; done: number; failed: number };
+}
+
 export interface RuleWithLabel extends RuleDto {
   refId: string;
   label: string;
@@ -155,12 +162,17 @@ const GREEN = "#16a34a";
 export function BoostedOddsBoard({
   initialSports,
   initialRules,
+  initialImageWorker = null,
 }: {
   initialSports: SportRow[];
   initialRules: RuleWithLabel[];
+  initialImageWorker?: ImageWorkerStatus | null;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [rules, setRules] = useState<RuleWithLabel[]>(initialRules);
+  const [imageWorker, setImageWorker] = useState<ImageWorkerStatus | null>(
+    initialImageWorker,
+  );
   const [sports, setSports] = useState<SportRow[]>(initialSports);
   // Storefront order: CS2 / Dota 2 / LoL / Valorant pinned, the rest
   // alphabetical, bot sports hidden — identical to the sidebar.
@@ -183,10 +195,13 @@ export function BoostedOddsBoard({
   const refreshSummary = useCallback(async () => {
     try {
       const [r, s] = await Promise.all([
-        clientApi<{ rules: RuleWithLabel[] }>("/admin/boosted-odds/rules"),
+        clientApi<{ rules: RuleWithLabel[]; imageWorker?: ImageWorkerStatus }>(
+          "/admin/boosted-odds/rules",
+        ),
         clientApi<{ entries: SportRow[] }>("/admin/boosted-odds/sports"),
       ]);
       setRules(r.rules);
+      setImageWorker(r.imageWorker ?? null);
       setSports(s.entries);
     } catch {
       // Non-fatal — the next mutation retries.
@@ -221,6 +236,8 @@ export function BoostedOddsBoard({
           {error}
         </div>
       )}
+
+      {imageWorker && <ImageWorkerStrip status={imageWorker} />}
 
       <ActiveRulesTable
         rules={rules}
@@ -1493,6 +1510,49 @@ function TierBadge({ tier }: { tier: number | null }) {
     >
       T{unset ? "—" : tier}
     </span>
+  );
+}
+
+// Image-worker status strip: liveness dot (heartbeat-driven, same
+// mechanism as the support assistant's online indicator) + queue
+// totals. Offline is a NORMAL state — the worker runs on the operator
+// PC and jobs simply wait while it's off.
+function ImageWorkerStrip({ status }: { status: ImageWorkerStatus }) {
+  const anyGraphics =
+    status.queue.pending + status.queue.done + status.queue.failed > 0;
+  // Nothing to say when the feature is unused and the worker is off.
+  if (!anyGraphics && !status.online) return null;
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        fontSize: 12,
+        color: "var(--color-fg-muted)",
+      }}
+    >
+      <span
+        aria-hidden
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: 999,
+          flexShrink: 0,
+          background: status.online ? "#16a34a" : "var(--color-border)",
+        }}
+      />
+      <span>
+        Image worker {status.online ? "online" : "offline"}
+        {!status.online && status.queue.pending > 0
+          ? " — queued graphics wait until the operator PC is back"
+          : ""}
+      </span>
+      <span className="mono tnum" style={{ marginLeft: "auto" }}>
+        {status.queue.pending} queued · {status.queue.done} ready
+        {status.queue.failed > 0 ? ` · ${status.queue.failed} failed` : ""}
+      </span>
+    </div>
   );
 }
 
