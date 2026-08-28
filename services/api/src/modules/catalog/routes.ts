@@ -35,6 +35,18 @@ import {
 import { NotFoundError } from "../../lib/errors.js";
 import { cached } from "../../lib/cache.js";
 import {
+  loadBoostRulesForMatches,
+  loadViewerRiskScore,
+  toQuoteRule,
+  type BatchedMatchBoosts,
+  type MatchBoostContext,
+} from "../../lib/boosted-odds.js";
+import {
+  quoteMarketBoost,
+  type BoostQuoteCell,
+  type BoostQuoteRule,
+} from "@oddzilla/types";
+import {
   loadPromoVisibilityCascades,
   resolveVisible,
 } from "../../lib/bettor-promo-visibility.js";
@@ -393,6 +405,83 @@ interface MatchWinnerPair {
   drawOutcomeId: string | null;
   drawPrice: string | null;
   drawProbability: string | null;
+  /**
+   * The chosen market's FULL active+priced outcome set, raw published
+   * odds. ZillaBoost's key math needs the whole book (it shaves the
+   * market's key, so a two-way boost derived from only one side would be
+   * wrong), and the boost is computed from the RAW price — matching
+   * validateCustomBoostForBet, so the price on the card is exactly the
+   * price placement will re-derive. Boosted legs bypass the per-bettor
+   * odds adjustment at placement too, so skipping it here is consistent.
+   */
+  boostOutcomes: Array<{ outcomeId: string; publishedOdds: number }>;
+}
+
+/**
+ * ZillaBoost the inline match-winner row of a list card.
+ *
+ * The match-detail page recomputes boosts client-side from live WS ticks;
+ * a list card has no per-outcome WS subscription and is server-rendered,
+ * so the list prices its one market here instead. Returns the boosted
+ * cells keyed by outcomeId, or null when nothing applies (no rule, the
+ * fair-book clamp swallowed the boost, or the price didn't move at
+ * display precision).
+ */
+interface MatchWinnerBoostQuote {
+  /** Boosted cells for the CURRENT server-side prices (SSR render). */
+  cells: Map<string, BoostQuoteCell>;
+  /** Resolved market-wide rule, for the client's per-tick re-price. */
+  marketWide: BoostQuoteRule | null;
+  /** Resolved outcome-scope rules, keyed by outcomeId. */
+  selections: Record<string, BoostQuoteRule> | null;
+}
+
+function quoteMatchWinnerBoost(
+  pair: MatchWinnerPair,
+  ctx: MatchBoostContext,
+  boosts: BatchedMatchBoosts,
+): MatchWinnerBoostQuote | null {
+  if (boosts.empty) return null;
+  const marketId = BigInt(pair.homeMarketId);
+  const marketWideRule = boosts.marketWide(ctx, marketId);
+  const selectionRules = boosts.selections(marketId);
+  const hasSelections = !!selectionRules && selectionRules.size > 0;
+  if (!marketWideRule && !hasSelections) return null;
+
+  const marketWide = marketWideRule ? toQuoteRule(marketWideRule) : null;
+  const selections = hasSelections
+    ? new Map([...selectionRules].map(([k, v]) => [k, toQuoteRule(v)]))
+    : null;
+  // The RULE is returned even when it currently prices to nothing (the
+  // fair-book clamp swallowed it, or the price didn't move at display
+  // precision). The client re-prices on every WS tick, so a boost that
+  // is invisible now can materialise a tick later — withholding the rule
+  // would leave the row permanently unboosted until the next SSR load.
+  const cells =
+    pair.boostOutcomes.length > 0
+      ? quoteMarketBoost({
+          outcomes: pair.boostOutcomes,
+          marketWide,
+          selections,
+        })
+      : [];
+  return {
+    cells: new Map(cells.map((c) => [c.outcomeId, c])),
+    marketWide,
+    selections: selections ? Object.fromEntries(selections) : null,
+  };
+}
+
+/** Serialised boost attached to one list-card price. */
+function boostDto(cell: BoostQuoteCell | undefined) {
+  if (!cell) return null;
+  return {
+    ruleId: cell.ruleId,
+    boostPct: cell.boostPct,
+    endsAt: cell.endsAt,
+    /** Pre-boost price, for the struck-through original on the card. */
+    originalPrice: cell.originalOdds,
+  };
 }
 
 async function loadMatchWinnerOdds(
@@ -463,6 +552,16 @@ async function loadMatchWinnerOdds(
       drawOutcomeId: draw ? draw.outcomeId : null,
       drawPrice: draw ? (draw.active ? draw.publishedOdds : null) : null,
       drawProbability: draw?.probability ?? null,
+      // >= 1 in parity with the client compute and placement: a favorite
+      // at exactly 1.00 stays in the set so a live near-decided market
+      // doesn't lose its boost on every tick.
+      boostOutcomes: best
+        .filter((o) => o.active && o.publishedOdds !== null)
+        .map((o) => ({
+          outcomeId: o.outcomeId,
+          publishedOdds: Number(o.publishedOdds),
+        }))
+        .filter((o) => Number.isFinite(o.publishedOdds) && o.publishedOdds >= 1),
     });
   }
   return out;
@@ -922,6 +1021,9 @@ export default async function catalogRoutes(app: FastifyInstance) {
         tournamentId: tournaments.id,
         tournamentName: tournaments.name,
         tournamentRiskTier: tournaments.riskTier,
+        // Needed for the competitor tier of the ZillaBoost cascade.
+        homeCompetitorId: matches.homeCompetitorId,
+        awayCompetitorId: matches.awayCompetitorId,
       })
       .from(matches)
       .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
@@ -988,14 +1090,37 @@ export default async function catalogRoutes(app: FastifyInstance) {
       return applyBettorAdjustment(raw, probability, bp);
     };
 
-    // Inline Top market per card (when admin configured the Top scope
-     // for this sport). Returned alongside matchWinner so the storefront
-     // can show either depending on which list-page tab is active.
-    const topMarkets = await loadTopMarketsForMatches(
+    // ZillaBoost for the inline match-winner row. Sequential because it
+    // needs the market ids that loadMatchWinnerOdds just resolved. The
+    // match page recomputes boosts client-side per WS tick; a list card
+    // has no per-outcome subscription, so it's priced here.
+    const boostCtxBySport: MatchBoostContext[] = rows.map((r) => ({
+      matchId: r.matchId,
+      tournamentId: r.tournamentId,
+      sportId: sport.id,
+      homeCompetitorId: r.homeCompetitorId,
+      awayCompetitorId: r.awayCompetitorId,
+    }));
+    const [viewerRiskScore, topMarkets] = await Promise.all([
+      loadViewerRiskScore(app.db, request.user?.id),
+      // Inline Top market per card (when admin configured the Top scope
+      // for this sport). Returned alongside matchWinner so the storefront
+      // can show either depending on which list-page tab is active.
+      loadTopMarketsForMatches(
+        app.db,
+        rows.map((r) => ({ matchId: r.matchId, sportId: sport.id })),
+        topIdsBySport,
+        formatForMatch,
+      ),
+    ]);
+    const boosts = await loadBoostRulesForMatches(
       app.db,
-      rows.map((r) => ({ matchId: r.matchId, sportId: sport.id })),
-      topIdsBySport,
-      formatForMatch,
+      boostCtxBySport,
+      Array.from(oddsByMatch.values()).map((o) => BigInt(o.homeMarketId)),
+      viewerRiskScore,
+    );
+    const boostCtxByMatch = new Map(
+      boostCtxBySport.map((c) => [c.matchId.toString(), c]),
     );
 
     return {
@@ -1029,34 +1154,80 @@ export default async function catalogRoutes(app: FastifyInstance) {
             riskTier: r.tournamentRiskTier,
           },
           matchWinner: o
-            ? {
-                marketId: o.homeMarketId,
-                home: {
-                  outcomeId: o.homeOutcomeId,
-                  price: applyBettorAdjustment(o.homePrice, o.homeProbability, bp),
-                  probability: o.homeProbability,
-                },
-                away: {
-                  outcomeId: o.awayOutcomeId,
-                  price: applyBettorAdjustment(o.awayPrice, o.awayProbability, bp),
-                  probability: o.awayProbability,
-                },
-                // Present only when the match-winner market is 3-way
-                // (BO2 esports, 1X2 sports). Storefront list cards
-                // grow a "Draw" row between home and away when this
-                // field is non-null.
-                draw: o.drawOutcomeId
-                  ? {
-                      outcomeId: o.drawOutcomeId,
-                      price: applyBettorAdjustment(
-                        o.drawPrice,
-                        o.drawProbability,
-                        bp,
-                      ),
-                      probability: o.drawProbability,
-                    }
-                  : null,
-              }
+            ? (() => {
+                // A boosted cell REPLACES the adjusted price outright:
+                // placement prices a boosted leg from the raw published
+                // odds and skips the per-bettor adjustment entirely
+                // (bets/service.ts branches on boostedOddsRuleId before
+                // the adjustment branch), so the card has to show the
+                // number placement will re-derive — otherwise the
+                // bettor is quoted one price and charged another.
+                const bctx = boostCtxByMatch.get(r.matchId.toString());
+                const bq = bctx ? quoteMatchWinnerBoost(o, bctx, boosts) : null;
+                const cells = bq?.cells;
+                const homeCell = cells?.get(o.homeOutcomeId);
+                const awayCell = cells?.get(o.awayOutcomeId);
+                const drawCell = o.drawOutcomeId
+                  ? cells?.get(o.drawOutcomeId)
+                  : undefined;
+                return {
+                  marketId: o.homeMarketId,
+                  // Resolved boost inputs so the client can re-price this
+                  // row from live WS ticks. Without them the first tick
+                  // would replace the boosted price with the raw one and
+                  // the boost would visibly flicker off — the same bug
+                  // 32286a7 fixed on the match page.
+                  boostRule: bq?.marketWide ?? null,
+                  boostSelections: bq?.selections ?? null,
+                  home: {
+                    outcomeId: o.homeOutcomeId,
+                    // Suspended (price null) stays null — a boost must
+                    // never resurrect an unbettable outcome.
+                    price:
+                      o.homePrice !== null && homeCell
+                        ? homeCell.boostedOdds
+                        : applyBettorAdjustment(
+                            o.homePrice,
+                            o.homeProbability,
+                            bp,
+                          ),
+                    probability: o.homeProbability,
+                    boost: o.homePrice !== null ? boostDto(homeCell) : null,
+                  },
+                  away: {
+                    outcomeId: o.awayOutcomeId,
+                    price:
+                      o.awayPrice !== null && awayCell
+                        ? awayCell.boostedOdds
+                        : applyBettorAdjustment(
+                            o.awayPrice,
+                            o.awayProbability,
+                            bp,
+                          ),
+                    probability: o.awayProbability,
+                    boost: o.awayPrice !== null ? boostDto(awayCell) : null,
+                  },
+                  // Present only when the match-winner market is 3-way
+                  // (BO2 esports, 1X2 sports). Storefront list cards
+                  // grow a "Draw" row between home and away when this
+                  // field is non-null.
+                  draw: o.drawOutcomeId
+                    ? {
+                        outcomeId: o.drawOutcomeId,
+                        price:
+                          o.drawPrice !== null && drawCell
+                            ? drawCell.boostedOdds
+                            : applyBettorAdjustment(
+                                o.drawPrice,
+                                o.drawProbability,
+                                bp,
+                              ),
+                        probability: o.drawProbability,
+                        boost: o.drawPrice !== null ? boostDto(drawCell) : null,
+                      }
+                    : null,
+                };
+              })()
             : null,
           topMarket: top,
         };
@@ -1690,6 +1861,9 @@ export default async function catalogRoutes(app: FastifyInstance) {
         sportId: sports.id,
         sportSlug: sports.slug,
         sportName: sports.name,
+        // Needed for the competitor tier of the ZillaBoost cascade.
+        homeCompetitorId: matches.homeCompetitorId,
+        awayCompetitorId: matches.awayCompetitorId,
       })
       .from(matches)
       .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
@@ -1748,14 +1922,35 @@ export default async function catalogRoutes(app: FastifyInstance) {
       return applyBettorAdjustment(raw, probability, bp);
     };
 
+    // ZillaBoost for the inline match-winner row — see the sport-page
+    // handler for why the list prices this server-side.
+    const boostCtxList: MatchBoostContext[] = rows.map((r) => ({
+      matchId: r.matchId,
+      tournamentId: r.tournamentId,
+      sportId: r.sportId,
+      homeCompetitorId: r.homeCompetitorId,
+      awayCompetitorId: r.awayCompetitorId,
+    }));
     // Inline Top markets per card. We fetch the curated id list per
     // sport once (typically a handful of distinct sports in any list
     // response), then resolve the first available Top market per match.
-    const topMarkets = await loadTopMarketsForMatches(
+    const [viewerRiskScore, topMarkets] = await Promise.all([
+      loadViewerRiskScore(app.db, request.user?.id),
+      loadTopMarketsForMatches(
+        app.db,
+        rows.map((r) => ({ matchId: r.matchId, sportId: r.sportId })),
+        topIdsBySport,
+        formatForMatch,
+      ),
+    ]);
+    const boosts = await loadBoostRulesForMatches(
       app.db,
-      rows.map((r) => ({ matchId: r.matchId, sportId: r.sportId })),
-      topIdsBySport,
-      formatForMatch,
+      boostCtxList,
+      Array.from(oddsByMatch.values()).map((o) => BigInt(o.homeMarketId)),
+      viewerRiskScore,
+    );
+    const boostCtxByMatch = new Map(
+      boostCtxList.map((c) => [c.matchId.toString(), c]),
     );
     const topConfiguredSports: Record<string, boolean> = {};
     for (const r of rows) {
@@ -1790,34 +1985,80 @@ export default async function catalogRoutes(app: FastifyInstance) {
           },
           sport: { slug: r.sportSlug, name: r.sportName },
           matchWinner: o
-            ? {
-                marketId: o.homeMarketId,
-                home: {
-                  outcomeId: o.homeOutcomeId,
-                  price: applyBettorAdjustment(o.homePrice, o.homeProbability, bp),
-                  probability: o.homeProbability,
-                },
-                away: {
-                  outcomeId: o.awayOutcomeId,
-                  price: applyBettorAdjustment(o.awayPrice, o.awayProbability, bp),
-                  probability: o.awayProbability,
-                },
-                // Present only when the match-winner market is 3-way
-                // (BO2 esports, 1X2 sports). Storefront list cards
-                // grow a "Draw" row between home and away when this
-                // field is non-null.
-                draw: o.drawOutcomeId
-                  ? {
-                      outcomeId: o.drawOutcomeId,
-                      price: applyBettorAdjustment(
-                        o.drawPrice,
-                        o.drawProbability,
-                        bp,
-                      ),
-                      probability: o.drawProbability,
-                    }
-                  : null,
-              }
+            ? (() => {
+                // A boosted cell REPLACES the adjusted price outright:
+                // placement prices a boosted leg from the raw published
+                // odds and skips the per-bettor adjustment entirely
+                // (bets/service.ts branches on boostedOddsRuleId before
+                // the adjustment branch), so the card has to show the
+                // number placement will re-derive — otherwise the
+                // bettor is quoted one price and charged another.
+                const bctx = boostCtxByMatch.get(r.matchId.toString());
+                const bq = bctx ? quoteMatchWinnerBoost(o, bctx, boosts) : null;
+                const cells = bq?.cells;
+                const homeCell = cells?.get(o.homeOutcomeId);
+                const awayCell = cells?.get(o.awayOutcomeId);
+                const drawCell = o.drawOutcomeId
+                  ? cells?.get(o.drawOutcomeId)
+                  : undefined;
+                return {
+                  marketId: o.homeMarketId,
+                  // Resolved boost inputs so the client can re-price this
+                  // row from live WS ticks. Without them the first tick
+                  // would replace the boosted price with the raw one and
+                  // the boost would visibly flicker off — the same bug
+                  // 32286a7 fixed on the match page.
+                  boostRule: bq?.marketWide ?? null,
+                  boostSelections: bq?.selections ?? null,
+                  home: {
+                    outcomeId: o.homeOutcomeId,
+                    // Suspended (price null) stays null — a boost must
+                    // never resurrect an unbettable outcome.
+                    price:
+                      o.homePrice !== null && homeCell
+                        ? homeCell.boostedOdds
+                        : applyBettorAdjustment(
+                            o.homePrice,
+                            o.homeProbability,
+                            bp,
+                          ),
+                    probability: o.homeProbability,
+                    boost: o.homePrice !== null ? boostDto(homeCell) : null,
+                  },
+                  away: {
+                    outcomeId: o.awayOutcomeId,
+                    price:
+                      o.awayPrice !== null && awayCell
+                        ? awayCell.boostedOdds
+                        : applyBettorAdjustment(
+                            o.awayPrice,
+                            o.awayProbability,
+                            bp,
+                          ),
+                    probability: o.awayProbability,
+                    boost: o.awayPrice !== null ? boostDto(awayCell) : null,
+                  },
+                  // Present only when the match-winner market is 3-way
+                  // (BO2 esports, 1X2 sports). Storefront list cards
+                  // grow a "Draw" row between home and away when this
+                  // field is non-null.
+                  draw: o.drawOutcomeId
+                    ? {
+                        outcomeId: o.drawOutcomeId,
+                        price:
+                          o.drawPrice !== null && drawCell
+                            ? drawCell.boostedOdds
+                            : applyBettorAdjustment(
+                                o.drawPrice,
+                                o.drawProbability,
+                                bp,
+                              ),
+                        probability: o.drawProbability,
+                        boost: o.drawPrice !== null ? boostDto(drawCell) : null,
+                      }
+                    : null,
+                };
+              })()
             : null,
           topMarket: top,
         };
