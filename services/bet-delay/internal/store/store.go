@@ -8,11 +8,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// RiskZilla bank bookkeeping is USDC-only: the engine bypasses the OZ
+// demo currency entirely, so no OZ ticket ever contributes to
+// riskzilla_bank_state.open_liability_micro. Every writer of that
+// counter must gate on this, in both directions -- an unguarded
+// increment injects a phantom balance the (guarded) decrements can
+// never remove.
+const riskzillaCurrency = "USDC"
 
 type Store struct {
 	pool *pgxpool.Pool
@@ -288,7 +297,7 @@ type UpdatedLegOdds struct {
 func AcceptWithUpdatedOdds(
 	ctx context.Context,
 	tx pgx.Tx,
-	ticketID string,
+	ticketID, currency string,
 	oldPayoutMicro int64,
 	newPayoutMicro int64,
 	legs []UpdatedLegOdds,
@@ -318,8 +327,18 @@ UPDATE tickets
 	// (newPayoutMicro - oldPayoutMicro) until the next recompute. The
 	// table is a singleton (id=1) but we don't depend on the literal
 	// here in case the row layout changes.
+	//
+	// USDC-only, like every other writer of this counter (the engine's
+	// placement bump, settlement's settle/reverse, RejectAndRefund
+	// below). The engine bypasses OZ entirely, so for an OZ ticket
+	// oldPayoutMicro was never added -- applying the delta here injects
+	// a phantom balance that NOTHING ever removes, because settlement's
+	// decrement is itself USDC-gated. That is exactly how 8.5 "USDC" of
+	// open liability accumulated from OZ re-prices after the 2026-06-04
+	// recompute zeroed the counter. Currency is CHAR(4), so "OZ" arrives
+	// padded -- trim before comparing.
 	delta := newPayoutMicro - oldPayoutMicro
-	if delta != 0 {
+	if strings.TrimSpace(currency) == riskzillaCurrency && delta != 0 {
 		if _, err := tx.Exec(ctx, `
 UPDATE riskzilla_bank_state
    SET open_liability_micro = open_liability_micro + $1`, delta); err != nil {
@@ -368,7 +387,7 @@ ON CONFLICT (type, ref_type, ref_id) WHERE ref_id IS NOT NULL DO NOTHING`,
 	// never touches the counter, so guard on currency. GREATEST(0, …)
 	// mirrors settlement's UpdateRiskzillaBankOnSettle and prevents
 	// underflow. Singleton row, no WHERE — matches the accept path above.
-	if currency == "USDC" && potentialPayoutMicro > 0 {
+	if strings.TrimSpace(currency) == riskzillaCurrency && potentialPayoutMicro > 0 {
 		if _, err := tx.Exec(ctx, `
 UPDATE riskzilla_bank_state
    SET open_liability_micro = GREATEST(0, open_liability_micro - $1)`, potentialPayoutMicro); err != nil {

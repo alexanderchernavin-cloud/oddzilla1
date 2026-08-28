@@ -272,7 +272,7 @@ func (w *Worker) processTicket(ctx context.Context, p store.PendingTicket) error
 
 	case actionAcceptWithUpdatedOdds:
 		if err := store.AcceptWithUpdatedOdds(
-			ctx, tx, p.ID, p.PotentialPayoutMicro, decision.newPayoutMicro, decision.updatedLegs,
+			ctx, tx, p.ID, p.Currency, p.PotentialPayoutMicro, decision.newPayoutMicro, decision.updatedLegs,
 		); err != nil {
 			return err
 		}
