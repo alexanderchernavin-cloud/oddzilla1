@@ -124,7 +124,10 @@ export function useZillaBoostBanners(): ZillaBoostBannersSnapshot {
         (b) => b.endsAt === null || new Date(b.endsAt).getTime() > nowMs,
       );
     return {
-      sports: data.sports,
+      // Sport banners carry endsAt too (they render a countdown chip and
+      // a home banner, not just the sidebar bolt), so they expire between
+      // polls like every other scope.
+      sports: fresh(data.sports),
       tournaments: fresh(data.tournaments),
       matches: fresh(data.matches),
       markets: fresh(data.markets),

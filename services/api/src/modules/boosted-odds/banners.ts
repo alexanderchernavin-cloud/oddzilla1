@@ -36,6 +36,7 @@ import type {
   ZillaBoostBannersResponse,
   ZillaBoostMarketBanner,
   ZillaBoostMatchBanner,
+  ZillaBoostSportBanner,
   ZillaBoostTournamentBanner,
 } from "@oddzilla/types";
 import { isQuotableOutcomeOdds } from "@oddzilla/types";
@@ -197,11 +198,29 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
 
     const out = EMPTY();
 
-    // ── sport scope → sidebar icons ─────────────────────────────────
+    // ── sport scope → home banner + sidebar icon ────────────────────
+    // A sport-wide boost gets a banner of its own, shaped like the
+    // tournament one and carrying no odds (it covers every market of
+    // every match under the sport, so there is no single price to
+    // quote). The bolt icon in the sidebar rides the same array.
     const sportRules = rules.filter((r) => r.scope === "sport");
     if (sportRules.length > 0) {
       const rows = await app.db
-        .select({ id: sports.id, slug: sports.slug })
+        .select({
+          id: sports.id,
+          slug: sports.slug,
+          name: sports.name,
+          logoUrl: sports.logoUrl,
+          brandColor: sports.brandColor,
+          matchCount: sql<number>`(
+            SELECT count(*)::int FROM matches m
+             JOIN tournaments t ON t.id = m.tournament_id
+             JOIN categories c ON c.id = t.category_id
+             WHERE c.sport_id = ${sports.id}
+               AND m.status IN ('not_started','live')
+               AND EXISTS (SELECT 1 FROM markets mk WHERE mk.match_id = m.id AND mk.status = 1)
+          )`,
+        })
         .from(sports)
         .where(
           and(
@@ -210,11 +229,27 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
           ),
         );
       const bySport = new Map(sportRules.map((r) => [r.sportId!, r]));
-      out.sports = rows.map((s) => ({
-        sportId: s.id,
-        slug: s.slug,
-        boostPct: Number(bySport.get(s.id)!.boostPct),
-      }));
+      // Not gated on matchCount — same as the tournament banner, which
+      // renders with its count whatever that count is. Silently dropping
+      // a banner the operator explicitly asked for is what made this
+      // look broken in the first place.
+      out.sports = rows.flatMap((s): ZillaBoostSportBanner[] => {
+        const rule = bySport.get(s.id);
+        if (!rule) return [];
+        return [
+          {
+            ruleId: rule.id,
+            boostPct: Number(rule.boostPct),
+            endsAt: rule.endsAt?.toISOString() ?? null,
+            sportId: s.id,
+            slug: s.slug,
+            name: s.name,
+            logoUrl: s.logoUrl,
+            brandColor: s.brandColor,
+            matchCount: s.matchCount,
+          },
+        ];
+      });
     }
 
     // ── tournament scope → tournament banners ───────────────────────

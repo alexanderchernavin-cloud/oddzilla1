@@ -377,6 +377,7 @@
     "subtitle": "Boosts escolhidos pela casa",
     "openTournament": "Abrir torneio",
     "openMatch": "Abrir partida",
+    "openSport": "Abrir esporte",
     "openMatchForPrices": "Abra a partida para ver as odds turbinadas",
     "matchesCount": "{count, plural, one {# partida} other {# partidas}}"
   },
