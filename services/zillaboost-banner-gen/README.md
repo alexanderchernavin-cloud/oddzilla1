@@ -1,9 +1,17 @@
 # zillaboost-banner-gen
 
-Operator-PC worker that generates AI graphics for ZillaBoost promo
-banners. NOT part of the docker stack — it runs wherever the local
-models live (or any always-on PC that can reach them) and dials OUT to
-the production API; the server never connects to the LAN.
+Worker that generates AI graphics for ZillaBoost promo banners.
+
+**Primary deployment (since the tailnet): the `banner-gen` compose
+service on the production box.** tailscaled runs on the HOST and joins
+the operator's tailnet; the container reaches the model PC's LM Studio +
+image server through it (containers route to `100.64.0.0/10` via the
+host, no extra network config). Set `LM_STUDIO_BASE_URL` /
+`IMAGE_API_BASE` in the server `.env` to the PC's tailnet name and
+`make recreate banner-gen`.
+
+It can equally run straight on any PC (`pnpm start` with a local
+`.env`) — the queue's claim leases make concurrent workers safe.
 
 ## Flow
 
