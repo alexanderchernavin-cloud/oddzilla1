@@ -268,6 +268,7 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
             status: zillaboostBannerImageJobs.status,
             attempts: zillaboostBannerImageJobs.attempts,
             lastError: zillaboostBannerImageJobs.lastError,
+            lastPrompt: zillaboostBannerImageJobs.lastPrompt,
             generatedAt: zillaboostBannerImageJobs.generatedAt,
           })
           .from(zillaboostBannerImageJobs)
@@ -311,11 +312,19 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
           const j = jobByRule.get(r.id);
           // Flag on but no job row: legacy rule from before 0089 or a
           // manual DB edit — render as pending-shaped "queued" anyway.
-          if (!j) return { status: "pending" as const, attempts: 0, lastError: null, generatedAt: null };
+          if (!j)
+            return {
+              status: "pending" as const,
+              attempts: 0,
+              lastError: null,
+              lastPrompt: null,
+              generatedAt: null,
+            };
           return {
             status: j.status as "pending" | "done" | "failed",
             attempts: j.attempts,
             lastError: j.lastError,
+            lastPrompt: j.lastPrompt,
             generatedAt: j.generatedAt?.toISOString() ?? null,
           };
         })(),
