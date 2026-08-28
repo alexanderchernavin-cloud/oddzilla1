@@ -55,6 +55,14 @@ async function loadSharp(): Promise<SharpModule | null> {
   return sharpPromise;
 }
 
+/** "#RRGGBB" (with or without the hash) → normalised, or null. */
+function normalizeHex(hex: string | null | undefined): string | null {
+  if (!hex) return null;
+  const clean = hex.trim();
+  if (!/^#?[0-9a-fA-F]{6}$/.test(clean)) return null;
+  return clean.startsWith("#") ? clean : `#${clean}`;
+}
+
 function escapeXml(s: string): string {
   return s
     .replaceAll("&", "&amp;")
@@ -171,7 +179,7 @@ function geometry(w: number, h: number): Geometry {
  * radial darkening buys the same contrast for a light logo on a bright
  * plate and stays invisible as a shape.
  */
-function backdropSvg(g: Geometry, drawHalos: boolean): string {
+function backdropSvg(g: Geometry): string {
   const halo = (cx: number) =>
     `<ellipse cx="${cx}" cy="${g.crestCy}" rx="${g.haloRx}" ry="${g.haloRy}" fill="url(#halo)"/>`;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${g.w}" height="${g.h}">
@@ -188,7 +196,33 @@ function backdropSvg(g: Geometry, drawHalos: boolean): string {
     </radialGradient>
   </defs>
   <rect x="0" y="${g.bandTop}" width="${g.w}" height="${g.h - g.bandTop}" fill="url(#band)"/>
-  ${drawHalos ? halo(g.homeCx) + halo(g.awayCx) : ""}
+  ${halo(g.homeCx)}${halo(g.awayCx)}
+</svg>`;
+}
+
+/**
+ * Stand-in crest for a team with no `logo_url` — roughly 13% of
+ * competitors on the current feed. Without it one side wears a crest
+ * and the other wears nothing, which reads as a broken image rather
+ * than as a team that has no badge on file. Same shape the storefront
+ * falls back to (`TeamMark`: a disc in the brand colour carrying the
+ * first two characters of the name), so the art and the row underneath
+ * it agree.
+ */
+function monogramSvg(
+  g: Geometry,
+  font: string,
+  cx: number,
+  name: string,
+  brand: string | null,
+): string {
+  const family = `${escapeXml(font)}, Segoe UI, Arial, Helvetica, sans-serif`;
+  const r = Math.round(g.crestH * 0.5);
+  const fill = normalizeHex(brand) ?? "#2a2f3a";
+  const size = Math.round(r * 0.86);
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${g.w}" height="${g.h}">
+  <circle cx="${cx}" cy="${g.crestCy}" r="${r}" fill="${fill}" fill-opacity="0.92" stroke="rgba(255,255,255,0.28)" stroke-width="${Math.max(2, Math.round(r * 0.045))}"/>
+  <text x="${cx}" y="${g.crestCy + size * 0.35}" text-anchor="middle" font-family="${family}" font-size="${size}" font-weight="700" letter-spacing="1" fill="#ffffff">${escapeXml(name.trim().slice(0, 2).toUpperCase())}</text>
 </svg>`;
 }
 
@@ -216,7 +250,10 @@ export interface ComposedImage {
     outputWidth: number;
     outputHeight: number;
     outputFormat: string;
+    /** Real crests composited (0-2). */
     crests: number;
+    /** Sides that fell back to an initials disc for want of a logo_url. */
+    monograms: number;
   };
 }
 
@@ -240,6 +277,7 @@ export async function composeBanner(
       outputHeight: cfg.imageHeight,
       outputFormat: "png",
       crests: 0,
+      monograms: 0,
     },
   });
   if (!sharp) return encodeRaw();
@@ -256,6 +294,7 @@ export async function composeBanner(
       cfg.compose && versusScope && !!c.homeTeam && !!c.awayTeam;
 
     let crests = 0;
+    let monograms = 0;
     if (wantsOverlay) {
       const g = geometry(w, h);
       const [homeRaw, awayRaw] = await Promise.all([
@@ -288,16 +327,27 @@ export async function composeBanner(
         fitCrest(awayRaw),
       ]);
       crests = (home ? 1 : 0) + (away ? 1 : 0);
+      monograms = 2 - crests;
 
       const layers: Array<{ input: Buffer; top: number; left: number }> = [
-        {
-          input: Buffer.from(backdropSvg(g, crests > 0)),
-          top: 0,
-          left: 0,
-        },
+        { input: Buffer.from(backdropSvg(g)), top: 0, left: 0 },
       ];
-      const place = async (buf: Buffer | null, cx: number) => {
-        if (!buf) return;
+      const place = async (
+        buf: Buffer | null,
+        cx: number,
+        name: string,
+        brand: string | null,
+      ) => {
+        if (!buf) {
+          // No crest on file — stand-in disc, so both sides carry a mark
+          // and the versus composition stays symmetric.
+          layers.push({
+            input: Buffer.from(monogramSvg(g, cfg.composeFont, cx, name, brand)),
+            top: 0,
+            left: 0,
+          });
+          return;
+        }
         const m = await sharp(buf).metadata();
         layers.push({
           input: buf,
@@ -305,8 +355,8 @@ export async function composeBanner(
           top: Math.round(g.crestCy - (m.height ?? g.crestH) / 2),
         });
       };
-      await place(home, g.homeCx);
-      await place(away, g.awayCx);
+      await place(home, g.homeCx, c.homeTeam!, c.homeBrandColor);
+      await place(away, g.awayCx, c.awayTeam!, c.awayBrandColor);
       layers.push({
         input: Buffer.from(
           textSvg(g, cfg.composeFont, c.homeTeam!, c.awayTeam!),
@@ -330,6 +380,7 @@ export async function composeBanner(
         outputHeight: h,
         outputFormat: cfg.outputFormat,
         crests,
+        monograms,
       },
     };
   } catch (err) {
