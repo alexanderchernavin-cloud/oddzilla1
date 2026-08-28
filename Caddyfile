@@ -93,6 +93,15 @@
 		request_body @support_uploads {
 			max_size 60MB
 		}
+		# The ZillaBoost image worker uploads finished banner graphics as
+		# base64 JSON — the 4 MiB decoded cap is ~5.6 MiB encoded. 8 MiB
+		# matches the route's own bodyLimit (banner-gen.ts). The first
+		# live render (834 KB body) squeaked under the 1 MiB default;
+		# a real 3:1 banner would not have.
+		@banner_gen_uploads path /webhooks/banner-gen/*/jobs/*/complete
+		request_body @banner_gen_uploads {
+			max_size 8MB
+		}
 		# Cap request bodies at the edge — Fastify's per-route default is
 		# 1 MiB but slow uploaders still tie up api memory while the body
 		# streams in. Matches the largest legitimate admin payload (the
