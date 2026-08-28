@@ -24,6 +24,7 @@ import type { WorkerConfig } from "./config.js";
 import { backendUp, generateImage } from "./imagegen.js";
 import { authorPrompt, entitiesOf } from "./prompt.js";
 import { researchEntities } from "./research.js";
+import { healthState } from "./health.js";
 import { log } from "./logger.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -73,9 +74,12 @@ export async function runWorker(cfg: WorkerConfig): Promise<never> {
     "zillaboost-banner-gen worker starting",
   );
 
+  healthState.mode = "running";
   for (;;) {
     // Image backend gate FIRST — never claim what we can't render.
-    if (!(await backendUp(cfg))) {
+    const up = await backendUp(cfg);
+    healthState.backendUp = up;
+    if (!up) {
       log.warn(
         { retryInMs: cfg.backendRetryMs, imageApiBase: cfg.imageApiBase },
         "image backend unreachable — queued jobs wait server-side; retrying hourly",
@@ -85,6 +89,7 @@ export async function runWorker(cfg: WorkerConfig): Promise<never> {
     }
 
     try {
+      healthState.lastPollAt = new Date().toISOString();
       const { jobs } = await api.pending(3);
       if (jobs.length > 0) {
         log.info({ count: jobs.length }, "claimed jobs");

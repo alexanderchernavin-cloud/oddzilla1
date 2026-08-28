@@ -51,14 +51,9 @@ export interface WorkerConfig {
   wikipediaApiBase: string;
 }
 
-function req(name: string): string {
+function opt2(name: string): string | null {
   const v = process.env[name];
-  if (!v || v.trim() === "") {
-    // eslint-disable-next-line no-console
-    console.error(`[zillaboost-banner-gen] missing required env ${name}`);
-    process.exit(1);
-  }
-  return v.trim();
+  return v && v.trim() !== "" ? v.trim() : null;
 }
 
 function opt(name: string, fallback: string): string {
@@ -73,10 +68,18 @@ function num(name: string, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-export function loadConfig(): WorkerConfig {
+/**
+ * Null when the required env is absent — the caller PARKS instead of
+ * exiting (graceful-idle convention: the container must boot cleanly
+ * with creds unset, log a warning, and serve health only).
+ */
+export function loadConfig(): WorkerConfig | null {
+  const apiBase = opt2("ODDZILLA_API_BASE");
+  const token = opt2("BANNER_GEN_TOKEN");
+  if (!apiBase || !token) return null;
   return {
-    apiBase: req("ODDZILLA_API_BASE").replace(/\/+$/, ""),
-    token: req("BANNER_GEN_TOKEN"),
+    apiBase: apiBase.replace(/\/+$/, ""),
+    token,
     lmStudioBaseUrl: opt("LM_STUDIO_BASE_URL", "http://localhost:1234").replace(
       /\/+$/,
       "",
