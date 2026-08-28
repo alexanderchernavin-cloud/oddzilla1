@@ -15,6 +15,7 @@
 
 import type { BannerGenJob } from "@oddzilla/types";
 import type { WorkerConfig } from "./config.js";
+import { gameVocab } from "./game-vocab.js";
 import type { ResearchNote } from "./research.js";
 import { log } from "./logger.js";
 
@@ -23,23 +24,58 @@ const SYSTEM_PROMPT = `You write prompts for a Stable Diffusion-style image mode
 Rules, non-negotiable:
 - Output ONLY the image prompt as one comma-separated line. No preamble, no quotes, no explanations.
 - The image must contain NO text, NO numbers, NO letters, NO logos, NO watermarks, NO scoreboards.
-- Do not name real people. Do not render trademarked logos; evoke teams through colour palettes and atmosphere instead.
+- Do not name real people. Do not render trademarked logos or team crests.
+- START from the GAME WORLD clause given to you and keep its subject matter. It is ground truth about what this game looks like. Never substitute a different genre — a MOBA must not contain soldiers with guns, a shooter must not contain wizards.
+- If two teams are given, compose a VERSUS image: the two sides mirrored or converging, one team's colour dominating the left, the other's the right, clashing in the middle. Use the exact hex colours supplied as the two accent colours.
+- If one team or a tournament is given, use its supplied colour as the dominant accent.
+- Use the research notes for concrete regional or national flavour (a Ukrainian roster, a Brazilian roster, a Chinese league) expressed as colour, crowd, and setting — never as flags with text.
 - Style: premium esports promo art — dramatic arena lighting, depth of field, cinematic composition, dark moody background with vivid accent colours. Keep the left third of the frame calmer/darker (UI copy sits there).
-- Use the research notes to pick concrete, correct imagery: the actual game the entities play (e.g. tactical shooter agents for Valorant, MOBA arena for Dota 2), team colours, national or regional flavour.
+- Be specific and physical. Name what is happening in the frame. Do NOT write vague filler like "esports arena, neon lights, cinematic" and stop — that produces stock art indistinguishable between titles.
 - 40-80 words.`;
+
+/** "#RRGGBB" → a phrase the model can act on, or null. */
+function colorNote(label: string, hex: string | null): string | null {
+  if (!hex) return null;
+  const clean = hex.trim();
+  if (!/^#?[0-9a-fA-F]{6}$/.test(clean)) return null;
+  return `${label} colour ${clean.startsWith("#") ? clean : `#${clean}`}`;
+}
 
 function describeJob(job: BannerGenJob): string {
   const c = job.context;
+  const vocab = gameVocab(c.sportSlug);
+  const lines: string[] = [`GAME: ${vocab.label}.`, `GAME WORLD: ${vocab.scene}.`];
+
   if (c.homeTeam && c.awayTeam) {
-    return `A match between "${c.homeTeam}" and "${c.awayTeam}"${c.tournamentName ? ` at the tournament "${c.tournamentName}"` : ""}${c.sportName ? ` in the esport "${c.sportName}"` : ""}.`;
+    const colors = [
+      colorNote(`"${c.homeTeam}"`, c.homeBrandColor),
+      colorNote(`"${c.awayTeam}"`, c.awayBrandColor),
+    ].filter(Boolean);
+    lines.push(
+      `BOOSTED: the match "${c.homeTeam}" versus "${c.awayTeam}"${c.tournamentName ? ` at "${c.tournamentName}"` : ""}. Compose it as a versus image.`,
+    );
+    if (colors.length > 0) lines.push(`TEAM COLOURS: ${colors.join("; ")}.`);
+    else {
+      lines.push(
+        "TEAM COLOURS: not supplied — pick two strongly contrasting accent colours for the two sides.",
+      );
+    }
+  } else if (c.competitorName) {
+    lines.push(`BOOSTED: the team "${c.competitorName}".`);
+    const col = colorNote(`"${c.competitorName}"`, c.competitorBrandColor);
+    if (col) lines.push(`TEAM COLOUR: ${col}.`);
+  } else if (c.tournamentName) {
+    lines.push(
+      `BOOSTED: the tournament "${c.tournamentName}" — show its stage and crowd, championship scale.`,
+    );
+    const col = colorNote(`"${c.tournamentName}"`, c.tournamentBrandColor);
+    if (col) lines.push(`TOURNAMENT COLOUR: ${col}.`);
+  } else {
+    lines.push(
+      `BOOSTED: the whole game "${c.sportName ?? "esports"}" — a signature scene from it, no specific teams.`,
+    );
   }
-  if (c.competitorName) {
-    return `The team "${c.competitorName}"${c.sportName ? ` in the esport "${c.sportName}"` : ""}.`;
-  }
-  if (c.tournamentName) {
-    return `The tournament "${c.tournamentName}"${c.sportName ? ` in the esport "${c.sportName}"` : ""}.`;
-  }
-  return `The esport "${c.sportName ?? "esports"}" as a whole.`;
+  return lines.join("\n");
 }
 
 /** Entities worth researching, most specific first. */
@@ -64,7 +100,36 @@ async function discoverModel(cfg: WorkerConfig): Promise<string> {
 }
 
 const FALLBACK_STYLE =
-  "epic esports arena at night, dramatic volumetric stage lighting, holographic battle effects, cinematic wide shot, dark moody atmosphere with vivid neon accents, depth of field, no text, no logos, premium digital promo art";
+  "cinematic wide shot, dramatic volumetric stage lighting, dark moody atmosphere with vivid accent colours, depth of field, no text, no logos, premium digital promo art";
+
+/**
+ * Prompt used when the LLM is unreachable or returns nothing. Built
+ * from the deterministic game vocabulary rather than generic arena
+ * boilerplate, so a degraded run still produces a picture of the RIGHT
+ * GAME — the previous version fell back to "epic esports arena" for
+ * every title, which is exactly the stock look we're fixing.
+ */
+function fallbackPrompt(job: BannerGenJob): string {
+  const c = job.context;
+  const vocab = gameVocab(c.sportSlug);
+  const accents = [
+    c.homeBrandColor,
+    c.awayBrandColor,
+    c.competitorBrandColor,
+    c.tournamentBrandColor,
+  ]
+    .filter((h): h is string => !!h && /^#?[0-9a-fA-F]{6}$/.test(h.trim()))
+    .slice(0, 2);
+  const versus =
+    c.homeTeam && c.awayTeam
+      ? "two opposing sides converging from left and right, mirrored versus composition, "
+      : "";
+  const palette =
+    accents.length > 0
+      ? `accent colours ${accents.join(" and ")}, `
+      : "";
+  return `${vocab.scene}, ${versus}${palette}${FALLBACK_STYLE}`;
+}
 
 /**
  * Author the diffusion prompt. LLM failure falls back to a serviceable
@@ -110,8 +175,7 @@ export async function authorPrompt(
     return text.replaceAll(/\s+/g, " ").replace(/^["']|["']$/g, "").trim();
   } catch (err) {
     log.warn({ err, ruleId: job.ruleId }, "prompt LLM failed — using fallback");
-    const names = entitiesOf(job).join(", ");
-    return `${names ? `themed around ${names}, ` : ""}${FALLBACK_STYLE}`;
+    return fallbackPrompt(job);
   } finally {
     clearTimeout(timer);
   }

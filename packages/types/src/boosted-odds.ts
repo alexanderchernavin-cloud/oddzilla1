@@ -142,14 +142,24 @@ export interface BannerGenJob {
    * per scope: sport rules carry sportName/sportSlug; tournament rules
    * add tournamentName; match / market / outcome rules add the teams;
    * competitor rules carry competitorName. Never all at once.
+   *
+   * The brand colours matter more than they look: the prompt tells the
+   * image model to build a versus composition out of the two teams'
+   * actual palettes. Without them (they were missing until 2026-08-28)
+   * "evoke the teams through colour" is an instruction the model can't
+   * follow, and it falls back to stock neon arena art.
    */
   context: {
     sportName: string | null;
     sportSlug: string | null;
     tournamentName: string | null;
+    tournamentBrandColor: string | null;
     homeTeam: string | null;
+    homeBrandColor: string | null;
     awayTeam: string | null;
+    awayBrandColor: string | null;
     competitorName: string | null;
+    competitorBrandColor: string | null;
   };
 }
 

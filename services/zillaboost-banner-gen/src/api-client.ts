@@ -56,10 +56,22 @@ export class WorkerApi {
     return this.call(`/pending?limit=${limit}`, { method: "GET" });
   }
 
-  complete(ruleId: string, imageBase64: string, mime: string): Promise<unknown> {
+  complete(
+    ruleId: string,
+    imageBase64: string,
+    mime: string,
+    prompt?: string,
+  ): Promise<unknown> {
     return this.call(`/jobs/${ruleId}/complete`, {
       method: "POST",
-      body: JSON.stringify({ imageBase64, mime }),
+      // The prompt rides along so the backoffice can show WHY an image
+      // looks the way it does (migration 0090). Trimmed to the server's
+      // 4000-char cap.
+      body: JSON.stringify({
+        imageBase64,
+        mime,
+        ...(prompt ? { prompt: prompt.slice(0, 4000) } : null),
+      }),
     });
   }
 
