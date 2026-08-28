@@ -212,11 +212,18 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
           name: sports.name,
           logoUrl: sports.logoUrl,
           brandColor: sports.brandColor,
+          // The correlated column is spelled out literally: with a
+          // single-table FROM, Drizzle renders `${sports.id}` as the
+          // unqualified `"id"`, which is ambiguous against the
+          // subquery's own joins (m/t/c all have an id). The tournament
+          // banner's twin below gets away with `${tournaments.id}` only
+          // because its outer query has joins, which makes Drizzle
+          // qualify every column. Broke prod on 2026-08-28.
           matchCount: sql<number>`(
             SELECT count(*)::int FROM matches m
              JOIN tournaments t ON t.id = m.tournament_id
              JOIN categories c ON c.id = t.category_id
-             WHERE c.sport_id = ${sports.id}
+             WHERE c.sport_id = "sports"."id"
                AND m.status IN ('not_started','live')
                AND EXISTS (SELECT 1 FROM markets mk WHERE mk.match_id = m.id AND mk.status = 1)
           )`,
