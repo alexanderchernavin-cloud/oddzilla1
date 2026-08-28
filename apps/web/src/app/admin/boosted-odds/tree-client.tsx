@@ -39,6 +39,8 @@ export interface RuleGraphicsState {
   status: "pending" | "done" | "failed";
   attempts: number;
   lastError: string | null;
+  /** Diffusion prompt this image came from — hover the chip to read it. */
+  lastPrompt: string | null;
   generatedAt: string | null;
 }
 
@@ -1573,7 +1575,7 @@ function GraphicsChip({ state }: { state: RuleGraphicsState }) {
         state.status === "failed"
           ? `Generation failed after ${state.attempts} attempts: ${state.lastError ?? "unknown error"}. Untick + re-tick the graphics option to retry.`
           : state.status === "done"
-            ? `Generated ${state.generatedAt ? new Date(state.generatedAt).toLocaleString() : ""}`
+            ? `Generated ${state.generatedAt ? new Date(state.generatedAt).toLocaleString() : ""}${state.lastPrompt ? `\n\nPrompt:\n${state.lastPrompt}` : ""}`
             : `Waiting for the image worker${state.attempts > 0 ? ` (${state.attempts} failed attempts so far${state.lastError ? `; last: ${state.lastError}` : ""})` : ""} — jobs are processed when the operator PC is online.`
       }
       style={{
