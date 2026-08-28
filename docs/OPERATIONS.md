@@ -1049,7 +1049,7 @@ main, so this fast-forwards):
 ```powershell
 git fetch D:\AI\delta.bundle "refs/remotes/origin/main:refs/remotes/origin/bundlemain"
 git merge --ff-only refs/remotes/origin/bundlemain
-pnpm install
+pnpm install   # load-bearing: the compositor uses sharp, a native module
 Stop-ScheduledTask -TaskName ZillaboostWorker
 Start-ScheduledTask  -TaskName ZillaboostWorker
 git update-ref -d refs/remotes/origin/bundlemain   # tidy the temp ref
@@ -1080,6 +1080,38 @@ after `ssh` gets mangled; pipe a script file.
 - **API blip** → normal poll-interval retry. A job orphaned mid-render
   self-returns when its 15-min claim lease expires.
 
+### What controls image quality
+
+Four levers, in the order they matter. Every one of them is visible in
+the `img ready` chip's panel on `/admin/boosted-odds` (prompt + params).
+
+1. **Pixel budget** — `IMAGE_WIDTH` / `IMAGE_HEIGHT`, default 1920x640
+   (~1.2 MP). The original 1152x384 was under half what these models
+   train at, and under-resourced diffusion is what "AI slop" is: mushy
+   faces, melted hands, duplicated subjects. No prompt fixes it. Keep
+   both divisible by 64. The plate downscales to `BANNER_OUTPUT_WIDTH`
+   (1536) on the way out, which sharpens it and shrinks the upload.
+2. **FLUX guidance** — `IMAGE_FLUX_GUIDANCE`, default 2.5. ComfyUI
+   applies 3.5 implicitly when no `FluxGuidance` node is in the graph,
+   and 3.5 is the over-contrasted, plastic-skin look. Lower is more
+   natural; below ~1.8 it starts ignoring the prompt.
+3. **Prompt register** — prose, not tags. `services/zillaboost-banner-gen/src/prompt.ts`
+   holds a banned-vocabulary list (`cinematic`, `dramatic`, `epic`,
+   `depth of field`, `vivid accent colours`, …) that is both forbidden
+   in the system prompt and **stripped from the completion** before the
+   render, because a small local model agrees and then does it anyway.
+4. **Per-title art direction** — `game-vocab.ts` carries `scene` (what
+   is in frame) and `style` (how that game actually looks) per sport
+   slug, both appended deterministically. A title with no entry falls
+   back to generic event photography, which is the one case where a
+   banner will look like every other banner. Adding a sport means
+   adding an entry.
+
+Team crests and names are NOT rendered — they are composited onto the
+finished plate (`compose.ts`, `sharp`) for match / market scope. Sport
+and tournament plates stay bare because the storefront lays its own
+copy over them.
+
 ### Troubleshooting a bad-looking image
 
 Expand the `img ready` chip on `/admin/boosted-odds`: the panel shows the
@@ -1089,12 +1121,17 @@ image beside the exact prompt (Copy button) and the render params.
 | Symptom | Cause |
 | --- | --- |
 | Wrong game entirely (MOBA rendered as soldiers) | The prompt lost its game clause. `game-vocab.ts` supplies each sport slug's scene as ground truth; check the stored prompt starts from it. |
-| Generic art, no team identity | The teams have no `brand_color`. Set them at `/admin/competitors` — the prompt builds its versus composition from those hex values. With none set the prompt falls back to "two strongly contrasting accents", which still yields a versus image but not the teams' real colours. |
+| Generic, airbrushed, could-be-any-game | Check the stored prompt for the banned vocabulary (`cinematic`, `dramatic`, `vivid accent colours`). If it is there, the worker predates the scrub — update it. If it is absent and the image is still soft, check `width`/`height` in the params: anything under ~1 MP renders like this. |
+| Generic art, no team identity | The teams have no `brand_color`. Set them at `/admin/competitors` — the prompt puts each side's colour on its gear and light. With none set the prompt asks only for "clearly different gear colours". |
+| No crests or names on a match banner | Either `sharp` is missing on the PC (unpacked new code without `pnpm install` — the worker logs `sharp unavailable` and ships bare plates), or the teams have no `logo_url` (set at `/admin/competitors`). `renderMeta.composed` / `renderMeta.crests` in the panel says which. |
+| Crest looks blurry | The source `logo_url` is a small raster. SVG and large PNG crests composite crisply; a 64px PNG cannot. Upload a better one at `/admin/competitors`. |
 | Panel says "No prompt recorded" | The worker predates migration 0090/0091 (it only stores what the worker sends). Update the worker — see "Updating the worker on the GPU box" — then regenerate. |
-| Legible text / logo shapes in the image | Diffusion limitation. FLUX ignores negative prompts, so the no-text terms only bite on SD3-family checkpoints. |
+| Legible text / logo shapes in the image | Diffusion limitation. FLUX ignores negative prompts, so the no-text terms only bite on SD3-family checkpoints; on FLUX the positive prompt's "every surface unmarked" tail is the only defence. Regenerate for a different seed. |
 | `hipErrorLaunchFailure`, then ComfyUI 500s on every request | `sd3.5_large_fp8_scaled` crashes ROCm on the RX 7900 XTX and wedges the GPU context. Restart the ComfyUI process (`D:\AI\comfyui-server.cmd`) and keep `IMAGE_MODEL` on FLUX. |
 | Upload 413s after a successful render | A body-limit regression. The `/complete` route needs its own `bodyLimit` (8 MiB) AND Caddy needs the `@banner_gen_uploads` carve-out above its 1 MiB default. Both must be present. |
 | Image refetched on every page view | Caddy's blanket `Cache-Control: no-store` on `/api` must keep excluding the public image byte-serves via the `@api_nocache` matcher; both headers reach the browser and `no-store` wins. |
+| White gap down the right edge of the image strip | A storefront layout regression, not a render problem. `BannerArtStrip` full-bleeds by cancelling the card's 10px/12px padding with negative margins, so it needs `maxWidth: "none"` — Tailwind preflight's `img, video { max-width: 100% }` in `@layer base` otherwise clamps `calc(100% + 24px)` back to 100% and the whole 24px lands on the right (the left margin still applies). Measured 2026-08-28: 328px card, 302px image. |
+| Composited names too small to read | The overlay is sized against the DISPLAY size (~411x137 in a lobby card on a 1512px desktop), not the 1536x512 file — the plate downscales ~3.7x. Anything under ~45px in the file arrives under 12px on screen. Geometry lives in `compose.ts` `geometry()`. |
 
 ### Where to look
 

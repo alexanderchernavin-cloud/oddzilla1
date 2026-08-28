@@ -115,6 +115,31 @@ function constantTimeEquals(a: string, b: string): boolean {
 }
 
 /**
+ * Crest URLs reach the worker ABSOLUTE. `competitors.logo_url` is
+ * either an Oddin CDN URL (already absolute) or our own byte-serve
+ * path `/api/competitors/<id>/logo?v=…`, and the worker runs on an
+ * operator PC with no notion of our origin. It composites these onto
+ * the finished plate as real artwork — diffusion cannot draw a crest,
+ * so this is the only path to a banner that carries team identity.
+ */
+function absoluteLogoUrl(url: string | null): string | null {
+  if (!url) return null;
+  const trimmed = url.trim();
+  if (trimmed === "") return null;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (!trimmed.startsWith("/")) return null;
+  const env = loadEnv();
+  const base =
+    env.EMAIL_PUBLIC_BASE_URL ??
+    (env.FRONTEND_HOST ? `https://${env.FRONTEND_HOST}` : null);
+  // No public base configured (a bare dev env): drop the crest rather
+  // than hand the worker a URL it cannot resolve. It renders the plate
+  // without it.
+  if (!base) return null;
+  return `${base.replace(/\/+$/, "")}${trimmed}`;
+}
+
+/**
  * Build the per-scope entity context the worker's research + prompt
  * steps need. Every branch resolves down to human-readable names — the
  * worker never sees internal ids beyond the ruleId it echoes back.
@@ -128,12 +153,16 @@ async function buildJobContext(
     sportSlug: null,
     tournamentName: null,
     tournamentBrandColor: null,
+    tournamentLogoUrl: null,
     homeTeam: null,
     homeBrandColor: null,
+    homeLogoUrl: null,
     awayTeam: null,
     awayBrandColor: null,
+    awayLogoUrl: null,
     competitorName: null,
     competitorBrandColor: null,
+    competitorLogoUrl: null,
   };
   switch (rule.scope) {
     case "sport": {
@@ -149,6 +178,7 @@ async function buildJobContext(
         .select({
           name: tournaments.name,
           brandColor: tournaments.brandColor,
+          logoUrl: tournaments.logoUrl,
           sportName: sports.name,
           sportSlug: sports.slug,
         })
@@ -162,6 +192,7 @@ async function buildJobContext(
             ...empty,
             tournamentName: t.name,
             tournamentBrandColor: t.brandColor,
+            tournamentLogoUrl: absoluteLogoUrl(t.logoUrl),
             sportName: t.sportName,
             sportSlug: t.sportSlug,
           }
@@ -172,6 +203,7 @@ async function buildJobContext(
         .select({
           name: competitors.name,
           brandColor: competitors.brandColor,
+          logoUrl: competitors.logoUrl,
           sportName: sports.name,
           sportSlug: sports.slug,
         })
@@ -184,6 +216,7 @@ async function buildJobContext(
             ...empty,
             competitorName: c.name,
             competitorBrandColor: c.brandColor,
+            competitorLogoUrl: absoluteLogoUrl(c.logoUrl),
             sportName: c.sportName,
             sportSlug: c.sportSlug,
           }
@@ -205,6 +238,8 @@ async function buildJobContext(
           awayTeam: matches.awayTeam,
           homeBrandColor: homeCompetitor.brandColor,
           awayBrandColor: awayCompetitor.brandColor,
+          homeLogoUrl: homeCompetitor.logoUrl,
+          awayLogoUrl: awayCompetitor.logoUrl,
           tournamentName: tournaments.name,
           tournamentBrandColor: tournaments.brandColor,
           sportName: sports.name,
@@ -227,8 +262,10 @@ async function buildJobContext(
             tournamentBrandColor: m.tournamentBrandColor,
             homeTeam: m.homeTeam,
             homeBrandColor: m.homeBrandColor,
+            homeLogoUrl: absoluteLogoUrl(m.homeLogoUrl),
             awayTeam: m.awayTeam,
             awayBrandColor: m.awayBrandColor,
+            awayLogoUrl: absoluteLogoUrl(m.awayLogoUrl),
           }
         : empty;
     }

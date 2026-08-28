@@ -2,16 +2,28 @@
 // /v1/chat/completions). The LLM turns "what is boosted" + the Wikipedia
 // research into ONE diffusion prompt.
 //
-// House rules baked into the system prompt:
-//  - NO text, numbers, logos, or watermarks in the image. Diffusion text
-//    is garbage, and the storefront overlays its own ZillaBoost chip,
-//    boost pct, and entity names — the graphic is pure atmosphere.
-//  - Landscape esports-promo composition with the visual weight kept
-//    left-of-center safe (the wide banners put copy on the left over a
-//    scrim).
-//  - Draw on the researched real-world facts (team colours, national
-//    identity, the game the tournament is played in) without rendering
-//    trademarked logos.
+// Register: PROSE, not tag soup. The backend is FLUX (T5 text encoder),
+// which reads sentences and largely ignores comma-separated tag lists —
+// the old "cinematic, dramatic arena lighting, depth of field, vivid
+// accent colours" shape is SD1.5-era phrasing and it is exactly what
+// produced airbrushed slop that looked identical for all 32 titles.
+//
+// Three things now carry the quality:
+//
+//  1. A banned-vocabulary list. Every word that summons the generic
+//     AI-promo look is forbidden in the system prompt AND stripped from
+//     the completion afterwards (scrubSlop), because a small local model
+//     agrees not to use them and then uses them anyway.
+//  2. The title's real art direction from game-vocab, appended
+//     deterministically so the LLM cannot dilute it.
+//  3. Team identity expressed PHYSICALLY — the colour is on the kit and
+//     the light, not named as an "accent colour".
+//
+// Still no text and no logos in the render: diffusion at banner scale
+// produces mangled pseudo-letters and smeared pseudo-crests, which is
+// the single clearest AI tell. The REAL crests and REAL team names are
+// composited onto the finished plate in compose.ts, in vector-crisp
+// form, which is the only way to get them right.
 
 import type { BannerGenJob } from "@oddzilla/types";
 import type { WorkerConfig } from "./config.js";
@@ -19,27 +31,116 @@ import { gameVocab } from "./game-vocab.js";
 import type { ResearchNote } from "./research.js";
 import { log } from "./logger.js";
 
-const SYSTEM_PROMPT = `You write prompts for a Stable Diffusion-style image model. The image is a promotional banner background for an esports betting site (wide landscape, roughly 3:1).
+/**
+ * Filler that makes an image look machine-made. Forbidden in the system
+ * prompt and stripped from the completion. Ordered longest-first so a
+ * multi-word phrase is removed before its constituent words.
+ */
+const SLOP_TERMS = [
+  "trending on artstation",
+  "award-winning",
+  "award winning",
+  "highly detailed",
+  "hyper-detailed",
+  "hyper detailed",
+  "ultra-detailed",
+  "ultra detailed",
+  "extremely detailed",
+  "intricate details",
+  "intricately detailed",
+  "volumetric lighting",
+  "volumetric light",
+  "god rays",
+  "lens flare",
+  "depth of field",
+  "shallow depth",
+  "bokeh",
+  "cinematic lighting",
+  "cinematic composition",
+  "cinematic",
+  "dramatic lighting",
+  "dramatic",
+  "epic",
+  "moody",
+  "atmospheric",
+  "breathtaking",
+  "stunning",
+  "striking",
+  "majestic",
+  "masterpiece",
+  "hyperrealistic",
+  "hyper-realistic",
+  "photo-realistic 8k",
+  "8k",
+  "4k",
+  "uhd",
+  "high resolution",
+  "vivid accent colours",
+  "vivid accent colors",
+  "accent colours",
+  "accent colors",
+  "neon glow",
+  "neon lights",
+  "neon",
+  "glowing energy",
+  "premium",
+  "promo art",
+  "promotional art",
+  "esports promo",
+  "digital art",
+  "concept art",
+  "artstation",
+  "unreal engine 5",
+  "octane render",
+  "vibrant colours",
+  "vibrant colors",
+];
 
-Rules, non-negotiable:
-- Output ONLY the image prompt as one comma-separated line. No preamble, no quotes, no explanations.
-- The image must contain NO text, NO numbers, NO letters, NO logos, NO watermarks, NO scoreboards.
-- Do not name real people. Do not render trademarked logos or team crests.
-- START from the GAME WORLD clause given to you and keep its subject matter. It is ground truth about what this game looks like. Never substitute a different genre — a MOBA must not contain soldiers with guns, a shooter must not contain wizards.
-- If two teams are given, compose a VERSUS image: the two sides mirrored or converging, one team's colour dominating the left, the other's the right, clashing in the middle. Use the exact hex colours supplied as the two accent colours.
-- If one team or a tournament is given, use its supplied colour as the dominant accent.
-- Use the research notes for concrete regional or national flavour (a Ukrainian roster, a Brazilian roster, a Chinese league) expressed as colour, crowd, and setting — never as flags with text.
-- Style: premium esports promo art — dramatic arena lighting, depth of field, cinematic composition, dark moody background with vivid accent colours. Keep the left third of the frame calmer/darker (UI copy sits there).
-- Be specific and physical. Name what is happening in the frame. Do NOT write vague filler like "esports arena, neon lights, cinematic" and stop — that produces stock art indistinguishable between titles.
-- 40-80 words.`;
+const SYSTEM_PROMPT = `You write prompts for the FLUX image model. The output is the artwork for a promotional banner on an esports betting site: one wide image, roughly 3 times as wide as it is tall.
 
-/** "#RRGGBB" → a phrase the model can act on, or null. */
-function colorNote(label: string, hex: string | null): string | null {
+HOW TO WRITE
+- Write 3 to 5 plain English sentences describing ONE specific moment, as if describing a screenshot to someone who cannot see it. Full sentences, not comma-separated tags.
+- Say who is in the frame, what they are physically doing, where they are, and what the light is doing. Be concrete. "A rifleman braces against a stone doorway as dust drifts through the sunlight behind him" is good. "Intense esports action" is useless.
+- Output ONLY the description. No preamble, no quotes, no headings, no lists.
+
+WHAT THE IMAGE MUST BE
+- Start from the GAME WORLD given to you. It is ground truth about what this title looks like. Never substitute a different genre: a MOBA has no soldiers with rifles, a tactical shooter has no wizards.
+- Keep it grounded and believable. Real anatomy, real materials, real light. Nothing floating, nothing melting, no impossible glow.
+- Two teams means the two sides face each other across the frame — one side entering from the left, the other from the right. Put each team's colour ON that side physically: their gear, their kit trim, the light falling on them. Never describe colour as an abstract "accent".
+- Use the research notes only for real, visible detail (a roster's country, a venue, a climate). Never as a flag, never as writing.
+
+BANNED — do not use these words at all: ${SLOP_TERMS.slice(0, 34).join(", ")}. They produce generic machine-made pictures. Describe the actual light instead of calling it dramatic.
+
+BANNED SUBJECTS
+- No text, letters, numbers, scoreboards, banners with writing, or watermarks. Clothing, walls and equipment are unmarked.
+- No logos, crests or team badges. They are added to the finished image afterwards as real artwork.
+- No real named people.`;
+
+/** "#RRGGBB" → normalised, or null when the value is not a hex colour. */
+function normalizeHex(hex: string | null): string | null {
   if (!hex) return null;
   const clean = hex.trim();
   if (!/^#?[0-9a-fA-F]{6}$/.test(clean)) return null;
-  return `${label} colour ${clean.startsWith("#") ? clean : `#${clean}`}`;
+  return clean.startsWith("#") ? clean : `#${clean}`;
 }
+
+/**
+ * Where the composited overlay lands, told to the model as a
+ * composition instruction. Match/market plates get a matchup band laid
+ * over the bottom third (compose.ts); sport and tournament plates are
+ * used as a backdrop with the storefront's own copy scrimmed over the
+ * left. Either way the model should leave that area simple — which
+ * happens to be better composition regardless.
+ */
+function framingClause(scope: BannerGenJob["scope"]): string {
+  if (scope === "match" || scope === "market" || scope === "outcome") {
+    return "Composition: wide banner crop, the action across the middle of the frame, the bottom third kept simple and uncluttered (ground, floor, low haze).";
+  }
+  return "Composition: wide banner crop, the action in the middle and right of the frame, the left third kept simple and darker.";
+}
+
+const TECHNICAL_TAIL =
+  "Wide 3:1 banner crop. Every surface unmarked: no text, no letters, no numbers, no logos, no badges, no watermark anywhere in the frame.";
 
 function describeJob(job: BannerGenJob): string {
   const c = job.context;
@@ -47,32 +148,33 @@ function describeJob(job: BannerGenJob): string {
   const lines: string[] = [`GAME: ${vocab.label}.`, `GAME WORLD: ${vocab.scene}.`];
 
   if (c.homeTeam && c.awayTeam) {
-    const colors = [
-      colorNote(`"${c.homeTeam}"`, c.homeBrandColor),
-      colorNote(`"${c.awayTeam}"`, c.awayBrandColor),
-    ].filter(Boolean);
+    const home = normalizeHex(c.homeBrandColor);
+    const away = normalizeHex(c.awayBrandColor);
     lines.push(
-      `BOOSTED: the match "${c.homeTeam}" versus "${c.awayTeam}"${c.tournamentName ? ` at "${c.tournamentName}"` : ""}. Compose it as a versus image.`,
+      `BOOSTED: the match "${c.homeTeam}" against "${c.awayTeam}"${c.tournamentName ? ` at ${c.tournamentName}` : ""}. Two sides facing each other across the frame.`,
     );
-    if (colors.length > 0) lines.push(`TEAM COLOURS: ${colors.join("; ")}.`);
-    else {
+    if (home || away) {
       lines.push(
-        "TEAM COLOURS: not supplied — pick two strongly contrasting accent colours for the two sides.",
+        `SIDE COLOURS (put them on gear and light, never as abstract accents): left side ${home ?? "any strong colour that contrasts with the right"}, right side ${away ?? "any strong colour that contrasts with the left"}.`,
+      );
+    } else {
+      lines.push(
+        "SIDE COLOURS: none supplied — give the two sides clearly different gear colours.",
       );
     }
   } else if (c.competitorName) {
+    const col = normalizeHex(c.competitorBrandColor);
     lines.push(`BOOSTED: the team "${c.competitorName}".`);
-    const col = colorNote(`"${c.competitorName}"`, c.competitorBrandColor);
-    if (col) lines.push(`TEAM COLOUR: ${col}.`);
+    if (col) lines.push(`TEAM COLOUR (on gear and light): ${col}.`);
   } else if (c.tournamentName) {
+    const col = normalizeHex(c.tournamentBrandColor);
     lines.push(
-      `BOOSTED: the tournament "${c.tournamentName}" — show its stage and crowd, championship scale.`,
+      `BOOSTED: the tournament "${c.tournamentName}" — show the scale of the event itself, the stage and the crowd, no specific teams.`,
     );
-    const col = colorNote(`"${c.tournamentName}"`, c.tournamentBrandColor);
-    if (col) lines.push(`TOURNAMENT COLOUR: ${col}.`);
+    if (col) lines.push(`EVENT COLOUR (in the stage light and staging): ${col}.`);
   } else {
     lines.push(
-      `BOOSTED: the whole game "${c.sportName ?? "esports"}" — a signature scene from it, no specific teams.`,
+      `BOOSTED: the game "${c.sportName ?? "esports"}" as a whole — one signature moment from it, no specific teams.`,
     );
   }
   return lines.join("\n");
@@ -99,54 +201,64 @@ async function discoverModel(cfg: WorkerConfig): Promise<string> {
   return id;
 }
 
-const FALLBACK_STYLE =
-  "cinematic wide shot, dramatic volumetric stage lighting, dark moody atmosphere with vivid accent colours, depth of field, no text, no logos, premium digital promo art";
+/**
+ * Strip the banned vocabulary the model used anyway, then repair the
+ * punctuation the removal leaves behind. Cheap and deterministic — the
+ * alternative is re-prompting, which on a small local model mostly
+ * produces a different set of the same words.
+ */
+export function scrubSlop(text: string): string {
+  let out = text;
+  for (const term of SLOP_TERMS) {
+    out = out.replaceAll(
+      new RegExp(`\\b${term.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi"),
+      " ",
+    );
+  }
+  return out
+    .replaceAll(/\s+/g, " ")
+    .replaceAll(/\s+([,.;:])/g, "$1")
+    .replaceAll(/([,;:])\s*(?=[,.;:])/g, "")
+    .replaceAll(/,\s*\./g, ".")
+    .replaceAll(/\.\s*\./g, ".")
+    .trim();
+}
 
 /**
- * Prompt used when the LLM is unreachable or returns nothing. Built
- * from the deterministic game vocabulary rather than generic arena
- * boilerplate, so a degraded run still produces a picture of the RIGHT
- * GAME — the previous version fell back to "epic esports arena" for
- * every title, which is exactly the stock look we're fixing.
+ * Prompt used when the LLM is unreachable or its completion scrubs down
+ * to nothing. Built from the deterministic game vocabulary — a degraded
+ * run still produces a picture of the RIGHT GAME, in the right style.
  */
 function fallbackPrompt(job: BannerGenJob): string {
   const c = job.context;
   const vocab = gameVocab(c.sportSlug);
-  const accents = [
-    c.homeBrandColor,
-    c.awayBrandColor,
-    c.competitorBrandColor,
-    c.tournamentBrandColor,
-  ]
-    .filter((h): h is string => !!h && /^#?[0-9a-fA-F]{6}$/.test(h.trim()))
-    .slice(0, 2);
-  const versus =
+  const home = normalizeHex(c.homeBrandColor);
+  const away = normalizeHex(c.awayBrandColor);
+  const sides =
     c.homeTeam && c.awayTeam
-      ? "two opposing sides converging from left and right, mirrored versus composition, "
+      ? ` Two opposing sides face each other across the frame, the left side in ${home ?? "dark red"} gear and the right side in ${away ?? "deep blue"} gear.`
       : "";
-  const palette =
-    accents.length > 0
-      ? `accent colours ${accents.join(" and ")}, `
-      : "";
-  return `${vocab.scene}, ${versus}${palette}${FALLBACK_STYLE}`;
+  return `${vocab.scene}.${sides}`;
 }
 
 /**
- * Author the diffusion prompt. LLM failure falls back to a serviceable
- * generic prompt seeded with the entity names — a plainer banner beats a
- * failed job.
+ * Author the diffusion prompt: LLM paragraph (scrubbed) + the title's
+ * real art direction + the framing and no-marks tail, both appended
+ * deterministically so no completion can drop them.
  */
 export async function authorPrompt(
   cfg: WorkerConfig,
   job: BannerGenJob,
   notes: readonly ResearchNote[],
 ): Promise<string> {
+  const vocab = gameVocab(job.context.sportSlug);
   const research =
     notes.length > 0
       ? notes.map((n) => `- ${n.entity}: ${n.summary}`).join("\n")
       : "(no research available — rely on the entity names)";
-  const user = `Boosted entity:\n${describeJob(job)}\n\nResearch notes:\n${research}\n\nWrite the image prompt now.`;
+  const user = `Boosted entity:\n${describeJob(job)}\n\nResearch notes:\n${research}\n\nWrite the description now.`;
 
+  let body = fallbackPrompt(job);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), cfg.requestTimeoutMs);
   try {
@@ -157,8 +269,10 @@ export async function authorPrompt(
       signal: controller.signal,
       body: JSON.stringify({
         model,
-        temperature: 0.7,
-        max_tokens: 300,
+        // Lower than the old 0.7: this is an instruction-following task
+        // with a hard banned-word list, not a creative-writing one.
+        temperature: 0.45,
+        max_tokens: 400,
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: user },
@@ -166,17 +280,24 @@ export async function authorPrompt(
       }),
     });
     if (!res.ok) throw new Error(`lmstudio chat HTTP ${res.status}`);
-    const body = (await res.json()) as {
+    const json = (await res.json()) as {
       choices?: Array<{ message?: { content?: string } }>;
     };
-    const text = body.choices?.[0]?.message?.content?.trim();
-    if (!text) throw new Error("lmstudio returned empty completion");
-    // One line, and strip stray wrapping quotes some models add.
-    return text.replaceAll(/\s+/g, " ").replace(/^["']|["']$/g, "").trim();
+    const raw = json.choices?.[0]?.message?.content?.trim();
+    if (!raw) throw new Error("lmstudio returned empty completion");
+    const cleaned = scrubSlop(raw.replace(/^["']|["']$/g, ""));
+    // A completion that scrubs down to nothing (all filler) is worse
+    // than the deterministic scene — keep the fallback in that case.
+    if (cleaned.length >= 60) body = cleaned;
+    else log.warn({ ruleId: job.ruleId, raw }, "completion scrubbed empty — using scene fallback");
   } catch (err) {
     log.warn({ err, ruleId: job.ruleId }, "prompt LLM failed — using fallback");
-    return fallbackPrompt(job);
   } finally {
     clearTimeout(timer);
   }
+
+  return [body, `${vocab.style}.`, framingClause(job.scope), TECHNICAL_TAIL]
+    .join(" ")
+    .replaceAll(/\s+/g, " ")
+    .trim();
 }
