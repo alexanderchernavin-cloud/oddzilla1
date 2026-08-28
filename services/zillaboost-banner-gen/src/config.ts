@@ -5,11 +5,10 @@
 // (LM Studio, for research summarisation + image-prompt authoring), and a
 // local image-generation server.
 //
-// The image backend speaks the AUTOMATIC1111/Forge-compatible
-// `/sdapi/v1/txt2img` JSON API by default (SD WebUI, Forge, and SD.Next
-// all expose it). If the local setup runs something else, point
-// IMAGE_API_BASE at any server that accepts the same shape — the whole
-// exchange lives in imagegen.ts, one file to swap.
+// The image backend is ComfyUI (what the operator's model PC runs —
+// port 8188, checkpoints flux1-dev-fp8 + sd3.5_large_fp8_scaled as of
+// 2026-08-28). The whole exchange lives in imagegen.ts — one file to
+// swap for a different stack.
 
 export interface WorkerConfig {
   /** Public API base, including the /api prefix, e.g. https://oddzilla.cc/api */
@@ -22,9 +21,14 @@ export interface WorkerConfig {
   /** Model id; null = auto-discover the loaded model via /v1/models. */
   lmStudioModel: string | null;
 
-  /** A1111-compatible image server base, e.g. http://192.168.50.37:7860 */
+  /** ComfyUI base, e.g. http://desktop-io524q2:8188 (tailnet name). */
   imageApiBase: string;
-  /** Optional checkpoint override (sent as override_settings). */
+  /**
+   * Optional checkpoint override (ckpt_name as ComfyUI lists it). Unset
+   * = discovered from /object_info, preferring an SD3-family checkpoint
+   * (honours the negative prompt; FLUX ignores it and loves adding
+   * text to poster-shaped images).
+   */
   imageModel: string | null;
   imageWidth: number;
   imageHeight: number;
@@ -85,18 +89,21 @@ export function loadConfig(): WorkerConfig | null {
       "",
     ),
     lmStudioModel: process.env.LM_STUDIO_MODEL?.trim() || null,
-    imageApiBase: opt("IMAGE_API_BASE", "http://localhost:7860").replace(
+    imageApiBase: opt("IMAGE_API_BASE", "http://localhost:8188").replace(
       /\/+$/,
       "",
     ),
     imageModel: process.env.IMAGE_MODEL?.trim() || null,
     // 3:1 landscape — the storefront renders wide banner strips.
-    // 1152x384 divides by 64 (SDXL-friendly) and reads well downscaled.
+    // 1152x384 divides by 64 and reads well downscaled.
     imageWidth: num("IMAGE_WIDTH", 1152),
     imageHeight: num("IMAGE_HEIGHT", 384),
     imageSteps: num("IMAGE_STEPS", 28),
-    imageCfgScale: num("IMAGE_CFG_SCALE", 6),
-    imageSampler: opt("IMAGE_SAMPLER", "Euler a"),
+    // SD3.5-appropriate; imagegen drops it to 1.0 for a FLUX checkpoint
+    // unless the env pins it explicitly.
+    imageCfgScale: num("IMAGE_CFG_SCALE", 4.5),
+    // ComfyUI sampler_name (scheduler is pinned to "simple").
+    imageSampler: opt("IMAGE_SAMPLER", "euler"),
     imageNegativeExtra: opt("IMAGE_NEGATIVE_EXTRA", ""),
     pollIntervalMs: num("POLL_INTERVAL_MS", 30_000),
     backendRetryMs: num("BACKEND_RETRY_MS", 60 * 60 * 1000),
