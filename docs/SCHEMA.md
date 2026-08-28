@@ -386,8 +386,31 @@ per tier (ON DELETE CASCADE) and a partial unique index per scope so an
 entity carries at most one rule. `boost_pct NUMERIC(5,2)` is a
 Netwinstable key delta in percentage points (same math as ZillaFlash),
 recomputed against live `published_odds` on every read: nothing is frozen
-in the row. `ends_at` NULL means the boost runs until the operator removes
-it; `min_risk_score NUMERIC(4,3)` NULL means every bettor receives it,
+in the row.
+
+**Scheduling window.** `starts_at` (migration 0092) NULL means live
+immediately; `ends_at` NULL means the boost runs until the operator
+removes it. A rule is deliverable only INSIDE the window:
+
+```sql
+(starts_at IS NULL OR starts_at <= now())
+AND (ends_at IS NULL OR ends_at >  now())
+```
+
+Both halves are one shared predicate — `boostWindowIsOpen()` for SQL and
+`ruleWindowIsOpen()` in memory, in
+[`services/api/src/lib/boosted-odds.ts`](../services/api/src/lib/boosted-odds.ts).
+Never write the condition out by hand at a call site: a reader that
+checks only `ends_at` will price, display, **and pay out** a boost the
+operator scheduled for a future date. The four readers that must apply
+it are `loadBoostRulesForMatch`, `loadBoostRulesForMatches`,
+`validateCustomBoostForBet` (rejects `boosted_odds_not_started`), and
+`GET /catalog/zillaboost-banners`. The `boosted_odds_window_order` CHECK
+enforces `starts_at < ends_at` regardless of what the admin route allows.
+The graphics-banner job queue is deliberately NOT window-gated —
+rendering the artwork before the boost starts is the point.
+
+`min_risk_score NUMERIC(4,3)` NULL means every bettor receives it,
 otherwise `users.risk_score >= min_risk_score` gates delivery (anonymous
 viewers count as the 1.000 default). `banner` (migration 0086)
 marks the rule for a storefront home-page promo banner (market →
@@ -477,6 +500,26 @@ Columns of note:
   `GET /catalog/zillaboost-banners/:ruleId/image` with an immutable
   cache header; `generated_at` rides the URL as `?v=` so a regenerated
   image is a new URL.
+- `last_prompt text` (migration 0090) + `last_render_meta jsonb`
+  (migration 0091) — the diffusion prompt this image was rendered from
+  and the params behind it (checkpoint, latent class, cfg, steps,
+  sampler, size, **seed**, negative prompt). Image quality is iterated
+  by changing prompts, and before these the prompt existed only in the
+  operator PC's worker log — so a bad-looking banner was undiagnosable
+  from the backoffice. The seed is the reproducibility handle: prompt +
+  seed + params lets an operator repeat the exact render by hand in
+  ComfyUI. Both are nullable and optional in the upload route so an
+  older worker build still completes jobs, and `/fail` records them too
+  (COALESCEd, so a failure report never erases what a previous attempt
+  stored). Surfaced in the admin overview by expanding the `img` chip.
+
+The image bytes are a **DB blob on purpose**. Cardinality is bounded by
+rule count (`rule_id` is the PK — one image per rule), each is ≤ 4 MiB,
+the blob lives on the QUEUE table rather than `boosted_odds_config` so
+the hot pricing selects never drag it along, and the byte-serve is
+immutable-cached with a `?v=` stamp so Postgres is read roughly once per
+browser. Object storage would add a credential and a failure mode for
+nothing at this scale.
 
 ### Tickets
 

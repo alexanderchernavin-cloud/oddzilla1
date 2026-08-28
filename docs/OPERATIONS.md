@@ -183,13 +183,15 @@ what's sensitive:
 | `TRON_RPC_URL` | TronGrid (mainnet `https://api.trongrid.io`, testnet `https://api.shasta.trongrid.io`) | when plan changes |
 | `ETH_RPC_URL` | Alchemy / Infura / QuickNode / self-hosted | when plan changes |
 | `BACKUP_GPG_RECIPIENT` (optional, PR #130) | GPG key id of an off-host operator. Set → daily pg dump is GPG-encrypted (`.sql.gz.gpg`); unset → plain gzip. | rotate when the operator's key rotates |
+| `SUPPORT_AI_BOT_TOKEN` (optional) | `openssl rand -hex 24`. Auth for `/webhooks/support-ai/*`. The SAME value goes in the PC worker's own `.env`. | any time — rotate both sides together |
+| `BANNER_GEN_TOKEN` (optional, migration 0089) | `openssl rand -hex 24`. Auth for `/webhooks/banner-gen/*` (ZillaBoost image worker). The SAME value goes in `services/zillaboost-banner-gen/.env` on the operator PC. | any time — rotate both sides together |
 
 Each service can boot WITHOUT certain optional vars and degrades
 gracefully:
 
 | Service | Required | Optional → effect when absent |
 | --- | --- | --- |
-| api | DATABASE_URL, REDIS_URL, JWT_SECRET, REFRESH_COOKIE_SECRET, SIGNER_SOCKET_PATH | signer unreachable → `/wallet/deposit-addresses` returns 500 with `SignerUnavailableError`. FIREBASE_SERVICE_ACCOUNT_PATH unset OR target file missing → push-outbox worker still drains the queue but marks every row `sent_at=NOW(), last_error='firebase_disabled'`; no FCM notifications go out until credentials are mounted. EMAIL_PROVIDER_TOKEN unset → email-outbox worker still drains but stamps each row `last_error='email_disabled'`; signup verify + forgot-password emails are queued and discarded until a key is set. SENDGRID_INBOUND_SECRET unset → `/webhooks/sendgrid-inbound/*` 503s `inbound_disabled` (no inbound mail can be ingested). |
+| api | DATABASE_URL, REDIS_URL, JWT_SECRET, REFRESH_COOKIE_SECRET, SIGNER_SOCKET_PATH | signer unreachable → `/wallet/deposit-addresses` returns 500 with `SignerUnavailableError`. FIREBASE_SERVICE_ACCOUNT_PATH unset OR target file missing → push-outbox worker still drains the queue but marks every row `sent_at=NOW(), last_error='firebase_disabled'`; no FCM notifications go out until credentials are mounted. EMAIL_PROVIDER_TOKEN unset → email-outbox worker still drains but stamps each row `last_error='email_disabled'`; signup verify + forgot-password emails are queued and discarded until a key is set. SENDGRID_INBOUND_SECRET unset → `/webhooks/sendgrid-inbound/*` 503s `inbound_disabled` (no inbound mail can be ingested). SUPPORT_AI_BOT_TOKEN unset → `/webhooks/support-ai/*` 503s `bot_disabled`, support chat falls back to humans. BANNER_GEN_TOKEN unset → `/webhooks/banner-gen/*` 503s `banner_gen_disabled`; ZillaBoost graphics jobs still enqueue and wait in `zillaboost_banner_image_jobs` until a token exists. |
 | mail-receiver | SENDGRID_INBOUND_SECRET, MAIL_WEBHOOK_URL | Container fails to boot if either is unset — fail-fast so the operator notices immediately rather than discovering mail is silently lost. Outbound is unaffected (Resend, separate path). |
 | signer | HD_MASTER_MNEMONIC | n/a — only this service reads the mnemonic |
 | feed-ingester | DATABASE_URL, REDIS_URL | ODDIN_TOKEN+ODDIN_CUSTOMER_ID absent → idle, health-only |
@@ -198,6 +200,7 @@ gracefully:
 | bet-delay | DATABASE_URL, REDIS_URL | none |
 | wallet-watcher | DATABASE_URL | TRON_RPC_URL absent → TRC20 scanner disabled. ETH_RPC_URL absent → ERC20 scanner disabled. Both absent → idle, health-only |
 | ws-gateway | REDIS_URL, JWT_SECRET | none |
+| support-ai-bot, zillaboost-banner-gen | ODDZILLA_API_BASE + their token | **Not compose services** — both run on an operator PC and dial OUT (see [support-ai-bot](../services/support-ai-bot/README.md) / [zillaboost-banner-gen](../services/zillaboost-banner-gen/README.md)). Missing env → the worker parks health-only instead of crash-looping. Not running at all → the server-side queue simply accumulates. |
 
 Keep `.env` out of git. Consider `sops + age` or a secrets manager before
 public launch.
@@ -973,6 +976,92 @@ flip back on, otherwise the table grows.
 [`apps/mobile-android/.../fcm/README.md`](../apps/mobile-android/app/src/main/java/cc/oddzilla/app/fcm/README.md)
 — `~15 minutes of work after a Firebase project exists`. Server side
 keeps draining (graceful-idle) until then.
+
+## ZillaBoost graphics banners (image worker)
+
+AI-generated promo art for ZillaBoost banners. Same architecture as the
+support-ai bot, and the architecture is the security control: the worker
+runs **on the operator PC next to ComfyUI** and dials OUT over HTTPS.
+
+```
+worker (operator PC) ──outbound HTTPS──> https://oddzilla.cc/api/webhooks/banner-gen/<secret>/...
+   │
+   ├──> ComfyUI    http://127.0.0.1:8188   (never leaves that box)
+   └──> LM Studio  http://127.0.0.1:1234   (prompt authoring)
+```
+
+**ComfyUI must stay bound to 127.0.0.1.** It has no authentication,
+executes workflow graphs as the (Administrator) user running it, and
+`--enable-manager` installs custom nodes from arbitrary git URLs — a
+reachable port 8188 is remote code execution as admin on that machine.
+A server-side compose variant reaching the PC over tailscale existed for
+a few hours on 2026-08-28 and was reverted the same day; tailscale was
+purged from the box. **Do not reintroduce a network path from the
+sportsbook to the model PC** — it only needs "make me an image from this
+text", which the pull queue already provides.
+
+### Activation
+
+Server side (already done on prod):
+
+```sh
+# generate + set BANNER_GEN_TOKEN, then
+ssh team@178.104.174.24 "cd /home/team/oddzilla && make recreate api"
+```
+
+Empty token → the webhook routes 503 `banner_gen_disabled`; the admin
+option still enqueues jobs, which wait. Operator PC side:
+
+```sh
+cd services/zillaboost-banner-gen
+cp .env.example .env    # ODDZILLA_API_BASE + the SAME BANNER_GEN_TOKEN
+pnpm install && pnpm start
+```
+
+Run it under Task Scheduler ("At log on") so booting the PC IS the
+retry. Keep `IMAGE_MODEL=flux1-dev-fp8.safetensors` pinned on the
+RX 7900 XTX box (see below).
+
+### Availability model
+
+- **PC off** → nothing polls; jobs sit `pending` and drain on boot. No
+  server-side retry machinery exists because none is needed.
+- **ComfyUI down, PC on** → the worker probes before claiming and sleeps
+  1 h between probes. No jobs claimed, no attempts burned.
+- **Generation error** → reported; 1 h backoff per attempt, `failed`
+  after 24. Untick + re-tick the graphics option to reset.
+- **API blip** → normal poll-interval retry. A job orphaned mid-render
+  self-returns when its 15-min claim lease expires.
+
+### Troubleshooting a bad-looking image
+
+Expand the `img ready` chip on `/admin/boosted-odds`: the panel shows the
+image beside the exact prompt (Copy button) and the render params.
+`seed` + `checkpoint` + prompt reproduce the render by hand in ComfyUI.
+
+| Symptom | Cause |
+| --- | --- |
+| Wrong game entirely (MOBA rendered as soldiers) | The prompt lost its game clause. `game-vocab.ts` supplies each sport slug's scene as ground truth; check the stored prompt starts from it. |
+| Generic art, no team identity | The teams have no `brand_color`. Set them at `/admin/competitors` — the prompt builds its versus composition from those hex values. |
+| Legible text / logo shapes in the image | Diffusion limitation. FLUX ignores negative prompts, so the no-text terms only bite on SD3-family checkpoints. |
+| `hipErrorLaunchFailure`, then ComfyUI 500s on every request | `sd3.5_large_fp8_scaled` crashes ROCm on the RX 7900 XTX and wedges the GPU context. Restart the ComfyUI process (`D:\AI\comfyui-server.cmd`) and keep `IMAGE_MODEL` on FLUX. |
+| Upload 413s after a successful render | A body-limit regression. The `/complete` route needs its own `bodyLimit` (8 MiB) AND Caddy needs the `@banner_gen_uploads` carve-out above its 1 MiB default. Both must be present. |
+| Image refetched on every page view | Caddy's blanket `Cache-Control: no-store` on `/api` must keep excluding the public image byte-serves via the `@api_nocache` matcher; both headers reach the browser and `no-store` wins. |
+
+### Where to look
+
+- Worker log on the PC — `job start` → `prompt authored` → `submitting
+  comfyui workflow` → `job complete`.
+- Admin `/admin/boosted-odds` — "Image worker online/offline" dot
+  (heartbeat, Redis `bannergen:worker:online`, TTL 90 s) + queue counts.
+- Queue state:
+
+```sh
+ssh team@178.104.174.24 "sudo -n docker exec oddzilla-postgres-1 psql -U oddzilla -d oddzilla -c \"SELECT rule_id, status, attempts, left(last_error,60) FROM zillaboost_banner_image_jobs\""
+```
+
+Note images cascade away with their rule: deleting a boost rule deletes
+its job row and image.
 
 ## OZ demo currency backfill
 
