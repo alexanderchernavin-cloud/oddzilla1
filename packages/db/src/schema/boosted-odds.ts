@@ -19,6 +19,7 @@ import {
   bigint,
   numeric,
   text,
+  jsonb,
   timestamp,
   check,
   uniqueIndex,
@@ -77,6 +78,12 @@ export const boostedOddsConfig = pgTable(
     // migration 0088). The admin route checks the row exists on write.
     outcomeId: text("outcome_id"),
     boostPct: numeric("boost_pct", { precision: 5, scale: 2 }).notNull(),
+    // Scheduling window (starts_at added in migration 0092). NULL start
+    // = live immediately; NULL end = runs until removed. A rule is
+    // deliverable only when now() is inside the window, and EVERY reader
+    // must check both halves — one that checks only ends_at would price
+    // and pay out a boost scheduled for next week.
+    startsAt: timestamp("starts_at", { withTimezone: true }),
     endsAt: timestamp("ends_at", { withTimezone: true }),
     minRiskScore: numeric("min_risk_score", { precision: 4, scale: 3 }),
     // Promo banner on the storefront home page (migration 0086):
@@ -169,6 +176,11 @@ export const zillaboostBannerImageJobs = pgTable(
     // 0090) — image quality is iterated by changing prompts, so the
     // backoffice needs to see what was actually asked for.
     lastPrompt: text("last_prompt"),
+    // Render params behind that prompt (migration 0091) — checkpoint,
+    // cfg, steps, sampler, size, seed, negative prompt. Distinguishes a
+    // prompt problem from a params problem, and the seed makes a render
+    // reproducible by hand.
+    lastRenderMeta: jsonb("last_render_meta"),
     generatedAt: timestamp("generated_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

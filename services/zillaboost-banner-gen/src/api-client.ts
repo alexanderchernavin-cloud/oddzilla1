@@ -61,24 +61,37 @@ export class WorkerApi {
     imageBase64: string,
     mime: string,
     prompt?: string,
+    renderMeta?: Record<string, unknown>,
   ): Promise<unknown> {
     return this.call(`/jobs/${ruleId}/complete`, {
       method: "POST",
-      // The prompt rides along so the backoffice can show WHY an image
-      // looks the way it does (migration 0090). Trimmed to the server's
-      // 4000-char cap.
+      // Prompt + render params ride along so the backoffice can show WHY
+      // an image looks the way it does (migrations 0090 / 0091). Trimmed
+      // to the server's 4000-char cap.
       body: JSON.stringify({
         imageBase64,
         mime,
         ...(prompt ? { prompt: prompt.slice(0, 4000) } : null),
+        ...(renderMeta ? { renderMeta } : null),
       }),
     });
   }
 
-  fail(ruleId: string, error: string): Promise<unknown> {
+  fail(
+    ruleId: string,
+    error: string,
+    prompt?: string,
+    renderMeta?: Record<string, unknown>,
+  ): Promise<unknown> {
     return this.call(`/jobs/${ruleId}/fail`, {
       method: "POST",
-      body: JSON.stringify({ error: error.slice(0, 2000) }),
+      // A failed render's prompt + params are the most useful thing to
+      // see, so send whatever we got to before the failure.
+      body: JSON.stringify({
+        error: error.slice(0, 2000),
+        ...(prompt ? { prompt: prompt.slice(0, 4000) } : null),
+        ...(renderMeta ? { renderMeta } : null),
+      }),
     });
   }
 }

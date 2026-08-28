@@ -43,6 +43,7 @@ import type {
 } from "@oddzilla/types";
 import { isQuotableOutcomeOdds } from "@oddzilla/types";
 import {
+  boostWindowIsOpen,
   loadSelectionBoostedMarketIds,
   loadViewerRiskScore,
   quoteBoostedMarket,
@@ -184,10 +185,9 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
       .where(
         and(
           eq(boostedOddsConfig.banner, true),
-          or(
-            isNull(boostedOddsConfig.endsAt),
-            gt(boostedOddsConfig.endsAt, sql`now()`),
-          ),
+          // Inside the scheduling window — a rule scheduled for later
+          // must not surface a banner yet (migration 0092).
+          boostWindowIsOpen(),
         ),
       )
       .limit(50);
@@ -432,6 +432,7 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
           marketId: null,
           outcomeId: null,
           boostPct: Number(r.boostPct),
+          startsAt: r.startsAt,
           endsAt: r.endsAt,
           minRiskScore: null,
         };
@@ -556,6 +557,7 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
         marketId: r.marketId,
         outcomeId: null,
         boostPct: Number(r.boostPct),
+        startsAt: r.startsAt,
         endsAt: r.endsAt,
         minRiskScore: null,
       };

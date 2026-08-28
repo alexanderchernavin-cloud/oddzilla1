@@ -45,6 +45,8 @@ interface RuleDto {
   /** scope='outcome' only — the boosted cell within the rule's market. */
   outcomeId: string | null;
   boostPct: number;
+  /** Scheduled activation (migration 0092); null = live immediately. */
+  startsAt: string | null;
   endsAt: string | null;
   minRiskScore: number | null;
   banner: boolean;
@@ -59,6 +61,7 @@ function toRuleDto(r: typeof boostedOddsConfig.$inferSelect): RuleDto {
     scope: r.scope,
     outcomeId: r.outcomeId,
     boostPct: Number(r.boostPct),
+    startsAt: r.startsAt?.toISOString() ?? null,
     endsAt: r.endsAt?.toISOString() ?? null,
     minRiskScore: r.minRiskScore !== null ? Number(r.minRiskScore) : null,
     banner: r.banner,
@@ -85,6 +88,11 @@ const putBody = z
     refId: z.string().regex(/^\d+$/),
     outcomeId: z.string().trim().min(1).max(64).optional(),
     boostPct: z.number().gt(0).max(50),
+    // Scheduled activation (migration 0092). Null/absent = live now.
+    // Unlike endsAt this is NOT rejected for being in the past — a start
+    // time that has already passed just means "live", which is a
+    // harmless way to express "start immediately".
+    startsAt: z.string().datetime({ offset: true }).nullable().optional(),
     endsAt: z.string().datetime({ offset: true }).nullable().optional(),
     minRiskScore: z.number().min(0.01).max(10).nullable().optional(),
     // Promo banner on the storefront home page (migration 0086). No
@@ -269,6 +277,7 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
             attempts: zillaboostBannerImageJobs.attempts,
             lastError: zillaboostBannerImageJobs.lastError,
             lastPrompt: zillaboostBannerImageJobs.lastPrompt,
+            lastRenderMeta: zillaboostBannerImageJobs.lastRenderMeta,
             generatedAt: zillaboostBannerImageJobs.generatedAt,
           })
           .from(zillaboostBannerImageJobs)
@@ -318,6 +327,7 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
               attempts: 0,
               lastError: null,
               lastPrompt: null,
+              lastRenderMeta: null,
               generatedAt: null,
             };
           return {
@@ -325,6 +335,8 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
             attempts: j.attempts,
             lastError: j.lastError,
             lastPrompt: j.lastPrompt,
+            lastRenderMeta:
+              (j.lastRenderMeta as Record<string, unknown> | null) ?? null,
             generatedAt: j.generatedAt?.toISOString() ?? null,
           };
         })(),
@@ -835,9 +847,15 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
   app.put("/admin/boosted-odds/rules", async (request) => {
     const admin = request.requireRole("admin");
     const body = putBody.parse(request.body);
+    const startsAt = body.startsAt ? new Date(body.startsAt) : null;
     const endsAt = body.endsAt ? new Date(body.endsAt) : null;
     if (endsAt && endsAt.getTime() <= Date.now()) {
       throw new BadRequestError("ends_at_in_past", "ends_at_in_past");
+    }
+    // Mirrors the boosted_odds_window_order CHECK — caught here for a
+    // clean 400 instead of a constraint-violation 500.
+    if (startsAt && endsAt && startsAt.getTime() >= endsAt.getTime()) {
+      throw new BadRequestError("window_inverted", "window_inverted");
     }
 
     // Verify the referenced entity exists — clearer 404 than an FK 500.
@@ -930,6 +948,7 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
         .limit(1);
       const values = {
         boostPct: body.boostPct.toFixed(2),
+        startsAt,
         endsAt,
         minRiskScore:
           body.minRiskScore != null ? body.minRiskScore.toFixed(3) : null,

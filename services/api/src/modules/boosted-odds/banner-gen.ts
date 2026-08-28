@@ -90,10 +90,21 @@ const completeBody = z.object({
   // so the backoffice can see WHY an image looks the way it does.
   // Optional: an older worker build that doesn't send it still completes.
   prompt: z.string().trim().max(4000).optional(),
+  // Render params behind it (migration 0091) — checkpoint / cfg / steps
+  // / sampler / size / seed / negative. Passthrough object: the shape
+  // follows whatever backend the worker drives, and it's diagnostic
+  // display only, never interpreted server-side.
+  renderMeta: z.record(z.string(), z.unknown()).optional(),
 });
 
 const failBody = z.object({
   error: z.string().trim().min(1).max(2000),
+  // A failed render's prompt + params are exactly what you need to see
+  // to fix it, so /fail records them too when the worker got far enough
+  // to have them (e.g. the SD3.5 GPU crash: prompt was fine, checkpoint
+  // was not).
+  prompt: z.string().trim().max(4000).optional(),
+  renderMeta: z.record(z.string(), z.unknown()).optional(),
 });
 
 function constantTimeEquals(a: string, b: string): boolean {
@@ -341,6 +352,7 @@ export default async function bannerGenRoutes(app: FastifyInstance) {
           imageData: bytes,
           imageMime: body.mime,
           lastPrompt: body.prompt ?? null,
+          lastRenderMeta: body.renderMeta ?? null,
           generatedAt: new Date(),
           leasedUntil: null,
           lastError: null,
@@ -376,10 +388,14 @@ export default async function bannerGenRoutes(app: FastifyInstance) {
       const ruleId = parseRuleId(request);
       const body = failBody.parse(request.body);
 
+      // COALESCE on prompt/meta: an older worker build omits them, and a
+      // failure report must never erase what a previous attempt recorded.
       const updated = (await app.db.execute(sql`
         UPDATE zillaboost_banner_image_jobs
            SET attempts = attempts + 1,
                last_error = ${body.error},
+               last_prompt = COALESCE(${body.prompt ?? null}, last_prompt),
+               last_render_meta = COALESCE(${body.renderMeta ? JSON.stringify(body.renderMeta) : null}::jsonb, last_render_meta),
                status = CASE WHEN attempts + 1 >= ${MAX_ATTEMPTS} THEN 'failed' ELSE 'pending' END,
                next_attempt_at = now() + interval '${sql.raw(String(RETRY_BACKOFF_MINUTES))} minutes',
                leased_until = NULL,
