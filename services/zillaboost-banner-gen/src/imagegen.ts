@@ -80,9 +80,12 @@ function buildWorkflow(args: {
   steps: number;
   cfgScale: number;
   sampler: string;
+  scheduler: string;
+  /** FLUX distilled-guidance value, or null for non-FLUX checkpoints. */
+  fluxGuidance: number | null;
   seed: number;
 }): Record<string, unknown> {
-  return {
+  const graph: Record<string, unknown> = {
     "1": {
       class_type: "CheckpointLoaderSimple",
       inputs: { ckpt_name: args.checkpoint },
@@ -106,10 +109,11 @@ function buildWorkflow(args: {
         steps: args.steps,
         cfg: args.cfgScale,
         sampler_name: args.sampler,
-        scheduler: "simple",
+        scheduler: args.scheduler,
         denoise: 1,
         model: ["1", 0],
-        positive: ["2", 0],
+        // FluxGuidance (node 8) when present — see below.
+        positive: args.fluxGuidance === null ? ["2", 0] : ["8", 0],
         negative: ["3", 0],
         latent_image: ["4", 0],
       },
@@ -123,6 +127,20 @@ function buildWorkflow(args: {
       inputs: { images: ["6", 0], filename_prefix: "zillaboost" },
     },
   };
+  // flux1-dev is guidance-distilled: the classifier-free scale is baked
+  // into the conditioning, not the sampler (KSampler runs cfg=1, which
+  // is also why the negative branch does nothing there). ComfyUI
+  // defaults that baked value to 3.5 when no FluxGuidance node sets it,
+  // and 3.5 is the source of the over-contrasted, over-saturated,
+  // plastic-skin look. Lower values (2.0-2.8) render markedly more
+  // natural — this node is what makes the value tunable at all.
+  if (args.fluxGuidance !== null) {
+    graph["8"] = {
+      class_type: "FluxGuidance",
+      inputs: { conditioning: ["2", 0], guidance: args.fluxGuidance },
+    };
+  }
+  return graph;
 }
 
 interface HistoryImage {
@@ -138,34 +156,40 @@ export interface RenderMeta {
   checkpoint: string;
   latentClass: string;
   cfgScale: number;
+  /** FLUX distilled guidance, absent on non-FLUX checkpoints. */
+  fluxGuidance?: number;
   steps: number;
   sampler: string;
+  scheduler: string;
   width: number;
   height: number;
   seed: number;
   negative: string;
 }
 
-/** Render one banner. Returns PNG bytes as base64 + the params used. */
+/**
+ * Render one plate. Returns the raw PNG bytes — compositing (compose.ts)
+ * scales them down, lays the real crests and names on, and does the
+ * final encode, so nothing here base64s an intermediate.
+ */
 export async function generateImage(
   cfg: WorkerConfig,
   prompt: string,
-): Promise<{ imageBase64: string; mime: "image/png"; meta: RenderMeta }> {
+): Promise<{ plate: Buffer; meta: RenderMeta }> {
   const checkpoint = await resolveCheckpoint(cfg);
   const isFlux = /flux/i.test(checkpoint);
-  // FLUX ignores the negative branch and needs cfg 1.0, and the
-  // verified box workflow ran 20 steps; honour explicit operator
-  // overrides, otherwise adapt per family.
-  const cfgScale =
-    process.env.IMAGE_CFG_SCALE?.trim()
-      ? cfg.imageCfgScale
-      : isFlux
-        ? 1.0
-        : cfg.imageCfgScale;
-  const steps =
-    process.env.IMAGE_STEPS?.trim() ? cfg.imageSteps : isFlux ? 20 : cfg.imageSteps;
+  // FLUX ignores the negative branch and needs sampler cfg 1.0 (its
+  // guidance rides the conditioning instead — see buildWorkflow).
+  // Honour explicit operator overrides, otherwise adapt per family.
+  const cfgScale = process.env.IMAGE_CFG_SCALE?.trim()
+    ? cfg.imageCfgScale
+    : isFlux
+      ? 1.0
+      : cfg.imageCfgScale;
+  const steps = cfg.imageSteps;
   const seed = randomBytes(4).readUInt32BE(0);
   const latentClass = isFlux ? "EmptyLatentImage" : "EmptySD3LatentImage";
+  const fluxGuidance = isFlux ? cfg.imageFluxGuidance : null;
   const negative = cfg.imageNegativeExtra
     ? `${NEGATIVE_BASE}, ${cfg.imageNegativeExtra}`
     : NEGATIVE_BASE;
@@ -173,8 +197,10 @@ export async function generateImage(
     checkpoint,
     latentClass,
     cfgScale,
+    ...(fluxGuidance === null ? {} : { fluxGuidance }),
     steps,
     sampler: cfg.imageSampler,
+    scheduler: cfg.imageScheduler,
     width: cfg.imageWidth,
     height: cfg.imageHeight,
     seed,
@@ -190,9 +216,14 @@ export async function generateImage(
     steps,
     cfgScale,
     sampler: cfg.imageSampler,
+    scheduler: cfg.imageScheduler,
+    fluxGuidance,
     seed,
   });
-  log.info({ checkpoint, cfgScale, seed }, "submitting comfyui workflow");
+  log.info(
+    { checkpoint, cfgScale, fluxGuidance, steps, seed },
+    "submitting comfyui workflow",
+  );
 
   const submit = await fetch(`${cfg.imageApiBase}/prompt`, {
     method: "POST",
@@ -246,5 +277,5 @@ export async function generateImage(
   if (!view.ok) throw new Error(`comfyui /view HTTP ${view.status}`);
   const bytes = Buffer.from(await view.arrayBuffer());
   if (bytes.length === 0) throw new Error("comfyui returned an empty image");
-  return { imageBase64: bytes.toString("base64"), mime: "image/png", meta };
+  return { plate: bytes, meta };
 }

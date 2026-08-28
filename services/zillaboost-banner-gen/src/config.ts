@@ -35,8 +35,36 @@ export interface WorkerConfig {
   imageSteps: number;
   imageCfgScale: number;
   imageSampler: string;
+  /** ComfyUI scheduler name paired with the sampler. */
+  imageScheduler: string;
+  /**
+   * FLUX distilled-guidance value (the FluxGuidance node). ComfyUI's
+   * implicit default is 3.5, which over-contrasts and plastics faces;
+   * 2.0-2.8 renders noticeably more naturally. Ignored for non-FLUX
+   * checkpoints, which take their guidance from imageCfgScale.
+   */
+  imageFluxGuidance: number;
   /** Extra negative-prompt terms appended to the built-in set. */
   imageNegativeExtra: string;
+
+  /**
+   * Composite REAL team crests and REAL team names onto the finished
+   * plate (match / market scope only). Diffusion cannot draw either
+   * legibly; compositing is the only way to get them crisp. Set
+   * BANNER_COMPOSITE=0 to ship the bare plate.
+   */
+  compose: boolean;
+  /** Delivered width — the plate is rendered larger and downscaled. */
+  outputWidth: number;
+  /** Delivered encoding. WebP keeps a 1536-wide banner well under the 4 MB cap. */
+  outputFormat: "webp" | "png";
+  outputQuality: number;
+  /**
+   * Font family for the composited team names. Must be installed on
+   * this PC — "Segoe UI" ships with Windows. Text that fails to
+   * rasterise is dropped, the crests and plate still ship.
+   */
+  composeFont: string;
 
   /** Poll cadence while everything is reachable. */
   pollIntervalMs: number;
@@ -95,16 +123,30 @@ export function loadConfig(): WorkerConfig | null {
     ),
     imageModel: process.env.IMAGE_MODEL?.trim() || null,
     // 3:1 landscape — the storefront renders wide banner strips.
-    // 1152x384 divides by 64 and reads well downscaled.
-    imageWidth: num("IMAGE_WIDTH", 1152),
-    imageHeight: num("IMAGE_HEIGHT", 384),
+    //
+    // 1920x640 (1.23 MP), not the original 1152x384 (0.44 MP): the old
+    // size was less than half the pixel budget these models are trained
+    // at, and under-resourced diffusion is exactly what "AI slop" looks
+    // like — mushy faces, melted hands, duplicated subjects. Both
+    // dimensions still divide by 64. The plate is downscaled to
+    // outputWidth on the way out, which adds a little extra crispness
+    // for free.
+    imageWidth: num("IMAGE_WIDTH", 1920),
+    imageHeight: num("IMAGE_HEIGHT", 640),
     imageSteps: num("IMAGE_STEPS", 28),
     // SD3.5-appropriate; imagegen drops it to 1.0 for a FLUX checkpoint
     // unless the env pins it explicitly.
     imageCfgScale: num("IMAGE_CFG_SCALE", 4.5),
-    // ComfyUI sampler_name (scheduler is pinned to "simple").
+    // ComfyUI sampler_name + scheduler.
     imageSampler: opt("IMAGE_SAMPLER", "euler"),
+    imageScheduler: opt("IMAGE_SCHEDULER", "simple"),
+    imageFluxGuidance: num("IMAGE_FLUX_GUIDANCE", 2.5),
     imageNegativeExtra: opt("IMAGE_NEGATIVE_EXTRA", ""),
+    compose: opt("BANNER_COMPOSITE", "1") !== "0",
+    outputWidth: num("BANNER_OUTPUT_WIDTH", 1536),
+    outputFormat: opt("BANNER_OUTPUT_FORMAT", "webp") === "png" ? "png" : "webp",
+    outputQuality: num("BANNER_OUTPUT_QUALITY", 92),
+    composeFont: opt("BANNER_FONT", "Segoe UI"),
     pollIntervalMs: num("POLL_INTERVAL_MS", 30_000),
     backendRetryMs: num("BACKEND_RETRY_MS", 60 * 60 * 1000),
     requestTimeoutMs: num("REQUEST_TIMEOUT_MS", 60_000),
