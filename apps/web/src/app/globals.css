@@ -605,6 +605,27 @@ body {
 .oz-live-media-stream,
 .oz-live-media-stats { display: block; }
 
+/* Oddin (Havik) video player. The SDK takes the <video> we hand it and
+   wraps it in its own `.havik-player` root, so the fill rules have to
+   cover that injected wrapper as well as the element itself — sizing only
+   the <video> leaves it collapsed inside an auto-height wrapper. The
+   container owns the 16/9 box; everything inside fills it. `object-fit:
+   contain` letterboxes rather than crops, since stream aspect ratios vary
+   by broadcaster. */
+.oz-oddin-video > .havik-player,
+.oz-oddin-video > video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.oz-oddin-video video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
 /* Match-detail scoreboard. Desktop ships the original roomy bordered
    SCORE box and 28px logos; the breakpoint block below swaps in
    tighter variables so team names get the room they need on narrow

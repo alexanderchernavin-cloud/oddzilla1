@@ -20,6 +20,7 @@ import {
   type MatchStream,
 } from "@/components/match/match-streams";
 import { useLiveMatchStatus } from "@/lib/use-live-odds";
+import { useOddinVideo } from "@/lib/use-oddin-video";
 import { DisirWidget } from "./disir-widget";
 import { supportsLiveWidget } from "./supported-sports";
 import { useTranslations } from "@/lib/i18n";
@@ -53,8 +54,17 @@ export function MatchLiveMedia({
   // the moment the match finishes — otherwise the iframe stays mounted
   // showing its final state until the bettor reloads.
   const liveStatus = useLiveMatchStatus(matchId);
-  const isLive = (liveStatus?.status ?? initialStatus) === "live";
-  const [mobileTab, setMobileTab] = useState<MobileTab>(streams.length > 0 ? "stream" : "stats");
+  const status = liveStatus?.status ?? initialStatus;
+  const isLive = status === "live";
+  const [mobileTab, setMobileTab] = useState<MobileTab>("stream");
+
+  // Oddin's first-party stream, when it carries one for this match. Only
+  // worth asking about while the match could still be watched — a closed or
+  // cancelled fixture has nothing to play, and the catalog drops it anyway.
+  const { availability: oddinVideo } = useOddinVideo(
+    matchId,
+    status === "not_started" || status === "live",
+  );
 
   // If a sport doesn't support live widgets at all, skip the whole
   // dance and fall back to streams-only (or render nothing if no
@@ -63,15 +73,33 @@ export function MatchLiveMedia({
   const sportHasLiveWidget = supportsLiveWidget(sportSlug);
   const renderStats = isLive && sportHasLiveWidget;
 
-  // No streams + no live stats = render nothing, matching the old behaviour.
-  if (streams.length === 0 && !renderStats) return null;
+  // The stream pane earns its place if EITHER a broadcaster URL came off the
+  // fixture or Oddin carries its own stream — a match can have the latter
+  // with an empty tv_channels block, which is the common case.
+  // `signInRequired` counts: watching is signed-in-only, and the pane then
+  // holds the sign-in prompt rather than a player.
+  const renderStream =
+    streams.length > 0 || oddinVideo.available || oddinVideo.signInRequired;
+
+  // Nothing to stream + no live stats = render nothing, as before.
+  if (!renderStream && !renderStats) return null;
+
+  // The mobile switcher has one pill per available pane, so force the tab
+  // onto whichever pane exists when only one does. Needed because Oddin
+  // availability lands a round-trip after mount: a match with no
+  // tv_channels starts with no stream pane and gains one.
+  const activeTab: MobileTab = !renderStats
+    ? "stream"
+    : !renderStream
+      ? "stats"
+      : mobileTab;
 
   return (
     <section style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       {/* Mobile pill switcher: only renders when both stream + stats
           could plausibly show. On desktop, the same buttons stay hidden
           and both panels render stacked. */}
-      {streams.length > 0 && renderStats ? (
+      {renderStream && renderStats ? (
         <div
           className="oz-live-media-tabs"
           role="tablist"
@@ -88,30 +116,34 @@ export function MatchLiveMedia({
         >
           <PillBtn
             label={tMatch("stream")}
-            active={mobileTab === "stream"}
+            active={activeTab === "stream"}
             onClick={() => setMobileTab("stream")}
           />
           <PillBtn
             label={tMatch("stats")}
-            active={mobileTab === "stats"}
+            active={activeTab === "stats"}
             onClick={() => setMobileTab("stats")}
           />
         </div>
       ) : null}
 
-      {streams.length > 0 ? (
+      {renderStream ? (
         <div
           className="oz-live-media-stream"
-          data-active={mobileTab === "stream" ? "true" : "false"}
+          data-active={activeTab === "stream" ? "true" : "false"}
         >
-          <MatchStreams streams={streams} parentHost={parentHost} />
+          <MatchStreams
+            streams={streams}
+            parentHost={parentHost}
+            oddinVideo={oddinVideo}
+          />
         </div>
       ) : null}
 
       {renderStats ? (
         <div
           className="oz-live-media-stats"
-          data-active={mobileTab === "stats" ? "true" : "false"}
+          data-active={activeTab === "stats" ? "true" : "false"}
         >
           <LiveStatsHeader sportSlug={sportSlug} />
           <DisirWidget

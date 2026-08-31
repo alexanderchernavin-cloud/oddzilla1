@@ -91,7 +91,24 @@ function buildCsp(nonce: string, frameAncestors: "none" | "self"): string {
     // beacon/upload endpoints (loader in lib/analytics/clarity.tsx —
     // consent-gated). The tag script itself needs no script-src entry:
     // 'strict-dynamic' trusts scripts injected by our nonce'd bundle.
-    `connect-src 'self' ${apiOrigins} ${wsOrigins} https://cdn.oddin.gg https://*.clarity.ms https://c.bing.com`,
+    // https://*.oddin-video.gg covers every host the Havik video SDK talks
+    // to, all of which live under that apex: `feed[-dev]` (playback
+    // resolution + catalog), `playback[-dev]` (HLS manifest + segments, which
+    // hls.js fetches with XHR — so they land under connect-src, not
+    // media-src), `drm[-dev]` (Widevine / FairPlay licence POSTs and the
+    // FairPlay certificate), `events.feed[-dev]` (SSE live-state), and
+    // `beacons[-dev]` (QoE). A CSP wildcard matches at any depth, so the
+    // four-label events host is covered too.
+    `connect-src 'self' ${apiOrigins} ${wsOrigins} https://cdn.oddin.gg https://*.oddin-video.gg https://*.clarity.ms https://c.bing.com`,
+    // hls.js drives playback through MSE, which means the <video> src is a
+    // `blob:` URL. Without an explicit media-src this inherits
+    // `default-src 'self'` and every stream fails to attach.
+    "media-src 'self' blob:",
+    // hls.js runs its demuxer in a Worker created from a blob. worker-src
+    // otherwise falls back to script-src, whose 'strict-dynamic' does not
+    // permit blob: workers — the SDK would fall back to main-thread
+    // demuxing (and log a CSP violation on every stream).
+    "worker-src 'self' blob:",
     "frame-src 'self' https://player.twitch.tv https://www.twitch.tv https://www.youtube.com https://www.youtube-nocookie.com https://player.kick.com https://video.gjirafa.com https://*.oddin.gg",
     `frame-ancestors '${frameAncestors}'`,
     "base-uri 'self'",

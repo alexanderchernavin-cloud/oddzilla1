@@ -809,7 +809,14 @@
       "fallbackTitle": "Match widget"
     },
     "streams": {
-      "liveStream": "Live stream"
+      "liveStream": "Live stream",
+      "oddinLabel": "Oddin HD"
+    },
+    "oddinVideo": {
+      "signInTitle": "Sign in to watch this stream",
+      "signInCta": "Sign in",
+      "armed": "Starts automatically when the match goes live",
+      "drmUnsupported": "This browser cannot play the protected stream. Try Chrome, Edge, Firefox or Safari."
     },
     "listCols": {
       "aria": "Match list columns",

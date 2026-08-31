@@ -809,7 +809,14 @@
       "fallbackTitle": "Widget zápasu"
     },
     "streams": {
-      "liveStream": "Živý přenos"
+      "liveStream": "Živý přenos",
+      "oddinLabel": "Oddin HD"
+    },
+    "oddinVideo": {
+      "signInTitle": "Pro sledovani prenosu se prihlaste",
+      "signInCta": "Prihlasit se",
+      "armed": "Spusti se automaticky, az zapas zacne",
+      "drmUnsupported": "Tento prohlizec nedokaze prehrat chraneny prenos. Zkuste Chrome, Edge, Firefox nebo Safari."
     },
     "listCols": {
       "aria": "Sloupce seznamu zápasů",

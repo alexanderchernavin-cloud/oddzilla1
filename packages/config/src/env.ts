@@ -74,6 +74,33 @@ const EnvSchema = z.object({
     z.string().min(8).optional(),
   ),
 
+  // Oddin video (Havik player) — first-party match streams. Same
+  // graceful-idle shape as Disir + OBB: when ODDIN_VIDEO_API_KEY is empty
+  // /video/* returns 503 video_disabled and the storefront renders no
+  // player and no stream tab.
+  //
+  // Integration: ODDIN_VIDEO_BASE_URL=https://feed-dev.oddin-video.gg + a
+  //              pk_test_… key.
+  // Production:  ODDIN_VIDEO_BASE_URL=https://feed.oddin-video.gg + a
+  //              pk_live_… key.
+  //
+  // The key is PUBLISHABLE — Oddin scopes it with a server-side
+  // allowed-origin list, and the browser SDK needs it directly (it signs
+  // its own DRM license POSTs). Every origin that mounts the player must be
+  // on that list; ask Oddin to add hosts. We hand it to the browser from
+  // the api rather than via NEXT_PUBLIC_* so rotation doesn't need a web
+  // rebuild. Min length 8 mirrors the other optional-secret preprocessors;
+  // the pk_ prefix is not enforced so Oddin can change key formats without
+  // breaking our boot.
+  ODDIN_VIDEO_BASE_URL: z
+    .string()
+    .url()
+    .default("https://feed-dev.oddin-video.gg"),
+  ODDIN_VIDEO_API_KEY: z.preprocess(
+    (v) => (typeof v === "string" ? v.trim() : v),
+    z.preprocess((v) => (v === "" ? undefined : v), z.string().min(8).optional()),
+  ),
+
   // Single shared ERC20 receive address for USDC deposits. Empty =
   // /wallet/deposit-address returns { available: false } and the
   // storefront tells the user deposits aren't currently enabled.
