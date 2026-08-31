@@ -223,6 +223,13 @@ func main() {
 			// matches that drift out of sync are a real bug to surface,
 			// not noise to mop up.)
 			go runFixtureRefreshListener(ctx, pool, resolver, logger)
+
+			// Broadcaster URLs land on the fixture at/after kickoff, not
+			// before, so the refresh fired on the live transition is too
+			// early to see them and nothing else re-asks. This sweeper
+			// re-requests shortly after go-live; it rides the same
+			// listener (and its cooldown) via pg_notify.
+			go runStreamBackfillSweeper(ctx, st, logger)
 		}
 	}
 
@@ -529,6 +536,72 @@ func runHandoverSweeper(ctx context.Context, st *store.Store, log zerolog.Logger
 			if n > 0 {
 				log.Info().Int64("demoted", n).Msg("handover sweep: -2 markets timed out → -1 (suspended)")
 			}
+		}
+	}
+}
+
+// runStreamBackfillSweeper re-asks Oddin for the fixture of live matches that
+// still have no broadcaster URLs, shortly after they go live.
+//
+// Broadcaster URLs are not on the fixture at kickoff. Oddin attaches them at
+// or just after it, but our only refresh fires ON the not_started -> live
+// transition, seconds too early, and the fixture_change STREAM_URL (106)
+// event that should cover later attachment does not arrive in practice. So
+// the column stayed NULL forever and the storefront showed no stream tab at
+// all — measured on production 2026-08-31 as 649 of 724 live matches with
+// NULL tv_channels and zero of 523 upcoming, while Oddin was serving three
+// channels for a match we had stored as NULL. One manual refresh populated
+// it, which is what proves the parse and persist paths are fine and this is
+// purely a matter of asking again a bit later.
+//
+// It goes through pg_notify rather than calling the resolver directly so it
+// inherits the per-URN cooldown in runFixtureRefreshListener: a URN emitted
+// on several consecutive ticks costs one REST call per cooldown window, not
+// one per tick.
+//
+// Bounded on purpose. Plenty of matches genuinely have no broadcaster, and
+// without the age ceiling every one of them would burn REST calls for its
+// whole duration; the batch cap keeps a busy minute (hundreds of sim matches
+// kicking off together) from turning into a burst against Oddin's REST.
+func runStreamBackfillSweeper(ctx context.Context, st *store.Store, log zerolog.Logger) {
+	const (
+		sweepEvery = 60 * time.Second
+		// Skip the transition itself — runFixtureRefreshListener already
+		// covered that moment, and Oddin has not attached anything yet.
+		minAge = 60 * time.Second
+		// Past this a match almost certainly has no broadcaster at all.
+		maxAge = 15 * time.Minute
+		// Per tick. With the listener's 5-minute cooldown this is a ceiling
+		// on notifications, not on REST calls.
+		batch = 40
+	)
+	t := time.NewTicker(sweepEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			urns, err := store.SelectLiveMatchesMissingStreams(ctx, st.Pool(), minAge, maxAge, batch)
+			if err != nil {
+				log.Warn().Err(err).Msg("stream backfill sweep: query failed")
+				continue
+			}
+			if len(urns) == 0 {
+				continue
+			}
+			sent := 0
+			for _, urn := range urns {
+				if _, err := st.Pool().Exec(ctx, `SELECT pg_notify('fixture_refresh', $1)`, urn); err != nil {
+					log.Warn().Err(err).Str("urn", urn).Msg("stream backfill sweep: notify failed")
+					continue
+				}
+				sent++
+			}
+			log.Info().
+				Int("candidates", len(urns)).
+				Int("notified", sent).
+				Msg("stream backfill sweep: re-requested fixtures for live matches with no tv_channels")
 		}
 	}
 }

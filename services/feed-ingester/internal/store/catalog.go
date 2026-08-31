@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -608,4 +609,62 @@ ON CONFLICT (provider, provider_urn, entity_type) DO UPDATE
 		return fmt.Errorf("enqueue review: %w", err)
 	}
 	return nil
+}
+
+// SelectLiveMatchesMissingStreams returns provider URNs of live matches that
+// have no tv_channels yet and went live recently enough to be worth another
+// look.
+//
+// Why this exists: broadcaster URLs are NOT present on the fixture when a
+// match goes live. Oddin attaches them at or shortly after kickoff, but our
+// only refresh fires ON the not_started -> live transition — seconds too
+// early — and the fixture_change STREAM_URL (106) event that is supposed to
+// cover later attachment does not arrive in practice. The result measured on
+// production 2026-08-31: 649 of 724 live matches had NULL tv_channels, and
+// ZERO of 523 upcoming matches had any, while Oddin's fixture endpoint was
+// serving three channels for a match we had stored as NULL. A single manual
+// refresh populated it, which is what proves this is a timing race and not a
+// parsing or persistence fault.
+//
+// The window is deliberately narrow. `minAge` skips the moment of transition
+// (already covered), and `maxAge` stops us re-asking forever about matches
+// that genuinely have no broadcaster — plenty do not, and without a ceiling
+// every one of them would burn REST calls for the length of the match.
+func SelectLiveMatchesMissingStreams(
+	ctx context.Context,
+	db pgxRunner,
+	minAge, maxAge time.Duration,
+	limit int,
+) ([]string, error) {
+	rows, err := db.Query(ctx, `
+SELECT provider_urn
+  FROM matches
+ WHERE status = 'live'
+   AND tv_channels IS NULL
+   AND live_started_at IS NOT NULL
+   AND live_started_at < NOW() - $1::interval
+   AND live_started_at > NOW() - $2::interval
+ ORDER BY live_started_at DESC
+ LIMIT $3`,
+		fmt.Sprintf("%d seconds", int(minAge.Seconds())),
+		fmt.Sprintf("%d seconds", int(maxAge.Seconds())),
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("select live matches missing streams: %w", err)
+	}
+	defer rows.Close()
+
+	var urns []string
+	for rows.Next() {
+		var urn string
+		if err := rows.Scan(&urn); err != nil {
+			return nil, fmt.Errorf("scan live match missing streams: %w", err)
+		}
+		urns = append(urns, urn)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate live matches missing streams: %w", err)
+	}
+	return urns, nil
 }
