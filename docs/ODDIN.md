@@ -593,3 +593,110 @@ the ETH scanner use. Once Oddin enables OBB for our IP range, set
 `ODDIN_OBB_HOST=api-obb.integration.oddin.gg:443` (integration) or
 `api-obb.oddin.gg:443` (prod), restart the api container, and the
 toggle starts surfacing.
+
+## Video (Havik player)
+
+Oddin's live video is a **separate product from the AMQP feed and from
+Disir**, on its own apex (`oddin-video.gg`) with its own credential. It is
+not part of the odds pipeline: nothing about video touches markets,
+settlement, or the ledger.
+
+### Environments and hosts
+
+| Role | Integration | Production |
+| --- | --- | --- |
+| Feed API (playback resolution + catalog) | `https://feed-dev.oddin-video.gg` | `https://feed.oddin-video.gg` |
+| CDN (HLS manifest + segments) | `https://playback-dev.oddin-video.gg` | `playback.…` |
+| DRM (licence + FairPlay certificate) | `https://drm-dev.oddin-video.gg` | `drm.…` |
+| Live state (SSE) | `https://events.feed-dev.oddin-video.gg` | `events.feed.…` |
+| QoE beacons | `https://beacons-dev.oddin-video.gg` | `beacons.…` |
+
+Only the feed API base is configured (`ODDIN_VIDEO_BASE_URL`). The SDK
+derives the rest by hostname convention: SSE prefixes the host with
+`events.`, beacons rewrites the leading `feed`/`feed-*` label to
+`beacons`/`beacons-*`. Oddin also publishes a directory at
+`https://status-dev.oddin-video.gg/v1/endpoints.json` (it additionally
+lists China ICP edges on a different apex, `*.uibpqbf.com`, which we do
+not use).
+
+### Credential
+
+A **publishable** api-key, `pk_test_…` (integration) or `pk_live_…`
+(production), sent as `x-api-key`. Unlike `ODDIN_TOKEN` or
+`DISIR_BRAND_TOKEN` this is designed to sit in browser JavaScript: it is
+scoped server-side by an **allowed-origin list**, and the browser needs it
+directly because DRM licence requests are POSTed from the page with the
+same key that resolved playback (Oddin returns `403 FORBIDDEN` if they
+differ). Responses carry `Vary: x-api-key, Origin, CloudFront-Viewer-Country`.
+
+Adding an origin is a manual step on Oddin's side, same as the Disir widget
+domains. `oddzilla.cc` is already on the list — confirmed by
+`Access-Control-Allow-Origin: https://oddzilla.cc` on a live catalog call
+(2026-08-31).
+
+### Endpoints we use
+
+```
+GET /v1/catalog[?status=live|upcoming|ended][&sport=…]
+    -> { tournaments: [ { urn, name, sport, isOffline, matches: [
+           { matchUrn, matchName, status, datePlannedStart } ] } ] }
+    ETag + Cache-Control: public, max-age=10.
+    Unfiltered it returned 818 matches / 21 tournaments across
+    cs2, cs2_duels, dota2, dota2_duels, rush_basketball, rush_cricket,
+    rush_madden, rush_soccer (2026-08-31).
+
+GET /v1/playback/{urn}          <-- GET, and the URN is percent-encoded
+    -> { matchUrn, protocol: "hls", drmEnabled, manifestUrl,
+         drm: { widevine: { licenseUrl },
+                fairplay: { licenseUrl, certificateUrl } },
+         expiresAt, serverTime, analytics: { sid } }
+    425 TOO_EARLY (with Retry-After / liveStartsAt) · 410 GONE ·
+    404 NOT_FOUND · 401 UNAUTHORIZED · 503 UNAVAILABLE
+
+GET /v1/events/{urn}            on the events.* host, Server-Sent Events
+    -> pushed live | upcoming | ended | gone
+```
+
+The match URN is the **same `od:match:N` we already store** in
+`matches.provider_urn`, so no mapping table is needed — see
+`resolveMatchUrn` in `services/api/src/modules/video/routes.ts`.
+
+### Gotchas
+
+- **`/v1/playback/{urn}` is a GET, not a POST.** The published reference
+  reads as though playback resolution is a POST; it isn't, and the
+  CloudFront distribution in front of the feed API rejects POST outright
+  ("This distribution is not configured to allow the HTTP request method
+  that was used"). The URN goes in the path, percent-encoded
+  (`od%3Amatch%3A3089416`) — unlike Disir, which returns 405 for an encoded
+  colon and needs the URN interpolated literally.
+
+- **A URN with no stream answers `503 UNAVAILABLE`, not 404.** So playback
+  resolution cannot be used as an availability probe: "Oddin doesn't carry
+  this match" and "the service is briefly unhappy" are the same response.
+  Availability must come from `/v1/catalog`. This is why
+  `services/api/src/modules/video/catalog.ts` exists.
+
+- **`/v1/playback/{urn}/status` does not exist** on the current deployment
+  (plain `404 page not found`, not a JSON error). Use the catalog for
+  status, or the SSE channel for push.
+
+- **Browser CSP needs three additions, not one.** Beyond
+  `connect-src https://*.oddin-video.gg`, hls.js needs `media-src blob:`
+  (the MSE object URL on the `<video>`) and `worker-src blob:` (its demuxer
+  worker). Both otherwise inherit a policy that blocks them —
+  `default-src 'self'` and `script-src … 'strict-dynamic'` respectively —
+  and playback fails with no obvious cause.
+
+- **The SDK reparents the `<video>` you give it** when `controls: 'custom'`:
+  it inserts a `.havik-player` div as a sibling and moves the video inside.
+  A React-rendered element therefore must not be handed over — create it
+  imperatively, or unmounting throws `NotFoundError: Failed to execute
+  removeChild`. Theme CSS variables (`--havik-*`) are set as **inline**
+  styles on that wrapper, so a stylesheet cannot override them; pass
+  `theme` to `createPlayer` (values may themselves be `var(...)`).
+
+- **DRM is real.** `drmEnabled: true` on every stream checked, Widevine +
+  FairPlay (no PlayReady — Edge plays via Widevine). Browsers without a
+  working CDM raise `DRM_CLIENT`, which is terminal: no retry helps, so the
+  UI says so rather than offering one.

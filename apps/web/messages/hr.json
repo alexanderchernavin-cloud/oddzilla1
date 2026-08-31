@@ -812,7 +812,14 @@
       "fallbackTitle": "Widget meča"
     },
     "streams": {
-      "liveStream": "Prijenos uživo"
+      "liveStream": "Prijenos uživo",
+      "oddinLabel": "Oddin HD"
+    },
+    "oddinVideo": {
+      "signInTitle": "Prijavite se za gledanje prijenosa",
+      "signInCta": "Prijava",
+      "armed": "Pokrece se automatski kada susret pocne",
+      "drmUnsupported": "Ovaj preglednik ne moze reproducirati zasticeni prijenos. Pokusajte s Chromeom, Edgeom, Firefoxom ili Safarijem."
     },
     "listCols": {
       "aria": "Stupci popisa mečeva",

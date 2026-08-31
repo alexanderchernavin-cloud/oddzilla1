@@ -22,7 +22,8 @@
     "./boosted-odds": "./src/boosted-odds.ts",
     "./odds": "./src/odds.ts",
     "./live-chat": "./src/live-chat.ts",
-    "./support": "./src/support.ts"
+    "./support": "./src/support.ts",
+    "./video": "./src/video.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

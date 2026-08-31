@@ -812,7 +812,14 @@
       "fallbackTitle": "Виджет матча"
     },
     "streams": {
-      "liveStream": "Прямая трансляция"
+      "liveStream": "Прямая трансляция",
+      "oddinLabel": "Oddin HD"
+    },
+    "oddinVideo": {
+      "signInTitle": "Войдите, чтобы смотреть трансляцию",
+      "signInCta": "Войти",
+      "armed": "Запустится автоматически, когда матч начнётся",
+      "drmUnsupported": "Этот браузер не может воспроизвести защищённую трансляцию. Попробуйте Chrome, Edge, Firefox или Safari."
     },
     "listCols": {
       "aria": "Колонки списка матчей",

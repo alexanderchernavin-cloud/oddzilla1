@@ -1,8 +1,11 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { I } from "@/components/ui/icons";
 import { useTranslations } from "@/lib/i18n";
+import type { OddinVideoAvailability } from "@oddzilla/types/video";
+import { OddinVideoPlayer } from "./oddin-video-player";
 
 export interface MatchStream {
   platform: "twitch" | "youtube" | "kick" | "gjirafa" | "other";
@@ -19,9 +22,28 @@ interface Props {
   // passed in so the client doesn't have to guess at runtime (would be
   // wrong on first render anyway).
   parentHost: string | null;
+  // Oddin's own stream for this match, when it carries one. Listed FIRST in
+  // the source strip and selected by default: it is the rights-cleared
+  // first-party feed, DRM-protected and low-latency, where the Twitch /
+  // YouTube entries are whatever broadcaster URLs the fixture happened to
+  // advertise. Null / unavailable leaves the strip exactly as it was before
+  // this existed.
+  oddinVideo?: OddinVideoAvailability | null;
 }
 
-export function MatchStreams({ streams, parentHost }: Props) {
+/**
+ * One selectable video source: Oddin's player, or a third-party iframe.
+ * `embedIdx` is the stream's position among the embeddable streams, NOT in
+ * this list — it feeds `streamLabel`'s "Twitch 1 / Twitch 2" fallback, which
+ * would otherwise start counting at 2 whenever the Oddin source is present.
+ */
+type Source =
+  | { kind: "oddin" }
+  /** A stream exists but the viewer is anonymous — offer sign-in instead. */
+  | { kind: "signin" }
+  | { kind: "embed"; stream: MatchStream; embedIdx: number };
+
+export function MatchStreams({ streams, parentHost, oddinVideo }: Props) {
   const t = useTranslations("matchWidgets");
   const embeddable = streams.filter(
     (s) =>
@@ -32,10 +54,32 @@ export function MatchStreams({ streams, parentHost }: Props) {
   );
 
   const [activeIdx, setActiveIdx] = useState(0);
+  // Set when the SDK reports the stream is genuinely gone (404 / 410 / key
+  // refused). The catalog behind `oddinVideo` is a 60s cache and can lead or
+  // lag reality, so we drop the source rather than leave a dead tab.
+  const [oddinDropped, setOddinDropped] = useState(false);
 
-  if (streams.length === 0) return null;
+  const oddinReady =
+    !oddinDropped && oddinVideo?.available === true ? oddinVideo : null;
+  // Mutually exclusive with oddinReady: the api sets one or the other.
+  const oddinSignIn = !oddinDropped && oddinVideo?.signInRequired === true;
 
-  const active = embeddable[activeIdx] ?? null;
+  const sources: Source[] = [
+    ...(oddinReady ? [{ kind: "oddin" } as const] : []),
+    ...(oddinSignIn ? [{ kind: "signin" } as const] : []),
+    ...embeddable.map(
+      (stream, embedIdx) => ({ kind: "embed", stream, embedIdx }) as const,
+    ),
+  ];
+
+  // No playable source and no advertised URL to link out to.
+  if (sources.length === 0 && streams.length === 0) return null;
+
+  // Clamp rather than reset: the Oddin source can appear a poll after mount
+  // (or vanish on a terminal error), and an out-of-range index would blank
+  // the pane. Selection shifting by one in that moment is the lesser evil.
+  const idx = Math.min(activeIdx, Math.max(0, sources.length - 1));
+  const active = sources[idx] ?? null;
 
   return (
     <section
@@ -64,42 +108,67 @@ export function MatchStreams({ streams, parentHost }: Props) {
         >
           {t("streams.liveStream")}
         </span>
-        {embeddable.length > 1 ? (
+        {sources.length > 1 ? (
           <div role="tablist" style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-            {embeddable.map((s, idx) => (
-              <button
-                key={s.url}
-                role="tab"
-                aria-selected={idx === activeIdx}
-                onClick={() => setActiveIdx(idx)}
-                style={{
-                  background: idx === activeIdx ? "var(--surface-2)" : "transparent",
-                  border: "1px solid var(--border)",
-                  borderColor:
-                    idx === activeIdx ? "var(--fg-muted)" : "var(--border)",
-                  color: idx === activeIdx ? "var(--fg)" : "var(--fg-muted)",
-                  borderRadius: 999,
-                  padding: "4px 10px",
-                  fontSize: 12,
-                  cursor: "pointer",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                }}
-              >
-                <PlatformDot platform={s.platform} />
-                {streamLabel(s, idx)}
-              </button>
-            ))}
+            {sources.map((src, i) => {
+              const selected = i === idx;
+              return (
+                <button
+                  key={src.kind === "embed" ? src.stream.url : src.kind}
+                  role="tab"
+                  aria-selected={selected}
+                  onClick={() => setActiveIdx(i)}
+                  style={{
+                    background: selected ? "var(--surface-2)" : "transparent",
+                    border: "1px solid var(--border)",
+                    borderColor: selected ? "var(--fg-muted)" : "var(--border)",
+                    color: selected ? "var(--fg)" : "var(--fg-muted)",
+                    borderRadius: 999,
+                    padding: "4px 10px",
+                    fontSize: 12,
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <PlatformDot
+                    platform={src.kind === "embed" ? src.stream.platform : "oddin"}
+                  />
+                  {src.kind === "embed"
+                    ? streamLabel(src.stream, src.embedIdx)
+                    : t("streams.oddinLabel")}
+                </button>
+              );
+            })}
           </div>
         ) : null}
       </div>
 
-      {active ? (
-        <StreamEmbed stream={active} parentHost={parentHost} />
-      ) : (
+      {/* Mounted for the whole life of the section and hidden when another
+          source is selected, so switching tabs and back does not tear the
+          player down and re-arm it (which would re-resolve playback, fetch a
+          fresh licence, and restart from the live edge). */}
+      {oddinReady ? (
+        <div style={{ display: active?.kind === "oddin" ? "block" : "none" }}>
+          <OddinVideoPlayer
+            availability={oddinReady}
+            onUnavailable={() => setOddinDropped(true)}
+          />
+        </div>
+      ) : null}
+
+      {active?.kind === "signin" ? <SignInToWatch /> : null}
+
+      {active?.kind === "embed" ? (
+        <StreamEmbed stream={active.stream} parentHost={parentHost} />
+      ) : null}
+
+      {/* Nothing embeddable at all — link out to whatever the fixture
+          advertised, as before. */}
+      {sources.length === 0 && streams.length > 0 ? (
         <FallbackCard stream={streams[0]!} />
-      )}
+      ) : null}
     </section>
   );
 }
@@ -118,9 +187,15 @@ function platformName(p: MatchStream["platform"]): string {
   return "Stream";
 }
 
-function PlatformDot({ platform }: { platform: MatchStream["platform"] }) {
+function PlatformDot({
+  platform,
+}: {
+  platform: MatchStream["platform"] | "oddin";
+}) {
   const color =
-    platform === "twitch"
+    platform === "oddin"
+      ? "var(--accent)"
+      : platform === "twitch"
       ? "#a970ff"
       : platform === "youtube"
         ? "#ff0033"
@@ -206,6 +281,64 @@ function StreamEmbed({
           border: 0,
         }}
       />
+    </div>
+  );
+}
+
+/**
+ * Shown in place of the player when Oddin carries a stream for this match
+ * but the viewer is signed out. Deliberately keeps the same 16/9 black box
+ * the player would occupy, so the layout doesn't jump when they come back
+ * signed in.
+ */
+function SignInToWatch() {
+  const t = useTranslations("matchWidgets");
+  return (
+    <div
+      style={{
+        position: "relative",
+        width: "100%",
+        aspectRatio: "16 / 9",
+        background: "#0b0b0c",
+        borderRadius: "var(--r-md, 10px)",
+        overflow: "hidden",
+        border: "1px solid var(--border)",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 12,
+        padding: 20,
+        textAlign: "center",
+      }}
+    >
+      <span
+        className="mono"
+        style={{
+          fontSize: 11,
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+          color: "#9a9a98",
+        }}
+      >
+        {t("oddinVideo.signInTitle")}
+      </span>
+      <Link
+        href="/login"
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          padding: "8px 18px",
+          borderRadius: 999,
+          background: "#f2f1ec",
+          color: "#0b0b0c",
+          fontSize: 13,
+          fontWeight: 600,
+          textDecoration: "none",
+        }}
+      >
+        {t("oddinVideo.signInCta")}
+      </Link>
     </div>
   );
 }

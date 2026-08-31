@@ -812,7 +812,14 @@
       "fallbackTitle": "Widget del partido"
     },
     "streams": {
-      "liveStream": "Transmisión en vivo"
+      "liveStream": "Transmisión en vivo",
+      "oddinLabel": "Oddin HD"
+    },
+    "oddinVideo": {
+      "signInTitle": "Inicia sesion para ver esta transmision",
+      "signInCta": "Iniciar sesion",
+      "armed": "Comienza automaticamente cuando el partido empiece",
+      "drmUnsupported": "Este navegador no puede reproducir la transmision protegida. Prueba con Chrome, Edge, Firefox o Safari."
     },
     "listCols": {
       "aria": "Columnas de la lista de partidos",
