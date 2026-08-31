@@ -711,6 +711,26 @@ The match URN is the **same `od:match:N` we already store** in
   styles on that wrapper, so a stylesheet cannot override them; pass
   `theme` to `createPlayer` (values may themselves be `var(...)`).
 
+- **The live window is tiny — do not run the SDK's default latency target.**
+  A 1080p60 playlist observed live carried:
+
+  ```
+  #EXT-X-TARGETDURATION:2
+  #EXT-X-PART-INF:PART-TARGET=0.55
+  #EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=1.65
+  ```
+
+  with **three 2s segments in the window — about 6 seconds of published
+  media in total**, and a top rendition of 1080p60 at 6.1 Mbps. The SDK's
+  default `liveLatencyTarget: 2` leaves 0.35s of headroom over the 1.65s
+  `PART-HOLD-BACK` floor, so any jitter empties the buffer: the player
+  stalls, drifts behind live, tries to recover at 1.5x playback rate and
+  stalls again — a permanent spinner over an otherwise-decoding picture.
+  We pass `liveLatencyTarget: 4` (~2.4x PART-HOLD-BACK, still inside the
+  6s window). Do not raise it much past 6s or playback moves to the oldest
+  segment in the window and risks eviction mid-fetch; cap ABR with
+  `maxBitrate` instead.
+
 - **DRM is real.** `drmEnabled: true` on every stream checked, Widevine +
   FairPlay (no PlayReady — Edge plays via Widevine). Browsers without a
   working CDM raise `DRM_CLIENT`, which is terminal: no retry helps, so the
