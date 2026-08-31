@@ -200,6 +200,31 @@ export function OddinVideoPlayer({ availability, onUnavailable }: Props) {
         }
         player = created;
 
+        // Snap to the live edge the first time the viewer actually presses
+        // play.
+        //
+        // hls.js pins its start position when it attaches. With autoplay off
+        // the player sits armed while the live edge keeps advancing, so a
+        // viewer who opens the page and presses play a minute later resumes
+        // a minute behind live and has to hit the SDK's GO LIVE button to
+        // catch up. Nobody wants to watch a live match on a delay they did
+        // not ask for.
+        //
+        // First play only: a later pause/resume is a deliberate act and we
+        // leave the GO LIVE control to handle it, rather than yanking the
+        // viewer forward every time they come back.
+        let snapped = false;
+        created.on("playing", () => {
+          if (snapped) return;
+          snapped = true;
+          try {
+            created.seekToLive();
+          } catch {
+            // Non-fatal: worst case the viewer starts slightly behind and
+            // the GO LIVE button is right there.
+          }
+        });
+
         created.on("error", (err: PlaybackError) => {
           if (err.code === "DRM_CLIENT") {
             // The browser/OS can't do the required DRM (Linux Chromium
