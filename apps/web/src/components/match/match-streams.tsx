@@ -8,7 +8,7 @@ import type { OddinVideoAvailability } from "@oddzilla/types/video";
 import { OddinVideoPlayer } from "./oddin-video-player";
 
 export interface MatchStream {
-  platform: "twitch" | "youtube" | "kick" | "gjirafa" | "other";
+  platform: "twitch" | "youtube" | "kick" | "gjirafa" | "vpplayer" | "other";
   embedId: string | null;
   url: string;
   name: string | null;
@@ -50,7 +50,9 @@ export function MatchStreams({ streams, parentHost, oddinVideo }: Props) {
       (s.platform === "twitch" && s.embedId && parentHost) ||
       (s.platform === "youtube" && s.embedId) ||
       (s.platform === "kick" && s.embedId) ||
-      (s.platform === "gjirafa" && s.embedId),
+      (s.platform === "gjirafa" && s.embedId) ||
+      // vpplayer carries no embedId - the url IS the player page.
+      s.platform === "vpplayer",
   );
 
   const [activeIdx, setActiveIdx] = useState(0);
@@ -185,6 +187,9 @@ function platformName(p: MatchStream["platform"]): string {
   if (p === "youtube") return "YouTube";
   if (p === "kick") return "Kick";
   if (p === "gjirafa") return "Gjirafa";
+  // Gjirafa white-label player host; Oddin still labels the channel
+  // "Gjirafa", and stream.name wins over this when present.
+  if (p === "vpplayer") return "Gjirafa";
   return "Stream";
 }
 
@@ -202,7 +207,7 @@ function PlatformDot({
         ? "#ff0033"
         : platform === "kick"
           ? "#53fc18"
-          : platform === "gjirafa"
+          : platform === "gjirafa" || platform === "vpplayer"
             ? "#f97316"
             : "var(--fg-muted)";
   return (
@@ -251,6 +256,12 @@ function StreamEmbed({
   } else if (stream.platform === "gjirafa" && stream.embedId) {
     src = `https://video.gjirafa.com/embed/${encodeURIComponent(stream.embedId)}`;
     title = `Gjirafa: ${stream.embedId}`;
+  } else if (stream.platform === "vpplayer") {
+    // Already a player page (`host.vpplayer.tech/player/<a>/<v>.html`), so
+    // it goes in verbatim. The api validated the host and path shape before
+    // classifying it, which is what makes using the raw url here safe.
+    src = stream.url;
+    title = "Gjirafa";
   }
 
   if (!src) return <FallbackCard stream={stream} />;
