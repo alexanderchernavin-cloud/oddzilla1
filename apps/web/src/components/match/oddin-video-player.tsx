@@ -77,28 +77,45 @@ const PLAYER_THEME = {
 // Errors that mean "there is nothing here to watch" rather than "try again".
 // NETWORK / TIMEOUT / UNAVAILABLE / RATE_LIMITED are deliberately absent —
 // those are transient, and the SDK's own status card offers a Retry.
-// How far behind the live edge to sit, in seconds.
+// Why this player does NOT run in low-latency mode, and sits 4s back.
 //
-// The SDK defaults to 2s, which does not survive contact with Oddin's
-// streams. Their LL-HLS playlists advertise:
+// Oddin's LL-HLS playlists are extremely tight. A live 1080p60 playlist
+// measured on 2026-08-31 advertised:
 //
 //   #EXT-X-TARGETDURATION:2
 //   #EXT-X-PART-INF:PART-TARGET=0.55
 //   #EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=1.65
 //
-// — and carry only three 2s segments, so the ENTIRE published window is
-// about 6 seconds. A 2s target leaves 0.35s of headroom over the 1.65s
-// PART-HOLD-BACK floor while the top rendition is 1080p60 at 6.1 Mbps: any
-// jitter drains the buffer, playback stalls, drifts behind live, and hls.js
-// tries to claw back at 1.5x playback rate and stalls again. That is the
-// permanent-spinner behaviour reported on 2026-08-31.
+// carrying three 2s segments — the ENTIRE published window is ~6 seconds,
+// which is the RFC 8216bis minimum (3x target duration). The origin itself
+// is healthy: it publishes in real time (+2 segments per 4s wall clock) and
+// a 1466 KB segment fetched in 202 ms, ~59 Mbit/s effective against a
+// 6.1 Mbit/s top rendition. Bandwidth was never the constraint.
 //
-// 4s is ~2.4x PART-HOLD-BACK and still sits well inside the 6s window, so
-// there is room to absorb a slow part fetch without falling off the back.
-// Still comfortably "live" for betting — Twitch and YouTube run 10-20s.
-// If stalling persists, the next lever is capping ABR below 1080p60
-// (`maxBitrate`), not pushing this higher: past ~6s we would start playing
-// the oldest segment in the window and risk it being evicted mid-fetch.
+// With the SDK's defaults (lowLatency 'auto', which resolves to TRUE
+// unconditionally despite the docstring claiming it lets hls.js decide from
+// the manifest) playback failed like this, measured in the page:
+//
+//   decoded: 0   dropped: 0   bufferAhead: -24.62   res: 1920x1080
+//
+// Zero frames decoded AND zero dropped means it is not a decode or
+// compositing bottleneck. `bufferAhead` negative is the real fault: the
+// playhead had run 24.6s PAST the end of every buffered range, so there was
+// simply nothing at the playhead to decode. That is part-chasing on a 6s
+// window — the playhead tracks an advancing live edge the buffer can never
+// reach, and never recovers on its own.
+//
+// So: lowLatency false. hls.js then plays whole 2s segments with ordinary
+// live sync instead of chasing parts, which a 6s window can actually
+// sustain. It also flips `enableWorker` back on as a side effect, because
+// the SDK derives it as `enableWorker: !lowLatency` — transmuxing moves off
+// the main thread, which this page (WS odds ticks, pollers, analytics) is
+// glad of even though it was not the cause here.
+//
+// 4s back is ~2.4x PART-HOLD-BACK and two whole segments inside the window.
+// Do not push much past 6s or playback moves to the oldest segment in the
+// window and risks eviction mid-fetch; cap ABR with `maxBitrate` instead.
+// Still comfortably live for betting — Twitch and YouTube run 10-20s.
 const LIVE_LATENCY_TARGET_SECONDS = 4;
 
 const TERMINAL_CODES = new Set([
@@ -162,6 +179,16 @@ export function OddinVideoPlayer({ availability, onUnavailable }: Props) {
           statusOverlays: true,
           theme: PLAYER_THEME,
           liveLatencyTarget: LIVE_LATENCY_TARGET_SECONDS,
+          // Segment-based live, not LL-HLS part-chasing. See the note on
+          // LIVE_LATENCY_TARGET_SECONDS for the measurement behind this.
+          lowLatency: false,
+          // Oddin's QoE beacon endpoint does not send CORS headers:
+          //   POST https://beacons-dev.oddin-video.gg/v1/beacons
+          //   blocked by CORS policy: no Access-Control-Allow-Origin
+          // Every flush fails preflight, so no telemetry reaches them either
+          // way — this only stops the console noise and the dead requests.
+          // Re-enable once Oddin allow-lists the origin on that host.
+          analytics: false,
           // Arm on an upcoming match. `kickoffAt` widens the poll cadence
           // when the viewer is armed long before the start.
           waitForLive: startsAt ? { kickoffAt: startsAt } : true,

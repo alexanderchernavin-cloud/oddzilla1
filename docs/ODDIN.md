@@ -711,6 +711,22 @@ The match URN is the **same `od:match:N` we already store** in
   styles on that wrapper, so a stylesheet cannot override them; pass
   `theme` to `createPlayer` (values may themselves be `var(...)`).
 
+- **The QoE beacon endpoint has no CORS headers.** The SDK POSTs to
+  `https://beacons[-dev].oddin-video.gg/v1/beacons` from the page, and that
+  host does not return `Access-Control-Allow-Origin` — every flush fails
+  preflight and spams the console, from the same origin the api-key is
+  allow-listed for. No telemetry reaches Oddin either way, so we pass
+  `analytics: false`. Re-enable once they allow-list the origin on that host.
+
+- **`lowLatency: 'auto'` does not do what the type declaration says.** The
+  docstring reads "lets hls.js decide from the manifest (safe default)", but
+  the shipped code is
+  `lowLatency: opts.lowLatency === undefined || opts.lowLatency === "auto" || opts.lowLatency`
+  — `'auto'` resolves to `true` unconditionally and nothing inspects the
+  manifest. The SDK also derives `enableWorker: !lowLatency`, so the default
+  additionally forces hls.js to transmux on the main thread; the two are
+  orthogonal in hls.js, so this coupling looks unintended.
+
 - **The live window is tiny — do not run the SDK's default latency target.**
   A 1080p60 playlist observed live carried:
 
@@ -721,14 +737,29 @@ The match URN is the **same `od:match:N` we already store** in
   ```
 
   with **three 2s segments in the window — about 6 seconds of published
-  media in total**, and a top rendition of 1080p60 at 6.1 Mbps. The SDK's
-  default `liveLatencyTarget: 2` leaves 0.35s of headroom over the 1.65s
-  `PART-HOLD-BACK` floor, so any jitter empties the buffer: the player
-  stalls, drifts behind live, tries to recover at 1.5x playback rate and
-  stalls again — a permanent spinner over an otherwise-decoding picture.
-  We pass `liveLatencyTarget: 4` (~2.4x PART-HOLD-BACK, still inside the
-  6s window). Do not raise it much past 6s or playback moves to the oldest
-  segment in the window and risks eviction mid-fetch; cap ABR with
+  media in total**, which is the RFC 8216bis minimum (3x target duration),
+  against a top rendition of 1080p60 at 6.1 Mbps.
+
+  The origin is not the problem: it publishes in real time (+2 segments per
+  4s wall clock) and a 1466 KB segment fetched in 202 ms — ~59 Mbit/s
+  effective, ~10x what the stream needs. Under the SDK defaults playback
+  measured in-page as:
+
+  ```
+  decoded: 0   dropped: 0   bufferAhead: -24.62   res: 1920x1080
+  ```
+
+  Zero decoded *and* zero dropped rules out decode and compositing. The
+  fault is the negative `bufferAhead`: the playhead had run 24.6s PAST the
+  end of every buffered range, so there was nothing at the playhead to
+  decode. That is part-chasing on a 6s window — the playhead tracks a live
+  edge the buffer can never reach and never recovers.
+
+  We therefore pass `lowLatency: false` (whole 2s segments, ordinary live
+  sync, and `enableWorker` back on as a side effect) plus
+  `liveLatencyTarget: 4` — ~2.4x `PART-HOLD-BACK` and two whole segments
+  inside the window. Do not raise it much past 6s or playback moves to the
+  oldest segment in the window and risks eviction mid-fetch; cap ABR with
   `maxBitrate` instead.
 
 - **DRM is real.** `drmEnabled: true` on every stream checked, Widevine +
