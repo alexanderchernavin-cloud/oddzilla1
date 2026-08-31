@@ -190,18 +190,28 @@ export interface BannerGenJob {
    * actual palettes. Without them (they were missing until 2026-08-28)
    * "evoke the teams through colour" is an instruction the model can't
    * follow, and it falls back to stock neon arena art.
+   *
+   * The `*LogoUrl` fields are ABSOLUTE (the api resolves our own
+   * `/api/...` byte-serve paths against the public base) so the worker
+   * can fetch them directly. They are not for the prompt — diffusion
+   * cannot draw a crest — they are composited onto the finished plate
+   * as real artwork.
    */
   context: {
     sportName: string | null;
     sportSlug: string | null;
     tournamentName: string | null;
     tournamentBrandColor: string | null;
+    tournamentLogoUrl: string | null;
     homeTeam: string | null;
     homeBrandColor: string | null;
+    homeLogoUrl: string | null;
     awayTeam: string | null;
     awayBrandColor: string | null;
+    awayLogoUrl: string | null;
     competitorName: string | null;
     competitorBrandColor: string | null;
+    competitorLogoUrl: string | null;
   };
 }
 

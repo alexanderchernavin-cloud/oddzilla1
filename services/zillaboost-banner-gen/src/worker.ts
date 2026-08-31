@@ -2,7 +2,8 @@
 //
 //   poll /pending → for each claimed job:
 //     research entities (Wikipedia) → author prompt (LM Studio) →
-//     render (local image server) → upload → done
+//     render plate (ComfyUI) → composite real crests + names (sharp) →
+//     upload → done
 //
 // Availability semantics, matching the operator's requirements exactly:
 //  - Production PC-off case: the server queue is pull-based, so an OFF
@@ -21,6 +22,7 @@
 import type { BannerGenJob } from "@oddzilla/types";
 import { WorkerApi, ApiError } from "./api-client.js";
 import type { WorkerConfig } from "./config.js";
+import { composeBanner } from "./compose.js";
 import { backendUp, generateImage } from "./imagegen.js";
 import { authorPrompt, entitiesOf } from "./prompt.js";
 import { researchEntities } from "./research.js";
@@ -46,10 +48,25 @@ async function processJob(
     const notes = await researchEntities(cfg, entitiesOf(job));
     prompt = await authorPrompt(cfg, job, notes);
     log.info({ ruleId: job.ruleId, prompt }, "prompt authored");
-    const { imageBase64, mime, meta } = await generateImage(cfg, prompt);
-    await api.complete(job.ruleId, imageBase64, mime, prompt, { ...meta });
+    const { plate, meta } = await generateImage(cfg, prompt);
+    // Real crests + real team names go on AFTER the render — diffusion
+    // cannot draw either legibly at this size (see compose.ts).
+    const composed = await composeBanner(cfg, job, plate);
+    await api.complete(
+      job.ruleId,
+      composed.imageBase64,
+      composed.mime,
+      prompt,
+      { ...meta, ...composed.meta },
+    );
     log.info(
-      { ruleId: job.ruleId, ms: Date.now() - started, seed: meta.seed },
+      {
+        ruleId: job.ruleId,
+        ms: Date.now() - started,
+        seed: meta.seed,
+        composed: composed.meta.composed,
+        crests: composed.meta.crests,
+      },
       "job complete — image uploaded",
     );
   } catch (err) {

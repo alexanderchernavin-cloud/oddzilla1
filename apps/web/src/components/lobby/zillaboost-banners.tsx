@@ -202,11 +202,20 @@ function BannerArtBackdrop({
  * to the card edges by cancelling the card's 10px/12px padding with
  * negative margins.
  *
- * `flexShrink: 0` is load-bearing: the card is a column flex container,
- * so this img is a flex item, and a flex item whose width exceeds the
- * line (100% + 24px does, by design) gets SHRUNK back by the default
- * flex-shrink: 1 — while the -12px left margin still applies. Result
- * was an image visibly shifted left with a gap down the right edge.
+ * TWO overrides are load-bearing, and both defend the `100% + 24px`
+ * width against something that would quietly shrink it back to 100% —
+ * which does not centre the image, it dumps the whole 24px on the right
+ * edge as a white gap, because the -12px left margin still applies.
+ *
+ *  - `maxWidth: "none"` beats Tailwind preflight's
+ *    `img, video { max-width: 100% }` in `@layer base`. Measured on
+ *    production 2026-08-28: a 328px card rendered a 302px image with a
+ *    25px gap down the right edge. This is the one that actually bit.
+ *  - `flexShrink: 0` covers the flex-item path: the card is a column
+ *    flex container, so an item wider than the line can be shrunk back.
+ *
+ * If you add another full-bleed image anywhere, it needs the same
+ * `maxWidth` opt-out — preflight applies to every `img` on the site.
  */
 function BannerArtStrip({ url, onFail }: { url: string; onFail: () => void }) {
   return (
@@ -216,6 +225,7 @@ function BannerArtStrip({ url, onFail }: { url: string; onFail: () => void }) {
       onError={onFail}
       style={{
         width: "calc(100% + 24px)",
+        maxWidth: "none",
         flexShrink: 0,
         margin: "-10px -12px 0",
         aspectRatio: "3 / 1",
