@@ -82,9 +82,6 @@ const PLAYER_THEME = {
   fontFamily: "var(--font-sans, ui-sans-serif, system-ui, sans-serif)",
 } as const;
 
-// Errors that mean "there is nothing here to watch" rather than "try again".
-// NETWORK / TIMEOUT / UNAVAILABLE / RATE_LIMITED are deliberately absent —
-// those are transient, and the SDK's own status card offers a Retry.
 // Why this player does NOT run in low-latency mode, and sits 4s back.
 //
 // Oddin's LL-HLS playlists are extremely tight. A live 1080p60 playlist
@@ -126,6 +123,9 @@ const PLAYER_THEME = {
 // Still comfortably live for betting — Twitch and YouTube run 10-20s.
 const LIVE_LATENCY_TARGET_SECONDS = 4;
 
+// Errors that mean "there is nothing here to watch" rather than "try again".
+// NETWORK / TIMEOUT / UNAVAILABLE / RATE_LIMITED are deliberately absent —
+// those are transient, and the SDK's own status card offers a Retry.
 const TERMINAL_CODES = new Set([
   "NOT_FOUND",
   "GONE",
@@ -166,16 +166,23 @@ export function OddinVideoPlayer({ availability, active, onUnavailable }: Props)
 
     setDrmUnsupported(false);
 
-    // `?oddinLowLatency=1` restores the SDK's own default (LL-HLS part
-    // chasing) for one page load, so the playback failure documented in
-    // docs/ODDIN.md can be reproduced on demand — for capturing a HAR, and
-    // so Oddin can reproduce it themselves from a URL we hand them rather
-    // than having to trust our write-up.
+    // `?oddinLowLatency=1` restores the ORIGINAL failing configuration for a
+    // single page load so the playback fault documented in docs/ODDIN.md can
+    // be reproduced on demand.
     //
-    // Opt-in, per page load, affects nobody who does not type it, and the
-    // worst it can do is give that one viewer the bad stream we already
-    // know about. Remove once Oddin has closed the report.
-    const forceLowLatency =
+    // It has to restore all three settings together, not just the one it is
+    // named after. The first cut flipped only `lowLatency` and consequently
+    // never reproduced anything — by then muted autoplay had shipped, and the
+    // leading theory for the fault is that `autoplay: false` is what strands
+    // the playhead: hls.js keeps nudging currentTime toward an advancing
+    // liveSyncPosition while a paused element never plays into the buffer, so
+    // currentTime ends up past buffered.end (measured: bufferAhead -24.62).
+    // Leaving autoplay on, or leaving the seek-to-live snap in place, hides
+    // exactly the thing we are trying to show.
+    //
+    // Opt-in, per page load, affects nobody who does not type it. Remove once
+    // Oddin has closed the report.
+    const reproMode =
       typeof window !== "undefined" &&
       new URLSearchParams(window.location.search).has("oddinLowLatency");
 
@@ -211,7 +218,9 @@ export function OddinVideoPlayer({ availability, active, onUnavailable }: Props)
           // Only autoplays when this is the selected source — see the
           // play/pause effect below, which also pauses it on a tab switch so
           // a hidden player never pulls a rights-metered stream.
-          autoplay: activeRef.current,
+          // Repro mode restores autoplay:false, the original setting and the
+          // suspected cause. Otherwise autoplay when this is the live tab.
+          autoplay: reproMode ? false : activeRef.current,
           muted: true,
           controls: "custom",
           statusOverlays: true,
@@ -220,7 +229,7 @@ export function OddinVideoPlayer({ availability, active, onUnavailable }: Props)
           // Segment-based live, not LL-HLS part-chasing. See the note on
           // LIVE_LATENCY_TARGET_SECONDS for the measurement behind this.
           // `?oddinLowLatency=1` flips it back to reproduce the fault.
-          lowLatency: forceLowLatency,
+          lowLatency: reproMode,
           // Oddin's QoE beacon endpoint does not send CORS headers:
           //   POST https://beacons-dev.oddin-video.gg/v1/beacons
           //   blocked by CORS policy: no Access-Control-Allow-Origin
@@ -253,7 +262,9 @@ export function OddinVideoPlayer({ availability, active, onUnavailable }: Props)
         // First play only: a later pause/resume is a deliberate act and we
         // leave the GO LIVE control to handle it, rather than yanking the
         // viewer forward every time they come back.
-        let snapped = false;
+        // Skipped entirely in repro mode: snapping to live is precisely the
+        // recovery that would hide a stranded playhead.
+        let snapped = reproMode;
         created.on("playing", () => {
           if (snapped) return;
           snapped = true;
