@@ -77,6 +77,30 @@ const PLAYER_THEME = {
 // Errors that mean "there is nothing here to watch" rather than "try again".
 // NETWORK / TIMEOUT / UNAVAILABLE / RATE_LIMITED are deliberately absent —
 // those are transient, and the SDK's own status card offers a Retry.
+// How far behind the live edge to sit, in seconds.
+//
+// The SDK defaults to 2s, which does not survive contact with Oddin's
+// streams. Their LL-HLS playlists advertise:
+//
+//   #EXT-X-TARGETDURATION:2
+//   #EXT-X-PART-INF:PART-TARGET=0.55
+//   #EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=1.65
+//
+// — and carry only three 2s segments, so the ENTIRE published window is
+// about 6 seconds. A 2s target leaves 0.35s of headroom over the 1.65s
+// PART-HOLD-BACK floor while the top rendition is 1080p60 at 6.1 Mbps: any
+// jitter drains the buffer, playback stalls, drifts behind live, and hls.js
+// tries to claw back at 1.5x playback rate and stalls again. That is the
+// permanent-spinner behaviour reported on 2026-08-31.
+//
+// 4s is ~2.4x PART-HOLD-BACK and still sits well inside the 6s window, so
+// there is room to absorb a slow part fetch without falling off the back.
+// Still comfortably "live" for betting — Twitch and YouTube run 10-20s.
+// If stalling persists, the next lever is capping ABR below 1080p60
+// (`maxBitrate`), not pushing this higher: past ~6s we would start playing
+// the oldest segment in the window and risk it being evicted mid-fetch.
+const LIVE_LATENCY_TARGET_SECONDS = 4;
+
 const TERMINAL_CODES = new Set([
   "NOT_FOUND",
   "GONE",
@@ -112,7 +136,9 @@ export function OddinVideoPlayer({ availability, onUnavailable }: Props) {
     const video = document.createElement("video");
     video.playsInline = true;
     video.muted = true;
-    video.preload = "none";
+    // Deliberately no `preload="none"`. hls.js owns loading through MSE, so
+    // it buys nothing here, and on a stream this tight it is one more reason
+    // for the element to sit idle instead of filling its buffer.
     container.appendChild(video);
 
     void (async () => {
@@ -135,6 +161,7 @@ export function OddinVideoPlayer({ availability, onUnavailable }: Props) {
           controls: "custom",
           statusOverlays: true,
           theme: PLAYER_THEME,
+          liveLatencyTarget: LIVE_LATENCY_TARGET_SECONDS,
           // Arm on an upcoming match. `kickoffAt` widens the poll cadence
           // when the viewer is armed long before the start.
           waitForLive: startsAt ? { kickoffAt: startsAt } : true,
