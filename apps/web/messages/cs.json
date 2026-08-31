@@ -378,6 +378,9 @@
     "openTournament": "Otevřít turnaj",
     "openMatch": "Otevřít zápas",
     "openSport": "Otevřít sport",
+    "openTeam": "Otevřít tým",
+    "teamOnlyBlurb": "zvyšuje kurzy samotného týmu",
+    "teamAllBlurb": "zvyšuje všechny trhy jejich zápasů",
     "openMatchForPrices": "Otevřete zápas a uvidíte navýšené kurzy",
     "matchesCount": "{count, plural, one {# zápas} few {# zápasy} other {# zápasů}}"
   },

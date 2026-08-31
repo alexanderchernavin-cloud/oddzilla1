@@ -60,6 +60,14 @@ export interface CustomBoostRulesSnapshot {
    * ladder lines created after the last poll. Null = none.
    */
   matchWide: CustomBoostRule | null;
+  /**
+   * Set only when `matchWide` is a `team_only` team boost (migration
+   * 0093): the outcome id that IS the boosted team on this match. The
+   * caller must then apply matchWide as a SELECTION on that outcome and
+   * ONLY where isTeamShapedMarket(providerMarketId) holds — applying it
+   * market-wide would move the opponent's price too.
+   */
+  matchWideTeamOutcomeId: "1" | "2" | null;
   /** Server-corrected ms-since-epoch for the countdown chips. */
   nowMs: number;
 }
@@ -68,6 +76,7 @@ const EMPTY: CustomBoostRulesSnapshot = {
   byMarket: new Map(),
   selectionsByMarket: new Map(),
   matchWide: null,
+  matchWideTeamOutcomeId: null,
   nowMs: 0,
 };
 
@@ -165,7 +174,17 @@ export function useCustomBoostedOdds(matchId: string): CustomBoostRulesSnapshot 
             endsAt: data.matchWide.endsAt,
           }
         : null;
-    return { byMarket, selectionsByMarket, matchWide, nowMs };
+    // Only meaningful while the rule it describes is live.
+    const matchWideTeamOutcomeId = matchWide
+      ? (data.matchWide?.teamOutcomeId ?? null)
+      : null;
+    return {
+      byMarket,
+      selectionsByMarket,
+      matchWide,
+      matchWideTeamOutcomeId,
+      nowMs,
+    };
   }, [data, tick]);
 }
 

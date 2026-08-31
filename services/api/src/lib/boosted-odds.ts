@@ -32,8 +32,10 @@ import {
   CUSTOM_BOOST_DEFAULT_RISK_SCORE,
   CUSTOM_BOOST_PLACEMENT_TOLERANCE,
   type BoostedOddsScope,
+  isTeamShapedMarket,
   type BoostQuoteCell,
   type BoostQuoteRule,
+  type CompetitorBoostMarkets,
 } from "@oddzilla/types";
 
 export interface BoostRule {
@@ -50,6 +52,34 @@ export interface BoostRule {
   startsAt: Date | null;
   endsAt: Date | null;
   minRiskScore: number | null;
+  /** scope='competitor' only — 'all' | 'team_only' (migration 0093). */
+  competitorMarkets: CompetitorBoostMarkets;
+}
+
+/**
+ * True when this rule only boosts its team's own outcomes rather than
+ * every market of the team's matches. Such a rule is priced like an
+ * outcome-scope rule, so callers must route it through `selections`
+ * (never `marketWide`) or the opponent's price moves too.
+ */
+export function isTeamOnlyRule(rule: BoostRule): boolean {
+  return rule.scope === "competitor" && rule.competitorMarkets === "team_only";
+}
+
+/**
+ * Which outcome id represents this rule's team on the given match, or
+ * null when the rule isn't team-only / the team isn't in this match.
+ * Team-shaped markets put the home competitor at outcome "1" and the
+ * away one at "2" (see isTeamShapedMarket).
+ */
+export function teamOutcomeForRule(
+  rule: BoostRule,
+  ctx: Pick<MatchBoostContext, "homeCompetitorId" | "awayCompetitorId">,
+): "1" | "2" | null {
+  if (!isTeamOnlyRule(rule) || rule.competitorId === null) return null;
+  if (ctx.homeCompetitorId === rule.competitorId) return "1";
+  if (ctx.awayCompetitorId === rule.competitorId) return "2";
+  return null;
 }
 
 /** BoostRule -> the subset quoteMarketBoost needs. */
@@ -114,6 +144,8 @@ function rowToRule(
     startsAt: r.startsAt,
     endsAt: r.endsAt,
     minRiskScore: r.minRiskScore !== null ? Number(r.minRiskScore) : null,
+    competitorMarkets:
+      r.competitorMarkets === "team_only" ? "team_only" : "all",
   };
 }
 
@@ -191,15 +223,24 @@ export interface BatchedMatchBoosts {
   /** True when nothing in the batch is boosted — lets callers skip work. */
   readonly empty: boolean;
   /**
-   * Market-wide rule pricing `marketId` on this match, or null.
-   * Precedence market > match > competitor > tournament > sport. Pass
-   * the result to quoteMarketBoost as `marketWide`; when the market also
-   * has selection rules, quoteMarketBoost ignores this and prices from
-   * those alone (a selection rule REPLACES coarser ones).
+   * Everything quoteMarketBoost needs for one market, resolved together.
+   *
+   * `providerMarketId` is REQUIRED because a `team_only` competitor rule
+   * (migration 0093) may only touch team-shaped markets, and must be
+   * applied as a SELECTION on that team's own outcome — never
+   * market-wide, or the opponent's price moves too. Returning the two
+   * halves from one call makes that impossible to get wrong at a call
+   * site; an earlier split `marketWide()` / `selections()` pair let a
+   * caller take the competitor rule as market-wide by accident.
    */
-  marketWide(ctx: MatchBoostContext, marketId: bigint): BoostRule | null;
-  /** outcomeId -> rule for outcome-scope rules on this market, or null. */
-  selections(marketId: bigint): Map<string, BoostRule> | null;
+  resolve(
+    ctx: MatchBoostContext,
+    marketId: bigint,
+    providerMarketId: number,
+  ): {
+    marketWide: BoostRule | null;
+    selections: Map<string, BoostRule> | null;
+  };
 }
 
 export async function loadBoostRulesForMatches(
@@ -210,8 +251,7 @@ export async function loadBoostRulesForMatches(
 ): Promise<BatchedMatchBoosts> {
   const emptyResult: BatchedMatchBoosts = {
     empty: true,
-    marketWide: () => null,
-    selections: () => null,
+    resolve: () => ({ marketWide: null, selections: null }),
   };
   if (contexts.length === 0) return emptyResult;
 
@@ -303,28 +343,61 @@ export async function loadBoostRulesForMatches(
 
   return {
     empty: false,
-    marketWide(ctx, marketId) {
-      const market = byMarket.get(marketId.toString());
-      if (market) return market;
-      const match = byMatch.get(ctx.matchId.toString());
-      if (match) return match;
-      // Both teams boosted -> the higher pct wins, same tie-break
-      // resolveBoostForMarket uses.
-      let competitorBest: BoostRule | null = null;
-      for (const id of [ctx.homeCompetitorId, ctx.awayCompetitorId]) {
-        if (id === null) continue;
-        const r = byCompetitor.get(id);
-        if (r && (!competitorBest || r.boostPct > competitorBest.boostPct)) {
-          competitorBest = r;
+    resolve(ctx, marketId, providerMarketId) {
+      // Explicit outcome-scope rules first — they always win their cell.
+      const explicit = selectionsByMarket.get(marketId.toString()) ?? null;
+      const selections = explicit ? new Map(explicit) : null;
+
+      // team_only competitor rules become selections on their own team's
+      // outcome, and only where the market is team-shaped. Both teams
+      // can be boosted this way at once — each gets its own cell, which
+      // the market-wide tie-break below couldn't express.
+      let teamOnly: Map<string, BoostRule> | null = null;
+      if (isTeamShapedMarket(providerMarketId)) {
+        for (const id of [ctx.homeCompetitorId, ctx.awayCompetitorId]) {
+          if (id === null) continue;
+          const r = byCompetitor.get(id);
+          if (!r || !isTeamOnlyRule(r)) continue;
+          const outcomeId = teamOutcomeForRule(r, ctx);
+          if (!outcomeId) continue;
+          // An explicit outcome rule on that same cell outranks it.
+          if (selections?.has(outcomeId)) continue;
+          teamOnly ??= new Map();
+          teamOnly.set(outcomeId, r);
         }
       }
-      if (competitorBest) return competitorBest;
-      return (
-        byTournament.get(ctx.tournamentId) ?? bySport.get(ctx.sportId) ?? null
-      );
-    },
-    selections(marketId) {
-      return selectionsByMarket.get(marketId.toString()) ?? null;
+
+      const mergedSelections =
+        selections || teamOnly
+          ? new Map([...(selections ?? []), ...(teamOnly ?? [])])
+          : null;
+
+      // Market-wide resolution, most specific first. team_only competitor
+      // rules are skipped here — they were handled above and must never
+      // price a whole market.
+      const marketWide = ((): BoostRule | null => {
+        const market = byMarket.get(marketId.toString());
+        if (market) return market;
+        const match = byMatch.get(ctx.matchId.toString());
+        if (match) return match;
+        // Both teams boosted -> the higher pct wins, same tie-break
+        // resolveBoostForMarket uses.
+        let competitorBest: BoostRule | null = null;
+        for (const id of [ctx.homeCompetitorId, ctx.awayCompetitorId]) {
+          if (id === null) continue;
+          const r = byCompetitor.get(id);
+          if (!r || isTeamOnlyRule(r)) continue;
+          if (!competitorBest || r.boostPct > competitorBest.boostPct) {
+            competitorBest = r;
+          }
+        }
+        if (competitorBest) return competitorBest;
+        return (
+          byTournament.get(ctx.tournamentId) ?? bySport.get(ctx.sportId) ?? null
+        );
+      })();
+
+      return { marketWide, selections: mergedSelections };
     },
   };
 }
@@ -570,6 +643,9 @@ export async function validateCustomBoostForBet(
       id: markets.id,
       matchId: markets.matchId,
       status: markets.status,
+      // Needed to decide whether a team_only competitor rule may touch
+      // this market at all (migration 0093).
+      providerMarketId: markets.providerMarketId,
       tournamentId: matches.tournamentId,
       sportId: categories.sportId,
       homeCompetitorId: matches.homeCompetitorId,
@@ -597,6 +673,21 @@ export async function validateCustomBoostForBet(
     (rule.scope === "sport" && rule.sportId === market.sportId);
   if (!covers) return { ok: false, reason: "boosted_odds_not_applicable" };
 
+  // A team_only competitor rule prices ONE cell — this team's own
+  // outcome, and only in a team-shaped market (migration 0093). Anything
+  // else it might have covered under 'all' mode is not boosted, so a leg
+  // claiming it there must be refused rather than priced.
+  const teamOnlyOutcomeId = teamOutcomeForRule(rule, market);
+  if (isTeamOnlyRule(rule)) {
+    if (
+      !isTeamShapedMarket(market.providerMarketId) ||
+      teamOnlyOutcomeId === null ||
+      teamOnlyOutcomeId !== args.outcomeId
+    ) {
+      return { ok: false, reason: "boosted_odds_not_applicable" };
+    }
+  }
+
   // Selection rules on this market are needed either way: on the
   // outcome path they set the joint fair-book scaling, and on the
   // market-wide path their mere existence means the coarser rule was
@@ -607,15 +698,31 @@ export async function validateCustomBoostForBet(
     marketIdBig,
     args.riskScore,
   );
-  if (rule.scope !== "outcome" && selections.size > 0) {
+  const pricedAsSelection = rule.scope === "outcome" || isTeamOnlyRule(rule);
+  if (!pricedAsSelection && selections.size > 0) {
+    return { ok: false, reason: "boosted_odds_not_applicable" };
+  }
+  // An explicit outcome rule on the same cell outranks a team_only one
+  // (the resolver applies that precedence), so the leg should be
+  // claiming that rule's id instead.
+  if (isTeamOnlyRule(rule) && selections.has(args.outcomeId)) {
     return { ok: false, reason: "boosted_odds_not_applicable" };
   }
 
   const priced = await loadQuotableOutcomes(app.db, marketIdBig);
+  // team_only is quoted through the selection path with a synthesized
+  // single-cell map, so the delta comes out of that outcome's own
+  // probability and the opponent's price is untouched — byte-identical
+  // to what the client and the list cards compute.
+  const effectiveSelections = pricedAsSelection
+    ? rule.scope === "outcome"
+      ? selections
+      : new Map([[teamOnlyOutcomeId!, rule]])
+    : null;
   const quote = quoteBoostedMarket(
-    rule.scope === "outcome" ? null : rule,
+    pricedAsSelection ? null : rule,
     priced,
-    rule.scope === "outcome" ? selections : null,
+    effectiveSelections,
   );
   if (!quote) return { ok: false, reason: "boosted_odds_not_applicable" };
   const snap = quote.find((q) => q.outcomeId === args.outcomeId);

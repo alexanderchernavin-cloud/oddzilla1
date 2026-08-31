@@ -24,9 +24,11 @@ import type {
   CustomBoostedSelection,
 } from "@oddzilla/types";
 import {
+  isTeamOnlyRule,
   loadBoostRulesForMatch,
   loadViewerRiskScore,
   passesRiskGate,
+  teamOutcomeForRule,
 } from "../../lib/boosted-odds.js";
 
 const paramsSchema = z.object({ matchId: z.coerce.bigint() });
@@ -84,8 +86,16 @@ export default async function boostedOddsRoutes(app: FastifyInstance) {
     // object the client applies to whatever markets it currently
     // renders; explicit market-scope rules ship per market (those ids
     // are stable — the rule pins the row).
+    const ctx = {
+      homeCompetitorId: match.homeCompetitorId,
+      awayCompetitorId: match.awayCompetitorId,
+    };
     let matchRule: (typeof eligible)[number] | null = null;
     let competitorBest: (typeof eligible)[number] | null = null;
+    let teamOnlyBest: {
+      rule: (typeof eligible)[number];
+      outcomeId: "1" | "2";
+    } | null = null;
     let tournamentRule: (typeof eligible)[number] | null = null;
     let sportRule: (typeof eligible)[number] | null = null;
     const marketEntries: CustomBoostedMarket[] = [];
@@ -113,7 +123,20 @@ export default async function boostedOddsRoutes(app: FastifyInstance) {
           matchRule = r;
           break;
         case "competitor":
-          if (!competitorBest || r.boostPct > competitorBest.boostPct) {
+          // team_only rules never price a whole market — they resolve to
+          // that team's own outcome and ride `matchWide.teamOutcomeId`
+          // (migration 0093). Collected separately so a coarser
+          // market-wide competitor rule on the OTHER team still wins the
+          // market-wide slot.
+          if (isTeamOnlyRule(r)) {
+            const outcomeId = teamOutcomeForRule(r, ctx);
+            if (
+              outcomeId &&
+              (!teamOnlyBest || r.boostPct > teamOnlyBest.rule.boostPct)
+            ) {
+              teamOnlyBest = { rule: r, outcomeId };
+            }
+          } else if (!competitorBest || r.boostPct > competitorBest.boostPct) {
             competitorBest = r;
           }
           break;
@@ -125,7 +148,14 @@ export default async function boostedOddsRoutes(app: FastifyInstance) {
           break;
       }
     }
-    const wide = matchRule ?? competitorBest ?? tournamentRule ?? sportRule;
+    // A team_only rule is more specific than any market-wide rule, so it
+    // wins the slot when both apply — same "most specific wins"
+    // precedence a selection rule has over its market. It carries
+    // teamOutcomeId, which tells the client to apply it to that one
+    // outcome in team-shaped markets only.
+    const wide = teamOnlyBest
+      ? teamOnlyBest.rule
+      : (matchRule ?? competitorBest ?? tournamentRule ?? sportRule);
 
     // A selection boost takes over its market's pricing, so drop any
     // market-scope entry for the same market. The client applies the
@@ -142,6 +172,10 @@ export default async function boostedOddsRoutes(app: FastifyInstance) {
             ruleId: wide.id,
             boostPct: wide.boostPct,
             endsAt: wide.endsAt?.toISOString() ?? null,
+            teamOutcomeId:
+              teamOnlyBest && teamOnlyBest.rule.id === wide.id
+                ? teamOnlyBest.outcomeId
+                : null,
           }
         : null,
       serverNow: new Date().toISOString(),

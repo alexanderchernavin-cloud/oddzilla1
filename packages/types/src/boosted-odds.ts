@@ -32,6 +32,36 @@ export type BoostedOddsScope =
   | "outcome";
 
 /**
+ * How a competitor (team) rule spreads across the team's matches
+ * (migration 0093).
+ *
+ * - `all`: every market of every match the team plays — the original
+ *   behaviour, including opponent-facing and symmetric markets.
+ * - `team_only`: only the team's OWN outcome, only in team-shaped
+ *   markets. Priced like an outcome-scope rule, so the opponent's price
+ *   is untouched.
+ */
+export type CompetitorBoostMarkets = "all" | "team_only";
+
+/**
+ * Markets where outcome "1" IS the home competitor and "2" the away one:
+ * match winner (1) and map winner (4). This is the existing convention
+ * across the codebase — ZillaTips' team-of-interest mapping and the
+ * banner endpoint's `teamShaped` flag both key off exactly these two —
+ * and a `team_only` team boost needs the same answer, so the predicate
+ * lives here once instead of a third copy.
+ *
+ * Everything else (totals, handicaps, correct score, round winners) is
+ * either symmetric or line-shaped: no single outcome "is" a given team,
+ * so a team_only boost deliberately does not touch them.
+ */
+export const TEAM_SHAPED_PROVIDER_MARKET_IDS: readonly number[] = [1, 4];
+
+export function isTeamShapedMarket(providerMarketId: number): boolean {
+  return TEAM_SHAPED_PROVIDER_MARKET_IDS.includes(providerMarketId);
+}
+
+/**
  * Tolerance for "did the user click the price we compute now" at bet
  * placement. Same rationale + value as ZILLAFLASH_PLACEMENT_TOLERANCE:
  * boosted odds drift sub-cent as the underlying ticks and the display
@@ -68,6 +98,18 @@ export interface CustomBoostMatchWideRule {
   ruleId: string;
   boostPct: number;
   endsAt: string | null;
+  /**
+   * Set only for a `team_only` competitor rule (migration 0093): the
+   * outcome id that IS the boosted team on this match ("1" home / "2"
+   * away). When present the client must apply the boost as a SELECTION
+   * boost on that outcome, and only where `isTeamShapedMarket` holds —
+   * never market-wide, or the opponent's price moves too.
+   *
+   * Delivered as an instruction rather than a market list on purpose: a
+   * live match mints new market rows as maps start, and an enumerated
+   * list would silently miss them.
+   */
+  teamOutcomeId?: "1" | "2" | null;
 }
 
 /**
@@ -259,6 +301,31 @@ export interface ZillaBoostSportBanner {
   matchCount: number;
 }
 
+/**
+ * competitor-scope rule → ZillaBoost team banner linking to the team's
+ * fixtures (`/sport/:slug?team=<id>`).
+ *
+ * Carries no odds for the same reason the sport and tournament banners
+ * don't: the rule spans every match the team plays, so there is no
+ * single price to quote. `teamOnly` is surfaced so the copy can say
+ * whether the boost is on the team's own prices or the whole match.
+ */
+export interface ZillaBoostCompetitorBanner {
+  ruleId: string;
+  boostPct: number;
+  endsAt: string | null;
+  competitorId: number;
+  name: string;
+  abbreviation: string | null;
+  logoUrl: string | null;
+  brandColor: string | null;
+  sportSlug: string;
+  /** Bettable matches (live + upcoming with >= 1 active market). */
+  matchCount: number;
+  /** True when the rule only boosts this team's own outcomes. */
+  teamOnly: boolean;
+}
+
 /** tournament-scope rule → ZillaBoost tournament banner linking to its match list. */
 export interface ZillaBoostTournamentBanner {
   ruleId: string;
@@ -282,6 +349,8 @@ export interface ZillaBoostBannersResponse {
    * do nothing.)
    */
   sports: ZillaBoostSportBanner[];
+  /** competitor-scope rules → team banners (migration 0093). */
+  competitors: ZillaBoostCompetitorBanner[];
   tournaments: ZillaBoostTournamentBanner[];
   matches: ZillaBoostMatchBanner[];
   markets: ZillaBoostMarketBanner[];

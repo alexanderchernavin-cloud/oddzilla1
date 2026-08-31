@@ -78,6 +78,11 @@ export const boostedOddsConfig = pgTable(
     // migration 0088). The admin route checks the row exists on write.
     outcomeId: text("outcome_id"),
     boostPct: numeric("boost_pct", { precision: 5, scale: 2 }).notNull(),
+    // scope='competitor' only (migration 0093): 'all' boosts every market
+    // of the team's matches (original behaviour), 'team_only' boosts just
+    // the team's own outcome in team-shaped markets so the opponent's
+    // price doesn't move. Ignored for other scopes.
+    competitorMarkets: text("competitor_markets").notNull().default("all"),
     // Scheduling window (starts_at added in migration 0092). NULL start
     // = live immediately; NULL end = runs until removed. A rule is
     // deliverable only when now() is inside the window, and EVERY reader
