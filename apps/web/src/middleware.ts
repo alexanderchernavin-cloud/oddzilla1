@@ -109,7 +109,10 @@ function buildCsp(nonce: string, frameAncestors: "none" | "self"): string {
     // permit blob: workers — the SDK would fall back to main-thread
     // demuxing (and log a CSP violation on every stream).
     "worker-src 'self' blob:",
-    "frame-src 'self' https://player.twitch.tv https://www.twitch.tv https://www.youtube.com https://www.youtube-nocookie.com https://player.kick.com https://video.gjirafa.com https://*.oddin.gg",
+    // host.vpplayer.tech is Gjirafa's white-label player host. Oddin labels
+    // those channels "Gjirafa" but serves them from this domain rather than
+    // video.gjirafa.com, so it needs its own entry or the iframe is blocked.
+    "frame-src 'self' https://player.twitch.tv https://www.twitch.tv https://www.youtube.com https://www.youtube-nocookie.com https://player.kick.com https://video.gjirafa.com https://host.vpplayer.tech https://*.oddin.gg",
     `frame-ancestors '${frameAncestors}'`,
     "base-uri 'self'",
     "form-action 'self'",

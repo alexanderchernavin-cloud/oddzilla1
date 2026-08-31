@@ -213,10 +213,12 @@ function formatOdds(s: string | null | undefined): string | null {
 // — and so a future admin override (e.g. blocking a misbehaving
 // channel) has one place to land.
 type StreamSource = {
-  platform: "twitch" | "youtube" | "kick" | "gjirafa" | "other";
+  platform: "twitch" | "youtube" | "kick" | "gjirafa" | "vpplayer" | "other";
   // For Twitch / Kick: the channel slug (`esl_csgo`, `xqc`).
   // For YouTube: the video id (`abc123XYZ`).
   // For Gjirafa: the page slug (`gjirafa50-masters-league-...`).
+  // For vpplayer: always null — that URL is already the player page and
+  // gets used verbatim as the iframe src.
   // null for `other` and for malformed URLs — caller falls back to
   // the original URL.
   embedId: string | null;
@@ -326,6 +328,23 @@ function classifyStreamUrl(
       return { platform: "gjirafa", embedId: slug.toLowerCase() };
     }
     return { platform: "gjirafa", embedId: null };
+  }
+  if (host === "host.vpplayer.tech") {
+    // Gjirafa's white-label player host. Oddin labels these channels
+    // "Gjirafa" but the URL is not video.gjirafa.com, so the branch above
+    // never matched them and they fell through to `other` — visible in the
+    // payload but never embedded (observed 2026-08-31 on eFootball, where
+    // it was one of three advertised sources).
+    //
+    // Unlike the others there is nothing to build: the URL already IS the
+    // player page (`/player/<account>/<video>.html`), so embedId stays null
+    // and the frontend uses `url` verbatim. The path is still shape-checked
+    // — this value ends up as an iframe `src`, and the feed is only
+    // semi-trusted.
+    if (/^\/player\/[A-Za-z0-9_-]{1,64}\/[A-Za-z0-9_-]{1,64}\.html$/.test(parsed.pathname)) {
+      return { platform: "vpplayer", embedId: null };
+    }
+    return { platform: "other", embedId: null };
   }
   return { platform: "other", embedId: null };
 }
