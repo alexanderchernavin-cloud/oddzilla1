@@ -407,37 +407,71 @@ function CompetitorBanner({
   nowMs: number;
 }) {
   const t = useTranslations("zillaboost");
+  const [artFailed, setArtFailed] = useState(false);
+  const art = !artFailed && b.imageUrl ? b.imageUrl : null;
   const accent = b.brandColor || undefined;
   return (
     <Link
       href={`/sport/${b.sportSlug}?team=${b.competitorId}`}
       style={{
+        position: "relative",
+        overflow: "hidden",
         display: "flex",
         alignItems: "center",
         gap: 12,
-        padding: "14px 16px",
+        padding: art ? "18px 16px" : "14px 16px",
         borderRadius: "var(--r-md)",
         border: `1px solid ${accent ?? "var(--border)"}`,
         background: accent
           ? `color-mix(in oklab, ${accent} 8%, var(--surface))`
           : `color-mix(in oklab, ${GREEN} 6%, var(--surface))`,
         textDecoration: "none",
-        color: "var(--fg)",
+        // Over the AI art + scrim the content is always light-on-dark,
+        // whatever the theme.
+        color: art ? "#fff" : "var(--fg)",
       }}
     >
-      <TeamMark
-        tag={(b.abbreviation || b.name).slice(0, 3).toUpperCase()}
-        name={b.name}
-        logoUrl={b.logoUrl}
-        color={accent}
-        size={30}
-      />
-      <span style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0, flex: 1 }}>
+      {art && (
+        <BannerArtBackdrop url={art} onFail={() => setArtFailed(true)} />
+      )}
+      <span
+        style={{
+          position: "relative",
+          zIndex: 2,
+          display: "inline-flex",
+          flexShrink: 0,
+        }}
+      >
+        <TeamMark
+          tag={(b.abbreviation || b.name).slice(0, 3).toUpperCase()}
+          name={b.name}
+          logoUrl={b.logoUrl}
+          color={accent}
+          size={30}
+        />
+      </span>
+      <span
+        style={{
+          position: "relative",
+          zIndex: 2,
+          display: "flex",
+          flexDirection: "column",
+          gap: 3,
+          minWidth: 0,
+          flex: 1,
+        }}
+      >
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <BoostTag endsAt={b.endsAt} nowMs={nowMs} />
           <span
             className="mono tnum"
-            style={{ fontSize: 11, fontWeight: 700, color: GREEN }}
+            style={{
+              fontSize: 11,
+              fontWeight: 700,
+              // The brand green vanishes into dark art — over the scrim
+              // the pct rides a lighter tint of it.
+              color: art ? "#7ee2a0" : GREEN,
+            }}
           >
             +{b.boostPct}%
           </span>
@@ -453,16 +487,25 @@ function CompetitorBanner({
         >
           {b.name}
         </span>
-        <span style={{ fontSize: 11.5, color: "var(--fg-muted)" }}>
+        <span
+          style={{
+            fontSize: 11.5,
+            color: art ? "rgba(255, 255, 255, 0.75)" : "var(--fg-muted)",
+          }}
+        >
           {t(b.teamOnly ? "teamOnlyBlurb" : "teamAllBlurb")} ·{" "}
           {t("matchesCount", { count: b.matchCount })}
         </span>
       </span>
       <span
         style={{
+          // zIndex 2 keeps the CTA above the art layer; without it the
+          // backdrop paints over it.
+          position: "relative",
+          zIndex: 2,
           fontSize: 12,
           fontWeight: 600,
-          color: "var(--fg)",
+          color: art ? "#fff" : "var(--fg)",
           display: "inline-flex",
           alignItems: "center",
           gap: 6,
@@ -470,7 +513,12 @@ function CompetitorBanner({
         }}
       >
         {t("openTeam")}
-        <span aria-hidden style={{ color: "var(--fg-dim)" }}>→</span>
+        <span
+          aria-hidden
+          style={{ color: art ? "rgba(255, 255, 255, 0.7)" : "var(--fg-dim)" }}
+        >
+          →
+        </span>
       </span>
     </Link>
   );

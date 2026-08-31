@@ -324,6 +324,8 @@ export interface ZillaBoostCompetitorBanner {
   ruleId: string;
   boostPct: number;
   endsAt: string | null;
+  /** AI-generated backdrop (migration 0089), or null. */
+  imageUrl: string | null;
   competitorId: number;
   name: string;
   abbreviation: string | null;

@@ -977,6 +977,67 @@ flip back on, otherwise the table grows.
 — `~15 minutes of work after a Firebase project exists`. Server side
 keeps draining (graceful-idle) until then.
 
+## ZillaBoost runbook
+
+Operator-curated odds boosts, at `/admin/boosted-odds`. Rules attach to
+a sport, tournament, team, match, single market, or single selection;
+most specific wins (`selection > market > match > team > tournament >
+sport`).
+
+### The red "!" — boost limited by fair odds
+
+A boost shaves percentage points off the market's *key* (the overround),
+and it will **never** take the book to or past fair (key 1.0) — that
+would hand the bettor positive EV. So a boost bigger than the market's
+remaining margin is silently truncated, and on a market already at or
+past fair it does nothing whatsoever.
+
+The `!` next to a rule means exactly that. Hover it: the tooltip gives
+how many covered markets are affected, how many are completely dead, and
+the largest boost the tightest one can actually deliver.
+
+**What to do:** lower the boost %, or narrow the scope. A big number on a
+broad scope (a whole sport) will always clip somewhere, because margin
+varies market to market — that is expected, not a bug. Worry when
+*most* of the covered markets are flagged, or when any are dead.
+
+Rough guide: esports match-winner books usually carry 5–8pp of margin,
+so a boost above ~5pp starts clipping on the tighter ones. Observed on
+production 2026-08-28: a 13% match-scope rule was truncated on 96 of its
+107 covered markets (tightest book had 7.43pp of headroom), while a 4%
+team rule across 182 markets was unaffected.
+
+A rule with no `!` and no clamp data at all covers nothing currently
+priced — its match may have gone terminal, or its markets are suspended.
+
+### Team boosts: which markets
+
+A team rule (migration 0093) chooses its span:
+
+- **This team's odds only** — boosts just that team's own outcome, in
+  match-winner and map-winner markets. The delta comes out of that
+  outcome's own probability, so **the opponent's price does not move**.
+  Both teams in one match can each carry their own such boost. Symmetric
+  markets (totals, handicaps, correct score) aren't about one team and
+  stay unboosted.
+- **All markets on their matches** — every market of every match the
+  team plays, opponent's side included. The original behaviour and the
+  default; existing rules were untouched by the migration.
+
+If a team boost looks like it "isn't working" on totals or handicaps,
+check this setting first — team-only skipping them is by design.
+
+### Banners
+
+Ticking "create promo banner" surfaces the rule on the storefront home
+page. Market and match scopes show prices; team, tournament and sport
+scopes deliberately don't (they span too many markets for one price to
+be meaningful) and act as signposts into the filtered match list. A
+single selection has no banner shape.
+
+Team brand colours matter here: `/admin/competitors` colours drive both
+the banner accent and the AI artwork's palette.
+
 ## ZillaBoost graphics banners (image worker)
 
 AI-generated promo art for ZillaBoost banners. Same architecture as the
