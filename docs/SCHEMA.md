@@ -410,6 +410,27 @@ enforces `starts_at < ends_at` regardless of what the admin route allows.
 The graphics-banner job queue is deliberately NOT window-gated —
 rendering the artwork before the boost starts is the point.
 
+**Team boost market span.** `competitor_markets` (migration 0093, `NOT
+NULL DEFAULT 'all'`, CHECK `IN ('all','team_only')`) applies only to
+`scope='competitor'`:
+
+- `all` — every market of every match the team plays, opponent-facing
+  and symmetric markets included. The original behaviour, and the
+  default, so no pre-existing row changed meaning.
+- `team_only` — only the team's OWN outcome, and only in team-shaped
+  markets (`provider_market_id IN (1,4)`: match winner and map winner,
+  where outcome `1` is the home competitor and `2` the away one). Priced
+  through the SELECTION path, so the delta comes out of that outcome's
+  own implied probability and the opponent's price does not move. Two
+  team_only rules on opposite sides of the same match therefore both
+  apply, each to its own cell.
+
+The team-shaped predicate is `isTeamShapedMarket` in
+[`packages/types/src/boosted-odds.ts`](../packages/types/src/boosted-odds.ts),
+shared by the API and the browser. A team_only rule reaches the client as
+`matchWide.teamOutcomeId` — an instruction, not a market list, because a
+live match mints new market rows as maps start.
+
 `min_risk_score NUMERIC(4,3)` NULL means every bettor receives it,
 otherwise `users.risk_score >= min_risk_score` gates delivery (anonymous
 viewers count as the 1.000 default). `banner` (migration 0086)

@@ -49,6 +49,8 @@ interface RuleDto {
   startsAt: string | null;
   endsAt: string | null;
   minRiskScore: number | null;
+  /** scope='competitor' only: 'all' | 'team_only' (migration 0093). */
+  competitorMarkets: "all" | "team_only";
   banner: boolean;
   /** AI-generated banner graphic requested (migration 0089). */
   graphicsBanner: boolean;
@@ -64,6 +66,7 @@ function toRuleDto(r: typeof boostedOddsConfig.$inferSelect): RuleDto {
     startsAt: r.startsAt?.toISOString() ?? null,
     endsAt: r.endsAt?.toISOString() ?? null,
     minRiskScore: r.minRiskScore !== null ? Number(r.minRiskScore) : null,
+    competitorMarkets: r.competitorMarkets === "team_only" ? "team_only" : "all",
     banner: r.banner,
     graphicsBanner: r.graphicsBanner,
     updatedAt: r.updatedAt.toISOString(),
@@ -95,6 +98,11 @@ const putBody = z
     startsAt: z.string().datetime({ offset: true }).nullable().optional(),
     endsAt: z.string().datetime({ offset: true }).nullable().optional(),
     minRiskScore: z.number().min(0.01).max(10).nullable().optional(),
+    // scope='competitor' only (migration 0093). 'all' = every market of
+    // the team's matches (original behaviour); 'team_only' = just the
+    // team's own outcome in team-shaped markets. Accepted and stored for
+    // other scopes but ignored, same as outcomeId/banner.
+    competitorMarkets: z.enum(["all", "team_only"]).optional(),
     // Promo banner on the storefront home page (migration 0086). No
     // banner surface for competitor or outcome scope — accepted,
     // stored, unused.
@@ -128,6 +136,104 @@ function scopeColumn(scope: z.infer<typeof scopeSchema>) {
 
 const homeCompetitor = alias(competitors, "home_competitor");
 const awayCompetitor = alias(competitors, "away_competitor");
+
+/** Per-rule fair-odds clamp status for the active-rules overview. */
+export interface RuleClampStatus {
+  /** Live, priced markets the rule covers that were evaluated. */
+  marketsChecked: number;
+  /** Markets where the requested boost is cut short by the fair book. */
+  clampedCount: number;
+  /** Markets with no headroom at all — the boost does nothing there. */
+  swallowedCount: number;
+  /** Largest boost the tightest covered market can actually deliver, pp. */
+  worstEffectivePct: number | null;
+}
+
+/**
+ * Which covered markets can't deliver the requested boost.
+ *
+ * Computed in SQL rather than by pricing every market in TS, because the
+ * whole clamp reduces to the book key: boostMarketKey targets
+ * `key - pct/100` and floors it at 1.0 (never give the player a fair-or-
+ * better book), and `bookKey` is just SUM(1/odds). So:
+ *
+ *   clamped  <=>  key < 1.0 + pct/100      (target floored)
+ *   swallowed <=> key <= 1.0               (no headroom at all)
+ *   best deliverable pct on a clamped market = (key - 1.0) * 100
+ *
+ * Exact, not an estimate. Outcome-scope rules are excluded: their
+ * binding limit is usually SELECTION_BOOST_MAX_PROB_SHARE (half the
+ * cell's own probability), so reporting only the fair-book check would
+ * be a misleading signal.
+ */
+async function loadClampStatus(
+  app: FastifyInstance,
+): Promise<Map<string, RuleClampStatus>> {
+  const rows = (await app.db.execute(sql`
+    WITH keys AS (
+      SELECT mo.market_id,
+             SUM(1.0 / mo.published_odds) AS k
+        FROM market_outcomes mo
+        JOIN markets mk ON mk.id = mo.market_id
+       WHERE mk.status = 1
+         AND mo.active
+         AND mo.published_odds IS NOT NULL
+         AND mo.published_odds > 0
+       GROUP BY mo.market_id
+      HAVING COUNT(*) >= 2
+    ),
+    mkt AS (
+      SELECT mk.id AS market_id,
+             mk.match_id,
+             m.home_competitor_id,
+             m.away_competitor_id,
+             t.id AS tournament_id,
+             c.sport_id
+        FROM markets mk
+        JOIN matches m     ON m.id = mk.match_id
+        JOIN tournaments t ON t.id = m.tournament_id
+        JOIN categories c  ON c.id = t.category_id
+       WHERE mk.status = 1
+         AND m.status IN ('not_started', 'live')
+    )
+    SELECT r.id::text                                              AS rule_id,
+           COUNT(*)::int                                           AS markets_checked,
+           COUNT(*) FILTER (WHERE k.k < 1.0 + r.boost_pct / 100.0)::int AS clamped_count,
+           COUNT(*) FILTER (WHERE k.k <= 1.0)::int                 AS swallowed_count,
+           MIN(k.k)                                                AS min_key
+      FROM boosted_odds_config r
+      JOIN mkt ON (
+           (r.scope = 'sport'      AND mkt.sport_id       = r.sport_id)
+        OR (r.scope = 'tournament' AND mkt.tournament_id  = r.tournament_id)
+        OR (r.scope = 'match'      AND mkt.match_id       = r.match_id)
+        OR (r.scope = 'competitor' AND (mkt.home_competitor_id = r.competitor_id
+                                     OR mkt.away_competitor_id = r.competitor_id))
+        OR (r.scope = 'market'     AND mkt.market_id      = r.market_id)
+      )
+      JOIN keys k ON k.market_id = mkt.market_id
+     WHERE r.scope <> 'outcome'
+     GROUP BY r.id, r.boost_pct
+  `)) as unknown as Array<{
+    rule_id: string;
+    markets_checked: number;
+    clamped_count: number;
+    swallowed_count: number;
+    min_key: string | number | null;
+  }>;
+
+  const out = new Map<string, RuleClampStatus>();
+  for (const r of rows) {
+    const minKey = r.min_key === null ? null : Number(r.min_key);
+    out.set(r.rule_id, {
+      marketsChecked: r.markets_checked,
+      clampedCount: r.clamped_count,
+      swallowedCount: r.swallowed_count,
+      worstEffectivePct:
+        minKey === null ? null : Math.max(0, (minKey - 1) * 100),
+    });
+  }
+  return out;
+}
 
 export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
   // ── Active rules overview ──────────────────────────────────────────
@@ -288,6 +394,8 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
     // Image-worker liveness (heartbeat key, TTL 90 s) + queue totals for
     // the status strip above the rules table. Best-effort: a Redis blip
     // just reads as offline.
+    const clampByRule = await loadClampStatus(app);
+
     let workerLastSeen: string | null = null;
     try {
       workerLastSeen = await app.redis.get(BANNER_GEN_ONLINE_KEY);
@@ -316,6 +424,9 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
       },
       rules: rows.map((r) => ({
         ...toRuleDto(r),
+        // Fair-odds clamp: null when the rule covers nothing priced
+        // right now (or is outcome-scope, which this check skips).
+        clamp: clampByRule.get(r.id) ?? null,
         graphics: (() => {
           if (!r.graphicsBanner) return null;
           const j = jobByRule.get(r.id);
@@ -948,6 +1059,7 @@ export default async function adminBoostedOddsRoutes(app: FastifyInstance) {
         .limit(1);
       const values = {
         boostPct: body.boostPct.toFixed(2),
+        competitorMarkets: body.competitorMarkets ?? "all",
         startsAt,
         endsAt,
         minRiskScore:

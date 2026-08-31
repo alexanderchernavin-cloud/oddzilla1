@@ -443,8 +443,11 @@ function quoteMatchWinnerBoost(
 ): MatchWinnerBoostQuote | null {
   if (boosts.empty) return null;
   const marketId = BigInt(pair.homeMarketId);
-  const marketWideRule = boosts.marketWide(ctx, marketId);
-  const selectionRules = boosts.selections(marketId);
+  // provider_market_id 1 by construction — loadMatchWinnerOdds only
+  // selects the match-winner market. Passing it lets a team_only
+  // competitor rule resolve to this team's own outcome.
+  const { marketWide: marketWideRule, selections: selectionRules } =
+    boosts.resolve(ctx, marketId, 1);
   const hasSelections = !!selectionRules && selectionRules.size > 0;
   if (!marketWideRule && !hasSelections) return null;
 
