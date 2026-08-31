@@ -433,12 +433,47 @@ live match mints new market rows as maps start.
 
 `min_risk_score NUMERIC(4,3)` NULL means every bettor receives it,
 otherwise `users.risk_score >= min_risk_score` gates delivery (anonymous
-viewers count as the 1.000 default). `banner` (migration 0086)
-marks the rule for a storefront home-page promo banner (market →
-ZillaFlash-style card, match → scoreless match card, tournament →
-ZillaBoost banner, sport → sidebar bolt icon; no surface for
-competitor or outcome scope). Managed at `/admin/boosted-odds`
-(operator-facing name: ZillaBoost); every mutation is audit-logged.
+viewers count as the 1.000 default). `banner` (migration 0086) marks the
+rule for a storefront home-page promo banner, shaped per scope:
+
+| Scope | Banner surface | Odds on it? |
+| --- | --- | --- |
+| `market` | ZillaFlash-style offer card | yes, every outcome |
+| `match` | scoreless match card | yes, match-winner (falls back to current map winner, then first active market) |
+| `competitor` | team card → `/sport/:slug?team=<id>` (migration 0093) | no |
+| `tournament` | wide banner → `/sport/:slug?tournament=<id>` | no |
+| `sport` | wide banner → `/sport/:slug`, **plus** the sidebar bolt (banner added 2026-08-28) | no |
+| `outcome` | none — a single cell has no banner shape | — |
+
+The three broad scopes carry **no odds deliberately**: the rule spans
+every market of every match under it, so there is no single price to
+quote. The banner is a signpost; the list cards under it carry their own
+boosted prices. None of them is gated on `matchCount` — silently
+dropping a banner the operator explicitly asked for is what made the
+sport case look broken before it had a surface at all.
+
+Managed at `/admin/boosted-odds` (operator-facing name: ZillaBoost);
+every mutation is audit-logged.
+
+**Fair-odds warning.** The active-rules overview flags rules whose
+`boost_pct` the covered book can't actually deliver, because
+`boostMarketKey` floors its target key at 1.0 and silently truncates the
+delta rather than going fair-or-better. Computed exactly in SQL from the
+book key (`SUM(1/published_odds)` per market, active + priced outcomes on
+`status=1` markets, `>= 2` outcomes):
+
+```
+clamped   <=>  key <  1.0 + boost_pct/100
+dead      <=>  key <= 1.0                  (boost does nothing at all)
+best deliverable pct on a clamped market = (key - 1.0) * 100
+```
+
+`scope='outcome'` rules are excluded: their binding limit is usually
+`SELECTION_BOOST_MAX_PROB_SHARE` (half the cell's own probability), so
+the fair-book number alone would be a misleading signal. The algebra is
+pinned against the real `boostMarketKey` in
+[`packages/types/src/boosted-odds.test.ts`](../packages/types/src/boosted-odds.test.ts)
+so the SQL and the TS pricing cannot drift apart.
 
 Resolution per market when rules overlap:
 `outcome > market > match > competitor > tournament > sport`. Two

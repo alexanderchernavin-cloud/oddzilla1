@@ -337,6 +337,10 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
               ruleId: r.id,
               boostPct: Number(r.boostPct),
               endsAt: r.endsAt?.toISOString() ?? null,
+              // Team boosts can request AI artwork too — the graphics
+              // option shares the banner gate, and the job context
+              // already carries competitorName + brand colour.
+              imageUrl: imageUrlFor(r.id),
               competitorId: c.id,
               name: c.name,
               abbreviation: c.abbreviation,
