@@ -46,6 +46,14 @@ import { useTranslations } from "@/lib/i18n";
 interface Props {
   availability: OddinVideoAvailability;
   /**
+   * Whether this is the source the viewer currently has selected. The player
+   * stays MOUNTED when it isn't — tearing it down and back up on every tab
+   * switch would re-resolve playback, fetch a fresh licence and restart from
+   * the live edge — but it is paused, so a hidden player is not quietly
+   * pulling a rights-metered stream in the background.
+   */
+  active: boolean;
+  /**
    * Called when the stream is definitively not playable (Oddin says the match
    * is unknown / gone, or our key is refused). The parent should stop
    * offering it as a source.
@@ -126,7 +134,7 @@ const TERMINAL_CODES = new Set([
   "INVALID_URN",
 ]);
 
-export function OddinVideoPlayer({ availability, onUnavailable }: Props) {
+export function OddinVideoPlayer({ availability, active, onUnavailable }: Props) {
   const t = useTranslations("matchWidgets");
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [drmUnsupported, setDrmUnsupported] = useState(false);
@@ -138,6 +146,16 @@ export function OddinVideoPlayer({ availability, onUnavailable }: Props) {
   const onUnavailableRef = useRef(onUnavailable);
   onUnavailableRef.current = onUnavailable;
 
+  // Same reasoning for `active`: the create effect reads it once to decide
+  // whether to autoplay, and a separate effect below handles later changes.
+  // Putting `active` in the create effect's deps would rebuild the player on
+  // every tab switch.
+  const activeRef = useRef(active);
+  activeRef.current = active;
+
+  // Lets the play/pause effect reach the player without re-creating it.
+  const playerRef = useRef<Player | null>(null);
+
   useEffect(() => {
     if (!matchUrn || !baseUrl || !apiKey) return;
     const container = containerRef.current;
@@ -147,6 +165,19 @@ export function OddinVideoPlayer({ availability, onUnavailable }: Props) {
     let player: Player | null = null;
 
     setDrmUnsupported(false);
+
+    // `?oddinLowLatency=1` restores the SDK's own default (LL-HLS part
+    // chasing) for one page load, so the playback failure documented in
+    // docs/ODDIN.md can be reproduced on demand — for capturing a HAR, and
+    // so Oddin can reproduce it themselves from a URL we hand them rather
+    // than having to trust our write-up.
+    //
+    // Opt-in, per page load, affects nobody who does not type it, and the
+    // worst it can do is give that one viewer the bad stream we already
+    // know about. Remove once Oddin has closed the report.
+    const forceLowLatency =
+      typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).has("oddinLowLatency");
 
     // Ours to create and ours to remove — see the header note on why this
     // element must not come from React.
@@ -170,10 +201,17 @@ export function OddinVideoPlayer({ availability, onUnavailable }: Props) {
           baseUrl,
           matchUrn,
           credential: { apiKey },
-          // No autoplay: matches the Twitch / YouTube embeds beside it, and
-          // avoids pulling a DRM stream for a bettor who opened the page to
-          // look at odds. `statusOverlays` supplies the play CTA.
-          autoplay: false,
+          // Autoplay MUTED, the way every sportsbook plays a live match feed:
+          // the picture is up the moment the page is, and the viewer unmutes
+          // if they want sound. Browsers permit muted autoplay without a
+          // gesture; if one blocks it anyway the SDK emits `autoplayblocked`
+          // and `statusOverlays` puts a play CTA over the poster, so the
+          // no-gesture case degrades to exactly the old behaviour.
+          //
+          // Only autoplays when this is the selected source — see the
+          // play/pause effect below, which also pauses it on a tab switch so
+          // a hidden player never pulls a rights-metered stream.
+          autoplay: activeRef.current,
           muted: true,
           controls: "custom",
           statusOverlays: true,
@@ -181,7 +219,8 @@ export function OddinVideoPlayer({ availability, onUnavailable }: Props) {
           liveLatencyTarget: LIVE_LATENCY_TARGET_SECONDS,
           // Segment-based live, not LL-HLS part-chasing. See the note on
           // LIVE_LATENCY_TARGET_SECONDS for the measurement behind this.
-          lowLatency: false,
+          // `?oddinLowLatency=1` flips it back to reproduce the fault.
+          lowLatency: forceLowLatency,
           // Oddin's QoE beacon endpoint does not send CORS headers:
           //   POST https://beacons-dev.oddin-video.gg/v1/beacons
           //   blocked by CORS policy: no Access-Control-Allow-Origin
@@ -199,6 +238,7 @@ export function OddinVideoPlayer({ availability, onUnavailable }: Props) {
           return;
         }
         player = created;
+        playerRef.current = created;
 
         // Snap to the live edge the first time the viewer actually presses
         // play.
@@ -261,9 +301,26 @@ export function OddinVideoPlayer({ availability, onUnavailable }: Props) {
         // to do about it, and it must not break unmount.
       }
       player = null;
+      playerRef.current = null;
       container.replaceChildren();
     };
   }, [matchUrn, baseUrl, apiKey, startsAt]);
+
+  // Follow the source selection. The player is kept alive behind a hidden
+  // container so switching back is instant, which means it would otherwise
+  // keep streaming while the viewer watches Twitch — pause it instead.
+  useEffect(() => {
+    const p = playerRef.current;
+    if (!p) return;
+    if (active) {
+      void p.play().catch(() => {
+        // Autoplay policy, or a race with teardown. The SDK's own play
+        // control is on screen either way.
+      });
+    } else {
+      p.pause();
+    }
+  }, [active]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
