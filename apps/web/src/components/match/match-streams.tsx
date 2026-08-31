@@ -153,6 +153,7 @@ export function MatchStreams({ streams, parentHost, oddinVideo }: Props) {
         <div style={{ display: active?.kind === "oddin" ? "block" : "none" }}>
           <OddinVideoPlayer
             availability={oddinReady}
+            active={active?.kind === "oddin"}
             onUnavailable={() => setOddinDropped(true)}
           />
         </div>
