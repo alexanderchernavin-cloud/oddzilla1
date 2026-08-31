@@ -57,6 +57,17 @@ export default async function videoRoutes(app: FastifyInstance) {
   const env = loadEnv();
   const baseUrl = env.ODDIN_VIDEO_BASE_URL.replace(/\/$/, "");
 
+  // Oddin gates the api-key on an allowed-origin list enforced SERVER-side,
+  // and a request carrying no Origin is refused outright ("origin not
+  // allowed"), so our own catalog fetch has to name an allow-listed origin.
+  // The storefront origin is exactly the one Oddin has on file, so derive it
+  // from FRONTEND_HOST and fall back to the first configured CORS origin for
+  // local dev (which Oddin won't know — video degrades to unavailable there,
+  // which is the right outcome).
+  const catalogOrigin = env.FRONTEND_HOST
+    ? `https://${env.FRONTEND_HOST}`
+    : (env.CORS_ORIGINS.split(",")[0]?.trim() ?? "");
+
   function requireKey(): string {
     if (!env.ODDIN_VIDEO_API_KEY) {
       throw new ServiceUnavailableError(
@@ -80,7 +91,7 @@ export default async function videoRoutes(app: FastifyInstance) {
       const apiKey = requireKey();
       const urn = await resolveMatchUrn(app, req.params.matchId);
 
-      const catalog = await loadVideoCatalog(app, baseUrl, apiKey);
+      const catalog = await loadVideoCatalog(app, baseUrl, apiKey, catalogOrigin);
       // Catalog unreachable — report "no video" rather than an error. The
       // storefront's stream tab strip simply doesn't gain an Oddin entry.
       if (!catalog) return UNAVAILABLE;
