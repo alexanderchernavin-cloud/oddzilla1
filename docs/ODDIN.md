@@ -634,6 +634,21 @@ domains. `oddzilla.cc` is already on the list — confirmed by
 `Access-Control-Allow-Origin: https://oddzilla.cc` on a live catalog call
 (2026-08-31).
 
+**The allow-list is enforced server-side, and a missing `Origin` fails it.**
+This is not CORS: Oddin checks the header on the request, so a plain
+server-to-server call with no `Origin` gets
+
+```
+403 {"error":{"code":"FORBIDDEN","message":"origin not allowed"}}
+```
+
+Our api therefore sets `Origin: https://${FRONTEND_HOST}` explicitly on its
+catalog fetch (Node's fetch allows setting it; browsers do not). This cost a
+deploy to find — every hand-run probe had sent an `Origin` out of habit, so
+the failure only appeared from inside the container, as
+`oddin video: catalog rejected our api key or origin` in the api log. If
+video silently reports unavailable for every match, check that line first.
+
 ### Endpoints we use
 
 ```

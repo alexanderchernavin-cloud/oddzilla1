@@ -93,13 +93,24 @@ async function fetchCatalog(
   app: FastifyInstance,
   baseUrl: string,
   apiKey: string,
+  origin: string,
 ): Promise<CatalogMap | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
   try {
     const res = await fetch(`${baseUrl}/v1/catalog`, {
       method: "GET",
-      headers: { accept: "application/json", "x-api-key": apiKey },
+      headers: {
+        accept: "application/json",
+        "x-api-key": apiKey,
+        // Oddin enforces the api-key's allowed-origin list SERVER-side, and
+        // a request with no Origin at all counts as not-allowed: a bare
+        // server-to-server call gets `403 {"code":"FORBIDDEN","message":
+        // "origin not allowed"}`. This is not CORS — no browser is involved
+        // — so we must state the origin explicitly. Node's fetch permits
+        // setting Origin (browsers do not), which is what makes this work.
+        origin,
+      },
       signal: controller.signal,
     });
     if (!res.ok) {
@@ -107,9 +118,13 @@ async function fetchCatalog(
       // an error-level line, since it's a config problem an operator must
       // fix, not a blip that will heal on its own.
       if (res.status === 401 || res.status === 403) {
+        // 403 is usually `origin not allowed`: either the origin we sent
+        // isn't on Oddin's list for this key, or FRONTEND_HOST is unset and
+        // we fell back to something they don't recognise. Log the origin —
+        // it's the one field that makes this diagnosable from the logs.
         app.log.error(
-          { status: res.status },
-          "oddin video: catalog rejected our api key",
+          { status: res.status, origin },
+          "oddin video: catalog rejected our api key or origin",
         );
       } else {
         app.log.warn({ status: res.status }, "oddin video: catalog fetch failed");
@@ -135,6 +150,7 @@ export async function loadVideoCatalog(
   app: FastifyInstance,
   baseUrl: string,
   apiKey: string,
+  origin: string,
 ): Promise<CatalogMap | null> {
   const cached = await app.redis.get(CACHE_KEY).catch(() => null);
   if (cached) {
@@ -152,7 +168,7 @@ export async function loadVideoCatalog(
   if (inFlight) return inFlight;
 
   inFlight = (async () => {
-    const map = await fetchCatalog(app, baseUrl, apiKey);
+    const map = await fetchCatalog(app, baseUrl, apiKey, origin);
     if (map === null) {
       await app.redis
         .set(NEGATIVE_KEY, "1", "EX", NEGATIVE_TTL_SECONDS)
