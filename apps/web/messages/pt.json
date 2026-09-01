@@ -378,6 +378,9 @@
     "openTournament": "Abrir torneio",
     "openMatch": "Abrir partida",
     "openSport": "Abrir esporte",
+    "openTeam": "Abrir equipe",
+    "teamOnlyBlurb": "melhora as odds da própria equipe",
+    "teamAllBlurb": "melhora todos os mercados das partidas dela",
     "openMatchForPrices": "Abra a partida para ver as odds turbinadas",
     "matchesCount": "{count, plural, one {# partida} other {# partidas}}"
   },

@@ -24,6 +24,7 @@ export interface ZillaBoostBannersSnapshot extends ZillaBoostBannersResponse {
 
 const EMPTY: ZillaBoostBannersSnapshot = {
   sports: [],
+  competitors: [],
   tournaments: [],
   matches: [],
   markets: [],
@@ -128,6 +129,7 @@ export function useZillaBoostBanners(): ZillaBoostBannersSnapshot {
       // a home banner, not just the sidebar bolt), so they expire between
       // polls like every other scope.
       sports: fresh(data.sports),
+      competitors: fresh(data.competitors),
       tournaments: fresh(data.tournaments),
       matches: fresh(data.matches),
       markets: fresh(data.markets),

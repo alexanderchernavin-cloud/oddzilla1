@@ -37,6 +37,7 @@ import type {
   ZillaBoostBannerOutcome,
   ZillaBoostBannersResponse,
   ZillaBoostMarketBanner,
+  ZillaBoostCompetitorBanner,
   ZillaBoostMatchBanner,
   ZillaBoostSportBanner,
   ZillaBoostTournamentBanner,
@@ -60,6 +61,7 @@ const awayCompetitor = alias(competitors, "away_competitor");
 
 const EMPTY = (): ZillaBoostBannersResponse => ({
   sports: [],
+  competitors: [],
   tournaments: [],
   matches: [],
   markets: [],
@@ -294,6 +296,65 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
       });
     }
 
+    // ── competitor scope → team banners (migration 0093) ────────────
+    // Like the sport / tournament banners, carries NO odds: the rule
+    // spans every match the team plays, so there is no single price to
+    // quote. Links to the team's fixtures via /sport/:slug?team=<id>,
+    // which the sport page already supports.
+    const competitorBannerRules = rules.filter((r) => r.scope === "competitor");
+    if (competitorBannerRules.length > 0) {
+      const rows = await app.db
+        .select({
+          id: competitors.id,
+          name: competitors.name,
+          abbreviation: competitors.abbreviation,
+          logoUrl: competitors.logoUrl,
+          brandColor: competitors.brandColor,
+          sportSlug: sports.slug,
+          matchCount: sql<number>`(
+            SELECT count(*)::int FROM matches m
+             WHERE (m.home_competitor_id = ${competitors.id}
+                    OR m.away_competitor_id = ${competitors.id})
+               AND m.status IN ('not_started','live')
+               AND EXISTS (SELECT 1 FROM markets mk WHERE mk.match_id = m.id AND mk.status = 1)
+          )`,
+        })
+        .from(competitors)
+        .innerJoin(sports, eq(sports.id, competitors.sportId))
+        .where(
+          inArray(
+            competitors.id,
+            competitorBannerRules.map((r) => r.competitorId!),
+          ),
+        );
+      const byId = new Map(rows.map((r) => [r.id, r]));
+      out.competitors = competitorBannerRules.flatMap(
+        (r): ZillaBoostCompetitorBanner[] => {
+          const c = byId.get(r.competitorId!);
+          if (!c) return [];
+          return [
+            {
+              ruleId: r.id,
+              boostPct: Number(r.boostPct),
+              endsAt: r.endsAt?.toISOString() ?? null,
+              // Team boosts can request AI artwork too — the graphics
+              // option shares the banner gate, and the job context
+              // already carries competitorName + brand colour.
+              imageUrl: imageUrlFor(r.id),
+              competitorId: c.id,
+              name: c.name,
+              abbreviation: c.abbreviation,
+              logoUrl: c.logoUrl,
+              brandColor: c.brandColor,
+              sportSlug: c.sportSlug,
+              matchCount: c.matchCount,
+              teamOnly: r.competitorMarkets === "team_only",
+            },
+          ];
+        },
+      );
+    }
+
     // ── tournament scope → tournament banners ───────────────────────
     const tournamentRules = rules.filter((r) => r.scope === "tournament");
     if (tournamentRules.length > 0) {
@@ -435,6 +496,7 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
           startsAt: r.startsAt,
           endsAt: r.endsAt,
           minRiskScore: null,
+          competitorMarkets: "all",
         };
         let marketId: string | null = null;
         let marketLabel: string | null = null;
@@ -560,6 +622,7 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
         startsAt: r.startsAt,
         endsAt: r.endsAt,
         minRiskScore: null,
+        competitorMarkets: "all",
       };
       const priced = await loadPricedOutcomes(app, row.id);
       const quote = quoteBoostedMarket(rule, priced);

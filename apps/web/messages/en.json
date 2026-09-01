@@ -378,6 +378,9 @@
     "openTournament": "Open tournament",
     "openMatch": "Open match",
     "openSport": "Open sport",
+    "openTeam": "Open team",
+    "teamOnlyBlurb": "boosts this team's own prices",
+    "teamAllBlurb": "boosts every market on their matches",
     "openMatchForPrices": "Open the match to see boosted prices",
     "matchesCount": "{count, plural, one {# match} other {# matches}}"
   },

@@ -26,6 +26,8 @@ export interface RuleDto {
   /** scope='outcome' only — the boosted cell within the rule's market. */
   outcomeId: string | null;
   boostPct: number;
+  /** scope='competitor' only: 'all' | 'team_only' (migration 0093). */
+  competitorMarkets: "all" | "team_only";
   /** Scheduled activation; null = live immediately (migration 0092). */
   startsAt: string | null;
   endsAt: string | null;
@@ -55,9 +57,23 @@ export interface ImageWorkerStatus {
   queue: { pending: number; done: number; failed: number };
 }
 
+/**
+ * Fair-odds clamp status for one rule (computed server-side from the
+ * book key of every live market the rule covers). Null when the rule
+ * covers nothing priced right now, or is outcome-scope (whose binding
+ * limit is the per-selection cap, not the fair book).
+ */
+export interface RuleClamp {
+  marketsChecked: number;
+  clampedCount: number;
+  swallowedCount: number;
+  worstEffectivePct: number | null;
+}
+
 export interface RuleWithLabel extends RuleDto {
   refId: string;
   label: string;
+  clamp?: RuleClamp | null;
   /**
    * Oddin risk tier — present only on tournament-scope rules, where the
    * overview shows it beside the name. Undefined for every other scope.
@@ -458,6 +474,7 @@ function ActiveRulesTable({
               {r.label}
             </span>
             {r.scope === "tournament" && <TierBadge tier={r.riskTier ?? null} />}
+            {r.clamp && <ClampWarning clamp={r.clamp} rule={r} />}
             {r.graphics && (
               <GraphicsChip
                 state={r.graphics}
@@ -1801,6 +1818,63 @@ function GraphicsChip({
   );
 }
 
+/**
+ * Red "!" when the requested boost can't actually be delivered because
+ * the covered book is already at (or near) fair odds.
+ *
+ * boostMarketKey floors its target key at 1.0 — it will never hand the
+ * player a fair-or-better book — so on a tight market a big boost_pct is
+ * silently cut down, and on a market already at/below fair it does
+ * nothing at all. Without this the operator sets "+40%" and sees a
+ * green badge claiming +40% while the storefront shows a fraction of it.
+ */
+function ClampWarning({ clamp, rule }: { clamp: RuleClamp; rule: RuleDto }) {
+  if (clamp.clampedCount === 0) return null;
+  const all = clamp.clampedCount === clamp.marketsChecked;
+  const best =
+    clamp.worstEffectivePct === null
+      ? null
+      : Math.round(clamp.worstEffectivePct * 100) / 100;
+  const dead = clamp.swallowedCount > 0;
+  const title =
+    `Fair-odds limit: +${rule.boostPct}% can't be delivered on ` +
+    `${clamp.clampedCount} of ${clamp.marketsChecked} live market` +
+    `${clamp.marketsChecked === 1 ? "" : "s"} this rule covers.\n\n` +
+    `A boost never takes the book to or past fair (key 1.0), so on a ` +
+    `tight market the requested delta is cut down` +
+    (best !== null
+      ? ` — the tightest one can only give +${best}%.`
+      : ".") +
+    (dead
+      ? `\n\n${clamp.swallowedCount} market${clamp.swallowedCount === 1 ? " is" : "s are"} already at or past fair: the boost does nothing there at all.`
+      : "") +
+    `\n\nLower the boost %, or narrow the scope to markets with more margin.`;
+  return (
+    <span
+      title={title}
+      aria-label="Boost limited by fair odds"
+      style={{
+        flexShrink: 0,
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 16,
+        height: 16,
+        borderRadius: 999,
+        background: dead || all ? "#dc2626" : "color-mix(in oklab, #dc2626 18%, transparent)",
+        color: dead || all ? "#fff" : "#dc2626",
+        border: "1px solid #dc2626",
+        fontSize: 11,
+        fontWeight: 800,
+        lineHeight: 1,
+        cursor: "help",
+      }}
+    >
+      !
+    </span>
+  );
+}
+
 function MiniRuleDot({ rule }: { rule: RuleDto }) {
   const expired =
     rule.endsAt !== null && new Date(rule.endsAt).getTime() <= Date.now();
@@ -1967,9 +2041,15 @@ function BoostModal({
   );
   const [banner, setBanner] = useState(rule?.banner ?? false);
   const [graphics, setGraphics] = useState(rule?.graphicsBanner ?? false);
+  // scope='competitor' only (migration 0093): does the boost cover every
+  // market of the team's matches, or only the team's own outcomes?
+  const [competitorMarkets, setCompetitorMarkets] = useState<
+    "all" | "team_only"
+  >(rule?.competitorMarkets ?? "all");
   const [busy, setBusy] = useState(false);
-  // Neither a team nor a single selection has a home-page banner shape.
-  const bannerDisabled = scope === "competitor" || scope === "outcome";
+  // A single selection has no home-page banner shape. Teams DO now
+  // (migration 0093) — a team banner links to that team's fixtures.
+  const bannerDisabled = scope === "outcome";
 
   const applyPreset = (minutes: number) => {
     setEndMode("duration");
@@ -2064,6 +2144,7 @@ function BoostModal({
               ? { outcomeId: target.outcomeId }
               : null),
             boostPct: pctNum,
+            competitorMarkets,
             startsAt: startsIso,
             endsAt: endsIso,
             minRiskScore: minRsNum,
@@ -2177,6 +2258,46 @@ function BoostModal({
             )}
           </span>
         </label>
+
+        {scope === "competitor" && (
+          <div style={fieldStyle}>
+            <span style={labelStyle}>Which markets</span>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {(
+                [
+                  ["team_only", "This team's odds only"],
+                  ["all", "All markets on their matches"],
+                ] as const
+              ).map(([mode, label]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setCompetitorMarkets(mode)}
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 600,
+                    padding: "4px 12px",
+                    borderRadius: 999,
+                    border: `1px solid ${competitorMarkets === mode ? "var(--color-fg)" : "var(--color-border)"}`,
+                    background:
+                      competitorMarkets === mode
+                        ? "var(--color-bg-subtle)"
+                        : "transparent",
+                    color: "var(--color-fg)",
+                    cursor: "pointer",
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <span style={hintStyle}>
+              {competitorMarkets === "team_only"
+                ? "Boosts only this team's own price, in match-winner and map-winner markets. The delta comes out of that outcome's own probability, so the opponent's price does not move. Other markets (totals, handicaps, correct score) aren't about one team and stay unboosted."
+                : "Boosts every market of every match this team plays — including the opponent's side and symmetric markets like totals."}
+            </span>
+          </div>
+        )}
 
         <div style={fieldStyle}>
           <span style={labelStyle}>Starts</span>

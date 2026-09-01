@@ -378,6 +378,9 @@
     "openTournament": "Otvori turnir",
     "openMatch": "Otvori meč",
     "openSport": "Otvori sport",
+    "openTeam": "Otvori tim",
+    "teamOnlyBlurb": "povećava kvote same ekipe",
+    "teamAllBlurb": "povećava sva tržišta njihovih mečeva",
     "openMatchForPrices": "Otvorite meč za pojačane kvote",
     "matchesCount": "{count, plural, one {# meč} few {# meča} other {# mečeva}}"
   },

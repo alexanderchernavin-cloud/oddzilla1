@@ -378,6 +378,9 @@
     "openTournament": "Открыть турнир",
     "openMatch": "К матчу",
     "openSport": "К виду спорта",
+    "openTeam": "К команде",
+    "teamOnlyBlurb": "повышает коэффициенты самой команды",
+    "teamAllBlurb": "повышает все рынки её матчей",
     "openMatchForPrices": "Откройте матч, чтобы увидеть бустнутые коэффициенты",
     "matchesCount": "{count, plural, one {# матч} few {# матча} other {# матчей}}"
   },

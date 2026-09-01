@@ -25,6 +25,8 @@ import {
   isQuotableOutcomeOdds,
   quoteMarketBoost,
 } from "@oddzilla/types/netwinstable";
+// Subpath, never the barrel — see packages/types/src/odds.ts.
+import { isTeamShapedMarket } from "@oddzilla/types/boosted-odds";
 import type { ZillaFlashOffer } from "@oddzilla/types";
 import { useTranslations } from "@/lib/i18n";
 import type { ZillaTip } from "@oddzilla/types/zillatips";
@@ -374,13 +376,40 @@ export function LiveMarkets({
       for (const g of mergedGroups) {
         for (const m of g.markets) {
           if (m.status !== 1) continue;
-          const selections = customBoost.selectionsByMarket.get(m.id) ?? null;
+          const explicitSelections =
+            customBoost.selectionsByMarket.get(m.id) ?? null;
           // Market-scope rule wins over the match-wide rule, which
           // otherwise covers EVERY rendered market — including ladder
           // lines created after the last rules poll (live line churn).
+          const marketScoped = customBoost.byMarket.get(m.id) ?? null;
+
+          // A team_only team boost (migration 0093) arrives as matchWide
+          // + teamOutcomeId: it must be applied as a SELECTION on that
+          // one outcome, and only in team-shaped markets, or it would
+          // move the opponent's price too. An explicit outcome rule on
+          // the same cell outranks it — same precedence the server's
+          // resolver applies.
+          const teamOutcomeId = customBoost.matchWideTeamOutcomeId;
+          const teamOnlyApplies =
+            !!customBoost.matchWide &&
+            !!teamOutcomeId &&
+            !marketScoped &&
+            isTeamShapedMarket(m.providerMarketId) &&
+            !explicitSelections?.has(teamOutcomeId);
+
+          const selections =
+            teamOnlyApplies && teamOutcomeId
+              ? new Map([
+                  ...(explicitSelections ?? []),
+                  [teamOutcomeId, customBoost.matchWide!],
+                ])
+              : explicitSelections;
+
+          // matchWide only prices market-wide when it is NOT a team_only
+          // rule; otherwise it has already become a selection above.
           const marketWide =
-            customBoost.byMarket.get(m.id) ?? customBoost.matchWide;
-          if (!marketWide && !selections) continue;
+            marketScoped ?? (teamOutcomeId ? null : customBoost.matchWide);
+          if (!marketWide && (!selections || selections.size === 0)) continue;
           const priced = m.outcomes.filter(
             (o) =>
               o.active &&
@@ -420,6 +449,7 @@ export function LiveMarkets({
     customBoost.byMarket,
     customBoost.selectionsByMarket,
     customBoost.matchWide,
+    customBoost.matchWideTeamOutcomeId,
     flashByOutcome,
   ]);
 
