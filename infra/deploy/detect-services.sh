@@ -38,8 +38,15 @@ mark() {
   done
 }
 
+# Keep in step with ORDER above — this list is what a docker-compose.yml
+# change rebuilds. It is hardcoded rather than derived from ORDER because
+# ORDER also carries `caddy`, which is config-reloaded rather than built.
+# Adding a service to ORDER and forgetting this function means compose
+# changes silently skip it: that happened to support-ai-bot on 2026-09-01,
+# where the deploy rebuilt all ten siblings and never created the new
+# container at all.
 mark_all_built_services() {
-  mark api ws-gateway web1 signer feed-ingester odds-publisher settlement bet-delay wallet-watcher metrics-collector mail-receiver
+  mark api ws-gateway web1 signer feed-ingester odds-publisher settlement bet-delay wallet-watcher metrics-collector mail-receiver support-ai-bot
 }
 
 while IFS= read -r path; do
