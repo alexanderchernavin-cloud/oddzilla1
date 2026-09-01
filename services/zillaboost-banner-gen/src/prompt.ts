@@ -192,8 +192,18 @@ export function entitiesOf(job: BannerGenJob): string[] {
   return out.slice(0, 4);
 }
 
+/** Auth header for the LLM endpoint. Empty for a local LM Studio, which
+ *  needs none; required by a hosted OpenAI-compatible gateway. */
+function llmHeaders(cfg: WorkerConfig): Record<string, string> {
+  const h: Record<string, string> = { "content-type": "application/json" };
+  if (cfg.lmStudioApiKey) h.authorization = `Bearer ${cfg.lmStudioApiKey}`;
+  return h;
+}
+
 async function discoverModel(cfg: WorkerConfig): Promise<string> {
-  const res = await fetch(`${cfg.lmStudioBaseUrl}/v1/models`);
+  const res = await fetch(`${cfg.lmStudioBaseUrl}/v1/models`, {
+    headers: llmHeaders(cfg),
+  });
   if (!res.ok) throw new Error(`lmstudio /v1/models HTTP ${res.status}`);
   const body = (await res.json()) as { data?: Array<{ id?: string }> };
   const id = body.data?.[0]?.id;
@@ -265,14 +275,23 @@ export async function authorPrompt(
     const model = cfg.lmStudioModel ?? (await discoverModel(cfg));
     const res = await fetch(`${cfg.lmStudioBaseUrl}/v1/chat/completions`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: llmHeaders(cfg),
       signal: controller.signal,
       body: JSON.stringify({
         model,
         // Lower than the old 0.7: this is an instruction-following task
         // with a hard banned-word list, not a creative-writing one.
         temperature: 0.45,
-        max_tokens: 400,
+        // Budget covers REASONING tokens as well as the prompt we want.
+        // Reasoning models (GLM-5.3-flash on the hosted endpoint, for one)
+        // spend this allowance on an internal `reasoning_content` field
+        // first and only then emit `content` — at max_tokens 400 a long
+        // research blob can burn the lot and return content: "" with
+        // finish_reason "length", i.e. a silently empty prompt. Measured:
+        // a short support answer cost 40 reasoning + 31 text tokens, so the
+        // multiple matters more than the absolute. Harmless on a local
+        // non-reasoning model, which simply stops when it is done.
+        max_tokens: 1200,
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: user },

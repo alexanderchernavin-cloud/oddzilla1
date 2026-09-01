@@ -18,8 +18,19 @@ export interface WorkerConfig {
 
   /** LM Studio OpenAI-compatible server base, e.g. http://192.168.50.37:1234 */
   lmStudioBaseUrl: string;
-  /** Model id; null = auto-discover the loaded model via /v1/models. */
+  /**
+   * Model id; null = auto-discover via /v1/models.
+   *
+   * Auto-discovery takes the FIRST entry, which is right for a local LM
+   * Studio serving one loaded model and wrong for a hosted gateway serving
+   * several — set this explicitly whenever the endpoint offers a choice.
+   */
   lmStudioModel: string | null;
+  /**
+   * Bearer token for the LLM endpoint. Null for a local LM Studio, which
+   * needs no auth; required by a hosted OpenAI-compatible gateway.
+   */
+  lmStudioApiKey: string | null;
 
   /** ComfyUI base, e.g. http://desktop-io524q2:8188 (tailnet name). */
   imageApiBase: string;
@@ -117,6 +128,7 @@ export function loadConfig(): WorkerConfig | null {
       "",
     ),
     lmStudioModel: process.env.LM_STUDIO_MODEL?.trim() || null,
+    lmStudioApiKey: process.env.LM_STUDIO_API_KEY?.trim() || null,
     imageApiBase: opt("IMAGE_API_BASE", "http://localhost:8188").replace(
       /\/+$/,
       "",
