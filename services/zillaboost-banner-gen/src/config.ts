@@ -88,6 +88,15 @@ export interface WorkerConfig {
   backendRetryMs: number;
   /** Per-request timeout against the local services. */
   requestTimeoutMs: number;
+  /**
+   * Timeout for the LLM call specifically, separate from requestTimeoutMs.
+   *
+   * The prompt budget is 10k tokens and a reasoning model emits roughly
+   * 136 tok/s, so a full-length generation is ~74s — past the 60s that is
+   * right for the Wikipedia lookups requestTimeoutMs also covers. Sharing
+   * one value would either abort long prompts or make research hang.
+   */
+  llmTimeoutMs: number;
   /** txt2img can legitimately run minutes on a big model. */
   imageTimeoutMs: number;
   /** Wikipedia Action API endpoint backing entity research. */
@@ -162,6 +171,7 @@ export function loadConfig(): WorkerConfig | null {
     pollIntervalMs: num("POLL_INTERVAL_MS", 30_000),
     backendRetryMs: num("BACKEND_RETRY_MS", 60 * 60 * 1000),
     requestTimeoutMs: num("REQUEST_TIMEOUT_MS", 60_000),
+    llmTimeoutMs: num("LLM_TIMEOUT_MS", 180_000),
     imageTimeoutMs: num("IMAGE_TIMEOUT_MS", 10 * 60 * 1000),
     wikipediaApiBase: opt(
       "WIKIPEDIA_API_BASE",
