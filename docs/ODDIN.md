@@ -755,11 +755,26 @@ The match URN is the **same `od:match:N` we already store** in
   decode. That is part-chasing on a 6s window — the playhead tracks a live
   edge the buffer can never reach and never recovers.
 
-  We therefore pass `lowLatency: false` (whole 2s segments, ordinary live
-  sync, and `enableWorker` back on as a side effect) plus
-  `liveLatencyTarget: 4` — ~2.4x `PART-HOLD-BACK` and two whole segments
-  inside the window. Do not raise it much past 6s or playback moves to the
-  oldest segment in the window and risks eviction mid-fetch; cap ABR with
+  **The trigger is `autoplay: false`, not low latency by itself** — confirmed
+  by reproduction 2026-09-01. hls.js keeps nudging `currentTime` toward an
+  advancing `liveSyncPosition` while a paused element never plays into the
+  buffer, so the playhead is left stranded ahead of it; with autoplay off the
+  picture advances about one frame every 5-6 seconds. We ran `lowLatency:
+  false` for a while, which also avoided it, but at ~3s of latency for the
+  wrong reason.
+
+  Current config is `lowLatency: true` with `liveLatencyTarget: 4` (~2.4x
+  `PART-HOLD-BACK`, two whole segments inside the 6s window). Two things make
+  that safe and **both are required**: muted autoplay, so the element is never
+  sitting paused on a live edge; and a strand watchdog in
+  [`oddin-video-player.tsx`](../apps/web/src/components/match/oddin-video-player.tsx)
+  that seeks to live whenever `currentTime` drifts past `buffered.end` while
+  playing. The watchdog is not belt-and-braces — autoplay is not guaranteed,
+  and our own Android WebView sets `mediaPlaybackRequiresUserGesture = true`,
+  which blocks it outright, so that entire population starts paused and relies
+  on it. **If autoplay is ever turned off again, turn low latency off with
+  it.** Do not raise the target much past 6s or playback moves to the oldest
+  segment in the window and risks eviction mid-fetch; cap ABR with
   `maxBitrate` instead.
 
 - **DRM is real.** `drmEnabled: true` on every stream checked, Widevine +
