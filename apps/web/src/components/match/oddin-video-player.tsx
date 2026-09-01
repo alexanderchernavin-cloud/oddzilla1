@@ -82,45 +82,51 @@ const PLAYER_THEME = {
   fontFamily: "var(--font-sans, ui-sans-serif, system-ui, sans-serif)",
 } as const;
 
-// Why this player does NOT run in low-latency mode, and sits 4s back.
+// Low-latency is ON, targeting 4s behind the live edge. The history matters,
+// because the obvious reading of this file is that LL should be off.
 //
-// Oddin's LL-HLS playlists are extremely tight. A live 1080p60 playlist
-// measured on 2026-08-31 advertised:
+// Oddin's LL-HLS playlists are tight. A live 1080p60 playlist measured
+// 2026-08-31 advertised:
 //
 //   #EXT-X-TARGETDURATION:2
 //   #EXT-X-PART-INF:PART-TARGET=0.55
 //   #EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=1.65
 //
 // carrying three 2s segments — the ENTIRE published window is ~6 seconds,
-// which is the RFC 8216bis minimum (3x target duration). The origin itself
-// is healthy: it publishes in real time (+2 segments per 4s wall clock) and
-// a 1466 KB segment fetched in 202 ms, ~59 Mbit/s effective against a
-// 6.1 Mbit/s top rendition. Bandwidth was never the constraint.
+// the RFC 8216bis minimum. Delivery itself is fine: the window rolls in real
+// time and a 2s segment fetches in 140-202ms (59-83 Mbit/s effective against
+// a 6.1 Mbit/s rendition), so bandwidth was never the constraint.
 //
-// With the SDK's defaults (lowLatency 'auto', which resolves to TRUE
-// unconditionally despite the docstring claiming it lets hls.js decide from
-// the manifest) playback failed like this, measured in the page:
+// On that stream, playback died like this (measured in the page):
 //
 //   decoded: 0   dropped: 0   bufferAhead: -24.62   res: 1920x1080
 //
-// Zero frames decoded AND zero dropped means it is not a decode or
-// compositing bottleneck. `bufferAhead` negative is the real fault: the
-// playhead had run 24.6s PAST the end of every buffered range, so there was
-// simply nothing at the playhead to decode. That is part-chasing on a 6s
-// window — the playhead tracks an advancing live edge the buffer can never
-// reach, and never recovers on its own.
+// Zero decoded AND zero dropped rules out decode, GPU and compositing. The
+// fault is the negative bufferAhead: currentTime had run 24.6s PAST the end
+// of every buffered range, so there was nothing at the playhead to decode.
+// hls.js does not recover from that — its gap jumping spans maxBufferHole
+// (0.5s), not a 20s+ gulf.
 //
-// So: lowLatency false. hls.js then plays whole 2s segments with ordinary
-// live sync instead of chasing parts, which a 6s window can actually
-// sustain. It also flips `enableWorker` back on as a side effect, because
-// the SDK derives it as `enableWorker: !lowLatency` — transmuxing moves off
-// the main thread, which this page (WS odds ticks, pollers, analytics) is
-// glad of even though it was not the cause here.
+// The trigger is NOT low-latency by itself. It is `autoplay: false` on a live
+// LL stream, confirmed by reproduction on 2026-09-01: hls.js keeps nudging
+// currentTime toward an advancing liveSyncPosition while a paused element
+// never plays into the buffer, and the playhead is left stranded ahead of it.
+// We ran LL off for a while, which also avoided it, but that cost ~3s of
+// latency for the wrong reason.
 //
-// 4s back is ~2.4x PART-HOLD-BACK and two whole segments inside the window.
-// Do not push much past 6s or playback moves to the oldest segment in the
-// window and risks eviction mid-fetch; cap ABR with `maxBitrate` instead.
-// Still comfortably live for betting — Twitch and YouTube run 10-20s.
+// So LL is on, and the two things that make it safe are BOTH required:
+//   - autoplay (muted), so the element is never sitting paused on a live edge
+//   - the strand watchdog below, because autoplay is not guaranteed. Our own
+//     Android WebView sets mediaPlaybackRequiresUserGesture = true and blocks
+//     it outright, so that entire population starts paused.
+//
+// If you ever turn autoplay off again, turn LL off with it.
+//
+// 4s is ~2.4x PART-HOLD-BACK and two whole segments inside a 6s window. It
+// can probably come down to ~2.5-3s now the watchdog exists, but do that
+// deliberately and watch for strands. Going the other way, past ~6s, moves
+// playback to the oldest segment in the window and risks eviction mid-fetch;
+// cap ABR with `maxBitrate` instead.
 const LIVE_LATENCY_TARGET_SECONDS = 4;
 
 // Errors that mean "there is nothing here to watch" rather than "try again".
@@ -163,6 +169,7 @@ export function OddinVideoPlayer({ availability, active, onUnavailable }: Props)
 
     let disposed = false;
     let player: Player | null = null;
+    let strandTimer: ReturnType<typeof setInterval> | null = null;
 
     setDrmUnsupported(false);
 
@@ -170,8 +177,8 @@ export function OddinVideoPlayer({ availability, active, onUnavailable }: Props)
     // single page load so the playback fault documented in docs/ODDIN.md can
     // be reproduced on demand.
     //
-    // It restores TWO settings: lowLatency on (the SDK default via 'auto')
-    // and autoplay off. The first cut flipped only lowLatency and
+    // Now that low-latency is on in production too, this flag restores the
+    // one remaining difference: autoplay off. The first cut flipped only lowLatency and
     // consequently never reproduced anything — by then muted autoplay had
     // shipped, and `autoplay: false` turns out to be the trigger: hls.js
     // keeps nudging currentTime toward an advancing liveSyncPosition while a
@@ -229,10 +236,9 @@ export function OddinVideoPlayer({ availability, active, onUnavailable }: Props)
           statusOverlays: true,
           theme: PLAYER_THEME,
           liveLatencyTarget: LIVE_LATENCY_TARGET_SECONDS,
-          // Segment-based live, not LL-HLS part-chasing. See the note on
-          // LIVE_LATENCY_TARGET_SECONDS for the measurement behind this.
-          // `?oddinLowLatency=1` flips it back to reproduce the fault.
-          lowLatency: reproMode,
+          // Low-latency on. It is safe here because autoplay is on and the
+          // strand watchdog below is a continuous recovery — see both notes.
+          lowLatency: true,
           // Oddin's QoE beacon endpoint does not send CORS headers:
           //   POST https://beacons-dev.oddin-video.gg/v1/beacons
           //   blocked by CORS policy: no Access-Control-Allow-Origin
@@ -284,6 +290,45 @@ export function OddinVideoPlayer({ availability, active, onUnavailable }: Props)
           }
         });
 
+        // Strand watchdog.
+        //
+        // The failure mode this integration hit: currentTime ends up PAST the
+        // end of every buffered range, so there is nothing at the playhead to
+        // decode and playback dies without erroring (measured: decoded 0,
+        // dropped 0, bufferAhead -24.62). hls.js does not recover — its gap
+        // jumping spans maxBufferHole, 0.5s, not a 20s+ gulf.
+        //
+        // Confirmed trigger is a paused element on a live LL-HLS stream, so
+        // the seek-to-live on first play covers the common case. It fires
+        // ONCE though, and our own Android app sets
+        // mediaPlaybackRequiresUserGesture = true, which blocks autoplay
+        // outright — every Android viewer therefore starts paused and depends
+        // on that single rescue. A second strand later in the session would
+        // have nothing left to save it.
+        //
+        // So: check periodically, and seek to live whenever the playhead is
+        // outside the buffer while we are supposed to be playing. Cheap (two
+        // property reads), idempotent, and self-limiting via SEEK_COOLDOWN so
+        // a genuinely broken stream cannot become a seek loop.
+        const STRAND_TOLERANCE_S = 1;
+        const SEEK_COOLDOWN_MS = 5000;
+        let lastRescueAt = 0;
+        strandTimer = setInterval(() => {
+          if (video.paused || video.seeking) return;
+          const ranges = video.buffered;
+          if (ranges.length === 0) return;
+          const end = ranges.end(ranges.length - 1);
+          if (video.currentTime <= end + STRAND_TOLERANCE_S) return;
+          const now = Date.now();
+          if (now - lastRescueAt < SEEK_COOLDOWN_MS) return;
+          lastRescueAt = now;
+          try {
+            created.seekToLive();
+          } catch {
+            // Nothing useful to do; the next tick will try again.
+          }
+        }, 3000);
+
         created.on("error", (err: PlaybackError) => {
           if (err.code === "DRM_CLIENT") {
             // The browser/OS can't do the required DRM (Linux Chromium
@@ -313,6 +358,10 @@ export function OddinVideoPlayer({ availability, active, onUnavailable }: Props)
       // destroy() unwinds the SDK's own wrapper (unmountControls puts the
       // <video> back where it found it), but don't rely on that having run
       // before clearing: emptying the container covers both paths.
+      if (strandTimer) {
+        clearInterval(strandTimer);
+        strandTimer = null;
+      }
       try {
         player?.destroy();
       } catch {
