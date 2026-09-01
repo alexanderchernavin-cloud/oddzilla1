@@ -24,6 +24,7 @@ import { LmStudio, type ChatMessage } from "./lmstudio.js";
 import { buildMessages } from "./prompt.js";
 import { DEFAULT_HOLDING_MESSAGE } from "./guardrails.js";
 import { TOOLS, executeTool } from "./tools.js";
+import { touchLiveness } from "./liveness.js";
 
 const cfg = loadConfig();
 const api = new BotApi(cfg);
@@ -199,10 +200,12 @@ async function heartbeatLoop(): Promise<void> {
 
 async function pollLoop(): Promise<void> {
   while (!stopped) {
+    touchLiveness();
     await pollOnce();
     await sleep(cfg.pollIntervalMs);
   }
 }
+
 
 export async function run(): Promise<void> {
   logger.info(
