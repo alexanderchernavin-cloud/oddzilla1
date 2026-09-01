@@ -270,7 +270,7 @@ export async function authorPrompt(
 
   let body = fallbackPrompt(job);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), cfg.requestTimeoutMs);
+  const timer = setTimeout(() => controller.abort(), cfg.llmTimeoutMs);
   try {
     const model = cfg.lmStudioModel ?? (await discoverModel(cfg));
     const res = await fetch(`${cfg.lmStudioBaseUrl}/v1/chat/completions`, {
@@ -286,12 +286,19 @@ export async function authorPrompt(
         // Reasoning models (GLM-5.3-flash on the hosted endpoint, for one)
         // spend this allowance on an internal `reasoning_content` field
         // first and only then emit `content` — at max_tokens 400 a long
-        // research blob can burn the lot and return content: "" with
-        // finish_reason "length", i.e. a silently empty prompt. Measured:
-        // a short support answer cost 40 reasoning + 31 text tokens, so the
-        // multiple matters more than the absolute. Harmless on a local
-        // non-reasoning model, which simply stops when it is done.
-        max_tokens: 1200,
+        // research blob burned the lot and returned content: "" with
+        // finish_reason "length", i.e. a silently empty prompt that
+        // fallbackPrompt() then masked. Measured on one banner: 969
+        // reasoning + 212 text tokens.
+        //
+        // This is a CEILING, not an allocation: the model stops at
+        // finish_reason "stop" when it is done, so a generous number costs
+        // nothing on a normal generation and only bounds a runaway one.
+        // Hence 10k rather than something tuned to the measurement — the
+        // failure it prevents is silent, and the cost of headroom is zero.
+        // llmTimeoutMs is sized to match (~74s at 136 tok/s if it ever
+        // actually ran to the ceiling).
+        max_tokens: 10_000,
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: user },
