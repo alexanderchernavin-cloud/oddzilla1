@@ -170,15 +170,18 @@ export function OddinVideoPlayer({ availability, active, onUnavailable }: Props)
     // single page load so the playback fault documented in docs/ODDIN.md can
     // be reproduced on demand.
     //
-    // It has to restore all three settings together, not just the one it is
-    // named after. The first cut flipped only `lowLatency` and consequently
-    // never reproduced anything — by then muted autoplay had shipped, and the
-    // leading theory for the fault is that `autoplay: false` is what strands
-    // the playhead: hls.js keeps nudging currentTime toward an advancing
-    // liveSyncPosition while a paused element never plays into the buffer, so
-    // currentTime ends up past buffered.end (measured: bufferAhead -24.62).
-    // Leaving autoplay on, or leaving the seek-to-live snap in place, hides
-    // exactly the thing we are trying to show.
+    // It restores TWO settings: lowLatency on (the SDK default via 'auto')
+    // and autoplay off. The first cut flipped only lowLatency and
+    // consequently never reproduced anything — by then muted autoplay had
+    // shipped, and `autoplay: false` turns out to be the trigger: hls.js
+    // keeps nudging currentTime toward an advancing liveSyncPosition while a
+    // paused element never plays into the buffer, so currentTime ends up past
+    // buffered.end (measured: bufferAhead -24.62). Confirmed by reproduction
+    // 2026-09-01 — with autoplay off the picture advances one frame every
+    // 5-6 seconds.
+    //
+    // The seek-to-live snap stays ON here, matching production, so this
+    // differs from the shipped config in exactly those two settings.
     //
     // Opt-in, per page load, affects nobody who does not type it. Remove once
     // Oddin has closed the report.
@@ -262,9 +265,14 @@ export function OddinVideoPlayer({ availability, active, onUnavailable }: Props)
         // First play only: a later pause/resume is a deliberate act and we
         // leave the GO LIVE control to handle it, rather than yanking the
         // viewer forward every time they come back.
-        // Skipped entirely in repro mode: snapping to live is precisely the
-        // recovery that would hide a stranded playhead.
-        let snapped = reproMode;
+        // Active in repro mode too, deliberately. Leaving it on keeps repro
+        // mode differing from production in exactly two settings
+        // (lowLatency + autoplay) instead of three, and answers a question
+        // worth answering: does an explicit seek to the live edge rescue a
+        // stranded playhead, or does it strand again straight after? Both
+        // outcomes are informative — the first says the state is escapable,
+        // the second that it is not.
+        let snapped = false;
         created.on("playing", () => {
           if (snapped) return;
           snapped = true;
