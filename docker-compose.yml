@@ -356,14 +356,58 @@ services:
       <<: *hc
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${WS_GATEWAY_PORT:-3002}/healthz"]
 
+  # The AI support assistant. Moved here from the operator PC on
+  # 2026-09-01: the only thing that ever tied it to a PC was a local
+  # LM Studio, and with LM_STUDIO_BASE_URL pointed at a hosted
+  # OpenAI-compatible endpoint that anchor is gone. On the box it
+  # answers around the clock instead of only while a PC is awake with
+  # a model loaded.
+  #
+  # Still outbound-only. It polls /webhooks/support-ai/* and posts
+  # replies; it listens on nothing, which is why the healthcheck reads
+  # a liveness file the poll loop touches rather than probing a port.
+  #
+  # Graceful-idle, the same way every credential-gated service here
+  # behaves: with SUPPORT_AI_BOT_TOKEN unset the worker parks, logs a
+  # warning and stays healthy rather than exiting — which matters under
+  # `restart: unless-stopped`, where an exit would crashloop. So it is a
+  # normal always-on service with no profile, and setting the token plus
+  # a recreate is all that enables it.
+  support-ai-bot:
+    <<: *ts-service
+    mem_limit: 256m
+    cpus: 0.5
+    build:
+      context: .
+      dockerfile: services/support-ai-bot/Dockerfile
+    environment:
+      SERVICE_NAME: support-ai-bot
+      # Same-network call to the api rather than back out through Caddy
+      # and in again. The path secret is still the auth, unchanged.
+      ODDZILLA_API_BASE: ${SUPPORT_AI_BOT_API_BASE:-http://api:3001}
+      LIVENESS_FILE: /tmp/support-ai-bot.alive
+    healthcheck:
+      <<: *hc
+      # Unhealthy when the poll loop has not turned for 90s. The file is
+      # touched at the top of each tick (default cadence 4s), before the
+      # API call, so an API outage does not restart the container into
+      # the same outage — only a wedged or dead loop trips this.
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "const{statSync}=require('node:fs');process.exit(Date.now()-statSync('/tmp/support-ai-bot.alive').mtimeMs<90000?0:1)",
+        ]
+
   # NOTE: the ZillaBoost graphics-banner worker
   # (services/zillaboost-banner-gen) is deliberately NOT a compose
-  # service. It runs on the operator PC next to ComfyUI — which is
-  # bound to 127.0.0.1 and must stay that way (unauthenticated
-  # admin-level code execution if exposed) — and dials OUT to
-  # /webhooks/banner-gen/* like services/support-ai-bot does. A
-  # server-side container briefly existed (2026-08-28, via tailscale)
-  # and was reverted the same day for exactly that reason.
+  # service, and unlike support-ai-bot above it never can be. It runs on
+  # the operator PC next to ComfyUI — which is bound to 127.0.0.1 and
+  # must stay that way (unauthenticated admin-level code execution if
+  # exposed) — and dials OUT to /webhooks/banner-gen/*. A server-side
+  # container briefly existed (2026-08-28, via tailscale) and was
+  # reverted the same day for exactly that reason.
 
   web1:
     <<: *web-base

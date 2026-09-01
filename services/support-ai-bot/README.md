@@ -1,8 +1,20 @@
 # support-ai-bot
 
-Autonomous live-support assistant for Oddzilla, powered by a **local** model
-served by **LM Studio**. It runs on an operator PC — **not** in the docker
-stack — and answers bettors in the existing live-support chat while the PC is on.
+Autonomous live-support assistant for Oddzilla. It answers bettors in the
+existing live-support chat, using any **OpenAI-compatible
+`/v1/chat/completions`** endpoint for the model.
+
+**It runs in the docker stack** (since 2026-09-01). It was PC-only before
+that for exactly one reason — the model was a local LM Studio, so the thing
+calling it had to sit beside it. Point `LM_STUDIO_BASE_URL` at a hosted
+endpoint and that anchor is gone, so the assistant now answers around the
+clock instead of only while a PC is awake with a model loaded. Running it on
+a PC against a local LM Studio still works unchanged; nothing about the
+outbound design assumes either location.
+
+(Its sibling `services/zillaboost-banner-gen` stays on the PC permanently:
+it drives ComfyUI, which is unauthenticated admin-level code execution and
+must remain bound to loopback.)
 
 ## How it works
 
