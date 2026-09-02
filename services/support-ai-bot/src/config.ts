@@ -62,8 +62,15 @@ export function loadConfig(): BotConfig {
     pendingBatch: num("BOT_PENDING_BATCH", 8),
     maxReplyChars: num("BOT_MAX_REPLY_CHARS", 1500),
     temperature: num("BOT_TEMPERATURE", 0.3),
-    maxTokens: num("BOT_MAX_TOKENS", 1024),
-    requestTimeoutMs: num("BOT_LM_TIMEOUT_MS", 60000),
+    // Ceiling, not a target: the model stops on its own when the reply is
+    // done. Reasoning models (GLM) spend this budget on a hidden reasoning
+    // pass FIRST, and a bettor question that needs real thought ("were my
+    // last bets bad?" over 10 tickets) burned the old 1024 default before a
+    // single word of reply was written: the endpoint returned finish_reason
+    // "length" with empty content and the worker escalated (2026-09-02).
+    maxTokens: num("BOT_MAX_TOKENS", 50000),
+    // Long reasoning passes need the wall-clock room the budget implies.
+    requestTimeoutMs: num("BOT_LM_TIMEOUT_MS", 120000),
     wikipediaApiBase: opt(
       "WIKIPEDIA_API_BASE",
       "https://en.wikipedia.org/w/api.php",
