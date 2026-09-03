@@ -43,8 +43,8 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { sql } from "drizzle-orm";
-import { adminAuditLog, amqpState } from "@oddzilla/db";
+import { eq, sql } from "drizzle-orm";
+import { adminAuditLog, amqpState, feedControl } from "@oddzilla/db";
 import { BadRequestError, ServiceUnavailableError } from "../../lib/errors.js";
 
 const bodySchema = z.object({
@@ -89,16 +89,11 @@ function isTransientLockError(err: unknown): boolean {
 
 // ── Feed source switch ──────────────────────────────────────────────────
 //
-// Redis keys shared with services/feed-ingester (cmd/feed-ingester/main.go,
-// runSourceSwitch) and services/bifrost-feed (internal/gate). Redis rather
-// than Postgres because both consumers already poll Redis for the gate and
-// the failure mode of a lost key is the safe default (auto).
-const FEED_SOURCE_KEY = "feed:source";
-const FEED_SOURCE_SWITCHED_KEY = "feed:source:switched_unix";
-const FEED_SOURCE_SWITCHED_BY_KEY = "feed:source:switched_by";
-const FEED_SOURCE_APPLIED_KEY = "feed:source:applied";
-const FEED_SOURCE_FLUSHED_KEY = "feed:source:flushed_unix";
-
+// State lives in the singleton `feed_control` row (migration 0095), read
+// every 2 s by services/feed-ingester (runSourceSwitch) and
+// services/bifrost-feed (internal/gate). The first cut used Redis keys;
+// production Redis is an allkeys-lru cache and evicted them on day one,
+// silently undoing a forced Backup. Operator state must survive that.
 const feedSourceSchema = z.enum(["auto", "prod", "backup"]);
 type FeedSource = z.infer<typeof feedSourceSchema>;
 
@@ -133,24 +128,37 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
         'source=backup requires {"confirm":"switch-feed-source"} in the body',
       );
     }
-    const before = await app.redis.get(FEED_SOURCE_KEY);
     const nowUnix = Math.floor(Date.now() / 1000);
-    await app.redis
-      .multi()
-      .set(FEED_SOURCE_KEY, body.source)
-      .set(FEED_SOURCE_SWITCHED_KEY, String(nowUnix))
-      .set(FEED_SOURCE_SWITCHED_BY_KEY, admin.id)
-      .exec();
-    await app.db.insert(adminAuditLog).values({
-      actorUserId: admin.id,
-      action: "feed.source_switch",
-      targetType: "feed_source",
-      targetId: FEED_SOURCE_KEY,
-      beforeJson: { source: before ?? "auto" },
-      afterJson: { source: body.source, switchedUnix: nowUnix },
-      ipInet: request.ip ?? null,
+    const before = await app.db.transaction(async (tx) => {
+      const [prev] = await tx
+        .select({ source: feedControl.source })
+        .from(feedControl)
+        .where(eq(feedControl.id, 1))
+        .for("update");
+      // flushed_at is reset so bifrost-feed waits for feed-ingester's fresh
+      // acknowledgement of THIS switch before re-emitting.
+      await tx
+        .update(feedControl)
+        .set({
+          source: body.source,
+          switchedAt: sql`NOW()`,
+          switchedBy: admin.id,
+          flushedAt: null,
+          updatedAt: sql`NOW()`,
+        })
+        .where(eq(feedControl.id, 1));
+      await tx.insert(adminAuditLog).values({
+        actorUserId: admin.id,
+        action: "feed.source_switch",
+        targetType: "feed_control",
+        targetId: "1",
+        beforeJson: { source: prev?.source ?? "auto" },
+        afterJson: { source: body.source, switchedUnix: nowUnix },
+        ipInet: request.ip ?? null,
+      });
+      return prev?.source ?? "auto";
     });
-    request.log.warn({ from: before ?? "auto", to: body.source, admin: admin.id }, "feed source switched");
+    request.log.warn({ from: before, to: body.source, admin: admin.id }, "feed source switched");
     return { ok: true, source: body.source, switchedUnix: nowUnix };
   });
 
@@ -349,19 +357,15 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
   // the backup is publishing, and what it has published.
   app.get("/admin/feed/backup-status", async (request) => {
     request.requireRole("admin");
-    const [hash, primaryRaw, sourceRaw, switchedRaw, switchedBy, appliedRaw, flushedRaw, connectedRaw] =
-      await Promise.all([
-        app.redis.hgetall("bifrost:feed:status"),
-        app.redis.get("feed:primary:last_msg_unix"),
-        app.redis.get(FEED_SOURCE_KEY),
-        app.redis.get(FEED_SOURCE_SWITCHED_KEY),
-        app.redis.get(FEED_SOURCE_SWITCHED_BY_KEY),
-        app.redis.get(FEED_SOURCE_APPLIED_KEY),
-        app.redis.get(FEED_SOURCE_FLUSHED_KEY),
-        // Refreshed every 2 s with a 15 s TTL while feed-ingester holds
-        // an open AMQP connection; absent = disconnected.
-        app.redis.get("feed:primary:connected_unix"),
-      ]);
+    const [hash, primaryRaw, connectedRaw, controlRows] = await Promise.all([
+      app.redis.hgetall("bifrost:feed:status"),
+      app.redis.get("feed:primary:last_msg_unix"),
+      // Refreshed every 2 s with a 15 s TTL while feed-ingester holds
+      // an open AMQP connection; absent = disconnected.
+      app.redis.get("feed:primary:connected_unix"),
+      app.db.select().from(feedControl).where(eq(feedControl.id, 1)).limit(1),
+    ]);
+    const control = controlRows[0];
     const nowUnix = Math.floor(Date.now() / 1000);
     const num = (key: string): number | null => {
       const v = hash[key];
@@ -374,6 +378,11 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
       const n = Number(raw);
       return Number.isFinite(n) && n > 0 ? n : null;
     };
+    const dateUnix = (d: Date | null | undefined): number | null =>
+      d ? Math.floor(d.getTime() / 1000) : null;
+    const sourceRaw = control?.source ?? null;
+    const switchedBy = control?.switchedBy ?? null;
+    const appliedRaw = control?.appliedSource ?? null;
     const heartbeat = num("heartbeat_unix");
     const primaryLast = primaryRaw != null ? Number(primaryRaw) : null;
     return {
@@ -387,11 +396,11 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
         requested: feedSourceSchema.safeParse(sourceRaw).success
           ? (sourceRaw as FeedSource)
           : "auto",
-        switchedUnix: toUnix(switchedRaw),
+        switchedUnix: dateUnix(control?.switchedAt),
         switchedBy,
         // What feed-ingester last applied (null until it booted with this code).
         appliedByIngester: appliedRaw,
-        flushedUnix: toUnix(flushedRaw),
+        flushedUnix: dateUnix(control?.flushedAt),
       },
       active: hash.active === "1",
       sinceUnix: num("since_unix"),

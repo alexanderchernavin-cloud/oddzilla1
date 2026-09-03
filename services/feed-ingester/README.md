@@ -74,11 +74,12 @@ Two additions ride alongside the AMQP path; see
   Bifrost's `match` query and reshapes it into the same
   `oddinxml.FixtureResponse`, and seeds `competitor_profiles` icons from
   the team data. Enabled when `BIFROST_API_KEY` is set.
-- `runSourceSwitch` (main.go) polls Redis `feed:source`, the backoffice
-  Feed source switch. `backup`: keep the AMQP connection and its liveness
-  stamps but ack deliveries without applying them, suspend the catalogue
-  once, acknowledge with `feed:source:flushed_unix` (bifrost-feed waits
-  for it before re-emitting). Back to `auto` / `prod`: reconnect-style
+- `runSourceSwitch` (main.go) polls the Postgres singleton `feed_control`
+  (migration 0095), the backoffice Feed source switch. `backup`: keep the
+  AMQP connection and its liveness stamps but ack deliveries without
+  applying them, suspend the catalogue once, acknowledge with
+  `feed_control.flushed_at` (bifrost-feed waits for it before
+  re-emitting), and record `applied_source`. Back to `auto` / `prod`: reconnect-style
   flush + 24 h replay, then resume applying. A boot-time `backup` value
   is adopted without a flush. `/healthz` reports `feedSource` and
   `amqpApplied`. While on `backup` no Oddin feed REST endpoint is called:

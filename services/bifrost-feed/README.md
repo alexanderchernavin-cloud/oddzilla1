@@ -28,10 +28,17 @@ Bifrost (wss + https) ──► runner ──► translate ──► Redis strea
 - `dbstate` gates settlement: a market is voiced only if it exists in our
   Postgres and is not already `-3` / `-4` there. No local "already sent"
   state is ever authoritative, so restarts and reconnects converge.
-- `gate` reads `feed:primary:last_msg_unix` (stamped by feed-ingester on
-  every AMQP delivery). `auto` mode publishes after
-  `BIFROST_TAKEOVER_AFTER_SECONDS` of silence and stands down the moment
-  the stamp is fresh again; `active` forces publishing; `off` idles.
+- `gate` reads the operator switch from the Postgres singleton
+  `feed_control` (auto / prod / backup; migration 0095) and feed-ingester's
+  two Redis liveness stamps (`feed:primary:last_msg_unix` per delivery,
+  `feed:primary:connected_unix` while the AMQP connection is open). Auto
+  publishes after `BIFROST_TAKEOVER_AFTER_SECONDS` with both stamps stale
+  and stands down the moment one is fresh; backup forces publishing (after
+  feed-ingester's flush acknowledgement); prod idles. Operator state is
+  deliberately not in Redis: production Redis is an allkeys-lru cache.
+- `publisher` trims `oddin.backup` by time (`XADD … MINID`, 60 s), never by
+  count: entries are full match snapshots and a count cap let the stream
+  fill Redis on day one.
 - On activation every cached snapshot is re-emitted so the catalogue the
   alive watchdog suspended comes back in one pass. Every
   `BIFROST_RESYNC_INTERVAL_SECONDS` the runner re-lists the offer and

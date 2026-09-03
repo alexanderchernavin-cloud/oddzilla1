@@ -11,13 +11,17 @@ package dbstate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/oddzilla/bifrost-feed/internal/bifrost"
+	"github.com/oddzilla/bifrost-feed/internal/gate"
 )
 
 // Filter answers "may I settle this market" for one match.
@@ -108,11 +112,40 @@ func canonicalFromJSON(raw []byte) string {
 	return strings.Join(parts, "|")
 }
 
-// Permissive treats every market as known and open. Dry-run only: it
-// makes the translator emit a settlement for every fully settled market
-// it sees, which is what an operator wants to eyeball.
+// ReadControl returns the operator's feed source switch (migration 0095,
+// singleton feed_control row). A missing row reads as an unset switch so
+// the env default applies.
+func (d *DB) ReadControl(ctx context.Context) (gate.Control, error) {
+	var (
+		source   string
+		switched time.Time
+		flushed  *time.Time
+	)
+	err := d.pool.QueryRow(ctx, `SELECT source, switched_at, flushed_at FROM feed_control WHERE id = 1`).
+		Scan(&source, &switched, &flushed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return gate.Control{}, nil
+	}
+	if err != nil {
+		return gate.Control{}, fmt.Errorf("read feed_control: %w", err)
+	}
+	c := gate.Control{Source: source, SwitchedAt: switched}
+	if flushed != nil {
+		c.FlushedAt = *flushed
+	}
+	return c, nil
+}
+
+// Permissive treats every market as known and open and reports no
+// operator switch. Dry-run only: it makes the translator emit a settlement
+// for every fully settled market it sees, which is what an operator wants
+// to eyeball.
 type Permissive struct{}
 
 func (Permissive) OpenMarkets(_ context.Context, _ string) (Filter, error) {
 	return Filter{Known: true, AllOpen: true}, nil
+}
+
+func (Permissive) ReadControl(_ context.Context) (gate.Control, error) {
+	return gate.Control{}, nil
 }

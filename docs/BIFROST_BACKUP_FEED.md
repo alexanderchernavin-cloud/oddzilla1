@@ -96,13 +96,23 @@ implementation. The consumers cannot tell which transport a message came
 from except by the routing key `bifrost.backup` in logs and
 `feed_messages`.
 
-**Gate and the operator switch.** Two inputs, both in Redis. The
-backoffice switch `feed:source` (`PUT /admin/feed/source`, the **Feed
-source** control on `/admin/feed`, audit-logged) selects `auto` (default),
-`prod` (backup never publishes) or `backup` (backup forced); when unset,
-the env default `BIFROST_MODE` applies (`auto` / `active` / `off`). In
-auto, the primary counts as alive while EITHER of feed-ingester's two
-stamps is fresh: `feed:primary:last_msg_unix` (every AMQP delivery, at
+**Gate and the operator switch.** Two inputs. The backoffice switch is
+the singleton Postgres row `feed_control` (migration 0095; `PUT
+/admin/feed/source`, the **Feed source** control on `/admin/feed`,
+audit-logged) and selects `auto` (default), `prod` (backup never
+publishes) or `backup` (backup forced); when never set, the env default
+`BIFROST_MODE` applies (`auto` / `active` / `off`). **It is in Postgres,
+not Redis, after an incident on day one:** the first cut kept it in Redis
+keys, production Redis is `maxmemory 256mb` + `allkeys-lru`, and this
+service's own `oddin.backup` stream (MAXLEN 50 000 entries of up to 150 KB
+each) filled Redis to its ceiling within an hour of forced Backup;
+`allkeys-lru` then evicted the five `feed:source*` keys and the stream
+itself, bifrost-feed read an empty switch and fell back to Auto, and
+feed-ingester ran the switch-back flush + Oddin replay — the operator's
+forced Backup was silently undone. The stream is now trimmed by time
+(`XADD … MINID`, 60 s) so it cannot grow past tens of MB, and operator
+state never touches Redis. In auto, the primary counts as alive while
+EITHER of feed-ingester's two Redis stamps is fresh: `feed:primary:last_msg_unix` (every AMQP delivery, at
 most once a second) or `feed:primary:connected_unix` (every 2 s with a
 15 s TTL while the AMQP connection is open, deleted on disconnect). The
 gate publishes only once both have been stale past
@@ -134,13 +144,16 @@ accepted as-is: when Oddin's REST is down their broker is down too, and
 the operator answer is the switch.
 
 **Forced backup is a real source switch.** feed-ingester polls the same
-key: on `→ backup` it keeps the AMQP connection (so the transport still
+row: on `→ backup` it keeps the AMQP connection (so the transport still
 stamps liveness and the alive watchdog does not re-suspend what the backup
 re-activates) but acks every delivery without applying it, suspends the
-active catalogue once, and acknowledges with `feed:source:flushed_unix`.
+active catalogue once, and acknowledges with `feed_control.flushed_at`.
 bifrost-feed activates only after that acknowledgement (15 s ceiling for a
 feed-ingester that is itself down), so its full re-emit lands on the clean
-slate and the flush can never wipe it. On `backup →` feed-ingester runs
+slate and the flush can never wipe it; because the flush of a 10k-market
+catalogue takes longer than the ceiling (76 s measured), the runner also
+re-emits whenever a flush acknowledgement lands after it has started
+publishing. On `backup →` feed-ingester runs
 the same flush + 24 h replay an AMQP reconnect does and then resumes
 applying AMQP. Settlement is deliberately outside the switch: it consumes
 both sources always, because apply-once makes that safe and cancel /

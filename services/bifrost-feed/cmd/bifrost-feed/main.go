@@ -109,9 +109,10 @@ func main() {
 			Locale: cfg.Bifrost.Locale,
 			Origin: cfg.Bifrost.Origin,
 		}, logger)
-		g = gate.New(rdb, cfg.Mode, time.Duration(cfg.TakeoverAfterSeconds)*time.Second, logger)
+		db := dbstate.New(pool)
+		g = gate.New(rdb, db, cfg.Mode, time.Duration(cfg.TakeoverAfterSeconds)*time.Second, logger)
 		pub = publisher.NewRedis(rdb, logger)
-		runner = feed.New(cfg, client, pub, dbstate.New(pool), g, logger)
+		runner = feed.New(cfg, client, pub, db, g, logger)
 		go g.Run(ctx)
 		go runner.Run(ctx)
 		go publishStatus(ctx, pub, g, runner, logger)
@@ -148,7 +149,7 @@ func runDryRun(ctx context.Context, cfg config.Config, d time.Duration, logger z
 		Locale: cfg.Bifrost.Locale,
 		Origin: cfg.Bifrost.Origin,
 	}, logger)
-	g := gate.New(nil, config.ModeActive, time.Minute, logger)
+	g := gate.New(nil, dbstate.Permissive{}, config.ModeActive, time.Minute, logger)
 	pub := publisher.NewDryRun(logger)
 	runner := feed.New(cfg, client, pub, dbstate.Permissive{}, g, logger)
 	runCtx, cancel := context.WithTimeout(ctx, d)
