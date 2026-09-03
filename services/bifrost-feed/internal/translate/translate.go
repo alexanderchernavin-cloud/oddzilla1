@@ -187,9 +187,24 @@ type settleOutcomeXML struct {
 // ─── odds_change ───────────────────────────────────────────────────────────
 
 // OddsChange renders the non-settled markets of a snapshot as one Oddin
-// odds_change. Returns (nil, nil) when the match carries no open or
-// suspended market — feed-ingester ignores an odds_change with no markets,
-// and a match whose every market is CLOSED belongs to the settlement path.
+// odds_change.
+//
+// Two shapes come out of this. With at least one open or suspended market
+// it is an ordinary odds_change. With none, it is a lifecycle-only message
+// carrying just <sport_event_status> — but ONLY when the match itself is
+// terminal; a live match whose book is momentarily all-closed produces
+// (nil, nil) as before.
+//
+// The lifecycle-only shape exists because nothing else closes the match.
+// A finished match stops appearing on the live offer, so its subscription
+// goes quiet, and the settlement path only closes a match indirectly (via
+// settlement's MarkMatchClosedIfAllMarketsTerminal, which needs every one
+// of OUR market rows to reach a terminal status). Any market Bifrost no
+// longer lists would strand the match at `live` forever — which is exactly
+// what production showed on 2026-09-03: matches finished 2-0 still wearing
+// a LIVE pill with no prices. feed-ingester answers this shape in
+// handleOddsChange, where a terminal status on a market-less message is
+// applied to an already-known match.
 func OddsChange(m *bifrost.Match, nowMs int64) ([]byte, error) {
 	urn := m.URN()
 	if urn == "" {
@@ -203,14 +218,26 @@ func OddsChange(m *bifrost.Match, nowMs int64) ([]byte, error) {
 		}
 		out = append(out, renderMarket(mk))
 	}
+	ses := sportEventStatus(m)
 	if len(out) == 0 {
-		return nil, nil
+		// Lifecycle-only message, terminal states exclusively. Anything
+		// else with an empty book is a normal mid-round suspension and
+		// must stay silent.
+		if ses == nil || ses.Status != MatchStatusCode(bifrost.MatchClosed) {
+			return nil, nil
+		}
+		return marshal(oddsChangeXML{
+			EventID:          urn,
+			Product:          Product(m.State),
+			Timestamp:        nowMs,
+			SportEventStatus: ses,
+		})
 	}
 	doc := oddsChangeXML{
 		EventID:          urn,
 		Product:          Product(m.State),
 		Timestamp:        nowMs,
-		SportEventStatus: sportEventStatus(m),
+		SportEventStatus: ses,
 		Odds:             &oddsBlockXML{Markets: out},
 	}
 	return marshal(doc)

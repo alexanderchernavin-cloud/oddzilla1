@@ -138,6 +138,61 @@ func Handle(ctx context.Context, d Deps, routingKey string, body []byte) error {
 
 // ─── odds_change ──────────────────────────────────────────────────────────
 
+// applyLifecycleOnly handles an odds_change that carries no markets but
+// does carry a TERMINAL <sport_event_status>. Ordinarily a market-less
+// message says nothing and is dropped above, and on the Oddin AMQP path
+// that stays true: Oddin keeps re-asserting a match's state on every
+// odds_change while it still quotes something, and settlement's
+// MarkMatchClosedIfAllMarketsTerminal catches the tail.
+//
+// The Bifrost backup feed has no such tail. A finished match leaves the
+// live offer, so its subscription goes quiet, and the only view that still
+// carries its markets is the historic one. If any market our catalogue
+// holds open is missing from Bifrost's list, the all-markets-terminal
+// close never fires and the match sits at `live` forever — 2026-09-03
+// showed matches finished 2-0 still wearing a LIVE pill with no prices.
+// bifrost-feed therefore sends the terminal state on its own, with no
+// <odds> block, and this is where it lands.
+//
+// Deliberately narrow. Only `closed` and `cancelled` are acted on, and
+// only for a match we already know: a market-less message must never
+// auto-create a fixture, so this looks the match up instead of going
+// through the resolver. store.UpdateMatchStatus's guard is forward-only,
+// which makes a replay a no-op.
+func applyLifecycleOnly(ctx context.Context, d Deps, msg *oddinxml.OddsChange) {
+	if msg.SportEventStatus == nil || msg.SportEventStatus.Status == nil {
+		return
+	}
+	newStatus := oddinxml.MapMatchStatusCode(*msg.SportEventStatus.Status)
+	if newStatus != "closed" && newStatus != "cancelled" {
+		return
+	}
+	matchID, found, err := store.FindMatchByURN(ctx, d.Store.Pool(), msg.EventID)
+	if err != nil {
+		d.Log.Warn().Err(err).Str("urn", msg.EventID).
+			Msg("odds_change without markets: match lookup failed; dropping")
+		return
+	}
+	if !found {
+		return
+	}
+	changed, err := store.UpdateMatchStatus(ctx, d.Store.Pool(), matchID, newStatus)
+	if err != nil {
+		d.Log.Warn().Err(err).Int64("match_id", matchID).Str("status", newStatus).
+			Msg("odds_change without markets: status update failed; continuing")
+		return
+	}
+	if !changed {
+		return
+	}
+	d.Log.Info().Int64("match_id", matchID).Str("urn", msg.EventID).Str("status", newStatus).
+		Msg("match closed by a lifecycle-only odds_change")
+	if perr := d.Bus.PublishMatchStatus(ctx, matchID, newStatus, msg.Timestamp); perr != nil {
+		d.Log.Debug().Err(perr).Int64("match", matchID).Str("status", newStatus).
+			Msg("publish match status failed")
+	}
+}
+
 func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 	var msg oddinxml.OddsChange
 	if err := xml.Unmarshal(body, &msg); err != nil {
@@ -145,6 +200,7 @@ func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 		return nil
 	}
 	if msg.Odds == nil || len(msg.Odds.Markets) == 0 {
+		applyLifecycleOnly(ctx, d, &msg)
 		return nil
 	}
 

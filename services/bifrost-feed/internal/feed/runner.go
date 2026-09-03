@@ -585,7 +585,7 @@ func (r *Runner) sweepRecentResults(ctx context.Context, window time.Duration) {
 		r.recordError(fmt.Errorf("sweep list: %w", err))
 		return
 	}
-	checked, settled := 0, 0
+	checked, settled, closed := 0, 0, 0
 	for _, ref := range refs {
 		if ctx.Err() != nil {
 			return
@@ -625,9 +625,25 @@ func (r *Runner) sweepRecentResults(ctx context.Context, window time.Duration) {
 		if r.Stats().SettledMarkets > before {
 			settled++
 		}
+		// Voice the close too. Settling every market our catalogue holds
+		// open would normally let settlement's
+		// MarkMatchClosedIfAllMarketsTerminal do this for us, but only if
+		// Bifrost still lists every one of those markets; any it has
+		// dropped would strand the match at `live`. This match is off the
+		// live offer and finished, so the lifecycle signal is safe to send
+		// directly and is idempotent (feed-ingester's status guard is
+		// forward-only).
+		if m.State == bifrost.MatchClosed {
+			if body, terr := translate.OddsChange(m, time.Now().UnixMilli()); terr != nil {
+				r.recordError(fmt.Errorf("sweep translate close %s: %w", urn, terr))
+			} else if body != nil && r.publish(ctx, "odds_change", urn, body) {
+				r.bump(func(s *Stats) { s.OddsChanges++ })
+				closed++
+			}
+		}
 	}
 	if checked > 0 {
-		r.log.Info().Dur("window", window).Int("results_listed", len(refs)).Int("fetched", checked).Int("matches_settled", settled).Msg("results settlement sweep")
+		r.log.Info().Dur("window", window).Int("results_listed", len(refs)).Int("fetched", checked).Int("matches_settled", settled).Int("matches_closed", closed).Msg("results settlement sweep")
 	}
 }
 

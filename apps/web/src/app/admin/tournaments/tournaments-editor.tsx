@@ -347,7 +347,7 @@ function TournamentEditableRow({ row }: { row: TournamentRow }) {
             className="rounded-[8px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-2 py-1 font-mono text-xs outline-none focus:border-[var(--color-accent)]"
           >
             <option value="auto">
-              Auto{row.riskTier != null ? ` (now T${row.riskTier})` : " (unset)"}
+              Auto{row.riskTier != null ? ` (now T${row.riskTier})` : " (unset - priced as T10)"}
             </option>
             {RISK_TIERS.map((t) => (
               <option key={t} value={String(t)}>
@@ -357,7 +357,20 @@ function TournamentEditableRow({ row }: { row: TournamentRow }) {
           </select>
         ) : (
           <span className="inline-flex items-center gap-2 font-mono text-xs">
-            {row.riskTier != null ? `T${row.riskTier}` : "T—"}
+            {row.riskTier != null ? (
+              `T${row.riskTier}`
+            ) : (
+              <span
+                className="rounded-[4px] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em]"
+                style={{
+                  color: "var(--color-warning)",
+                  border: "1px solid var(--color-warning)",
+                }}
+                title="No risk tier from Oddin. RiskZilla underwrites this tournament at tier 10, the strictest, until an operator assigns one here."
+              >
+                unset
+              </span>
+            )}
             <span
               className="text-[10px] uppercase tracking-[0.12em]"
               style={{

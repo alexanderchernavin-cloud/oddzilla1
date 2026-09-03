@@ -42,6 +42,17 @@ import { sql } from "drizzle-orm";
 import type { DbClient } from "@oddzilla/db";
 import { riskzillaEventLog } from "@oddzilla/db";
 
+// A tournament with no Oddin risk tier is priced as the STRICTEST tier
+// rather than the tier-0 global fallback. Oddin's meta API is the only
+// source of `tournaments.risk_tier`, and the Bifrost backup feed carries
+// no tier at all, so a tournament first seen while Oddin is unreachable
+// would otherwise be underwritten at the loose global default until an
+// operator noticed. Failing safe means an untiered tournament accepts
+// the smallest liability we offer until someone assigns a real tier on
+// /admin/tournaments (which also sets risk_tier_locked). Kept in step
+// with the `T?` badge the admin panel renders for the same rows.
+export const UNTIERED_RISK_TIER = 10;
+
 // Currency that RiskZilla manages. OZ is a demo currency with no
 // real-money exposure; OZ placements bypass RiskZilla entirely.
 export const RISKZILLA_CURRENCY = "USDC" as const;
@@ -237,7 +248,7 @@ export class RiskzillaEngine {
     // ── Load configuration ────────────────────────────────────────
     const tiersInPlay = new Set<number>([0]);
     for (const leg of intent.legs) {
-      if (leg.riskTier != null) tiersInPlay.add(leg.riskTier);
+      tiersInPlay.add(leg.riskTier ?? UNTIERED_RISK_TIER);
     }
     // Pass the int set as a Postgres array literal (`{0,10}`) cast to
     // int[]. Drizzle's `${array}` interpolation expands to `$1, $2, …`
@@ -262,8 +273,7 @@ export class RiskzillaEngine {
       throw new Error("riskzilla_settings_global_missing");
     }
     const tierFor = (leg: RiskzillaIntentLeg): SettingsRow => {
-      if (leg.riskTier == null) return fallback;
-      return settingsByTier.get(leg.riskTier) ?? fallback;
+      return settingsByTier.get(leg.riskTier ?? UNTIERED_RISK_TIER) ?? fallback;
     };
 
     const providerMarketIds = Array.from(
