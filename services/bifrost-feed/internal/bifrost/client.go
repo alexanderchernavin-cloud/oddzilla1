@@ -202,7 +202,22 @@ func (c *Client) ListMatches(ctx context.Context, historic bool, dateFrom, dateT
 // FetchMatch loads the full detail for one match. Tries the active view
 // first and falls back to the historic one, which is what Bifrost's own
 // front end does when it does not know the state up front.
+// FetchMatch reads one match detail. It asks the live view first and the
+// historic view second, and prefers whichever answer actually carries
+// markets.
+//
+// The market check is load-bearing, not a nicety. Once a match finishes,
+// Bifrost still answers `historic: false` with a real object — correct id,
+// state CLOSED — but an EMPTY marketGroups list; every settled market is
+// only reachable through `historic: true` (measured 2026-09-03 on three
+// finished CS2 matches: 0 markets live vs 532-607 CLOSED markets historic,
+// all outcomes WON/LOST). Returning on the first non-nil result therefore
+// handed the settlement sweep a market-less snapshot, SettleCandidates
+// found nothing, and the sweep logged `matches_settled: 0` on every pass
+// while its fetch list grew without bound. Those matches stayed `live` in
+// our catalogue with no prices on the storefront.
 func (c *Client) FetchMatch(ctx context.Context, id string) (*Match, error) {
+	var fallback *Match
 	for _, historic := range []bool{false, true} {
 		data, err := c.Query(ctx, "match", QueryMatch, map[string]any{"matchId": id, "historic": historic})
 		if err != nil {
@@ -214,11 +229,19 @@ func (c *Client) FetchMatch(ctx context.Context, id string) (*Match, error) {
 		if err := json.Unmarshal(data, &parsed); err != nil {
 			return nil, fmt.Errorf("match: decode: %w", err)
 		}
-		if parsed.Match != nil {
+		if parsed.Match == nil {
+			continue
+		}
+		if len(parsed.Match.MarketGroups) > 0 || len(parsed.Match.MainMarketGroups) > 0 {
 			return parsed.Match, nil
 		}
+		// Keep the market-less answer only as a last resort: callers that
+		// just want lifecycle state still get something to read.
+		if fallback == nil {
+			fallback = parsed.Match
+		}
 	}
-	return nil, nil
+	return fallback, nil
 }
 
 func truncate(b []byte, n int) string {

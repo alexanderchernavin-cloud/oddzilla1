@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -103,6 +104,26 @@ func (c *Consumer) Run(ctx context.Context) error {
 		if err != nil {
 			if errors.Is(err, redis.Nil) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				continue
+			}
+			// NOGROUP means the group vanished under us. Production
+			// Redis runs allkeys-lru, and evicting the `odds.raw`
+			// key takes its consumer groups with it; the ingester's
+			// next XADD recreates the stream but nothing recreates
+			// the group. Without this branch the loop backs off
+			// forever and NO odds ever publish again -- on
+			// 2026-09-03 that left every price on the storefront
+			// blank for 92 minutes until the service was restarted
+			// by hand. Re-running ensureGroup is idempotent.
+			if isNoGroupErr(err) {
+				c.log.Warn().Err(err).Str("group", c.group).
+					Msg("consumer group is gone (redis eviction?); recreating")
+				if cerr := c.ensureGroup(ctx); cerr != nil {
+					c.log.Error().Err(cerr).Msg("recreating the consumer group failed")
+				} else {
+					c.log.Warn().Str("group", c.group).
+						Msg("consumer group recreated; resuming reads")
+					continue
+				}
 			}
 			c.log.Warn().Err(err).Msg("XReadGroup error; backing off")
 			select {
@@ -223,6 +244,13 @@ func decodeBatch(msgs []redis.XMessage) []Event {
 		out = append(out, ev)
 	}
 	return out
+}
+
+// isNoGroupErr reports whether Redis answered NOGROUP, meaning either the
+// stream key or the consumer group is missing. Matched by prefix: the
+// message embeds the stream and group names, so equality won't do.
+func isNoGroupErr(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), "NOGROUP")
 }
 
 func isBusyGroupErr(err error) bool {

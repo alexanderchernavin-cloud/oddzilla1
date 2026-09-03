@@ -248,6 +248,47 @@ the REST profile is unavailable. The sport abbreviation Oddin's REST
 carries is approximated by the name without spaces (so the bot-sport
 blocklist still matches `eFootballBots`).
 
+### The historic view is the only one with settled markets
+
+Once a match finishes, Bifrost answers `match(id, historic: false)` with a
+real object — right id, `state: CLOSED` — and an **empty `marketGroups`**.
+Every settled market is reachable only through `historic: true`. Measured
+on 2026-09-03 against three finished CS2 matches:
+
+| Match | `historic: false` | `historic: true` |
+| --- | --- | --- |
+| od:match:3136677 | 0 markets | 532 CLOSED, outcomes WON / LOST |
+| od:match:3136678 | 0 markets | 607 CLOSED, outcomes WON / LOST |
+| od:match:3136680 | 0 markets | 552 CLOSED, outcomes WON / LOST |
+
+`Client.FetchMatch` asks for both and returns whichever answer actually
+carries markets, keeping the market-less one only as a last resort for
+callers that just want lifecycle state. Returning the first non-nil result
+instead — which it did until 2026-09-03 — handed the results sweep a
+market-less snapshot every time. `SettleCandidates` found nothing, the
+sweep logged `matches_settled: 0` on every pass while its fetch list grew
+without bound (31 to 73 in 80 minutes), and the affected matches sat at
+`live` in the catalogue with no prices on the storefront.
+
+### Closing a match that has left the offer
+
+Nothing else closes it. A finished match drops off the live offer, so its
+`onUpdateMatchLive` subscription goes quiet, and `onMatchStateChanged`
+only records the transition locally. The settlement path closes a match
+indirectly through settlement's `MarkMatchClosedIfAllMarketsTerminal`,
+which needs *every* market row we hold to reach a terminal status — so a
+single market Bifrost no longer lists strands the match forever.
+
+So `translate.OddsChange` emits a **lifecycle-only** `odds_change` for a
+CLOSED match with no quotable markets: `<sport_event_status status="4"/>`
+and no `<odds>` block. A live match whose book is momentarily all-closed
+still returns nothing, since that is an ordinary between-rounds
+suspension. The results sweep publishes the same message for every closed
+match it fetches. On the consumer side `feed-ingester.applyLifecycleOnly`
+acts on it: terminal codes only, and only for a match already in the
+catalogue, so a market-less message can never auto-create a fixture. The
+status guard is forward-only, which makes replays no-ops.
+
 ## 3. Recovery interplay with the primary
 
 Bifrost has no cursor and no replay; every connect is a full snapshot, so

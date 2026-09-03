@@ -246,8 +246,10 @@ func TestOddsChangePrematchProductAndNoScore(t *testing.T) {
 	}
 }
 
-func TestOddsChangeAllClosedReturnsNil(t *testing.T) {
-	m := sampleMatch(bifrost.MatchClosed)
+// A live match whose whole book is momentarily closed says nothing: that
+// is an ordinary between-rounds suspension, not a lifecycle event.
+func TestOddsChangeAllClosedLiveMatchReturnsNil(t *testing.T) {
+	m := sampleMatch(bifrost.MatchStarted)
 	for gi := range m.MarketGroups {
 		for mi := range m.MarketGroups[gi].Markets {
 			m.MarketGroups[gi].Markets[mi].State = bifrost.MarketClosed
@@ -255,7 +257,40 @@ func TestOddsChangeAllClosedReturnsNil(t *testing.T) {
 	}
 	body, err := OddsChange(m, 1)
 	if err != nil || body != nil {
-		t.Fatalf("expected nil body for an all-closed match, got %v %s", err, body)
+		t.Fatalf("expected nil body for a live all-closed match, got %v %s", err, body)
+	}
+}
+
+// A CLOSED match with nothing left to quote still has to say it closed.
+// Without this message nothing moves matches.status off `live`: the match
+// has left the live offer so its subscription is silent, and the
+// settlement path can only close it if Bifrost still lists every market
+// our catalogue holds open. The message carries the status and no <odds>
+// block, which is the shape feed-ingester's handleOddsChange applies to an
+// already-known match.
+func TestOddsChangeClosedMatchEmitsLifecycleOnly(t *testing.T) {
+	m := sampleMatch(bifrost.MatchClosed)
+	for gi := range m.MarketGroups {
+		for mi := range m.MarketGroups[gi].Markets {
+			m.MarketGroups[gi].Markets[mi].State = bifrost.MarketClosed
+		}
+	}
+	body, err := OddsChange(m, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body == nil {
+		t.Fatal("a closed match must still voice its terminal status")
+	}
+	var got oddsChange
+	if err := xml.Unmarshal(body, &got); err != nil {
+		t.Fatalf("consumer decode: %v -- %s", err, body)
+	}
+	if got.SportEventStatus == nil || got.SportEventStatus.Status == nil || *got.SportEventStatus.Status != 4 {
+		t.Fatalf("expected terminal status 4, got %+v", got.SportEventStatus)
+	}
+	if got.Odds != nil && len(got.Odds.Markets) != 0 {
+		t.Fatalf("lifecycle-only message must carry no markets, got %d", len(got.Odds.Markets))
 	}
 }
 

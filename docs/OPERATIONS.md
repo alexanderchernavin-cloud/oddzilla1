@@ -649,6 +649,40 @@ Before accepting real money:
 5. If our ingester stuck → `docker compose restart feed-ingester`. It will
    read `amqp_state.after_ts` and recover via REST snapshot.
 
+### Every price on the storefront is blank (`odds.raw` consumer group gone)
+
+Symptom: the whole storefront renders em dashes instead of odds, on every
+sport, and `market_outcomes.published_odds` is NULL for every active
+outcome. odds-publisher logs the same line every two seconds:
+
+```
+NOGROUP No such key 'odds.raw' or consumer group 'odds-publisher' in XREADGROUP with GROUP option
+```
+
+Cause: production Redis is `maxmemory 256mb` with `allkeys-lru`. Under
+memory pressure it can evict the `odds.raw` stream key, and evicting a
+stream destroys its consumer groups. feed-ingester's next XADD recreates
+the key but nothing recreates the group. See the `redis-is-a-cache-not-state`
+note — this is the same class of failure as the evicted feed-source keys.
+
+Since 2026-09-03 the consumer heals itself: the read loop recognises
+NOGROUP and re-runs `ensureGroup`. If you are on an older image, restart
+the service, which recreates the group at boot:
+
+```bash
+ssh team@178.104.174.24 'cd /home/team/oddzilla && sudo -n docker compose restart odds-publisher'
+```
+
+Confirm recovery — the group should exist with `lag` falling to 0, and the
+NULL count should drain within a minute or two:
+
+```bash
+ssh team@178.104.174.24 'sudo -n docker exec oddzilla-redis-1 redis-cli XINFO GROUPS odds.raw'
+```
+
+Outcomes that do not tick again stay NULL until their next update, or
+until bifrost-feed's five-minute resync re-emits every cached snapshot.
+
 ### Settlement lag (tickets accepted > 2 h and still not settled after match end)
 
 1. Is `services/settlement` healthy? (`/healthz`, logs, `docker compose ps`).

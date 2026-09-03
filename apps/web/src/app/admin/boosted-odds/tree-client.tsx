@@ -1694,9 +1694,11 @@ function RuleBadge({
 // boost on a tier-1 final carries very different exposure than the same
 // boost on a tier-9 qualifier.
 //
-// NULL renders as an explicit "T—" rather than being omitted: "no tier
-// set" is itself information the operator wants, and a silently absent
-// badge is indistinguishable from a rendering bug.
+// NULL renders as a highlighted "T?" rather than being omitted: "no tier
+// set" is itself information the operator wants, a silently absent badge
+// is indistinguishable from a rendering bug, and the row is actionable —
+// RiskZilla prices an untiered tournament at UNTIERED_RISK_TIER (10, the
+// strictest) until someone assigns a real tier on /admin/tournaments.
 function TierBadge({ tier }: { tier: number | null }) {
   const unset = tier == null;
   return (
@@ -1704,7 +1706,7 @@ function TierBadge({ tier }: { tier: number | null }) {
       className="mono tnum"
       title={
         unset
-          ? "No Oddin risk tier on this tournament"
+          ? "No risk tier from Oddin. RiskZilla underwrites this tournament at tier 10, the strictest, until an operator assigns one here."
           : `Risk tier ${tier}${tier <= 2 ? " (top)" : ""}`
       }
       style={{
@@ -1715,12 +1717,14 @@ function TierBadge({ tier }: { tier: number | null }) {
         lineHeight: 1.5,
         padding: "0 4px",
         borderRadius: 4,
-        border: "1px solid var(--color-border)",
-        color: unset ? "var(--color-fg-muted)" : "var(--color-fg)",
+        border: unset
+          ? "1px solid var(--color-warning)"
+          : "1px solid var(--color-border)",
+        color: unset ? "var(--color-warning)" : "var(--color-fg)",
         background: unset ? "transparent" : "var(--color-bg-subtle)",
       }}
     >
-      T{unset ? "—" : tier}
+      {unset ? "T?" : `T${tier}`}
     </span>
   );
 }
