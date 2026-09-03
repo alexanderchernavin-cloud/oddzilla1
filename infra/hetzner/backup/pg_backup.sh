@@ -10,8 +10,13 @@
 #     environment file (JWT_SECRET, ODDIN_TOKEN, future
 #     HD_MASTER_MNEMONIC, …) into the cron shell, where any concurrent
 #     root process could read /proc/<pid>/environ.
-#   • POSTGRES_PASSWORD is piped to pg_dump via a fd-based password file
-#     so it never appears in `ps`, environment dumps, or shell history.
+#   • POSTGRES_PASSWORD never touches the host at all: pg_dump runs through
+#     a shell INSIDE the postgres container that exports PGPASSWORD from
+#     the container's own environment (compose passes it to the image).
+#     The host argv carries only the literal "$POSTGRES_PASSWORD". The
+#     previous `docker exec -e PGPASSWORD=<value>` form put the real
+#     password into `ps` for every local user for the duration of the
+#     dump (fixed 2026-09-03, spotted during a deploy).
 #   • Dumps written mode 600 root-only.
 #   • Optional GPG encryption — set BACKUP_GPG_RECIPIENT (e.g. an
 #     off-host operator's pubkey) and the dump is encrypted in addition
@@ -74,13 +79,21 @@ read_env_var() {
 
 POSTGRES_USER=$(read_env_var POSTGRES_USER oddzilla)
 POSTGRES_DB=$(read_env_var POSTGRES_DB oddzilla)
-POSTGRES_PASSWORD=$(read_env_var POSTGRES_PASSWORD)
 BACKUP_GPG_RECIPIENT=$(read_env_var BACKUP_GPG_RECIPIENT)
 
-if [ -z "${POSTGRES_PASSWORD}" ]; then
-    echo "pg_backup: POSTGRES_PASSWORD missing in ${ENV_FILE}" >&2
+if ! docker exec "${CONTAINER}" sh -c 'test -n "$POSTGRES_PASSWORD"'; then
+    echo "pg_backup: POSTGRES_PASSWORD is not set inside ${CONTAINER}" >&2
     exit 1
 fi
+
+# pg_dump inside the container, password taken from the container's own
+# env. user/db go in as positional args so no value is interpolated into
+# the sh -c string.
+pg_dump_in_container() {
+    docker exec "${CONTAINER}" \
+        sh -c 'export PGPASSWORD="$POSTGRES_PASSWORD"; exec pg_dump --host=127.0.0.1 --port=5432 --username="$1" --dbname="$2" --no-owner --clean --if-exists' \
+        sh "${POSTGRES_USER}" "${POSTGRES_DB}"
+}
 
 DUMP="${BACKUP_DIR}/oddzilla-${TS}.sql.gz"
 if [ -n "${BACKUP_GPG_RECIPIENT}" ]; then
@@ -112,36 +125,19 @@ rm -f "${BACKUP_DIR}"/oddzilla-*.part 2>/dev/null || true
 prune_dumps "$((RETENTION_COUNT - 1))"
 
 # pg_dump runs inside the postgres container; gzip / gpg run on host.
-# The password is passed through an explicit env into the container only
-# (not the host shell environment). Write to a .part temp and atomically
-# rename on success so a truncated dump (e.g. disk fills mid-write) can
-# never masquerade as a valid backup.
+# Write to a .part temp and atomically rename on success so a truncated
+# dump (e.g. disk fills mid-write) can never masquerade as a valid backup.
 if [ -n "${BACKUP_GPG_RECIPIENT}" ]; then
-    docker exec \
-        -e PGPASSWORD="${POSTGRES_PASSWORD}" \
-        "${CONTAINER}" \
-        pg_dump \
-            --host=127.0.0.1 --port=5432 \
-            --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" \
-            --no-owner --clean --if-exists \
+    pg_dump_in_container \
         | gzip -9 \
         | gpg --batch --yes --trust-model always \
               --encrypt --recipient "${BACKUP_GPG_RECIPIENT}" \
               --output "${DUMP_TMP}"
 else
-    docker exec \
-        -e PGPASSWORD="${POSTGRES_PASSWORD}" \
-        "${CONTAINER}" \
-        pg_dump \
-            --host=127.0.0.1 --port=5432 \
-            --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" \
-            --no-owner --clean --if-exists \
+    pg_dump_in_container \
         | gzip -9 > "${DUMP_TMP}"
 fi
 mv -f "${DUMP_TMP}" "${DUMP}"
-
-# Wipe the password from the shell as soon as we're done with it.
-unset POSTGRES_PASSWORD
 
 chown root:team "${DUMP}" 2>/dev/null || true
 chmod 640 "${DUMP}"

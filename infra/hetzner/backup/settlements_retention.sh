@@ -102,16 +102,21 @@ read_env_var() {
 
 PGUSER=$(read_env_var POSTGRES_USER oddzilla)
 PGDB=$(read_env_var POSTGRES_DB oddzilla)
-PGPASSWORD=$(read_env_var POSTGRES_PASSWORD)
-if [ -z "${PGPASSWORD}" ]; then
-    echo "settlements-retention: POSTGRES_PASSWORD missing in ${ENV_FILE}" >&2
+if ! docker exec "${CONTAINER}" sh -c 'test -n "$POSTGRES_PASSWORD"' 2>/dev/null; then
+    echo "settlements-retention: POSTGRES_PASSWORD is not set inside ${CONTAINER}" >&2
     exit 1
 fi
 
-# Password goes into the container's env only, never the host shell's argv.
+# The password never touches the host: psql runs through a shell INSIDE the
+# container that exports PGPASSWORD from the container's own environment.
+# The host argv carries only the literal "$POSTGRES_PASSWORD" (the previous
+# `docker exec -e PGPASSWORD=<value>` leaked it into `ps`; fixed 2026-09-03).
+# user / db / SQL are positional args so nothing is interpolated into the
+# sh -c string.
 psql_q() {
-    docker exec -e PGPASSWORD="${PGPASSWORD}" "${CONTAINER}" \
-        psql -U "${PGUSER}" -d "${PGDB}" -X -A -t -q -c "$1"
+    docker exec "${CONTAINER}" \
+        sh -c 'export PGPASSWORD="$POSTGRES_PASSWORD"; exec psql -U "$1" -d "$2" -X -A -t -q -c "$3"' \
+        sh "${PGUSER}" "${PGDB}" "$1"
 }
 
 # Guards, per the header analysis:
@@ -156,7 +161,6 @@ while :; do
     sleep 2
 done
 
-unset PGPASSWORD
 
 printf '{"service":"settlements-retention","event":"complete","deleted":%d,"retention_days":%d}\n' \
     "${deleted_total}" "${RETENTION_DAYS}"

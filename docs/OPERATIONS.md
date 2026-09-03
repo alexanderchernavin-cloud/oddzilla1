@@ -438,8 +438,18 @@ with a fresh backup in hand — it is **not** wired into the nightly cron.
 Hardening applied in PR #130: the script no longer sources the entire
 `.env` into the cron shell environment (every secret was being exported
 into the cron PID's `/proc/<pid>/environ`); it now reads only
-`POSTGRES_USER`, `POSTGRES_DB`, `POSTGRES_PASSWORD`, and
-`BACKUP_GPG_RECIPIENT`.
+`POSTGRES_USER`, `POSTGRES_DB`, and `BACKUP_GPG_RECIPIENT`. Since
+2026-09-03 the password is not read on the host at all: `pg_dump` runs
+through `docker exec <container> sh -c 'export PGPASSWORD="$POSTGRES_PASSWORD"; exec pg_dump …' sh <user> <db>`,
+taking it from the postgres container's own environment. The earlier
+`docker exec -e PGPASSWORD=<value>` form exposed the real password in
+`ps` to every local user for the duration of each run (and, for the
+`sudo`-wrapped pre-deploy dump, in the sudo journal line); it was spotted
+in a process listing during a deploy. The same pattern is used by the
+pre-deploy `infra/deploy/dump-db.sh`, `audit_chain_check.sh`,
+`odds_retention.sh` and `settlements_retention.sh`. After changing any
+of the cron scripts, re-copy them to `/usr/local/bin/oddzilla-*` — cron
+runs the installed copies, not the repo checkout.
 
 ### settlements retention
 
