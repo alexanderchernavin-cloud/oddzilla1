@@ -29,6 +29,7 @@ import (
 	"github.com/rs/zerolog"
 
 	amqpkit "github.com/oddzilla/settlement/internal/amqp"
+	"github.com/oddzilla/settlement/internal/backupstream"
 	"github.com/oddzilla/settlement/internal/config"
 	"github.com/oddzilla/settlement/internal/oddinrest"
 	"github.com/oddzilla/settlement/internal/settler"
@@ -80,6 +81,21 @@ func main() {
 		logger.Warn().Msg("Oddin creds absent; settlement idling — health only")
 	} else {
 		go runAMQP(ctx, cfg, stt, logger)
+	}
+
+	// Backup feed (services/bifrost-feed) delivers synthesised
+	// bet_settlement documents over the `oddin.backup` Redis stream while
+	// Oddin's AMQP is down. Same Handle, same apply-once semantics — the
+	// stream is just a second transport. Attached regardless of AMQP creds
+	// so the backup works even on a box where Oddin never configured them.
+	if cfg.BackupStreamEnabled {
+		consumer, _ := os.Hostname()
+		if consumer == "" {
+			consumer = "settlement"
+		}
+		go backupstream.Run(ctx, rdb, "settlement", consumer, stt.Handle, logger)
+	} else {
+		logger.Info().Msg("backup stream consumer disabled (BACKUP_STREAM_ENABLED=false)")
 	}
 
 	// Stranded-ticket reconciler. Runs off DB state only (no Oddin), so it

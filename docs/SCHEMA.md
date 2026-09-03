@@ -340,6 +340,12 @@ real categories (countries like "England", or "International").
 esport. `provider_urn` may be NULL (dummy) or hold a real Oddin URN later.
 
 **`tournaments`** — child of category. `provider_urn` unique globally.
+`risk_tier_locked` (migration 0094) is TRUE when an operator assigned
+`risk_tier` by hand on `/admin/tournaments`; feed-ingester's REST refresh
+(`UpdateTournamentRiskTier`) skips locked rows. Exists because the Bifrost
+backup feed carries no risk tier, so a tournament first seen while Oddin's
+meta API is down would otherwise sit at NULL and RiskZilla would price it
+off the tier-0 fallback.
 
 **`matches`** — `BIGSERIAL` id because we'll have a lot of them. `provider_urn`
 like `od:match:1234`. `live_score` is a free-form JSONB (different games have

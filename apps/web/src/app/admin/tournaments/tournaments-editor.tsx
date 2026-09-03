@@ -30,10 +30,15 @@ export interface TournamentRow {
   slug: string;
   name: string;
   riskTier: number | null;
+  riskTierLocked: boolean;
   active: boolean;
   logoUrl: string | null;
   brandColor: string | null;
 }
+
+// RiskZilla's per-tier settings run 1..10; "auto" hands the tier back to
+// Oddin's REST metadata (migration 0094 lock semantics).
+const RISK_TIERS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
 
 export interface SportOption {
   id: number;
@@ -193,6 +198,7 @@ function TournamentTable({ list }: { list: ListShape }) {
             <th className="px-4 py-3 text-left">Logo</th>
             <th className="px-4 py-3 text-left">Tournament</th>
             <th className="px-4 py-3 text-left">Sport</th>
+            <th className="px-4 py-3 text-left">Risk tier</th>
             <th className="px-4 py-3 text-left">Logo URL</th>
             <th className="px-4 py-3 text-left">Color</th>
             <th className="px-4 py-3" />
@@ -214,6 +220,10 @@ function TournamentEditableRow({ row }: { row: TournamentRow }) {
   const [editing, setEditing] = useState(false);
   const [logoUrl, setLogoUrl] = useState(row.logoUrl ?? "");
   const [brandColor, setBrandColor] = useState(row.brandColor ?? "");
+  // "auto" = unlocked (Oddin REST owns the value); "1".."10" = manual.
+  const [riskTier, setRiskTier] = useState(
+    row.riskTierLocked && row.riskTier != null ? String(row.riskTier) : "auto",
+  );
   const [error, setError] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -223,6 +233,7 @@ function TournamentEditableRow({ row }: { row: TournamentRow }) {
   function startEdit() {
     setLogoUrl(row.logoUrl ?? "");
     setBrandColor(row.brandColor ?? "");
+    setRiskTier(row.riskTierLocked && row.riskTier != null ? String(row.riskTier) : "auto");
     setError(null);
     setEditing(true);
   }
@@ -244,6 +255,7 @@ function TournamentEditableRow({ row }: { row: TournamentRow }) {
           body: JSON.stringify({
             logoUrl: logoUrl.trim(),
             brandColor: brandColor.trim(),
+            riskTier: riskTier === "auto" ? null : Number(riskTier),
           }),
         });
         setEditing(false);
@@ -323,12 +335,45 @@ function TournamentEditableRow({ row }: { row: TournamentRow }) {
       </td>
       <td className="px-4 py-3">
         <div className="font-medium">{row.name}</div>
-        <div className="font-mono text-[10px] text-[var(--color-fg-subtle)]">
-          {row.slug}
-          {row.riskTier !== null ? ` · tier ${row.riskTier}` : ""}
-        </div>
+        <div className="font-mono text-[10px] text-[var(--color-fg-subtle)]">{row.slug}</div>
       </td>
       <td className="px-4 py-3 text-[var(--color-fg-muted)]">{row.sportSlug}</td>
+      <td className="px-4 py-3 align-top">
+        {editing ? (
+          <select
+            value={riskTier}
+            onChange={(e) => setRiskTier(e.target.value)}
+            disabled={pending}
+            className="rounded-[8px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-2 py-1 font-mono text-xs outline-none focus:border-[var(--color-accent)]"
+          >
+            <option value="auto">
+              Auto{row.riskTier != null ? ` (now T${row.riskTier})` : " (unset)"}
+            </option>
+            {RISK_TIERS.map((t) => (
+              <option key={t} value={String(t)}>
+                T{t} manual
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="inline-flex items-center gap-2 font-mono text-xs">
+            {row.riskTier != null ? `T${row.riskTier}` : "T—"}
+            <span
+              className="text-[10px] uppercase tracking-[0.12em]"
+              style={{
+                color: row.riskTierLocked ? "var(--color-accent)" : "var(--color-fg-subtle)",
+              }}
+              title={
+                row.riskTierLocked
+                  ? "Assigned by an operator; the Oddin REST refresh will not overwrite it"
+                  : "Filled from Oddin's tournament metadata when reachable"
+              }
+            >
+              {row.riskTierLocked ? "manual" : "auto"}
+            </span>
+          </span>
+        )}
+      </td>
       <td className="px-4 py-3 align-top">
         {editing ? (
           <input

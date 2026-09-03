@@ -903,6 +903,94 @@ address derivation) — that's the only process that has it. Notes:
    affected).
 5. Permanent fix: upgrade Hetzner plan.
 
+## Backup feed (Bifrost) failover
+
+`services/bifrost-feed` is the standby source for odds, scores, fixtures
+and settlements when Oddin's AMQP feed goes silent. Full design in
+[`docs/BIFROST_BACKUP_FEED.md`](./BIFROST_BACKUP_FEED.md); this is the
+operator view.
+
+**State model.** The **Feed source** switch on `/admin/feed` (Redis
+`feed:source`, `PUT /admin/feed/source`, audit-logged) has three positions:
+
+| Position | Prod Oddin (AMQP) | Backup Oddin (Bifrost) |
+| --- | --- | --- |
+| **Auto** (default) | applied | standby; publishes after `BIFROST_TAKEOVER_AFTER_SECONDS` (45 s) of AMQP silence, stands down the moment AMQP resumes |
+| **Prod Oddin only** | applied | never publishes |
+| **Backup Oddin** | connection kept, deliveries acked but NOT applied by feed-ingester | forced: publishes regardless of AMQP |
+
+Settlement is outside the switch: it always consumes both sources, because
+its apply-once dedup makes that safe and cancel / rollback messages exist
+only on AMQP. When the switch was never set, the env default
+`BIFROST_MODE` (auto / active / off) applies. An empty `BIFROST_API_KEY`
+idles the backup regardless (graceful-idle).
+
+**Switching to Backup** (the operator confirms in the UI): feed-ingester
+suspends every active market once and acknowledges with
+`feed:source:flushed_unix`; bifrost-feed waits for that acknowledgement
+(15 s ceiling) and then re-emits every cached match snapshot, so the
+catalogue comes back from Bifrost within seconds and the flush can never
+land on top of it. **Switching back** to Auto or Prod runs the same
+flush + 24 h Oddin replay an AMQP reconnect does. Both transitions are
+visible on the card (`feed-ingester applied: …`, `Waiting for … flush`).
+
+**Enable.**
+
+```bash
+ssh team@178.104.174.24 "cd /home/team/oddzilla && sed -i 's/^BIFROST_API_KEY=.*/BIFROST_API_KEY=<key>/' .env && make deploy"
+```
+
+Then open `/admin/feed`: the **Backup feed (Bifrost)** card must show the
+primary alive, the backup in standby, the socket connected as "MaxBet RS"
+(client 101) and tracked matches roughly equal to the active offer.
+`curl -s http://127.0.0.1:8086/healthz | jq .gate,.feed` gives the same
+from the box.
+
+**Drill / planned failover.** Click **Backup Oddin** on `/admin/feed`
+and confirm. The card shows `arming` while feed-ingester flushes, then
+ACTIVE (forced by switch); `oddsChangesPublished` climbs and
+`feed_messages` rows for the window carry routing key `bifrost.backup`.
+Click **Auto** when done; feed-ingester replays from Oddin. No container
+restart is involved. (The env route still exists for a box with no api:
+`BIFROST_MODE=active` + `make recreate bifrost-feed`, but it does not stop
+feed-ingester from applying AMQP.)
+
+**Stop consuming without touching the producer.** `BACKUP_STREAM_ENABLED=false`
++ `make recreate feed-ingester settlement`.
+
+**What a real takeover looks like in the logs.** feed-ingester:
+`feed silent past threshold — no alive/odds; suspending active catalog`
+(20 s). bifrost-feed: `primary feed silent past threshold; backup ACTIVE`
+(45 s) then `re-emitting every cached match snapshot`. On AMQP return:
+feed-ingester `amqp connected` + `flush-before-recover complete`, then
+bifrost-feed `primary feed resumed; backup standing down` within 2 s.
+
+**Key revoked.** bifrost-feed logs `Bifrost rejected the api key` and
+retries every 60 s; the card shows the socket disconnected. Nothing is
+published; the watchdog-suspended catalogue stays suspended, which is the
+safe state. Ask Oddin for a fresh key.
+
+**Risk tier while the meta API is down.** Bifrost carries none. Assign it
+by hand on `/admin/tournaments` (Risk tier column → Edit → `T<n> manual`);
+the lock keeps the REST refresh from overwriting it. `Auto` hands the
+value back to Oddin's metadata.
+
+**After a long outage of the whole stack.** Nothing to do by hand. On
+reconnect feed-ingester's flush + 24 h Oddin replay rebuilds odds and
+re-delivers settlements to both consumers (settlement's durable queue also
+kept whatever Oddin published while it was down). If the backup is the
+active source, its results sweep re-derives every settlement our DB still
+lacks: 3 h back on every 5-minute resync, 24 h back on activation and
+every 30 minutes; Bifrost keeps settled markets visible for at least two
+weeks. The one thing only the AMQP replay restores is cancels and
+rollbacks, and that replay reaches back 24 h.
+
+**Not covered yet.** Cancel and rollback messages are not synthesised
+(Bifrost exposes no representation for them; deferred, see the design
+doc). A market Oddin cancels during a backup window stays open on our side
+until the primary replays it; the stranded-ticket reconciler and admin
+manual void are the fallbacks.
+
 ## FCM push notifications
 
 Server-side is live as of migration `0058_push_notifications_outbox`.

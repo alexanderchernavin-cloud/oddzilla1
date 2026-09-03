@@ -507,6 +507,23 @@ services:
       <<: *hc
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${SETTLEMENT_HEALTH_PORT:-8083}/healthz"]
 
+  # Backup odds + settlement feed from Oddin's Bifrost GraphQL API. Standby
+  # by default: publishes onto the `oddin.backup` Redis stream only while
+  # feed-ingester's AMQP liveness stamp is stale (BIFROST_MODE=auto). Idles
+  # when BIFROST_API_KEY is empty. See docs/BIFROST_BACKUP_FEED.md.
+  bifrost-feed:
+    <<: *go-service
+    build:
+      context: ./services/bifrost-feed
+      dockerfile: Dockerfile
+    mem_limit: 160m
+    environment:
+      SERVICE_NAME: bifrost-feed
+      HEALTH_PORT: ${BIFROST_FEED_HEALTH_PORT:-8086}
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${BIFROST_FEED_HEALTH_PORT:-8086}/healthz"]
+
   bet-delay:
     <<: *go-service
     build:

@@ -1,0 +1,993 @@
+# ---- fragment FavouriteMatch
+fragment FavouriteMatch on Match {
+  id
+  favourite
+}
+
+# ---- fragment FavouriteTournament
+fragment FavouriteTournament on Tournament {
+  id
+  favourite
+}
+
+# ---- fragment LiveMatchDetail
+fragment LiveMatchDetail on Match {
+  id
+  categories
+  favourite
+  favouriteMarketIds
+  ...MatchBase
+  ...MatchStream
+  ...MatchMarketGroups
+  ...MatchMainMarketGroups
+  ...MatchSimpleScore
+  ...MatchGameClientInfo
+}
+
+# ---- fragment MatchBase
+fragment MatchBase on Match {
+  id
+  datePlannedStart
+  state
+  prematchOnly
+  name
+  hasObb
+  ...MatchTeams
+  ...MatchTournament
+}
+
+# ---- fragment MatchGameClientInfo
+fragment MatchGameClientInfo on Match {
+  gameClientInfo {
+    streamID
+    mapAssetName
+    streamServerHost
+    token
+  }
+}
+
+# ---- fragment MatchMainMarketGroups
+fragment MatchMainMarketGroups on Match {
+  mainMarketGroups {
+    id
+    name
+    namePrefix
+    layoutType
+    independenceId
+    selections {
+      id
+      name
+    }
+    markets {
+      id
+      info
+      state
+      outcomes {
+        id
+        odds
+        status
+      }
+    }
+  }
+}
+
+# ---- fragment MatchMarketGroups
+fragment MatchMarketGroups on Match {
+  marketGroups {
+    id
+    name
+    independenceId
+    favouriteId
+    selections {
+      id
+      name
+    }
+    namePrefix
+    layoutType
+    category
+    order
+    markets {
+      id
+      info
+      state
+      outcomes {
+        id
+        odds
+        status
+      }
+    }
+  }
+}
+
+# ---- fragment MatchSimpleScore
+fragment MatchSimpleScore on Match {
+  simpleScore {
+    home
+    away
+    periods {
+      home
+      away
+      number
+    }
+    periodType
+    activePeriodIdx
+    totalPeriods
+  }
+}
+
+# ---- fragment MatchStream
+fragment MatchStream on Match {
+  allStreams {
+    url
+    locale
+    name
+  }
+}
+
+# ---- fragment MatchTeams
+fragment MatchTeams on Match {
+  teams {
+    team {
+      id
+      name
+      icon
+    }
+    winner
+  }
+}
+
+# ---- fragment MatchTournament
+fragment MatchTournament on Match {
+  tournament {
+    id
+    name
+    favourite
+    sport {
+      id
+      icon
+      name
+    }
+  }
+}
+
+# ---- fragment NonBettingTimelineMatch
+fragment NonBettingTimelineMatch on Match {
+  id
+  stream {
+    url
+    streamProvider
+  }
+  ...MatchBase
+  ...MatchSimpleScore
+}
+
+# ---- fragment OutrightsBase
+fragment OutrightsBase on Outrights {
+  date
+  teams {
+    id
+    name
+    icon
+  }
+  tournament {
+    id
+    name
+    favourite
+    sport {
+      id
+      icon
+      name
+    }
+  }
+}
+
+# ---- fragment OutrightsDetail
+fragment OutrightsDetail on Outrights {
+  id
+  categories
+  favourite
+  ...OutrightsBase
+  ...OutrightsMarketGroups
+}
+
+# ---- fragment OutrightsMainMarketGroups
+fragment OutrightsMainMarketGroups on Outrights {
+  mainMarketGroups {
+    id
+    name
+    selections {
+      id
+      name
+    }
+    markets {
+      id
+      info
+      outcomes {
+        id
+        status
+        odds
+      }
+    }
+    independenceId
+  }
+}
+
+# ---- fragment OutrightsMarketGroups
+fragment OutrightsMarketGroups on Outrights {
+  marketGroups {
+    id
+    name
+    independenceId
+    selections {
+      id
+      name
+    }
+    category
+    markets {
+      id
+      info
+      state
+      outcomes {
+        id
+        odds
+        status
+      }
+    }
+  }
+}
+
+# ---- fragment PendingTicket
+fragment PendingTicket on Ticket {
+  id
+  ...TicketBets
+  rejectionReason
+  rejectionReasonMessage
+  stake {
+    amount
+    tax
+    totalAmount
+  }
+  wonAmount {
+    amount
+    tax
+    totalAmount
+  }
+  reOffer {
+    stake
+  }
+  date
+  status
+  currency
+}
+
+# ---- fragment StreamOverlayMatch
+fragment StreamOverlayMatch on Match {
+  id
+  name
+  teams {
+    team {
+      name
+    }
+  }
+  tournament {
+    id
+    sport {
+      id
+    }
+  }
+  marketGroups {
+    id
+    name
+    namePrefix
+    layoutType
+    independenceId
+    selections {
+      id
+      name
+    }
+    markets {
+      id
+      info
+      outcomes {
+        id
+        odds
+        status
+      }
+    }
+  }
+}
+
+# ---- fragment TicketBets
+fragment TicketBets on Ticket {
+  bets {
+    id
+    stake {
+      amount
+      tax
+      totalAmount
+    }
+    selections {
+      outcomeId
+      namePrefix
+      marketGroupName
+      outcomeName
+      marketInfo
+      odds
+      title
+      matchId
+      tournamentId
+      sportId
+      status
+      outcomeDescription
+      obbSelections {
+        outcomeId
+        namePrefix
+        marketGroupName
+        outcomeName
+        marketInfo
+        outcomeDescription
+        status
+      }
+    }
+    wonAmount {
+      amount
+      tax
+      totalAmount
+    }
+    totalOdds
+    systems
+  }
+}
+
+# ---- fragment TimelineMatch
+fragment TimelineMatch on Match {
+  id
+  marketsCount
+  stream {
+    url
+    streamProvider
+  }
+  gameClientInfo {
+    streamID
+  }
+  favourite
+  ...MatchBase
+  ...MatchMainMarketGroups
+  ...MatchSimpleScore
+}
+
+# ---- fragment TimelineOutrights
+fragment TimelineOutrights on Outrights {
+  id
+  marketsCount
+  ...OutrightsBase
+  ...OutrightsMainMarketGroups
+}
+
+# ---- fragment UserTicket
+fragment UserTicket on Ticket {
+  id
+  ...TicketBets
+  stake {
+    amount
+    tax
+    totalAmount
+  }
+  wonAmount {
+    amount
+    tax
+    totalAmount
+  }
+  date
+  status
+  currency
+  rejectionReason
+  possibleWinAmount {
+    amount
+    tax
+    totalAmount
+  }
+}
+
+# ---- mutation acceptTicket
+mutation acceptTicket($input: TicketInput!) {
+  acceptTicket(input: $input) {
+    id
+    rejectionReason
+  }
+}
+
+# ---- mutation addFavourite
+mutation addFavourite($input: AddFavouriteInput!) {
+  addFavourite(input: $input)
+}
+
+# ---- mutation addMatchFavouriteMarket
+mutation addMatchFavouriteMarket($input: AddMatchFavouriteMarketInput!) {
+  addMatchFavouriteMarket(input: $input) {
+    id
+    favouriteMarketIds
+  }
+}
+
+# ---- mutation clearFavourites
+mutation clearFavourites {
+  clearFavourites
+}
+
+# ---- mutation hideSurvey
+mutation hideSurvey($input: HideSurveyInput!) {
+  hideSurvey(input: $input)
+}
+
+# ---- mutation removeFavourite
+mutation removeFavourite($input: RemoveFavouriteInput!) {
+  removeFavourite(input: $input)
+}
+
+# ---- mutation removeMatchFavouriteMarket
+mutation removeMatchFavouriteMarket($input: RemoveMatchFavouriteMarketInput!) {
+  removeMatchFavouriteMarket(input: $input) {
+    id
+    favouriteMarketIds
+  }
+}
+
+# ---- mutation submitSurvey
+mutation submitSurvey($input: SurveyInput!) {
+  submitSurvey(input: $input)
+}
+
+# ---- query GetGeneralBettingRules
+query GetGeneralBettingRules {
+  generalBettingRules
+}
+
+# ---- query IsAlive
+query IsAlive {
+  __typename
+}
+
+# ---- query Tournament
+query Tournament($id: ID!) {
+    tournament(id: $id) {
+      id
+      favourite
+    }
+  }
+
+# ---- query allMatch
+query allMatch($after: String, $before: String, $first: Int, $last: Int, $sportType: SportType, $liveOnly: Boolean, $sports: [ID!], $tournaments: [ID!], $historic: Boolean, $favourites: Boolean, $search: String, $dateFrom: String, $dateTo: String, $sort: SortType) {
+  allMatch(
+    after: $after
+    before: $before
+    first: $first
+    last: $last
+    sportType: $sportType
+    liveOnly: $liveOnly
+    sports: $sports
+    tournaments: $tournaments
+    historic: $historic
+    favourites: $favourites
+    text: $search
+    dateFrom: $dateFrom
+    dateTo: $dateTo
+    sort: $sort
+  ) {
+    edges {
+      node {
+        ...TimelineMatch
+      }
+    }
+    pageInfo {
+      hasNextPage
+      hasPreviousPage
+      startCursor
+      endCursor
+    }
+    total
+  }
+}
+
+# ---- query allMatchSearch
+query allMatchSearch($first: Int, $search: String, $historic: Boolean) {
+  allMatch(first: $first, text: $search, historic: $historic) {
+    edges {
+      node {
+        id
+        ...MatchBase
+      }
+    }
+    pageInfo {
+      hasNextPage
+      hasPreviousPage
+      startCursor
+      endCursor
+    }
+    total
+  }
+}
+
+# ---- query allOutrights
+query allOutrights($after: String, $first: Int, $sports: [ID!], $tournaments: [ID!], $historic: Boolean, $favourites: Boolean, $search: String) {
+  allOutrights(
+    after: $after
+    first: $first
+    sports: $sports
+    tournaments: $tournaments
+    historic: $historic
+    favourites: $favourites
+    text: $search
+  ) {
+    edges {
+      node {
+        ...TimelineOutrights
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    total
+  }
+}
+
+# ---- query allUserTicket
+query allUserTicket($after: String, $first: Int, $dateFrom: String, $dateTo: String, $statuses: [TicketStatus!], $search: String) {
+  allUserTickets(
+    after: $after
+    first: $first
+    dateFrom: $dateFrom
+    dateTo: $dateTo
+    statuses: $statuses
+    text: $search
+  ) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    edges {
+      node {
+        ...UserTicket
+      }
+      cursor
+    }
+  }
+}
+
+# ---- query clientSettings
+query clientSettings {
+  clientSettings {
+    taxSettings {
+      currency
+      country
+      conditions {
+        tax
+        threshold
+        type
+        roundingPlaces
+      }
+    }
+    roundingSettings {
+      currency
+      incomingStakeRoundingPlaces
+      outgoingAmountRoundingPlaces
+    }
+    showBettingRules
+  }
+}
+
+# ---- query favouriteCount
+query favouriteCount {
+  favouriteCount
+}
+
+# ---- query match
+query match($matchId: ID!, $historic: Boolean!, $obbOutcomes: [ID!]) {
+  match(id: $matchId, historic: $historic, obbOutcomes: $obbOutcomes) {
+    ...LiveMatchDetail
+  }
+}
+
+# ---- query matchCustomStream
+query matchCustomStream($matchId: ID!) {
+  customStream(matchId: $matchId) {
+    ... on EmbeddedStream {
+      url
+    }
+    ... on HLSStream {
+      url
+    }
+  }
+}
+
+# ---- query nav
+query nav {
+  sportInfo {
+    id
+    name
+    shortcut
+    icon
+    liveMatchesCount
+    activeMatchesCount
+    closedMatchesCount
+    outrightsCount
+    closedOutrightsCount
+    order
+    tournaments {
+      id
+      name
+      shortcut
+      liveMatchesCount
+      activeMatchesCount
+      closedMatchesCount
+      outrightsCount
+      closedOutrightsCount
+      favourite
+    }
+    sportType
+  }
+}
+
+# ---- query nonBettingAllMatch
+query nonBettingAllMatch($after: String, $before: String, $first: Int, $last: Int, $sportType: SportType, $liveOnly: Boolean, $sports: [ID!], $tournaments: [ID!], $historic: Boolean, $search: String) {
+  allMatch(
+    after: $after
+    before: $before
+    first: $first
+    last: $last
+    sportType: $sportType
+    liveOnly: $liveOnly
+    sports: $sports
+    tournaments: $tournaments
+    historic: $historic
+    text: $search
+  ) {
+    edges {
+      node {
+        ...NonBettingTimelineMatch
+      }
+    }
+    pageInfo {
+      hasNextPage
+      hasPreviousPage
+      startCursor
+      endCursor
+    }
+    total
+  }
+}
+
+# ---- query nonBettingMatch
+query nonBettingMatch($matchId: ID!) {
+  match(id: $matchId) {
+    ...MatchBase
+    ...MatchStream
+    ...MatchSimpleScore
+  }
+}
+
+# ---- query outrights
+query outrights($id: ID!) {
+  outrights(id: $id) {
+    ...OutrightsDetail
+  }
+}
+
+# ---- query showSurvey
+query showSurvey($input: String!) {
+  showSurvey(key: $input)
+}
+
+# ---- query streamOverlayMatch
+query streamOverlayMatch($matchId: ID!) {
+  match(id: $matchId, historic: false) {
+    ...StreamOverlayMatch
+  }
+}
+
+# ---- query ticket
+query ticket($ticketId: ID!) {
+  ticket(ticketId: $ticketId) {
+    ...PendingTicket
+  }
+}
+
+# ---- query ticketRestrictions
+query ticketRestrictions($ticket: TicketInput!) {
+  restrictions(ticket: $ticket) {
+    bets {
+      restrictions {
+        ... on MinStakeRestriction {
+          stake
+          violated
+        }
+        ... on MaxStakeRestriction {
+          stake
+          violated
+        }
+        ... on MinOddsRestriction {
+          odds
+          violated
+        }
+        ... on OutcomeStateRestriction {
+          id
+          state
+          violated
+        }
+        ... on OutcomeOddsRestriction {
+          id
+          odds
+          violated
+        }
+        ... on InvalidCombinationRestriction {
+          outcomeIds
+          independenceId
+        }
+        ... on EventNotFoundRestriction {
+          outcomeId
+        }
+        ... on DuplicateTeamRestriction {
+          outcomeId
+        }
+        ... on CorrelatedMarketRestriction {
+          outcomeId
+        }
+        ... on ObbMinOutcomesRestriction {
+          matchId
+          violated
+        }
+        ... on ObbInvalidSessionRestriction {
+          eventId
+        }
+      }
+    }
+  }
+}
+
+# ---- query ticketStatusByCorrelationId
+query ticketStatusByCorrelationId($id: String!) {
+  ticketByCorrelationId(correlationID: $id) {
+    id
+    status
+    bets {
+      selections {
+        title
+      }
+    }
+  }
+}
+
+# ---- query topPicks
+query topPicks {
+  topPicks {
+    id
+    sport {
+      id
+      name
+      shortcut
+      icon
+    }
+    matches {
+      id
+      matchID
+      homeTeam
+      awayTeam
+      icon
+    }
+    tournaments {
+      id
+      icon
+      tournamentId
+      title
+      sportID
+    }
+  }
+}
+
+# ---- query widgetMatchStatistics
+query widgetMatchStatistics($matchId: ID!, $darkMode: Boolean, $theme: String) {
+  matchStatistics(matchId: $matchId, darkMode: $darkMode, theme: $theme) {
+    url
+  }
+}
+
+# ---- query widgetScoreboard
+query widgetScoreboard($matchId: ID!, $darkMode: Boolean, $theme: String) {
+  scoreboardWidget(matchId: $matchId, darkMode: $darkMode, theme: $theme) {
+    url
+  }
+}
+
+# ---- query widgetTournamentStatistics
+query widgetTournamentStatistics($tournamentId: ID!, $darkMode: Boolean, $theme: String) {
+  tournamentStatistics(
+    tournamentId: $tournamentId
+    darkMode: $darkMode
+    theme: $theme
+  ) {
+    url
+  }
+}
+
+# ---- subscription navUpdated
+subscription navUpdated {
+  onUpdateSportInfo {
+    id
+    name
+    shortcut
+    icon
+    liveMatchesCount
+    activeMatchesCount
+    closedMatchesCount
+    outrightsCount
+    closedOutrightsCount
+    order
+    tournaments {
+      id
+      name
+      shortcut
+      liveMatchesCount
+      activeMatchesCount
+      closedMatchesCount
+      outrightsCount
+      closedOutrightsCount
+    }
+    sportType
+  }
+}
+
+# ---- subscription onMatchStateChanged
+subscription onMatchStateChanged($sports: [ID!], $tournaments: [ID!]) {
+  onMatchStateChanged(sports: $sports, tournaments: $tournaments) {
+    id
+    datePlannedStart
+    state
+    prematchOnly
+    stream {
+      url
+      streamProvider
+    }
+  }
+}
+
+# ---- subscription onTicketUpdate
+subscription onTicketUpdate($ticketId: ID!) {
+  onTicketUpdate(ticketId: $ticketId) {
+    ...PendingTicket
+  }
+}
+
+# ---- subscription onUpdateMatch
+subscription onUpdateMatch($matchId: ID!) {
+  onUpdateMatchLive(matchId: $matchId, withInit: true) {
+    id
+    datePlannedStart
+    marketsCount
+    state
+    hasObb
+    ...MatchStream
+    ...MatchTeams
+    ...MatchMainMarketGroups
+    ...MatchSimpleScore
+  }
+}
+
+# ---- subscription onUpdateMatchHistoric
+subscription onUpdateMatchHistoric($matchId: ID!) {
+  onUpdateMatchHistoric(matchId: $matchId, withInit: true) {
+    id
+    datePlannedStart
+    state
+    prematchOnly
+    categories
+    ...MatchTeams
+    ...MatchMarketGroups
+    ...MatchSimpleScore
+  }
+}
+
+# ---- subscription onUpdateMatchLive
+subscription onUpdateMatchLive($matchId: ID!, $obbOutcomes: [ID!]) {
+  onUpdateMatchLive(matchId: $matchId, withInit: true, obbOutcomes: $obbOutcomes) {
+    id
+    datePlannedStart
+    state
+    prematchOnly
+    categories
+    hasObb
+    stream {
+      url
+      streamProvider
+    }
+    allStreams {
+      url
+      locale
+      name
+    }
+    ...MatchTeams
+    ...MatchMarketGroups
+    ...MatchMainMarketGroups
+    ...MatchSimpleScore
+    ...MatchGameClientInfo
+  }
+}
+
+# ---- subscription onUpdateNonBettingMatch
+subscription onUpdateNonBettingMatch($matchId: ID!) {
+  onUpdateMatchLive(matchId: $matchId, withInit: true) {
+    id
+    datePlannedStart
+    state
+    ...MatchStream
+    ...MatchTeams
+    ...MatchSimpleScore
+  }
+}
+
+# ---- subscription onUpdateOutcome
+subscription onUpdateOutcome($outcomeId: ID!) {
+  onUpdateOutcome(outcomeId: $outcomeId) {
+    id
+    state
+    odds
+  }
+}
+
+# ---- subscription onUpdateOutrights
+subscription onUpdateOutrights($id: ID!) {
+  onUpdateOutrights(outrightsId: $id, withInit: true) {
+    id
+    date
+    teams {
+      id
+      name
+      icon
+    }
+    marketsCount
+    ...OutrightsMainMarketGroups
+  }
+}
+
+# ---- subscription onUpdateOutrightsDetail
+subscription onUpdateOutrightsDetail($id: ID!) {
+  onUpdateOutrights(outrightsId: $id, withInit: true) {
+    id
+    date
+    teams {
+      id
+      name
+      icon
+    }
+    ...OutrightsMarketGroups
+  }
+}
+
+# ---- subscription onUpdateStreamOverlayMatch
+subscription onUpdateStreamOverlayMatch($matchId: ID!) {
+  onUpdateMatchLive(matchId: $matchId, withInit: true) {
+    ...StreamOverlayMatch
+  }
+}
+
+# ---- subscription onUserTicketUpdate
+subscription onUserTicketUpdate {
+  onUserTicketUpdate {
+    id
+    ...TicketBets
+    rejectionReason
+    stake {
+      amount
+      tax
+      totalAmount
+    }
+    wonAmount {
+      amount
+      tax
+      totalAmount
+    }
+    date
+    status
+  }
+}
+

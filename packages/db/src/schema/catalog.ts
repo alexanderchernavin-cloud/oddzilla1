@@ -89,6 +89,10 @@ export const tournaments = pgTable(
     // Oddin risk_tier: sidebar lists tournaments higher-tier first.
     // Nullable until the backfill runs or auto-mapping populates it.
     riskTier: smallint(),
+    // Migration 0094: TRUE when an operator assigned risk_tier by hand in
+    // the backoffice. feed-ingester's REST refresh skips locked rows, so
+    // a manual tier survives the next fixture refresh and the backfill.
+    riskTierLocked: boolean("risk_tier_locked").notNull().default(false),
     // Optional per-tournament branding. Mirrors sports + competitors:
     // logo_url either external paste or auto-stamped /api/tournaments/
     // <id>/logo, brand_color "#RRGGBB" hex. Both nullable — when absent

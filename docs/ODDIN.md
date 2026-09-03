@@ -470,6 +470,24 @@ all markets". Anchor: `markets.last_oddin_ts`.
   review. Nothing goes live to users without an approved mapping row (Phase
   3 will enforce this gate).
 
+## Bifrost backup feed
+
+Oddin's white-label esports front end (Bifrost, the iframe behind
+`maxbet.rs/en/esport`) exposes the same catalogue over GraphQL:
+`https://api-bifrost.oddin.gg/main/bifrost/query` (queries) and the same
+path over `wss://` (graphql-transport-ws subscriptions), authenticated by a
+brand key in `X-Api-Key`. Every id it hands out is base64 of a path built
+from Oddin URNs, with market specifiers already in the canonical
+`k=v|k=v` sorted form, so its data maps onto ours without a lookup table.
+`services/bifrost-feed` re-synthesises `odds_change` / `bet_settlement` /
+`fixture_change` from it onto the `oddin.backup` Redis stream while the
+AMQP feed is silent, and the auto-mapper uses its `match` query as a
+fixture fallback when the REST meta API is down. Protocol notes, the
+extracted operation catalogue, the enum mapping and the known gaps
+(no cancel / rollback representation, no probabilities, no risk tier)
+are in [`docs/BIFROST_BACKUP_FEED.md`](./BIFROST_BACKUP_FEED.md) and
+[`docs/fixtures/bifrost-operations.graphql`](./fixtures/bifrost-operations.graphql).
+
 ## BetBuilder (OBB)
 
 Oddin's BetBuilder is a **separate gRPC service** at `api-obb.oddin.gg:443`

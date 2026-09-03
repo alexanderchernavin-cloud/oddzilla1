@@ -55,3 +55,33 @@ internal/
 - **Persist `after_ts` before each flush** so crashes don't lose cursor.
 - **Never block on Redis.** If XADD fails, log + continue — Postgres is the
   source of truth and odds-publisher will re-publish on next change.
+
+## Backup inputs (Bifrost)
+
+Two additions ride alongside the AMQP path; see
+[`docs/BIFROST_BACKUP_FEED.md`](../../docs/BIFROST_BACKUP_FEED.md).
+
+- `internal/backupstream` consumes the `oddin.backup` Redis stream written
+  by `services/bifrost-feed` (consumer group `feed-ingester`, routing key
+  `bifrost.backup`). Entries are Oddin-shaped `odds_change` /
+  `fixture_change` documents and go through the same `handler.Handle`.
+  They never bump `lastAmqpMessageUnix`: that counter, mirrored to Redis
+  `feed:primary:last_msg_unix` at most once per second by the AMQP
+  handler, is the primary-liveness signal both the alive watchdog and the
+  backup's gate key off. `BACKUP_STREAM_ENABLED=false` detaches it.
+- `internal/bifrost` is the auto-mapper's second fixture source. When the
+  REST fixture lookup fails, `automap.Resolver.fetchFixtureAny` asks
+  Bifrost's `match` query and reshapes it into the same
+  `oddinxml.FixtureResponse`, and seeds `competitor_profiles` icons from
+  the team data. Enabled when `BIFROST_API_KEY` is set.
+- `runSourceSwitch` (main.go) polls Redis `feed:source`, the backoffice
+  Feed source switch. `backup`: keep the AMQP connection and its liveness
+  stamps but ack deliveries without applying them, suspend the catalogue
+  once, acknowledge with `feed:source:flushed_unix` (bifrost-feed waits
+  for it before re-emitting). Back to `auto` / `prod`: reconnect-style
+  flush + 24 h replay, then resume applying. A boot-time `backup` value
+  is adopted without a flush. `/healthz` reports `feedSource` and
+  `amqpApplied`.
+- `store.UpdateTournamentRiskTier` skips rows with `risk_tier_locked`
+  (migration 0094): an operator-assigned tier on `/admin/tournaments`
+  survives the per-fixture refresh and `-backfill-tournament-metadata`.

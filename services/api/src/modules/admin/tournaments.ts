@@ -74,16 +74,24 @@ const listQuery = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
+// Manual risk tier (migration 0094). A number assigns the tier AND locks
+// the row so feed-ingester's REST refresh cannot overwrite it; null
+// unlocks it (the current value stays until the next automatic refresh
+// replaces it). Range mirrors RiskZilla's per-tier settings (1..10).
+const riskTierSchema = z.union([z.number().int().min(1).max(10), z.null()]);
+
 const patchBody = z
   .object({
     logoUrl: z.union([logoUrlSchema, z.literal("").transform(() => null)]).optional(),
     brandColor: z
       .union([hexColor, z.literal("").transform(() => null)])
       .optional(),
+    riskTier: riskTierSchema.optional(),
   })
-  .refine((v) => v.logoUrl !== undefined || v.brandColor !== undefined, {
-    message: "at least one field is required",
-  });
+  .refine(
+    (v) => v.logoUrl !== undefined || v.brandColor !== undefined || v.riskTier !== undefined,
+    { message: "at least one field is required" },
+  );
 
 interface TournamentRow {
   id: number;
@@ -95,6 +103,7 @@ interface TournamentRow {
   slug: string;
   name: string;
   riskTier: number | null;
+  riskTierLocked: boolean;
   active: boolean;
   logoUrl: string | null;
   brandColor: string | null;
@@ -140,6 +149,7 @@ export default async function adminTournamentsRoutes(app: FastifyInstance) {
           slug: tournaments.slug,
           name: tournaments.name,
           riskTier: tournaments.riskTier,
+          riskTierLocked: tournaments.riskTierLocked,
           active: tournaments.active,
           logoUrl: tournaments.logoUrl,
           brandColor: tournaments.brandColor,
@@ -219,6 +229,8 @@ export default async function adminTournamentsRoutes(app: FastifyInstance) {
         logoUrl: tournaments.logoUrl,
         brandColor: tournaments.brandColor,
         logoMime: tournaments.logoMime,
+        riskTier: tournaments.riskTier,
+        riskTierLocked: tournaments.riskTierLocked,
       })
       .from(tournaments)
       .where(eq(tournaments.id, params.id))
@@ -232,7 +244,19 @@ export default async function adminTournamentsRoutes(app: FastifyInstance) {
       brandColor: string | null;
       logoData: Buffer | null;
       logoMime: string | null;
+      riskTier: number | null;
+      riskTierLocked: boolean;
     }> = {};
+    if (body.riskTier !== undefined) {
+      if (body.riskTier === null) {
+        // Back to automatic: keep whatever tier is there, let the next
+        // REST refresh own it again.
+        patch.riskTierLocked = false;
+      } else {
+        patch.riskTier = body.riskTier;
+        patch.riskTierLocked = true;
+      }
+    }
     if (body.logoUrl !== undefined) {
       patch.logoUrl = body.logoUrl;
       const isByteServeUrl =
@@ -258,6 +282,8 @@ export default async function adminTournamentsRoutes(app: FastifyInstance) {
           logoUrl: before.logoUrl,
           brandColor: before.brandColor,
           logoMime: before.logoMime,
+          riskTier: before.riskTier,
+          riskTierLocked: before.riskTierLocked,
         },
         afterJson: {
           slug: before.slug,
@@ -265,6 +291,10 @@ export default async function adminTournamentsRoutes(app: FastifyInstance) {
           logoUrl: patch.logoUrl,
           brandColor: patch.brandColor,
           ...(patch.logoMime !== undefined ? { logoMime: patch.logoMime } : {}),
+          ...(patch.riskTier !== undefined ? { riskTier: patch.riskTier } : {}),
+          ...(patch.riskTierLocked !== undefined
+            ? { riskTierLocked: patch.riskTierLocked }
+            : {}),
         },
         ipInet: request.ip ?? null,
       });

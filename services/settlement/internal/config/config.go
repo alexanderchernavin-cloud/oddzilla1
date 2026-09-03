@@ -33,6 +33,11 @@ type Config struct {
 	// Read from SETTLEMENT_RECONCILE_INTERVAL_SECONDS, default 300; <=0
 	// disables the sweeper.
 	ReconcileIntervalSeconds int
+	// BackupStreamEnabled attaches the `oddin.backup` Redis stream consumer
+	// that feeds bifrost-feed's synthesised bet_settlement messages into
+	// the same Handle the AMQP path uses. On by default;
+	// BACKUP_STREAM_ENABLED=false detaches it.
+	BackupStreamEnabled bool
 }
 
 type OddinConfig struct {
@@ -87,6 +92,7 @@ func Load() (Config, error) {
 		Heartbeat:   30 * time.Second,
 	}
 	cfg.Oddin.Enabled = cfg.Oddin.Token != "" && cfg.Oddin.CustomerID != ""
+	cfg.BackupStreamEnabled = !strings.EqualFold(getEnvDefault("BACKUP_STREAM_ENABLED", "true"), "false")
 	return cfg, nil
 }
 
