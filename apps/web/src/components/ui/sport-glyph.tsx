@@ -47,6 +47,18 @@ const BRAND_LOGOS = new Set<string>([
   "etouchdown-bots",
   "cs2-duels",
   "dota2-duels",
+  // Traditional sports from the Fonbet feed (services/fonbet-ingester).
+  // Most Fonbet sports carry a CDN icon in sports.logo_url (resolved
+  // above); these nine have no Fonbet glyph so they ship bundled art.
+  "american-football",
+  "table-tennis",
+  "mma",
+  "basketball-3x3",
+  "beach-volleyball",
+  "beach-soccer",
+  "specials",
+  "aussie-rules",
+  "gaelic-sports",
 ]);
 
 // Legacy short ids used by the SPORTS list above map onto canonical slugs.

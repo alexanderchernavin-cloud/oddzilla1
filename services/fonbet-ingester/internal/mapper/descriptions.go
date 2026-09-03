@@ -58,11 +58,22 @@ func StaticDescriptions(idx *fonbet.Index, opt Options) []Description {
 		if d == nil {
 			continue
 		}
-		id := itoa(fm.FactorID)
+		// Match-winner cells are addressed two ways: by the canonical
+		// 1/2/3 id on the main event and by their factor id on sub-events
+		// (halves, periods). Both need a label.
+		d.Outcomes[itoa(fm.FactorID)] = fm.Label
 		if fm.WinnerOutcome != "" {
-			id = fm.WinnerOutcome
+			d.Outcomes[fm.WinnerOutcome] = OutcomeTemplate(fm, idx.Lang)
+		} else {
+			d.Outcomes[itoa(fm.FactorID)] = OutcomeTemplate(fm, idx.Lang)
 		}
-		d.Outcomes[id] = OutcomeTemplate(fm, idx.Lang)
+		if fm.DoubleChance {
+			// Sub-event double-chance cells stay in the base pmid market.
+			base := byPMID[opt.pmidBase()+t.Num]
+			if base != nil {
+				base.Outcomes[itoa(fm.FactorID)] = fm.Label
+			}
+		}
 	}
 	return out
 }

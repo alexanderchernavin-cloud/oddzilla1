@@ -214,10 +214,16 @@ func (c *Client) getURL(ctx context.Context, u string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
 	}
+	return decodeBody(raw, resp.Header.Get("Content-Encoding"))
+}
+
+// decodeBody enforces the size cap and transparently gunzips (the line
+// servers gzip even when not asked).
+func decodeBody(raw []byte, contentEncoding string) ([]byte, error) {
 	if len(raw) > maxResponseBytes {
 		return nil, fmt.Errorf("response exceeds %d bytes", maxResponseBytes)
 	}
-	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") || (len(raw) > 2 && raw[0] == 0x1f && raw[1] == 0x8b) {
+	if strings.EqualFold(contentEncoding, "gzip") || (len(raw) > 2 && raw[0] == 0x1f && raw[1] == 0x8b) {
 		zr, err := gzip.NewReader(bytes.NewReader(raw))
 		if err != nil {
 			return nil, fmt.Errorf("gzip: %w", err)

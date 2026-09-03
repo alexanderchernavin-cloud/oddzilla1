@@ -133,6 +133,15 @@ func main() {
 	if err := ing.Bootstrap(ctx); err != nil {
 		log.Fatal().Err(err).Msg("bootstrap previous state")
 	}
+	// Logos are applied after the first cycle has created the rows (see the
+	// loop below) and refreshed every 6 h alongside the catalogue.
+	var logos *fonbet.Logos
+	if l, err := client.FetchLogos(ctx); err != nil {
+		log.Warn().Err(err).Msg("logo catalogue unavailable; entities keep initials")
+	} else {
+		logos = l
+		log.Info().Int("teams", len(l.Teams)).Int("competitions", len(l.Competitions)).Int("sports", len(l.Sports)).Msg("logo catalogue loaded")
+	}
 
 	go runWatchdog(ctx, ing, cfg.Fonbet.StaleSuspendAfter, log)
 	go runHostRefresh(ctx, client, log)
@@ -142,8 +151,18 @@ func main() {
 	defer ticker.Stop()
 	catalogRefresh := time.NewTicker(6 * time.Hour)
 	defer catalogRefresh.Stop()
+	logoTicker := time.NewTicker(10 * time.Minute) // cheap: only NULL logo rows are touched
+	defer logoTicker.Stop()
 	for {
 		cycle(ctx, client, idx, opt, ing, log)
+		if logos != nil {
+			// Right after a cycle every new sport / team / tournament row
+			// exists, so the first pass and each periodic pass fill gaps.
+			if err := ing.ApplyLogos(ctx, logos); err != nil {
+				log.Warn().Err(err).Msg("apply logos")
+			}
+			logos = nil
+		}
 		select {
 		case <-ctx.Done():
 			// Container going down: suspend so nothing quotes frozen odds
@@ -161,6 +180,12 @@ func main() {
 				if err := ing.WriteStaticDescriptions(ctx, mapper.StaticDescriptions(idx, opt)); err != nil {
 					log.Warn().Err(err).Msg("refresh descriptions")
 				}
+			}
+		case <-logoTicker.C:
+			if l, err := client.FetchLogos(ctx); err != nil {
+				log.Warn().Err(err).Msg("logo refresh failed")
+			} else {
+				logos = l // applied right after the next cycle
 			}
 		case <-ticker.C:
 		}

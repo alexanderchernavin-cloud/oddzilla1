@@ -144,7 +144,7 @@ func (in *Ingester) Bootstrap(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	markets, outcomes := 0, 0
+	markets, outcomes, unpublished := 0, 0, 0
 	for _, sm := range stored {
 		eventID, err := strconv.ParseInt(strings.TrimPrefix(sm.ProviderURN, store.URNMatch), 10, 64)
 		if err != nil {
@@ -157,7 +157,16 @@ func (in *Ingester) Bootstrap(ctx context.Context) error {
 		for _, mk := range sm.Markets {
 			mst := &marketState{DBID: mk.ID, PMID: mk.ProviderMarketID, Canonical: mk.Canonical, Status: mk.Status, Outcomes: map[string]outcomeState{}}
 			for _, o := range mk.Outcomes {
-				mst.Outcomes[o.OutcomeID] = outcomeState{Odds: o.RawOdds, Active: o.Active}
+				st := outcomeState{Odds: o.RawOdds, Active: o.Active}
+				if o.Unpublished {
+					// odds-publisher never saw this price (stream trimmed
+					// or publisher down). Forget the odds so the first
+					// cycle re-emits it onto odds.raw; the pg upsert is a
+					// 0-row write because raw_odds is unchanged.
+					st.Odds = ""
+					unpublished++
+				}
+				mst.Outcomes[o.OutcomeID] = st
 				outcomes++
 			}
 			ms.Markets[strconv.Itoa(mk.ProviderMarketID)+"|"+mk.Canonical] = mst
@@ -165,7 +174,8 @@ func (in *Ingester) Bootstrap(ctx context.Context) error {
 		}
 		in.matches[eventID] = ms
 	}
-	in.log.Info().Int("matches", len(in.matches)).Int("markets", markets).Int("outcomes", outcomes).Msg("previous state loaded from postgres")
+	in.log.Info().Int("matches", len(in.matches)).Int("markets", markets).Int("outcomes", outcomes).
+		Int("republish", unpublished).Msg("previous state loaded from postgres")
 	return nil
 }
 
@@ -418,10 +428,15 @@ func (in *Ingester) applyMatch(ctx context.Context, m *mapper.Match, nowMs int64
 			if prev.Active {
 				deactM = append(deactM, ps.DBID)
 				deactO = append(deactO, oid)
-				events = append(events, bus.OddsEvent{
-					MarketID: ps.DBID, OutcomeID: oid, ProviderMarketID: mk.PMID, SpecifiersCanonical: mk.Canonical,
-					RawOdds: prev.Odds, Active: false, MatchID: ms.DBID, SourceTs: nowMs,
-				})
+				// odds-publisher needs a price to apply margin to; a
+				// deactivation whose last price we no longer hold (boot
+				// republish / post-suspend state) is only written to pg.
+				if prev.Odds != "" {
+					events = append(events, bus.OddsEvent{
+						MarketID: ps.DBID, OutcomeID: oid, ProviderMarketID: mk.PMID, SpecifiersCanonical: mk.Canonical,
+						RawOdds: prev.Odds, Active: false, MatchID: ms.DBID, SourceTs: nowMs,
+					})
+				}
 			}
 			forget = append(forget, pendingOutcome{ps: ps, oid: oid})
 		}
@@ -567,7 +582,9 @@ func (in *Ingester) ensureMatch(ctx context.Context, m *mapper.Match, stats *Sta
 	db := in.st.Pool()
 	sportID, ok := in.sportIDs[m.SportID]
 	if !ok {
-		id, err := store.EnsureSport(ctx, db, store.URNSport+strconv.Itoa(m.SportID), m.Sport.Slug, m.Sport.Name, m.Sport.Kind)
+		// Logos come from the line/logos catalogue (ApplyLogos) — the
+		// alias-based CDN path 404s for a third of the sports.
+		id, err := store.EnsureSport(ctx, db, store.URNSport+strconv.Itoa(m.SportID), m.Sport.Slug, m.Sport.Name, m.Sport.Kind, "")
 		if err != nil {
 			return nil, err
 		}

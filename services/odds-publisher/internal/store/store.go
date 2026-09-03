@@ -17,12 +17,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// marketCacheSize bounds the in-process MarketInfo cache. 4096 fits the
-// peak concurrent-market working set with comfortable headroom (hot
-// matches × 30-150 markets each); each entry is ~40 bytes so the cache
-// caps at well under 1 MiB. Sized large enough that recovery snapshots
-// don't churn it.
-const marketCacheSize = 4096
+// marketCacheSize bounds the in-process MarketInfo cache. Each entry is
+// ~40 bytes, so 131072 entries cap at a few MiB. Sized for the combined
+// working set of Oddin (a few thousand hot markets) and the Fonbet line
+// (~90k markets across ~3.5k matches) so ResolveMarkets rarely misses
+// once warm; 4096 thrashed constantly with the second provider on.
+const marketCacheSize = 131072
 
 type Store struct {
 	pool *pgxpool.Pool
@@ -39,11 +39,11 @@ type Store struct {
 }
 
 type marginCache struct {
-	global          int
-	sport           map[int]int    // sport_id → bp
-	tournament      map[int]int    // tournament_id → bp
-	marketType      map[int]int    // provider_market_id → bp
-	fetchedAt       time.Time
+	global     int
+	sport      map[int]int // sport_id → bp
+	tournament map[int]int // tournament_id → bp
+	marketType map[int]int // provider_market_id → bp
+	fetchedAt  time.Time
 }
 
 func New(pool *pgxpool.Pool) *Store {
@@ -240,4 +240,3 @@ VALUES ($1, $2, $3::numeric, $4::numeric, $5::numeric, $6)`
 	}
 	return nil
 }
-

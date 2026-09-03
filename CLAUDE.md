@@ -723,4 +723,6 @@ If you're a fresh agent picking this up:
     `/admin/margins` (cascade market_type→tournament→sport→global)
     rather than touching code. Per-user margin would be a new column
     (`users.margin_bp_override`) + a branch in
-    `odds-publisher/internal/publisher/publisher.go` `processOne`.
+    `odds-publisher/internal/publisher/publisher.go` `Handle` (batched
+    since the Fonbet feed landed: one UNNEST UPDATE + one odds_history
+    INSERT per XREADGROUP batch, `store.ResolveMarkets` for the lineage).

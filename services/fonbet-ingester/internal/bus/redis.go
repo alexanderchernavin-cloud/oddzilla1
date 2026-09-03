@@ -17,7 +17,11 @@ import (
 
 const (
 	StreamOddsRaw = "odds.raw"
-	MaxLenApprox  = 100_000
+	// MaxLenApprox trims the stream on our XADDs. feed-ingester trims to
+	// 100k; a full Fonbet line is ~200k outcomes and a cold start publishes
+	// all of them at once, so we keep enough headroom for odds-publisher
+	// (batched, thousands of ticks/s) to drain it before anything is cut.
+	MaxLenApprox = 400_000
 )
 
 // OddsEvent is one outcome update on the stream.

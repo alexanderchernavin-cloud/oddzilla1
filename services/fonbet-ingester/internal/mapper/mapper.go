@@ -65,6 +65,7 @@ type Match struct {
 	EventID     int64
 	SportID     int // Fonbet root sport id
 	Sport       SportInfo
+	SportAlias  string // Fonbet's own alias ("football"); drives the CDN sport icon
 	SegmentID   int
 	SegmentName string
 	Category    string // derived from the segment name prefix ("Испания. Примера" → "Испания")
@@ -117,6 +118,12 @@ type Outcome struct {
 	Odds     string
 	Active   bool
 	Name     string // Fonbet caption with %P / %1 / %2 resolved; raw name for admin
+}
+
+// placeholderTeams are Fonbet's generic participants on aggregate
+// specials ("any home team vs any away team of the round") — not matches.
+var placeholderTeams = map[string]bool{
+	"Хозяева": true, "Гости": true, "Home": true, "Away": true, "Хозяин": true, "Гость": true,
 }
 
 var mapRe = regexp.MustCompile(`(?i)^(?:(\d+)-?[яй]?\s*карта|map\s*(\d+)|(\d+)\s*карта)$`)
@@ -195,6 +202,10 @@ func Build(resp *fonbet.ListResponse, idx *fonbet.Index, opt Options) *Snapshot 
 			snap.Skipped["no_teams"]++ // outrights / specials have a single participant
 			continue
 		}
+		if placeholderTeams[strings.TrimSpace(e.Team1)] || placeholderTeams[strings.TrimSpace(e.Team2)] {
+			snap.Skipped["placeholder_teams"]++ // "Хозяева — Гости" aggregate specials
+			continue
+		}
 		root := rootOf(e.SportID)
 		if root == nil {
 			snap.Skipped["no_sport"]++
@@ -219,6 +230,7 @@ func Build(resp *fonbet.ListResponse, idx *fonbet.Index, opt Options) *Snapshot 
 			EventID:     e.ID,
 			SportID:     root.ID,
 			Sport:       SportFor(root.ID, root.Name),
+			SportAlias:  strings.TrimSpace(root.Alias),
 			SegmentID:   e.SportID,
 			SegmentName: segName,
 			Category:    categoryFromSegment(segName),
@@ -365,8 +377,14 @@ func addFactors(
 			}
 			specs[t.Param.SpecifierKey()] = line
 		}
+		// Match-winner handling (canonical 1/2/3 outcome ids + the
+		// double-chance split) applies to the main event only. A half /
+		// period / map "1X2" keeps factor ids so the storefront's
+		// match-winner lookup (outcome ids 1/2/3 in the Fonbet pmid range)
+		// can never pick a sub-event market for the list card.
+		mainEvent := len(base) == 0
 		pmid := opt.pmidBase() + t.Num
-		if meta.DoubleChance {
+		if meta.DoubleChance && mainEvent {
 			pmid = opt.dcBase() + t.Num
 		}
 		canonical := specifiers.Canonical(specs)
@@ -384,7 +402,7 @@ func addFactors(
 				Hash:         specifiers.Hash(specs),
 				Status:       status,
 				TableNum:     t.Num,
-				DoubleChance: meta.DoubleChance,
+				DoubleChance: meta.DoubleChance && mainEvent,
 				Variant:      specs["variant"],
 				VariantLabel: variantLabel,
 				Outcomes:     map[string]*Outcome{},
@@ -392,7 +410,7 @@ func addFactors(
 			m.Markets[key] = mk
 		}
 		outcomeID := strconv.Itoa(id)
-		if meta.WinnerOutcome != "" {
+		if meta.WinnerOutcome != "" && mainEvent {
 			outcomeID = meta.WinnerOutcome
 		}
 		if _, dup := mk.Outcomes[outcomeID]; dup {

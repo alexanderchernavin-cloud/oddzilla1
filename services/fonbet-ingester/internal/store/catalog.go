@@ -9,15 +9,20 @@ import (
 // EnsureSport upserts a sport keyed by (provider, provider_urn). The name
 // is only written on insert — operators may rename sports in /admin and
 // the feed must not clobber that.
-func EnsureSport(ctx context.Context, db pgxRunner, providerURN, slug, name, kind string) (int, error) {
+//
+// logoURL (may be empty) seeds sports.logo_url for the storefront glyph;
+// an operator-uploaded logo is never overwritten (COALESCE keeps the
+// existing value).
+func EnsureSport(ctx context.Context, db pgxRunner, providerURN, slug, name, kind, logoURL string) (int, error) {
 	const q = `
-INSERT INTO sports (provider, provider_urn, slug, name, kind)
-VALUES ($1, $2, $3, $4, $5::sport_kind)
+INSERT INTO sports (provider, provider_urn, slug, name, kind, logo_url)
+VALUES ($1, $2, $3, $4, $5::sport_kind, NULLIF($6, ''))
 ON CONFLICT (provider, provider_urn) DO UPDATE
-   SET active = TRUE
+   SET active   = TRUE,
+       logo_url = COALESCE(sports.logo_url, EXCLUDED.logo_url)
 RETURNING id`
 	var id int
-	if err := db.QueryRow(ctx, q, Provider, providerURN, slug, name, kind).Scan(&id); err != nil {
+	if err := db.QueryRow(ctx, q, Provider, providerURN, slug, name, kind, logoURL).Scan(&id); err != nil {
 		return 0, fmt.Errorf("ensure sport %s: %w", slug, err)
 	}
 	return id, nil

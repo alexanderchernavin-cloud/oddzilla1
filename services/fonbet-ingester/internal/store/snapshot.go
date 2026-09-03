@@ -32,9 +32,10 @@ type StoredMarket struct {
 }
 
 type StoredOutcome struct {
-	OutcomeID string
-	RawOdds   string // "" when NULL
-	Active    bool
+	OutcomeID   string
+	RawOdds     string // "" when NULL
+	Active      bool
+	Unpublished bool // raw_odds present but published_odds NULL: odds-publisher never saw it
 }
 
 // LoadProviderState reads every non-terminal Fonbet match with its
@@ -70,7 +71,8 @@ SELECT id, provider_urn, status::text, home_team, away_team,
 
 	rows, err := db.Query(ctx, `
 SELECT m.id, m.match_id, m.provider_market_id, m.specifiers_json::text, m.status,
-       mo.outcome_id, COALESCE(mo.raw_odds::text, ''), COALESCE(mo.active, FALSE)
+       mo.outcome_id, COALESCE(mo.raw_odds::text, ''), COALESCE(mo.active, FALSE),
+       (mo.raw_odds IS NOT NULL AND mo.published_odds IS NULL)
   FROM markets m
   JOIN matches ma ON ma.id = m.match_id
   LEFT JOIN market_outcomes mo ON mo.market_id = m.id
@@ -93,8 +95,9 @@ SELECT m.id, m.match_id, m.provider_market_id, m.specifiers_json::text, m.status
 			outcomeID         *string
 			rawOdds           string
 			active            bool
+			unpublished       bool
 		)
-		if err := rows.Scan(&marketID, &matchID, &pmid, &specJSON, &status, &outcomeID, &rawOdds, &active); err != nil {
+		if err := rows.Scan(&marketID, &matchID, &pmid, &specJSON, &status, &outcomeID, &rawOdds, &active, &unpublished); err != nil {
 			return nil, fmt.Errorf("scan provider market: %w", err)
 		}
 		if cur == nil || cur.ID != marketID {
@@ -109,7 +112,7 @@ SELECT m.id, m.match_id, m.provider_market_id, m.specifiers_json::text, m.status
 			cur = &curMatch.Markets[len(curMatch.Markets)-1]
 		}
 		if outcomeID != nil {
-			cur.Outcomes = append(cur.Outcomes, StoredOutcome{OutcomeID: *outcomeID, RawOdds: trimOdds(rawOdds), Active: active})
+			cur.Outcomes = append(cur.Outcomes, StoredOutcome{OutcomeID: *outcomeID, RawOdds: trimOdds(rawOdds), Active: active, Unpublished: unpublished})
 		}
 	}
 	if err := rows.Err(); err != nil {
