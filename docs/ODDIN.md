@@ -307,10 +307,25 @@ Every AMQP (re)connect runs `store.FlushAndSuspendActiveCatalog` BEFORE
 calling `InitiateRecovery`. This is unconditional — no staleness
 threshold. Rationale: even a few seconds of feed gap can leave a market
 quoting odds Oddin already moved off of, and a single placement at
-stale odds is a real-money loss. Two steps inside one transaction:
+stale odds is a real-money loss. Three steps inside one transaction:
 
 1. UPDATE markets → `status = -1` for every market currently at
    `status = 1` on a `not_started` / `live` match.
+3. UPDATE matches → `status = 'suspended'` for every `live` match, so
+   the MATCH leaves the offer too and not merely its markets. Suspending
+   markets alone left every match still asserting `live`, and nothing
+   ever walked that claim back: the incoming source only re-asserts what
+   it carries, and a match neither source carries has no route to a
+   terminal status. Production accumulated 675 such rows, the oldest from
+   2026-04-18. A failover has to empty the offer and let the new source
+   rebuild it. Only `live` is moved — a `not_started` match makes no false
+   claim and its markets are already suspended. The round trip is legal
+   both ways: `UpdateMatchStatus`'s live branch excludes only
+   closed/cancelled/live, and its generic branch carries a narrow
+   exception letting `suspended` return to `not_started`. Callers publish
+   a `matchStatus` frame per suspended match so open pages drop the LIVE
+   pill in the same moment the prices go.
+
 2. UPDATE market_outcomes → `published_odds = NULL`, `raw_odds = NULL`,
    `probability = NULL`, `active = FALSE` for every outcome on a
    `not_started` / `live` match. Storefront and bet placement both

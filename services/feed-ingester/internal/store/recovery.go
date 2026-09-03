@@ -39,6 +39,10 @@ type FlushSummary struct {
 	// replay reaches them (seconds), and any click in that window dead-
 	// ends at placement with `market_not_active`.
 	SuspendedRefs []FlushSuspendedRef
+	// SuspendedMatchIDs is every match this call took off the offer by
+	// moving it from `live` to `suspended`. The caller publishes a
+	// `matchStatus` frame per id so open pages drop the LIVE pill.
+	SuspendedMatchIDs []int64
 }
 
 // FlushSuspendedRef pairs each suspended market with its match for the
@@ -120,6 +124,47 @@ func FlushAndSuspendActiveCatalog(ctx context.Context, pool *pgxpool.Pool) (Flus
 		return s, fmt.Errorf("flush: null outcomes: %w", err)
 	}
 	s.SuspendedOutcomes = tag.RowsAffected()
+
+	// Step 3: take the MATCHES off the offer too, not just their markets.
+	//
+	// Suspending markets alone leaves every match still asserting `live`
+	// in the catalogue. Nothing then walks that claim back: the new source
+	// only re-asserts the matches IT carries, and a match neither source
+	// carries has no path to a terminal status, so it sits at `live`
+	// forever. Production accumulated 675 such rows, the oldest from
+	// 2026-04-18. A flush has to empty the offer completely and let the
+	// incoming source rebuild it, which is the whole point of failing over.
+	//
+	// `live` only. A `not_started` match makes no false claim — it is
+	// scheduled, not running — and its markets are already suspended, so
+	// it is invisible either way. Moving it here would also be a one-way
+	// trip that costs more than it buys.
+	//
+	// The round trip is legal in both directions: UpdateMatchStatus's live
+	// branch excludes only closed/cancelled/live, so `suspended` -> `live`
+	// passes, and its generic branch now lets `suspended` -> `not_started`
+	// through as well. Terminal matches stay untouched.
+	mrows, err := tx.Query(ctx, `
+		UPDATE matches
+		   SET status = 'suspended'::match_status, updated_at = NOW()
+		 WHERE status = 'live'
+		RETURNING id
+	`)
+	if err != nil {
+		return s, fmt.Errorf("flush: suspend matches: %w", err)
+	}
+	for mrows.Next() {
+		var id int64
+		if err := mrows.Scan(&id); err != nil {
+			mrows.Close()
+			return s, fmt.Errorf("flush: scan suspended match: %w", err)
+		}
+		s.SuspendedMatchIDs = append(s.SuspendedMatchIDs, id)
+	}
+	mrows.Close()
+	if err := mrows.Err(); err != nil {
+		return s, fmt.Errorf("flush: iterate suspended matches: %w", err)
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return s, fmt.Errorf("flush: commit: %w", err)

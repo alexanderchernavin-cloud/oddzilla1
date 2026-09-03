@@ -322,7 +322,7 @@ UPDATE matches
  WHERE id = $1
    AND status::text NOT IN ('closed','cancelled')
    AND status::text <> $2
-   AND $2 <> 'not_started'`,
+   AND ($2 <> 'not_started' OR status::text = 'suspended')`,
 		matchID, status,
 	)
 	if err != nil {
