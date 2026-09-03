@@ -93,15 +93,16 @@ export function BackupFeedCard() {
       <SourceSwitch status={status} onChanged={load} />
 
       <p style={{ margin: 0, fontSize: 12.5, lineHeight: 1.5, color: "var(--color-fg-muted)" }}>
-        Prod Oddin is the AMQP feed. Backup Oddin is bifrost-feed re-synthesising odds, scores
-        and settlements from Oddin&apos;s Bifrost GraphQL API through the normal ingest path.
-        Only Auto moves by itself: the backup takes over after the AMQP feed has been silent past
-        the threshold and stands down the moment it resumes. Backup Oddin and Prod Oddin only are
-        manual positions and stay where you put them, through restarts and deploys, until you
-        change them. Forcing Backup suspends the catalogue once, stops applying AMQP odds, and
-        re-feeds everything from Bifrost within seconds; moving the switch back replays from Oddin.
-        Settlement always consumes both sources (apply-once dedup); cancel and rollback messages
-        exist only on AMQP. See docs/BIFROST_BACKUP_FEED.md.
+        Prod Oddin is the AMQP feed. <strong>CommZilla</strong>, a.k.a. Communism Mode, is
+        bifrost-feed re-synthesising odds, scores and settlements from Oddin&apos;s Bifrost
+        GraphQL API through the normal ingest path. Only Auto moves by itself: CommZilla takes
+        over after the AMQP feed has been silent past the threshold and stands down the moment it
+        resumes. CommZilla and Prod Oddin only are manual positions and stay where you put them,
+        through restarts and deploys, until you change them. Going Communist empties the offer
+        once, suspending every active market AND every live match, stops applying AMQP odds, and
+        re-feeds everything from Bifrost within seconds; moving the switch back replays from
+        Oddin. Settlement always consumes both sources (apply-once dedup); cancel and rollback
+        messages exist only on AMQP. See docs/BIFROST_BACKUP_FEED.md.
       </p>
 
       {error ? (
@@ -112,7 +113,7 @@ export function BackupFeedCard() {
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
         <Tile label="Primary feed (AMQP)" value={primary.value} tone={primary.tone} hint={primary.hint} />
-        <Tile label="Backup service" value={backup.value} tone={backup.tone} hint={backup.hint} />
+        <Tile label="CommZilla" value={backup.value} tone={backup.tone} hint={backup.hint} />
         <Tile
           label="Bifrost socket"
           value={status?.connected ? "connected" : status?.online ? "disconnected" : "—"}
@@ -163,9 +164,9 @@ export function BackupFeedCard() {
 }
 
 const SOURCE_OPTIONS: { value: FeedSource; label: string; hint: string }[] = [
-  { value: "auto", label: "Auto", hint: "Prod Oddin, backup takes over on AMQP silence" },
-  { value: "prod", label: "Prod Oddin only", hint: "Backup never publishes" },
-  { value: "backup", label: "Backup Oddin", hint: "Force Bifrost; AMQP odds ignored" },
+  { value: "auto", label: "Auto", hint: "Prod Oddin, CommZilla takes over on AMQP silence" },
+  { value: "prod", label: "Prod Oddin only", hint: "CommZilla never publishes" },
+  { value: "backup", label: "CommZilla", hint: "Communism Mode: force Bifrost, AMQP odds ignored" },
 ];
 
 function SourceSwitch({ status, onChanged }: { status: BackupFeedStatus | null; onChanged: () => void }) {
@@ -293,7 +294,7 @@ function SourceSwitch({ status, onChanged }: { status: BackupFeedStatus | null; 
           }}
         >
           <span>
-            Switch to <strong>Backup Oddin</strong>? Every active market is suspended once, AMQP
+            Switch to <strong>CommZilla</strong> (Communism Mode)? Every active market is suspended once, AMQP
             odds are ignored until you switch back, and bifrost-feed re-feeds the catalogue
             from Bifrost within seconds. Cancel and rollback messages from Oddin are still
             applied by settlement, but nothing else from AMQP is.
