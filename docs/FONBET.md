@@ -145,6 +145,19 @@ The shipped design is option 2 (results feed) with option 1's score-based
 rules on top of it; option 3 (manual settlement UI) remains the escape
 hatch for whatever the rules leave open.
 
+## Storefront
+
+- `/sports` — traditional-sports tab (sidebar "Спорт" / "Sports"): the
+  cross-sport live + upcoming lists filtered with `kind=traditional` on
+  `GET /catalog/matches`, one chip per sport. The lobby, `/live` and
+  `/upcoming` keep mixing both verticals.
+- Match page: Fonbet sub-events render as tabs (`fb_<kind>` scopes derived
+  from the `variant` specifier and the description prefix); deactivated
+  markets are not loaded at all.
+- Sport icons / team logos: `sports.logo_url`, `competitors.logo_url`,
+  `tournaments.logo_url` from Fonbet's CDN; bundled SVGs for the nine
+  sports without a Fonbet glyph.
+
 ## Follow-ups
 
 - Sub-event tabs (`fb_<kind>` scopes) take their label from the feed

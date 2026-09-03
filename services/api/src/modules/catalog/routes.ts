@@ -1908,6 +1908,9 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .object({
         status: z.enum(["live", "upcoming"]).default("live"),
         limit: z.coerce.number().int().min(1).max(200).default(80),
+        // Optional vertical filter: the /sports tab lists traditional
+        // sports (Fonbet feed) only; the lobby keeps mixing both.
+        kind: z.enum(["esport", "traditional"]).optional(),
       })
       .parse(request.query);
 
@@ -1953,6 +1956,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         and(
           cond,
           eq(sports.active, true),
+          q.kind ? eq(sports.kind, q.kind) : undefined,
           hasActiveMarket,
           notHiddenTournament,
         ),
@@ -2144,7 +2148,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
     };
     };
     if (!request.user) {
-      const key = `catalog:matches:v1:${q.status}:${q.limit}`;
+      const key = `catalog:matches:v1:${q.status}:${q.kind ?? "all"}:${q.limit}`;
       return cached(app.redis, key, ANON_LIST_CACHE_TTL_SECONDS, build);
     }
     return build();

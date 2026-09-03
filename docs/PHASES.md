@@ -960,6 +960,8 @@ next to Oddin's esports by scraping the public Fonbet KZ line.
   batch) — needed to keep up with the Fonbet churn.
 - Fonbet CDN logos for teams / tournaments / sports; bundled icons for the
   nine sports without a Fonbet glyph; sub-event tabs on the match page.
+- `/sports` storefront tab (sidebar entry, per-sport chips, live +
+  upcoming) backed by `kind=traditional` on `/catalog/matches`.
 
 **Acceptance (still open):**
 - Settlement soak on a staging stack: compare a week of automatic
