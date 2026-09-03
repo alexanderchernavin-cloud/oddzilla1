@@ -713,7 +713,9 @@ func flushBeforeRecover(ctx context.Context, deps handler.Deps, log zerolog.Logg
 	log.Warn().
 		Int64("suspended_markets", summary.SuspendedMarkets).
 		Int64("suspended_outcomes", summary.SuspendedOutcomes).
+		Int("suspended_matches", len(summary.SuspendedMatchIDs)).
 		Msg("flush-before-recover complete; awaiting replay to re-activate")
+	broadcastMatchesSuspended(ctx, deps, summary.SuspendedMatchIDs, log)
 
 	// Rewind the recovery cursor for both producers to the full
 	// RecoveryWindowCap. Without this, the cursor stays pinned to "now
@@ -765,6 +767,23 @@ func broadcastSuspended(ctx context.Context, deps handler.Deps, refs []store.Flu
 			log.Debug().Err(perr).
 				Int64("match", ref.MatchID).Int64("market", ref.MarketID).
 				Msg("publish market status failed")
+		}
+	}
+}
+
+// broadcastMatchesSuspended tells open pages that these matches left the
+// offer, so the LIVE pill goes away in the same moment the prices do.
+// Without it a viewer keeps a live-looking header over a dead board until
+// they reload.
+func broadcastMatchesSuspended(ctx context.Context, deps handler.Deps, ids []int64, log zerolog.Logger) {
+	if deps.Bus == nil || len(ids) == 0 {
+		return
+	}
+	nowMs := time.Now().UnixMilli()
+	for _, id := range ids {
+		if perr := deps.Bus.PublishMatchStatus(ctx, id, "suspended", nowMs); perr != nil {
+			log.Debug().Err(perr).Int64("match", id).
+				Msg("publish match status failed")
 		}
 	}
 }
@@ -895,8 +914,10 @@ func suspendCatalogForStaleness(ctx context.Context, deps handler.Deps, log zero
 	log.Warn().
 		Int64("suspended_markets", summary.SuspendedMarkets).
 		Int64("suspended_outcomes", summary.SuspendedOutcomes).
+		Int("suspended_matches", len(summary.SuspendedMatchIDs)).
 		Msg("watchdog: active catalog suspended due to feed silence")
 	broadcastSuspended(ctx, deps, summary.SuspendedRefs, log)
+	broadcastMatchesSuspended(ctx, deps, summary.SuspendedMatchIDs, log)
 }
 
 // PrimaryLivenessKey is the Redis key services/bifrost-feed's gate reads
