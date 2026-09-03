@@ -225,7 +225,11 @@ again.
 ## 5. Runbook
 
 **Enable.** Put the key in `.env` on the box (`sed -i` a single key,
-never `cat .env`), keep `BIFROST_MODE=auto`, `make deploy`. Check:
+never `cat .env`), keep `BIFROST_MODE=auto`, `make deploy`. The deploy
+that first introduced the service did not create its container (the
+service map is read from the pre-deploy checkout; see docs/OPERATIONS.md
+step 4), so on that one occasion `make build SVC=bifrost-feed && make
+recreate SVC=bifrost-feed` followed. Check:
 
 ```bash
 curl -s http://127.0.0.1:8086/healthz | jq .gate,.feed.connected,.feed.trackedMatches
