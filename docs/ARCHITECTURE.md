@@ -119,6 +119,32 @@ models on `127.0.0.1`; the production box never connects inward. See
 (news-scraper was scoped for Phase 8 but cancelled mid-phase; the
 service and `news_articles` table were removed via migration 0003.)
 
+## Second provider: Fonbet KZ (fonbet-ingester)
+
+Traditional sports come from the public Fonbet KZ line instead of Oddin.
+`services/fonbet-ingester` is a sibling Go service (own module, duplicated
+`store` / `bus` / specifier helpers per the per-service rule) that:
+
+- polls `GET <line>/events/list?lang=ru&version=0&scopeMarket=1800` every
+  `FONBET_POLL_INTERVAL_MS` (≈1 MB gzipped, ~5.8k matches / 200k prices);
+- maps the snapshot onto the Oddin-shaped schema — `fb:match:<id>` URNs,
+  `provider_market_id = 1_000_000 + Fonbet table`, lines as `handicap` /
+  `threshold` specifiers, sub-events as `variant` (or `map=N` for esports),
+  match-winner outcomes as `1` / `2` / `3`;
+- diffs against the previous snapshot (seeded from Postgres on boot) and
+  writes only deltas: `UpsertMarketsBulk`, `UpsertOutcomesBulk`,
+  deactivation of vanished outcomes / markets, `odds_history` on price
+  moves, `XADD odds.raw` per changed outcome, `marketStatus` /
+  `matchStatus` / `score` pub/sub frames;
+- suspends every Fonbet market (`status=-1`, odds nulled) when no snapshot
+  has landed for `FONBET_STALE_SUSPEND_SECONDS` and on SIGTERM, so a dead
+  poller never leaves frozen prices bettable.
+
+Everything downstream (odds-publisher → ws-gateway → storefront, bet
+placement, bet-delay) is provider-agnostic and needs no change. What is
+**not** wired is settlement: Fonbet has no push feed for results, so
+markets never reach `-3`. See [`FONBET.md`](./FONBET.md).
+
 ## Data flow walkthroughs
 
 ### Odds update

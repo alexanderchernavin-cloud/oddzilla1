@@ -483,6 +483,22 @@ services:
       <<: *hc
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${FEED_INGESTER_HEALTH_PORT:-8081}/healthz"]
 
+  # Second odds provider: public Fonbet KZ line (traditional sports).
+  # Idles (health only) unless FONBET_ENABLED=true in .env — read
+  # docs/FONBET.md before enabling: Fonbet markets have no settlement
+  # path yet.
+  fonbet-ingester:
+    <<: *go-service
+    build:
+      context: ./services/fonbet-ingester
+      dockerfile: Dockerfile
+    environment:
+      SERVICE_NAME: fonbet-ingester
+      HEALTH_PORT: ${FONBET_INGESTER_HEALTH_PORT:-8087}
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${FONBET_INGESTER_HEALTH_PORT:-8087}/healthz"]
+
   odds-publisher:
     <<: *go-service
     build:

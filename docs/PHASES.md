@@ -937,3 +937,28 @@ Independent of phase numbering — these must all be true:
    encrypted; the off-host rsync target is still manual.)
 6. Runbook for feed outage, settlement lag, wallet-watcher chain reorg,
    ws-gateway storm.
+
+## Fonbet KZ sports feed (started 2026-09-03, off by default)
+
+Goal: add traditional sports (football, tennis, hockey, basketball, …)
+next to Oddin's esports by scraping the public Fonbet KZ line.
+
+**Delivered:**
+- `services/fonbet-ingester` — Go poller: host discovery via `urls.json`,
+  factor catalogue → market / outcome descriptions (ru + en), snapshot
+  mapper with unit tests on real fixtures, delta ingest into the existing
+  tables + `odds.raw`, staleness watchdog, SIGTERM suspend, `/healthz`.
+- Compose / dev compose / Makefile / CI wiring; `FONBET_*` env block.
+- `loadMatchWinnerOdds` accepts Fonbet match-winner rows so list cards
+  show 1 / X / 2 for Fonbet matches.
+
+**Acceptance (still open):**
+- Settlement for Fonbet markets — needs a results source (Fonbet
+  `results` endpoint or score-based resolution for main markets) and an
+  apply-once path into `settlements`. Until then tickets on Fonbet
+  markets never settle, so `FONBET_ENABLED` stays `false` on prod.
+- Storefront polish: sport icons for the new slugs
+  (`apps/web/public/sports/<slug>.svg`), traditional-sport live scoreboard
+  (Fonbet payload carries `home` / `away` / `periods` / `scoreboard.time`).
+- Load check on the CPX31 box with the full line enabled (or scope it via
+  `FONBET_ALLOWED_SPORT_IDS` / `FONBET_MAX_MATCHES`).

@@ -13,7 +13,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { and, asc, desc, eq, ilike, inArray, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, notInArray, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import {
   sports,
@@ -125,6 +125,13 @@ const awayCompetitor = alias(competitors, "away_competitor");
 // with many thresholds to choose from (Totals, Handicaps, …).
 const LINE_SPECIFIERS = ["threshold", "handicap"] as const;
 type LineSpec = (typeof LINE_SPECIFIERS)[number];
+
+// provider_market_id namespace of the Fonbet KZ feed
+// (services/fonbet-ingester, docs/FONBET.md): 1_000_000 + Fonbet table
+// number. Oddin ids stay far below this. Fonbet's match-winner tables are
+// the only Fonbet markets whose outcome ids are the canonical "1" / "2" /
+// "3" — every other Fonbet outcome id is a numeric factor id >= 100.
+const FONBET_PMID_BASE = 1_000_000;
 
 // lineInfo returns the line-specifier present on the market (if any)
 // plus a grouping key that collapses markets that differ only in their
@@ -527,8 +534,18 @@ async function loadMatchWinnerOdds(
     .where(
       and(
         inArray(markets.matchId, matchIds),
-        eq(markets.providerMarketId, 1),
         eq(markets.status, 1),
+        // Oddin's match winner is provider_market_id 1. Fonbet match
+        // winners live in the FONBET_PMID_BASE namespace and are the only
+        // Fonbet markets using outcome ids "1" / "2" / "3", so the id
+        // filter selects exactly the match-winner rows for both providers.
+        or(
+          eq(markets.providerMarketId, 1),
+          and(
+            gte(markets.providerMarketId, FONBET_PMID_BASE),
+            inArray(marketOutcomes.outcomeId, ["1", "2", "3"]),
+          ),
+        ),
       ),
     );
 
