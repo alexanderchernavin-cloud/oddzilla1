@@ -76,6 +76,13 @@ That's the whole deploy. The target wraps
    `.deploy/last-sha`) and `origin/main`.
 4. Map changed files → affected services via
    [`infra/deploy/detect-services.sh`](../infra/deploy/detect-services.sh).
+   **This runs from the checkout as it is BEFORE the fast-forward**, so the
+   deploy that first adds a compose service uses a `detect-services.sh` that
+   has never heard of it: the new container is neither built nor created,
+   even though every sibling is rebuilt (support-ai-bot 2026-09-01,
+   bifrost-feed 2026-09-03). After such a deploy finishes, run
+   `make build SVC=<new> && make recreate SVC=<new>` once; from the next
+   deploy on the script knows the service.
 5. `git reset --hard origin/main`.
 6. If the diff includes any `packages/db/migrations/*.sql`: take a pre-deploy
    `pg_dump` to `.deploy/backups/<sha>.sql.gz` (keep only the most recent —
