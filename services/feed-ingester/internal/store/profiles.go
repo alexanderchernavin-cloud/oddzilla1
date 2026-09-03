@@ -66,6 +66,27 @@ func UpsertCompetitorProfile(ctx context.Context, pool *pgxpool.Pool, p *oddinxm
 	return tx.Commit(ctx)
 }
 
+// SeedPlayerProfileIfMissing records a player's display name when no
+// profile row exists yet. Bifrost's player-prop outcomes carry the name
+// next to the od:player URN, so the backup feed can fill the roster gap
+// the REST competitor profile would otherwise leave while Oddin's REST is
+// unavailable. competitor_urn stays NULL (Bifrost does not say which team
+// the player belongs to); the REST profile upsert overwrites the whole row
+// when it next succeeds.
+func SeedPlayerProfileIfMissing(ctx context.Context, pool *pgxpool.Pool, urn, name string) error {
+	if urn == "" || name == "" {
+		return nil
+	}
+	_, err := pool.Exec(ctx, `
+		INSERT INTO player_profiles (urn, name, updated_at)
+		VALUES ($1, $2, NOW())
+		ON CONFLICT (urn) DO NOTHING`, urn, name)
+	if err != nil {
+		return fmt.Errorf("seed player profile %s: %w", urn, err)
+	}
+	return nil
+}
+
 // CompetitorProfileExists returns true when we already cached a profile
 // for this URN — used to skip redundant REST fetches for teams we've
 // already seen recently.

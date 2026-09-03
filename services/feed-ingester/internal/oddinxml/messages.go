@@ -116,7 +116,12 @@ type Market struct {
 	StartTime          *int64    `xml:"start_time,attr"` // bet_cancel window (ms)
 	EndTime            *int64    `xml:"end_time,attr"`
 	FavouriteIsHome    string    `xml:"favourite,attr"`
-	Outcomes           []Outcome `xml:"outcome"`
+	// Name is not part of Oddin's schema. services/bifrost-feed sets it to
+	// the rendered market name from Bifrost so a market type first seen
+	// while the feed source is Backup can seed market_descriptions; Oddin's
+	// own messages leave it empty and the handler then does nothing.
+	Name     string    `xml:"name,attr"`
+	Outcomes []Outcome `xml:"outcome"`
 }
 
 type Outcome struct {

@@ -81,7 +81,19 @@ Two additions ride alongside the AMQP path; see
   for it before re-emitting). Back to `auto` / `prod`: reconnect-style
   flush + 24 h replay, then resume applying. A boot-time `backup` value
   is adopted without a flush. `/healthz` reports `feedSource` and
-  `amqpApplied`.
+  `amqpApplied`. While on `backup` no Oddin feed REST endpoint is called:
+  the resolver's REST gate sends fixtures to Bifrost and skips tournament
+  info / competitor profiles, descriptions refresh + competitor backfill
+  + recovery requests are skipped, an AMQP reconnect neither flushes nor
+  replays, and the alive watchdog guards bifrost-feed's heartbeat and
+  socket instead of AMQP. Switching back re-enables REST and immediately
+  refreshes descriptions + competitor profiles.
+- Backup-sourced `odds_change` documents carry `name` on markets (the
+  Bifrost group name; seeds `market_descriptions` when no row exists) and
+  on outcomes (selection names → `market_outcomes.name`; player URNs also
+  seed `player_profiles`). Oddin's own messages carry neither, so the
+  seeding is a no-op for the primary path, and REST overwrites the seeds
+  on its next refresh.
 - `store.UpdateTournamentRiskTier` skips rows with `risk_tier_locked`
   (migration 0094): an operator-assigned tier on `/admin/tournaments`
   survives the per-fixture refresh and `-backfill-tournament-metadata`.

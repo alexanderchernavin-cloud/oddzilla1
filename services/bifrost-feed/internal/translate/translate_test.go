@@ -41,11 +41,13 @@ type oddsChange struct {
 			ID         int    `xml:"id,attr"`
 			Specifiers string `xml:"specifiers,attr"`
 			Status     int    `xml:"status,attr"`
+			Name       string `xml:"name,attr"`
 			Outcomes   []struct {
 				ID          string `xml:"id,attr"`
 				Odds        string `xml:"odds,attr"`
 				Active      *int   `xml:"active,attr"`
 				Probability string `xml:"probabilities,attr"`
+				Name        string `xml:"name,attr"`
 			} `xml:"outcome"`
 		} `xml:"market"`
 	} `xml:"odds"`
@@ -99,6 +101,10 @@ func sampleMatch(state string) *bifrost.Match {
 		MarketGroups: []bifrost.MarketGroup{
 			{
 				Name: "Winner",
+				Selections: []bifrost.Selection{
+					{ID: b64("market_group_selection/" + urn + "/1|variant=way:two/1"), Name: "PuckChamp"},
+					{ID: b64("market_group_selection/" + urn + "/1|variant=way:two/2"), Name: "Team Spirit Academy"},
+				},
 				Markets: []bifrost.Market{{
 					ID:    b64("market/" + urn + "/1|variant=way:two/1-variant=way:two|way=two"),
 					State: bifrost.MarketOpen,
@@ -196,6 +202,16 @@ func TestOddsChangeRoundTrip(t *testing.T) {
 	}
 	if winner.Outcomes[0].Odds != "9" || winner.Outcomes[1].Odds != "1.03" {
 		t.Fatalf("odds format: %+v", winner.Outcomes)
+	}
+	if winner.Name != "Winner" {
+		t.Fatalf("market must carry the Bifrost group name: %q", winner.Name)
+	}
+	if winner.Outcomes[0].Name != "PuckChamp" || winner.Outcomes[1].Name != "Team Spirit Academy" {
+		t.Fatalf("outcomes must carry the selection names: %+v", winner.Outcomes)
+	}
+	handicapNoSel := got.Odds.Markets[1]
+	if handicapNoSel.Outcomes[0].Name != "" {
+		t.Fatalf("a group without selections must not invent outcome names: %+v", handicapNoSel.Outcomes[0])
 	}
 	if *winner.Outcomes[0].Active != 1 {
 		t.Fatalf("open outcome must be active: %+v", winner.Outcomes[0])
