@@ -101,12 +101,28 @@ backoffice switch `feed:source` (`PUT /admin/feed/source`, the **Feed
 source** control on `/admin/feed`, audit-logged) selects `auto` (default),
 `prod` (backup never publishes) or `backup` (backup forced); when unset,
 the env default `BIFROST_MODE` applies (`auto` / `active` / `off`). In
-auto, the gate publishes only when feed-ingester's liveness stamp
-`feed:primary:last_msg_unix` is older than `BIFROST_TAKEOVER_AFTER_SECONDS`
-(45 s; the alive watchdog suspends the catalogue at 20 s, so the backup
-always arrives after the suspend, never racing it) and stands down the
-instant the stamp is fresh. Both sides are asymmetric on purpose: slow to
-take over, immediate to yield.
+auto, the primary counts as alive while EITHER of feed-ingester's two
+stamps is fresh: `feed:primary:last_msg_unix` (every AMQP delivery, at
+most once a second) or `feed:primary:connected_unix` (every 2 s with a
+15 s TTL while the AMQP connection is open, deleted on disconnect). The
+gate publishes only once both have been stale past
+`BIFROST_TAKEOVER_AFTER_SECONDS` (45 s; the alive watchdog suspends the
+catalogue at 20 s, so the backup always arrives after the suspend, never
+racing it) and stands down the instant one is fresh. Both sides are
+asymmetric on purpose: slow to take over, immediate to yield.
+
+The connection stamp is there because deliveries alone gave a false
+positive on the very first production restart (2026-09-03): feed-ingester's
+OnConnect flush of ~10k markets took 76 s and Oddin's replay took another
+80 s to start flowing, so the connection was open but delivery-free for
+over two minutes; the backup took over at 46 s, re-fed 152 snapshots and
+stood down 33 s later when data arrived — harmless (identical odds, no
+settlements) but wrong. Every outage the backup exists for (token
+revoked, broker unreachable, network partition) drops the connection and
+therefore stops the stamp; a producer-side Oddin outage with the broker
+still up does not, and for that case the alive watchdog still suspends the
+catalogue and the operator can force **Backup Oddin** if Bifrost is still
+serving.
 
 **Forced backup is a real source switch.** feed-ingester polls the same
 key: on `→ backup` it keeps the AMQP connection (so the transport still

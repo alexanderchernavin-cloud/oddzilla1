@@ -9,10 +9,17 @@
 //       backup  → backup Oddin forced; publish regardless of AMQP
 //     When the key is absent the env default BIFROST_MODE applies.
 //
-//  2. The primary liveness stamp, Redis `feed:primary:last_msg_unix`,
-//     written by feed-ingester on every AMQP delivery. In auto mode the
-//     backup publishes while the stamp is older than the takeover
-//     threshold and stands down the moment it is fresh again.
+//  2. The primary liveness stamps written by feed-ingester:
+//     `feed:primary:last_msg_unix` on every AMQP delivery, and
+//     `feed:primary:connected_unix` every 2 s (15 s TTL, deleted on
+//     disconnect) for as long as the AMQP connection is open. In auto
+//     mode the primary counts as alive while EITHER is fresh; the backup
+//     publishes once both have been stale past the takeover threshold
+//     and stands down the moment one is fresh again. The connection
+//     stamp exists because a restart leaves the connection open but
+//     delivery-free for 60-100 s (flush + Oddin's replay ramp), which on
+//     2026-09-03 triggered a 33 s takeover on a healthy feed; every real
+//     outage the backup is for drops the connection.
 //
 // Forced backup waits for feed-ingester's flush acknowledgement
 // (`feed:source:flushed_unix` at or after `feed:source:switched_unix`)
@@ -45,11 +52,18 @@ import (
 // Redis keys shared with feed-ingester (services/feed-ingester/cmd/
 // feed-ingester/main.go) and the api (services/api/src/modules/admin/feed.ts).
 const (
-	PrimaryLivenessKey = "feed:primary:last_msg_unix"
-	SourceKey          = "feed:source"
-	SourceSwitchedKey  = "feed:source:switched_unix"
-	SourceFlushedKey   = "feed:source:flushed_unix"
+	PrimaryLivenessKey  = "feed:primary:last_msg_unix"
+	PrimaryConnectedKey = "feed:primary:connected_unix"
+	SourceKey           = "feed:source"
+	SourceSwitchedKey   = "feed:source:switched_unix"
+	SourceFlushedKey    = "feed:source:flushed_unix"
 )
+
+// connectedFresh bounds how old the connection stamp may be and still
+// count; feed-ingester refreshes it every 2 s with a 15 s TTL, so a live
+// key is always inside this window and a missed refresh or two is
+// tolerated.
+const connectedFresh = 20 * time.Second
 
 // Source values written by the backoffice.
 const (
@@ -76,6 +90,7 @@ type Status struct {
 	Active               bool       `json:"active"`
 	WaitingForFlush      bool       `json:"waitingForFlush"`
 	Since                time.Time  `json:"since"`
+	PrimaryConnected     bool       `json:"primaryConnected"`
 	PrimaryLastMessageAt *time.Time `json:"primaryLastMessageAt,omitempty"`
 	PrimaryStaleSeconds  *int64     `json:"primaryStaleSeconds,omitempty"`
 	TakeoverAfterSeconds int        `json:"takeoverAfterSeconds"`
@@ -90,16 +105,17 @@ type Gate struct {
 	bootedAt    time.Time
 	log         zerolog.Logger
 
-	mu          sync.RWMutex
-	mode        config.Mode
-	source      string
-	active      bool
-	waiting     bool
-	since       time.Time
-	generation  uint64
-	lastPrimary time.Time
-	transitions int64
-	lastErr     string
+	mu            sync.RWMutex
+	mode          config.Mode
+	source        string
+	active        bool
+	waiting       bool
+	since         time.Time
+	generation    uint64
+	lastPrimary   time.Time
+	lastConnected time.Time
+	transitions   int64
+	lastErr       string
 }
 
 func New(rdb *redis.Client, defaultMode config.Mode, takeoverAfter time.Duration, log zerolog.Logger) *Gate {
@@ -134,10 +150,11 @@ func (g *Gate) Run(ctx context.Context) {
 }
 
 type inputs struct {
-	primary  time.Time
-	source   string
-	switched time.Time
-	flushed  time.Time
+	primary   time.Time
+	connected time.Time
+	source    string
+	switched  time.Time
+	flushed   time.Time
 }
 
 func (g *Gate) evaluate(ctx context.Context) {
@@ -153,6 +170,7 @@ func (g *Gate) evaluate(ctx context.Context) {
 	}
 	g.lastErr = ""
 	g.lastPrimary = in.primary
+	g.lastConnected = in.connected
 	g.source = in.source
 
 	mode := g.defaultMode
@@ -194,6 +212,12 @@ func (g *Gate) evaluate(ctx context.Context) {
 		} else {
 			silence = time.Since(in.primary)
 		}
+		// An open AMQP connection is proof of life even with no deliveries
+		// yet (post-restart flush + replay ramp); the outages the backup
+		// exists for all drop the connection.
+		if !in.connected.IsZero() && time.Since(in.connected) < connectedFresh {
+			silence = 0
+		}
 		want = silence >= g.threshold
 		if want != g.active {
 			if want {
@@ -223,11 +247,11 @@ func (g *Gate) flip(active bool) {
 
 func (g *Gate) read(ctx context.Context) (inputs, error) {
 	var in inputs
-	vals, err := g.rdb.MGet(ctx, PrimaryLivenessKey, SourceKey, SourceSwitchedKey, SourceFlushedKey).Result()
+	vals, err := g.rdb.MGet(ctx, PrimaryLivenessKey, SourceKey, SourceSwitchedKey, SourceFlushedKey, PrimaryConnectedKey).Result()
 	if err != nil && !errors.Is(err, redis.Nil) {
 		return in, err
 	}
-	if len(vals) != 4 {
+	if len(vals) != 5 {
 		return in, errors.New("mget returned unexpected arity")
 	}
 	in.primary = unixField(vals[0])
@@ -236,6 +260,7 @@ func (g *Gate) read(ctx context.Context) (inputs, error) {
 	}
 	in.switched = unixField(vals[2])
 	in.flushed = unixField(vals[3])
+	in.connected = unixField(vals[4])
 	return in, nil
 }
 
@@ -279,6 +304,7 @@ func (g *Gate) Snapshot() Status {
 		TakeoverAfterSeconds: int(g.threshold / time.Second),
 		Transitions:          g.transitions,
 		LastRedisError:       g.lastErr,
+		PrimaryConnected:     !g.lastConnected.IsZero() && time.Since(g.lastConnected) < connectedFresh,
 	}
 	if !g.lastPrimary.IsZero() {
 		lp := g.lastPrimary

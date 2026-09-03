@@ -349,7 +349,7 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
   // the backup is publishing, and what it has published.
   app.get("/admin/feed/backup-status", async (request) => {
     request.requireRole("admin");
-    const [hash, primaryRaw, sourceRaw, switchedRaw, switchedBy, appliedRaw, flushedRaw] =
+    const [hash, primaryRaw, sourceRaw, switchedRaw, switchedBy, appliedRaw, flushedRaw, connectedRaw] =
       await Promise.all([
         app.redis.hgetall("bifrost:feed:status"),
         app.redis.get("feed:primary:last_msg_unix"),
@@ -358,6 +358,9 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
         app.redis.get(FEED_SOURCE_SWITCHED_BY_KEY),
         app.redis.get(FEED_SOURCE_APPLIED_KEY),
         app.redis.get(FEED_SOURCE_FLUSHED_KEY),
+        // Refreshed every 2 s with a 15 s TTL while feed-ingester holds
+        // an open AMQP connection; absent = disconnected.
+        app.redis.get("feed:primary:connected_unix"),
       ]);
     const nowUnix = Math.floor(Date.now() / 1000);
     const num = (key: string): number | null => {
@@ -413,6 +416,10 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
         primaryLast != null && Number.isFinite(primaryLast) ? primaryLast : null,
       primaryStaleSeconds:
         primaryLast != null && Number.isFinite(primaryLast) ? nowUnix - primaryLast : null,
+      primaryConnected: (() => {
+        const c = toUnix(connectedRaw);
+        return c != null && nowUnix - c < 20;
+      })(),
     };
   });
 

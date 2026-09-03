@@ -54,6 +54,12 @@ type Consumer struct {
 	handler   Handler
 	onConnect OnConnect
 	log       zerolog.Logger
+
+	// OnDisconnect is invoked once each time an established connection
+	// ends, for any reason, before the reconnect backoff. Optional; set
+	// after New. feed-ingester uses it to drop the "AMQP connected"
+	// liveness stamp the backup feed's gate reads.
+	OnDisconnect func()
 }
 
 func New(cfg Config, handler Handler, onConnect OnConnect, log zerolog.Logger) *Consumer {
@@ -123,6 +129,11 @@ func (c *Consumer) runOnce(ctx context.Context) error {
 		return fmt.Errorf("dial: %w", err)
 	}
 	defer conn.Close()
+	defer func() {
+		if c.OnDisconnect != nil {
+			c.OnDisconnect()
+		}
+	}()
 
 	ch, err := conn.Channel()
 	if err != nil {
