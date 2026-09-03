@@ -273,7 +273,21 @@ func Grade(mk Market, idx *fonbet.Index, pmidBase, dcBase int, label string, spo
 			if side == "" {
 				return nil, false, "unknown winner outcome " + id
 			}
-			won := (side == "1" && h > a) || (side == "2" && a > h) || (side == "X" && h == a)
+			var won bool
+			switch side {
+			case "1":
+				won = h > a
+			case "2":
+				won = a > h
+			case "X":
+				won = h == a
+			case "1X": // double-chance cells stay in the sub-event winner market
+				won = h >= a
+			case "12":
+				won = h != a
+			case "X2":
+				won = a >= h
+			}
 			outs = append(outs, Outcome{ID: id, Result: boolResult(won)})
 		}
 		return sortOutcomes(outs), true, ""
@@ -339,10 +353,14 @@ func winnerSide(id string, idx *fonbet.Index) string {
 	if f, err := strconv.Atoi(id); err == nil {
 		if fm := idx.Factors[f]; fm != nil {
 			switch fm.Label {
-			case "1", "2":
+			case "1", "2", "12":
 				return fm.Label
 			case "X", "Х":
 				return "X"
+			case "1X", "1Х":
+				return "1X"
+			case "X2", "Х2":
+				return "X2"
 			}
 		}
 	}

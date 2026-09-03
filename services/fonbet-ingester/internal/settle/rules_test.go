@@ -127,6 +127,17 @@ func TestGradeFootball(t *testing.T) {
 	if !ok || outs[0] != (Outcome{"over", "0", ""}) || outs[1] != (Outcome{"under", "1", ""}) {
 		t.Fatalf("half total: %+v", outs)
 	}
+	// 1st-half winner keeps factor ids and double-chance cells: 1-1 → X, 1X, X2 win
+	outs, ok, why = Grade(Market{PMID: 1000120, Specs: map[string]string{"variant": "fb:100201"}, OutcomeIDs: []string{"921", "922", "923", "924", "1571", "925"}}, idx, 1000000, 1900000, "1-й тайм", 1, ss)
+	if !ok || len(outs) != 6 {
+		t.Fatalf("half winner: %+v %s", outs, why)
+	}
+	for _, o := range outs {
+		want := map[string]string{"921": "0", "922": "1", "923": "0", "924": "1", "1571": "0", "925": "1"}[o.ID]
+		if o.Result != want {
+			t.Fatalf("half winner outcome %s = %s, want %s", o.ID, o.Result, want)
+		}
+	}
 	// corners total 9.5 → 10 corners → over
 	outs, ok, _ = Grade(Market{PMID: 1000305, Specs: map[string]string{"threshold": "9.5", "variant": "fb:400100"}, OutcomeIDs: []string{"over", "under"}}, idx, 1000000, 1900000, "угловые", 1, ss)
 	if !ok || outs[0] != (Outcome{"over", "1", ""}) {
