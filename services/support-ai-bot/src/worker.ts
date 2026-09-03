@@ -57,6 +57,7 @@ async function handleThread(thread: SupportBotPendingThread): Promise<void> {
   // so the assistant can look anything up but can never change anything.
   const messages: ChatMessage[] = buildMessages(thread);
   let finalContent = "";
+  let lastFinishReason: string | null = null;
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
     const allowTools = round < MAX_TOOL_ROUNDS;
@@ -75,6 +76,22 @@ async function handleThread(thread: SupportBotPendingThread): Promise<void> {
       });
       return;
     }
+    lastFinishReason = completion.finishReason;
+    // One line per model turn so a truncated reply (finish_reason "length")
+    // is distinguishable from a model that genuinely returned nothing. Before
+    // this the 2026-09-02 "check my last bets" hand-off looked identical to
+    // an intentional escalation in the log.
+    logger.info({
+      event: "completion",
+      threadId: thread.threadId,
+      round,
+      finishReason: completion.finishReason,
+      toolCalls: completion.toolCalls.length,
+      contentChars: completion.content.length,
+      promptTokens: completion.usage.promptTokens,
+      completionTokens: completion.usage.completionTokens,
+      reasoningTokens: completion.usage.reasoningTokens,
+    });
 
     if (allowTools && completion.toolCalls.length > 0) {
       messages.push({
@@ -108,8 +125,16 @@ async function handleThread(thread: SupportBotPendingThread): Promise<void> {
   }
 
   if (!finalContent) {
-    await api.escalate(thread.threadId, "empty_reply", DEFAULT_HOLDING_MESSAGE);
-    logger.warn({ event: "empty_reply", threadId: thread.threadId });
+    // finish_reason "length" here means BOT_MAX_TOKENS is too small for the
+    // model's reasoning pass; raise it rather than blaming the model.
+    const reason =
+      lastFinishReason === "length" ? "empty_reply_truncated" : "empty_reply";
+    await api.escalate(thread.threadId, reason, DEFAULT_HOLDING_MESSAGE);
+    logger.warn({
+      event: "empty_reply",
+      threadId: thread.threadId,
+      finishReason: lastFinishReason,
+    });
     return;
   }
   if (finalContent.startsWith(ESCALATE_PREFIX)) {

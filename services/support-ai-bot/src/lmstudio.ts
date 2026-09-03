@@ -34,13 +34,27 @@ export interface ToolCall {
   arguments: string;
 }
 
+export interface CompletionUsage {
+  promptTokens: number | null;
+  completionTokens: number | null;
+  /** Hidden reasoning tokens, when the endpoint reports them (GLM does). */
+  reasoningTokens: number | null;
+}
+
 export interface Completion {
   content: string;
   toolCalls: ToolCall[];
+  /** "stop" | "tool_calls" | "length" | ... as reported by the endpoint.
+   * "length" means the reply was cut off by max_tokens. On a reasoning
+   * model that usually surfaces as EMPTY content, because the internal
+   * reasoning pass consumed the whole budget before any text was emitted. */
+  finishReason: string | null;
+  usage: CompletionUsage;
 }
 
 interface RawCompletion {
   choices?: Array<{
+    finish_reason?: string | null;
     message?: {
       content?: string | null;
       tool_calls?: Array<{
@@ -49,6 +63,15 @@ interface RawCompletion {
       }>;
     };
   }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    completion_tokens_details?: { reasoning_tokens?: number };
+  };
+}
+
+function numOrNull(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
 export class LmStudio {
@@ -107,13 +130,25 @@ export class LmStudio {
         throw new Error(`lm_studio_http_${res.status}: ${text.slice(0, 200)}`);
       }
       const body = (await res.json()) as RawCompletion;
-      const msg = body.choices?.[0]?.message;
+      const choice = body.choices?.[0];
+      const msg = choice?.message;
       const toolCalls: ToolCall[] = (msg?.tool_calls ?? []).map((tc, i) => ({
         id: tc.id ?? `call_${i}`,
         name: tc.function?.name ?? "",
         arguments: tc.function?.arguments ?? "{}",
       }));
-      return { content: msg?.content ?? "", toolCalls };
+      return {
+        content: msg?.content ?? "",
+        toolCalls,
+        finishReason: choice?.finish_reason ?? null,
+        usage: {
+          promptTokens: numOrNull(body.usage?.prompt_tokens),
+          completionTokens: numOrNull(body.usage?.completion_tokens),
+          reasoningTokens: numOrNull(
+            body.usage?.completion_tokens_details?.reasoning_tokens,
+          ),
+        },
+      };
     } finally {
       clearTimeout(timer);
     }
