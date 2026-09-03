@@ -18,6 +18,7 @@ import { CombiBoostConfigProvider } from "@/lib/combi-boost-config";
 import { SportLogosProvider } from "@/lib/sport-logos";
 import { NotificationProvider } from "@/lib/notifications";
 import { SessionUserProvider } from "@/lib/session-user";
+import { WsSessionSync } from "@/lib/ws-session-sync";
 import { WalletProvider } from "@/lib/wallets";
 import { ZillapassProvider } from "@/lib/zillapass";
 import { getSessionUser } from "@/lib/auth";
@@ -62,6 +63,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
   return (
     <MobileDrawersProvider>
       <SessionUserProvider userId={user?.id ?? null}>
+      <WsSessionSync />
       <MatchPageProvider>
       <SidePanelProvider>
       <CombiBoostConfigProvider config={combiBoostConfig}>

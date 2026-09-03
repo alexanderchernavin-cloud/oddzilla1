@@ -48,7 +48,7 @@ Oddin AMQP+REST ── feed-ingester (Go) ──► Postgres (markets, outcomes,
 Redis Streams ──► odds-publisher (Go) ──► Postgres (published_odds)
                                        └─► Redis pub/sub (odds:match:{id})
 
-Redis pub/sub ──► ws-gateway (TS) ──► browsers (WebSocket, 5 msg/s/client cap)
+Redis pub/sub ──► ws-gateway (TS) ──► browsers (WebSocket, 1 MiB/socket buffer cap)
                                        │
                                        └─ also user:{id} channels for ticket frames
 
@@ -208,10 +208,41 @@ These rules are load-bearing. Breaking them causes money or data loss.
    reconnects. Pub/sub may drop; streams do not. Two pub/sub channel
    namespaces in use:
    - `odds:match:{matchId}` — one publisher (`odds-publisher`), fan-out
-     via `ws-gateway` with 5 msg/s/client token bucket.
+     via `ws-gateway`. Not rate-limited: a sportsbook cannot drop price
+     ticks, and the outbound token bucket that used to be here was
+     removed in `c005882`.
    - `user:{userId}` — two publishers (`api` on placement, `bet-delay` /
      `settlement` on lifecycle), fan-out unrate-limited (low volume,
      high-value-to-user ticket frames).
+
+   **The fanout is bounded by buffer, not by rate.** `ws.send()` never
+   blocks — a consumer that stops draining (throttled phone, laptop
+   asleep on a half-open TCP connection still reporting `readyState ===
+   OPEN`, OS-frozen tab) has every subsequent frame queued in the
+   sender, reachable, and therefore un-collectable. That is unbounded
+   heap growth keyed to FEED VOLUME rather than client count, and it
+   OOM-killed the 256 MiB gateway four times on 2026-09-03 while it
+   served a couple of dozen sockets. Every fan-out send goes through
+   `sendToClient()` in
+   [`services/ws-gateway/src/server.ts`](./services/ws-gateway/src/server.ts),
+   which disconnects a socket past `WS_MAX_BUFFERED_BYTES` (1 MiB)
+   rather than queueing behind it. Disconnecting is the correct
+   remedy precisely because of the first line of this invariant: the
+   browser reconnects, resubscribes, and re-reads current prices from
+   Postgres. Silently dropping frames instead would leave that client
+   quoting a price the book has already moved off, with no signal.
+
+   **A WS socket's identity is fixed at upgrade time.** ws-gateway reads
+   the `oddzilla_access` cookie once, during the HTTP upgrade, and never
+   re-reads it — so a socket opened while logged out never joins its
+   `user:{id}` channel, no matter what happens afterwards in the tab.
+   Signing in is a client-side route change, so nothing reopens it on
+   its own. [`ws-session-sync.tsx`](./apps/web/src/lib/ws-session-sync.tsx)
+   compares the gateway's `hello.userId` against the SSR-resolved
+   session and reconnects on a mismatch (bounded — an expired cookie
+   must not spin). Anything that depends on a `user:{id}` frame needs a
+   transport-independent fallback anyway; see the ticket poll in
+   [`bet-slip-rail.tsx`](./apps/web/src/components/shell/bet-slip-rail.tsx).
 
    **A stream consumer must survive losing its consumer group.** Production
    Redis is `maxmemory 256mb` + `allkeys-lru`, so it can evict a stream key
@@ -308,6 +339,8 @@ These rules are load-bearing. Breaking them causes money or data loss.
 | Bet-delay evaluator + tests | `services/bet-delay/internal/worker/worker.go` |
 | Chain scanners (Go) | `services/wallet-watcher/internal/{ethereum,tron}/`; shared confirmation tick in `internal/deposits/` |
 | Frontend live-odds + ticket WS | [`apps/web/src/lib/use-live-odds.ts`](./apps/web/src/lib/use-live-odds.ts), [`use-ticket-stream.ts`](./apps/web/src/lib/use-ticket-stream.ts) |
+| WS socket identity vs session | [`apps/web/src/lib/ws-session-sync.tsx`](./apps/web/src/lib/ws-session-sync.tsx) — mounted in the `(main)` layout, publishes the SSR-resolved user id into the shared socket via `setExpectedSessionUser()`. The gateway authenticates ONCE at upgrade (invariant 7), so a socket opened logged-out stays anonymous through a login and never receives `user:{id}` ticket frames; the same happens when a tab reconnects after a gateway restart with an already-expired 15-minute access cookie. On `hello.userId !== expectedUserId` the connection closes itself and the reconnect re-reads the cookie, capped at `MAX_AUTH_RECONNECTS` so an expired cookie (only a navigation through the Next.js middleware refreshes it) can't spin. |
+| Ticket resolution during the bet-delay window | [`bet-slip-rail.tsx`](./apps/web/src/components/shell/bet-slip-rail.tsx) — `applyTicketResolution()` is fed by TWO transports: the `user:{id}` WS frame (fast path) and an HTTP poll of `GET /bets/:id` starting just after `notBeforeTs`. The poll is not redundancy for its own sake: when the frame never arrived the button sat on "Placing…", timed out, and reverted to "Place bet" **with the slip still populated** while the bet was already accepted and the stake debited. Nothing upstream catches the resulting second click — every submit mints a fresh `idempotencyKey`, so the retry is a genuinely new ticket. Observed in production 2026-09-03. |
 | Frontend bet slip store | [`apps/web/src/lib/bet-slip.tsx`](./apps/web/src/lib/bet-slip.tsx) |
 | Bet slip right-rail UI | [`apps/web/src/components/shell/bet-slip-rail.tsx`](./apps/web/src/components/shell/bet-slip-rail.tsx) |
 | Shell components | [`apps/web/src/components/shell/`](./apps/web/src/components/shell/) — `top-bar.tsx`, `top-bar-search.tsx` (debounced global search popover), `sidebar.tsx` (auto-expands tournament sub-tree under the active sport), `bet-slip-rail.tsx`, `theme-toggle.tsx`, `zillapass-indicator.tsx` (signed-in-only progress chip beside the search bar — polls `GET /zillapass/me` every 30 s, renders `completed/total` + a mini progress bar; click opens a popover with per-task progress and an "Open ZillaPass" link to the full page) |
