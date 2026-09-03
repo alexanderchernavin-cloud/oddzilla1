@@ -78,3 +78,18 @@ lock contention bounded. Each chunk:
 ```bash
 go run ./cmd/settlement
 ```
+
+## Backup input (Bifrost)
+
+`internal/backupstream` consumes the `oddin.backup` Redis stream written
+by `services/bifrost-feed` (consumer group `settlement`, routing key
+`bifrost.backup`). Entries are Oddin-shaped `bet_settlement` documents
+synthesised from Bifrost's terminal outcome statuses while the AMQP feed
+is silent; they go through the same `Settler.Handle`, so the apply-once
+insert, the outcome cascade and the per-ticket payout path are identical.
+A backup settlement's payload hash can differ from the one Oddin later
+replays (specifier string order, INACTIVE outcomes omitted), which yields
+a second `settlements` row and no other effect: every downstream write is
+idempotent. Cancel and rollback messages are not synthesised (deferred;
+see [`docs/BIFROST_BACKUP_FEED.md`](../../docs/BIFROST_BACKUP_FEED.md)).
+`BACKUP_STREAM_ENABLED=false` detaches the consumer.

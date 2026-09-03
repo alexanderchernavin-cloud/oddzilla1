@@ -32,6 +32,27 @@ type Config struct {
 	// Oddin — all optional. If Token is empty, the ingester boots idle
 	// (health endpoint only) until credentials arrive.
 	Oddin OddinConfig
+
+	// Bifrost is the fixture-metadata fallback for the auto-mapper: when
+	// Oddin's REST meta API fails, unknown matches are resolved through
+	// Bifrost's GraphQL `match` query instead of landing as placeholders
+	// under `unclassified`. Optional; empty API key disables it. Shares
+	// its env vars with services/bifrost-feed so one .env block serves both.
+	Bifrost BifrostConfig
+
+	// BackupStreamEnabled attaches the `oddin.backup` Redis stream consumer
+	// that feeds bifrost-feed's synthesised odds_change / fixture_change
+	// messages into the same handler the AMQP path uses. On by default;
+	// BACKUP_STREAM_ENABLED=false detaches it.
+	BackupStreamEnabled bool
+}
+
+type BifrostConfig struct {
+	Enabled bool
+	URL     string
+	APIKey  string
+	Locale  string
+	Origin  string
 }
 
 type OddinConfig struct {
@@ -97,6 +118,15 @@ func Load() (Config, error) {
 	cfg.Oddin.BlockedSportSlugs = parseBlockedSports(
 		getEnvDefault("BLOCKED_ODDIN_SPORT_SLUGS", "efootballbots,ebasketballbots"),
 	)
+
+	cfg.Bifrost = BifrostConfig{
+		URL:    getEnvDefault("BIFROST_API_URL", "https://api-bifrost.oddin.gg/main/bifrost/query"),
+		APIKey: os.Getenv("BIFROST_API_KEY"),
+		Locale: getEnvDefault("BIFROST_LOCALE", "en"),
+		Origin: getEnvDefault("BIFROST_ORIGIN", "https://bifrost.oddin.gg"),
+	}
+	cfg.Bifrost.Enabled = cfg.Bifrost.APIKey != ""
+	cfg.BackupStreamEnabled = !strings.EqualFold(getEnvDefault("BACKUP_STREAM_ENABLED", "true"), "false")
 
 	return cfg, nil
 }

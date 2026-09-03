@@ -30,6 +30,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/oddzilla/feed-ingester/internal/bifrost"
 	"github.com/oddzilla/feed-ingester/internal/oddinrest"
 	"github.com/oddzilla/feed-ingester/internal/oddinxml"
 	"github.com/oddzilla/feed-ingester/internal/store"
@@ -48,6 +49,7 @@ var ErrSportBlocked = errors.New("sport is on blocklist")
 type Resolver struct {
 	st  *store.Store
 	rc  *oddinrest.Client // may be nil → fallback-only mode
+	bf  *bifrost.Client   // optional second fixture source; nil = REST only
 	log zerolog.Logger
 
 	defaultSportID    int
@@ -79,6 +81,16 @@ func New(
 		defaultCategoryID: fallbackCategoryID,
 		blockedSportSlugs: blockedSportSlugs,
 	}
+}
+
+// WithBifrostFallback registers Bifrost as the second fixture source. When
+// the REST fixture lookup fails (meta API down, 5xx, network) the resolver
+// asks Bifrost's GraphQL `match` query for the same hierarchy before
+// giving up and creating a placeholder. Team icons that ride along seed
+// competitor_profiles so the storefront still shows crests.
+func (r *Resolver) WithBifrostFallback(c *bifrost.Client) *Resolver {
+	r.bf = c
+	return r
 }
 
 // sportBlocked returns true when the given Oddin FixtureSport should be
@@ -130,8 +142,9 @@ func (r *Resolver) ResolveMatch(ctx context.Context, reqCtx MatchContext, rawPay
 		return existing, nil
 	}
 
-	// Unknown match — fetch the full hierarchy from REST.
-	fixture, fetchErr := r.fetchFixture(ctx, reqCtx.MatchURN)
+	// Unknown match — fetch the full hierarchy from REST, or from Bifrost
+	// when REST cannot answer.
+	fixture, icons, fetchErr := r.fetchFixtureAny(ctx, reqCtx.MatchURN)
 	if fetchErr != nil {
 		r.log.Warn().
 			Err(fetchErr).
@@ -208,8 +221,51 @@ func (r *Resolver) ResolveMatch(ctx context.Context, reqCtx MatchContext, rawPay
 	// REST quota on every re-fetch.
 	r.CacheCompetitorProfile(ctx, merged.HomeTeamURN)
 	r.CacheCompetitorProfile(ctx, merged.AwayTeamURN)
+	r.cacheBifrostIcons(ctx, icons)
 
 	return id, nil
+}
+
+// cacheBifrostIcons seeds competitor_profiles from the team icons a
+// Bifrost fixture carried, for teams the REST profile endpoint has not
+// (or could not) populate. Never overwrites an existing profile — REST
+// carries the roster too and stays authoritative once reachable.
+func (r *Resolver) cacheBifrostIcons(ctx context.Context, icons []bifrost.TeamIcon) {
+	for _, ic := range icons {
+		if ic.URN == "" || ic.Icon == "" {
+			continue
+		}
+		if exists, err := store.CompetitorProfileExists(ctx, r.st.Pool(), ic.URN); err != nil || exists {
+			continue
+		}
+		p := &oddinxml.CompetitorProfile{}
+		p.Competitor.ID = ic.URN
+		p.Competitor.Name = sanitizeName(ic.Name)
+		p.Competitor.IconPath = ic.Icon
+		if err := store.UpsertCompetitorProfile(ctx, r.st.Pool(), p); err != nil {
+			r.log.Debug().Err(err).Str("competitor_urn", ic.URN).Msg("bifrost icon seed failed")
+		}
+	}
+}
+
+// fetchFixtureAny tries REST first and Bifrost second. Returns the fixture
+// from whichever answered, the Bifrost team icons when it was Bifrost, and
+// the REST error only when neither source could help.
+func (r *Resolver) fetchFixtureAny(ctx context.Context, matchURN string) (*oddinxml.FixtureResponse, []bifrost.TeamIcon, error) {
+	fx, restErr := r.fetchFixture(ctx, matchURN)
+	if restErr == nil && fx != nil {
+		return fx, nil, nil
+	}
+	if r.bf == nil {
+		return nil, nil, restErr
+	}
+	bfx, icons, bfErr := r.bf.Fixture(ctx, matchURN)
+	if bfErr != nil || bfx == nil {
+		return nil, nil, fmt.Errorf("%v; bifrost fallback: %w", restErr, bfErr)
+	}
+	r.log.Info().Str("match_urn", matchURN).AnErr("rest_error", restErr).
+		Msg("fixture resolved through Bifrost fallback")
+	return bfx, icons, nil
 }
 
 // CacheCompetitorProfile pulls a competitor's profile (name + roster)
@@ -350,7 +406,7 @@ func (r *Resolver) RefreshFromFixture(ctx context.Context, matchURN string) erro
 	if !ok {
 		return nil // unknown match — odds_change/handler will create it via ResolveMatch
 	}
-	fx, err := r.fetchFixture(ctx, matchURN)
+	fx, icons, err := r.fetchFixtureAny(ctx, matchURN)
 	if err != nil || fx == nil {
 		// 404 or transient error — log via caller and move on.
 		return err
@@ -385,12 +441,14 @@ func (r *Resolver) RefreshFromFixture(ctx context.Context, matchURN string) erro
 	// labels without waiting for match re-creation.
 	r.CacheCompetitorProfile(ctx, merged.HomeTeamURN)
 	r.CacheCompetitorProfile(ctx, merged.AwayTeamURN)
+	r.cacheBifrostIcons(ctx, icons)
 	r.refreshTournamentMetadata(ctx, tournamentID, merged.TournamentURN)
 	r.log.Info().
 		Str("match_urn", matchURN).
 		Int64("match_id", matchID).
 		Int("tournament_id", tournamentID).
-		Msg("fixture refreshed from REST")
+		Bool("via_bifrost", icons != nil).
+		Msg("fixture refreshed")
 	return nil
 }
 
@@ -669,7 +727,7 @@ func (r *Resolver) ensurePlaceholderTournament(ctx context.Context, sportID int,
 // Returns nil when REST is unavailable or the event isn't known to Oddin.
 func (r *Resolver) fetchFixture(ctx context.Context, eventURN string) (*oddinxml.FixtureResponse, error) {
 	if r.rc == nil {
-		return nil, fmt.Errorf("oddin rest client not configured")
+		return nil, errors.New("oddin rest client not configured")
 	}
 	body, err := r.rc.SportEventFixture(ctx, restLang, eventURN)
 	if err != nil {

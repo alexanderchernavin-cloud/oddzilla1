@@ -483,6 +483,31 @@ transaction. Wallet-watcher's chain scanner is **not yet wired** to
 auto-flip `submitted → confirmed` based on on-chain inclusion — that's
 a Phase 7.5 follow-up; the existing scanner has all the data it needs.
 
+## Backup feed (Bifrost)
+
+```
+Bifrost GraphQL ──wss──► bifrost-feed ──► translate ──► Redis stream `oddin.backup`
+                             ▲                              ├─► feed-ingester (odds_change, fixture_change)
+        gate: `feed:primary:last_msg_unix`                  └─► settlement    (bet_settlement)
+        (stamped by feed-ingester on every AMQP delivery)
+```
+
+`services/bifrost-feed` holds one WebSocket to Oddin's Bifrost API with a
+subscription per match on the active esports offer. Every frame is a full
+match snapshot; the translator renders it as the Oddin XML the two
+consumers already decode, so the money path stays single-implementation
+and the backup inherits every existing invariant. It publishes only while
+feed-ingester's liveness stamp is stale past `BIFROST_TAKEOVER_AFTER_SECONDS`
+(auto mode), re-emits every cached snapshot on activation, and stands
+down the instant AMQP resumes. Settlement is derived by comparing
+Bifrost's CLOSED markets against our own `markets.status`, never from an
+in-memory log, so restarts and the primary's 24 h replay converge without
+coordination. The auto-mapper gains a Bifrost fixture fallback for the
+case where Oddin's REST meta API is the part that is down. Details,
+enum mapping, recovery interplay and the deliberate gaps (no cancel /
+rollback synthesis, derived probabilities, manual risk tier) are in
+[`docs/BIFROST_BACKUP_FEED.md`](./BIFROST_BACKUP_FEED.md).
+
 ## Non-obvious choices
 
 - **Redis Streams for internal bus, not Kafka.** MVP runs on 4 GB RAM.

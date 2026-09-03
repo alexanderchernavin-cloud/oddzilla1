@@ -1,5 +1,6 @@
 import { serverApi } from "@/lib/server-fetch";
 import { RecoveryPanel, type FeedStatus } from "./recovery-panel";
+import { BackupFeedCard } from "./backup-feed-card";
 
 export default async function AdminFeedPage() {
   const status = await serverApi<FeedStatus>("/admin/feed/status");
@@ -35,6 +36,8 @@ export default async function AdminFeedPage() {
           recovery is in flight.
         </p>
       </div>
+
+      <BackupFeedCard />
 
       <RecoveryPanel initialStatus={status ?? { producers: [] }} />
     </div>

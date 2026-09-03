@@ -87,7 +87,73 @@ function isTransientLockError(err: unknown): boolean {
   return false;
 }
 
+// ── Feed source switch ──────────────────────────────────────────────────
+//
+// Redis keys shared with services/feed-ingester (cmd/feed-ingester/main.go,
+// runSourceSwitch) and services/bifrost-feed (internal/gate). Redis rather
+// than Postgres because both consumers already poll Redis for the gate and
+// the failure mode of a lost key is the safe default (auto).
+const FEED_SOURCE_KEY = "feed:source";
+const FEED_SOURCE_SWITCHED_KEY = "feed:source:switched_unix";
+const FEED_SOURCE_SWITCHED_BY_KEY = "feed:source:switched_by";
+const FEED_SOURCE_APPLIED_KEY = "feed:source:applied";
+const FEED_SOURCE_FLUSHED_KEY = "feed:source:flushed_unix";
+
+const feedSourceSchema = z.enum(["auto", "prod", "backup"]);
+type FeedSource = z.infer<typeof feedSourceSchema>;
+
+const sourceBody = z.object({
+  source: feedSourceSchema,
+  // Forcing the backup suspends the whole active catalogue and ignores
+  // the AMQP feed until switched back; require the same kind of explicit
+  // confirmation the recovery flush does.
+  confirm: z.literal("switch-feed-source").optional(),
+});
+
+const sourceRateLimit = {
+  rateLimit: { max: 10, timeWindow: "1 minute" },
+};
+
 export default async function adminFeedRoutes(app: FastifyInstance) {
+  // PUT /admin/feed/source  { source: "auto" | "prod" | "backup", confirm? }
+  //   auto    prod Oddin (AMQP) with automatic failover to the Bifrost
+  //           backup after BIFROST_TAKEOVER_AFTER_SECONDS of silence
+  //   prod    prod Oddin only; the backup never publishes
+  //   backup  backup Oddin forced: feed-ingester suspends the catalogue
+  //           and stops applying AMQP odds; bifrost-feed re-feeds it
+  //           within seconds. Settlement keeps consuming AMQP as well —
+  //           its apply-once dedup makes dual sources safe, and cancel /
+  //           rollback messages exist only there.
+  app.put("/admin/feed/source", { config: sourceRateLimit }, async (request) => {
+    const admin = request.requireRole("admin");
+    const body = sourceBody.parse(request.body ?? {});
+    if (body.source === "backup" && body.confirm !== "switch-feed-source") {
+      throw new BadRequestError(
+        "confirm_required",
+        'source=backup requires {"confirm":"switch-feed-source"} in the body',
+      );
+    }
+    const before = await app.redis.get(FEED_SOURCE_KEY);
+    const nowUnix = Math.floor(Date.now() / 1000);
+    await app.redis
+      .multi()
+      .set(FEED_SOURCE_KEY, body.source)
+      .set(FEED_SOURCE_SWITCHED_KEY, String(nowUnix))
+      .set(FEED_SOURCE_SWITCHED_BY_KEY, admin.id)
+      .exec();
+    await app.db.insert(adminAuditLog).values({
+      actorUserId: admin.id,
+      action: "feed.source_switch",
+      targetType: "feed_source",
+      targetId: FEED_SOURCE_KEY,
+      beforeJson: { source: before ?? "auto" },
+      afterJson: { source: body.source, switchedUnix: nowUnix },
+      ipInet: request.ip ?? null,
+    });
+    request.log.warn({ from: before ?? "auto", to: body.source, admin: admin.id }, "feed source switched");
+    return { ok: true, source: body.source, switchedUnix: nowUnix };
+  });
+
   app.post(
     "/admin/feed/recovery",
     { config: recoveryRateLimit },
@@ -275,6 +341,80 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
     };
   },
   );
+
+  // Backup feed (services/bifrost-feed) status. The service refreshes a
+  // Redis hash every 5 s with a 120 s TTL; feed-ingester stamps the
+  // primary-liveness key on every AMQP delivery. Both are read here so
+  // the operator sees, on one card, whether the primary is alive, whether
+  // the backup is publishing, and what it has published.
+  app.get("/admin/feed/backup-status", async (request) => {
+    request.requireRole("admin");
+    const [hash, primaryRaw, sourceRaw, switchedRaw, switchedBy, appliedRaw, flushedRaw] =
+      await Promise.all([
+        app.redis.hgetall("bifrost:feed:status"),
+        app.redis.get("feed:primary:last_msg_unix"),
+        app.redis.get(FEED_SOURCE_KEY),
+        app.redis.get(FEED_SOURCE_SWITCHED_KEY),
+        app.redis.get(FEED_SOURCE_SWITCHED_BY_KEY),
+        app.redis.get(FEED_SOURCE_APPLIED_KEY),
+        app.redis.get(FEED_SOURCE_FLUSHED_KEY),
+      ]);
+    const nowUnix = Math.floor(Date.now() / 1000);
+    const num = (key: string): number | null => {
+      const v = hash[key];
+      if (v == null || v === "") return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const toUnix = (raw: string | null): number | null => {
+      if (raw == null) return null;
+      const n = Number(raw);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    };
+    const heartbeat = num("heartbeat_unix");
+    const primaryLast = primaryRaw != null ? Number(primaryRaw) : null;
+    return {
+      online: heartbeat != null && nowUnix - heartbeat < 120,
+      heartbeatUnix: heartbeat,
+      mode: hash.mode ?? null,
+      defaultMode: hash.default_mode ?? null,
+      waitingForFlush: hash.waiting_for_flush === "1",
+      source: {
+        // Effective switch position; absent key means auto.
+        requested: feedSourceSchema.safeParse(sourceRaw).success
+          ? (sourceRaw as FeedSource)
+          : "auto",
+        switchedUnix: toUnix(switchedRaw),
+        switchedBy,
+        // What feed-ingester last applied (null until it booted with this code).
+        appliedByIngester: appliedRaw,
+        flushedUnix: toUnix(flushedRaw),
+      },
+      active: hash.active === "1",
+      sinceUnix: num("since_unix"),
+      connected: hash.connected === "1",
+      clientId: num("client_id"),
+      clientName: hash.client_name ?? null,
+      trackedMatches: num("tracked"),
+      frames: num("frames"),
+      reconnects: num("reconnects"),
+      oddsChanges: num("odds_changes"),
+      settlements: num("settlements"),
+      settledMarkets: num("settled_markets"),
+      fixtureChanges: num("fixture_changes"),
+      lastFrameUnix: num("last_frame_unix"),
+      lastPublishUnix: num("last_publish_unix"),
+      lastResyncUnix: num("last_resync_unix"),
+      lastError: hash.last_error || null,
+      lastErrorUnix: num("last_error_unix"),
+      takeoverAfterSeconds: num("takeover_after_s"),
+      gateTransitions: num("gate_transitions"),
+      primaryLastMessageUnix:
+        primaryLast != null && Number.isFinite(primaryLast) ? primaryLast : null,
+      primaryStaleSeconds:
+        primaryLast != null && Number.isFinite(primaryLast) ? nowUnix - primaryLast : null,
+    };
+  });
 
   // Read-only status so the admin UI can show the current cursor lag
   // before the operator hits the button.

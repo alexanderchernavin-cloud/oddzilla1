@@ -157,8 +157,11 @@ func UpdateTournamentRiskTier(ctx context.Context, db pgxRunner, tournamentID in
 	if riskTier <= 0 {
 		return nil
 	}
+	// risk_tier_locked (migration 0094) marks a tier an operator assigned by
+	// hand in the backoffice; the automatic REST refresh must never
+	// overwrite it.
 	if _, err := db.Exec(ctx,
-		`UPDATE tournaments SET risk_tier = $2 WHERE id = $1`,
+		`UPDATE tournaments SET risk_tier = $2 WHERE id = $1 AND NOT risk_tier_locked`,
 		tournamentID, riskTier,
 	); err != nil {
 		return fmt.Errorf("update tournament risk_tier: %w", err)

@@ -30,6 +30,8 @@ import (
 
 	amqpkit "github.com/oddzilla/feed-ingester/internal/amqp"
 	"github.com/oddzilla/feed-ingester/internal/automap"
+	"github.com/oddzilla/feed-ingester/internal/backupstream"
+	"github.com/oddzilla/feed-ingester/internal/bifrost"
 	"github.com/oddzilla/feed-ingester/internal/bus"
 	"github.com/oddzilla/feed-ingester/internal/config"
 	"github.com/oddzilla/feed-ingester/internal/handler"
@@ -116,6 +118,19 @@ func main() {
 		fallbackCategoryID,
 		cfg.Oddin.BlockedSportSlugs,
 	)
+	// Second fixture source for the auto-mapper. With Oddin's REST meta
+	// API down, unknown matches would otherwise land as placeholders
+	// under `unclassified` even while the Bifrost backup keeps their odds
+	// flowing; Bifrost's `match` query carries the same hierarchy.
+	if cfg.Bifrost.Enabled {
+		resolver = resolver.WithBifrostFallback(bifrost.New(bifrost.Config{
+			URL:    cfg.Bifrost.URL,
+			APIKey: cfg.Bifrost.APIKey,
+			Locale: cfg.Bifrost.Locale,
+			Origin: cfg.Bifrost.Origin,
+		}))
+		logger.Info().Msg("bifrost fixture fallback enabled for auto-mapping")
+	}
 	if len(cfg.Oddin.BlockedSportSlugs) == 0 {
 		logger.Warn().Msg("sport blocklist disabled — every Oddin sport will be persisted")
 	} else {
@@ -180,11 +195,41 @@ func main() {
 		logger.Warn().Msg("alive watchdog disabled (FEED_STALE_SUSPEND_SECONDS<=0) — a silent feed will NOT auto-suspend the catalog")
 	}
 
+	// ── Operator feed-source switch ──────────────────────────────────────
+	// The backoffice (PUT /admin/feed/source) writes Redis `feed:source`:
+	// auto / prod / backup. In `backup` this process keeps the AMQP
+	// connection (transport liveness still stamps) but acks every delivery
+	// without applying it, after suspending the catalogue once so the
+	// Bifrost backup's full re-emit lands on a clean slate. Switching back
+	// runs the same flush + 24 h Oddin replay a reconnect would.
+	go runSourceSwitch(ctx, rdb, deps, logger)
+
 	// ── AMQP (optional) ────────────────────────────────────────────────
+	// Backup feed stream (Bifrost). services/bifrost-feed publishes
+	// Oddin-shaped odds_change and fixture_change documents onto the
+	// `oddin.backup` Redis stream while the AMQP feed is silent. They flow
+	// through the same handler.Handle; the only thing they must NOT do is
+	// bump lastAmqpMessageUnix, which is the primary-liveness signal the
+	// alive watchdog and the backup's own gate both key off. Attached
+	// regardless of AMQP creds so the backup works even on a box where
+	// Oddin never configured them.
+	if cfg.BackupStreamEnabled {
+		consumer, _ := os.Hostname()
+		if consumer == "" {
+			consumer = "feed-ingester"
+		}
+		go backupstream.Run(ctx, rdb, "feed-ingester", consumer,
+			func(ctx context.Context, rk string, body []byte) error {
+				return handler.Handle(ctx, deps, rk, body)
+			}, logger)
+	} else {
+		logger.Info().Msg("backup stream consumer disabled (BACKUP_STREAM_ENABLED=false)")
+	}
+
 	if !cfg.Oddin.Enabled {
 		logger.Warn().Msg("Oddin creds absent (ODDIN_TOKEN/ODDIN_CUSTOMER_ID); running idle — health endpoint only")
 	} else {
-		go runAMQP(ctx, cfg, deps, logger)
+		go runAMQP(ctx, cfg, deps, rdb, logger)
 		// Background sweeper: any market stuck at status=-2 (handed over
 		// from pre-match to live) for more than 60s gets demoted to -1
 		// (suspended). Per Oddin docs §1.4 — if the live producer doesn't
@@ -766,7 +811,17 @@ func suspendCatalogForStaleness(ctx context.Context, deps handler.Deps, log zero
 	broadcastSuspended(ctx, deps, summary.SuspendedRefs, log)
 }
 
-func runAMQP(ctx context.Context, cfg config.Config, deps handler.Deps, log zerolog.Logger) {
+// PrimaryLivenessKey is the Redis key services/bifrost-feed's gate reads
+// to decide whether the primary AMQP feed is alive. Value: unix seconds of
+// the last delivery of any kind. Written at most once per second.
+const PrimaryLivenessKey = "feed:primary:last_msg_unix"
+
+// lastLivenessWriteUnix throttles the Redis heartbeat to one SET per
+// second — the handler closure runs per delivery, which peaks at
+// thousands per second during live bursts.
+var lastLivenessWriteUnix atomic.Int64
+
+func runAMQP(ctx context.Context, cfg config.Config, deps handler.Deps, rdb *redis.Client, log zerolog.Logger) {
 	cons := amqpkit.New(
 		amqpkit.Config{
 			Host:       cfg.Oddin.AMQPHost,
@@ -780,7 +835,23 @@ func runAMQP(ctx context.Context, cfg config.Config, deps handler.Deps, log zero
 		func(ctx context.Context, rk string, body []byte) error {
 			// Update the healthz signal first — even a delivery the
 			// handler later rejects proves the AMQP transport is live.
-			lastAmqpMessageUnix.Store(time.Now().Unix())
+			now := time.Now().Unix()
+			lastAmqpMessageUnix.Store(now)
+			// Mirror it to Redis for the backup feed's gate. Best-effort
+			// and throttled; a missed write just delays takeover detection
+			// by a second.
+			if lastLivenessWriteUnix.Load() != now && lastLivenessWriteUnix.Swap(now) != now {
+				if err := rdb.Set(ctx, PrimaryLivenessKey, now, 0).Err(); err != nil {
+					log.Debug().Err(err).Msg("primary liveness heartbeat write failed")
+				}
+			}
+			// Operator forced the backup source: the AMQP transport stays
+			// up (and keeps stamping liveness, so the alive watchdog does
+			// not re-suspend the catalogue the backup just re-activated)
+			// but nothing from it is applied.
+			if dropAMQP.Load() {
+				return nil
+			}
 			return handler.Handle(ctx, deps, rk, body)
 		},
 		func(ctx context.Context) error {
@@ -813,6 +884,108 @@ func runAMQP(ctx context.Context, cfg config.Config, deps handler.Deps, log zero
 
 	if err := cons.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Error().Err(err).Msg("amqp consumer exited")
+	}
+}
+
+// Feed-source switch keys, shared with services/bifrost-feed (internal/
+// gate) and the api (services/api/src/modules/admin/feed.ts).
+const (
+	feedSourceKey        = "feed:source"
+	feedSourceFlushedKey = "feed:source:flushed_unix"
+	feedSourceAppliedKey = "feed:source:applied"
+	feedSourceBackup     = "backup"
+)
+
+// dropAMQP is true while the operator has forced the backup source: AMQP
+// deliveries are acked without being applied. Read on the hot path, so an
+// atomic rather than a mutex.
+var dropAMQP atomic.Bool
+
+// currentFeedSource is what runSourceSwitch last observed, for /healthz.
+var currentFeedSource atomic.Pointer[string]
+
+// runSourceSwitch polls Redis `feed:source` every 2 s and applies
+// transitions:
+//
+//	→ backup : stop applying AMQP, suspend the active catalogue once,
+//	           acknowledge with feed:source:flushed_unix so bifrost-feed
+//	           knows it may re-emit.
+//	backup → : rewind + flush + ask Oddin for the full replay (the same
+//	           sequence a reconnect runs), then resume applying AMQP.
+//
+// The value present at boot is adopted without a flush: a restart while
+// forced to backup must not wipe the catalogue the backup is feeding.
+func runSourceSwitch(ctx context.Context, rdb *redis.Client, deps handler.Deps, log zerolog.Logger) {
+	log = log.With().Str("component", "feed-source").Logger()
+	read := func() (string, bool) {
+		v, err := rdb.Get(ctx, feedSourceKey).Result()
+		if errors.Is(err, redis.Nil) {
+			return "auto", true
+		}
+		if err != nil {
+			if ctx.Err() == nil {
+				log.Debug().Err(err).Msg("feed:source read failed")
+			}
+			return "", false
+		}
+		switch v {
+		case "auto", "prod", feedSourceBackup:
+			return v, true
+		}
+		return "auto", true
+	}
+	prev, ok := read()
+	if !ok {
+		prev = "auto"
+	}
+	dropAMQP.Store(prev == feedSourceBackup)
+	currentFeedSource.Store(&prev)
+	_ = rdb.Set(ctx, feedSourceAppliedKey, prev, 0).Err()
+	if prev == feedSourceBackup {
+		log.Warn().Msg("booted with feed source forced to backup; AMQP deliveries are acked without being applied")
+	}
+
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		cur, ok := read()
+		if !ok || cur == prev {
+			continue
+		}
+		switch {
+		case cur == feedSourceBackup:
+			dropAMQP.Store(true)
+			log.Warn().Str("from", prev).Msg("feed source switched to BACKUP: suspending catalogue, ignoring AMQP until switched back")
+			suspendCatalogForStaleness(ctx, deps, log)
+			if err := rdb.Set(ctx, feedSourceFlushedKey, time.Now().Unix(), 0).Err(); err != nil {
+				log.Warn().Err(err).Msg("flush acknowledgement write failed; bifrost-feed will activate after its 15 s ceiling")
+			}
+		case prev == feedSourceBackup:
+			log.Warn().Str("to", cur).Msg("feed source switched back to PROD: flushing and replaying from Oddin")
+			if deps.Rest != nil {
+				// Same sequence as an AMQP reconnect. dropAMQP stays true
+				// until the replay request is sent so a concurrent
+				// BumpAfterTs cannot narrow the rewound window.
+				flushBeforeRecover(ctx, deps, log)
+				handler.TriggerRecovery(ctx, deps, log)
+			} else {
+				log.Warn().Msg("no Oddin REST client; catalogue left as the backup last fed it")
+			}
+			dropAMQP.Store(false)
+		default:
+			log.Info().Str("from", prev).Str("to", cur).Msg("feed source changed (backup stays in standby either way)")
+		}
+		prev = cur
+		p := cur
+		currentFeedSource.Store(&p)
+		if err := rdb.Set(ctx, feedSourceAppliedKey, cur, 0).Err(); err != nil {
+			log.Debug().Err(err).Msg("feed:source:applied write failed")
+		}
 	}
 }
 
@@ -852,6 +1025,10 @@ type healthResp struct {
 	UptimeSeconds     int64  `json:"uptimeSeconds"`
 	LastAmqpMessageAt string `json:"lastAmqpMessageAt,omitempty"`
 	StaleSeconds      *int64 `json:"amqpStaleSeconds,omitempty"`
+	// FeedSource is the operator switch as last observed (auto / prod /
+	// backup); AmqpApplied is false while deliveries are acked unprocessed.
+	FeedSource  string `json:"feedSource,omitempty"`
+	AmqpApplied bool   `json:"amqpApplied"`
 }
 
 func startHealth(port string, pool *pgxpool.Pool, rdb *redis.Client, log zerolog.Logger) *http.Server {
@@ -877,6 +1054,10 @@ func startHealth(port string, pool *pgxpool.Pool, rdb *redis.Client, log zerolog
 			stale := int64(time.Since(time.Unix(ts, 0)).Seconds())
 			resp.StaleSeconds = &stale
 		}
+		if src := currentFeedSource.Load(); src != nil {
+			resp.FeedSource = *src
+		}
+		resp.AmqpApplied = !dropAMQP.Load()
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	})

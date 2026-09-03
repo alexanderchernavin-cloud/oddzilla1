@@ -68,13 +68,13 @@ redis-cli: ## Open redis-cli on the running redis container
 
 fmt: ## Format all code (prettier + gofmt)
 	pnpm format
-	@for svc in feed-ingester odds-publisher settlement bet-delay wallet-watcher; do \
+	@for svc in feed-ingester odds-publisher settlement bifrost-feed bet-delay wallet-watcher; do \
 		cd services/$$svc && gofmt -w . && cd ../..; \
 	done
 
 lint: ## Lint TS + Go
 	pnpm lint
-	@for svc in feed-ingester odds-publisher settlement bet-delay wallet-watcher; do \
+	@for svc in feed-ingester odds-publisher settlement bifrost-feed bet-delay wallet-watcher; do \
 		cd services/$$svc && go vet ./... && cd ../..; \
 	done
 
@@ -83,7 +83,7 @@ typecheck: ## TypeScript strict check across workspaces
 
 test: ## Run TS + Go tests
 	pnpm test
-	@for svc in feed-ingester odds-publisher settlement bet-delay wallet-watcher; do \
+	@for svc in feed-ingester odds-publisher settlement bifrost-feed bet-delay wallet-watcher; do \
 		cd services/$$svc && go test ./... && cd ../..; \
 	done
 
