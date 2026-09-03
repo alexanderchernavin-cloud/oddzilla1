@@ -16,8 +16,11 @@
 # Security notes (mirrors pg_backup.sh):
 #   • Only the vars we need are read out of .env — never `source .env`,
 #     which would export every secret into the cron shell.
-#   • POSTGRES_PASSWORD is passed to psql via the container env only, then
-#     unset; it never lands in `ps` or the host environment.
+#   • POSTGRES_PASSWORD never touches the host: psql runs through a shell
+#     INSIDE the postgres container that exports PGPASSWORD from the
+#     container's own environment, so the host argv carries only the
+#     literal "$POSTGRES_PASSWORD" (the earlier `docker exec -e
+#     PGPASSWORD=<value>` form leaked it into `ps`; fixed 2026-09-03).
 #   • SLACK_WEBHOOK_URL is shared with the other alert scripts. Without it
 #     the script still logs a JSON line and (on tamper / failure) exits
 #     non-zero so cron's MAILTO surfaces it.
@@ -39,7 +42,6 @@ read_env_var() {
 
 POSTGRES_USER=$(read_env_var POSTGRES_USER oddzilla)
 POSTGRES_DB=$(read_env_var POSTGRES_DB oddzilla)
-POSTGRES_PASSWORD=$(read_env_var POSTGRES_PASSWORD)
 WEBHOOK=$(read_env_var SLACK_WEBHOOK_URL)
 
 alert() {
@@ -54,20 +56,20 @@ alert() {
         --data "${payload}" "${WEBHOOK}" >/dev/null 2>&1 || true
 }
 
-if [ -z "${POSTGRES_PASSWORD}" ]; then
-    alert "audit-chain-check could not run on ${HOST}: POSTGRES_PASSWORD missing in ${ENV_FILE}"
+if ! docker exec "${CONTAINER}" sh -c 'test -n "$POSTGRES_PASSWORD"' 2>/dev/null; then
+    alert "audit-chain-check could not run on ${HOST}: POSTGRES_PASSWORD is not set inside ${CONTAINER}"
     exit 1
 fi
 
 # -tAc: tuples-only, unaligned (| separator), single command. Returns
-# "valid|broken|total" for the whole admin_audit_log chain.
-row=$(docker exec -e PGPASSWORD="${POSTGRES_PASSWORD}" "${CONTAINER}" \
-    psql -tAc "SELECT count(*) FILTER (WHERE ok), count(*) FILTER (WHERE NOT ok), count(*) FROM admin_audit_chain_check();" \
-    --host=127.0.0.1 --port=5432 --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}") || {
+# "valid|broken|total" for the whole admin_audit_log chain. Password comes
+# from the container's own env; user/db are positional args.
+row=$(docker exec "${CONTAINER}" \
+    sh -c 'export PGPASSWORD="$POSTGRES_PASSWORD"; exec psql -tAc "SELECT count(*) FILTER (WHERE ok), count(*) FILTER (WHERE NOT ok), count(*) FROM admin_audit_chain_check();" --host=127.0.0.1 --port=5432 --username="$1" --dbname="$2"' \
+    sh "${POSTGRES_USER}" "${POSTGRES_DB}") || {
     alert "audit-chain-check FAILED to query on ${HOST} — verifier errored (function missing? db down?)"
     exit 1
 }
-unset POSTGRES_PASSWORD
 
 valid="${row%%|*}"
 rest="${row#*|}"

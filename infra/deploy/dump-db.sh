@@ -52,21 +52,27 @@ read_env_var() {
 
 POSTGRES_USER=$(read_env_var POSTGRES_USER oddzilla)
 POSTGRES_DB=$(read_env_var POSTGRES_DB oddzilla)
-POSTGRES_PASSWORD=$(read_env_var POSTGRES_PASSWORD)
-
-if [ -z "${POSTGRES_PASSWORD}" ]; then
-  err "POSTGRES_PASSWORD missing in ${ENV_FILE}"
-  exit 1
-fi
 
 DUMP="${DEPLOY_BACKUP_DIR}/${SHA}.sql.gz"
 
+# The password never touches the host. The postgres container already
+# carries POSTGRES_PASSWORD in its own environment (compose passes it to
+# the image), so pg_dump runs through a shell INSIDE the container that
+# exports PGPASSWORD from there. The host-side argv only ever contains
+# the literal string "$POSTGRES_PASSWORD" — the previous
+# `docker exec -e PGPASSWORD=<value>` form put the real password into
+# `ps` for every user on the box for the whole dump AND into the sudo
+# journal line, which is how it was spotted on 2026-09-03.
+if ! sudo -n docker exec oddzilla-postgres-1 sh -c 'test -n "$POSTGRES_PASSWORD"'; then
+  err "POSTGRES_PASSWORD is not set inside the postgres container"
+  exit 1
+fi
+
 log "dumping pg to ${DUMP}"
 
-# Password is passed only into the container's env (-e), never into
-# the host shell environment. The dump streams over the docker exec
-# pipe straight into gzip on the host so the postgres container never
-# writes the dump to its own (mem-limited) filesystem.
+# The dump streams over the docker exec pipe straight into gzip on the
+# host so the postgres container never writes the dump to its own
+# (mem-limited) filesystem.
 #
 # `gzip -1` instead of `-9` because the previous setting put gzip on a
 # single host core and pg_dump blocked on Client/ClientWrite — backups
@@ -76,15 +82,10 @@ log "dumping pg to ${DUMP}"
 # rotation retention. The dump is a defensive snapshot before
 # migrations, not long-term storage — favouring time-to-recover over
 # disk efficiency is the right trade.
-sudo -n docker exec -e PGPASSWORD="${POSTGRES_PASSWORD}" \
-  oddzilla-postgres-1 \
-  pg_dump \
-    --host=127.0.0.1 --port=5432 \
-    --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" \
-    --no-owner --clean --if-exists \
+sudo -n docker exec oddzilla-postgres-1 \
+  sh -c 'export PGPASSWORD="$POSTGRES_PASSWORD"; exec pg_dump --host=127.0.0.1 --port=5432 --username="$1" --dbname="$2" --no-owner --clean --if-exists' \
+  sh "${POSTGRES_USER}" "${POSTGRES_DB}" \
   | gzip -1 > "${DUMP}"
-
-unset POSTGRES_PASSWORD
 
 chmod 640 "${DUMP}"
 
