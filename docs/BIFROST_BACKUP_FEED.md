@@ -248,6 +248,28 @@ the REST profile is unavailable. The sport abbreviation Oddin's REST
 carries is approximated by the name without spaces (so the bot-sport
 blocklist still matches `eFootballBots`).
 
+### A failover empties the offer first
+
+Switching into Backup, and now booting straight into Backup, both run
+`store.FlushAndSuspendActiveCatalog` before the backup publishes anything:
+every active market goes to `status=-1`, every outcome's odds are nulled,
+and every `live` match goes to `status='suspended'`. The offer is empty
+until Bifrost's re-emit rebuilds it, and whatever Bifrost does not carry
+stays gone.
+
+The match half matters as much as the market half. Suspending markets
+alone left matches asserting `live` with nothing able to walk the claim
+back, because the incoming source only re-asserts what it carries and a
+match neither source carries has no route to a terminal status.
+
+The boot case is a failover too. The AMQP reconnect path deliberately
+skips its flush while Backup is forced, so without an explicit boot flush
+a restart keeps whatever the previous process left behind and only the
+slice Bifrost happens to carry gets refreshed. feed-ingester acknowledges
+either flush by stamping `feed_control.flushed_at`; bifrost-feed waits for
+`flushed_at >= switched_at` (15 s ceiling) before its re-emit, so the full
+snapshot lands on a clean slate rather than racing the flush.
+
 ### The historic view is the only one with settled markets
 
 Once a match finishes, Bifrost answers `match(id, historic: false)` with a

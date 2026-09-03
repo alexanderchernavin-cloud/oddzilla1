@@ -1156,6 +1156,24 @@ func runSourceSwitch(ctx context.Context, pool *pgxpool.Pool, deps handler.Deps,
 	read := func() (string, bool) { return readFeedSource(ctx, pool, log) }
 	prev := loadFeedSource(ctx, pool, log)
 
+	// Booting straight into Backup is a failover too, and it has to empty
+	// the offer the same way switching into Backup does. Nothing else
+	// will: the AMQP reconnect path deliberately skips its flush while
+	// Backup is forced, so without this the catalogue keeps whatever the
+	// previous process left behind — prices nobody is feeding and matches
+	// nobody will ever close — and only the slice Bifrost happens to carry
+	// gets refreshed. Idempotent and cheap, and bifrost-feed re-emits
+	// every cached snapshot once it sees the acknowledgement.
+	if prev == feedSourceBackup {
+		log.Warn().Msg("booted into Backup: flushing the offer so the backup rebuilds it from scratch")
+		suspendCatalogForStaleness(ctx, deps, log)
+		if _, err := pool.Exec(ctx,
+			`UPDATE feed_control SET flushed_at = NOW(), updated_at = NOW() WHERE id = 1 AND source = 'backup'`,
+		); err != nil {
+			log.Warn().Err(err).Msg("boot flush acknowledgement write failed; bifrost-feed will activate after its 15 s ceiling")
+		}
+	}
+
 	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()
 	for {
