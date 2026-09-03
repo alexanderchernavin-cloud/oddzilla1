@@ -936,6 +936,14 @@ operator view.
 | **Prod Oddin only** | applied | never publishes |
 | **Backup Oddin** | connection kept, deliveries acked but NOT applied by feed-ingester | forced: publishes regardless of AMQP |
 
+**Only Auto moves by itself.** Backup Oddin and Prod Oddin only are manual
+positions: nothing in the system changes them, they survive restarts and
+deploys (the key lives in Redis with no TTL), and a forced Backup keeps
+publishing whatever AMQP does. That includes the case where Bifrost itself
+goes down while Backup is forced — the catalogue then stays dark until an
+operator moves the switch; the card shows the socket disconnected.
+Operator decision 2026-09-03.
+
 Settlement is outside the switch: it always consumes both sources, because
 its apply-once dedup makes that safe and cancel / rollback messages exist
 only on AMQP. When the switch was never set, the env default

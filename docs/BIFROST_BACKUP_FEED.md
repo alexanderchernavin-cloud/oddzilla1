@@ -124,6 +124,15 @@ still up does not, and for that case the alive watchdog still suspends the
 catalogue and the operator can force **Backup Oddin** if Bifrost is still
 serving.
 
+**Manual positions never auto-revert** (operator decision 2026-09-03).
+Only `auto` moves on its own. `backup` and `prod` stay where the operator
+put them across restarts and deploys, and a forced `backup` keeps
+publishing regardless of AMQP — including when Bifrost itself is down, in
+which case the catalogue stays dark until the switch is moved. The
+recovery weak spot in section 3 (REST down during an AMQP reconnect) is
+accepted as-is: when Oddin's REST is down their broker is down too, and
+the operator answer is the switch.
+
 **Forced backup is a real source switch.** feed-ingester polls the same
 key: on `→ backup` it keeps the AMQP connection (so the transport still
 stamps liveness and the alive watchdog does not re-suspend what the backup
