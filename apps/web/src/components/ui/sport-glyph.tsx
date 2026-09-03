@@ -1,6 +1,6 @@
 "use client";
 
-import type { SVGProps } from "react";
+import { useState, type SVGProps } from "react";
 import { useSportLogo } from "@/lib/sport-logos";
 
 // Slugs with a brand SVG in /public/sports/<slug>.svg.
@@ -71,11 +71,15 @@ const SLUG_ALIAS: Record<string, string> = {
 export function SportGlyph({ sport, size = 20 }: { sport: string; size?: number }) {
   const slug = (SLUG_ALIAS[sport] ?? sport).toLowerCase();
   // Resolution priority:
-  //   1. Admin-uploaded URL from /admin/sports (read via context).
+  //   1. Admin-uploaded / feed-supplied URL from /catalog/sports (context).
   //   2. Bundled brand SVG at /public/sports/<slug>.svg.
   //   3. Inline FallbackGlyph for slugs we don't have art for.
+  // A remote URL that fails to load (CDN outage, path gone) drops to the
+  // next tier instead of leaving a broken <img> — same contract as
+  // TeamMark for team crests.
   const dbLogoUrl = useSportLogo(slug);
-  if (dbLogoUrl) {
+  const [remoteFailed, setRemoteFailed] = useState(false);
+  if (dbLogoUrl && !remoteFailed) {
     return (
       <img
         src={dbLogoUrl}
@@ -83,6 +87,7 @@ export function SportGlyph({ sport, size = 20 }: { sport: string; size?: number 
         height={size}
         alt=""
         aria-hidden
+        onError={() => setRemoteFailed(true)}
         style={{ display: "inline-block", flexShrink: 0, objectFit: "contain" }}
       />
     );

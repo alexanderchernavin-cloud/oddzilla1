@@ -28,6 +28,7 @@ var knownSports = map[int]SportInfo{
 	9:     {"volleyball", "Volleyball", "traditional"},
 	10:    {"bandy", "Bandy", "traditional"},
 	16:    {"rugby", "Rugby", "traditional"},
+	17591: {"padel", "Padel", "traditional"},
 	1219:  {"water-polo", "Water Polo", "traditional"},
 	1429:  {"billiards", "Billiards", "traditional"},
 	1434:  {"futsal", "Futsal", "traditional"},
