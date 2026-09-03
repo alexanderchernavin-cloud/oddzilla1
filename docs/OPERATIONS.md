@@ -934,7 +934,7 @@ operator view.
 | --- | --- | --- |
 | **Auto** (default) | applied | standby; publishes after `BIFROST_TAKEOVER_AFTER_SECONDS` (45 s) with the AMQP connection down AND no delivery, stands down the moment either resumes (an open connection with no deliveries — the post-restart flush + replay ramp — counts as alive) |
 | **Prod Oddin only** | applied | never publishes |
-| **Backup Oddin** | connection kept, deliveries acked but NOT applied by feed-ingester | forced: publishes regardless of AMQP |
+| **Backup Oddin** | connection kept, deliveries acked but NOT applied by feed-ingester; **no Oddin feed REST call of any kind** (fixtures, tournament info, competitor profiles, market descriptions, recovery; settlement skips its recovery request too) | forced: publishes regardless of AMQP; fixtures, team names, crests, market and outcome names all come from Bifrost; the alive watchdog guards bifrost-feed's heartbeat and socket instead of AMQP |
 
 **Only Auto moves by itself.** Backup Oddin and Prod Oddin only are manual
 positions: nothing in the system changes them, they survive restarts and
@@ -943,6 +943,19 @@ publishing whatever AMQP does. That includes the case where Bifrost itself
 goes down while Backup is forced — the catalogue then stays dark until an
 operator moves the switch; the card shows the socket disconnected.
 Operator decision 2026-09-03.
+
+**Backup means Bifrost only, for the feed** (operator decision 2026-09-03).
+While the switch is on Backup, feed-ingester and settlement make no call to
+Oddin's feed REST host at all: unknown fixtures resolve through Bifrost's
+`match` query, market names seed `market_descriptions` from Bifrost's
+group names, outcome names land on `market_outcomes.name` and player names
+on `player_profiles`, tournament tier stays manual, an AMQP reconnect
+neither flushes nor requests a replay, and the alive watchdog suspends the
+catalogue if bifrost-feed's heartbeat goes stale or its socket disconnects
+for the threshold. Disir widgets, the Havik video player and OBB live in
+the api against other Oddin hosts and are untouched. Switching back to Auto
+or Prod re-enables REST, runs the flush + replay, and immediately refreshes
+market descriptions and competitor profiles to catch up.
 
 Settlement is outside the switch: it always consumes both sources, because
 its apply-once dedup makes that safe and cancel / rollback messages exist

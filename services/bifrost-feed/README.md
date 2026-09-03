@@ -21,7 +21,10 @@ Bifrost (wss + https) ──► runner ──► translate ──► Redis strea
   `onMatchStateChanged` stream. Every frame is a full match snapshot.
 - `translate` renders a snapshot as `odds_change` (open / suspended
   markets, live score, lifecycle code) and `bet_settlement` (markets
-  Bifrost has CLOSED with terminal outcome statuses).
+  Bifrost has CLOSED with terminal outcome statuses). Markets carry the
+  Bifrost group name as `name` (a non-Oddin attribute feed-ingester uses
+  to seed `market_descriptions`) and outcomes carry the selection name,
+  so labels exist even when Oddin's REST descriptions are unavailable.
 - `dbstate` gates settlement: a market is voiced only if it exists in our
   Postgres and is not already `-3` / `-4` there. No local "already sent"
   state is ever authoritative, so restarts and reconnects converge.

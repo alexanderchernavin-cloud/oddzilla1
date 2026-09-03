@@ -147,6 +147,29 @@ both sources always, because apply-once makes that safe and cancel /
 rollback messages exist only on AMQP. A restart while forced to backup
 adopts the key without a flush.
 
+**Backup means Bifrost only, for the feed** (operator decision
+2026-09-03). While the switch is on `backup`, no Oddin feed REST endpoint
+is called from feed-ingester or settlement: the resolver's REST gate
+(`Resolver.WithRESTGate`) sends fixture lookups straight to Bifrost and
+skips tournament-info and competitor-profile fetches; the market
+descriptions refresh, the competitor backfill and every recovery request
+(`handler.Deps.RestAllowed`, settlement's OnConnect) are skipped; an AMQP
+reconnect neither flushes nor replays. Labels come from Bifrost instead:
+the translator puts the market group name on `<market name=…>` (an
+attribute Oddin never sends; feed-ingester seeds `market_descriptions`
+from it with `INSERT … DO NOTHING`) and the selection name on
+`<outcome name=…>` (a real Oddin attribute; lands on
+`market_outcomes.name`, and player URNs also seed `player_profiles`). The
+storefront's label chain now falls back to that per-instance name for
+competitor and player outcomes before the raw URN. The alive watchdog
+switches to guarding bifrost-feed's status heartbeat and socket flag, so a
+dead backup still suspends the catalogue after the same threshold.
+Switching back re-enables REST, runs the flush + 24 h replay, and
+immediately refreshes descriptions and competitor profiles so the skipped
+metadata catches up; REST's `ON CONFLICT DO UPDATE` overwrites every seed.
+Disir widgets, the Havik video player and OBB are api-side against other
+Oddin hosts and are untouched.
+
 **Activation.** Every cached snapshot is re-emitted, so the suspended
 catalogue re-activates in one pass instead of waiting for each match's
 next natural update, and a 24 h results sweep settles whatever our DB

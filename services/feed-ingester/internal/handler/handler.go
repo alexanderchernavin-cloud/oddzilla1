@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"math/rand"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,6 +57,19 @@ type Deps struct {
 	Rest     *oddinrest.Client // optional; nil disables recovery flow
 	NodeID   int               // identifies this consumer to Oddin's recovery
 	Alive    *AliveState       // per-producer alive-gap tracker
+	// RestAllowed gates every call to Oddin's feed REST API (recovery
+	// requests here; fixtures, tournament info and competitor profiles in
+	// the resolver). nil = always allowed. main.go wires it to "the feed
+	// source switch is not on Backup": while an operator has forced the
+	// Bifrost backup, no Oddin feed REST endpoint is called at all.
+	RestAllowed func() bool
+	// DescriptionLang is the language backup-sourced market names are
+	// seeded under (matches the storefront's primary locale, "en").
+	DescriptionLang string
+}
+
+func (d Deps) restAllowed() bool {
+	return d.RestAllowed == nil || d.RestAllowed()
 }
 
 // Handle is the entry point from the AMQP consumer. Never returns an error
@@ -288,6 +302,16 @@ func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 	if err != nil {
 		return fmt.Errorf("upsert markets bulk: %w", err)
 	}
+
+	// Backup-sourced messages (services/bifrost-feed) carry rendered names
+	// Oddin's own never do: `name` on the market (the Bifrost group name)
+	// and on every outcome (the selection name). Seed the description
+	// catalogue and player profiles from them so a market type or player
+	// first seen while Oddin's REST is unavailable still gets a label.
+	// INSERT ... DO NOTHING everywhere: REST stays authoritative and
+	// overwrites the seeds when it next succeeds. Best-effort — labels
+	// must never block odds.
+	seedNamesFromMessage(ctx, d, msg.Odds.Markets)
 	// Build (providerMarketID, hash) → id map. RETURNING order from a
 	// SELECT-with-UNNEST + ON CONFLICT in Postgres is not guaranteed to
 	// match input order (rows that conflicted vs. inserted can interleave),
@@ -438,6 +462,35 @@ func handleOddsChange(ctx context.Context, d Deps, body []byte) error {
 	}
 
 	return nil
+}
+
+// seedNamesFromMessage seeds market_descriptions from `market@name` and
+// player_profiles from `outcome@name` on od:player outcomes. No-op for
+// Oddin's own messages, which carry neither.
+func seedNamesFromMessage(ctx context.Context, d Deps, markets []oddinxml.Market) {
+	lang := d.DescriptionLang
+	if lang == "" {
+		lang = "en"
+	}
+	for _, m := range markets {
+		if m.Name != "" {
+			variant := oddinxml.Parse(m.Specifiers)["variant"]
+			if inserted, err := store.SeedMarketDescriptionIfMissing(ctx, d.Store.Pool(), lang, m.ID, variant, m.Name); err != nil {
+				d.Log.Debug().Err(err).Int("market", m.ID).Msg("seed market description failed; continuing")
+			} else if inserted {
+				d.Log.Info().Int("market", m.ID).Str("variant", variant).Str("name", m.Name).
+					Msg("market description seeded from backup feed (REST overwrites on next refresh)")
+			}
+		}
+		for _, o := range m.Outcomes {
+			if o.Name == "" || !strings.HasPrefix(o.ID, "od:player:") {
+				continue
+			}
+			if err := store.SeedPlayerProfileIfMissing(ctx, d.Store.Pool(), o.ID, o.Name); err != nil {
+				d.Log.Debug().Err(err).Str("player", o.ID).Msg("seed player profile failed; continuing")
+			}
+		}
+	}
 }
 
 // ─── fixture_change ───────────────────────────────────────────────────────
@@ -720,6 +773,11 @@ const RecoveryWindowCap = 24 * time.Hour
 
 func triggerRecoveryForProduct(ctx context.Context, d Deps, product int) {
 	if d.Rest == nil {
+		return
+	}
+	if !d.restAllowed() {
+		d.Log.Warn().Int("product", product).
+			Msg("recovery: skipped — feed source is Backup, Oddin feed REST is not called")
 		return
 	}
 	productName := producerName(product)

@@ -133,18 +133,30 @@ type oddsBlockXML struct {
 	Markets []marketXML `xml:"market"`
 }
 
+// marketXML carries one attribute Oddin's own odds_change never does:
+// `name`, the rendered market group name from Bifrost ("Handicap",
+// "Map Duration"). feed-ingester seeds market_descriptions from it when no
+// REST-sourced template exists, so a market type first seen while the
+// feed source is Backup still gets a label. Oddin's decoder side ignores
+// unknown attributes, and ours only acts when the value is present.
 type marketXML struct {
 	ID         int          `xml:"id,attr"`
 	Specifiers string       `xml:"specifiers,attr,omitempty"`
 	Status     int          `xml:"status,attr"`
+	Name       string       `xml:"name,attr,omitempty"`
 	Outcomes   []outcomeXML `xml:"outcome"`
 }
 
+// outcomeXML.Name is a real Oddin attribute (their player-prop outcomes
+// carry it); we fill it from Bifrost's selection names for every outcome
+// so market_outcomes.name is populated and the storefront's label fallback
+// has something better than the raw id.
 type outcomeXML struct {
 	ID            string `xml:"id,attr"`
 	Odds          string `xml:"odds,attr,omitempty"`
 	Active        int    `xml:"active,attr"`
 	Probabilities string `xml:"probabilities,attr,omitempty"`
+	Name          string `xml:"name,attr,omitempty"`
 }
 
 type betSettlementXML struct {
@@ -209,6 +221,10 @@ func OddsChange(m *bifrost.Match, nowMs int64) ([]byte, error) {
 type keyedMarket struct {
 	key    bifrost.MarketKey
 	market bifrost.Market
+	// name is the market group's rendered name ("Handicap"); the scope
+	// prefix ("Map 2") is deliberately left off because feed-ingester
+	// derives scope from the specifiers.
+	name string
 	// outcomes in wire order with their Oddin ids
 	outcomes []keyedOutcome
 }
@@ -216,6 +232,9 @@ type keyedMarket struct {
 type keyedOutcome struct {
 	id      string
 	outcome bifrost.Outcome
+	// name is the group's selection name for this outcome id ("PuckChamp",
+	// "under", "2:0"); empty when the group listed no matching selection.
+	name string
 }
 
 // collectMarkets flattens marketGroups → markets, deduplicating by key
@@ -226,6 +245,7 @@ func collectMarkets(m *bifrost.Match) []keyedMarket {
 	seen := make(map[bifrost.MarketKey]struct{})
 	var out []keyedMarket
 	for _, g := range m.MarketGroups {
+		selNames := selectionNames(g)
 		for _, mk := range g.Markets {
 			_, key, err := bifrost.ParseMarketID(mk.ID)
 			if err != nil {
@@ -235,13 +255,13 @@ func collectMarkets(m *bifrost.Match) []keyedMarket {
 				continue
 			}
 			seen[key] = struct{}{}
-			km := keyedMarket{key: key, market: mk}
+			km := keyedMarket{key: key, market: mk, name: strings.TrimSpace(g.Name)}
 			for _, o := range mk.Outcomes {
 				_, _, oid, err := bifrost.ParseOutcomeID(o.ID)
 				if err != nil || oid == "" {
 					continue
 				}
-				km.outcomes = append(km.outcomes, keyedOutcome{id: oid, outcome: o})
+				km.outcomes = append(km.outcomes, keyedOutcome{id: oid, outcome: o, name: selNames[oid]})
 			}
 			out = append(out, km)
 		}
@@ -256,6 +276,26 @@ func collectMarkets(m *bifrost.Match) []keyedMarket {
 	return out
 }
 
+// selectionNames maps Oddin outcome id → rendered selection name for one
+// market group. Selection ids decode to
+// market_group_selection/<urn>/<group key>/<outcome id>; the last segment
+// is the same outcome id the group's markets use.
+func selectionNames(g bifrost.MarketGroup) map[string]string {
+	out := make(map[string]string, len(g.Selections))
+	for _, s := range g.Selections {
+		name := strings.TrimSpace(s.Name)
+		if name == "" {
+			continue
+		}
+		_, path, err := bifrost.DecodeID(s.ID)
+		if err != nil || len(path) == 0 {
+			continue
+		}
+		out[path[len(path)-1]] = name
+	}
+	return out
+}
+
 func renderMarket(km keyedMarket) marketXML {
 	status := -1
 	if km.market.State == bifrost.MarketOpen {
@@ -264,7 +304,7 @@ func renderMarket(km keyedMarket) marketXML {
 	probs := Probabilities(km.outcomes)
 	outs := make([]outcomeXML, 0, len(km.outcomes))
 	for i, ko := range km.outcomes {
-		o := outcomeXML{ID: ko.id}
+		o := outcomeXML{ID: ko.id, Name: ko.name}
 		if ko.outcome.Odds != nil {
 			o.Odds = FormatOdds(*ko.outcome.Odds)
 		}
@@ -280,6 +320,7 @@ func renderMarket(km keyedMarket) marketXML {
 		ID:         km.key.ProviderMarketID,
 		Specifiers: km.key.Specifiers,
 		Status:     status,
+		Name:       km.name,
 		Outcomes:   outs,
 	}
 }

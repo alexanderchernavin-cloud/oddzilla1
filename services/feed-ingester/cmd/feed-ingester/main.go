@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -79,6 +80,11 @@ func main() {
 		logger.Fatal().Err(err).Msg("redis ping")
 	}
 	logger.Info().Msg("connected to redis")
+
+	// Adopt the operator's feed source before anything below decides
+	// whether it may call Oddin's REST API (descriptions refresh,
+	// competitor backfill, the resolver). runSourceSwitch keeps it current.
+	loadFeedSource(ctx, rdb, logger)
 
 	// ── Store + resolver + bus ─────────────────────────────────────────
 	st := store.New(pool)
@@ -154,14 +160,24 @@ func main() {
 		return
 	}
 
+	// While the operator has forced the Backup source, no Oddin feed REST
+	// endpoint is called from this process: fixtures resolve through
+	// Bifrost, tournament tier / rosters / description refreshes wait, and
+	// no recovery request is sent. Widgets, video and OBB live in the api
+	// against other Oddin hosts and are unaffected.
+	restAllowed := func() bool { return !feedSourceIsBackup.Load() }
+	resolver = resolver.WithRESTGate(restAllowed)
+
 	deps := handler.Deps{
-		Store:    st,
-		Resolver: resolver,
-		Bus:      oddsBus,
-		Log:      logger,
-		Rest:     restClient,
-		NodeID:   cfg.Oddin.NodeID,
-		Alive:    handler.NewAliveState(),
+		Store:           st,
+		Resolver:        resolver,
+		Bus:             oddsBus,
+		Log:             logger,
+		Rest:            restClient,
+		NodeID:          cfg.Oddin.NodeID,
+		Alive:           handler.NewAliveState(),
+		RestAllowed:     restAllowed,
+		DescriptionLang: cfg.Oddin.Lang,
 	}
 
 	// ── Health server ──────────────────────────────────────────────────
@@ -190,7 +206,7 @@ func main() {
 	// bettable at frozen odds. <=0 disables it.
 	if cfg.FeedStaleSuspendSeconds > 0 {
 		staleAfter := time.Duration(cfg.FeedStaleSuspendSeconds) * time.Second
-		go runAliveWatchdog(ctx, deps, time.Now(), staleAfter, logger)
+		go runAliveWatchdog(ctx, deps, rdb, time.Now(), staleAfter, logger)
 	} else {
 		logger.Warn().Msg("alive watchdog disabled (FEED_STALE_SUSPEND_SECONDS<=0) — a silent feed will NOT auto-suspend the catalog")
 	}
@@ -202,7 +218,18 @@ func main() {
 	// without applying it, after suspending the catalogue once so the
 	// Bifrost backup's full re-emit lands on a clean slate. Switching back
 	// runs the same flush + 24 h Oddin replay a reconnect would.
-	go runSourceSwitch(ctx, rdb, deps, logger)
+	go runSourceSwitch(ctx, rdb, deps, func() {
+		// Catch up on the REST-sourced metadata the backup window skipped.
+		if restClient == nil {
+			return
+		}
+		for _, lang := range descriptionLangs(cfg.Oddin.Lang) {
+			if err := refreshMarketDescriptions(ctx, restClient, st, lang, logger); err != nil {
+				logger.Warn().Err(err).Str("lang", lang).Msg("post-backup market descriptions refresh failed")
+			}
+		}
+		backfillCompetitorProfiles(ctx, resolver, st, logger)
+	}, logger)
 
 	// ── AMQP (optional) ────────────────────────────────────────────────
 	// Backup feed stream (Bifrost). services/bifrost-feed publishes
@@ -249,9 +276,13 @@ func main() {
 			// KB of XML and changes rarely, so we don't need a tight
 			// cadence. Failures are logged but never fatal — stale
 			// descriptions are better than no descriptions.
-			for _, lang := range descriptionLangs(cfg.Oddin.Lang) {
-				if err := refreshMarketDescriptions(ctx, restClient, st, lang, logger); err != nil {
-					logger.Warn().Err(err).Str("lang", lang).Msg("initial market descriptions refresh failed; UI will fall back to ids")
+			if feedSourceIsBackup.Load() {
+				logger.Warn().Msg("feed source is Backup; skipping the boot-time market descriptions refresh (Oddin REST not called)")
+			} else {
+				for _, lang := range descriptionLangs(cfg.Oddin.Lang) {
+					if err := refreshMarketDescriptions(ctx, restClient, st, lang, logger); err != nil {
+						logger.Warn().Err(err).Str("lang", lang).Msg("initial market descriptions refresh failed; UI will fall back to ids")
+					}
 				}
 			}
 			go runDescriptionsRefresher(ctx, restClient, st, descriptionLangs(cfg.Oddin.Lang), logger)
@@ -365,6 +396,10 @@ func runDescriptionsRefresher(ctx context.Context, rc *oddinrest.Client, st *sto
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			if feedSourceIsBackup.Load() {
+				log.Info().Msg("feed source is Backup; market descriptions refresh skipped (Oddin REST not called)")
+				continue
+			}
 			for _, lang := range langs {
 				if err := refreshMarketDescriptions(ctx, rc, st, lang, log); err != nil {
 					log.Warn().Err(err).Str("lang", lang).Msg("market descriptions refresh failed")
@@ -379,6 +414,10 @@ func runDescriptionsRefresher(ctx context.Context, rc *oddinrest.Client, st *sto
 // REST calls so we don't burst into Oddin's rate limiter — 20 per second
 // is well under their per-endpoint ceiling.
 func backfillCompetitorProfiles(ctx context.Context, res *automap.Resolver, st *store.Store, log zerolog.Logger) {
+	if feedSourceIsBackup.Load() {
+		log.Warn().Msg("feed source is Backup; competitor profile backfill skipped (Oddin REST not called)")
+		return
+	}
 	urns, err := store.MissingCompetitorURNs(ctx, st.Pool())
 	if err != nil {
 		log.Warn().Err(err).Msg("competitor profile backfill query failed")
@@ -750,17 +789,44 @@ func broadcastSuspended(ctx context.Context, deps handler.Deps, refs []store.Flu
 // and clears the guard when fresh data resumes. Re-activation rides the
 // existing recovery paths — OnConnect flush+recover on a fresh connect,
 // or the alive-gap recovery when heartbeats resume on a live connection.
-func runAliveWatchdog(ctx context.Context, deps handler.Deps, startedAt time.Time, staleAfter time.Duration, log zerolog.Logger) {
+func runAliveWatchdog(ctx context.Context, deps handler.Deps, rdb *redis.Client, startedAt time.Time, staleAfter time.Duration, log zerolog.Logger) {
 	const checkEvery = 5 * time.Second
 	t := time.NewTicker(checkEvery)
 	defer t.Stop()
 	suspended := false
+	var backupUnhealthySince time.Time
 	log.Info().Dur("threshold", staleAfter).Msg("alive watchdog armed")
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case now := <-t.C:
+			// Forced Backup: AMQP silence is irrelevant (its deliveries are
+			// not applied), so the watchdog guards the source that IS
+			// feeding the catalogue — bifrost-feed's heartbeat and socket,
+			// read from its Redis status hash. A dead backup service or a
+			// lost Bifrost socket suspends the catalogue after the same
+			// threshold; bifrost-feed's re-emit on reconnect brings it back.
+			if feedSourceIsBackup.Load() {
+				healthy, why := backupHealthy(ctx, rdb, now, staleAfter)
+				switch {
+				case healthy:
+					backupUnhealthySince = time.Time{}
+					if suspended {
+						log.Warn().Msg("backup feed healthy again; staleness guard cleared (its re-emit re-activates markets)")
+						suspended = false
+					}
+				case backupUnhealthySince.IsZero():
+					backupUnhealthySince = now
+				case now.Sub(backupUnhealthySince) >= staleAfter && !suspended:
+					log.Error().Str("reason", why).Dur("threshold", staleAfter).
+						Msg("backup feed unhealthy past threshold while forced; suspending active catalog")
+					suspendCatalogForStaleness(ctx, deps, log)
+					suspended = true
+				}
+				continue
+			}
+			backupUnhealthySince = time.Time{}
 			sinceLast := feedSilence(lastAmqpMessageUnix.Load(), now, startedAt)
 			stale := sinceLast >= staleAfter
 			switch {
@@ -779,6 +845,28 @@ func runAliveWatchdog(ctx context.Context, deps handler.Deps, startedAt time.Tim
 			}
 		}
 	}
+}
+
+// backupHealthy reads services/bifrost-feed's status hash: healthy when
+// its heartbeat is fresh and its Bifrost socket is connected.
+func backupHealthy(ctx context.Context, rdb *redis.Client, now time.Time, staleAfter time.Duration) (bool, string) {
+	vals, err := rdb.HMGet(ctx, "bifrost:feed:status", "heartbeat_unix", "connected").Result()
+	if err != nil || len(vals) != 2 {
+		// Redis unreachable: cannot judge; do not flap.
+		return true, ""
+	}
+	hb, _ := vals[0].(string)
+	n, perr := strconv.ParseInt(hb, 10, 64)
+	if hb == "" || perr != nil {
+		return false, "bifrost-feed has published no status heartbeat"
+	}
+	if now.Sub(time.Unix(n, 0)) > staleAfter {
+		return false, "bifrost-feed heartbeat stale (service down?)"
+	}
+	if c, _ := vals[1].(string); c != "1" {
+		return false, "bifrost-feed reports its Bifrost socket disconnected"
+	}
+	return true, ""
 }
 
 // feedSilence reports how long the feed has been quiet. It measures from
@@ -932,6 +1020,13 @@ func runAMQP(ctx context.Context, cfg config.Config, deps handler.Deps, rdb *red
 			// (status=-1 fails the storefront filter) instead of silently
 			// keeping its pre-outage snapshot.
 			startConnectedStamp()
+			if feedSourceIsBackup.Load() {
+				// The backup is feeding the catalogue: flushing it here
+				// would wipe what Bifrost just fed, and the replay request
+				// is an Oddin REST call the operator asked us not to make.
+				log.Warn().Msg("amqp (re)connected while feed source is Backup; no flush, no recovery request")
+				return nil
+			}
 			if deps.Rest == nil {
 				log.Info().Msg("amqp (re)connected; recovery skipped (no rest client)")
 				return nil
@@ -963,6 +1058,15 @@ const (
 // atomic rather than a mutex.
 var dropAMQP atomic.Bool
 
+// feedSourceIsBackup gates every Oddin feed REST call (resolver fixtures,
+// tournament info, competitor profiles, descriptions refresh, recovery)
+// and switches the alive watchdog to guarding bifrost-feed instead of
+// AMQP. Set together with dropAMQP on the way INTO backup; on the way OUT
+// it is cleared FIRST so the reconnect-style replay request is allowed,
+// while dropAMQP stays set until that request is sent (a concurrent
+// BumpAfterTs would otherwise narrow the rewound recovery window).
+var feedSourceIsBackup atomic.Bool
+
 // currentFeedSource is what runSourceSwitch last observed, for /healthz.
 var currentFeedSource atomic.Pointer[string]
 
@@ -977,35 +1081,54 @@ var currentFeedSource atomic.Pointer[string]
 //
 // The value present at boot is adopted without a flush: a restart while
 // forced to backup must not wipe the catalogue the backup is feeding.
-func runSourceSwitch(ctx context.Context, rdb *redis.Client, deps handler.Deps, log zerolog.Logger) {
-	log = log.With().Str("component", "feed-source").Logger()
-	read := func() (string, bool) {
-		v, err := rdb.Get(ctx, feedSourceKey).Result()
-		if errors.Is(err, redis.Nil) {
-			return "auto", true
-		}
-		if err != nil {
-			if ctx.Err() == nil {
-				log.Debug().Err(err).Msg("feed:source read failed")
-			}
-			return "", false
-		}
-		switch v {
-		case "auto", "prod", feedSourceBackup:
-			return v, true
-		}
+// readFeedSource returns the normalised switch position and whether the
+// read succeeded. A missing key means auto.
+func readFeedSource(ctx context.Context, rdb *redis.Client, log zerolog.Logger) (string, bool) {
+	v, err := rdb.Get(ctx, feedSourceKey).Result()
+	if errors.Is(err, redis.Nil) {
 		return "auto", true
 	}
-	prev, ok := read()
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Debug().Err(err).Msg("feed:source read failed")
+		}
+		return "", false
+	}
+	switch v {
+	case "auto", "prod", feedSourceBackup:
+		return v, true
+	}
+	return "auto", true
+}
+
+// loadFeedSource adopts the stored switch position at boot: sets both
+// flags without any flush (a restart while forced to Backup must not wipe
+// the catalogue the backup is feeding) and records what was applied.
+func loadFeedSource(ctx context.Context, rdb *redis.Client, log zerolog.Logger) string {
+	cur, ok := readFeedSource(ctx, rdb, log)
 	if !ok {
-		prev = "auto"
+		cur = "auto"
 	}
-	dropAMQP.Store(prev == feedSourceBackup)
-	currentFeedSource.Store(&prev)
-	_ = rdb.Set(ctx, feedSourceAppliedKey, prev, 0).Err()
-	if prev == feedSourceBackup {
-		log.Warn().Msg("booted with feed source forced to backup; AMQP deliveries are acked without being applied")
+	isBackup := cur == feedSourceBackup
+	feedSourceIsBackup.Store(isBackup)
+	dropAMQP.Store(isBackup)
+	c := cur
+	currentFeedSource.Store(&c)
+	_ = rdb.Set(ctx, feedSourceAppliedKey, cur, 0).Err()
+	if isBackup {
+		log.Warn().Msg("booted with feed source forced to Backup: AMQP deliveries acked without being applied, no Oddin feed REST calls")
 	}
+	return cur
+}
+
+// runSourceSwitch polls the switch and applies transitions. onResume runs
+// (in its own goroutine) after a Backup → Prod/Auto transition, once REST
+// is allowed again, so the work skipped during the backup window
+// (descriptions refresh, competitor backfill) catches up immediately.
+func runSourceSwitch(ctx context.Context, rdb *redis.Client, deps handler.Deps, onResume func(), log zerolog.Logger) {
+	log = log.With().Str("component", "feed-source").Logger()
+	read := func() (string, bool) { return readFeedSource(ctx, rdb, log) }
+	prev := loadFeedSource(ctx, rdb, log)
 
 	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()
@@ -1021,24 +1144,29 @@ func runSourceSwitch(ctx context.Context, rdb *redis.Client, deps handler.Deps, 
 		}
 		switch {
 		case cur == feedSourceBackup:
+			feedSourceIsBackup.Store(true)
 			dropAMQP.Store(true)
-			log.Warn().Str("from", prev).Msg("feed source switched to BACKUP: suspending catalogue, ignoring AMQP until switched back")
+			log.Warn().Str("from", prev).Msg("feed source switched to BACKUP: suspending catalogue, ignoring AMQP and Oddin feed REST until switched back")
 			suspendCatalogForStaleness(ctx, deps, log)
 			if err := rdb.Set(ctx, feedSourceFlushedKey, time.Now().Unix(), 0).Err(); err != nil {
 				log.Warn().Err(err).Msg("flush acknowledgement write failed; bifrost-feed will activate after its 15 s ceiling")
 			}
 		case prev == feedSourceBackup:
 			log.Warn().Str("to", cur).Msg("feed source switched back to PROD: flushing and replaying from Oddin")
+			// REST is allowed again from here; dropAMQP stays true until
+			// the replay request is sent so a concurrent BumpAfterTs
+			// cannot narrow the rewound window.
+			feedSourceIsBackup.Store(false)
 			if deps.Rest != nil {
-				// Same sequence as an AMQP reconnect. dropAMQP stays true
-				// until the replay request is sent so a concurrent
-				// BumpAfterTs cannot narrow the rewound window.
 				flushBeforeRecover(ctx, deps, log)
 				handler.TriggerRecovery(ctx, deps, log)
 			} else {
 				log.Warn().Msg("no Oddin REST client; catalogue left as the backup last fed it")
 			}
 			dropAMQP.Store(false)
+			if onResume != nil {
+				go onResume()
+			}
 		default:
 			log.Info().Str("from", prev).Str("to", cur).Msg("feed source changed (backup stays in standby either way)")
 		}

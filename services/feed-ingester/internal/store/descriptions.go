@@ -76,6 +76,30 @@ func upsertMarketDescription(ctx context.Context, tx pgx.Tx, lang string, m oddi
 	return nil
 }
 
+// SeedMarketDescriptionIfMissing inserts a name template for a market
+// type that has no description row yet for the language. Used for the
+// rendered market names services/bifrost-feed carries on backup-sourced
+// odds_change messages: without it a market type first seen while Oddin's
+// REST is unavailable would render as "Market #N". The REST refresh's
+// ON CONFLICT DO UPDATE overwrites the seed with Oddin's real template
+// the next time it succeeds. The line ("+1.50", "2.5") is derived from
+// specifiers at render time, so a bare name like "Handicap" is a valid
+// template. Returns true when a row was inserted.
+func SeedMarketDescriptionIfMissing(ctx context.Context, pool *pgxpool.Pool, lang string, providerMarketID int, variant, name string) (bool, error) {
+	if name == "" {
+		return false, nil
+	}
+	tag, err := pool.Exec(ctx, `
+		INSERT INTO market_descriptions (provider_market_id, variant, language, name_template, specifiers_json, updated_at)
+		VALUES ($1, $2, $3, $4, '[]'::jsonb, NOW())
+		ON CONFLICT (provider_market_id, variant, language) DO NOTHING`,
+		providerMarketID, variant, lang, name)
+	if err != nil {
+		return false, fmt.Errorf("seed market description %d/%q: %w", providerMarketID, variant, err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // CountMarketDescriptions returns the number of market_descriptions rows,
 // used by the health/startup log to confirm the cache was populated.
 func CountMarketDescriptions(ctx context.Context, pool *pgxpool.Pool) (int, error) {

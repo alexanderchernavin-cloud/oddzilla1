@@ -1626,10 +1626,14 @@ export default async function catalogRoutes(app: FastifyInstance) {
         // translated, e.g. "Ничья".)
         const enSide = homeAwaySideFromTemplate(outcomeTemplateEn);
         let resolvedName: string;
+        // URN outcomes: profile name first, then the per-instance name the
+        // feed carried on the outcome (the Bifrost backup fills it from
+        // its selection names, so a player first seen while Oddin's REST
+        // is down still reads as a name), then the raw URN.
         if (r.outcomeId.startsWith("od:competitor:")) {
-          resolvedName = competitorNameMap.get(r.outcomeId) ?? r.outcomeId;
+          resolvedName = competitorNameMap.get(r.outcomeId) ?? (r.outcomeName || r.outcomeId);
         } else if (r.outcomeId.startsWith("od:player:")) {
-          resolvedName = playerNameMap.get(r.outcomeId) ?? r.outcomeId;
+          resolvedName = playerNameMap.get(r.outcomeId) ?? (r.outcomeName || r.outcomeId);
         } else if (enSide === "home") {
           resolvedName = match.homeTeam;
         } else if (enSide === "away") {

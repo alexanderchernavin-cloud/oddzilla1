@@ -80,7 +80,7 @@ func main() {
 	if !cfg.Oddin.Enabled {
 		logger.Warn().Msg("Oddin creds absent; settlement idling — health only")
 	} else {
-		go runAMQP(ctx, cfg, stt, logger)
+		go runAMQP(ctx, cfg, stt, rdb, logger)
 	}
 
 	// Backup feed (services/bifrost-feed) delivers synthesised
@@ -114,7 +114,15 @@ func main() {
 	cancel()
 }
 
-func runAMQP(ctx context.Context, cfg config.Config, stt *settler.Settler, log zerolog.Logger) {
+// feedSourceKey is the operator's feed source switch written by the api
+// (auto / prod / backup). While it reads "backup" no Oddin feed REST
+// endpoint may be called from any feed service — for settlement that is
+// the recovery request below. Settlement keeps consuming AMQP in every
+// mode (apply-once dedup makes dual sources safe; cancel / rollback exist
+// only there).
+const feedSourceKey = "feed:source"
+
+func runAMQP(ctx context.Context, cfg config.Config, stt *settler.Settler, rdb *redis.Client, log zerolog.Logger) {
 	// Stable named queue per (customer, deployment). The settlement
 	// stream needs at-least-once delivery across worker restarts; a
 	// server-named auto-delete queue silently drops unacked messages
@@ -166,6 +174,10 @@ func runAMQP(ctx context.Context, cfg config.Config, stt *settler.Settler, log z
 			// already covers the steady state; recovery is a one-shot
 			// best-effort top-up.
 			log.Info().Str("queue", queueName).Msg("amqp (re)connected")
+			if src, err := rdb.Get(ctx, feedSourceKey).Result(); err == nil && src == "backup" {
+				log.Warn().Msg("feed source is Backup; skipping the Oddin REST recovery request")
+				return nil
+			}
 			afterMs := time.Now().Add(-1 * time.Hour).UnixMilli()
 			for _, product := range []string{"pre", "live"} {
 				reqID := int(rand.Int31n(1_000_000_000)) //nolint:gosec // not security-sensitive

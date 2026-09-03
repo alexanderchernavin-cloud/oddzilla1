@@ -52,6 +52,13 @@ type Resolver struct {
 	bf  *bifrost.Client   // optional second fixture source; nil = REST only
 	log zerolog.Logger
 
+	// restGate, when set, is consulted before every Oddin REST call
+	// (fixture, tournament info, competitor profile). false = behave as if
+	// the REST client were absent: fixtures come from Bifrost, tournament
+	// tier and rosters are skipped. main.go wires it to "the feed source
+	// switch is not on Backup".
+	restGate func() bool
+
 	defaultSportID    int
 	defaultCategoryID int
 
@@ -91,6 +98,17 @@ func New(
 func (r *Resolver) WithBifrostFallback(c *bifrost.Client) *Resolver {
 	r.bf = c
 	return r
+}
+
+// WithRESTGate installs the predicate that decides whether Oddin REST may
+// be called right now. See Resolver.restGate.
+func (r *Resolver) WithRESTGate(allowed func() bool) *Resolver {
+	r.restGate = allowed
+	return r
+}
+
+func (r *Resolver) restAllowed() bool {
+	return r.rc != nil && (r.restGate == nil || r.restGate())
 }
 
 // sportBlocked returns true when the given Oddin FixtureSport should be
@@ -273,7 +291,7 @@ func (r *Resolver) fetchFixtureAny(ctx context.Context, matchURN string) (*oddin
 // effort: logs warnings but never returns errors, since missing names
 // only affect outcome labels and the rest of the ingest must proceed.
 func (r *Resolver) CacheCompetitorProfile(ctx context.Context, urn string) {
-	if urn == "" || r.rc == nil {
+	if urn == "" || !r.restAllowed() {
 		return
 	}
 	if exists, err := store.CompetitorProfileExists(ctx, r.st.Pool(), urn); err == nil && exists {
@@ -310,7 +328,7 @@ func (r *Resolver) CacheCompetitorProfile(ctx context.Context, urn string) {
 // write is skipped. Called on tournament creation and on every
 // fixture_change refresh, plus from the offline backfill tool.
 func (r *Resolver) refreshTournamentMetadata(ctx context.Context, tournamentID int, tournamentURN string) {
-	if r.rc == nil || tournamentURN == "" {
+	if tournamentURN == "" || !r.restAllowed() {
 		return
 	}
 	body, err := r.rc.TournamentInfo(ctx, restLang, tournamentURN)
@@ -728,6 +746,9 @@ func (r *Resolver) ensurePlaceholderTournament(ctx context.Context, sportID int,
 func (r *Resolver) fetchFixture(ctx context.Context, eventURN string) (*oddinxml.FixtureResponse, error) {
 	if r.rc == nil {
 		return nil, errors.New("oddin rest client not configured")
+	}
+	if !r.restAllowed() {
+		return nil, errors.New("oddin rest not called while the feed source is Backup")
 	}
 	body, err := r.rc.SportEventFixture(ctx, restLang, eventURN)
 	if err != nil {
