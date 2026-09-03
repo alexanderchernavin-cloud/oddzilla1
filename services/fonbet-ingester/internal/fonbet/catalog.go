@@ -53,6 +53,20 @@ type FactorMeta struct {
 	Label         string
 	WinnerOutcome string // "1" | "2" | "3" on match-winner tables
 	DoubleChance  bool   // 1X / 12 / X2 cells of a match-winner table
+	// SideID is the stable outcome id for parameterised tables. A line
+	// market (handicap -1.5, total 6.5) is identified by its line, but
+	// Fonbet prices it through whichever catalogue row currently sits on
+	// that line — different rows mean different factor ids for the same
+	// "over 6.5". Keying the outcome by side ("h1"/"h2", "over"/"under",
+	// "c<col>" fallback) keeps one outcome per side across row moves.
+	SideID string
+}
+
+var sideCaptions = map[string]string{
+	"1": "h1", "2": "h2",
+	"Б": "over", "М": "under", "O": "over", "U": "under",
+	"Over": "over", "Under": "under", "Больше": "over", "Меньше": "under",
+	"Да": "yes", "Нет": "no", "Yes": "yes", "No": "no",
 }
 
 // RowFactors returns every value factor on the same line as this factor.
@@ -156,6 +170,13 @@ func BuildIndex(cat *Catalog) *Index {
 						label = strconv.Itoa(c.FactorID)
 					}
 					fm := &FactorMeta{FactorID: c.FactorID, Table: tm, Row: ri, Label: label}
+					if tm.Param != ParamNone {
+						if side, ok := sideCaptions[col]; ok {
+							fm.SideID = side
+						} else {
+							fm.SideID = "c" + strconv.Itoa(ci)
+						}
+					}
 					if tm.IsMatchWinner {
 						if w, ok := matchWinnerCaptions[col]; ok {
 							fm.WinnerOutcome = w

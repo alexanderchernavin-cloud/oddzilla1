@@ -41,7 +41,8 @@ const (
 
 type Config struct {
 	URLsJSON    string
-	Hosts       []string
+	Hosts       []string // line hosts fallback
+	CommonHosts []string // clientsapi hosts fallback (results feed)
 	Lang        string
 	ScopeMarket int
 	Timeout     time.Duration
@@ -52,8 +53,9 @@ type Client struct {
 	http *http.Client
 	log  zerolog.Logger
 
-	mu    sync.Mutex
-	hosts []string
+	mu     sync.Mutex
+	hosts  []string
+	common []string
 }
 
 var hostNumRe = regexp.MustCompile(`line(\d+)`)
@@ -63,18 +65,41 @@ func New(cfg Config, log zerolog.Logger) *Client {
 		cfg.Timeout = 30 * time.Second
 	}
 	return &Client{
-		cfg:   cfg,
-		http:  &http.Client{Timeout: cfg.Timeout},
-		log:   log.With().Str("component", "fonbet-client").Logger(),
-		hosts: append([]string(nil), cfg.Hosts...),
+		cfg:    cfg,
+		http:   &http.Client{Timeout: cfg.Timeout},
+		log:    log.With().Str("component", "fonbet-client").Logger(),
+		hosts:  append([]string(nil), cfg.Hosts...),
+		common: append([]string(nil), cfg.CommonHosts...),
 	}
 }
 
-// Hosts returns the current host queue (first = preferred).
+// Hosts returns the current line host queue (first = preferred).
 func (c *Client) Hosts() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]string(nil), c.hosts...)
+}
+
+// CommonHosts returns the clientsapi hosts (results feed).
+func (c *Client) CommonHosts() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.common...)
+}
+
+func normalizeHosts(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, h := range in {
+		h = strings.TrimSpace(h)
+		if h == "" {
+			continue
+		}
+		if strings.HasPrefix(h, "//") {
+			h = "https:" + h
+		}
+		out = append(out, strings.TrimRight(h, "/"))
+	}
+	return out
 }
 
 // DiscoverHosts refreshes the line host list from urls.json. Failure is
@@ -88,29 +113,24 @@ func (c *Client) DiscoverHosts(ctx context.Context) error {
 		return fmt.Errorf("urls.json: %w", err)
 	}
 	var doc struct {
-		Line []string `json:"line"`
+		Line   []string `json:"line"`
+		Common []string `json:"common"`
 	}
 	if err := json.Unmarshal(body, &doc); err != nil {
 		return fmt.Errorf("urls.json decode: %w", err)
 	}
-	hosts := make([]string, 0, len(doc.Line))
-	for _, h := range doc.Line {
-		h = strings.TrimSpace(h)
-		if h == "" {
-			continue
-		}
-		if strings.HasPrefix(h, "//") {
-			h = "https:" + h
-		}
-		hosts = append(hosts, strings.TrimRight(h, "/"))
-	}
+	hosts := normalizeHosts(doc.Line)
 	if len(hosts) == 0 {
 		return errors.New("urls.json: empty line host list")
 	}
+	common := normalizeHosts(doc.Common)
 	c.mu.Lock()
 	c.hosts = hosts
+	if len(common) > 0 {
+		c.common = common
+	}
 	c.mu.Unlock()
-	c.log.Info().Strs("hosts", hosts).Msg("line hosts discovered")
+	c.log.Info().Strs("hosts", hosts).Strs("common", common).Msg("line hosts discovered")
 	return nil
 }
 

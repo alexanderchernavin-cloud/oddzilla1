@@ -1600,14 +1600,38 @@ export default async function catalogRoutes(app: FastifyInstance) {
           homeTeam: match.homeTeam,
           awayTeam: match.awayTeam,
         };
+        // Fonbet sub-events (halves, periods, corners, player props) ride
+        // the `variant` specifier and their templates carry the sub-event
+        // label as a prefix ("1-й тайм: Исходы"). Split the prefix off
+        // into its own tab so the match page groups like Fonbet's event
+        // view does — Match / 1-й тайм / угловые / Players — instead of
+        // one long "Match" list with prefixed names. Player props share a
+        // single tab and keep the player's name in the market title.
+        let scope = deriveScope(specs);
+        let nameTemplate = template;
+        let baseNameTemplate = baseTemplate;
+        const fbVariant = /^fb:(\d+)(?::(\d+))?$/.exec(variant);
+        if (fbVariant) {
+          const sep = template.indexOf(": ");
+          if (fbVariant[2]) {
+            scope = { id: "fb_players", label: locale === "ru" ? "Игроки" : "Players", order: 90 };
+          } else if (sep > 0) {
+            const label = template.slice(0, sep);
+            scope = { id: `fb_${fbVariant[1]}`, label, order: 10 + Number(fbVariant[1]) / 1e8 };
+            nameTemplate = template.slice(sep + 2);
+            if (baseTemplate.startsWith(label + ": ")) {
+              baseNameTemplate = baseTemplate.slice(sep + 2);
+            }
+          }
+        }
         m = {
           id: key,
           providerMarketId: r.providerMarketId,
           specifiers: specs,
           variant,
-          name: substituteTemplate(template, specs, teams, profiles, locale),
-          baseName: substituteTemplate(baseTemplate, specs, teams, profiles, locale),
-          scope: deriveScope(specs),
+          name: substituteTemplate(nameTemplate, specs, teams, profiles, locale),
+          baseName: substituteTemplate(baseNameTemplate, specs, teams, profiles, locale),
+          scope,
           status: r.status,
           lastOddinTs: r.lastOddinTs.toString(),
           lineKey: line.lineKey,
@@ -1685,7 +1709,15 @@ export default async function catalogRoutes(app: FastifyInstance) {
     // markets without an explicit row fall back to provider_market_id
     // ascending (the legacy default). The override table is small —
     // typically <50 rows per sport — so a per-request fetch is cheap.
-    const marketList = Array.from(marketMap.values());
+    // Drop deactivated markets (status 0) that have nothing bettable
+    // left. Oddin rarely leaves those behind, but a line-driven feed
+    // (Fonbet) retires handicap / total lines every few seconds as the
+    // price moves, and each retired line would otherwise render as a row
+    // of dashes. Suspended (-1) markets stay visible with their
+    // "Suspended" treatment — that state is transient and informative.
+    const marketList = Array.from(marketMap.values()).filter(
+      (m) => m.status !== 0 || m.outcomes.some((o) => o.active),
+    );
     // Sort outcomes inside each market by Oddin's canonical outcome_id
     // (see outcomeSortWeight). PG returns outcomes in undefined order
     // without ORDER BY, which made home/away appear randomly swapped on

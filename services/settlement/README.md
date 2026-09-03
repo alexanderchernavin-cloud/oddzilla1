@@ -1,5 +1,14 @@
 # services/settlement
 
+Provider-neutral input: besides Oddin AMQP, the service consumes the Redis
+stream `settlement.external` (`internal/extstream`, env
+`SETTLEMENT_EXTERNAL_STREAM`). Producers grade markets themselves and send
+`{type, event_urn, provider_market_id, specifiers, ts, outcomes}`; the
+consumer builds an `oddinxml.Market` and calls
+`Settler.ApplyExternalSettlement` / `ApplyExternalCancel`, so apply-once,
+sticky statuses, ticket grading and payouts are shared. Today's producer is
+`services/fonbet-ingester` (see `docs/FONBET.md`).
+
 AMQP consumer for Oddin settlement messages. Applies payouts to tickets.
 Go 1.23 / `amqp091-go` + `encoding/xml` + `pgx/v5`.
 

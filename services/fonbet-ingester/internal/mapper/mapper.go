@@ -410,8 +410,11 @@ func addFactors(
 			m.Markets[key] = mk
 		}
 		outcomeID := strconv.Itoa(id)
-		if meta.WinnerOutcome != "" && mainEvent {
+		switch {
+		case meta.WinnerOutcome != "" && mainEvent:
 			outcomeID = meta.WinnerOutcome
+		case meta.SideID != "":
+			outcomeID = meta.SideID // line markets: one outcome per side, whichever row prices it
 		}
 		if _, dup := mk.Outcomes[outcomeID]; dup {
 			continue

@@ -38,6 +38,7 @@ import (
 	"github.com/oddzilla/fonbet-ingester/internal/fonbet"
 	"github.com/oddzilla/fonbet-ingester/internal/ingest"
 	"github.com/oddzilla/fonbet-ingester/internal/mapper"
+	"github.com/oddzilla/fonbet-ingester/internal/settle"
 	"github.com/oddzilla/fonbet-ingester/internal/store"
 )
 
@@ -98,6 +99,7 @@ func main() {
 	client := fonbet.New(fonbet.Config{
 		URLsJSON:    cfg.Fonbet.URLsJSON,
 		Hosts:       cfg.Fonbet.Hosts,
+		CommonHosts: cfg.Fonbet.CommonHosts,
 		Lang:        cfg.Fonbet.Lang,
 		ScopeMarket: cfg.Fonbet.ScopeMarket,
 		Timeout:     cfg.Fonbet.HTTPTimeout,
@@ -146,6 +148,18 @@ func main() {
 	go runWatchdog(ctx, ing, cfg.Fonbet.StaleSuspendAfter, log)
 	go runHostRefresh(ctx, client, log)
 
+	// Results-based settlement: closed matches → Fonbet results feed →
+	// graded markets → settlement.external stream → services/settlement.
+	var indexPtr atomic.Pointer[fonbet.Index]
+	indexPtr.Store(idx)
+	if cfg.Fonbet.SettleEnabled {
+		worker := settle.New(st, b, client, &indexPtr, cfg.Fonbet.Lang, mapper.DefaultPMIDBase, mapper.DefaultDoubleChancePMIDBase, log)
+		go worker.Run(ctx, cfg.Fonbet.SettleInterval)
+		log.Info().Dur("interval", cfg.Fonbet.SettleInterval).Msg("settlement worker started")
+	} else {
+		log.Warn().Msg("FONBET_SETTLE_ENABLED=false — fonbet markets will not be settled automatically")
+	}
+
 	log.Info().Dur("interval", cfg.Fonbet.PollInterval).Int("scope_market", cfg.Fonbet.ScopeMarket).Msg("poll loop started")
 	ticker := time.NewTicker(cfg.Fonbet.PollInterval)
 	defer ticker.Stop()
@@ -177,6 +191,7 @@ func main() {
 		case <-catalogRefresh.C:
 			if fresh, err := loadCatalog(ctx, client, cfg.Fonbet.Lang, log); err == nil {
 				idx = fresh
+				indexPtr.Store(fresh)
 				if err := ing.WriteStaticDescriptions(ctx, mapper.StaticDescriptions(idx, opt)); err != nil {
 					log.Warn().Err(err).Msg("refresh descriptions")
 				}

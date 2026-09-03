@@ -69,6 +69,17 @@ type FonbetConfig struct {
 	// MaxMatches caps the number of level-1 events ingested per snapshot
 	// (soonest first, live first). 0 = unlimited. Useful on small boxes.
 	MaxMatches int
+
+	// SettleEnabled runs the results-based settlement worker (grades
+	// closed matches from Fonbet's results feed and hands them to
+	// services/settlement over the settlement.external stream).
+	SettleEnabled bool
+	// SettleInterval is how often closed matches are checked against the
+	// results feed.
+	SettleInterval time.Duration
+	// CommonHosts is the static fallback for the clientsapi hosts the
+	// results feed lives on (urls.json `common` overrides it).
+	CommonHosts []string
 }
 
 func Load() (Config, error) {
@@ -100,6 +111,12 @@ func Load() (Config, error) {
 		AllowedSportIDs:   parseIntSet(getEnvDefault("FONBET_ALLOWED_SPORT_IDS", "")),
 		IncludeSubEvents:  !strings.EqualFold(getEnvDefault("FONBET_INCLUDE_SUB_EVENTS", "true"), "false"),
 		MaxMatches:        atoiDefault("FONBET_MAX_MATCHES", 0),
+		SettleEnabled:     !strings.EqualFold(getEnvDefault("FONBET_SETTLE_ENABLED", "true"), "false"),
+		SettleInterval:    time.Duration(atoiDefault("FONBET_SETTLE_INTERVAL_MS", 120000)) * time.Millisecond,
+		CommonHosts:       splitList(getEnvDefault("FONBET_COMMON_HOSTS", "https://clientsapi05-w.kzac51-resources.kz,https://clientsapi21-w.kzac51-resources.kz,https://clientsapi51-w.kzac51-resources.kz,https://clientsapi54-w.kzac51-resources.kz")),
+	}
+	if cfg.Fonbet.SettleInterval < 10*time.Second {
+		cfg.Fonbet.SettleInterval = 10 * time.Second
 	}
 	if cfg.Fonbet.PollInterval < time.Second {
 		cfg.Fonbet.PollInterval = time.Second

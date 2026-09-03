@@ -952,11 +952,19 @@ next to Oddin's esports by scraping the public Fonbet KZ line.
 - `loadMatchWinnerOdds` accepts Fonbet match-winner rows so list cards
   show 1 / X / 2 for Fonbet matches.
 
+- Settlement: results feed (`results.json.php`) → graded main markets →
+  `settlement.external` stream → `services/settlement` (`internal/extstream`,
+  `Settler.ApplyExternalSettlement/Cancel`). Conservative sport rules;
+  skipped markets are logged for manual settlement.
+- odds-publisher batched (one UNNEST UPDATE + one history INSERT per
+  batch) — needed to keep up with the Fonbet churn.
+- Fonbet CDN logos for teams / tournaments / sports; bundled icons for the
+  nine sports without a Fonbet glyph; sub-event tabs on the match page.
+
 **Acceptance (still open):**
-- Settlement for Fonbet markets — needs a results source (Fonbet
-  `results` endpoint or score-based resolution for main markets) and an
-  apply-once path into `settlements`. Until then tickets on Fonbet
-  markets never settle, so `FONBET_ENABLED` stays `false` on prod.
+- Settlement soak on a staging stack: compare a week of automatic
+  settlements against Fonbet's own results before enabling on prod.
+- Manual settlement UI for the markets the rules leave open.
 - Storefront polish: sport icons for the new slugs
   (`apps/web/public/sports/<slug>.svg`), traditional-sport live scoreboard
   (Fonbet payload carries `home` / `away` / `periods` / `scoreboard.time`).

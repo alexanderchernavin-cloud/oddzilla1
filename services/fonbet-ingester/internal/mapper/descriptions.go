@@ -60,11 +60,17 @@ func StaticDescriptions(idx *fonbet.Index, opt Options) []Description {
 		}
 		// Match-winner cells are addressed two ways: by the canonical
 		// 1/2/3 id on the main event and by their factor id on sub-events
-		// (halves, periods). Both need a label.
+		// (halves, periods). Line markets are addressed by side id. All
+		// forms get a label.
 		d.Outcomes[itoa(fm.FactorID)] = fm.Label
-		if fm.WinnerOutcome != "" {
+		switch {
+		case fm.WinnerOutcome != "":
 			d.Outcomes[fm.WinnerOutcome] = OutcomeTemplate(fm, idx.Lang)
-		} else {
+		case fm.SideID != "":
+			if _, done := d.Outcomes[fm.SideID]; !done {
+				d.Outcomes[fm.SideID] = OutcomeTemplate(fm, idx.Lang)
+			}
+		default:
 			d.Outcomes[itoa(fm.FactorID)] = OutcomeTemplate(fm, idx.Lang)
 		}
 		if fm.DoubleChance {

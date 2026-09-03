@@ -74,17 +74,20 @@ func TestBuildFootballMatch(t *testing.T) {
 	if hcp == nil {
 		t.Fatalf("handicap -2.5 missing; keys=%v", keys(m.Markets))
 	}
-	if len(hcp.Outcomes) != 2 || hcp.Outcomes["910"] == nil || hcp.Outcomes["912"] == nil {
+	if len(hcp.Outcomes) != 2 || hcp.Outcomes["h1"] == nil || hcp.Outcomes["h2"] == nil {
 		t.Fatalf("handicap outcomes: %v", keys2(hcp.Outcomes))
 	}
-	if hcp.Outcomes["910"].Odds != "6.8" || hcp.Outcomes["912"].Odds != "1.1" {
+	if hcp.Outcomes["h1"].FactorID != 910 || hcp.Outcomes["h2"].FactorID != 912 {
+		t.Fatalf("handicap factor ids: %+v", hcp.Outcomes)
+	}
+	if hcp.Outcomes["h1"].Odds != "6.8" || hcp.Outcomes["h2"].Odds != "1.1" {
 		t.Fatalf("handicap odds: %+v", hcp.Outcomes)
 	}
 	// Totals: `threshold`, over + under on the same line.
 	var totals int
 	for _, mk := range m.Markets {
 		if mk.PMID == 1000305 {
-			if mk.Specs["threshold"] == "" || len(mk.Outcomes) != 2 {
+			if mk.Specs["threshold"] == "" || len(mk.Outcomes) != 2 || mk.Outcomes["over"] == nil || mk.Outcomes["under"] == nil {
 				t.Fatalf("total market malformed: %+v", mk)
 			}
 			totals++
@@ -244,10 +247,10 @@ func TestDescriptions(t *testing.T) {
 	if dc.Name != "Двойной шанс" || len(dc.Outcomes) != 3 {
 		t.Fatalf("double-chance description: %+v", dc)
 	}
-	if h := byPMID[1000304]; h.Name != "Фора {handicap}" || h.Outcomes["910"] != "1" || h.Outcomes["912"] != "2" {
+	if h := byPMID[1000304]; h.Name != "Фора {handicap}" || h.Outcomes["h1"] != "1" || h.Outcomes["h2"] != "2" || h.Outcomes["910"] != "1" {
 		t.Fatalf("handicap description: %+v", h)
 	}
-	if tt := byPMID[1000305]; tt.Name != "Тотал {threshold}" || tt.Outcomes["930"] != "Б" || tt.Outcomes["931"] != "М" {
+	if tt := byPMID[1000305]; tt.Name != "Тотал {threshold}" || tt.Outcomes["over"] != "Б" || tt.Outcomes["under"] != "М" {
 		t.Fatalf("total description: %+v", tt)
 	}
 	if got := VariantTemplate("1-й тайм", "Фора {handicap}"); got != "1-й тайм: Фора {handicap}" {

@@ -141,9 +141,11 @@ Traditional sports come from the public Fonbet KZ line instead of Oddin.
   poller never leaves frozen prices bettable.
 
 Everything downstream (odds-publisher → ws-gateway → storefront, bet
-placement, bet-delay) is provider-agnostic and needs no change. What is
-**not** wired is settlement: Fonbet has no push feed for results, so
-markets never reach `-3`. See [`FONBET.md`](./FONBET.md).
+placement, bet-delay) is provider-agnostic and needs no change. Settlement: the ingester grades
+closed matches from Fonbet's results feed and publishes one message per
+market on the `settlement.external` Redis stream; `services/settlement`
+consumes it (`internal/extstream`) and applies it through the same code
+path as an Oddin `bet_settlement`. See [`FONBET.md`](./FONBET.md).
 
 ## Data flow walkthroughs
 

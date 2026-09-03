@@ -75,6 +75,47 @@ func (b *Bus) PublishOddsBatch(ctx context.Context, events []OddsEvent) error {
 	return nil
 }
 
+// StreamSettlement is consumed by services/settlement (internal/extstream).
+const StreamSettlement = "settlement.external"
+
+// SettlementMessage is one market result handed to the settlement service.
+type SettlementMessage struct {
+	Type             string // "settle" | "cancel"
+	EventURN         string
+	ProviderMarketID int
+	Specifiers       string // canonical k=v|k=v
+	Ts               int64  // ms
+	OutcomesJSON     string // JSON array of {id,result,void_factor}; empty for cancel
+}
+
+// PublishSettlementBatch XADDs the messages in one pipeline.
+func (b *Bus) PublishSettlementBatch(ctx context.Context, msgs []SettlementMessage) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+	pipe := b.rdb.Pipeline()
+	for _, m := range msgs {
+		pipe.XAdd(ctx, &redis.XAddArgs{
+			Stream: StreamSettlement,
+			MaxLen: 200_000,
+			Approx: true,
+			Values: map[string]any{
+				"type":               m.Type,
+				"provider":           "fonbet",
+				"event_urn":          m.EventURN,
+				"provider_market_id": m.ProviderMarketID,
+				"specifiers":         m.Specifiers,
+				"ts":                 m.Ts,
+				"outcomes":           m.OutcomesJSON,
+			},
+		})
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("pipeline xadd %s: %w", StreamSettlement, err)
+	}
+	return nil
+}
+
 func boolInt(b bool) int {
 	if b {
 		return 1

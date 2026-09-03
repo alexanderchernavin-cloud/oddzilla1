@@ -38,6 +38,12 @@ type Config struct {
 	// the same Handle the AMQP path uses. On by default;
 	// BACKUP_STREAM_ENABLED=false detaches it.
 	BackupStreamEnabled bool
+
+	// ExternalStream is the Redis stream provider-neutral settlement
+	// messages arrive on (services/fonbet-ingester is the producer). Read
+	// from SETTLEMENT_EXTERNAL_STREAM, default "settlement.external"; empty
+	// disables the consumer.
+	ExternalStream string
 }
 
 type OddinConfig struct {
@@ -70,6 +76,7 @@ func Load() (Config, error) {
 		// acceptable settle-latency budget for the rare miss while keeping
 		// the scan (partial index WHERE result IS NULL) negligible.
 		ReconcileIntervalSeconds: atoiDefault("SETTLEMENT_RECONCILE_INTERVAL_SECONDS", 300),
+		ExternalStream:           getEnvDefault("SETTLEMENT_EXTERNAL_STREAM", "settlement.external"),
 	}
 	cfg.DatabaseURL = os.Getenv("DATABASE_URL")
 	if cfg.DatabaseURL == "" {
