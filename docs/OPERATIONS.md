@@ -927,8 +927,9 @@ and settlements when Oddin's AMQP feed goes silent. Full design in
 [`docs/BIFROST_BACKUP_FEED.md`](./BIFROST_BACKUP_FEED.md); this is the
 operator view.
 
-**State model.** The **Feed source** switch on `/admin/feed` (Redis
-`feed:source`, `PUT /admin/feed/source`, audit-logged) has three positions:
+**State model.** The **Feed source** switch on `/admin/feed` (Postgres
+singleton `feed_control`, migration 0095; `PUT /admin/feed/source`,
+audit-logged) has three positions:
 
 | Position | Prod Oddin (AMQP) | Backup Oddin (Bifrost) |
 | --- | --- | --- |
@@ -938,8 +939,11 @@ operator view.
 
 **Only Auto moves by itself.** Backup Oddin and Prod Oddin only are manual
 positions: nothing in the system changes them, they survive restarts and
-deploys (the key lives in Redis with no TTL), and a forced Backup keeps
-publishing whatever AMQP does. That includes the case where Bifrost itself
+deploys (the row lives in Postgres — NOT Redis: on 2026-09-03 the
+`allkeys-lru` Redis evicted the first cut's `feed:source*` keys when the
+backup stream filled its 256 MB and a forced Backup silently reverted to
+Auto; the stream is now time-trimmed and operator state is in
+`feed_control`), and a forced Backup keeps publishing whatever AMQP does. That includes the case where Bifrost itself
 goes down while Backup is forced — the catalogue then stays dark until an
 operator moves the switch; the card shows the socket disconnected.
 Operator decision 2026-09-03.

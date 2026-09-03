@@ -97,11 +97,12 @@ type Runner struct {
 	gate   *gate.Gate
 	log    zerolog.Logger
 
-	mu       sync.Mutex
-	tracked  map[string]*tracked
-	stats    Stats
-	lastGen  uint64
-	resyncNo int
+	mu        sync.Mutex
+	tracked   map[string]*tracked
+	stats     Stats
+	lastGen   uint64
+	lastFlush time.Time
+	resyncNo  int
 }
 
 func New(cfg config.Config, client *bifrost.Client, pub publisher.Publisher, db dbstate.Source, g *gate.Gate, log zerolog.Logger) *Runner {
@@ -458,12 +459,25 @@ func (r *Runner) publish(ctx context.Context, kind, urn string, body []byte) boo
 // pass instead of waiting for each match's next natural update.
 func (r *Runner) watchGate(ctx context.Context) {
 	active, gen := r.gate.Generation()
+	flush := r.gate.FlushMark()
 	r.mu.Lock()
 	if gen == r.lastGen {
+		// No activation flip. But a flush acknowledgement that lands while
+		// we are already publishing (feed-ingester's flush outran the 15 s
+		// activation ceiling — 76 s measured) has just suspended everything
+		// we fed; re-emit so the catalogue comes back.
+		if active && !flush.IsZero() && flush.After(r.lastFlush) {
+			r.lastFlush = flush
+			r.mu.Unlock()
+			r.log.Warn().Time("flushed_at", flush).Msg("catalogue flush acknowledged after activation; re-emitting every cached match snapshot")
+			r.reemitAll(ctx)
+			return
+		}
 		r.mu.Unlock()
 		return
 	}
 	r.lastGen = gen
+	r.lastFlush = flush
 	r.mu.Unlock()
 	if !active {
 		r.log.Warn().Msg("gate inactive; publishing stopped")

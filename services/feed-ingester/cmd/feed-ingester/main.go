@@ -84,7 +84,7 @@ func main() {
 	// Adopt the operator's feed source before anything below decides
 	// whether it may call Oddin's REST API (descriptions refresh,
 	// competitor backfill, the resolver). runSourceSwitch keeps it current.
-	loadFeedSource(ctx, rdb, logger)
+	loadFeedSource(ctx, pool, logger)
 
 	// ── Store + resolver + bus ─────────────────────────────────────────
 	st := store.New(pool)
@@ -218,7 +218,7 @@ func main() {
 	// without applying it, after suspending the catalogue once so the
 	// Bifrost backup's full re-emit lands on a clean slate. Switching back
 	// runs the same flush + 24 h Oddin replay a reconnect would.
-	go runSourceSwitch(ctx, rdb, deps, func() {
+	go runSourceSwitch(ctx, pool, deps, func() {
 		// Catch up on the REST-sourced metadata the backup window skipped.
 		if restClient == nil {
 			return
@@ -1044,14 +1044,12 @@ func runAMQP(ctx context.Context, cfg config.Config, deps handler.Deps, rdb *red
 	}
 }
 
-// Feed-source switch keys, shared with services/bifrost-feed (internal/
-// gate) and the api (services/api/src/modules/admin/feed.ts).
-const (
-	feedSourceKey        = "feed:source"
-	feedSourceFlushedKey = "feed:source:flushed_unix"
-	feedSourceAppliedKey = "feed:source:applied"
-	feedSourceBackup     = "backup"
-)
+// The feed source switch lives in the singleton `feed_control` Postgres
+// row (migration 0095), written by the api and read every 2 s here and in
+// services/bifrost-feed. It was Redis keys for one day: production Redis is
+// an allkeys-lru cache and evicted them when the backup stream filled it,
+// silently turning a forced Backup back into Auto.
+const feedSourceBackup = "backup"
 
 // dropAMQP is true while the operator has forced the backup source: AMQP
 // deliveries are acked without being applied. Read on the hot path, so an
@@ -1082,15 +1080,13 @@ var currentFeedSource atomic.Pointer[string]
 // The value present at boot is adopted without a flush: a restart while
 // forced to backup must not wipe the catalogue the backup is feeding.
 // readFeedSource returns the normalised switch position and whether the
-// read succeeded. A missing key means auto.
-func readFeedSource(ctx context.Context, rdb *redis.Client, log zerolog.Logger) (string, bool) {
-	v, err := rdb.Get(ctx, feedSourceKey).Result()
-	if errors.Is(err, redis.Nil) {
-		return "auto", true
-	}
+// read succeeded. A missing row means auto.
+func readFeedSource(ctx context.Context, pool *pgxpool.Pool, log zerolog.Logger) (string, bool) {
+	var v string
+	err := pool.QueryRow(ctx, `SELECT COALESCE((SELECT source FROM feed_control WHERE id = 1), 'auto')`).Scan(&v)
 	if err != nil {
 		if ctx.Err() == nil {
-			log.Debug().Err(err).Msg("feed:source read failed")
+			log.Debug().Err(err).Msg("feed_control read failed")
 		}
 		return "", false
 	}
@@ -1101,11 +1097,20 @@ func readFeedSource(ctx context.Context, rdb *redis.Client, log zerolog.Logger) 
 	return "auto", true
 }
 
+// markApplied records what this process adopted, for the backoffice card.
+func markApplied(ctx context.Context, pool *pgxpool.Pool, source string, log zerolog.Logger) {
+	if _, err := pool.Exec(ctx,
+		`UPDATE feed_control SET applied_source = $1, applied_at = NOW(), updated_at = NOW() WHERE id = 1`, source,
+	); err != nil && ctx.Err() == nil {
+		log.Debug().Err(err).Msg("feed_control applied write failed")
+	}
+}
+
 // loadFeedSource adopts the stored switch position at boot: sets both
 // flags without any flush (a restart while forced to Backup must not wipe
 // the catalogue the backup is feeding) and records what was applied.
-func loadFeedSource(ctx context.Context, rdb *redis.Client, log zerolog.Logger) string {
-	cur, ok := readFeedSource(ctx, rdb, log)
+func loadFeedSource(ctx context.Context, pool *pgxpool.Pool, log zerolog.Logger) string {
+	cur, ok := readFeedSource(ctx, pool, log)
 	if !ok {
 		cur = "auto"
 	}
@@ -1114,7 +1119,7 @@ func loadFeedSource(ctx context.Context, rdb *redis.Client, log zerolog.Logger) 
 	dropAMQP.Store(isBackup)
 	c := cur
 	currentFeedSource.Store(&c)
-	_ = rdb.Set(ctx, feedSourceAppliedKey, cur, 0).Err()
+	markApplied(ctx, pool, cur, log)
 	if isBackup {
 		log.Warn().Msg("booted with feed source forced to Backup: AMQP deliveries acked without being applied, no Oddin feed REST calls")
 	}
@@ -1125,10 +1130,10 @@ func loadFeedSource(ctx context.Context, rdb *redis.Client, log zerolog.Logger) 
 // (in its own goroutine) after a Backup → Prod/Auto transition, once REST
 // is allowed again, so the work skipped during the backup window
 // (descriptions refresh, competitor backfill) catches up immediately.
-func runSourceSwitch(ctx context.Context, rdb *redis.Client, deps handler.Deps, onResume func(), log zerolog.Logger) {
+func runSourceSwitch(ctx context.Context, pool *pgxpool.Pool, deps handler.Deps, onResume func(), log zerolog.Logger) {
 	log = log.With().Str("component", "feed-source").Logger()
-	read := func() (string, bool) { return readFeedSource(ctx, rdb, log) }
-	prev := loadFeedSource(ctx, rdb, log)
+	read := func() (string, bool) { return readFeedSource(ctx, pool, log) }
+	prev := loadFeedSource(ctx, pool, log)
 
 	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()
@@ -1148,7 +1153,11 @@ func runSourceSwitch(ctx context.Context, rdb *redis.Client, deps handler.Deps, 
 			dropAMQP.Store(true)
 			log.Warn().Str("from", prev).Msg("feed source switched to BACKUP: suspending catalogue, ignoring AMQP and Oddin feed REST until switched back")
 			suspendCatalogForStaleness(ctx, deps, log)
-			if err := rdb.Set(ctx, feedSourceFlushedKey, time.Now().Unix(), 0).Err(); err != nil {
+			// Acknowledge the flush for THIS switch only (source still
+			// backup); bifrost-feed re-emits once flushed_at >= switched_at.
+			if _, err := pool.Exec(ctx,
+				`UPDATE feed_control SET flushed_at = NOW(), updated_at = NOW() WHERE id = 1 AND source = 'backup'`,
+			); err != nil {
 				log.Warn().Err(err).Msg("flush acknowledgement write failed; bifrost-feed will activate after its 15 s ceiling")
 			}
 		case prev == feedSourceBackup:
@@ -1173,9 +1182,7 @@ func runSourceSwitch(ctx context.Context, rdb *redis.Client, deps handler.Deps, 
 		prev = cur
 		p := cur
 		currentFeedSource.Store(&p)
-		if err := rdb.Set(ctx, feedSourceAppliedKey, cur, 0).Err(); err != nil {
-			log.Debug().Err(err).Msg("feed:source:applied write failed")
-		}
+		markApplied(ctx, pool, cur, log)
 	}
 }
 

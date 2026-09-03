@@ -21,10 +21,15 @@ const (
 	// StreamName is shared with services/feed-ingester and
 	// services/settlement (their internal/backupstream packages).
 	StreamName = "oddin.backup"
-	// MaxLenApprox bounds Redis memory. A full-catalogue re-snapshot is
-	// ~1 entry per match (a few hundred); live traffic is a few entries
-	// per second. 50k is many minutes of headroom for a stalled consumer.
-	MaxLenApprox = 50_000
+	// RetainFor is the time-based trim window (XADD ... MINID). Entries are
+	// full match snapshots — up to ~150 KB each — so a count-based cap is
+	// the wrong unit: the first cut's MAXLEN 50k let the stream grow past
+	// Redis's 256 MB maxmemory inside an hour of forced Backup on
+	// 2026-09-03, and allkeys-lru then evicted unrelated keys (including
+	// the operator's switch). Consumers read within milliseconds; sixty
+	// seconds of retention is ample and bounds the stream to tens of MB at
+	// live-burst rates.
+	RetainFor = 60 * time.Second
 	// StatusKey is the hash the admin backoffice reads for the
 	// "Backup feed" card. Refreshed every few seconds with a TTL so a
 	// dead service reads as offline rather than frozen.
@@ -55,7 +60,9 @@ func NewRedis(rdb *redis.Client, log zerolog.Logger) *Redis {
 func (p *Redis) Publish(ctx context.Context, kind, eventURN string, body []byte) error {
 	if err := p.rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: StreamName,
-		MaxLen: MaxLenApprox,
+		// Stream ids are <unix-ms>-<seq>; trimming by MINID drops every
+		// entry older than the window in the same command.
+		MinID:  fmt.Sprintf("%d-0", time.Now().Add(-RetainFor).UnixMilli()),
 		Approx: true,
 		Values: map[string]any{
 			"kind":      kind,

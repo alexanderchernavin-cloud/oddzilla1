@@ -3,6 +3,7 @@ import {
   pgTable,
   bigserial,
   bigint,
+  smallint,
   uuid,
   text,
   jsonb,
@@ -83,6 +84,23 @@ export const adminAuditLog = pgTable(
 export const amqpState = pgTable("amqp_state", {
   key: text().primaryKey(),
   afterTs: bigint({ mode: "bigint" }).notNull().default(0n),
+  updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+});
+
+// Operator feed source switch (migration 0095). Singleton row id=1.
+// `source` is auto / prod / backup; feed-ingester acknowledges with
+// flushed_at (after the catalogue flush on a switch into backup) and
+// applied_source / applied_at. Lives in Postgres, not Redis: the
+// production Redis is an allkeys-lru cache that evicted the first cut's
+// keys on day one and silently undid a forced Backup.
+export const feedControl = pgTable("feed_control", {
+  id: smallint().primaryKey().default(1),
+  source: text().notNull().default("auto"),
+  switchedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  switchedBy: uuid().references(() => users.id, { onDelete: "set null" }),
+  flushedAt: timestamp({ withTimezone: true }),
+  appliedSource: text(),
+  appliedAt: timestamp({ withTimezone: true }),
   updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 });
 

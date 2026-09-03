@@ -339,6 +339,17 @@ real categories (countries like "England", or "International").
 **`categories`** — child of sport. `is_dummy=true` when auto-created for an
 esport. `provider_urn` may be NULL (dummy) or hold a real Oddin URN later.
 
+**`feed_control`** (migration 0095) — singleton row (`id = 1`) holding the
+operator's feed source switch: `source` (`auto` / `prod` / `backup`),
+`switched_at`, `switched_by`, plus feed-ingester's acknowledgements
+`flushed_at` (stamped after the catalogue flush on a switch into backup;
+bifrost-feed waits for `flushed_at >= switched_at` before re-emitting) and
+`applied_source` / `applied_at`. Written by `PUT /admin/feed/source`
+(audit-logged), read every 2 s by feed-ingester and bifrost-feed. In
+Postgres, not Redis, because production Redis is an `allkeys-lru` cache
+that evicted the first cut's keys on day one and silently undid a forced
+Backup.
+
 **`tournaments`** — child of category. `provider_urn` unique globally.
 `risk_tier_locked` (migration 0094) is TRUE when an operator assigned
 `risk_tier` by hand on `/admin/tournaments`; feed-ingester's REST refresh
