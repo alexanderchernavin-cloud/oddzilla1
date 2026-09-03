@@ -19,6 +19,7 @@ type StoredMatch struct {
 	Status      string
 	HomeTeam    string
 	AwayTeam    string
+	StartTime   int64 // unix seconds, 0 when scheduled_at is NULL
 	Markets     []StoredMarket
 }
 
@@ -40,7 +41,8 @@ type StoredOutcome struct {
 // markets and outcomes.
 func LoadProviderState(ctx context.Context, db pgxRunner) ([]StoredMatch, error) {
 	matchRows, err := db.Query(ctx, `
-SELECT id, provider_urn, status::text, home_team, away_team
+SELECT id, provider_urn, status::text, home_team, away_team,
+       COALESCE(EXTRACT(EPOCH FROM scheduled_at)::bigint, 0)
   FROM matches
  WHERE provider_urn LIKE 'fb:match:%'
    AND status IN ('not_started', 'live')`)
@@ -51,7 +53,7 @@ SELECT id, provider_urn, status::text, home_team, away_team
 	var order []int64
 	for matchRows.Next() {
 		var m StoredMatch
-		if err := matchRows.Scan(&m.ID, &m.ProviderURN, &m.Status, &m.HomeTeam, &m.AwayTeam); err != nil {
+		if err := matchRows.Scan(&m.ID, &m.ProviderURN, &m.Status, &m.HomeTeam, &m.AwayTeam, &m.StartTime); err != nil {
 			matchRows.Close()
 			return nil, fmt.Errorf("scan provider match: %w", err)
 		}

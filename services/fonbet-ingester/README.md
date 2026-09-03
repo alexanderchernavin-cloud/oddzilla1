@@ -64,3 +64,9 @@ internal/
   the source of truth and the next diff re-emits.
 - **Only `fb:` URNs are touched** by the staleness / shutdown suspend.
 - **Full-snapshot semantics.** Whatever Fonbet omits is off the offer.
+- **State never runs ahead of Postgres.** A match whose writes fail is
+  dropped from memory and re-asserted in full on the next cycle.
+- **No single-tick closes.** A known match must be absent from
+  `MissingCyclesToClose` (3) consecutive snapshots before it is closed /
+  deactivated, and a snapshot with fewer than half the previously applied
+  matches is rejected as partial data.
