@@ -932,7 +932,7 @@ operator view.
 
 | Position | Prod Oddin (AMQP) | Backup Oddin (Bifrost) |
 | --- | --- | --- |
-| **Auto** (default) | applied | standby; publishes after `BIFROST_TAKEOVER_AFTER_SECONDS` (45 s) of AMQP silence, stands down the moment AMQP resumes |
+| **Auto** (default) | applied | standby; publishes after `BIFROST_TAKEOVER_AFTER_SECONDS` (45 s) with the AMQP connection down AND no delivery, stands down the moment either resumes (an open connection with no deliveries — the post-restart flush + replay ramp — counts as alive) |
 | **Prod Oddin only** | applied | never publishes |
 | **Backup Oddin** | connection kept, deliveries acked but NOT applied by feed-ingester | forced: publishes regardless of AMQP |
 

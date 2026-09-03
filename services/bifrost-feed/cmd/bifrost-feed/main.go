@@ -182,6 +182,7 @@ func publishStatus(ctx context.Context, pub *publisher.Redis, g *gate.Gate, runn
 				"default_mode":      string(gs.DefaultMode),
 				"source":            gs.Source,
 				"waiting_for_flush": boolStr(gs.WaitingForFlush),
+				"primary_connected": boolStr(gs.PrimaryConnected),
 				"active":            boolStr(gs.Active),
 				"since_unix":        gs.Since.Unix(),
 				"connected":         boolStr(rs.Connected),

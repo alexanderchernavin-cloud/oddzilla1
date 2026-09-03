@@ -40,6 +40,7 @@ export interface BackupFeedStatus {
   gateTransitions: number | null;
   primaryLastMessageUnix: number | null;
   primaryStaleSeconds: number | null;
+  primaryConnected: boolean;
 }
 
 const POLL_MS = 5000;
@@ -380,17 +381,24 @@ function Tile({ label, value, tone = "muted", hint }: { label: string; value: st
 
 function describePrimary(s: BackupFeedStatus | null): { value: string; tone: Tone; hint?: string } {
   if (!s) return { value: "…", tone: "muted" };
+  const last =
+    s.primaryStaleSeconds == null ? "no delivery seen yet" : `last message ${fmtDuration(s.primaryStaleSeconds)} ago`;
+  if (s.primaryConnected) {
+    // An open AMQP connection is proof of life even while deliveries
+    // pause (post-restart flush + replay ramp); the gate agrees.
+    if (s.primaryStaleSeconds != null && s.primaryStaleSeconds >= 20) {
+      return { value: "connected, quiet", tone: "warn", hint: last };
+    }
+    return { value: "alive", tone: "ok", hint: last };
+  }
   if (s.primaryStaleSeconds == null) {
-    return { value: "no heartbeat", tone: "warn", hint: "feed-ingester has not stamped the liveness key yet" };
+    return { value: "disconnected", tone: "warn", hint: "no AMQP connection and no delivery stamp" };
   }
   const threshold = s.takeoverAfterSeconds ?? 45;
   if (s.primaryStaleSeconds >= threshold) {
-    return { value: "SILENT", tone: "bad", hint: `last message ${fmtDuration(s.primaryStaleSeconds)} ago` };
+    return { value: "DOWN", tone: "bad", hint: `AMQP disconnected; ${last}` };
   }
-  if (s.primaryStaleSeconds >= 20) {
-    return { value: "quiet", tone: "warn", hint: `last message ${fmtDuration(s.primaryStaleSeconds)} ago` };
-  }
-  return { value: "alive", tone: "ok", hint: `last message ${fmtDuration(s.primaryStaleSeconds)} ago` };
+  return { value: "disconnected", tone: "warn", hint: `${last}; backup takes over at ${threshold}s` };
 }
 
 function describeBackup(s: BackupFeedStatus | null): { value: string; tone: Tone; hint?: string } {

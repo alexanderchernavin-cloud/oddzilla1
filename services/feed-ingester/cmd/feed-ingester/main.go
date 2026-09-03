@@ -816,12 +816,72 @@ func suspendCatalogForStaleness(ctx context.Context, deps handler.Deps, log zero
 // the last delivery of any kind. Written at most once per second.
 const PrimaryLivenessKey = "feed:primary:last_msg_unix"
 
+// PrimaryConnectedKey is the second liveness signal: refreshed every 2 s
+// with a 15 s TTL for as long as the AMQP connection is open, deleted the
+// moment it drops. The gate treats the primary as alive while EITHER key
+// is fresh. Deliveries alone were not enough: after a restart, the
+// OnConnect flush plus Oddin's replay ramp leave 60-100 s with the
+// connection open but nothing delivered (measured 2026-09-03 during the
+// deploy that shipped the backup), and the backup took over for 33 s on
+// a perfectly healthy feed. The outages the backup exists for — token
+// revoked, broker unreachable, network partition — all drop the
+// connection, so they still stop this stamp.
+const PrimaryConnectedKey = "feed:primary:connected_unix"
+
+const primaryConnectedTTL = 15 * time.Second
+
 // lastLivenessWriteUnix throttles the Redis heartbeat to one SET per
 // second — the handler closure runs per delivery, which peaks at
 // thousands per second during live bursts.
 var lastLivenessWriteUnix atomic.Int64
 
 func runAMQP(ctx context.Context, cfg config.Config, deps handler.Deps, rdb *redis.Client, log zerolog.Logger) {
+	// Connection-level liveness stamp (see PrimaryConnectedKey). Started
+	// at the top of every OnConnect, BEFORE the flush + recovery that can
+	// hold the delivery loop for over a minute; stopped and the key deleted
+	// on disconnect so a dropped connection reads as down within 2 s
+	// rather than after the TTL.
+	var (
+		stampMu   sync.Mutex
+		stampStop chan struct{}
+	)
+	startConnectedStamp := func() {
+		stampMu.Lock()
+		defer stampMu.Unlock()
+		if stampStop != nil {
+			return
+		}
+		stop := make(chan struct{})
+		stampStop = stop
+		go func() {
+			t := time.NewTicker(2 * time.Second)
+			defer t.Stop()
+			for {
+				if err := rdb.Set(ctx, PrimaryConnectedKey, time.Now().Unix(), primaryConnectedTTL).Err(); err != nil {
+					log.Debug().Err(err).Msg("primary connected stamp write failed")
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-stop:
+					return
+				case <-t.C:
+				}
+			}
+		}()
+	}
+	stopConnectedStamp := func() {
+		stampMu.Lock()
+		defer stampMu.Unlock()
+		if stampStop != nil {
+			close(stampStop)
+			stampStop = nil
+		}
+		if err := rdb.Del(context.Background(), PrimaryConnectedKey).Err(); err != nil {
+			log.Debug().Err(err).Msg("primary connected stamp delete failed")
+		}
+	}
+
 	cons := amqpkit.New(
 		amqpkit.Config{
 			Host:       cfg.Oddin.AMQPHost,
@@ -871,6 +931,7 @@ func runAMQP(ctx context.Context, cfg config.Config, deps handler.Deps, rdb *red
 			// guarantees anything Oddin omits drops out of the catalog
 			// (status=-1 fails the storefront filter) instead of silently
 			// keeping its pre-outage snapshot.
+			startConnectedStamp()
 			if deps.Rest == nil {
 				log.Info().Msg("amqp (re)connected; recovery skipped (no rest client)")
 				return nil
@@ -881,6 +942,7 @@ func runAMQP(ctx context.Context, cfg config.Config, deps handler.Deps, rdb *red
 		},
 		log,
 	)
+	cons.OnDisconnect = stopConnectedStamp
 
 	if err := cons.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Error().Err(err).Msg("amqp consumer exited")
