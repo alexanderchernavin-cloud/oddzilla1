@@ -25,47 +25,32 @@ import (
 	"github.com/oddzilla/fonbet-ingester/internal/specifiers"
 )
 
+// provider_market_id namespaces. A cross-service contract, not a knob:
+// services/api (FONBET_PMID_BASE) and the settlement grader hard-code the
+// same values.
 const (
-	DefaultPMIDBase             = 1_000_000
-	DefaultDoubleChancePMIDBase = 1_900_000
+	PMIDBase             = 1_000_000 // + Fonbet catalogue table number
+	DoubleChancePMIDBase = 1_900_000 // 1X / 12 / X2 cells split off a match-winner table
 )
 
 type Options struct {
-	PMIDBase             int
-	DoubleChancePMIDBase int
-	BlockedSports        map[int]struct{}
-	AllowedSports        map[int]struct{}
-	IncludeSubEvents     bool
-	MaxMatches           int
-}
-
-func (o Options) pmidBase() int {
-	if o.PMIDBase == 0 {
-		return DefaultPMIDBase
-	}
-	return o.PMIDBase
-}
-
-func (o Options) dcBase() int {
-	if o.DoubleChancePMIDBase == 0 {
-		return DefaultDoubleChancePMIDBase
-	}
-	return o.DoubleChancePMIDBase
+	BlockedSports    map[int]struct{}
+	AllowedSports    map[int]struct{}
+	IncludeSubEvents bool
+	MaxMatches       int
 }
 
 // Snapshot is one decoded line.
 type Snapshot struct {
 	PacketVersion int64
-	Matches       []*Match         // live first, then by start time
-	ByEvent       map[int64]*Match // Fonbet event id → match
-	Skipped       map[string]int   // reason → count, for the cycle log line
+	Matches       []*Match       // live first, then by start time
+	Skipped       map[string]int // reason → count, for the cycle log line
 }
 
 type Match struct {
 	EventID     int64
 	SportID     int // Fonbet root sport id
 	Sport       SportInfo
-	SportAlias  string // Fonbet's own alias ("football"); drives the CDN sport icon
 	SegmentID   int
 	SegmentName string
 	Category    string // derived from the segment name prefix ("Испания. Примера" → "Испания")
@@ -103,7 +88,6 @@ type Market struct {
 	Canonical    string
 	Hash         []byte
 	Status       int16
-	TableNum     int
 	DoubleChance bool
 	Variant      string // specs["variant"], "" for the main event
 	VariantLabel string // human label of the sub-event ("1-й тайм", player name)
@@ -130,7 +114,7 @@ var mapRe = regexp.MustCompile(`(?i)^(?:(\d+)-?[яй]?\s*карта|map\s*(\d+)|
 
 // Build maps one list response using the catalogue index.
 func Build(resp *fonbet.ListResponse, idx *fonbet.Index, opt Options) *Snapshot {
-	snap := &Snapshot{PacketVersion: resp.PacketVersion, ByEvent: map[int64]*Match{}, Skipped: map[string]int{}}
+	snap := &Snapshot{PacketVersion: resp.PacketVersion, Skipped: map[string]int{}}
 
 	sports := make(map[int]*fonbet.Sport, len(resp.Sports))
 	for i := range resp.Sports {
@@ -230,7 +214,6 @@ func Build(resp *fonbet.ListResponse, idx *fonbet.Index, opt Options) *Snapshot 
 			EventID:     e.ID,
 			SportID:     root.ID,
 			Sport:       SportFor(root.ID, root.Name),
-			SportAlias:  strings.TrimSpace(root.Alias),
 			SegmentID:   e.SportID,
 			SegmentName: segName,
 			Category:    categoryFromSegment(segName),
@@ -252,20 +235,35 @@ func Build(resp *fonbet.ListResponse, idx *fonbet.Index, opt Options) *Snapshot 
 		}
 
 		suspendAll := m.Blocked || m.NotActive
-		addFactors(m, idx, opt, factors[e.ID], blockedFactors[e.ID], suspendAll, nil, "")
+		addFactors(m, idx, factors[e.ID], blockedFactors[e.ID], suspendAll, nil, "")
 
 		if opt.IncludeSubEvents {
-			// Walk the sub-event tree (halves → half corners, etc.).
-			queue := append([]*fonbet.Event(nil), children[e.ID]...)
+			// Walk the sub-event tree (halves → half corners, players under a
+			// "players" node, ...). A nested child inherits its parent's
+			// label and variant so "угловые" under "1-й тайм" becomes
+			// "1-й тайм угловые" / variant "fb:100201/400100" — distinct from
+			// full-match corners in the catalog and graded on the half's
+			// statistic row at settlement.
+			type node struct {
+				ev            *fonbet.Event
+				parentVariant string
+				parentLabel   string
+			}
+			queue := make([]node, 0, len(children[e.ID]))
+			for _, c := range children[e.ID] {
+				queue = append(queue, node{ev: c})
+			}
 			for len(queue) > 0 {
-				c := queue[0]
+				n := queue[0]
 				queue = queue[1:]
-				queue = append(queue, children[c.ID]...)
-				base, label := subEventSpecs(c)
+				base, label := subEventSpecs(n.ev, n.parentVariant, n.parentLabel)
 				if label == "" {
 					continue
 				}
-				addFactors(m, idx, opt, factors[c.ID], blockedFactors[c.ID], suspendAll || blockedAll[c.ID], base, label)
+				for _, gc := range children[n.ev.ID] {
+					queue = append(queue, node{ev: gc, parentVariant: base["variant"], parentLabel: label})
+				}
+				addFactors(m, idx, factors[n.ev.ID], blockedFactors[n.ev.ID], suspendAll || blockedAll[n.ev.ID], base, label)
 			}
 		}
 		// A live match can legitimately carry zero priced factors for a
@@ -277,7 +275,6 @@ func Build(resp *fonbet.ListResponse, idx *fonbet.Index, opt Options) *Snapshot 
 			continue
 		}
 		snap.Matches = append(snap.Matches, m)
-		snap.ByEvent[e.ID] = m
 	}
 
 	sort.SliceStable(snap.Matches, func(i, j int) bool {
@@ -291,10 +288,7 @@ func Build(resp *fonbet.ListResponse, idx *fonbet.Index, opt Options) *Snapshot 
 		return a.EventID < b.EventID
 	})
 	if opt.MaxMatches > 0 && len(snap.Matches) > opt.MaxMatches {
-		for _, m := range snap.Matches[opt.MaxMatches:] {
-			delete(snap.ByEvent, m.EventID)
-			snap.Skipped["max_matches"]++
-		}
+		snap.Skipped["max_matches"] += len(snap.Matches) - opt.MaxMatches
 		snap.Matches = snap.Matches[:opt.MaxMatches]
 	}
 	return snap
@@ -304,7 +298,7 @@ func Build(resp *fonbet.ListResponse, idx *fonbet.Index, opt Options) *Snapshot 
 // (esports) become `map=N` so the storefront renders them as Map N tabs;
 // everything else becomes a `variant` so its markets never collide with
 // the main event's and pick up their own description rows.
-func subEventSpecs(c *fonbet.Event) (specifiers.Specifiers, string) {
+func subEventSpecs(c *fonbet.Event, parentVariant, parentLabel string) (specifiers.Specifiers, string) {
 	name := strings.TrimSpace(c.Name)
 	if name == "" {
 		name = strings.TrimSpace(c.Team1) // player props (kind 91) carry the player in team1
@@ -312,17 +306,27 @@ func subEventSpecs(c *fonbet.Event) (specifiers.Specifiers, string) {
 	if name == "" {
 		return nil, ""
 	}
-	if m := mapRe.FindStringSubmatch(name); m != nil {
-		n := firstNonEmpty(m[1:]...)
-		if n != "" {
-			return specifiers.Specifiers{"map": n}, name
+	if parentVariant == "" {
+		if m := mapRe.FindStringSubmatch(name); m != nil {
+			n := firstNonEmpty(m[1:]...)
+			if n != "" {
+				return specifiers.Specifiers{"map": n}, name
+			}
 		}
 	}
-	v := "fb:" + strconv.FormatInt(c.Kind, 10)
+	// Nested child: fold the parent in unless Fonbet already spelled it
+	// out in the child's own name ("1-й тайм угловые").
+	if parentLabel != "" && !strings.Contains(strings.ToLower(name), strings.ToLower(parentLabel)) {
+		name = parentLabel + " " + name
+	}
+	v := strconv.FormatInt(c.Kind, 10)
 	if strings.TrimSpace(c.Name) == "" && c.Team1ID != 0 {
 		v += ":" + strconv.FormatInt(c.Team1ID, 10)
 	}
-	return specifiers.Specifiers{"variant": v}, name
+	if parentVariant != "" {
+		v = strings.TrimPrefix(parentVariant, "fb:") + "/" + v
+	}
+	return specifiers.Specifiers{"variant": "fb:" + v}, name
 }
 
 func firstNonEmpty(ss ...string) string {
@@ -337,7 +341,6 @@ func firstNonEmpty(ss ...string) string {
 func addFactors(
 	m *Match,
 	idx *fonbet.Index,
-	opt Options,
 	fs map[int]fonbet.Factor,
 	blocked map[int]bool,
 	suspendAll bool,
@@ -383,9 +386,9 @@ func addFactors(
 		// match-winner lookup (outcome ids 1/2/3 in the Fonbet pmid range)
 		// can never pick a sub-event market for the list card.
 		mainEvent := len(base) == 0
-		pmid := opt.pmidBase() + t.Num
+		pmid := PMIDBase + t.Num
 		if meta.DoubleChance && mainEvent {
-			pmid = opt.dcBase() + t.Num
+			pmid = DoubleChancePMIDBase + t.Num
 		}
 		canonical := specifiers.Canonical(specs)
 		key := strconv.Itoa(pmid) + "|" + canonical
@@ -401,7 +404,6 @@ func addFactors(
 				Canonical:    canonical,
 				Hash:         specifiers.Hash(specs),
 				Status:       status,
-				TableNum:     t.Num,
 				DoubleChance: meta.DoubleChance && mainEvent,
 				Variant:      specs["variant"],
 				VariantLabel: variantLabel,
@@ -430,18 +432,49 @@ func addFactors(
 }
 
 // lineFor picks the line value for a parameterised factor: the display
-// parameter of the first factor on the same catalogue row that is present
-// in this event. For handicaps that is side 1's value (-2.5 while side 2
-// shows +2.5), so both sides of one line share a specifier.
+// parameter of side 1 (the first value cell on the same catalogue row), so
+// both sides of one line share a specifier. When Fonbet withholds side 1
+// (odds pruned) the line is derived from side 2 by flipping its sign, so
+// the stored handicap is always the home-applied value.
 func lineFor(meta *fonbet.FactorMeta, fs map[int]fonbet.Factor) string {
-	for _, rf := range meta.RowFactors() {
-		if f, ok := fs[rf]; ok {
-			if v := NormalizeParam(f); v != "" {
-				return v
-			}
+	row := meta.RowFactors()
+	if len(row) == 0 {
+		return NormalizeParam(fs[meta.FactorID])
+	}
+	if f, ok := fs[row[0]]; ok {
+		if v := NormalizeParam(f); v != "" {
+			return v
 		}
 	}
-	return NormalizeParam(fs[meta.FactorID])
+	for i, rf := range row {
+		f, ok := fs[rf]
+		if !ok {
+			continue
+		}
+		v := NormalizeParam(f)
+		if v == "" {
+			continue
+		}
+		if meta.Table.Param == fonbet.ParamHandicap && i > 0 {
+			return negateLine(v)
+		}
+		return v
+	}
+	return ""
+}
+
+// negateLine flips the sign of a numeric line ("2.5" ↔ "-2.5", "0" stays).
+func negateLine(v string) string {
+	if v == "0" || v == "" {
+		return v
+	}
+	if strings.HasPrefix(v, "-") {
+		return v[1:]
+	}
+	if _, err := strconv.ParseFloat(v, 64); err != nil {
+		return v // non-numeric parameter: leave as-is
+	}
+	return "-" + v
 }
 
 // NormalizeParam turns Fonbet's display parameter into a specifier value:
@@ -505,9 +538,8 @@ func buildScore(mi *fonbet.EventMisc, li *fonbet.LiveEventInfo) *LiveScore {
 		}
 		// scores[0] = overall, scores[1..] = periods (sets, halves, maps).
 		for gi := 1; gi < len(li.Scores); gi++ {
-			for pi, c := range li.Scores[gi] {
+			for _, c := range li.Scores[gi] {
 				s.Periods = append(s.Periods, Period{Number: len(s.Periods) + 1, Title: c.Title, Home: c.C1, Away: c.C2})
-				_ = pi
 			}
 		}
 		if s.Home == nil && len(li.Scores) > 0 && len(li.Scores[0]) > 0 {

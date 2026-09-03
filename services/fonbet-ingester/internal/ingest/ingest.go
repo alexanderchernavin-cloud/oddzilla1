@@ -11,7 +11,7 @@
 //   3. upsert new / re-statused markets, changed outcomes, deactivate
 //      outcomes and markets that vanished,
 //   4. XADD one odds.raw entry per changed outcome, publish marketStatus /
-//      matchStatus / score frames, append odds_history for price moves.
+//      matchStatus / score frames (odds-publisher writes odds_history).
 //
 // Safety rails:
 //   - a match whose writes fail is dropped from the in-memory state so the
@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -51,8 +52,12 @@ const (
 	MissingCyclesToClose = 3
 	// shrinkGuardMinMatches / shrinkGuardRatio: reject a snapshot carrying
 	// fewer than ratio × previous matches once the catalog is this big.
+	// After shrinkGuardMaxRejects consecutive rejections the smaller line
+	// is accepted as the new baseline — a scope change or a maintenance
+	// window legitimately halves the line and must not wedge ingestion.
 	shrinkGuardMinMatches = 200
 	shrinkGuardRatio      = 0.5
+	shrinkGuardMaxRejects = 5
 )
 
 // ErrSnapshotShrunk is returned by Apply when the shrink guard trips.
@@ -62,6 +67,10 @@ type Ingester struct {
 	st  *store.Store
 	bus *bus.Bus
 	log zerolog.Logger
+
+	// mu serialises Apply against SuspendAll — the poll loop, the
+	// staleness watchdog and the shutdown path all touch the same state.
+	mu sync.Mutex
 
 	matches       map[int64]*matchState     // Fonbet event id → state
 	missing       map[int64]int             // event id → consecutive cycles absent
@@ -73,8 +82,9 @@ type Ingester struct {
 	descrDone     map[string]struct{}       // "<pmid>|<variant>" already written
 	baseTemplates map[string]map[int]string // lang → pmid → base template
 
-	lastApplied int // match count of the last applied snapshot (shrink guard)
-	suspended   bool
+	lastApplied   int // match count of the last applied snapshot (shrink guard)
+	shrinkRejects int // consecutive snapshots rejected by the shrink guard
+	suspended     bool
 }
 
 type matchState struct {
@@ -105,19 +115,25 @@ type Stats struct {
 	Matches, NewMatches, ClosedMatches    int
 	MarketsUpserted, MarketsDeactivated   int
 	OutcomesUpserted, OutcomesDeactivated int
-	OddsEvents, HistoryRows, StatusFrames int
+	OddsEvents, StatusFrames              int
 	Failed                                int
 	Skipped                               map[string]int
 }
 
-// cycleOut accumulates everything published / appended after the per-match
-// writes so Redis and odds_history see one burst per cycle.
+// cycleOut accumulates everything published after the per-match writes so
+// Redis sees one pipelined burst per cycle. eventRefs parallels oddsEvents:
+// the in-memory outcome each price event came from (nil for deactivations),
+// so a failed XADD can forget the price and re-emit it next cycle.
 type cycleOut struct {
 	oddsEvents []bus.OddsEvent
-	history    []store.OddsHistoryRow
-	frames     []store.MatchMarketRef
-	frameStat  []int16
+	eventRefs  []outcomeRef
+	frames     []bus.StatusFrame
 	pendingDes []store.MarketDescription
+}
+
+type outcomeRef struct {
+	ps  *marketState
+	oid string
 }
 
 func New(st *store.Store, b *bus.Bus, log zerolog.Logger) *Ingester {
@@ -211,37 +227,44 @@ func (in *Ingester) Suspended() bool { return in.suspended }
 // and marks the in-memory state so the next successful snapshot
 // re-activates everything it still carries.
 func (in *Ingester) SuspendAll(ctx context.Context, nowMs int64) error {
+	in.mu.Lock()
+	defer in.mu.Unlock()
 	refs, outcomes, err := store.SuspendProviderCatalog(ctx, in.st.Pool())
 	if err != nil {
 		return err
 	}
+	// Mirror the status flip only — prices stay, so the next snapshot
+	// re-activates markets without republishing every outcome.
 	for _, ms := range in.matches {
 		for _, mk := range ms.Markets {
 			if mk.Status == 1 {
 				mk.Status = -1
 			}
-			for oid, o := range mk.Outcomes {
-				o.Active = false
-				o.Odds = ""
-				mk.Outcomes[oid] = o
-			}
 		}
 	}
 	in.publishStatusFrames(ctx, refs, -1, nowMs)
 	in.suspended = true
-	in.log.Warn().Int("markets", len(refs)).Int64("outcomes", outcomes).Msg("provider catalog suspended")
+	in.log.Warn().Int("markets", len(refs)).Int64("suspended", outcomes).Msg("provider catalog suspended")
 	return nil
 }
 
 // Apply diffs one snapshot against the previous state and persists it.
 func (in *Ingester) Apply(ctx context.Context, snap *mapper.Snapshot, nowMs int64) (Stats, error) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
 	stats := Stats{Matches: len(snap.Matches), Skipped: snap.Skipped}
 	// Compare against the last snapshot this process applied, not the
 	// bootstrapped database state — a narrowed FONBET_ALLOWED_SPORT_IDS or
 	// a long outage legitimately shrinks the line versus what pg holds.
 	if in.lastApplied >= shrinkGuardMinMatches && float64(len(snap.Matches)) < float64(in.lastApplied)*shrinkGuardRatio {
-		return stats, fmt.Errorf("%w (%d → %d)", ErrSnapshotShrunk, in.lastApplied, len(snap.Matches))
+		in.shrinkRejects++
+		if in.shrinkRejects < shrinkGuardMaxRejects {
+			return stats, fmt.Errorf("%w (%d → %d, rejection %d/%d)", ErrSnapshotShrunk, in.lastApplied, len(snap.Matches), in.shrinkRejects, shrinkGuardMaxRejects)
+		}
+		in.log.Warn().Int("previous", in.lastApplied).Int("now", len(snap.Matches)).
+			Msg("smaller line persisted across consecutive snapshots; accepting it as the new baseline")
 	}
+	in.shrinkRejects = 0
 	in.lastApplied = len(snap.Matches)
 
 	out := &cycleOut{}
@@ -276,7 +299,7 @@ func (in *Ingester) Apply(ctx context.Context, snap *mapper.Snapshot, nowMs int6
 		}
 		delete(in.missing, eventID)
 		if ms.Live {
-			if err := in.closeMatch(ctx, eventID, ms, nowMs, &stats); err != nil {
+			if err := in.closeMatch(ctx, eventID, ms, nowMs, out, &stats); err != nil {
 				in.log.Error().Err(err).Int64("event", eventID).Msg("close vanished live match failed")
 			}
 			continue
@@ -315,7 +338,7 @@ func (in *Ingester) applyMatch(ctx context.Context, m *mapper.Match, nowMs int64
 
 	// Lifecycle.
 	if m.Finished {
-		if err := in.closeMatch(ctx, m.EventID, ms, nowMs, stats); err != nil {
+		if err := in.closeMatch(ctx, m.EventID, ms, nowMs, out, stats); err != nil {
 			return err
 		}
 		in.closed[m.EventID] = struct{}{}
@@ -380,7 +403,7 @@ func (in *Ingester) applyMatch(ctx context.Context, m *mapper.Match, nowMs int64
 				ms.Markets[key] = ps
 			}
 			if r.NewStatus != r.PrevStatus {
-				out.addFrames([]store.MatchMarketRef{{MatchID: ms.DBID, MarketID: r.ID}}, r.NewStatus)
+				out.frames = append(out.frames, bus.StatusFrame{MatchID: ms.DBID, MarketID: r.ID, Status: r.NewStatus})
 			}
 			ps.Status = r.NewStatus
 		}
@@ -391,7 +414,7 @@ func (in *Ingester) applyMatch(ctx context.Context, m *mapper.Match, nowMs int64
 	var deactM []int64
 	var deactO []string
 	var events []bus.OddsEvent
-	var history []store.OddsHistoryRow
+	var eventRefs []outcomeRef
 	type pendingOutcome struct {
 		ps  *marketState
 		oid string
@@ -399,7 +422,6 @@ func (in *Ingester) applyMatch(ctx context.Context, m *mapper.Match, nowMs int64
 	}
 	var commit []pendingOutcome
 	var forget []pendingOutcome
-	now := time.UnixMilli(nowMs)
 	for key, mk := range m.Markets {
 		ps := ms.Markets[key]
 		if ps == nil {
@@ -416,9 +438,7 @@ func (in *Ingester) applyMatch(ctx context.Context, m *mapper.Match, nowMs int64
 				MarketID: ps.DBID, OutcomeID: oid, ProviderMarketID: mk.PMID, SpecifiersCanonical: mk.Canonical,
 				RawOdds: odds, Active: o.Active, MatchID: ms.DBID, SourceTs: nowMs,
 			})
-			if !had || prev.Odds != o.Odds {
-				history = append(history, store.OddsHistoryRow{MarketID: ps.DBID, OutcomeID: oid, RawOdds: &odds, Ts: now})
-			}
+			eventRefs = append(eventRefs, outcomeRef{ps, oid})
 			commit = append(commit, pendingOutcome{ps, oid, outcomeState{Odds: o.Odds, Active: o.Active}})
 		}
 		for oid, prev := range ps.Outcomes {
@@ -436,6 +456,7 @@ func (in *Ingester) applyMatch(ctx context.Context, m *mapper.Match, nowMs int64
 						MarketID: ps.DBID, OutcomeID: oid, ProviderMarketID: mk.PMID, SpecifiersCanonical: mk.Canonical,
 						RawOdds: prev.Odds, Active: false, MatchID: ms.DBID, SourceTs: nowMs,
 					})
+					eventRefs = append(eventRefs, outcomeRef{})
 				}
 			}
 			forget = append(forget, pendingOutcome{ps: ps, oid: oid})
@@ -489,36 +510,39 @@ func (in *Ingester) applyMatch(ctx context.Context, m *mapper.Match, nowMs int64
 	stats.OutcomesUpserted += len(outUpserts)
 	stats.OutcomesDeactivated += len(deactM)
 	out.oddsEvents = append(out.oddsEvents, events...)
-	out.history = append(out.history, history...)
+	out.eventRefs = append(out.eventRefs, eventRefs...)
 	return nil
 }
 
 // flush publishes the cycle's odds events + status frames (best-effort,
-// Redis never blocks the loop) and appends odds_history + variant rows.
+// Redis never blocks the loop) and writes the queued variant descriptions.
 func (in *Ingester) flush(ctx context.Context, out *cycleOut, nowMs int64, stats *Stats) {
 	for i := 0; i < len(out.oddsEvents); i += chunkStream {
 		end := min(i+chunkStream, len(out.oddsEvents))
 		if err := in.bus.PublishOddsBatch(ctx, out.oddsEvents[i:end]); err != nil {
-			in.log.Warn().Err(err).Msg("xadd odds.raw failed")
+			// odds-publisher never saw these prices. Forget them in memory
+			// so the next cycle re-emits every one of them (the pg write is
+			// a no-op because raw_odds is already current).
+			forgotten := 0
+			for _, ref := range out.eventRefs[i:] {
+				if ref.ps == nil {
+					continue
+				}
+				if st, ok := ref.ps.Outcomes[ref.oid]; ok {
+					st.Odds = ""
+					ref.ps.Outcomes[ref.oid] = st
+					forgotten++
+				}
+			}
+			in.log.Warn().Err(err).Int("requeued", forgotten).Msg("xadd odds.raw failed; prices will be re-emitted next cycle")
 			break
 		}
 	}
 	stats.OddsEvents = len(out.oddsEvents)
-	for i := range out.frames {
-		if err := in.bus.PublishMarketStatus(ctx, out.frames[i].MatchID, out.frames[i].MarketID, out.frameStat[i], nowMs); err != nil {
-			in.log.Warn().Err(err).Msg("publish marketStatus")
-			break
-		}
+	if err := in.bus.PublishMarketStatusBatch(ctx, out.frames, nowMs); err != nil {
+		in.log.Warn().Err(err).Msg("publish marketStatus")
 	}
 	stats.StatusFrames = len(out.frames)
-	for i := 0; i < len(out.history); i += chunkOutcomes {
-		end := min(i+chunkOutcomes, len(out.history))
-		if err := store.AppendOddsHistoryBulk(ctx, in.st.Pool(), out.history[i:end]); err != nil {
-			in.log.Warn().Err(err).Msg("odds_history append failed")
-			break
-		}
-	}
-	stats.HistoryRows = len(out.history)
 	for i := 0; i < len(out.pendingDes); i += chunkDescs {
 		end := min(i+chunkDescs, len(out.pendingDes))
 		if err := store.UpsertDescriptions(ctx, in.st.Pool(), out.pendingDes[i:end]); err != nil {
@@ -533,12 +557,11 @@ func (in *Ingester) flush(ctx context.Context, out *cycleOut, nowMs int64, stats
 
 func (o *cycleOut) addFrames(refs []store.MatchMarketRef, status int16) {
 	for _, r := range refs {
-		o.frames = append(o.frames, r)
-		o.frameStat = append(o.frameStat, status)
+		o.frames = append(o.frames, bus.StatusFrame{MatchID: r.MatchID, MarketID: r.MarketID, Status: status})
 	}
 }
 
-func (in *Ingester) closeMatch(ctx context.Context, eventID int64, ms *matchState, nowMs int64, stats *Stats) error {
+func (in *Ingester) closeMatch(ctx context.Context, eventID int64, ms *matchState, nowMs int64, out *cycleOut, stats *Stats) error {
 	changed, err := store.UpdateMatchStatus(ctx, in.st.Pool(), ms.DBID, "closed")
 	if err != nil {
 		return err
@@ -557,18 +580,18 @@ func (in *Ingester) closeMatch(ctx context.Context, eventID int64, ms *matchStat
 	if err != nil {
 		return err
 	}
-	in.publishStatusFrames(ctx, refs, 0, nowMs)
+	out.addFrames(refs, 0)
 	stats.MarketsDeactivated += len(refs)
 	delete(in.matches, eventID)
 	return nil
 }
 
+// publishStatusFrames is the immediate (non-cycle) variant used by SuspendAll.
 func (in *Ingester) publishStatusFrames(ctx context.Context, refs []store.MatchMarketRef, status int16, nowMs int64) {
-	for _, r := range refs {
-		if err := in.bus.PublishMarketStatus(ctx, r.MatchID, r.MarketID, status, nowMs); err != nil {
-			in.log.Warn().Err(err).Msg("publish marketStatus")
-			return
-		}
+	out := &cycleOut{}
+	out.addFrames(refs, status)
+	if err := in.bus.PublishMarketStatusBatch(ctx, out.frames, nowMs); err != nil {
+		in.log.Warn().Err(err).Msg("publish marketStatus")
 	}
 }
 
@@ -582,9 +605,7 @@ func (in *Ingester) ensureMatch(ctx context.Context, m *mapper.Match, stats *Sta
 	db := in.st.Pool()
 	sportID, ok := in.sportIDs[m.SportID]
 	if !ok {
-		// Logos come from the line/logos catalogue (ApplyLogos) — the
-		// alias-based CDN path 404s for a third of the sports.
-		id, err := store.EnsureSport(ctx, db, store.URNSport+strconv.Itoa(m.SportID), m.Sport.Slug, m.Sport.Name, m.Sport.Kind, "")
+		id, err := store.EnsureSport(ctx, db, store.URNSport+strconv.Itoa(m.SportID), m.Sport.Slug, m.Sport.Name, m.Sport.Kind)
 		if err != nil {
 			return nil, err
 		}

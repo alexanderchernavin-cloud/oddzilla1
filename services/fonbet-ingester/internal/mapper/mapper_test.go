@@ -33,7 +33,7 @@ func TestBuildFootballMatch(t *testing.T) {
 	resp, idx := loadFixtures(t)
 	snap := Build(resp, idx, Options{IncludeSubEvents: true, BlockedSports: map[int]struct{}{EsportsRootID: {}}})
 
-	m := snap.ByEvent[67372824]
+	m := findMatch(snap, 67372824)
 	if m == nil {
 		t.Fatalf("Dinamo - Akhmat (67372824) missing; skipped=%v", snap.Skipped)
 	}
@@ -272,4 +272,45 @@ func keys2(m map[string]*Outcome) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+func findMatch(snap *Snapshot, eventID int64) *Match {
+	for _, m := range snap.Matches {
+		if m.EventID == eventID {
+			return m
+		}
+	}
+	return nil
+}
+
+func TestNestedSubEventInheritsParent(t *testing.T) {
+	resp, idx := loadFixtures(t)
+	// Synthesize a level-3 "угловые" under the Dinamo match's "1-й тайм".
+	var half *fonbet.Event
+	for i := range resp.Events {
+		if resp.Events[i].ParentID == 67372824 && resp.Events[i].Name == "1-й тайм" {
+			half = &resp.Events[i]
+		}
+	}
+	if half == nil {
+		t.Skip("fixture has no 1st-half sub-event")
+	}
+	child := fonbet.Event{ID: 999999901, ParentID: half.ID, Level: 3, SportID: half.SportID, Kind: 400100, Name: "угловые", StartTime: half.StartTime, Place: "line"}
+	resp.Events = append(resp.Events, child)
+	resp.CustomFactors = append(resp.CustomFactors, fonbet.EventFactors{EventID: child.ID, Factors: []fonbet.Factor{{F: 930, V: 1.8, PT: "4.5"}, {F: 931, V: 1.9, PT: "4.5"}}})
+	snap := Build(resp, idx, Options{IncludeSubEvents: true})
+	m := findMatch(snap, 67372824)
+	mk := m.Markets["1000305|threshold=4.5|variant=fb:100201/400100"]
+	if mk == nil {
+		t.Fatalf("nested market missing; keys=%v", keys(m.Markets))
+	}
+	if mk.VariantLabel != "1-й тайм угловые" {
+		t.Fatalf("nested label: %q", mk.VariantLabel)
+	}
+}
+
+func TestNegateLine(t *testing.T) {
+	if negateLine("2.5") != "-2.5" || negateLine("-1") != "1" || negateLine("0") != "0" {
+		t.Fatalf("negateLine")
+	}
 }

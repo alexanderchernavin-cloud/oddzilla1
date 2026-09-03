@@ -22,24 +22,27 @@ const (
 	StreamOddsRaw = "odds.raw"
 
 	// MaxLenApprox trims the stream to roughly this many entries. Oddin
-	// can burst ~2000/s during live; 100k gives us ~minutes of retention
-	// even in the worst case. Trimming is approximate (~ cheaper than
-	// exact) — good enough for a stream-as-bus pattern.
-	MaxLenApprox = 100_000
+	// can burst ~2000/s during live; the Fonbet ingester shares this
+	// stream and re-asserts up to ~200k prices after a cold start, and
+	// MAXLEN is applied by whichever XADD runs — so both producers use the
+	// same 400k headroom (see services/fonbet-ingester/internal/bus).
+	// Trimming is approximate (~ cheaper than exact) — good enough for a
+	// stream-as-bus pattern.
+	MaxLenApprox = 400_000
 )
 
 // OddsEvent is what we publish per outcome update. Kept small — stream
 // entries are in Redis memory until consumed and trimmed.
 type OddsEvent struct {
-	MarketID      int64
-	OutcomeID     string
-	ProviderMarketID int
+	MarketID            int64
+	OutcomeID           string
+	ProviderMarketID    int
 	SpecifiersCanonical string // sorted k=v|k=v; hash can be derived
-	RawOdds       string // decimal string
-	Probability   string // decimal in [0,1]; empty when feed omits it
-	Active        bool
-	MatchID       int64
-	OddinTs       int64 // source timestamp, ms
+	RawOdds             string // decimal string
+	Probability         string // decimal in [0,1]; empty when feed omits it
+	Active              bool
+	MatchID             int64
+	OddinTs             int64 // source timestamp, ms
 }
 
 // Bus publishes odds events onto Redis Streams.
@@ -54,15 +57,15 @@ func New(rdb *redis.Client) *Bus {
 // PublishOdds writes one event per outcome to `odds.raw`.
 func (b *Bus) PublishOdds(ctx context.Context, ev OddsEvent) error {
 	fields := map[string]any{
-		"market_id":         ev.MarketID,
-		"outcome_id":        ev.OutcomeID,
+		"market_id":          ev.MarketID,
+		"outcome_id":         ev.OutcomeID,
 		"provider_market_id": ev.ProviderMarketID,
-		"specifiers":        ev.SpecifiersCanonical,
-		"raw_odds":          ev.RawOdds,
-		"probability":       ev.Probability,
-		"active":            boolInt(ev.Active),
-		"match_id":          ev.MatchID,
-		"oddin_ts":          ev.OddinTs,
+		"specifiers":         ev.SpecifiersCanonical,
+		"raw_odds":           ev.RawOdds,
+		"probability":        ev.Probability,
+		"active":             boolInt(ev.Active),
+		"match_id":           ev.MatchID,
+		"oddin_ts":           ev.OddinTs,
 	}
 	if err := b.rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: StreamOddsRaw,
@@ -88,20 +91,20 @@ func (b *Bus) PublishOddsBatch(ctx context.Context, events []OddsEvent) error {
 			MaxLen: MaxLenApprox,
 			Approx: true,
 			Values: map[string]any{
-				"market_id":         ev.MarketID,
-				"outcome_id":        ev.OutcomeID,
+				"market_id":          ev.MarketID,
+				"outcome_id":         ev.OutcomeID,
 				"provider_market_id": ev.ProviderMarketID,
-				"specifiers":        ev.SpecifiersCanonical,
-				"raw_odds":          ev.RawOdds,
+				"specifiers":         ev.SpecifiersCanonical,
+				"raw_odds":           ev.RawOdds,
 				// Must mirror PublishOdds — omitting probability here meant
 				// the batch path (the only one the handler uses) never put
 				// it on the stream, so published odds_history rows and the
 				// live WS odds frames carried no probability and the
 				// ws-gateway fair-odds clamp had nothing to clamp against.
-				"probability":       ev.Probability,
-				"active":            boolInt(ev.Active),
-				"match_id":          ev.MatchID,
-				"oddin_ts":          ev.OddinTs,
+				"probability": ev.Probability,
+				"active":      boolInt(ev.Active),
+				"match_id":    ev.MatchID,
+				"oddin_ts":    ev.OddinTs,
 			},
 		})
 	}

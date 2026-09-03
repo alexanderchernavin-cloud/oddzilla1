@@ -21,16 +21,16 @@ package oddinxml
 import "encoding/xml"
 
 type CompetitorProfile struct {
-	XMLName    xml.Name          `xml:"competitor_profile"`
-	Competitor CompetitorEntry   `xml:"competitor"`
-	Players    []ProfilePlayer   `xml:"players>player"`
+	XMLName    xml.Name        `xml:"competitor_profile"`
+	Competitor CompetitorEntry `xml:"competitor"`
+	Players    []ProfilePlayer `xml:"players>player"`
 }
 
 type CompetitorEntry struct {
-	ID           string          `xml:"id,attr"`
-	Name         string          `xml:"name,attr"`
-	Abbreviation string          `xml:"abbreviation,attr"`
-	IconPath     string          `xml:"icon_path,attr"`
+	ID           string            `xml:"id,attr"`
+	Name         string            `xml:"name,attr"`
+	Abbreviation string            `xml:"abbreviation,attr"`
+	IconPath     string            `xml:"icon_path,attr"`
 	Sports       []CompetitorSport `xml:"sport"`
 }
 

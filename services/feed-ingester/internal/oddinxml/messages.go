@@ -36,9 +36,9 @@ type OddsChange struct {
 // map lives in <scoreboard>. Both children are optional and absent on
 // pre-match snapshots.
 type SportEventStatus struct {
-	Status              *int          `xml:"status,attr"`              // 0..9 lifecycle code
-	MatchStatus         *int          `xml:"match_status,attr"`        // sport-specific in-game phase (live=6, ended=100, …)
-	HomeScore           *int          `xml:"home_score,attr"`          // series score (maps won)
+	Status              *int          `xml:"status,attr"`       // 0..9 lifecycle code
+	MatchStatus         *int          `xml:"match_status,attr"` // sport-specific in-game phase (live=6, ended=100, …)
+	HomeScore           *int          `xml:"home_score,attr"`   // series score (maps won)
 	AwayScore           *int          `xml:"away_score,attr"`
 	ScoreboardAvailable string        `xml:"scoreboard_available,attr"`
 	PeriodScores        *PeriodScores `xml:"period_scores"`
@@ -100,8 +100,10 @@ type OddsBlock struct {
 }
 
 // Market status codes (from Oddin):
-//  1  active (accepting bets)
-//  0  inactive (hide, no bets)
+//
+//	1  active (accepting bets)
+//	0  inactive (hide, no bets)
+//
 // -1  suspended (no bets for up to ~60s)
 // -2  handed over (pre-match → live transition)
 // -3  settled  (only in bet_settlement)
@@ -125,13 +127,13 @@ type Market struct {
 }
 
 type Outcome struct {
-	ID           string `xml:"id,attr"`           // "1", "2", or a URN
-	Odds         string `xml:"odds,attr"`         // decimal string
-	Active       *int   `xml:"active,attr"`       // 1 yes, 0 no
-	Probability  string `xml:"probabilities,attr"`
-	Result       string `xml:"result,attr"`       // bet_settlement: "1" won, "0" lost
-	VoidFactor   string `xml:"void_factor,attr"`  // "0.5" half, "1.0" full void
-	Name         string `xml:"name,attr"`
+	ID          string `xml:"id,attr"`     // "1", "2", or a URN
+	Odds        string `xml:"odds,attr"`   // decimal string
+	Active      *int   `xml:"active,attr"` // 1 yes, 0 no
+	Probability string `xml:"probabilities,attr"`
+	Result      string `xml:"result,attr"`      // bet_settlement: "1" won, "0" lost
+	VoidFactor  string `xml:"void_factor,attr"` // "0.5" half, "1.0" full void
+	Name        string `xml:"name,attr"`
 }
 
 // ─── BetSettlement ─────────────────────────────────────────────────────────
@@ -165,12 +167,12 @@ type BetCancel struct {
 
 // BetStop suspends markets in a group across an entire event (or a subset).
 type BetStop struct {
-	XMLName     xml.Name `xml:"bet_stop"`
-	EventID     string   `xml:"event_id,attr"`
-	Product     int      `xml:"product,attr"`
-	Timestamp   int64    `xml:"timestamp,attr"`
-	Groups      string   `xml:"groups,attr"`       // comma-separated names ("all" or specifics)
-	MarketStatus int     `xml:"market_status,attr"` // status to transition to (typically -1)
+	XMLName      xml.Name `xml:"bet_stop"`
+	EventID      string   `xml:"event_id,attr"`
+	Product      int      `xml:"product,attr"`
+	Timestamp    int64    `xml:"timestamp,attr"`
+	Groups       string   `xml:"groups,attr"`        // comma-separated names ("all" or specifics)
+	MarketStatus int      `xml:"market_status,attr"` // status to transition to (typically -1)
 }
 
 // ─── FixtureChange ─────────────────────────────────────────────────────────
@@ -322,6 +324,7 @@ func PeekEvent(body []byte) (eventURN string, product int, err error) {
 // Codes follow the Sportradar UOF convention used by Oddin:
 //
 //	0  not started     → not_started
+//
 // Per Oddin's spec (§2.4.1.2) the documented set is exactly:
 //
 //	0  not_started     → not_started

@@ -12,7 +12,6 @@ import (
 // markets — the settlement worker's work list.
 type PendingMatch struct {
 	MatchID   int64
-	EventID   int64
 	URN       string
 	HomeTeam  string
 	AwayTeam  string
@@ -28,8 +27,12 @@ type PendingMarket struct {
 	OutcomeIDs []string
 }
 
-// LoadPendingSettlement returns closed Fonbet matches (scheduled within
-// the last `days`) whose markets are not all terminal, with those markets.
+// LoadPendingSettlement returns Fonbet matches (scheduled within the last
+// `days`) whose markets are not all terminal, with those markets: closed
+// matches, plus not_started ones more than three hours past kick-off —
+// events Fonbet dropped from the line without ever going live (postponed,
+// abandoned). The results feed then decides: finished → graded, status 4
+// → voided, absent → stays pending.
 func LoadPendingSettlement(ctx context.Context, db pgxRunner, days int) ([]PendingMatch, error) {
 	rows, err := db.Query(ctx, `
 SELECT ma.id, ma.provider_urn, ma.home_team, ma.away_team,
@@ -37,7 +40,8 @@ SELECT ma.id, ma.provider_urn, ma.home_team, ma.away_team,
   FROM matches ma
   JOIN tournaments t ON t.id = ma.tournament_id
  WHERE ma.provider_urn LIKE 'fb:match:%'
-   AND ma.status = 'closed'
+   AND (ma.status = 'closed'
+        OR (ma.status = 'not_started' AND ma.scheduled_at < NOW() - INTERVAL '3 hours'))
    AND ma.scheduled_at > NOW() - ($1 || ' days')::interval
    AND EXISTS (SELECT 1 FROM markets mk WHERE mk.match_id = ma.id AND mk.status NOT IN (-3, -4))
  ORDER BY ma.scheduled_at`, strconv.Itoa(days))
@@ -53,7 +57,6 @@ SELECT ma.id, ma.provider_urn, ma.home_team, ma.away_team,
 			rows.Close()
 			return nil, fmt.Errorf("scan pending match: %w", err)
 		}
-		m.EventID, _ = strconv.ParseInt(strings.TrimPrefix(m.URN, URNMatch), 10, 64)
 		m.SegmentID, _ = strconv.Atoi(strings.TrimPrefix(tURN, URNTournament))
 		byID[m.MatchID] = &m
 		ids = append(ids, m.MatchID)
@@ -87,7 +90,12 @@ SELECT mk.id, mk.match_id, mk.provider_market_id, mk.specifiers_json::text,
 		}
 		pm.PMID = int(pmid)
 		pm.Specs = map[string]string{}
-		_ = json.Unmarshal([]byte(specJSON), &pm.Specs)
+		if err := json.Unmarshal([]byte(specJSON), &pm.Specs); err != nil {
+			// A market whose specifiers cannot be read must not be graded as
+			// the main-time market by accident: skip it (stays open for
+			// manual settlement) and say so.
+			return nil, fmt.Errorf("market %d: decode specifiers_json %q: %w", pm.ID, specJSON, err)
+		}
 		if m := byID[matchID]; m != nil {
 			m.Markets = append(m.Markets, pm)
 		}

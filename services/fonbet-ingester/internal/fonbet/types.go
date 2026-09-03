@@ -25,7 +25,6 @@ type Sport struct {
 	Kind     string `json:"kind"`
 	Name     string `json:"name"`
 	Alias    string `json:"alias"`
-	RegionID int    `json:"regionId"`
 }
 
 // Event: level 1 = match, level 2/3 = sub-event (half, map, corners,
@@ -70,12 +69,10 @@ type EventBlock struct {
 
 // EventMisc carries the compact live score.
 type EventMisc struct {
-	ID             int64  `json:"id"`
-	Score1         *int   `json:"score1"`
-	Score2         *int   `json:"score2"`
-	Comment        string `json:"comment"`
-	TimerSeconds   int    `json:"timerSeconds"`
-	TimerDirection int    `json:"timerDirection"`
+	ID      int64  `json:"id"`
+	Score1  *int   `json:"score1"`
+	Score2  *int   `json:"score2"`
+	Comment string `json:"comment"`
 }
 
 // LiveEventInfo carries the detailed live scoreboard.
@@ -108,16 +105,14 @@ type Group struct {
 // captions); later rows hold cells that are either text labels, "param"
 // cells (the line value) or "value" cells (the priced factor).
 type Table struct {
-	Num         int      `json:"num"`
-	Name        string   `json:"name"`
-	IsMain      bool     `json:"isMain"`
-	SortByParam bool     `json:"sortByParam"`
-	Rows        [][]Cell `json:"rows"`
+	Num    int      `json:"num"`
+	Name   string   `json:"name"`
+	IsMain bool     `json:"isMain"`
+	Rows   [][]Cell `json:"rows"`
 }
 
 type Cell struct {
-	Name      string `json:"name"`
-	Kind      string `json:"kind"` // "" (text) | "param" | "value"
-	FactorID  int    `json:"factorId"`
-	FlexParam bool   `json:"flexParam"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"` // "" (text) | "param" | "value"
+	FactorID int    `json:"factorId"`
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 )
 
 // MarketUpsert carries everything needed to upsert one row into `markets`.
@@ -219,9 +218,13 @@ type MatchMarketRef struct {
 }
 
 // SuspendProviderCatalog suspends every active Fonbet market on a
-// not_started/live match and nulls its outcome odds. Mirrors
-// feed-ingester's FlushAndSuspendActiveCatalog but scoped to `fb:` URNs so
-// an Oddin market is never touched. Race-safe (UPDATE only).
+// not_started/live match (status -1). Prices are left in place on purpose:
+// a suspended market is not bettable (placement rejects market_not_active)
+// and the storefront renders it as suspended, while keeping raw_odds
+// means the next snapshot after a restart re-activates ~90k markets with
+// status flips only instead of re-emitting ~200k prices onto odds.raw —
+// a burst that the shared stream's MAXLEN would trim. Only `fb:` URNs are
+// touched. Race-safe (UPDATE only).
 func SuspendProviderCatalog(ctx context.Context, db pgxRunner) ([]MatchMarketRef, int64, error) {
 	rows, err := db.Query(ctx, `
 UPDATE markets
@@ -235,63 +238,14 @@ RETURNING markets.match_id, markets.id`)
 	if err != nil {
 		return nil, 0, fmt.Errorf("suspend provider catalog: %w", err)
 	}
+	defer rows.Close()
 	refs := make([]MatchMarketRef, 0, 1024)
 	for rows.Next() {
 		var r MatchMarketRef
 		if err := rows.Scan(&r.MatchID, &r.MarketID); err != nil {
-			rows.Close()
 			return nil, 0, fmt.Errorf("scan suspended ref: %w", err)
 		}
 		refs = append(refs, r)
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, 0, err
-	}
-	tag, err := db.Exec(ctx, `
-UPDATE market_outcomes
-   SET published_odds = NULL, raw_odds = NULL, probability = NULL, active = FALSE, updated_at = NOW()
-  FROM markets m
-  JOIN matches ma ON ma.id = m.match_id
- WHERE market_outcomes.market_id = m.id
-   AND ma.provider_urn LIKE 'fb:match:%'
-   AND ma.status IN ('not_started', 'live')
-   AND market_outcomes.active = TRUE`)
-	if err != nil {
-		return nil, 0, fmt.Errorf("suspend provider outcomes: %w", err)
-	}
-	return refs, tag.RowsAffected(), nil
-}
-
-// OddsHistoryRow is one append-only odds_history row.
-type OddsHistoryRow struct {
-	MarketID  int64
-	OutcomeID string
-	RawOdds   *string
-	Ts        time.Time
-}
-
-// AppendOddsHistoryBulk inserts every row in one UNNEST INSERT.
-func AppendOddsHistoryBulk(ctx context.Context, db pgxRunner, rows []OddsHistoryRow) error {
-	if len(rows) == 0 {
-		return nil
-	}
-	marketIDs := make([]int64, len(rows))
-	outcomeIDs := make([]string, len(rows))
-	rawOdds := make([]*string, len(rows))
-	ts := make([]time.Time, len(rows))
-	for i, r := range rows {
-		marketIDs[i] = r.MarketID
-		outcomeIDs[i] = r.OutcomeID
-		rawOdds[i] = r.RawOdds
-		ts[i] = r.Ts
-	}
-	const q = `
-INSERT INTO odds_history (market_id, outcome_id, raw_odds, ts)
-SELECT t.mid, t.oid, t.raw::numeric, t.ts
-  FROM UNNEST($1::bigint[], $2::text[], $3::text[], $4::timestamptz[]) AS t(mid, oid, raw, ts)`
-	if _, err := db.Exec(ctx, q, marketIDs, outcomeIDs, rawOdds, ts); err != nil {
-		return fmt.Errorf("append odds_history bulk: %w", err)
-	}
-	return nil
+	return refs, int64(len(refs)), rows.Err()
 }

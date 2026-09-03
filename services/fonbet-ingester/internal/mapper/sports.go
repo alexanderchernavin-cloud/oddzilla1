@@ -6,8 +6,6 @@
 
 package mapper
 
-import "fmt"
-
 // EsportsRootID is Fonbet's "Киберспорт" root. Blocked by default in
 // config because Oddin already supplies the esports vertical.
 const EsportsRootID = 29086
@@ -50,20 +48,6 @@ var knownSports = map[int]SportInfo{
 	37145: {"mma", "Martial Arts", "traditional"},
 	45949: {"specials", "Specials", "traditional"},
 	47041: {"basketball-3x3", "Basketball 3x3", "traditional"},
-}
-
-// SportIconCDN is where fonbet.kz serves its monochrome sport glyphs,
-// keyed by the root sport's `alias` (sport_football.svg, sport_tennis.svg,
-// ...). Written to sports.logo_url so the storefront renders the same icon
-// set the Fonbet site uses; an operator upload in /admin/sports overrides
-// it. Empty alias → no icon (storefront falls back to its generic glyph).
-const SportIconCDN = "https://cdn-cf.kzac51-resources.kz/ContentCommon/website/resources/sport/sports/sport_%s.svg"
-
-func SportIconURL(alias string) string {
-	if alias == "" {
-		return ""
-	}
-	return fmt.Sprintf(SportIconCDN, alias)
 }
 
 // SportFor returns the static info for a Fonbet root sport, synthesising

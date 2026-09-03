@@ -19,4 +19,3 @@ func New(pool *pgxpool.Pool) *Store {
 // Pool exposes the underlying pool for callers that need a transaction
 // spanning multiple store methods.
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
-

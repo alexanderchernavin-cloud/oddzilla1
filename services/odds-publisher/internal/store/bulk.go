@@ -1,10 +1,8 @@
-// Batched write paths. The per-event UpdateOutcomePublishedOdds /
-// AppendOddsHistoryPublished pair costs two round-trips per outcome tick,
-// which capped the publisher at a few hundred ticks per second — fine for
-// Oddin's esports volume, too slow once a second provider (Fonbet, ~200k
-// priced outcomes) joins the stream. One UNNEST statement per batch keeps
-// the exact same guards and lets the consumer drain thousands of ticks
-// per second.
+// Batched write paths: one UNNEST UPDATE of published_odds and one
+// odds_history INSERT per XREADGROUP batch, plus a batched market-lineage
+// resolve. Two round-trips per outcome tick capped the publisher at a few
+// hundred ticks per second — fine for Oddin's esports volume, too slow once
+// a second provider (Fonbet, ~200k priced outcomes) joined the stream.
 
 package store
 
@@ -68,8 +66,7 @@ type PublishedRow struct {
 	SourceTs      int64  // ms
 }
 
-// UpdateOutcomesPublishedBulk mirrors UpdateOutcomePublishedOdds for many
-// rows: published_odds is written, probability only when supplied, the
+// UpdateOutcomesPublishedBulk writes many rows at once: published_odds is written, probability only when supplied, the
 // timestamp moves forward only, and unchanged rows are a 0-row write.
 //
 // Callers must pass at most one row per (market_id, outcome_id): with

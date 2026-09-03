@@ -20,11 +20,13 @@ package settle
 import (
 	"math"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
 
 	"github.com/oddzilla/fonbet-ingester/internal/fonbet"
+	"github.com/oddzilla/fonbet-ingester/internal/mapper"
 )
 
 // Outcome is one graded selection.
@@ -86,7 +88,6 @@ type labelTarget struct {
 	period int    // 1-based period, 0 = whole match
 	half   int    // 1 or 2 when the label says "половина" (two periods each)
 	stat   string // statistic row name, "" = the match score itself
-	set    bool   // the period is a set
 }
 
 func parseLabel(label string) labelTarget {
@@ -97,8 +98,6 @@ func parseLabel(label string) labelTarget {
 		switch m[2] {
 		case "половина":
 			t.half = n
-		case "сет", "партия":
-			t.period, t.set = n, true
 		default:
 			t.period = n
 		}
@@ -189,14 +188,14 @@ type Market struct {
 
 // Grade returns the graded outcomes for one market, or ok=false with a
 // reason when the market is out of scope.
-func Grade(mk Market, idx *fonbet.Index, pmidBase, dcBase int, label string, sport int, ss ScoreSet) ([]Outcome, bool, string) {
+func Grade(mk Market, idx *fonbet.Index, label string, sport int, ss ScoreSet) ([]Outcome, bool, string) {
 	if _, isMap := mk.Specs["map"]; isMap {
 		return nil, false, "map market"
 	}
-	isDC := mk.PMID >= dcBase
-	tableNum := mk.PMID - pmidBase
+	isDC := mk.PMID >= mapper.DoubleChancePMIDBase
+	tableNum := mk.PMID - mapper.PMIDBase
 	if isDC {
-		tableNum = mk.PMID - dcBase
+		tableNum = mk.PMID - mapper.DoubleChancePMIDBase
 	}
 	table := idx.Tables[tableNum]
 	if table == nil {
@@ -458,10 +457,6 @@ func boolResult(won bool) string {
 }
 
 func sortOutcomes(outs []Outcome) []Outcome {
-	for i := 1; i < len(outs); i++ {
-		for j := i; j > 0 && outs[j].ID < outs[j-1].ID; j-- {
-			outs[j], outs[j-1] = outs[j-1], outs[j]
-		}
-	}
+	sort.Slice(outs, func(i, j int) bool { return outs[i].ID < outs[j].ID })
 	return outs
 }

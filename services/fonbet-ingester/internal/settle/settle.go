@@ -32,8 +32,6 @@ type Worker struct {
 	index    *atomic.Pointer[fonbet.Index]
 	log      zerolog.Logger
 	lang     string
-	pmidBase int
-	dcBase   int
 	lookback int // days
 
 	// recently emitted market ids → when; avoids re-sending every cycle
@@ -42,12 +40,12 @@ type Worker struct {
 	emitted map[int64]time.Time
 }
 
-func New(st *store.Store, b *bus.Bus, client *fonbet.Client, index *atomic.Pointer[fonbet.Index], lang string, pmidBase, dcBase int, log zerolog.Logger) *Worker {
+func New(st *store.Store, b *bus.Bus, client *fonbet.Client, index *atomic.Pointer[fonbet.Index], lang string, log zerolog.Logger) *Worker {
 	return &Worker{
 		st: st, bus: b, client: client, index: index, lang: lang,
-		pmidBase: pmidBase, dcBase: dcBase, lookback: 7,
-		log:     log.With().Str("component", "settle").Logger(),
-		emitted: map[int64]time.Time{},
+		lookback: 7,
+		log:      log.With().Str("component", "settle").Logger(),
+		emitted:  map[int64]time.Time{},
 	}
 }
 
@@ -253,7 +251,7 @@ func (w *Worker) RunOnce(ctx context.Context) (Stats, error) {
 				stats.MarketsOpen++
 				continue
 			}
-			outs, ok, why := Grade(Market{PMID: mk.PMID, Specs: mk.Specs, OutcomeIDs: mk.OutcomeIDs}, idx, w.pmidBase, w.dcBase, label, sport, ss)
+			outs, ok, why := Grade(Market{PMID: mk.PMID, Specs: mk.Specs, OutcomeIDs: mk.OutcomeIDs}, idx, label, sport, ss)
 			if !ok {
 				stats.Skipped[why]++
 				stats.MarketsOpen++

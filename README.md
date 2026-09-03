@@ -51,7 +51,7 @@ Deeper references live in [**`docs/`**](docs/):
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | How services fit together. End-to-end walkthroughs for odds updates, bet placement, settlement, deposits. Scale path. |
 | [SCHEMA.md](docs/SCHEMA.md) | Why each table exists, key constraints, common queries. |
 | [ODDIN.md](docs/ODDIN.md) | Oddin AMQP routing keys, XML shapes, REST endpoints, market IDs, gotchas. |
-| [FONBET.md](docs/FONBET.md) | Fonbet KZ line: endpoints, JSON shapes, market mapping into the Oddin-shaped schema, limits (no settlement yet). |
+| [FONBET.md](docs/FONBET.md) | Fonbet KZ line: endpoints, JSON shapes, market mapping into the Oddin-shaped schema, results-feed settlement, operating limits. |
 | [PHASES.md](docs/PHASES.md) | Phase-by-phase roadmap, acceptance bars, post-MVP candidates, exit gates. |
 | [OPERATIONS.md](docs/OPERATIONS.md) | Deploy, backup, incident playbook. |
 

@@ -9,7 +9,8 @@ Gracefully idles (health only) unless `FONBET_ENABLED=true`. No
 credentials are needed — the line is public.
 
 **Read [`../../docs/FONBET.md`](../../docs/FONBET.md) before enabling on
-prod:** Fonbet markets have no settlement path yet.
+prod:** settlement is graded from Fonbet's results feed (`internal/settle`)
+and applied by `services/settlement`; soak it on staging first.
 
 ## Run
 

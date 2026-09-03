@@ -112,7 +112,7 @@ See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full picture, and
 
 ## Tech stack (locked)
 
-- **Go 1.23** — `services/{feed-ingester, odds-publisher, settlement, bet-delay, wallet-watcher, signer, bifrost-feed}`.
+- **Go 1.23** — `services/{feed-ingester, fonbet-ingester, odds-publisher, settlement, bet-delay, wallet-watcher, signer, bifrost-feed}`.
   Each service is its own Go module. Shared libs across services:
   `rabbitmq/amqp091-go`, `encoding/xml`, `jackc/pgx/v5` + `pgxpool`,
   `redis/go-redis/v9`, `rs/zerolog`. wallet-watcher uses stdlib `net/http`
@@ -160,14 +160,17 @@ These rules are load-bearing. Breaking them causes money or data loss.
 
 2. **Specifier canonicalization.** A market is uniquely keyed by
    `(match_id, provider_market_id, specifiers_hash)`. The hash is sha256 of
-   `k1=v1|k2=v2` with keys sorted lexicographically. Three implementations
+   `k1=v1|k2=v2` with keys sorted lexicographically. Four implementations
    that MUST stay byte-identical:
    - TS: [`packages/types/src/specifiers.ts`](./packages/types/src/specifiers.ts)
    - Go (feed-ingester): `services/feed-ingester/internal/oddinxml/specifiers.go`
    - Go (settlement): `services/settlement/internal/oddinxml/specifiers.go`
      (intentionally duplicated per the per-service-Go-module rule)
+   - Go (fonbet-ingester): `services/fonbet-ingester/internal/specifiers/specifiers.go`
+     (same rule; the Fonbet grader also emits canonical specifiers on the
+     `settlement.external` stream, which the settlement copy re-hashes)
 
-   All three are tested against the shared
+   All four are tested against the shared
    [`docs/fixtures/specifiers.json`](./docs/fixtures/specifiers.json)
    golden table. If they diverge, settlement silently fails to match
    tickets to settled markets.
@@ -381,8 +384,6 @@ These rules are load-bearing. Breaking them causes money or data loss.
     live` + `docs/SCHEMA.md`.
   - Env var added / renamed / removed → `.env.example` + CLAUDE.md
     `## Local secrets that exist`.
-
-- **Fonbet needs no secrets.** The KZ line is public; `FONBET_ENABLED=true` is the only switch (default false → the container idles on `/healthz`). Everything else has defaults documented in `.env.example`.
   - Phase progress, new component shipped, acceptance bar reached →
     `docs/PHASES.md` + the CLAUDE.md `## Live phase status` table.
   - Deploy / backup / runbook / incident step changed →
@@ -543,6 +544,8 @@ post-Phase-8 Oddin-workflow hardening pass; production stack is live at
 - `ODDIN_CUSTOMER_ID=142` — fetched via `curl -H "x-access-token: $ODDIN_TOKEN" https://api-mq.integration.oddin.gg/v1/users/whoami` (note `/v1/` prefix; the legacy `/users/whoami` returns 404)
 - `ODDIN_AMQP_PORT=5672` (NOT 5671 — Oddin runs AMQPS on 5672 per their docs §2)
 - `ODDIN_AMQP_TLS=true`
+- `FONBET_ENABLED` — the only switch for the Fonbet sports feed (no credentials; the KZ line is public; default `false` idles the container on `/healthz`). `FONBET_SETTLE_ENABLED`, the `FONBET_*` tuning knobs and `FONBET_INGESTER_HEALTH_PORT=8087` have defaults in `.env.example`.
+- `SETTLEMENT_EXTERNAL_STREAM=settlement.external` — Redis stream services/settlement consumes for provider-neutral settlements (Fonbet). Empty disables the consumer, and Fonbet tickets then never settle.
 - `JWT_SECRET` + `REFRESH_COOKIE_SECRET` — generated 48-byte secrets
 - `POSTGRES_PASSWORD` — generated 64-char hex
 - `NODE_ENV=production` (required so auth cookies get `Secure` flag)
@@ -588,7 +591,7 @@ When in doubt that everything is wired up, run from repo root:
 ```bash
 pnpm -r typecheck    # 9 TS workspaces (web, api, ws-gateway, 6 packages)
 pnpm audit --prod    # should report 0 vulns
-for svc in feed-ingester odds-publisher settlement bifrost-feed bet-delay wallet-watcher; do
+for svc in feed-ingester fonbet-ingester odds-publisher settlement bifrost-feed bet-delay wallet-watcher; do
   (cd services/$svc && go vet ./... && go test ./...)
 done
 ```

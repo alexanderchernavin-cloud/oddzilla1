@@ -135,15 +135,39 @@ func (b *Bus) publishEnvelope(ctx context.Context, matchID int64, envelope any) 
 	return nil
 }
 
-// PublishMarketStatus broadcasts a market-level status change.
-func (b *Bus) PublishMarketStatus(ctx context.Context, matchID, marketID int64, status int16, ts int64) error {
-	return b.publishEnvelope(ctx, matchID, struct {
-		Type     string `json:"type"`
-		MatchID  string `json:"matchId"`
-		MarketID string `json:"marketId"`
-		Status   int16  `json:"status"`
-		Ts       int64  `json:"ts"`
-	}{"marketStatus", strconv.FormatInt(matchID, 10), strconv.FormatInt(marketID, 10), status, ts})
+// StatusFrame is one market-level status change to broadcast.
+type StatusFrame struct {
+	MatchID  int64
+	MarketID int64
+	Status   int16
+}
+
+// PublishMarketStatusBatch broadcasts market-level status changes,
+// pipelined: a full-catalog suspend produces ~90k frames and one PUBLISH
+// round-trip each would not fit the shutdown budget.
+func (b *Bus) PublishMarketStatusBatch(ctx context.Context, frames []StatusFrame, ts int64) error {
+	const chunk = 1000
+	for i := 0; i < len(frames); i += chunk {
+		end := min(i+chunk, len(frames))
+		pipe := b.rdb.Pipeline()
+		for _, f := range frames[i:end] {
+			encoded, err := json.Marshal(struct {
+				Type     string `json:"type"`
+				MatchID  string `json:"matchId"`
+				MarketID string `json:"marketId"`
+				Status   int16  `json:"status"`
+				Ts       int64  `json:"ts"`
+			}{"marketStatus", strconv.FormatInt(f.MatchID, 10), strconv.FormatInt(f.MarketID, 10), f.Status, ts})
+			if err != nil {
+				return fmt.Errorf("marshal marketStatus: %w", err)
+			}
+			pipe.Publish(ctx, "odds:match:"+strconv.FormatInt(f.MatchID, 10), encoded)
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			return fmt.Errorf("pipeline publish marketStatus: %w", err)
+		}
+	}
+	return nil
 }
 
 // PublishMatchStatus broadcasts a match lifecycle transition.

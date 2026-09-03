@@ -39,9 +39,9 @@ func StaticDescriptions(idx *fonbet.Index, opt Options) []Description {
 		return d
 	}
 	for _, t := range idx.Tables {
-		_ = get(opt.pmidBase()+t.Num, MarketTemplate(t, idx.Lang, false))
+		_ = get(PMIDBase+t.Num, MarketTemplate(t, idx.Lang, false))
 		if t.IsMatchWinner {
-			_ = get(opt.dcBase()+t.Num, MarketTemplate(t, idx.Lang, true))
+			_ = get(DoubleChancePMIDBase+t.Num, MarketTemplate(t, idx.Lang, true))
 		}
 	}
 	// Second pass so appends above can't invalidate pointers.
@@ -50,9 +50,9 @@ func StaticDescriptions(idx *fonbet.Index, opt Options) []Description {
 	}
 	for _, fm := range idx.Factors {
 		t := fm.Table
-		pmid := opt.pmidBase() + t.Num
+		pmid := PMIDBase + t.Num
 		if fm.DoubleChance {
-			pmid = opt.dcBase() + t.Num
+			pmid = DoubleChancePMIDBase + t.Num
 		}
 		d := byPMID[pmid]
 		if d == nil {
@@ -63,19 +63,22 @@ func StaticDescriptions(idx *fonbet.Index, opt Options) []Description {
 		// (halves, periods). Line markets are addressed by side id. All
 		// forms get a label.
 		d.Outcomes[itoa(fm.FactorID)] = fm.Label
+		tpl := OutcomeTemplate(fm, idx.Lang)
 		switch {
+		case tpl == "":
+			delete(d.Outcomes, itoa(fm.FactorID)) // per-match name wins (team placeholder)
 		case fm.WinnerOutcome != "":
-			d.Outcomes[fm.WinnerOutcome] = OutcomeTemplate(fm, idx.Lang)
+			d.Outcomes[fm.WinnerOutcome] = tpl
 		case fm.SideID != "":
 			if _, done := d.Outcomes[fm.SideID]; !done {
-				d.Outcomes[fm.SideID] = OutcomeTemplate(fm, idx.Lang)
+				d.Outcomes[fm.SideID] = tpl
 			}
 		default:
-			d.Outcomes[itoa(fm.FactorID)] = OutcomeTemplate(fm, idx.Lang)
+			d.Outcomes[itoa(fm.FactorID)] = tpl
 		}
 		if fm.DoubleChance {
 			// Sub-event double-chance cells stay in the base pmid market.
-			base := byPMID[opt.pmidBase()+t.Num]
+			base := byPMID[PMIDBase+t.Num]
 			if base != nil {
 				base.Outcomes[itoa(fm.FactorID)] = fm.Label
 			}
@@ -125,7 +128,17 @@ func OutcomeTemplate(fm *fonbet.FactorMeta, lang string) string {
 	if key := fm.Table.Param.SpecifierKey(); key != "" {
 		s = strings.ReplaceAll(s, "%P", "{"+key+"}")
 	}
-	s = strings.ReplaceAll(s, "%1", "home")
-	s = strings.ReplaceAll(s, "%2", "away")
+	switch strings.TrimSpace(s) {
+	case "%1":
+		return "home" // renderOutcomeLabel maps the bare word to the team name
+	case "%2":
+		return "away"
+	}
+	if strings.Contains(s, "%1") || strings.Contains(s, "%2") {
+		// A team placeholder inside a longer caption cannot be rendered by
+		// the storefront's template engine; return "" so the API falls back
+		// to market_outcomes.name, which the mapper fills per match.
+		return ""
+	}
 	return strings.TrimSpace(s)
 }

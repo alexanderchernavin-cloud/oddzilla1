@@ -44,6 +44,7 @@ import (
 
 var (
 	lastSnapshotUnix atomic.Int64
+	cycleInFlight    atomic.Bool
 	lastMatches      atomic.Int64
 	lastOutcomes     atomic.Int64
 	catalogSuspended atomic.Bool
@@ -153,7 +154,7 @@ func main() {
 	var indexPtr atomic.Pointer[fonbet.Index]
 	indexPtr.Store(idx)
 	if cfg.Fonbet.SettleEnabled {
-		worker := settle.New(st, b, client, &indexPtr, cfg.Fonbet.Lang, mapper.DefaultPMIDBase, mapper.DefaultDoubleChancePMIDBase, log)
+		worker := settle.New(st, b, client, &indexPtr, cfg.Fonbet.Lang, log)
 		go worker.Run(ctx, cfg.Fonbet.SettleInterval)
 		log.Info().Dur("interval", cfg.Fonbet.SettleInterval).Msg("settlement worker started")
 	} else {
@@ -208,6 +209,8 @@ func main() {
 }
 
 func cycle(ctx context.Context, client *fonbet.Client, idx *fonbet.Index, opt mapper.Options, ing *ingest.Ingester, log zerolog.Logger) {
+	cycleInFlight.Store(true)
+	defer cycleInFlight.Store(false)
 	t0 := time.Now()
 	resp, err := client.FetchList(ctx)
 	if err != nil {
@@ -243,7 +246,7 @@ func cycle(ctx context.Context, client *fonbet.Client, idx *fonbet.Index, opt ma
 		Int("outcomes_up", stats.OutcomesUpserted).
 		Int("outcomes_off", stats.OutcomesDeactivated).
 		Int("odds_events", stats.OddsEvents).
-		Int("history", stats.HistoryRows)
+		Int("failed", stats.Failed)
 	if len(stats.Skipped) > 0 {
 		ev = ev.Interface("skipped", stats.Skipped)
 	}
@@ -284,7 +287,10 @@ func runWatchdog(ctx context.Context, ing *ingest.Ingester, staleAfter time.Dura
 			} else {
 				silence = now.Sub(startedAt)
 			}
-			if silence >= staleAfter && !ing.Suspended() {
+			// A cycle still running is not silence: the cold-start Apply of a
+			// full line can outlast the threshold, and Apply/SuspendAll are
+			// serialised by the ingester's mutex anyway.
+			if silence >= staleAfter && !ing.Suspended() && !cycleInFlight.Load() {
 				log.Error().Dur("silence", silence).Msg("no snapshot past threshold; suspending fonbet catalog")
 				if err := ing.SuspendAll(ctx, now.UnixMilli()); err != nil {
 					log.Error().Err(err).Msg("watchdog suspend failed")

@@ -20,7 +20,8 @@ running the production stack:
 - `.env` at `/home/team/oddzilla/.env` (mode 600) with real secrets;
   `ODDIN_CUSTOMER_ID=142` from `GET /v1/users/whoami`
 - Full Compose stack live: postgres, redis, caddy, api, web, ws-gateway,
-  feed-ingester, odds-publisher, settlement, bet-delay, wallet-watcher
+  feed-ingester, fonbet-ingester (idle unless `FONBET_ENABLED=true`),
+  odds-publisher, settlement, bet-delay, wallet-watcher
 - Connected to Oddin integration broker (bookmaker 142) via AMQPS on
   port 5672
 - DNS: `FRONTEND_HOST=oddzilla.cc` (apex), `ADMIN_HOST=sadmin.oddzilla.cc`
@@ -44,7 +45,7 @@ $EDITOR .env                          # fill real secrets, set ODDIN_CUSTOMER_ID
 # Build services SERIALLY — `docker compose build` (no service arg)
 # parallel-builds 7 services and OOMs the 4 GB CPX22 (see
 # project_build_oom_incident; took the site down ~30 min on 2026-05-06).
-for svc in postgres redis caddy api web1 ws-gateway feed-ingester odds-publisher settlement bet-delay wallet-watcher; do
+for svc in postgres redis caddy api web1 ws-gateway feed-ingester fonbet-ingester odds-publisher settlement bet-delay wallet-watcher; do
   sudo -n docker compose -f docker-compose.yml --profile scaled build $svc
 done
 sudo -n docker compose -f docker-compose.yml --profile scaled up -d

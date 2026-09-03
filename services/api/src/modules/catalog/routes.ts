@@ -1397,7 +1397,10 @@ export default async function catalogRoutes(app: FastifyInstance) {
         .where(
           and(
             eq(markets.matchId, params.id),
-            inArray(markets.status, [1, 0, -1]),
+            // 1 active, -1 suspended. Deactivated (0) markets are lines the
+            // provider pulled — nothing to render, so they stay out of the
+            // page instead of being loaded and dropped afterwards.
+            inArray(markets.status, [1, -1]),
           ),
         )
         .orderBy(markets.providerMarketId),
@@ -1610,14 +1613,22 @@ export default async function catalogRoutes(app: FastifyInstance) {
         let scope = deriveScope(specs);
         let nameTemplate = template;
         let baseNameTemplate = baseTemplate;
-        const fbVariant = /^fb:(\d+)(?::(\d+))?$/.exec(variant);
+        const fbVariant = /^fb:([\d/]+)(?::(\d+))?$/.exec(variant);
         if (fbVariant) {
           const sep = template.indexOf(": ");
           if (fbVariant[2]) {
             scope = { id: "fb_players", label: locale === "ru" ? "Игроки" : "Players", order: 90 };
           } else if (sep > 0) {
             const label = template.slice(0, sep);
-            scope = { id: `fb_${fbVariant[1]}`, label, order: 10 + Number(fbVariant[1]) / 1e8 };
+            // Nested sub-events ("fb:100201/400100" = corners of the 1st
+            // half) sort after their parent kind and tab id stays a
+            // plain identifier.
+            const kinds = (fbVariant[1] ?? "").split("/");
+            scope = {
+              id: `fb_${kinds.join("_")}`,
+              label,
+              order: 10 + Number(kinds[0] ?? 0) / 1e8 + kinds.length / 1e3,
+            };
             nameTemplate = template.slice(sep + 2);
             if (baseTemplate.startsWith(label + ": ")) {
               baseNameTemplate = baseTemplate.slice(sep + 2);
@@ -1709,15 +1720,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
     // markets without an explicit row fall back to provider_market_id
     // ascending (the legacy default). The override table is small —
     // typically <50 rows per sport — so a per-request fetch is cheap.
-    // Drop deactivated markets (status 0) that have nothing bettable
-    // left. Oddin rarely leaves those behind, but a line-driven feed
-    // (Fonbet) retires handicap / total lines every few seconds as the
-    // price moves, and each retired line would otherwise render as a row
-    // of dashes. Suspended (-1) markets stay visible with their
-    // "Suspended" treatment — that state is transient and informative.
-    const marketList = Array.from(marketMap.values()).filter(
-      (m) => m.status !== 0 || m.outcomes.some((o) => o.active),
-    );
+    const marketList = Array.from(marketMap.values());
     // Sort outcomes inside each market by Oddin's canonical outcome_id
     // (see outcomeSortWeight). PG returns outcomes in undefined order
     // without ORDER BY, which made home/away appear randomly swapped on

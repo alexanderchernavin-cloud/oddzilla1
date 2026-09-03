@@ -26,8 +26,8 @@ import "encoding/xml"
 
 // FixtureResponse is the top-level wrapper of /sport_events/.../fixture.
 type FixtureResponse struct {
-	XMLName xml.Name        `xml:"fixtures_fixture"`
-	Fixture FixturePayload  `xml:"fixture"`
+	XMLName xml.Name       `xml:"fixtures_fixture"`
+	Fixture FixturePayload `xml:"fixture"`
 }
 
 type FixturePayload struct {
@@ -105,8 +105,8 @@ type TournamentInfoItem struct {
 
 // SportsResponse is the top-level wrapper of /sports.
 type SportsResponse struct {
-	XMLName xml.Name      `xml:"sports"`
-	Sports  []SportEntry  `xml:"sport"`
+	XMLName xml.Name     `xml:"sports"`
+	Sports  []SportEntry `xml:"sport"`
 }
 
 type SportEntry struct {

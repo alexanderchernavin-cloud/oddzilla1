@@ -978,13 +978,15 @@ func isMatchScopedKind(k oddinxml.MessageKind) bool {
 // mapFixtureStatus translates Oddin fixture_change.change_type values to
 // our match_status enum. Per the Oddin docs the change_type is a numeric
 // id, not a name:
-//   1   NEW         — new fixture; status unchanged (REST re-fetch will fill in)
-//   2   DATE_TIME   — start time changed; status unchanged
-//   3   CANCELLED   — fixture cancelled; mark match cancelled
-//   4   FORMAT      — Bo3 → Bo5 etc.; status unchanged
-//   5   COVERAGE    — coverage changed; status unchanged
-//   106 STREAM_URL  — stream URL changed; status unchanged (refreshed
-//                     from REST so matches.tv_channels stays current)
+//
+//	1   NEW         — new fixture; status unchanged (REST re-fetch will fill in)
+//	2   DATE_TIME   — start time changed; status unchanged
+//	3   CANCELLED   — fixture cancelled; mark match cancelled
+//	4   FORMAT      — Bo3 → Bo5 etc.; status unchanged
+//	5   COVERAGE    — coverage changed; status unchanged
+//	106 STREAM_URL  — stream URL changed; status unchanged (refreshed
+//	                  from REST so matches.tv_channels stays current)
+//
 // When unknown / unset / "" we return "" so the resolver keeps whatever
 // status the match row already has.
 func mapFixtureStatus(changeType string) string {
@@ -995,4 +997,3 @@ func mapFixtureStatus(changeType string) string {
 		return ""
 	}
 }
-

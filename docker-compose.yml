@@ -484,9 +484,10 @@ services:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${FEED_INGESTER_HEALTH_PORT:-8081}/healthz"]
 
   # Second odds provider: public Fonbet KZ line (traditional sports).
-  # Idles (health only) unless FONBET_ENABLED=true in .env — read
-  # docs/FONBET.md before enabling: Fonbet markets have no settlement
-  # path yet.
+  # Idles (health only) unless FONBET_ENABLED=true in .env — see
+  # docs/FONBET.md (settlement is graded from Fonbet's results feed and
+  # applied by services/settlement via the settlement.external stream;
+  # run a settlement soak on staging before enabling on prod).
   fonbet-ingester:
     <<: *go-service
     build:

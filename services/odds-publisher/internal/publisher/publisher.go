@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -67,7 +68,7 @@ type Publisher struct {
 	log      zerolog.Logger
 
 	// Counters for healthz/metrics. Atomic so the /healthz handler
-	// can read them from a different goroutine than processOne
+	// can read them from a different goroutine than Handle
 	// without `go test -race` firing.
 	processed atomic.Int64
 	errors    atomic.Int64
@@ -161,25 +162,37 @@ func (p *Publisher) Handle(ctx context.Context, events []bus.Event) error {
 	// One row per (market, outcome) for the UPDATE — the stream is ordered,
 	// so the last tick in the batch is the current price. History keeps
 	// every tick.
-	latest := make(map[string]int, len(items))
+	type outcomeKey struct {
+		marketID  int64
+		outcomeID string
+	}
+	latest := make(map[outcomeKey]int, len(items))
 	for i, it := range items {
-		latest[fmt.Sprintf("%d|%s", it.row.MarketID, it.row.OutcomeID)] = i
+		latest[outcomeKey{it.row.MarketID, it.row.OutcomeID}] = i
 	}
 	rows := make([]store.PublishedRow, 0, len(latest))
 	history := make([]store.PublishedRow, 0, len(items))
 	for i, it := range items {
-		if latest[fmt.Sprintf("%d|%s", it.row.MarketID, it.row.OutcomeID)] == i {
+		if latest[outcomeKey{it.row.MarketID, it.row.OutcomeID}] == i {
 			rows = append(rows, it.row)
 		}
 		history = append(history, it.row)
 	}
 
 	// Persist first so reconnecting WS clients see the truth. A failed
-	// batch write leaves the entries pending for a retry rather than
-	// counting them as processed.
+	// batch write falls back to per-row writes so one row Postgres rejects
+	// cannot poison the whole batch (the pre-batch loop isolated failures
+	// per event; keep that contract). Rows that still fail are dropped
+	// like a failed single tick used to be — downstream catches up on the
+	// next price move.
 	if err := p.store.UpdateOutcomesPublishedBulk(ctx, rows); err != nil {
-		p.errors.Add(int64(len(items)))
-		return err
+		p.log.Warn().Err(err).Int("rows", len(rows)).Msg("batch publish write failed; retrying per row")
+		for _, r := range rows {
+			if rerr := p.store.UpdateOutcomesPublishedBulk(ctx, []store.PublishedRow{r}); rerr != nil {
+				p.errors.Add(1)
+				p.log.Warn().Err(rerr).Int64("market", r.MarketID).Str("outcome", r.OutcomeID).Msg("publish write failed; tick dropped")
+			}
+		}
 	}
 	if err := p.store.AppendOddsHistoryPublishedBulk(ctx, history); err != nil {
 		// Not fatal — history is for audit, not correctness.
@@ -195,7 +208,7 @@ func (p *Publisher) Handle(ctx context.Context, events []bus.Event) error {
 			p.log.Warn().Err(err).Msg("marshal payload")
 			continue
 		}
-		pipe.Publish(ctx, PubChannelPrefix+fmt.Sprintf("%d", it.payload.MatchID), body)
+		pipe.Publish(ctx, PubChannelPrefix+strconv.FormatInt(it.payload.MatchID, 10), body)
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		p.log.Debug().Err(err).Msg("publish failed (best-effort)")

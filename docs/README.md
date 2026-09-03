@@ -8,7 +8,7 @@
 | [FONBET.md](FONBET.md) | Fonbet KZ public line — second odds provider for traditional sports. Endpoints, payload shapes, how factors map to markets / specifiers / outcome ids, operating limits. |
 | [PHASES.md](PHASES.md) | Phase roadmap with delivered detail per phase. **Phases 1–8 complete + post-Phase-8 hardening pass shipped.** News scraper cancelled mid-Phase-8 (migration 0003 dropped the table). Next layer is the pre-launch exit gates. |
 | [OPERATIONS.md](OPERATIONS.md) | Deploy, env vars, health, logs, metrics, backups, restore, incident playbook, withdrawal admin runbook, HD mnemonic management. |
-| [fixtures/specifiers.json](fixtures/specifiers.json) | Golden test fixture shared between TS + 2 Go specifier implementations. |
+| [fixtures/specifiers.json](fixtures/specifiers.json) | Golden test fixture shared between TS + 3 Go specifier implementations (feed-ingester, settlement, fonbet-ingester). |
 
 Entry points for different questions:
 

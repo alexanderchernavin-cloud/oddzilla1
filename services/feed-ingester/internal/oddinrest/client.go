@@ -160,7 +160,8 @@ func (c *Client) Fixtures(ctx context.Context, lang string, offset, limit int) (
 // SportEventFixture returns the full hierarchy (tournament + sport + teams)
 // for a single match URN. Used by the auto-mapping resolver to build proper
 // catalog rows when an unknown match URN arrives on the feed.
-//   GET /v1/sports/{lang}/sport_events/{eventURN}/fixture
+//
+//	GET /v1/sports/{lang}/sport_events/{eventURN}/fixture
 func (c *Client) SportEventFixture(ctx context.Context, lang, eventURN string) ([]byte, error) {
 	path := fmt.Sprintf("/v1/sports/%s/sport_events/%s/fixture", lang, eventURN)
 	return c.Get(ctx, path, nil)
@@ -170,7 +171,8 @@ func (c *Client) SportEventFixture(ctx context.Context, lang, eventURN string) (
 // after auto-creating one from a fixture (the fixture endpoint returns the
 // sport's name + abbreviation, so this is mainly useful as a slug source for
 // sports that arrive ahead of any fixture call).
-//   GET /v1/sports/{lang}/sports
+//
+//	GET /v1/sports/{lang}/sports
 func (c *Client) Sports(ctx context.Context, lang string) ([]byte, error) {
 	return c.Get(ctx, fmt.Sprintf("/v1/sports/%s/sports", lang), nil)
 }
@@ -178,7 +180,8 @@ func (c *Client) Sports(ctx context.Context, lang string) ([]byte, error) {
 // TournamentInfo returns tournament metadata, including risk_tier, for a
 // single tournament URN. Used by auto-mapping to populate risk_tier on
 // tournament-creation and by the backfill tool.
-//   GET /v1/sports/{lang}/tournaments/{urn}/info
+//
+//	GET /v1/sports/{lang}/tournaments/{urn}/info
 func (c *Client) TournamentInfo(ctx context.Context, lang, tournamentURN string) ([]byte, error) {
 	path := fmt.Sprintf("/v1/sports/%s/tournaments/%s/info", lang, tournamentURN)
 	return c.Get(ctx, path, nil)
@@ -188,7 +191,9 @@ func (c *Client) TournamentInfo(ctx context.Context, lang, tournamentURN string)
 // plus the active player roster. Players carry their own URN, short
 // name, and full name — which is what the API substitutes into outcome
 // labels for player-prop markets (od:player:N outcome ids).
-//   GET /v1/sports/{lang}/competitors/{urn}/profile
+//
+//	GET /v1/sports/{lang}/competitors/{urn}/profile
+//
 // The response is small (single team + ~5 players for esports) so we
 // can call it once per match without caching concerns.
 func (c *Client) CompetitorProfile(ctx context.Context, lang, competitorURN string) ([]byte, error) {
@@ -199,7 +204,9 @@ func (c *Client) CompetitorProfile(ctx context.Context, lang, competitorURN stri
 // MarketDescriptions returns the market + outcome description catalog —
 // name templates, outcome labels, and specifier schema — that turns the
 // numeric market/outcome ids on the odds feed into user-facing names.
-//   GET /v1/descriptions/{lang}/markets
+//
+//	GET /v1/descriptions/{lang}/markets
+//
 // The response is ~80 KB of XML and changes rarely; callers should cache
 // it in Postgres and refresh on a schedule (hours-to-days cadence).
 func (c *Client) MarketDescriptions(ctx context.Context, lang string) ([]byte, error) {
