@@ -95,11 +95,13 @@ export function BackupFeedCard() {
       <p style={{ margin: 0, fontSize: 12.5, lineHeight: 1.5, color: "var(--color-fg-muted)" }}>
         Prod Oddin is the AMQP feed. Backup Oddin is bifrost-feed re-synthesising odds, scores
         and settlements from Oddin&apos;s Bifrost GraphQL API through the normal ingest path.
-        In Auto the backup takes over after the AMQP feed has been silent past the threshold
-        and stands down the moment it resumes. Forcing Backup suspends the catalogue once,
-        stops applying AMQP odds, and re-feeds everything from Bifrost within seconds;
-        switching back replays from Oddin. Settlement always consumes both sources (apply-once
-        dedup); cancel and rollback messages exist only on AMQP. See docs/BIFROST_BACKUP_FEED.md.
+        Only Auto moves by itself: the backup takes over after the AMQP feed has been silent past
+        the threshold and stands down the moment it resumes. Backup Oddin and Prod Oddin only are
+        manual positions and stay where you put them, through restarts and deploys, until you
+        change them. Forcing Backup suspends the catalogue once, stops applying AMQP odds, and
+        re-feeds everything from Bifrost within seconds; moving the switch back replays from Oddin.
+        Settlement always consumes both sources (apply-once dedup); cancel and rollback messages
+        exist only on AMQP. See docs/BIFROST_BACKUP_FEED.md.
       </p>
 
       {error ? (
