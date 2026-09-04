@@ -493,9 +493,22 @@ services:
     build:
       context: ./services/fonbet-ingester
       dockerfile: Dockerfile
+    # Overrides the go-service anchor's 320m / 0.75 cpu: this service keeps
+    # the whole Fonbet line (~90k markets / ~200k outcomes) in memory as
+    # the previous snapshot AND decodes + maps a fresh full snapshot every
+    # 5 s, so its working set is a multiple of the other Go workers'. The
+    # first version shipped on the anchor's 320m having only been run on a
+    # workstation with no cgroup limit; an OOM-kill here is SIGKILL, which
+    # skips the SIGTERM suspend and leaves frozen Fonbet prices bettable.
+    # GOMEMLIMIT tells the Go GC about the ceiling so it collects before
+    # the kernel does. Check `docker stats fonbet-ingester` after enabling
+    # and tune both together.
+    mem_limit: 768m
+    cpus: 1.0
     environment:
       SERVICE_NAME: fonbet-ingester
       HEALTH_PORT: ${FONBET_INGESTER_HEALTH_PORT:-8087}
+      GOMEMLIMIT: 640MiB
     healthcheck:
       <<: *hc
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${FONBET_INGESTER_HEALTH_PORT:-8087}/healthz"]

@@ -196,3 +196,35 @@ func TestGradeTennisAndOT(t *testing.T) {
 		t.Fatalf("hockey draw: %+v", outs)
 	}
 }
+
+// Regression: for otIncluded sports scoreFor already folds the OT row into
+// a two-way market's score. The tie-break must not add it a second time —
+// the first cut did, and a game still level after the recorded overtime
+// (100:102 + OT 3:1 = 103:103) came out 106:104, inventing a home win.
+func TestGradeBasketballTiedAfterOTStaysOpen(t *testing.T) {
+	idx := fixtureIndex()
+	bb := ScoreSet{
+		Main: fonbet.Score{Home: 100, Away: 102, Periods: [][2]int{{25, 25}, {25, 25}, {25, 26}, {25, 26}}},
+		OT:   &fonbet.Score{Home: 3, Away: 1},
+	}
+	outs, ok, why := Grade(Market{PMID: 1000120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "2"}}, idx, "", 3, bb)
+	if ok {
+		t.Fatalf("two-way basketball level after OT must stay open, got %+v", outs)
+	}
+	if why != "two-way market tied in main time" {
+		t.Fatalf("unexpected reason %q", why)
+	}
+	// With a shootout row the tie is broken by it, OT still counted once.
+	bb.Shoot = &fonbet.Score{Home: 0, Away: 1}
+	outs, ok, why = Grade(Market{PMID: 1000120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "2"}}, idx, "", 3, bb)
+	if !ok || outs[0].Result != "0" || outs[1].Result != "1" {
+		t.Fatalf("shootout after level OT: %+v %s", outs, why)
+	}
+	// Hockey (OT not included in the headline) still adds the OT row once
+	// on the tie-break path.
+	hk := ScoreSet{Main: fonbet.Score{Home: 2, Away: 2}, OT: &fonbet.Score{Home: 1, Away: 0}}
+	outs, ok, why = Grade(Market{PMID: 1000120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "2"}}, idx, "", 2, hk)
+	if !ok || outs[0].Result != "1" || outs[1].Result != "0" {
+		t.Fatalf("hockey OT winner: %+v %s", outs, why)
+	}
+}

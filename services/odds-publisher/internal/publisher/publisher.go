@@ -67,6 +67,12 @@ type Publisher struct {
 	cacheTTL time.Duration
 	log      zerolog.Logger
 
+	// historySkipPMIDMin > 0 drops the odds_history INSERT for ticks whose
+	// provider_market_id is at or above it (published_odds still updates).
+	// Operator brake on odds_history growth for a high-churn provider;
+	// see config.HistorySkipPMIDMin.
+	historySkipPMIDMin int
+
 	// Counters for healthz/metrics. Atomic so the /healthz handler
 	// can read them from a different goroutine than Handle
 	// without `go test -race` firing.
@@ -74,12 +80,17 @@ type Publisher struct {
 	errors    atomic.Int64
 }
 
-func New(st *store.Store, rdb *redis.Client, cacheTTL time.Duration, log zerolog.Logger) *Publisher {
+func New(st *store.Store, rdb *redis.Client, cacheTTL time.Duration, historySkipPMIDMin int, log zerolog.Logger) *Publisher {
+	if historySkipPMIDMin > 0 {
+		log.Warn().Int("provider_market_id_min", historySkipPMIDMin).
+			Msg("odds_history disabled for ticks at or above this provider_market_id (ODDS_HISTORY_SKIP_PMID_MIN)")
+	}
 	return &Publisher{
-		store:    st,
-		rdb:      rdb,
-		cacheTTL: cacheTTL,
-		log:      log.With().Str("component", "publisher").Logger(),
+		store:              st,
+		rdb:                rdb,
+		cacheTTL:           cacheTTL,
+		historySkipPMIDMin: historySkipPMIDMin,
+		log:                log.With().Str("component", "publisher").Logger(),
 	}
 }
 
@@ -175,6 +186,9 @@ func (p *Publisher) Handle(ctx context.Context, events []bus.Event) error {
 	for i, it := range items {
 		if latest[outcomeKey{it.row.MarketID, it.row.OutcomeID}] == i {
 			rows = append(rows, it.row)
+		}
+		if p.historySkipPMIDMin > 0 && it.payload.ProviderMarketID >= p.historySkipPMIDMin {
+			continue // operator brake: no odds_history for this provider range
 		}
 		history = append(history, it.row)
 	}

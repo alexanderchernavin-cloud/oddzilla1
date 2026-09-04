@@ -44,3 +44,11 @@ go run ./cmd/odds-publisher
 - Postgres writes are batched per XREADGROUP batch (`ODDS_PUBLISHER_BATCH`,
   default 128) — the per-event loop topped out near 250 ticks/s, which the
   Fonbet line (~300 changes/s) overran.
+- `ODDS_HISTORY_SKIP_PMID_MIN` (default 0 = off) is the operator brake on
+  `odds_history` growth: ticks with `provider_market_id >=` the value skip
+  the history INSERT while `published_odds` still updates. `1000000` covers
+  the Fonbet namespace. Sizing rule in docs/OPERATIONS.md "odds_history
+  retention".
+- `ODDS_PUBLISHER_GROUP` is also read by fonbet-ingester, which watches this
+  group's lag (`XINFO GROUPS odds.raw`) to pace its cold-start republish;
+  keep the two services on the same value.

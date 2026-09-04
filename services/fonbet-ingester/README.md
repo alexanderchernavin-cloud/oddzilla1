@@ -9,8 +9,12 @@ Gracefully idles (health only) unless `FONBET_ENABLED=true`. No
 credentials are needed — the line is public.
 
 **Read [`../../docs/FONBET.md`](../../docs/FONBET.md) before enabling on
-prod:** settlement is graded from Fonbet's results feed (`internal/settle`)
-and applied by `services/settlement`; soak it on staging first.
+prod.** Settlement is graded from Fonbet's results feed (`internal/settle`)
+and applied by `services/settlement`, and it is gated by its OWN switch:
+`FONBET_SETTLE_ENABLED` defaults to `false` independently of
+`FONBET_ENABLED`, so the feed can run alone while the grader is soaked on
+staging ("Before enabling settlement" in the doc). Until it is on, Fonbet
+markets stay open after the final whistle for manual settlement.
 
 ## Run
 
@@ -70,4 +74,20 @@ internal/
 - **No single-tick closes.** A known match must be absent from
   `MissingCyclesToClose` (3) consecutive snapshots before it is closed /
   deactivated, and a snapshot with fewer than half the previously applied
-  matches is rejected as partial data.
+  matches is rejected as partial data. Both compare the PRE-cap match count
+  (`Snapshot.TotalMatches`); events cut by `FONBET_MAX_MATCHES` are listed
+  in `Snapshot.Capped` and never treated as vanished.
+- **`odds.raw` MAXLEN equals feed-ingester's (100k) and stays there.** The
+  cold-start republish paces itself on odds-publisher's group lag
+  (`bus.OddsBacklog` / `ingest.waitForOddsBacklog`, high-water 50k, bounded
+  wait) rather than asking for a bigger stream — Redis is 256 MB total.
+- **Only https hosts under the operator's configured domains** are adopted
+  from `urls.json` (`fonbet.normalizeHosts`); the rest are logged and
+  ignored. The document is third-party input that decides where prices
+  and results are fetched from.
+- **A settle message is remembered as emitted only after it is on the
+  stream.** A failed XADD is returned as an error and the next pass retries
+  every unsent market.
+- **`sports.slug` collisions do not wedge a sport.** `EnsureSport` retries
+  with an `-fb-<id>` suffix when `sports_slug_key` fires (the
+  `(provider, provider_urn)` ON CONFLICT does not cover it).

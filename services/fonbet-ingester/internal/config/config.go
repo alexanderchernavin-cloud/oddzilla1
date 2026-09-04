@@ -72,8 +72,18 @@ type FonbetConfig struct {
 
 	// SettleEnabled runs the results-based settlement worker (grades
 	// closed matches from Fonbet's results feed and hands them to
-	// services/settlement over the settlement.external stream).
+	// services/settlement over the settlement.external stream). Default
+	// FALSE, independently of FONBET_ENABLED: the worker moves real money
+	// through the same apply-once path as Oddin settlements, and the
+	// grading rules must be soaked against Fonbet's own results on a
+	// staging stack before an operator switches it on. With the feed on
+	// and this off, Fonbet markets stay open for manual settlement.
 	SettleEnabled bool
+	// OddsPublisherGroup is odds-publisher's consumer group on odds.raw
+	// (same env var, same default as odds-publisher). The ingester reads
+	// its lag to apply backpressure during a cold-start republish instead
+	// of relying on a larger stream cap.
+	OddsPublisherGroup string
 	// SettleInterval is how often closed matches are checked against the
 	// results feed.
 	SettleInterval time.Duration
@@ -99,21 +109,22 @@ func Load() (Config, error) {
 	}
 
 	cfg.Fonbet = FonbetConfig{
-		Enabled:           strings.EqualFold(getEnvDefault("FONBET_ENABLED", "false"), "true"),
-		URLsJSON:          getEnvDefault("FONBET_URLS_JSON", "https://fonbet.kz/urls.json"),
-		Hosts:             splitList(getEnvDefault("FONBET_LINE_HOSTS", "https://line01-w.kzac51-resources.kz,https://line05-w.kzac51-resources.kz,https://line21-w.kzac51-resources.kz,https://line31-w.kzac51-resources.kz,https://line51-w.kzac51-resources.kz")),
-		Lang:              getEnvDefault("FONBET_LANG", "ru"),
-		ScopeMarket:       atoiDefault("FONBET_SCOPE_MARKET", 1800),
-		PollInterval:      time.Duration(atoiDefault("FONBET_POLL_INTERVAL_MS", 5000)) * time.Millisecond,
-		HTTPTimeout:       time.Duration(atoiDefault("FONBET_HTTP_TIMEOUT_MS", 30000)) * time.Millisecond,
-		StaleSuspendAfter: time.Duration(atoiDefault("FONBET_STALE_SUSPEND_SECONDS", 60)) * time.Second,
-		BlockedSportIDs:   parseIntSet(getEnvDefault("FONBET_BLOCKED_SPORT_IDS", "29086")),
-		AllowedSportIDs:   parseIntSet(getEnvDefault("FONBET_ALLOWED_SPORT_IDS", "")),
-		IncludeSubEvents:  !strings.EqualFold(getEnvDefault("FONBET_INCLUDE_SUB_EVENTS", "true"), "false"),
-		MaxMatches:        atoiDefault("FONBET_MAX_MATCHES", 0),
-		SettleEnabled:     !strings.EqualFold(getEnvDefault("FONBET_SETTLE_ENABLED", "true"), "false"),
-		SettleInterval:    time.Duration(atoiDefault("FONBET_SETTLE_INTERVAL_MS", 120000)) * time.Millisecond,
-		CommonHosts:       splitList(getEnvDefault("FONBET_COMMON_HOSTS", "https://clientsapi05-w.kzac51-resources.kz,https://clientsapi21-w.kzac51-resources.kz,https://clientsapi51-w.kzac51-resources.kz,https://clientsapi54-w.kzac51-resources.kz")),
+		Enabled:            strings.EqualFold(getEnvDefault("FONBET_ENABLED", "false"), "true"),
+		URLsJSON:           getEnvDefault("FONBET_URLS_JSON", "https://fonbet.kz/urls.json"),
+		Hosts:              splitList(getEnvDefault("FONBET_LINE_HOSTS", "https://line01-w.kzac51-resources.kz,https://line05-w.kzac51-resources.kz,https://line21-w.kzac51-resources.kz,https://line31-w.kzac51-resources.kz,https://line51-w.kzac51-resources.kz")),
+		Lang:               getEnvDefault("FONBET_LANG", "ru"),
+		ScopeMarket:        atoiDefault("FONBET_SCOPE_MARKET", 1800),
+		PollInterval:       time.Duration(atoiDefault("FONBET_POLL_INTERVAL_MS", 5000)) * time.Millisecond,
+		HTTPTimeout:        time.Duration(atoiDefault("FONBET_HTTP_TIMEOUT_MS", 30000)) * time.Millisecond,
+		StaleSuspendAfter:  time.Duration(atoiDefault("FONBET_STALE_SUSPEND_SECONDS", 60)) * time.Second,
+		BlockedSportIDs:    parseIntSet(getEnvDefault("FONBET_BLOCKED_SPORT_IDS", "29086")),
+		AllowedSportIDs:    parseIntSet(getEnvDefault("FONBET_ALLOWED_SPORT_IDS", "")),
+		IncludeSubEvents:   !strings.EqualFold(getEnvDefault("FONBET_INCLUDE_SUB_EVENTS", "true"), "false"),
+		MaxMatches:         atoiDefault("FONBET_MAX_MATCHES", 0),
+		SettleEnabled:      strings.EqualFold(getEnvDefault("FONBET_SETTLE_ENABLED", "false"), "true"),
+		SettleInterval:     time.Duration(atoiDefault("FONBET_SETTLE_INTERVAL_MS", 120000)) * time.Millisecond,
+		OddsPublisherGroup: getEnvDefault("ODDS_PUBLISHER_GROUP", "odds-publisher"),
+		CommonHosts:        splitList(getEnvDefault("FONBET_COMMON_HOSTS", "https://clientsapi05-w.kzac51-resources.kz,https://clientsapi21-w.kzac51-resources.kz,https://clientsapi51-w.kzac51-resources.kz,https://clientsapi54-w.kzac51-resources.kz")),
 	}
 	if cfg.Fonbet.SettleInterval < 10*time.Second {
 		cfg.Fonbet.SettleInterval = 10 * time.Second

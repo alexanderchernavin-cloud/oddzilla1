@@ -362,6 +362,28 @@ the table carries **zero bloat and no high-water mark** — the disk cost is
 exactly the live window (~35 GB at current volume) plus the day being
 written.
 
+**Fonbet changes the volume.** The 35-day window was sized for Oddin's few
+hundred ticks/s. The Fonbet line (`services/fonbet-ingester`) adds ~200k
+priced outcomes and odds-publisher was batched to ~5000 ticks/s to keep up
+with its churn — every one of those ticks is an `odds_history` row. Before
+`FONBET_ENABLED=true` on prod, decide which lever you will pull if the
+daily partitions grow past what the window can hold on a 160 GB disk
+(disk-full has taken this box down four times):
+
+- `ODDS_RETENTION_DAYS` on the cron (root crontab, `oddzilla-odds-retention`)
+  — shorten the window; admin odds charts look back 30 days, nothing else
+  reads history.
+- `ODDS_HISTORY_SKIP_PMID_MIN=1000000` in `.env` + `make recreate odds-publisher`
+  — stop writing history for the Fonbet `provider_market_id` namespace
+  entirely (`published_odds` still updates; Oddin history unaffected).
+  Fonbet markets then have no admin odds-history chart.
+
+Check `SELECT relname, pg_size_pretty(pg_total_relation_size(oid)) FROM
+pg_class WHERE relname LIKE 'odds_history_p%' ORDER BY relname DESC LIMIT 3`
+after the first 24 h with the feed on; the newest partition's size times
+`ODDS_RETENTION_DAYS` must fit comfortably under the disk headroom shown on
+`/admin/monitoring`.
+
 The pre-2026-08-26 model was a nightly batched DELETE against a single
 catch-all DEFAULT partition: it plateaued the heap (~60 GB at the 45-day
 window) but never returned pages to the OS — the reason both one-time
@@ -683,6 +705,20 @@ ssh team@178.104.174.24 'sudo -n docker exec oddzilla-redis-1 redis-cli XINFO GR
 
 Outcomes that do not tick again stay NULL until their next update, or
 until bifrost-feed's five-minute resync re-emits every cached snapshot.
+
+The same failure on `settlement.external` (the Fonbet settlement stream)
+looks like Fonbet tickets staying `accepted` after the final whistle while
+settlement logs `NOGROUP No such key 'settlement.external' or consumer
+group 'settlement'`. The consumer heals itself the same way (recreates the
+group inline, from `0` so unapplied entries replay) and fonbet-ingester
+re-emits anything older than an hour from Postgres state, so no manual
+step is needed; if you are on an image without the branch, `docker compose
+restart settlement`.
+
+The prevention side: keep `odds.raw` at the shared 100k MAXLEN in BOTH
+producers and let fonbet-ingester pace its cold-start republish on the
+group's lag. Do not raise a stream cap to fit a burst — the caps are a
+Redis-memory budget (256 MB total), not a buffer.
 
 ### Settlement lag (tickets accepted > 2 h and still not settled after match end)
 

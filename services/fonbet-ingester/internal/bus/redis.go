@@ -17,11 +17,21 @@ import (
 
 const (
 	StreamOddsRaw = "odds.raw"
-	// MaxLenApprox trims the stream on our XADDs. feed-ingester trims to
-	// 100k; a full Fonbet line is ~200k outcomes and a cold start publishes
-	// all of them at once, so we keep enough headroom for odds-publisher
-	// (batched, thousands of ticks/s) to drain it before anything is cut.
-	MaxLenApprox = 400_000
+	// MaxLenApprox trims the stream on our XADDs. MUST equal
+	// feed-ingester's value — MAXLEN is applied by whichever producer's
+	// XADD runs, so the two would otherwise fight. A full Fonbet line is
+	// ~200k outcomes and a cold start publishes all of them; that burst is
+	// handled by backpressure on the consumer group's lag (OddsBacklog,
+	// used by ingest.flush), NOT by raising this cap: production Redis is
+	// maxmemory 256mb + allkeys-lru, and a stream that outgrows the budget
+	// evicts unrelated keys and destroys consumer groups (2026-09-03).
+	MaxLenApprox = 100_000
+	// SettlementMaxLenApprox bounds settlement.external. One settlement
+	// pass emits at most a few thousand entries and the consumer acks
+	// within milliseconds; 20k covers a long consumer outage (~6 MB) and
+	// the ingester re-emits anything older than an hour from Postgres
+	// state anyway (settle.Worker), so nothing is lost when this trims.
+	SettlementMaxLenApprox = 20_000
 )
 
 // OddsEvent is one outcome update on the stream.
@@ -39,10 +49,41 @@ type OddsEvent struct {
 
 type Bus struct {
 	rdb *redis.Client
+	// oddsGroup is odds-publisher's consumer group on odds.raw
+	// (ODDS_PUBLISHER_GROUP); OddsBacklog reads its lag for backpressure.
+	oddsGroup string
 }
 
-func New(rdb *redis.Client) *Bus {
-	return &Bus{rdb: rdb}
+func New(rdb *redis.Client, oddsGroup string) *Bus {
+	return &Bus{rdb: rdb, oddsGroup: oddsGroup}
+}
+
+// OddsBacklog returns how many odds.raw entries odds-publisher has not yet
+// finished with (undelivered lag + delivered-but-unacked pending) and ok
+// when the number is trustworthy. ok=false when the group does not exist
+// yet, XINFO fails, or Redis cannot compute the lag (it reports nil after
+// certain trims); callers must then publish without backpressure rather
+// than stall — the stream's MAXLEN is still the hard ceiling.
+func (b *Bus) OddsBacklog(ctx context.Context) (int64, bool) {
+	if b.oddsGroup == "" {
+		return 0, false
+	}
+	groups, err := b.rdb.XInfoGroups(ctx, StreamOddsRaw).Result()
+	if err != nil {
+		return 0, false
+	}
+	for _, g := range groups {
+		if g.Name != b.oddsGroup {
+			continue
+		}
+		// go-redis surfaces a nil lag as 0 with no way to tell it apart
+		// from a genuine 0; with EntriesRead also 0 nothing has ever been
+		// delivered and the lag is real, otherwise treat 0 lag + 0 pending
+		// as "drained" — the only wrong answer is a false positive, which
+		// stalls the producer, and that is bounded by the caller's wait cap.
+		return g.Lag + g.Pending, true
+	}
+	return 0, false
 }
 
 // PublishOddsBatch pipelines N XADDs in one round trip.
@@ -97,7 +138,7 @@ func (b *Bus) PublishSettlementBatch(ctx context.Context, msgs []SettlementMessa
 	for _, m := range msgs {
 		pipe.XAdd(ctx, &redis.XAddArgs{
 			Stream: StreamSettlement,
-			MaxLen: 200_000,
+			MaxLen: SettlementMaxLenApprox,
 			Approx: true,
 			Values: map[string]any{
 				"type":               m.Type,

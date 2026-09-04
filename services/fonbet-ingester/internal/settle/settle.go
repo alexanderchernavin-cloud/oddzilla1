@@ -10,6 +10,7 @@ package settle
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -148,10 +149,25 @@ func (ri *resultIndex) find(m store.PendingMatch) *resultMatch {
 			return rm
 		}
 	}
-	// Fallback: same competition + start time and both team names present.
+	// Fallback: same competition + start time, both team names present AND
+	// in home-then-away order. The exact match above has already failed
+	// when we get here, and the most likely reason is that the two feeds
+	// name or order the teams differently — so an order-blind substring
+	// test would happily bind "Rubin – Orenburg" to home=Orenburg and grade
+	// every 1X2 / handicap / team total on the match inverted. Requiring
+	// home before away rejects the mirrored row; a genuinely reordered
+	// fixture then stays pending for manual settlement, which is the
+	// cheaper mistake.
 	h, a := strings.ToLower(m.HomeTeam), strings.ToLower(m.AwayTeam)
+	if h == "" || a == "" {
+		return nil
+	}
 	for _, rm := range ri.matches[resultKey{m.SegmentID, m.StartTime}] {
-		if strings.Contains(rm.name, h) && strings.Contains(rm.name, a) {
+		hi := strings.Index(rm.name, h)
+		if hi < 0 {
+			continue
+		}
+		if ai := strings.Index(rm.name[hi+len(h):], a); ai >= 0 {
 			return rm
 		}
 	}
@@ -202,7 +218,10 @@ func (w *Worker) RunOnce(ctx context.Context) (Stats, error) {
 
 	now := time.Now()
 	nowMs := now.UnixMilli()
+	// msgs and marketIDs are parallel: marketIDs[i] is the market msgs[i]
+	// settles, so the emitted stamp can be written per published chunk.
 	var msgs []bus.SettlementMessage
+	var marketIDs []int64
 	for _, m := range pending {
 		rm := ri.find(m)
 		if rm == nil {
@@ -217,7 +236,7 @@ func (w *Worker) RunOnce(ctx context.Context) (Stats, error) {
 				}
 				msgs = append(msgs, bus.SettlementMessage{Type: "cancel", EventURN: m.URN, ProviderMarketID: mk.PMID,
 					Specifiers: specifiers.Canonical(mk.Specs), Ts: nowMs})
-				w.emitted[mk.ID] = now
+				marketIDs = append(marketIDs, mk.ID)
 				stats.MarketsCancelled++
 			}
 			continue
@@ -257,17 +276,36 @@ func (w *Worker) RunOnce(ctx context.Context) (Stats, error) {
 				stats.MarketsOpen++
 				continue
 			}
+			if len(outs) == 0 {
+				// A market row with no outcomes grades to nothing; the
+				// consumer drops an outcome-less settle, so sending it
+				// would only mark the market emitted and hide it from the
+				// log for an hour.
+				stats.Skipped["no outcomes"]++
+				stats.MarketsOpen++
+				continue
+			}
 			payload, _ := json.Marshal(outs)
 			msgs = append(msgs, bus.SettlementMessage{Type: "settle", EventURN: m.URN, ProviderMarketID: mk.PMID,
 				Specifiers: specifiers.Canonical(mk.Specs), Ts: nowMs, OutcomesJSON: string(payload)})
-			w.emitted[mk.ID] = now
+			marketIDs = append(marketIDs, mk.ID)
 			stats.MarketsSettled++
 		}
 	}
+	// Publish in chunks and stamp `emitted` only for the chunk that made it
+	// onto the stream. Stamping inside the grading loop (as the first cut
+	// did) meant one failed XADD hid every market of the pass — published
+	// or not — from the next hour of passes, so tickets sat open for an
+	// hour after a transient Redis error.
 	for i := 0; i < len(msgs); i += 500 {
 		end := min(i+500, len(msgs))
 		if err := w.bus.PublishSettlementBatch(ctx, msgs[i:end]); err != nil {
-			return stats, err
+			unsent := len(msgs) - i
+			stats.MarketsSettled -= min(unsent, stats.MarketsSettled)
+			return stats, fmt.Errorf("publish settlements (%d of %d not sent, will retry next pass): %w", unsent, len(msgs), err)
+		}
+		for _, id := range marketIDs[i:end] {
+			w.emitted[id] = now
 		}
 	}
 	// Forget emissions older than an hour so a lost message is retried.

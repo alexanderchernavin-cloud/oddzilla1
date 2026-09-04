@@ -314,3 +314,38 @@ func TestNegateLine(t *testing.T) {
 		t.Fatalf("negateLine")
 	}
 }
+
+// Regression: with MaxMatches set, len(snap.Matches) is pinned at the cap,
+// so the ingester's partial-snapshot guard must read the pre-cap total and
+// must not treat the cut-off events as vanished from the feed.
+func TestBuildMaxMatchesReportsTotalAndCapped(t *testing.T) {
+	resp, idx := loadFixtures(t)
+	full := Build(resp, idx, Options{IncludeSubEvents: true})
+	if full.TotalMatches != len(full.Matches) || full.Capped != nil {
+		t.Fatalf("uncapped: total=%d len=%d capped=%v", full.TotalMatches, len(full.Matches), full.Capped)
+	}
+	if len(full.Matches) < 2 {
+		t.Skip("fixture carries fewer than two matches")
+	}
+	capped := Build(resp, idx, Options{IncludeSubEvents: true, MaxMatches: 1})
+	if len(capped.Matches) != 1 {
+		t.Fatalf("cap not applied: %d", len(capped.Matches))
+	}
+	if capped.TotalMatches != len(full.Matches) {
+		t.Fatalf("TotalMatches = %d, want pre-cap %d", capped.TotalMatches, len(full.Matches))
+	}
+	if len(capped.Capped) != len(full.Matches)-1 {
+		t.Fatalf("Capped has %d ids, want %d", len(capped.Capped), len(full.Matches)-1)
+	}
+	for _, m := range full.Matches[1:] {
+		if _, ok := capped.Capped[m.EventID]; !ok {
+			t.Fatalf("event %d cut by the cap is not in Capped", m.EventID)
+		}
+	}
+	if _, ok := capped.Capped[capped.Matches[0].EventID]; ok {
+		t.Fatalf("kept match %d must not be in Capped", capped.Matches[0].EventID)
+	}
+	if capped.Skipped["max_matches"] != len(full.Matches)-1 {
+		t.Fatalf("skipped[max_matches] = %d", capped.Skipped["max_matches"])
+	}
+}

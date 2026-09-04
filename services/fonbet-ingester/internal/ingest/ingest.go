@@ -256,16 +256,24 @@ func (in *Ingester) Apply(ctx context.Context, snap *mapper.Snapshot, nowMs int6
 	// Compare against the last snapshot this process applied, not the
 	// bootstrapped database state — a narrowed FONBET_ALLOWED_SPORT_IDS or
 	// a long outage legitimately shrinks the line versus what pg holds.
-	if in.lastApplied >= shrinkGuardMinMatches && float64(len(snap.Matches)) < float64(in.lastApplied)*shrinkGuardRatio {
+	// Compared on the PRE-cap count: with FONBET_MAX_MATCHES set,
+	// len(snap.Matches) is pinned at the cap and could never trip the
+	// guard, which is the one rail against a truncated Fonbet response
+	// mass-closing the catalog.
+	total := snap.TotalMatches
+	if total < len(snap.Matches) {
+		total = len(snap.Matches) // a Snapshot built without the field
+	}
+	if in.lastApplied >= shrinkGuardMinMatches && float64(total) < float64(in.lastApplied)*shrinkGuardRatio {
 		in.shrinkRejects++
 		if in.shrinkRejects < shrinkGuardMaxRejects {
-			return stats, fmt.Errorf("%w (%d → %d, rejection %d/%d)", ErrSnapshotShrunk, in.lastApplied, len(snap.Matches), in.shrinkRejects, shrinkGuardMaxRejects)
+			return stats, fmt.Errorf("%w (%d → %d, rejection %d/%d)", ErrSnapshotShrunk, in.lastApplied, total, in.shrinkRejects, shrinkGuardMaxRejects)
 		}
-		in.log.Warn().Int("previous", in.lastApplied).Int("now", len(snap.Matches)).
+		in.log.Warn().Int("previous", in.lastApplied).Int("now", total).
 			Msg("smaller line persisted across consecutive snapshots; accepting it as the new baseline")
 	}
 	in.shrinkRejects = 0
-	in.lastApplied = len(snap.Matches)
+	in.lastApplied = total
 
 	out := &cycleOut{}
 	seen := make(map[int64]struct{}, len(snap.Matches))
@@ -291,6 +299,14 @@ func (in *Ingester) Apply(ctx context.Context, snap *mapper.Snapshot, nowMs int6
 	// Matches absent from the line for several cycles in a row.
 	for eventID, ms := range in.matches {
 		if _, ok := seen[eventID]; ok {
+			continue
+		}
+		if _, capped := snap.Capped[eventID]; capped {
+			// Cut by FONBET_MAX_MATCHES, not gone from the feed: leave its
+			// state alone (prices stay as last written) rather than
+			// deactivating a match Fonbet is still quoting because a
+			// prematch event went live and pushed it past the cap.
+			delete(in.missing, eventID)
 			continue
 		}
 		in.missing[eventID]++
@@ -519,6 +535,7 @@ func (in *Ingester) applyMatch(ctx context.Context, m *mapper.Match, nowMs int64
 func (in *Ingester) flush(ctx context.Context, out *cycleOut, nowMs int64, stats *Stats) {
 	for i := 0; i < len(out.oddsEvents); i += chunkStream {
 		end := min(i+chunkStream, len(out.oddsEvents))
+		in.waitForOddsBacklog(ctx)
 		if err := in.bus.PublishOddsBatch(ctx, out.oddsEvents[i:end]); err != nil {
 			// odds-publisher never saw these prices. Forget them in memory
 			// so the next cycle re-emits every one of them (the pg write is
@@ -551,6 +568,46 @@ func (in *Ingester) flush(ctx context.Context, out *cycleOut, nowMs int64, stats
 				delete(in.descrDone, strconv.Itoa(d.ProviderMarketID)+"|"+d.Variant) // retry next cycle
 			}
 			break
+		}
+	}
+}
+
+// Backpressure on odds.raw. A cold start (or a post-suspend republish) has
+// ~200k prices to say at once while odds-publisher drains a few thousand
+// per second; without pacing the burst either outgrows the stream's MAXLEN
+// (prices trimmed before they were ever published) or, if the cap were
+// raised to fit it, outgrows Redis's 256 MB and evicts unrelated keys
+// (2026-09-03). So before each chunk the producer checks how far behind
+// odds-publisher's consumer group is and waits while the backlog is above
+// the high-water mark. Bounded: a dead publisher must not stall ingestion
+// forever — after oddsBacklogMaxWait the chunk goes out regardless and
+// MAXLEN remains the ceiling.
+const (
+	oddsBacklogHighWater = 50_000
+	oddsBacklogPoll      = 200 * time.Millisecond
+	oddsBacklogMaxWait   = 60 * time.Second
+)
+
+func (in *Ingester) waitForOddsBacklog(ctx context.Context) {
+	deadline := time.Now().Add(oddsBacklogMaxWait)
+	warned := false
+	for {
+		backlog, ok := in.bus.OddsBacklog(ctx)
+		if !ok || backlog < oddsBacklogHighWater {
+			return
+		}
+		if time.Now().After(deadline) {
+			in.log.Warn().Int64("backlog", backlog).Msg("odds.raw backlog still high after max wait; publishing anyway")
+			return
+		}
+		if !warned {
+			in.log.Info().Int64("backlog", backlog).Msg("odds.raw backlog above high-water mark; pacing publish")
+			warned = true
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(oddsBacklogPoll):
 		}
 	}
 }

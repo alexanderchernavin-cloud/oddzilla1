@@ -45,6 +45,14 @@ type Snapshot struct {
 	PacketVersion int64
 	Matches       []*Match       // live first, then by start time
 	Skipped       map[string]int // reason → count, for the cycle log line
+	// TotalMatches is the mappable match count BEFORE Options.MaxMatches
+	// truncated Matches. The ingester's partial-snapshot guard compares
+	// this, not len(Matches): with a cap set len(Matches) is pinned at the
+	// cap and could never fall below half the previous cycle.
+	TotalMatches int
+	// Capped holds the event ids Options.MaxMatches cut off. They are still
+	// on Fonbet's line; the ingester must not treat them as vanished.
+	Capped map[int64]struct{}
 }
 
 type Match struct {
@@ -287,8 +295,13 @@ func Build(resp *fonbet.ListResponse, idx *fonbet.Index, opt Options) *Snapshot 
 		}
 		return a.EventID < b.EventID
 	})
+	snap.TotalMatches = len(snap.Matches)
 	if opt.MaxMatches > 0 && len(snap.Matches) > opt.MaxMatches {
 		snap.Skipped["max_matches"] += len(snap.Matches) - opt.MaxMatches
+		snap.Capped = make(map[int64]struct{}, len(snap.Matches)-opt.MaxMatches)
+		for _, m := range snap.Matches[opt.MaxMatches:] {
+			snap.Capped[m.EventID] = struct{}{}
+		}
 		snap.Matches = snap.Matches[:opt.MaxMatches]
 	}
 	return snap

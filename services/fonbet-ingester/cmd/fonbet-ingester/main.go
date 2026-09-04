@@ -83,7 +83,7 @@ func main() {
 	log.Info().Msg("connected to redis")
 
 	st := store.New(pool)
-	b := bus.New(rdb)
+	b := bus.New(rdb, cfg.Fonbet.OddsPublisherGroup)
 	health := startHealth(cfg.HealthPort, pool, rdb, cfg.Fonbet.Enabled, log)
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

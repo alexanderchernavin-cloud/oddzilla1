@@ -68,7 +68,7 @@ func main() {
 		logger.Warn().Err(err).Msg("initial margin cache load failed; continuing (will retry lazily)")
 	}
 
-	pub := publisher.New(st, rdb, cfg.MarginCacheTTL, logger)
+	pub := publisher.New(st, rdb, cfg.MarginCacheTTL, cfg.HistorySkipPMIDMin, logger)
 
 	cons := bus.NewConsumer(
 		rdb,

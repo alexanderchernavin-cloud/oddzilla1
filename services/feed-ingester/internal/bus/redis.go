@@ -22,13 +22,18 @@ const (
 	StreamOddsRaw = "odds.raw"
 
 	// MaxLenApprox trims the stream to roughly this many entries. Oddin
-	// can burst ~2000/s during live; the Fonbet ingester shares this
-	// stream and re-asserts up to ~200k prices after a cold start, and
-	// MAXLEN is applied by whichever XADD runs — so both producers use the
-	// same 400k headroom (see services/fonbet-ingester/internal/bus).
-	// Trimming is approximate (~ cheaper than exact) — good enough for a
-	// stream-as-bus pattern.
-	MaxLenApprox = 400_000
+	// can burst ~2000/s during live; 100k gives us ~minutes of retention
+	// even in the worst case. Trimming is approximate (~ cheaper than
+	// exact) — good enough for a stream-as-bus pattern.
+	//
+	// fonbet-ingester shares this stream and MUST use the same value
+	// (MAXLEN is applied by whichever XADD runs). Do not raise it to make
+	// room for a producer burst: production Redis is maxmemory 256mb +
+	// allkeys-lru, and a stream that outgrows the budget evicts unrelated
+	// keys and destroys consumer groups (2026-09-03). A producer with more
+	// to say than the consumer drains applies backpressure on the group's
+	// lag instead — see fonbet-ingester/internal/ingest flush.
+	MaxLenApprox = 100_000
 )
 
 // OddsEvent is what we publish per outcome update. Kept small — stream

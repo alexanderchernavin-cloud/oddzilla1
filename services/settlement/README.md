@@ -7,7 +7,12 @@ stream `settlement.external` (`internal/extstream`, env
 consumer builds an `oddinxml.Market` and calls
 `Settler.ApplyExternalSettlement` / `ApplyExternalCancel`, so apply-once,
 sticky statuses, ticket grading and payouts are shared. Today's producer is
-`services/fonbet-ingester` (see `docs/FONBET.md`).
+`services/fonbet-ingester` (see `docs/FONBET.md`). The consumer follows
+CLAUDE.md invariant 7: it recreates its group inline on `NOGROUP` (Redis is
+allkeys-lru; an evicted stream key takes the group with it) and creates the
+group from `0`, not `$`, so a recreate — or a boot that races the producer's
+first XADD — replays entries still on the stream instead of skipping them.
+Pending entries are reclaimed with a paginated XAUTOCLAIM cursor.
 
 AMQP consumer for Oddin settlement messages. Applies payouts to tickets.
 Go 1.23 / `amqp091-go` + `encoding/xml` + `pgx/v5`.

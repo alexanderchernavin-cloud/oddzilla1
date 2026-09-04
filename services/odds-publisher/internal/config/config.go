@@ -29,6 +29,13 @@ type Config struct {
 	// MarginCacheTTL is how stale the in-memory odds_config cache may be.
 	// Admin edits take effect within this window.
 	MarginCacheTTL time.Duration
+
+	// HistorySkipPMIDMin: ticks with provider_market_id >= this value skip
+	// the odds_history INSERT (published_odds is still written). 0 = keep
+	// history for every tick. An operator brake for a provider whose tick
+	// volume outruns the odds_history partition retention — the Fonbet
+	// namespace starts at 1_000_000 (ODDS_HISTORY_SKIP_PMID_MIN).
+	HistorySkipPMIDMin int
 }
 
 func Load() (Config, error) {
@@ -42,6 +49,8 @@ func Load() (Config, error) {
 		BlockPeriod:    2 * time.Second,
 		ClaimIdle:      60 * time.Second,
 		MarginCacheTTL: 5 * time.Second,
+
+		HistorySkipPMIDMin: atoiDefault("ODDS_HISTORY_SKIP_PMID_MIN", 0),
 	}
 	cfg.DatabaseURL = os.Getenv("DATABASE_URL")
 	if cfg.DatabaseURL == "" {

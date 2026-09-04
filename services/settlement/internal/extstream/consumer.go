@@ -20,6 +20,14 @@
 // re-delivers entries idle for longer than claimIdle so a transient DB
 // error is retried instead of dropped. Apply-once inside the settler makes
 // re-delivery safe.
+//
+// The consumer group must survive being destroyed (CLAUDE.md invariant 7):
+// production Redis is allkeys-lru and evicting the stream key takes the
+// group with it, so the read loop recreates the group on NOGROUP instead
+// of backing off forever, and creates it from "0" rather than "$" so a
+// recreate (or a boot that races the producer's first XADD) replays what
+// is still in the stream instead of silently skipping it. Settlement is
+// idempotent end to end, so replaying already-applied entries is a no-op.
 
 package extstream
 
@@ -30,6 +38,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -75,8 +84,8 @@ func New(rdb *redis.Client, stt *settler.Settler, stream string, log zerolog.Log
 
 // Run blocks until ctx is cancelled.
 func (c *Consumer) Run(ctx context.Context) error {
-	if err := c.rdb.XGroupCreateMkStream(ctx, c.stream, Group, "$").Err(); err != nil && !isBusyGroup(err) {
-		return fmt.Errorf("create group: %w", err)
+	if err := c.ensureGroup(ctx); err != nil {
+		return err
 	}
 	go c.claimLoop(ctx)
 	c.log.Info().Str("stream", c.stream).Str("group", Group).Msg("external settlement consumer running")
@@ -90,6 +99,20 @@ func (c *Consumer) Run(ctx context.Context) error {
 		if err != nil {
 			if errors.Is(err, redis.Nil) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				continue
+			}
+			// NOGROUP: the stream key (and with it the group) was evicted
+			// or never existed. Recreate inline — without this branch the
+			// loop would back off every two seconds forever and no Fonbet
+			// market would settle again until a manual restart (the shape
+			// of the 2026-09-03 odds.raw outage, on the payout path).
+			if isNoGroupErr(err) {
+				c.log.Warn().Err(err).Str("group", Group).Msg("consumer group is gone (redis eviction?); recreating")
+				if cerr := c.ensureGroup(ctx); cerr != nil {
+					c.log.Error().Err(cerr).Msg("recreating the consumer group failed")
+				} else {
+					c.log.Warn().Str("group", Group).Msg("consumer group recreated; resuming reads")
+					continue
+				}
 			}
 			c.log.Warn().Err(err).Msg("XReadGroup error; backing off")
 			select {
@@ -179,23 +202,54 @@ func (c *Consumer) claimLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			msgs, _, err := c.rdb.XAutoClaim(ctx, &redis.XAutoClaimArgs{
-				Stream: c.stream, Group: Group, Consumer: c.consumer, MinIdle: claimIdle, Start: "0-0", Count: batchSize,
+		}
+		// Walk the whole pending list with the returned cursor: a fixed
+		// "0-0" start would only ever look at the first batchSize entries,
+		// so a backlog of stuck messages larger than that drained at 64
+		// per tick.
+		cursor := "0-0"
+		for {
+			msgs, next, err := c.rdb.XAutoClaim(ctx, &redis.XAutoClaimArgs{
+				Stream: c.stream, Group: Group, Consumer: c.consumer, MinIdle: claimIdle, Start: cursor, Count: batchSize,
 			}).Result()
 			if err != nil {
 				if !errors.Is(err, redis.Nil) {
 					c.log.Debug().Err(err).Msg("XAutoClaim")
 				}
-				continue
+				break
 			}
-			if len(msgs) > 0 {
-				c.log.Info().Int("count", len(msgs)).Msg("reclaimed pending external settlements")
-				c.handleMessages(ctx, msgs)
+			if len(msgs) == 0 {
+				break
 			}
+			c.log.Info().Int("count", len(msgs)).Msg("reclaimed pending external settlements")
+			c.handleMessages(ctx, msgs)
+			if next == "0-0" || next == "" {
+				break
+			}
+			cursor = next
 		}
 	}
 }
 
+// ensureGroup creates the consumer group idempotently. MKSTREAM so boot
+// does not fail before the producer's first XADD; "0" (not "$") so entries
+// already on the stream are delivered — the producer may have published
+// before we booted, and after an eviction-driven recreate the stream may
+// carry settlements nobody has applied yet.
+func (c *Consumer) ensureGroup(ctx context.Context) error {
+	if err := c.rdb.XGroupCreateMkStream(ctx, c.stream, Group, "0").Err(); err != nil && !isBusyGroup(err) {
+		return fmt.Errorf("create group: %w", err)
+	}
+	return nil
+}
+
 func isBusyGroup(err error) bool {
-	return err != nil && len(err.Error()) >= 9 && err.Error()[:9] == "BUSYGROUP"
+	return err != nil && strings.HasPrefix(err.Error(), "BUSYGROUP")
+}
+
+// isNoGroupErr reports whether Redis answered NOGROUP (stream key or
+// consumer group missing). Matched by prefix: the message embeds the
+// stream and group names.
+func isNoGroupErr(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), "NOGROUP")
 }

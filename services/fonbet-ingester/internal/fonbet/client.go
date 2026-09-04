@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -53,6 +54,11 @@ type Client struct {
 	http *http.Client
 	log  zerolog.Logger
 
+	// trusted is the set of registrable domains (last two labels) of the
+	// operator-configured hosts. Hosts discovered from urls.json are only
+	// adopted when they sit under one of these — see normalizeHosts.
+	trusted map[string]struct{}
+
 	mu     sync.Mutex
 	hosts  []string
 	common []string
@@ -65,11 +71,12 @@ func New(cfg Config, log zerolog.Logger) *Client {
 		cfg.Timeout = 30 * time.Second
 	}
 	return &Client{
-		cfg:    cfg,
-		http:   &http.Client{Timeout: cfg.Timeout},
-		log:    log.With().Str("component", "fonbet-client").Logger(),
-		hosts:  append([]string(nil), cfg.Hosts...),
-		common: append([]string(nil), cfg.CommonHosts...),
+		cfg:     cfg,
+		http:    &http.Client{Timeout: cfg.Timeout},
+		log:     log.With().Str("component", "fonbet-client").Logger(),
+		trusted: trustedSuffixes(cfg.Hosts, cfg.CommonHosts, []string{cfg.URLsJSON}),
+		hosts:   append([]string(nil), cfg.Hosts...),
+		common:  append([]string(nil), cfg.CommonHosts...),
 	}
 }
 
@@ -87,19 +94,77 @@ func (c *Client) CommonHosts() []string {
 	return append([]string(nil), c.common...)
 }
 
-func normalizeHosts(in []string) []string {
-	out := make([]string, 0, len(in))
-	for _, h := range in {
-		h = strings.TrimSpace(h)
+// normalizeHosts turns the host strings from urls.json into base URLs we
+// are willing to fetch odds and results from. Accepted: `https://host` or
+// the scheme-relative `//host` form, on a registrable domain that one of
+// the OPERATOR-configured hosts (FONBET_LINE_HOSTS / FONBET_COMMON_HOSTS /
+// FONBET_URLS_JSON) also uses. Everything else is returned in `skipped`:
+// an http:// host (silent downgrade to plaintext for a feed we pay out
+// against), any other scheme, or a domain we were never told about. The
+// list is served by a third party over the network — a compromised or
+// spoofed urls.json must not be able to point this process at an arbitrary
+// origin, nor at internal addresses.
+func normalizeHosts(in []string, trusted map[string]struct{}) (ok, skipped []string) {
+	for _, raw := range in {
+		h := strings.TrimSpace(raw)
 		if h == "" {
 			continue
 		}
 		if strings.HasPrefix(h, "//") {
 			h = "https:" + h
 		}
-		out = append(out, strings.TrimRight(h, "/"))
+		u, err := url.Parse(h)
+		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
+			skipped = append(skipped, raw)
+			continue
+		}
+		if _, known := trusted[registrableDomain(u.Hostname())]; !known {
+			skipped = append(skipped, raw)
+			continue
+		}
+		ok = append(ok, "https://"+u.Host)
+	}
+	return ok, skipped
+}
+
+// trustedSuffixes collects the registrable domains of the configured URLs.
+func trustedSuffixes(lists ...[]string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, list := range lists {
+		for _, raw := range list {
+			raw = strings.TrimSpace(raw)
+			if raw == "" {
+				continue
+			}
+			if strings.HasPrefix(raw, "//") {
+				raw = "https:" + raw
+			}
+			u, err := url.Parse(raw)
+			if err != nil || u.Hostname() == "" {
+				continue
+			}
+			if d := registrableDomain(u.Hostname()); d != "" {
+				out[d] = struct{}{}
+			}
+		}
 	}
 	return out
+}
+
+// registrableDomain is the last two DNS labels, lower-cased
+// ("line05-w.kzac51-resources.kz" → "kzac51-resources.kz"). Good enough
+// for the ccTLD-free domains Fonbet uses; an IP literal or a bare label
+// yields "" and is therefore never trusted.
+func registrableDomain(host string) string {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if net.ParseIP(host) != nil {
+		return ""
+	}
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 {
+		return ""
+	}
+	return strings.Join(labels[len(labels)-2:], ".")
 }
 
 // DiscoverHosts refreshes the line host list from urls.json. Failure is
@@ -119,11 +184,17 @@ func (c *Client) DiscoverHosts(ctx context.Context) error {
 	if err := json.Unmarshal(body, &doc); err != nil {
 		return fmt.Errorf("urls.json decode: %w", err)
 	}
-	hosts := normalizeHosts(doc.Line)
-	if len(hosts) == 0 {
-		return errors.New("urls.json: empty line host list")
+	hosts, skippedLine := normalizeHosts(doc.Line, c.trusted)
+	common, skippedCommon := normalizeHosts(doc.Common, c.trusted)
+	if skipped := append(skippedLine, skippedCommon...); len(skipped) > 0 {
+		// Not an error: the static lists stay authoritative. Loud, because
+		// a legitimate Fonbet domain move shows up here first and needs
+		// FONBET_LINE_HOSTS / FONBET_COMMON_HOSTS updated by hand.
+		c.log.Warn().Strs("skipped", skipped).Msg("urls.json listed hosts outside the trusted domains or not https; ignored")
 	}
-	common := normalizeHosts(doc.Common)
+	if len(hosts) == 0 {
+		return errors.New("urls.json: no acceptable line hosts (see skipped)")
+	}
 	c.mu.Lock()
 	c.hosts = hosts
 	if len(common) > 0 {

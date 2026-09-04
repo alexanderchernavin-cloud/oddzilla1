@@ -108,56 +108,59 @@ func parseLabel(label string) labelTarget {
 }
 
 // scoreFor resolves the (home, away) numbers a market settles on.
-// ok=false when the results feed does not carry that score.
-func scoreFor(ss ScoreSet, t labelTarget, sport int, table *fonbet.TableMeta, twoWay bool) (home, away int, ok bool) {
+// ok=false when the results feed does not carry that score. otApplied
+// reports that the overtime row was already folded into the result, so a
+// tie-break must not add it a second time.
+func scoreFor(ss ScoreSet, t labelTarget, sport int, table *fonbet.TableMeta, twoWay bool) (home, away int, otApplied, ok bool) {
 	rule, known := sportRules[sport]
 	if !known {
-		return 0, 0, false
+		return 0, 0, false, false
 	}
 	base := ss.Main
 	if t.stat != "" {
 		s, found := ss.Stats[t.stat]
 		if !found {
-			return 0, 0, false
+			return 0, 0, false, false
 		}
 		base = s
 	}
 	if t.half > 0 {
 		i, j := (t.half-1)*2, (t.half-1)*2+1
 		if j >= len(base.Periods) {
-			return 0, 0, false
+			return 0, 0, false, false
 		}
-		return base.Periods[i][0] + base.Periods[j][0], base.Periods[i][1] + base.Periods[j][1], true
+		return base.Periods[i][0] + base.Periods[j][0], base.Periods[i][1] + base.Periods[j][1], false, true
 	}
 	if t.period > 0 {
 		if t.period > len(base.Periods) {
-			return 0, 0, false
+			return 0, 0, false, false
 		}
-		return base.Periods[t.period-1][0], base.Periods[t.period-1][1], true
+		return base.Periods[t.period-1][0], base.Periods[t.period-1][1], false, true
 	}
 	// Whole match.
 	if t.stat != "" {
-		return base.Home, base.Away, true
+		return base.Home, base.Away, false, true
 	}
 	name := strings.ToLower(table.Name)
 	if rule.setBased && !table.IsMatchWinner && !strings.Contains(name, "сет") && !strings.Contains(name, "set") {
 		// games / points line: sum of the set scores
 		if len(base.Periods) == 0 {
-			return 0, 0, false
+			return 0, 0, false, false
 		}
 		h, a := 0, 0
 		for _, p := range base.Periods {
 			h += p[0]
 			a += p[1]
 		}
-		return h, a, true
+		return h, a, false, true
 	}
 	h, a := base.Home, base.Away
 	if rule.otIncluded && twoWay && ss.OT != nil {
 		h += ss.OT.Home
 		a += ss.OT.Away
+		otApplied = true
 	}
-	return h, a, true
+	return h, a, otApplied, true
 }
 
 func tableUnsafe(table *fonbet.TableMeta) bool {
@@ -226,7 +229,7 @@ func Grade(mk Market, idx *fonbet.Index, label string, sport int, ss ScoreSet) (
 
 	switch {
 	case isDC:
-		h, a, ok := scoreFor(ss, target, sport, table, false)
+		h, a, _, ok := scoreFor(ss, target, sport, table, false)
 		if !ok {
 			return nil, false, "no score"
 		}
@@ -256,12 +259,12 @@ func Grade(mk Market, idx *fonbet.Index, label string, sport int, ss ScoreSet) (
 		return sortOutcomes(outs), true, ""
 
 	case table.IsMatchWinner:
-		h, a, ok := scoreFor(ss, target, sport, table, !hasDraw)
+		h, a, otApplied, ok := scoreFor(ss, target, sport, table, !hasDraw)
 		if !ok {
 			return nil, false, "no score"
 		}
 		if h == a && !hasDraw {
-			h, a, ok = breakTie(h, a, ss, target)
+			h, a, ok = breakTie(h, a, ss, target, otApplied)
 			if !ok {
 				return nil, false, "two-way market tied in main time"
 			}
@@ -296,7 +299,7 @@ func Grade(mk Market, idx *fonbet.Index, label string, sport int, ss ScoreSet) (
 		if err != nil {
 			return nil, false, "bad handicap line"
 		}
-		h, a, ok := scoreFor(ss, target, sport, table, true)
+		h, a, _, ok := scoreFor(ss, target, sport, table, true)
 		if !ok {
 			return nil, false, "no score"
 		}
@@ -308,7 +311,7 @@ func Grade(mk Market, idx *fonbet.Index, label string, sport int, ss ScoreSet) (
 		if err != nil {
 			return nil, false, "bad total line"
 		}
-		h, a, ok := scoreFor(ss, target, sport, table, true)
+		h, a, _, ok := scoreFor(ss, target, sport, table, true)
 		if !ok {
 			return nil, false, "no score"
 		}
@@ -326,12 +329,16 @@ func Grade(mk Market, idx *fonbet.Index, label string, sport int, ss ScoreSet) (
 }
 
 // breakTie resolves a two-way market tied after main time using the OT
-// and shootout rows when the feed has them.
-func breakTie(h, a int, ss ScoreSet, t labelTarget) (int, int, bool) {
+// and shootout rows when the feed has them. otApplied says scoreFor
+// already folded the OT row in (otIncluded sports): adding it again would
+// double-count it and could invent a winner for a game that was still
+// level after the recorded overtime — the shootout row is the only thing
+// left to consult then.
+func breakTie(h, a int, ss ScoreSet, t labelTarget, otApplied bool) (int, int, bool) {
 	if t.stat != "" || t.period > 0 || t.half > 0 {
 		return h, a, false
 	}
-	if ss.OT != nil {
+	if ss.OT != nil && !otApplied {
 		h += ss.OT.Home
 		a += ss.OT.Away
 	}

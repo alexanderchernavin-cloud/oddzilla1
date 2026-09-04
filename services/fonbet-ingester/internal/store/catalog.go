@@ -3,14 +3,42 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // EnsureSport upserts a sport keyed by (provider, provider_urn). The name
 // is only written on insert — operators may rename sports in /admin and
 // the feed must not clobber that.
 // Logos are stamped separately by ApplyLogos (Fonbet's line/logos catalogue).
+//
+// sports.slug carries its own global UNIQUE (sports_slug_key) that the
+// (provider, provider_urn) ON CONFLICT does not cover. A Fonbet root whose
+// pinned slug collides with an existing row — an operator-renamed sport, an
+// Oddin sport sharing the name — would otherwise fail every cycle for every
+// match under that sport. On that collision the slug is suffixed with the
+// Fonbet id and the insert retried; a second collision is a real error.
 func EnsureSport(ctx context.Context, db pgxRunner, providerURN, slug, name, kind string) (int, error) {
+	id, err := insertSport(ctx, db, providerURN, slug, name, kind)
+	if err == nil {
+		return id, nil
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "sports_slug_key" {
+		alt := slug + "-fb-" + strings.TrimPrefix(providerURN, URNSport)
+		id, rerr := insertSport(ctx, db, providerURN, alt, name, kind)
+		if rerr == nil {
+			return id, nil
+		}
+		return 0, fmt.Errorf("ensure sport %s: slug taken and fallback %q failed: %w", slug, alt, rerr)
+	}
+	return 0, fmt.Errorf("ensure sport %s: %w", slug, err)
+}
+
+func insertSport(ctx context.Context, db pgxRunner, providerURN, slug, name, kind string) (int, error) {
 	const q = `
 INSERT INTO sports (provider, provider_urn, slug, name, kind)
 VALUES ($1, $2, $3, $4, $5::sport_kind)
@@ -18,10 +46,8 @@ ON CONFLICT (provider, provider_urn) DO UPDATE
    SET active = TRUE
 RETURNING id`
 	var id int
-	if err := db.QueryRow(ctx, q, Provider, providerURN, slug, name, kind).Scan(&id); err != nil {
-		return 0, fmt.Errorf("ensure sport %s: %w", slug, err)
-	}
-	return id, nil
+	err := db.QueryRow(ctx, q, Provider, providerURN, slug, name, kind).Scan(&id)
+	return id, err
 }
 
 // EnsureCategory upserts a (sport_id, slug)-keyed category. Fonbet has no

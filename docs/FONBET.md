@@ -15,7 +15,7 @@ rotate, staleness suspends), but treat a sudden drop in
 
 | Step             | Request                                                            | Notes                                                                                                                                                                   |
 | ---------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Host discovery   | `GET https://fonbet.kz/urls.json`                                  | `line[]` = `//lineNN-w.kzac51-resources.kz` hosts (rotate; fallback list in `FONBET_LINE_HOSTS`). `common[]` are account hosts — unused.                                |
+| Host discovery   | `GET https://fonbet.kz/urls.json`                                  | `line[]` = `//lineNN-w.kzac51-resources.kz` hosts (rotate; fallback list in `FONBET_LINE_HOSTS`). `common[]` = clientsapi hosts (results feed; fallback `FONBET_COMMON_HOSTS`). **Trust filter:** a discovered host is adopted only if it is `https` (or scheme-relative `//`) AND its registrable domain matches one of the operator-configured hosts / `FONBET_URLS_JSON`; anything else is logged and ignored, the static lists stay in force. The document is third-party network input that sets where we fetch prices and results from, so it must not be able to downgrade us to plaintext or point us at an arbitrary or internal origin. A genuine Fonbet domain move shows up as the skipped-hosts warning and needs the env lists updated. |
 | Full line        | `GET <line>/events/list?lang=ru&version=0&scopeMarket=1800`        | ~1.2 MB JSON, gzip-encoded even without `Accept-Encoding`. **`scopeMarket` must be 1800** for the KZ hosts (the RU site's 1600 → `404 Not Found`). `lang` ∈ ru, en, kk. |
 | Factor catalogue | `GET <line>/line/factorsCatalog/tables?version=0&lang=ru&sysId=NN` | Market layouts + labels. `sysId` = the host number (`line05` → 5). Covers 100 % of the factors seen in the line.                                                        |
 | Live only        | `GET <line>/line/liveEvents?lang=ru`                               | Not used (the full snapshot already carries live).                                                                                                                      |
@@ -89,7 +89,25 @@ address Fonbet markets with these ids.
   first cycle on an empty database writes all of it; afterwards a cycle
   touches only what moved (typically a few hundred outcomes per 5 s).
   Scope it with `FONBET_ALLOWED_SPORT_IDS` / `FONBET_MAX_MATCHES` on small
-  boxes.
+  boxes. With a cap set, the shrink guard still compares the PRE-cap count
+  (`Snapshot.TotalMatches`) and events cut by the cap are never treated as
+  vanished (`Snapshot.Capped`) — a prematch event going live and pushing
+  another past the cap must not deactivate the other.
+- **Memory.** The service holds the whole line in RAM as the previous
+  snapshot AND decodes + maps a fresh full snapshot every 5 s, so its
+  working set is a multiple of the other Go workers'. Compose gives it
+  `mem_limit: 768m` / `cpus: 1.0` / `GOMEMLIMIT=640MiB` (the anchor's 320m
+  was only ever run on a workstation with no cgroup). An OOM-kill is
+  SIGKILL — the SIGTERM suspend does not run and frozen prices stay
+  bettable until the replacement finishes its first cycle — so check
+  `docker stats` after enabling and tune the two values together.
+- **`odds_history`.** Every published tick is an `odds_history` INSERT.
+  The partition retention (`ODDS_RETENTION_DAYS`, default 35) was sized
+  for Oddin's few hundred ticks/s; watch partition sizes for the first
+  24 h after enabling and either shorten the window or set
+  `ODDS_HISTORY_SKIP_PMID_MIN=1000000` on odds-publisher to stop writing
+  history for the Fonbet namespace. See docs/OPERATIONS.md "odds_history
+  retention".
 - **Boot.** Previous state is loaded from Postgres so restarts do not
   republish unchanged prices onto `odds.raw` (which is trimmed at ~100k
   entries).
@@ -98,8 +116,17 @@ address Fonbet markets with these ids.
   `market_not_active`); the next good snapshot re-activates whatever is
   still quoted with status flips only, so a restart never re-emits the
   whole line onto `odds.raw`. SIGTERM does the same so a stopped container
-  never leaves stale prices bettable. Both ingesters trim `odds.raw` to
-  the same 400k MAXLEN — Redis applies whichever XADD runs.
+  never leaves stale prices bettable.
+- **`odds.raw` cap + backpressure.** Both ingesters trim `odds.raw` to the
+  SAME 100k MAXLEN (Redis applies whichever XADD runs, so the values must
+  agree). The cold-start republish (~200k prices) is paced, not buffered:
+  before each 1000-entry chunk the ingester reads odds-publisher's consumer
+  group lag (`XINFO GROUPS`, group `ODDS_PUBLISHER_GROUP`) and waits while
+  it is above 50k, for at most 60 s per flush. Do NOT raise the cap to make
+  the burst fit — production Redis is `maxmemory 256mb` + `allkeys-lru`,
+  and the first cut's 400k was half of that on its own; a stream that
+  outgrows the budget evicts unrelated keys and destroys consumer groups
+  (the 2026-09-03 incident). `settlement.external` is capped at 20k.
 - **Esports.** Root 29086 is blocked by default — Oddin already covers
   it and two providers for one match would double-list it.
 - **Geo.** The KZ hosts answered from the Hetzner box's region in testing;
@@ -117,16 +144,42 @@ frames, all-terminal match close).
 
 | Step                               | Where                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Results source                     | `GET <common>/results/results.json.php?locale=ru&lineDate=YYYY-MM-DD` on the `common` (clientsapi) hosts. `events[]` carry `name` ("A – B"), `score` ("2:2 (1-0 1-1 0-1 1-0)" — headline is the **main-time** score, periods in brackets), `startTime`, `status` (3 finished, 4 cancelled); `sections[]` map `fonbetCompetitionId` (= our segment / tournament id) to result rows. Statistic rows ("угловые", "желтые карты", "эйсы", "дополнительное время", "серия пенальти") follow their match with the same `startTime`. Result ids are document-local, so matching is by (competition, startTime, normalised "home – away").                                                                                                                                                  |
-| Worker                             | `internal/settle` in fonbet-ingester — every `FONBET_SETTLE_INTERVAL_MS`: `store.LoadPendingSettlement` (closed `fb:` matches with non-terminal markets, last 7 days) → results for the involved line days → `Grade` per market → `XADD settlement.external`. Cancelled results (`status 4`) void every market of the match.                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Results source                     | `GET <common>/results/results.json.php?locale=ru&lineDate=YYYY-MM-DD` on the `common` (clientsapi) hosts. `events[]` carry `name` ("A – B"), `score` ("2:2 (1-0 1-1 0-1 1-0)" — headline is the **main-time** score, periods in brackets), `startTime`, `status` (3 finished, 4 cancelled); `sections[]` map `fonbetCompetitionId` (= our segment / tournament id) to result rows. Statistic rows ("угловые", "желтые карты", "эйсы", "дополнительное время", "серия пенальти") follow their match with the same `startTime`. Result ids are document-local, so matching is by (competition, startTime, normalised "home – away"). Exact name first; the fallback accepts a row that contains both names **home before away** (sponsor / city decoration) and rejects the mirrored row — an order-blind substring match bound "Рубин – Оренбург" to home=Оренбург and inverted every grade on the match. A fixture the two feeds order differently therefore stays pending for manual settlement.                                                                                                                                                  |
+| Worker                             | `internal/settle` in fonbet-ingester — every `FONBET_SETTLE_INTERVAL_MS`: `store.LoadPendingSettlement` (closed `fb:` matches with non-terminal markets, last 7 days) → results for the involved line days → `Grade` per market → `XADD settlement.external`. Cancelled results (`status 4`) void every market of the match. **Gated by `FONBET_SETTLE_ENABLED`, default `false` — separate from `FONBET_ENABLED`** (see "Before enabling settlement"). A market is remembered as emitted only after its message is confirmed on the stream (per 500-message chunk); a failed XADD returns the error and the next pass retries everything unsent, instead of hiding the whole pass for an hour.                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | Rules (`internal/settle/rules.go`) | match winner 1/2/3 · double chance · handicap `h1/h2` · total `over/under` (whole, half and quarter lines, team totals via `side`) · the same on halves / periods / sets and on statistic rows. Sports: football, futsal, handball, hockey, floorball, water polo, rugby (headline = main time), basketball / 3x3 / american football / baseball (two-way markets add the "дополнительное время" row), tennis / table tennis / volleyball / badminton / beach volleyball (winner by sets; handicaps and totals on games / points unless the table says "сет"). Tables whose name mentions ОТ / овертайм / буллит / пенальти / чет / точный and every other sport or market shape are **left open** for manual settlement and counted in the `settlement pass` log line (`skipped`). |
-| Consumer                           | `services/settlement/internal/extstream` — XREADGROUP on `settlement.external` (group `settlement`), builds an `oddinxml.Market` and calls `Settler.ApplyExternalSettlement` / `ApplyExternalCancel`. Failures stay pending and are re-claimed after 60 s. `SETTLEMENT_EXTERNAL_STREAM` (default `settlement.external`, empty disables).                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Consumer                           | `services/settlement/internal/extstream` — XREADGROUP on `settlement.external` (group `settlement`), builds an `oddinxml.Market` and calls `Settler.ApplyExternalSettlement` / `ApplyExternalCancel`. Failures stay pending and are re-claimed after 60 s (cursor-paginated, so a backlog larger than one batch drains in one tick). The group is created from `0`, not `$`, and is **recreated inline on `NOGROUP`** (CLAUDE.md invariant 7): production Redis is allkeys-lru and can evict the stream key, which destroys the group — without the branch no Fonbet market would settle again until a manual restart, and a restart creating the group at `$` would skip every message published in the gap. Stream capped at 20k entries (~6 MB). `SETTLEMENT_EXTERNAL_STREAM` (default `settlement.external`, empty disables).                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | Message                            | `type` settle\|cancel, `event_urn`, `provider_market_id`, `specifiers` (canonical, sorted), `ts` ms, `outcomes` JSON `[{id,result,void_factor}]` — result `1`/`0`, void_factor `1` void, `0.5` half. Specifiers and outcome order feed the apply-once payload hash, so a resend of the same grading is a no-op.                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 Two-way markets tied after main time (hockey without an OT row, basketball
-without the OT row) stay open rather than guess. A market the rules skip
-can be settled by the operator; the settlement service's reconcile sweeper
-then pays the tickets.
+without the OT row) stay open rather than guess. For sports whose two-way
+markets include overtime (basketball, american football, baseball) the OT
+row is folded into the score exactly once — `scoreFor` reports it applied
+and `breakTie` then consults only the shootout row — so a game still level
+after the recorded overtime stays open instead of gaining an invented
+winner. A market the rules skip can be settled by the operator; the
+settlement service's reconcile sweeper then pays the tickets.
+
+### Before enabling settlement
+
+`FONBET_SETTLE_ENABLED` defaults to `false` and is gated separately from
+`FONBET_ENABLED` on purpose: the grader moves real money through the same
+apply-once path as Oddin settlements, and its rules have only been checked
+by hand against a handful of matches. Order of operations on prod:
+
+1. `FONBET_ENABLED=true`, `FONBET_SETTLE_ENABLED=false` — the line is
+   live, Fonbet markets stay open after the final whistle, tickets sit
+   `accepted`. Watch `fonbet-ingester` `/healthz` (staleness, match count),
+   `docker stats` for the 768m limit, and `odds_history` partition sizes.
+2. On a staging stack with the same build, run `FONBET_SETTLE_ENABLED=true`
+   for at least a week and compare every automatic settlement against
+   Fonbet's own results page for the same matches — specifically the
+   home/away orientation of 1X2 / handicap / team totals, OT handling on
+   basketball, and the set/games split on tennis. The `settlement pass` log
+   line's `skipped` map shows what the rules refused; each reason should
+   be one you expect.
+3. Only then flip `FONBET_SETTLE_ENABLED=true` on prod. Tickets that
+   accumulated during step 1 settle on the first pass (the worker reads
+   pending markets from Postgres, 7-day lookback).
 
 ## Historical note
 
