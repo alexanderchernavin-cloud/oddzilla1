@@ -937,3 +937,38 @@ Independent of phase numbering — these must all be true:
    encrypted; the off-host rsync target is still manual.)
 6. Runbook for feed outage, settlement lag, wallet-watcher chain reorg,
    ws-gateway storm.
+
+## Fonbet KZ sports feed (started 2026-09-03, off by default)
+
+Goal: add traditional sports (football, tennis, hockey, basketball, …)
+next to Oddin's esports by scraping the public Fonbet KZ line.
+
+**Delivered:**
+- `services/fonbet-ingester` — Go poller: host discovery via `urls.json`,
+  factor catalogue → market / outcome descriptions (ru + en), snapshot
+  mapper with unit tests on real fixtures, delta ingest into the existing
+  tables + `odds.raw`, staleness watchdog, SIGTERM suspend, `/healthz`.
+- Compose / dev compose / Makefile / CI wiring; `FONBET_*` env block.
+- `loadMatchWinnerOdds` accepts Fonbet match-winner rows so list cards
+  show 1 / X / 2 for Fonbet matches.
+
+- Settlement: results feed (`results.json.php`) → graded main markets →
+  `settlement.external` stream → `services/settlement` (`internal/extstream`,
+  `Settler.ApplyExternalSettlement/Cancel`). Conservative sport rules;
+  skipped markets are logged for manual settlement.
+- odds-publisher batched (one UNNEST UPDATE + one history INSERT per
+  batch) — needed to keep up with the Fonbet churn.
+- Fonbet CDN logos for teams / tournaments / sports; bundled icons for the
+  nine sports without a Fonbet glyph; sub-event tabs on the match page.
+- `/sports` storefront tab (sidebar entry, per-sport chips, live +
+  upcoming) backed by `kind=traditional` on `/catalog/matches`.
+
+**Acceptance (still open):**
+- Settlement soak on a staging stack: compare a week of automatic
+  settlements against Fonbet's own results before enabling on prod.
+- Manual settlement UI for the markets the rules leave open.
+- Storefront polish: sport icons for the new slugs
+  (`apps/web/public/sports/<slug>.svg`), traditional-sport live scoreboard
+  (Fonbet payload carries `home` / `away` / `periods` / `scoreboard.time`).
+- Load check on the CPX31 box with the full line enabled (or scope it via
+  `FONBET_ALLOWED_SPORT_IDS` / `FONBET_MAX_MATCHES`).

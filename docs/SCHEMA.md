@@ -348,7 +348,15 @@ bifrost-feed waits for `flushed_at >= switched_at` before re-emitting) and
 (audit-logged), read every 2 s by feed-ingester and bifrost-feed. In
 Postgres, not Redis, because production Redis is an `allkeys-lru` cache
 that evicted the first cut's keys on day one and silently undid a forced
-Backup.
+Backup. Migration 0099 adds the **Fonbet feed on/off switch** to the same
+row: `fonbet_enabled BOOLEAN NULL` (NULL = follow the `FONBET_ENABLED` env
+default; TRUE / FALSE = the operator's explicit position, which wins over
+env and survives restarts and deploys), `fonbet_switched_at` /
+`fonbet_switched_by`, and fonbet-ingester's acknowledgement
+`fonbet_applied_enabled` / `fonbet_applied_at`. Written by
+`PUT /admin/feed/fonbet` (audit-logged), read every 2 s by fonbet-ingester,
+which suspends the whole Fonbet catalog and stops polling on FALSE and
+boots the feed in place on TRUE.
 
 **`tournaments`** — child of category. `provider_urn` unique globally.
 `risk_tier_locked` (migration 0094) is TRUE when an operator assigned

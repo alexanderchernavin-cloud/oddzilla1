@@ -174,6 +174,17 @@ export function Sidebar({
         label={tShell("upcoming")}
       />
       {/*
+        Traditional sports (the Fonbet feed) get their own tab so the
+        esports-first lobby / Live / Pre-match pages stay focused and
+        football / tennis / hockey have one obvious entry point.
+      */}
+      <Item
+        href="/sports"
+        icon={<I.Trophy size={15} />}
+        active={isActive("/sports")}
+        label={tShell("sportsNav")}
+      />
+      {/*
         Community feed sits in the primary navigation cluster — same
         weight as Lobby / Live / Upcoming so the entry doesn't get
         buried at the bottom of the long sport list. Signed-out users

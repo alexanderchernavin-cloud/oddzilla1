@@ -26,9 +26,9 @@ package oddinxml
 import "encoding/xml"
 
 type MarketDescriptions struct {
-	XMLName      xml.Name              `xml:"market_descriptions"`
-	ResponseCode string                `xml:"response_code,attr"`
-	Markets      []MarketDescription   `xml:"market"`
+	XMLName      xml.Name            `xml:"market_descriptions"`
+	ResponseCode string              `xml:"response_code,attr"`
+	Markets      []MarketDescription `xml:"market"`
 }
 
 type MarketDescription struct {

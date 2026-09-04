@@ -41,6 +41,7 @@ jobs:
       matrix:
         service:
           - feed-ingester
+          - fonbet-ingester
           - odds-publisher
           - settlement
           - bet-delay

@@ -31,6 +31,7 @@ import (
 	amqpkit "github.com/oddzilla/settlement/internal/amqp"
 	"github.com/oddzilla/settlement/internal/backupstream"
 	"github.com/oddzilla/settlement/internal/config"
+	"github.com/oddzilla/settlement/internal/extstream"
 	"github.com/oddzilla/settlement/internal/oddinrest"
 	"github.com/oddzilla/settlement/internal/settler"
 	"github.com/oddzilla/settlement/internal/store"
@@ -96,6 +97,18 @@ func main() {
 		go backupstream.Run(ctx, rdb, "settlement", consumer, stt.Handle, logger)
 	} else {
 		logger.Info().Msg("backup stream consumer disabled (BACKUP_STREAM_ENABLED=false)")
+	}
+
+	// Provider-neutral settlements (Fonbet results graded by
+	// fonbet-ingester) arrive over a Redis stream and join the same apply
+	// path. Independent of Oddin creds — the Fonbet vertical settles even
+	// when the esports feed is idle.
+	if cfg.ExternalStream != "" {
+		go func() {
+			if err := extstream.New(rdb, stt, cfg.ExternalStream, logger).Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Error().Err(err).Msg("external settlement consumer exited")
+			}
+		}()
 	}
 
 	// Stranded-ticket reconciler. Runs off DB state only (no Oddin), so it

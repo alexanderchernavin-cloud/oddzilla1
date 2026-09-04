@@ -55,6 +55,14 @@ services:
       - ./services/feed-ingester:/app
       - go-mod-cache:/go/pkg/mod
 
+  fonbet-ingester:
+    command: ["go", "run", "./cmd/fonbet-ingester"]
+    ports:
+      - "127.0.0.1:${FONBET_INGESTER_HEALTH_PORT:-8087}:${FONBET_INGESTER_HEALTH_PORT:-8087}"
+    volumes:
+      - ./services/fonbet-ingester:/app
+      - go-mod-cache:/go/pkg/mod
+
   odds-publisher:
     command: ["go", "run", "./cmd/odds-publisher"]
     ports:

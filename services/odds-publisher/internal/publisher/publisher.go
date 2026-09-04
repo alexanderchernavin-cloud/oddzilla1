@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -54,7 +55,7 @@ type OutboundPayload struct {
 	TournamentID     int       `json:"tournamentId"`
 	Specifiers       string    `json:"specifiers"` // canonical k=v|k=v
 	OutcomeID        string    `json:"outcomeId"`
-	PublishedOdds    string    `json:"publishedOdds"` // decimal string
+	PublishedOdds    string    `json:"publishedOdds"`         // decimal string
 	Probability      string    `json:"probability,omitempty"` // decimal in [0,1]; "" omitted
 	Active           bool      `json:"active"`
 	Ts               time.Time `json:"ts"`
@@ -66,94 +67,176 @@ type Publisher struct {
 	cacheTTL time.Duration
 	log      zerolog.Logger
 
+	// historySkipPMIDMin > 0 drops the odds_history INSERT for ticks whose
+	// provider_market_id is at or above it (published_odds still updates).
+	// Operator brake on odds_history growth for a high-churn provider;
+	// see config.HistorySkipPMIDMin.
+	historySkipPMIDMin int
+
 	// Counters for healthz/metrics. Atomic so the /healthz handler
-	// can read them from a different goroutine than processOne
+	// can read them from a different goroutine than Handle
 	// without `go test -race` firing.
 	processed atomic.Int64
 	errors    atomic.Int64
 }
 
-func New(st *store.Store, rdb *redis.Client, cacheTTL time.Duration, log zerolog.Logger) *Publisher {
+func New(st *store.Store, rdb *redis.Client, cacheTTL time.Duration, historySkipPMIDMin int, log zerolog.Logger) *Publisher {
+	if historySkipPMIDMin > 0 {
+		log.Warn().Int("provider_market_id_min", historySkipPMIDMin).
+			Msg("odds_history disabled for ticks at or above this provider_market_id (ODDS_HISTORY_SKIP_PMID_MIN)")
+	}
 	return &Publisher{
-		store:    st,
-		rdb:      rdb,
-		cacheTTL: cacheTTL,
-		log:      log.With().Str("component", "publisher").Logger(),
+		store:              st,
+		rdb:                rdb,
+		cacheTTL:           cacheTTL,
+		historySkipPMIDMin: historySkipPMIDMin,
+		log:                log.With().Str("component", "publisher").Logger(),
 	}
 }
 
-// Handle implements bus.Handler. Processes a batch in parallel-safe
-// sequential order: for each event, look up the market, fetch margin,
-// compute published odds, persist, then PUBLISH.
+// Handle implements bus.Handler. Resolves market metadata + margin for
+// every event in the batch, then persists the whole batch with one UPDATE
+// and one odds_history INSERT before fanning out one PUBLISH per event.
+//
+// Batched on purpose: the previous one-event-at-a-time loop cost two
+// Postgres round-trips per tick and topped out at a few hundred ticks per
+// second — enough for Oddin's esports volume, not for a second provider
+// (Fonbet, ~200k priced outcomes) sharing the stream. Semantics are
+// unchanged: same margin math, same DISTINCT guards, same payload.
 func (p *Publisher) Handle(ctx context.Context, events []bus.Event) error {
 	if len(events) == 0 {
 		return nil
 	}
 
+	type prepared struct {
+		row     store.PublishedRow
+		payload OutboundPayload
+	}
+	// Resolve every distinct market of the batch in one round-trip (cache
+	// hits are served from the LRU, misses are fetched together).
+	ids := make([]int64, 0, len(events))
+	seen := make(map[int64]struct{}, len(events))
 	for _, ev := range events {
-		if err := p.processOne(ctx, ev); err != nil {
-			p.log.Warn().Err(err).Int64("market", ev.MarketID).Str("outcome", ev.OutcomeID).Msg("process failed")
-			p.errors.Add(1)
-			// Don't short-circuit — other events in the batch should
-			// still process. The bus consumer XACKs the whole batch
-			// regardless, so a per-event failure means we drop one
-			// odds tick; downstream catches up on the next tick.
-		} else {
-			p.processed.Add(1)
+		if _, ok := seen[ev.MarketID]; !ok {
+			seen[ev.MarketID] = struct{}{}
+			ids = append(ids, ev.MarketID)
 		}
 	}
-	return nil
-}
-
-func (p *Publisher) processOne(ctx context.Context, ev bus.Event) error {
-	info, err := p.store.ResolveMarket(ctx, ev.MarketID)
+	infos, err := p.store.ResolveMarkets(ctx, ids)
 	if err != nil {
-		return fmt.Errorf("resolve: %w", err)
-	}
-	marginBp, err := p.store.CurrentMargin(ctx, info, p.cacheTTL)
-	if err != nil {
-		return fmt.Errorf("margin: %w", err)
+		p.errors.Add(int64(len(events)))
+		return fmt.Errorf("resolve markets: %w", err)
 	}
 
-	published, err := applyMargin(ev.RawOdds, marginBp)
-	if err != nil {
-		return fmt.Errorf("apply margin: %w", err)
+	items := make([]prepared, 0, len(events))
+	for _, ev := range events {
+		info, ok := infos[ev.MarketID]
+		if !ok {
+			p.fail(ev, fmt.Errorf("market %d not found (race with ingester?)", ev.MarketID))
+			continue
+		}
+		marginBp, err := p.store.CurrentMargin(ctx, info, p.cacheTTL)
+		if err != nil {
+			p.fail(ev, fmt.Errorf("margin: %w", err))
+			continue
+		}
+		published, err := applyMargin(ev.RawOdds, marginBp)
+		if err != nil {
+			p.fail(ev, fmt.Errorf("apply margin: %w", err))
+			continue
+		}
+		items = append(items, prepared{
+			row: store.PublishedRow{
+				MarketID: info.MarketID, OutcomeID: ev.OutcomeID, RawOdds: ev.RawOdds,
+				PublishedOdds: published, Probability: ev.Probability, SourceTs: ev.OddinTs,
+			},
+			payload: OutboundPayload{
+				Type:             "odds",
+				MatchID:          info.MatchID,
+				MarketID:         info.MarketID,
+				ProviderMarketID: info.ProviderMarketID,
+				SportID:          info.SportID,
+				TournamentID:     info.TournamentID,
+				Specifiers:       ev.SpecifiersCanonical,
+				OutcomeID:        ev.OutcomeID,
+				PublishedOdds:    published,
+				Probability:      ev.Probability,
+				Active:           ev.Active,
+				Ts:               time.UnixMilli(ev.OddinTs),
+			},
+		})
+	}
+	if len(items) == 0 {
+		return nil
 	}
 
-	// Persist first so reconnecting WS clients see the truth.
-	if err := p.store.UpdateOutcomePublishedOdds(ctx, info.MarketID, ev.OutcomeID, published, ev.Probability, ev.OddinTs); err != nil {
-		return err
+	// One row per (market, outcome) for the UPDATE — the stream is ordered,
+	// so the last tick in the batch is the current price. History keeps
+	// every tick.
+	type outcomeKey struct {
+		marketID  int64
+		outcomeID string
 	}
-	if err := p.store.AppendOddsHistoryPublished(ctx, info.MarketID, ev.OutcomeID, ev.RawOdds, published, ev.Probability, time.UnixMilli(ev.OddinTs)); err != nil {
+	latest := make(map[outcomeKey]int, len(items))
+	for i, it := range items {
+		latest[outcomeKey{it.row.MarketID, it.row.OutcomeID}] = i
+	}
+	rows := make([]store.PublishedRow, 0, len(latest))
+	history := make([]store.PublishedRow, 0, len(items))
+	for i, it := range items {
+		if latest[outcomeKey{it.row.MarketID, it.row.OutcomeID}] == i {
+			rows = append(rows, it.row)
+		}
+		if p.historySkipPMIDMin > 0 && it.payload.ProviderMarketID >= p.historySkipPMIDMin {
+			continue // operator brake: no odds_history for this provider range
+		}
+		history = append(history, it.row)
+	}
+
+	// Persist first so reconnecting WS clients see the truth. A failed
+	// batch write falls back to per-row writes so one row Postgres rejects
+	// cannot poison the whole batch (the pre-batch loop isolated failures
+	// per event; keep that contract). Rows that still fail are dropped
+	// like a failed single tick used to be — downstream catches up on the
+	// next price move.
+	if err := p.store.UpdateOutcomesPublishedBulk(ctx, rows); err != nil {
+		p.log.Warn().Err(err).Int("rows", len(rows)).Msg("batch publish write failed; retrying per row")
+		for _, r := range rows {
+			if rerr := p.store.UpdateOutcomesPublishedBulk(ctx, []store.PublishedRow{r}); rerr != nil {
+				p.errors.Add(1)
+				p.log.Warn().Err(rerr).Int64("market", r.MarketID).Str("outcome", r.OutcomeID).Msg("publish write failed; tick dropped")
+			}
+		}
+	}
+	if err := p.store.AppendOddsHistoryPublishedBulk(ctx, history); err != nil {
 		// Not fatal — history is for audit, not correctness.
 		p.log.Debug().Err(err).Msg("history insert failed")
 	}
 
-	// Fan out.
-	payload := OutboundPayload{
-		Type:             "odds",
-		MatchID:          info.MatchID,
-		MarketID:         info.MarketID,
-		ProviderMarketID: info.ProviderMarketID,
-		SportID:          info.SportID,
-		TournamentID:     info.TournamentID,
-		Specifiers:       ev.SpecifiersCanonical,
-		OutcomeID:        ev.OutcomeID,
-		PublishedOdds:    published,
-		Probability:      ev.Probability,
-		Active:           ev.Active,
-		Ts:               time.UnixMilli(ev.OddinTs),
+	// Fan out. Pipelined; pub/sub drops are tolerable — the DB write is
+	// the source of truth.
+	pipe := p.rdb.Pipeline()
+	for _, it := range items {
+		body, err := json.Marshal(it.payload)
+		if err != nil {
+			p.log.Warn().Err(err).Msg("marshal payload")
+			continue
+		}
+		pipe.Publish(ctx, PubChannelPrefix+strconv.FormatInt(it.payload.MatchID, 10), body)
 	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshal payload: %w", err)
+	if _, err := pipe.Exec(ctx); err != nil {
+		p.log.Debug().Err(err).Msg("publish failed (best-effort)")
 	}
-	channel := PubChannelPrefix + fmt.Sprintf("%d", info.MatchID)
-	if err := p.rdb.Publish(ctx, channel, body).Err(); err != nil {
-		// Pub/sub drops are tolerable — the DB write is the source of truth.
-		p.log.Debug().Err(err).Str("channel", channel).Msg("publish failed (best-effort)")
-	}
+	p.processed.Add(int64(len(items)))
 	return nil
+}
+
+// fail records a per-event failure without short-circuiting the batch:
+// the bus consumer XACKs the whole batch regardless, so a bad event means
+// we drop one odds tick and downstream catches up on the next one.
+func (p *Publisher) fail(ev bus.Event, err error) {
+	p.log.Warn().Err(err).Int64("market", ev.MarketID).Str("outcome", ev.OutcomeID).Msg("process failed")
+	p.errors.Add(1)
 }
 
 // applyMargin divides raw decimal odds by (1 + margin_bp/10000) using

@@ -20,21 +20,21 @@ type MarketKey struct {
 
 // MarketUpsert carries everything needed to upsert one row into `markets`.
 type MarketUpsert struct {
-	Key             MarketKey
-	SpecifiersJSON  map[string]string // canonical key→value map
-	Status          int16
-	LastOddinTs     int64
+	Key            MarketKey
+	SpecifiersJSON map[string]string // canonical key→value map
+	Status         int16
+	LastOddinTs    int64
 }
 
 // OutcomeUpsert carries a single outcome row.
 type OutcomeUpsert struct {
-	MarketID      int64
-	OutcomeID     string
-	Name          string
-	RawOdds       *string // decimal as string; nil → don't touch
-	Probability   *string // decimal in [0,1]; nil → don't touch
-	Active        bool
-	LastOddinTs   int64
+	MarketID    int64
+	OutcomeID   string
+	Name        string
+	RawOdds     *string // decimal as string; nil → don't touch
+	Probability *string // decimal in [0,1]; nil → don't touch
+	Active      bool
+	LastOddinTs int64
 }
 
 // UpsertMarket inserts a market row or updates its status + last_oddin_ts,

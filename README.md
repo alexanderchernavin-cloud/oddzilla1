@@ -51,6 +51,7 @@ Deeper references live in [**`docs/`**](docs/):
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | How services fit together. End-to-end walkthroughs for odds updates, bet placement, settlement, deposits. Scale path. |
 | [SCHEMA.md](docs/SCHEMA.md) | Why each table exists, key constraints, common queries. |
 | [ODDIN.md](docs/ODDIN.md) | Oddin AMQP routing keys, XML shapes, REST endpoints, market IDs, gotchas. |
+| [FONBET.md](docs/FONBET.md) | Fonbet KZ line: endpoints, JSON shapes, market mapping into the Oddin-shaped schema, results-feed settlement, operating limits. |
 | [PHASES.md](docs/PHASES.md) | Phase-by-phase roadmap, acceptance bars, post-MVP candidates, exit gates. |
 | [OPERATIONS.md](docs/OPERATIONS.md) | Deploy, backup, incident playbook. |
 
@@ -59,6 +60,7 @@ Each service has its own local README:
 - [services/api](services/api/README.md)
 - [services/ws-gateway](services/ws-gateway/README.md)
 - [services/feed-ingester](services/feed-ingester/README.md)
+- [services/fonbet-ingester](services/fonbet-ingester/README.md)
 - [services/odds-publisher](services/odds-publisher/README.md)
 - [services/settlement](services/settlement/README.md)
 - [services/bet-delay](services/bet-delay/README.md)
@@ -81,6 +83,7 @@ services/
   api/               TS Fastify REST API
   ws-gateway/        TS WebSocket fanout
   feed-ingester/     Go — Oddin AMQP consumer + REST auto-mapper
+  fonbet-ingester/   Go — Fonbet KZ HTTP line poller (traditional sports)
   odds-publisher/    Go — applies payback margin, publishes pub/sub
   settlement/        Go — settle/cancel/rollback with apply-once semantics
   bet-delay/         Go — finalizes pending_delay tickets

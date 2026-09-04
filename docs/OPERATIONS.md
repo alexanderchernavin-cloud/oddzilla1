@@ -20,7 +20,8 @@ running the production stack:
 - `.env` at `/home/team/oddzilla/.env` (mode 600) with real secrets;
   `ODDIN_CUSTOMER_ID=142` from `GET /v1/users/whoami`
 - Full Compose stack live: postgres, redis, caddy, api, web, ws-gateway,
-  feed-ingester, odds-publisher, settlement, bet-delay, wallet-watcher
+  feed-ingester, fonbet-ingester (idle unless `FONBET_ENABLED=true`),
+  odds-publisher, settlement, bet-delay, wallet-watcher
 - Connected to Oddin integration broker (bookmaker 142) via AMQPS on
   port 5672
 - DNS: `FRONTEND_HOST=oddzilla.cc` (apex), `ADMIN_HOST=sadmin.oddzilla.cc`
@@ -44,7 +45,7 @@ $EDITOR .env                          # fill real secrets, set ODDIN_CUSTOMER_ID
 # Build services SERIALLY — `docker compose build` (no service arg)
 # parallel-builds 7 services and OOMs the 4 GB CPX22 (see
 # project_build_oom_incident; took the site down ~30 min on 2026-05-06).
-for svc in postgres redis caddy api web1 ws-gateway feed-ingester odds-publisher settlement bet-delay wallet-watcher; do
+for svc in postgres redis caddy api web1 ws-gateway feed-ingester fonbet-ingester odds-publisher settlement bet-delay wallet-watcher; do
   sudo -n docker compose -f docker-compose.yml --profile scaled build $svc
 done
 sudo -n docker compose -f docker-compose.yml --profile scaled up -d
@@ -360,6 +361,28 @@ partition). A partition DROP is instant and returns space to the OS, so
 the table carries **zero bloat and no high-water mark** — the disk cost is
 exactly the live window (~35 GB at current volume) plus the day being
 written.
+
+**Fonbet changes the volume.** The 35-day window was sized for Oddin's few
+hundred ticks/s. The Fonbet line (`services/fonbet-ingester`) adds ~200k
+priced outcomes and odds-publisher was batched to ~5000 ticks/s to keep up
+with its churn — every one of those ticks is an `odds_history` row. Before
+`FONBET_ENABLED=true` on prod, decide which lever you will pull if the
+daily partitions grow past what the window can hold on a 160 GB disk
+(disk-full has taken this box down four times):
+
+- `ODDS_RETENTION_DAYS` on the cron (root crontab, `oddzilla-odds-retention`)
+  — shorten the window; admin odds charts look back 30 days, nothing else
+  reads history.
+- `ODDS_HISTORY_SKIP_PMID_MIN=1000000` in `.env` + `make recreate odds-publisher`
+  — stop writing history for the Fonbet `provider_market_id` namespace
+  entirely (`published_odds` still updates; Oddin history unaffected).
+  Fonbet markets then have no admin odds-history chart.
+
+Check `SELECT relname, pg_size_pretty(pg_total_relation_size(oid)) FROM
+pg_class WHERE relname LIKE 'odds_history_p%' ORDER BY relname DESC LIMIT 3`
+after the first 24 h with the feed on; the newest partition's size times
+`ODDS_RETENTION_DAYS` must fit comfortably under the disk headroom shown on
+`/admin/monitoring`.
 
 The pre-2026-08-26 model was a nightly batched DELETE against a single
 catch-all DEFAULT partition: it plateaued the heap (~60 GB at the 45-day
@@ -683,6 +706,20 @@ ssh team@178.104.174.24 'sudo -n docker exec oddzilla-redis-1 redis-cli XINFO GR
 Outcomes that do not tick again stay NULL until their next update, or
 until bifrost-feed's five-minute resync re-emits every cached snapshot.
 
+The same failure on `settlement.external` (the Fonbet settlement stream)
+looks like Fonbet tickets staying `accepted` after the final whistle while
+settlement logs `NOGROUP No such key 'settlement.external' or consumer
+group 'settlement'`. The consumer heals itself the same way (recreates the
+group inline, from `0` so unapplied entries replay) and fonbet-ingester
+re-emits anything older than an hour from Postgres state, so no manual
+step is needed; if you are on an image without the branch, `docker compose
+restart settlement`.
+
+The prevention side: keep `odds.raw` at the shared 100k MAXLEN in BOTH
+producers and let fonbet-ingester pace its cold-start republish on the
+group's lag. Do not raise a stream cap to fit a burst — the caps are a
+Redis-memory budget (256 MB total), not a buffer.
+
 ### Settlement lag (tickets accepted > 2 h and still not settled after match end)
 
 1. Is `services/settlement` healthy? (`/healthz`, logs, `docker compose ps`).
@@ -1004,6 +1041,25 @@ container opens the inspector on 9229).
 and settlements when Oddin's AMQP feed goes silent. Full design in
 [`docs/BIFROST_BACKUP_FEED.md`](./BIFROST_BACKUP_FEED.md); this is the
 operator view.
+
+**Fonbet feed switch.** The **Fonbet feed** card on the same page turns the
+second provider on and off at runtime (`PUT /admin/feed/fonbet`, column
+`feed_control.fonbet_enabled`, migration 0099). Off is one click and the
+emergency brake: within 2 s fonbet-ingester suspends every Fonbet market
+(status `-1`, prices kept — nothing listed, placement rejects), stops
+polling Fonbet and stops its settlement worker, so tickets on Fonbet
+markets stay open until the feed is on again or you settle them by hand.
+On asks for confirmation, then the service boots the feed in place and the
+first cycle re-activates whatever Fonbet still quotes (the cold-start
+republish is paced against odds-publisher's group lag). The position wins
+over `FONBET_ENABLED` once set and survives restarts and deploys; the env
+var applies only while nothing was ever set here. The card shows the
+service heartbeat, whether the feed is running / off / suspended by the
+staleness watchdog, match and outcome counts, last snapshot age, whether
+settlement is armed (`FONBET_SETTLE_ENABLED`), and the acknowledgement
+fonbet-ingester writes to `fonbet_applied_*`. "fonbet-ingester is offline"
+on the card means the container is down or not deployed — the stored
+position applies when it starts.
 
 **State model.** The **Feed source** switch on `/admin/feed` (Postgres
 singleton `feed_control`, migration 0095; `PUT /admin/feed/source`,

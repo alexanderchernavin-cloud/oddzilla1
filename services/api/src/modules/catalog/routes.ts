@@ -13,7 +13,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { and, asc, desc, eq, ilike, inArray, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, notInArray, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import {
   sports,
@@ -125,6 +125,13 @@ const awayCompetitor = alias(competitors, "away_competitor");
 // with many thresholds to choose from (Totals, Handicaps, …).
 const LINE_SPECIFIERS = ["threshold", "handicap"] as const;
 type LineSpec = (typeof LINE_SPECIFIERS)[number];
+
+// provider_market_id namespace of the Fonbet KZ feed
+// (services/fonbet-ingester, docs/FONBET.md): 1_000_000 + Fonbet table
+// number. Oddin ids stay far below this. Fonbet's match-winner tables are
+// the only Fonbet markets whose outcome ids are the canonical "1" / "2" /
+// "3" — every other Fonbet outcome id is a numeric factor id >= 100.
+const FONBET_PMID_BASE = 1_000_000;
 
 // lineInfo returns the line-specifier present on the market (if any)
 // plus a grouping key that collapses markets that differ only in their
@@ -527,8 +534,18 @@ async function loadMatchWinnerOdds(
     .where(
       and(
         inArray(markets.matchId, matchIds),
-        eq(markets.providerMarketId, 1),
         eq(markets.status, 1),
+        // Oddin's match winner is provider_market_id 1. Fonbet match
+        // winners live in the FONBET_PMID_BASE namespace and are the only
+        // Fonbet markets using outcome ids "1" / "2" / "3", so the id
+        // filter selects exactly the match-winner rows for both providers.
+        or(
+          eq(markets.providerMarketId, 1),
+          and(
+            gte(markets.providerMarketId, FONBET_PMID_BASE),
+            inArray(marketOutcomes.outcomeId, ["1", "2", "3"]),
+          ),
+        ),
       ),
     );
 
@@ -1395,7 +1412,10 @@ export default async function catalogRoutes(app: FastifyInstance) {
         .where(
           and(
             eq(markets.matchId, params.id),
-            inArray(markets.status, [1, 0, -1]),
+            // 1 active, -1 suspended. Deactivated (0) markets are lines the
+            // provider pulled — nothing to render, so they stay out of the
+            // page instead of being loaded and dropped afterwards.
+            inArray(markets.status, [1, -1]),
           ),
         )
         .orderBy(markets.providerMarketId),
@@ -1598,14 +1618,46 @@ export default async function catalogRoutes(app: FastifyInstance) {
           homeTeam: match.homeTeam,
           awayTeam: match.awayTeam,
         };
+        // Fonbet sub-events (halves, periods, corners, player props) ride
+        // the `variant` specifier and their templates carry the sub-event
+        // label as a prefix ("1-й тайм: Исходы"). Split the prefix off
+        // into its own tab so the match page groups like Fonbet's event
+        // view does — Match / 1-й тайм / угловые / Players — instead of
+        // one long "Match" list with prefixed names. Player props share a
+        // single tab and keep the player's name in the market title.
+        let scope = deriveScope(specs);
+        let nameTemplate = template;
+        let baseNameTemplate = baseTemplate;
+        const fbVariant = /^fb:([\d/]+)(?::(\d+))?$/.exec(variant);
+        if (fbVariant) {
+          const sep = template.indexOf(": ");
+          if (fbVariant[2]) {
+            scope = { id: "fb_players", label: locale === "ru" ? "Игроки" : "Players", order: 90 };
+          } else if (sep > 0) {
+            const label = template.slice(0, sep);
+            // Nested sub-events ("fb:100201/400100" = corners of the 1st
+            // half) sort after their parent kind and tab id stays a
+            // plain identifier.
+            const kinds = (fbVariant[1] ?? "").split("/");
+            scope = {
+              id: `fb_${kinds.join("_")}`,
+              label,
+              order: 10 + Number(kinds[0] ?? 0) / 1e8 + kinds.length / 1e3,
+            };
+            nameTemplate = template.slice(sep + 2);
+            if (baseTemplate.startsWith(label + ": ")) {
+              baseNameTemplate = baseTemplate.slice(sep + 2);
+            }
+          }
+        }
         m = {
           id: key,
           providerMarketId: r.providerMarketId,
           specifiers: specs,
           variant,
-          name: substituteTemplate(template, specs, teams, profiles, locale),
-          baseName: substituteTemplate(baseTemplate, specs, teams, profiles, locale),
-          scope: deriveScope(specs),
+          name: substituteTemplate(nameTemplate, specs, teams, profiles, locale),
+          baseName: substituteTemplate(baseNameTemplate, specs, teams, profiles, locale),
+          scope,
           status: r.status,
           lastOddinTs: r.lastOddinTs.toString(),
           lineKey: line.lineKey,
@@ -1875,6 +1927,9 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .object({
         status: z.enum(["live", "upcoming"]).default("live"),
         limit: z.coerce.number().int().min(1).max(200).default(80),
+        // Optional vertical filter: the /sports tab lists traditional
+        // sports (Fonbet feed) only; the lobby keeps mixing both.
+        kind: z.enum(["esport", "traditional"]).optional(),
       })
       .parse(request.query);
 
@@ -1920,6 +1975,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         and(
           cond,
           eq(sports.active, true),
+          q.kind ? eq(sports.kind, q.kind) : undefined,
           hasActiveMarket,
           notHiddenTournament,
         ),
@@ -2111,7 +2167,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
     };
     };
     if (!request.user) {
-      const key = `catalog:matches:v1:${q.status}:${q.limit}`;
+      const key = `catalog:matches:v1:${q.status}:${q.kind ?? "all"}:${q.limit}`;
       return cached(app.redis, key, ANON_LIST_CACHE_TTL_SECONDS, build);
     }
     return build();

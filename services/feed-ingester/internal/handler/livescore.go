@@ -171,16 +171,16 @@ func buildLiveScore(s *oddinxml.SportEventStatus, oddinTsMs int64) ([]byte, erro
 //  2. Sport-aware fallback. Whether a period with score is "the live one"
 //     or "the just-finished one" depends on how the broker emits
 //     <period_scores>:
-//       - Map-based sports (type="map" — CS2 / Dota / LoL / Valorant)
-//         only ship a <period_score> row once the map's score is final,
-//         so count(periods-with-score) + 1 = next map being played.
-//       - Time-based sports (type="quarter" / "regular_period" /
-//         "first_half" / etc — basketball, football, hockey) pre-list
-//         every period at match start with 0:0, so the period
-//         accumulates score WHILE in progress. The highest-numbered
-//         period that has any activity IS the current period; treating
-//         "has score" as "completed" would advance to N+1 the moment
-//         the first basket of Q1 lands.
+//     - Map-based sports (type="map" — CS2 / Dota / LoL / Valorant)
+//     only ship a <period_score> row once the map's score is final,
+//     so count(periods-with-score) + 1 = next map being played.
+//     - Time-based sports (type="quarter" / "regular_period" /
+//     "first_half" / etc — basketball, football, hockey) pre-list
+//     every period at match start with 0:0, so the period
+//     accumulates score WHILE in progress. The highest-numbered
+//     period that has any activity IS the current period; treating
+//     "has score" as "completed" would advance to N+1 the moment
+//     the first basket of Q1 lands.
 //
 // We deliberately do NOT use top-level series home_score + away_score,
 // since for non-map sports those fields hold cumulative game points, not
