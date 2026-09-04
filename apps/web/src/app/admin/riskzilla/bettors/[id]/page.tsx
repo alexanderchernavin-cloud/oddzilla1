@@ -4,6 +4,7 @@ import { serverApi } from "@/lib/server-fetch";
 import { fromMicroMoney } from "@oddzilla/types/money";
 import { RsEditor } from "./rs-editor";
 import { NotesEditor } from "./notes-editor";
+import { BehaviourPanel, type BehaviourProfileDto } from "./behaviour-panel";
 import { readRzCurrencyFromSearchParams } from "../../currency";
 import { BettorAuditLog } from "@/components/admin/bettor-audit-log";
 
@@ -88,6 +89,7 @@ interface BettorProfile {
     potentialPayoutMicro: string;
     createdAt: string;
   }>;
+  behaviour: BehaviourProfileDto;
 }
 
 interface UserDetailLite {
@@ -160,6 +162,39 @@ export default async function BettorProfilePage({
         </div>
         <RsEditor userId={data.id} initial={data.riskScore} />
       </header>
+
+      {data.behaviour.alert && !data.behaviour.acknowledgedAt && (
+        <div
+          role="alert"
+          style={{
+            border: "1px solid #dc2626",
+            background: "color-mix(in oklab, #dc2626 8%, transparent)",
+            borderRadius: 8,
+            padding: "10px 14px",
+            fontSize: 13,
+            display: "flex",
+            gap: 12,
+            alignItems: "center",
+            flexWrap: "wrap",
+          }}
+        >
+          <strong style={{ color: "#dc2626" }}>Automation alert</strong>
+          <span>
+            Behaviour score{" "}
+            {data.behaviour.score == null ? "—" : `${Math.round(data.behaviour.score * 100)}%`}{" "}
+            across {data.behaviour.sessionsScored} scored session
+            {data.behaviour.sessionsScored === 1 ? "" : "s"} — above the{" "}
+            {Math.round(data.behaviour.threshold * 100)}% threshold. Review the
+            signals below; a lower risk score or a bet delay are the levers.
+          </span>
+          <a
+            href="#automation-signals"
+            style={{ marginLeft: "auto", fontSize: 12, color: "var(--color-fg)" }}
+          >
+            Jump to signals
+          </a>
+        </div>
+      )}
 
       <Section title="Operator notes">
         <p style={{ fontSize: 12, color: "var(--color-fg-muted)", margin: "0 0 12px" }}>
@@ -365,6 +400,24 @@ export default async function BettorProfilePage({
               </tbody>
             </table>
           )}
+        </Section>
+      </div>
+
+      <div id="automation-signals">
+        <Section title="Automation signals">
+          <p style={{ fontSize: 12, color: "var(--color-fg-muted)", margin: "0 0 12px" }}>
+            Likelihood that this bettor&apos;s sessions are driven by
+            automation, scored off the hot path from the first-party
+            analytics (pointer geometry, click rhythm) and the quote-to-place
+            confirm time on their tickets. Touch devices and thin sessions
+            are left unscored rather than guessed. A signal for a human to
+            weigh — never an automatic block. Thresholds live under{" "}
+            <Link href="/admin/riskzilla/bot-controls" style={{ color: "var(--color-fg)" }}>
+              Bot controls
+            </Link>
+            .
+          </p>
+          <BehaviourPanel userId={id} initial={data.behaviour} />
         </Section>
       </div>
 

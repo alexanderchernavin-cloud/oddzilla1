@@ -155,8 +155,11 @@ const jwtKey = secretKey(auth.jwtSecret);
 // rejected outright.
 const allowedOrigins = new Set(corsOrigins(env).map(normalizeOrigin));
 // When set to "true", require the Origin header on every upgrade.
-// Default (false) tolerates same-origin upgrades from server-side
-// runtimes that omit Origin. Browsers always send it on WS upgrades.
+// docker-compose.yml defaults this to true (2026-09-03): browsers always
+// send Origin on WS upgrades, nothing server-side opens /ws, and a bare
+// script or curl does not send one — so strict mode turns away the naive
+// odds scraper for free. The code default stays false so a local
+// `pnpm dev` without Compose keeps the tolerant behaviour.
 const corsOriginsStrict = process.env.CORS_ORIGINS_STRICT === "true";
 
 function normalizeOrigin(origin: string): string {

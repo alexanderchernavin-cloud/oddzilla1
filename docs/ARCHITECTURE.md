@@ -148,19 +148,33 @@ therefore safe.
 
 ### Bet placement
 
-1. Client builds a slip, submits `POST /bets` with a client-generated
+1. Client builds a slip. Whenever the selection SET changes the slip
+   asks `POST /bets/intent` for a placement intent token — a stateless
+   HMAC claim set bound to (user, sorted selection keys, issued-at,
+   nonce) — and keeps it fresh ahead of expiry (migration 0097). It then
+   submits `POST /bets` with the token, a client-generated
    `idempotencyKey` body field (NOT a header), stake in micro-units,
    `currency` (`USDT` or `OZ`; defaults to `USDT` for compat), and the
    market/outcome/odds for each selection. The currency selection lives
    in the bet-slip context (localStorage, default `OZ` so demo testing
    works out of the box) and is forwarded with each placement.
-2. `services/api` validates inside one transaction (with
+2. `services/api` first checks the intent (one HMAC, no I/O): present
+   when `riskzilla_bot_controls.intent_required` is on, signed by us,
+   for this user and this selection set, inside its TTL, and at least
+   `min_human_ms` old (`intent_too_fast` otherwise — the slip waits the
+   remainder out, so a hand never sees it; a script loses the
+   latency-arbitrage edge). The nonce is burned in Redis for the TTL,
+   keyed to the idempotency key so a network retry of the same
+   placement passes. Then it validates inside one transaction (with
    `SELECT FOR UPDATE` on the user + the matching `(user_id, currency)`
    wallet row): user is active, stake > 0, stake ≤ `balance - locked`
    (available), stake ≤ `users.global_limit_micro` (if set), each market
    is `status=1` (active), each outcome is `active=true` and has a
    current `published_odds`, submitted odds within ±5% (default
-   `DEFAULT_ODDS_DRIFT_TOLERANCE`) of current.
+   `DEFAULT_ODDS_DRIFT_TOLERANCE`) of current, and — for every currency —
+   the per-account velocity caps (placements and distinct matches in the
+   trailing minute, `max(1, round(base × risk_score))`; rejects as
+   `rejected_velocity` and logs to `riskzilla_event_log` for USDC).
 3. Same transaction:
    - Idempotency short-circuit: if `idempotencyKey` already exists for
      this user, return the existing ticket — no double-spend.

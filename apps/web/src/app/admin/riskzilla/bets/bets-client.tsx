@@ -55,6 +55,7 @@ const DECISION_OPTIONS = [
   { key: "rejected_min_stake", label: "Min stake" },
   { key: "rejected_market_factor", label: "Market factor" },
   { key: "rejected_user_blocked", label: "User blocked" },
+  { key: "rejected_velocity", label: "Velocity" },
 ] as const;
 
 interface Filters {

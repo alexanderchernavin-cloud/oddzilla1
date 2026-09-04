@@ -52,6 +52,10 @@ interface DashboardKpis {
     openMaxLossMicro: string;
   }>;
   bettorRsHistogram: Array<{ bucket: string; count: number }>;
+  // Behaviour-scoring automation alerts (migration 0098). `active` is
+  // every bettor currently over the threshold; `unacknowledged` those
+  // nobody on the risk team has looked at yet.
+  automationAlerts: { active: number; unacknowledged: number };
 }
 
 export default async function riskzillaDashboardRoutes(app: FastifyInstance) {
@@ -194,6 +198,13 @@ export default async function riskzillaDashboardRoutes(app: FastifyInstance) {
        ORDER BY bucket
     `)) as unknown as Array<{ bucket: string; n: number }>;
 
+    const alertRows = (await app.db.execute(sql`
+      SELECT COUNT(*)::int                                           AS active,
+             COUNT(*) FILTER (WHERE acknowledged_at IS NULL)::int    AS unacknowledged
+        FROM bettor_behaviour_scores
+       WHERE alert = TRUE
+    `)) as unknown as Array<{ active: number | string; unacknowledged: number | string }>;
+
     // Utilisation now reflects total committed capital — what we owe
     // bettors right now (their balance) plus what we may owe them
     // (open potential payouts) — relative to the bank limit. Only
@@ -231,6 +242,10 @@ export default async function riskzillaDashboardRoutes(app: FastifyInstance) {
         bucket: r.bucket,
         count: Number(r.n),
       })),
+      automationAlerts: {
+        active: Number(alertRows[0]?.active ?? 0),
+        unacknowledged: Number(alertRows[0]?.unacknowledged ?? 0),
+      },
     };
     return result;
   });

@@ -7,6 +7,7 @@ import {
   pgEnum,
   bigserial,
   bigint,
+  boolean,
   smallint,
   integer,
   text,
@@ -52,6 +53,9 @@ export const riskzillaDecisionEnum = pgEnum("riskzilla_decision", [
   "rejected_bank_limit",
   "rejected_user_blocked",
   "rejected_market_factor",
+  // Migration 0096: per-account velocity cap (bets / distinct matches
+  // per minute, scaled by risk score) — see riskzilla_bot_controls.
+  "rejected_velocity",
 ]);
 
 // ── Per-tier defaults ──────────────────────────────────────────────────
@@ -242,6 +246,99 @@ export const riskzillaLiveDelayConfig = pgTable(
 );
 
 export type RiskzillaLiveDelayConfig = typeof riskzillaLiveDelayConfig.$inferSelect;
+
+// ── Bot controls (migration 0097) ──────────────────────────────────────
+// Singleton knobs for the anti-automation gates on POST /bets: placement
+// intent token (required / TTL), minimum human confirm time, per-account
+// velocity caps (scaled by risk score), and the behaviour-score alert
+// threshold. Read via lib/riskzilla/bot-controls.ts (memoised); written
+// by PUT /admin/riskzilla/bot-controls (audit-logged).
+export const riskzillaBotControls = pgTable(
+  "riskzilla_bot_controls",
+  {
+    id: smallint().primaryKey().default(1),
+    intentRequired: boolean("intent_required").notNull().default(true),
+    intentTtlSeconds: integer("intent_ttl_seconds").notNull().default(120),
+    minHumanMs: integer("min_human_ms").notNull().default(600),
+    velocityEnabled: boolean("velocity_enabled").notNull().default(true),
+    maxBetsPerMinute: integer("max_bets_per_minute").notNull().default(12),
+    maxMatchesPerMinute: integer("max_matches_per_minute").notNull().default(10),
+    behaviourAlertThreshold: numeric("behaviour_alert_threshold", {
+      precision: 4,
+      scale: 3,
+    })
+      .notNull()
+      .default("0.700"),
+    behaviourMinSessions: integer("behaviour_min_sessions").notNull().default(2),
+    updatedBy: uuid("updated_by").references(() => users.id, { onDelete: "set null" }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check("riskzilla_bot_controls_singleton", sql`${t.id} = 1`),
+    check(
+      "riskzilla_bot_controls_intent_ttl_range",
+      sql`${t.intentTtlSeconds} BETWEEN 15 AND 900`,
+    ),
+    check("riskzilla_bot_controls_min_human_range", sql`${t.minHumanMs} BETWEEN 0 AND 10000`),
+    check(
+      "riskzilla_bot_controls_bets_range",
+      sql`${t.maxBetsPerMinute} BETWEEN 1 AND 1000`,
+    ),
+    check(
+      "riskzilla_bot_controls_matches_range",
+      sql`${t.maxMatchesPerMinute} BETWEEN 1 AND 1000`,
+    ),
+    check(
+      "riskzilla_bot_controls_threshold_range",
+      sql`${t.behaviourAlertThreshold} > 0 AND ${t.behaviourAlertThreshold} <= 1`,
+    ),
+    check(
+      "riskzilla_bot_controls_min_sessions_range",
+      sql`${t.behaviourMinSessions} BETWEEN 1 AND 100`,
+    ),
+  ],
+);
+
+// ── Per-bettor behaviour rollup (migration 0098) ───────────────────────
+// Automation likelihood per bettor, rolled up by the behaviour sweeper
+// from analytics_sessions.behaviour_score (weighted by sample count,
+// last 30 days) plus the confirm-time signal in tickets.quote_to_place_ms.
+// `alert` follows the threshold in riskzilla_bot_controls with 0.1 of
+// hysteresis; a newly raised alert clears any earlier acknowledgement.
+export const bettorBehaviourScores = pgTable(
+  "bettor_behaviour_scores",
+  {
+    userId: uuid("user_id")
+      .primaryKey()
+      .references(() => users.id, { onDelete: "cascade" }),
+    score: numeric({ precision: 4, scale: 3 }),
+    maxSessionScore: numeric("max_session_score", { precision: 4, scale: 3 }),
+    sessionsScored: integer("sessions_scored").notNull().default(0),
+    sessionsInsufficient: integer("sessions_insufficient").notNull().default(0),
+    features: jsonb().notNull().default(sql`'{}'::jsonb`),
+    alert: boolean().notNull().default(false),
+    alertSince: timestamp("alert_since", { withTimezone: true }),
+    acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+    acknowledgedBy: uuid("acknowledged_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    scoredAt: timestamp("scored_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "bettor_behaviour_scores_score_range",
+      sql`${t.score} IS NULL OR (${t.score} >= 0 AND ${t.score} <= 1)`,
+    ),
+    index("bettor_behaviour_scores_alert_idx")
+      .on(sql`${t.alertSince} DESC`)
+      .where(sql`${t.alert} = TRUE`),
+    index("bettor_behaviour_scores_score_idx").on(sql`${t.score} DESC NULLS LAST`),
+  ],
+);
+
+export type RiskzillaBotControls = typeof riskzillaBotControls.$inferSelect;
+export type BettorBehaviourScore = typeof bettorBehaviourScores.$inferSelect;
 
 export type RiskzillaSettings = typeof riskzillaSettings.$inferSelect;
 export type RiskzillaMarketFactor = typeof riskzillaMarketFactors.$inferSelect;

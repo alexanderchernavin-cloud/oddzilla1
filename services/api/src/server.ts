@@ -85,6 +85,10 @@ import {
 import { adminAnalyticsRoutes } from "./modules/admin/analytics.js";
 import { startPushOutboxWorker, type PushWorkerHandle } from "./modules/push/worker.js";
 import { startEmailOutboxWorker, type EmailWorkerHandle } from "./modules/email/worker.js";
+import {
+  startBehaviourScoringSweeper,
+  type BehaviourSweeperHandle,
+} from "./lib/riskzilla/behaviour-sweeper.js";
 import inboundEmailRoutes from "./modules/email/inbound/routes.js";
 import { ApiError } from "./lib/errors.js";
 
@@ -380,6 +384,17 @@ if (process.env.ANALYTICS_SWEEPER_DISABLED !== "1") {
   analyticsSweeperHandle = startAnalyticsRetentionSweeper(app);
 }
 
+// RiskZilla behaviour scoring (migration 0098). Every 5 min, Redis-lock
+// guarded: scores settled signed-in analytics sessions for automation
+// signals (pointer geometry, click rhythm) and rolls them up per bettor
+// into bettor_behaviour_scores, raising the RiskZilla automation alert
+// past the configured threshold. Off the placement hot path entirely.
+// Set BEHAVIOUR_SWEEPER_DISABLED=1 to skip.
+let behaviourSweeperHandle: BehaviourSweeperHandle | null = null;
+if (process.env.BEHAVIOUR_SWEEPER_DISABLED !== "1") {
+  behaviourSweeperHandle = startBehaviourScoringSweeper(app);
+}
+
 // ─── Boot ───────────────────────────────────────────────────────────────────
 
 app
@@ -408,6 +423,7 @@ async function shutdown() {
   stopMonitoringSampler();
   stopZillaFlashRotation();
   analyticsSweeperHandle?.close();
+  behaviourSweeperHandle?.close();
   if (matchWatcherHandle) {
     try {
       await matchWatcherHandle.close();

@@ -51,3 +51,11 @@ not replay from WS.
   user's ticket frames.
 - Rate cap (5 msg/s/client) protects the box from runaway fanout.
 - Never trust message payloads from clients — JSON-schema validate.
+- Every upgrade must carry an `Origin` in `CORS_ORIGINS`. Compose sets
+  `CORS_ORIGINS_STRICT=true` (2026-09-03), so an upgrade with no Origin
+  at all is refused with 403 too — browsers always send one, nothing
+  server-side opens `/ws`, and a bare script or curl does not. This is
+  the cheap anti-scraping layer for the public odds fan-out; a script
+  that spoofs the header still gets through, so it stops naive clients
+  only. Set `CORS_ORIGINS_STRICT=false` in `.env` if a legitimate
+  Origin-less client ever appears.

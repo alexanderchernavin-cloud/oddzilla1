@@ -7,9 +7,17 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { eq, inArray } from "drizzle-orm";
-import { SUPPORTED_CURRENCIES } from "@oddzilla/types";
+import { SUPPORTED_CURRENCIES, type BetIntentResponse } from "@oddzilla/types";
+import { loadAuthEnv } from "@oddzilla/config";
 import { markets, matches, tournaments, categories } from "@oddzilla/db";
 import { BetsService } from "./service.js";
+import {
+  checkIntent,
+  deriveIntentKey,
+  newIntentClaims,
+  signIntent,
+} from "./intent.js";
+import { loadBotControls } from "../../lib/riskzilla/bot-controls.js";
 import { NotFoundError } from "../../lib/errors.js";
 import { validateOfferForBet } from "../zillaflash/engine.js";
 import {
@@ -66,6 +74,21 @@ const placeBody = z.object({
   // restricts the effect to single + combo; the flag is accepted but
   // ignored for other products so the client UX can stay product-agnostic.
   acceptOddsChanges: z.boolean().optional(),
+  // Placement intent token from POST /bets/intent (migration 0097).
+  // Required when riskzilla_bot_controls.intent_required is on.
+  intentToken: z.string().min(16).max(2048).optional(),
+});
+
+const intentBody = z.object({
+  selections: z
+    .array(
+      z.object({
+        marketId: z.string().regex(/^\d+$/),
+        outcomeId: z.string().min(1).max(64),
+      }),
+    )
+    .min(1)
+    .max(30),
 });
 
 const listQuery = z.object({
@@ -78,10 +101,92 @@ const placeRateLimit = {
 
 export default async function betsRoutes(app: FastifyInstance) {
   const svc = new BetsService(app.db, app.redis);
+  // Dedicated HMAC key for placement intent tokens, derived from the JWT
+  // secret so an intent can never be confused with an access token.
+  const intentKey = deriveIntentKey(loadAuthEnv().jwtSecret);
+
+  // ── Placement intent (migration 0097) ─────────────────────────────
+  // The slip calls this whenever its selection SET changes (not on price
+  // ticks) and hands the token to POST /bets. Stateless HMAC claims bound
+  // to (user, selection set, issued-at); the placement route measures the
+  // quote -> place gap against riskzilla_bot_controls.min_human_ms and
+  // burns the nonce so a token can't be spent twice.
+  app.post(
+    "/bets/intent",
+    { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } },
+    async (request): Promise<BetIntentResponse> => {
+      const u = request.requireAuth();
+      const body = intentBody.parse(request.body);
+      const controls = await loadBotControls(app.db);
+      const now = Date.now();
+      const claims = newIntentClaims(u.id, body.selections, now);
+      return {
+        token: signIntent(claims, intentKey),
+        issuedAt: now,
+        expiresAt: now + controls.intentTtlSeconds * 1000,
+        minHumanMs: controls.minHumanMs,
+        required: controls.intentRequired,
+      };
+    },
+  );
+
+  // Best-effort single-use: burn the token nonce in Redis for its TTL,
+  // keyed to the placement's idempotency key so a network retry of the
+  // SAME placement passes while a second ticket on the same token does
+  // not. Redis is a cache here — if it is unavailable the signature +
+  // TTL + human-time checks still hold and we let the placement through
+  // rather than take the sportsbook down with the cache.
+  async function consumeIntentNonce(
+    nonce: string,
+    idempotencyKey: string,
+    ttlSeconds: number,
+  ): Promise<void> {
+    const key = `bet:intent:used:${nonce}`;
+    try {
+      const set = await app.redis.set(key, idempotencyKey, "EX", ttlSeconds + 60, "NX");
+      if (set) return;
+      const holder = await app.redis.get(key);
+      if (holder === idempotencyKey) return;
+    } catch (err) {
+      app.log.warn({ err, component: "bet-intent" }, "intent nonce check skipped (redis)");
+      return;
+    }
+    throw new BadRequestError("intent_replayed", "intent_replayed");
+  }
 
   app.post("/bets", { config: placeRateLimit }, async (request) => {
     const u = request.requireAuth();
     const body = placeBody.parse(request.body);
+
+    // ── Placement intent gate ─────────────────────────────────────────
+    // Cheapest check first: one HMAC, no I/O. `intent_required` is the
+    // operator's emergency off-switch — when off we still read a valid
+    // token for the confirm-time measurement but never reject on it.
+    const controls = await loadBotControls(app.db);
+    let quoteIssuedAtMs: number | null = null;
+    if (body.intentToken) {
+      const check = checkIntent(body.intentToken, intentKey, {
+        userId: u.id,
+        selections: body.selections,
+        nowMs: Date.now(),
+        ttlMs: controls.intentTtlSeconds * 1000,
+        minHumanMs: controls.minHumanMs,
+      });
+      if (check.claims) quoteIssuedAtMs = check.claims.t;
+      if (check.ok) {
+        if (controls.intentRequired) {
+          await consumeIntentNonce(
+            check.claims.n,
+            body.idempotencyKey,
+            controls.intentTtlSeconds,
+          );
+        }
+      } else if (controls.intentRequired) {
+        throw new BadRequestError(check.reason, check.reason);
+      }
+    } else if (controls.intentRequired) {
+      throw new BadRequestError("intent_required", "intent_required");
+    }
 
     // ── ZillaFlash boost re-validation ────────────────────────────────
     // Resolve any boost offer ids BEFORE handing the placement off to
@@ -206,6 +311,7 @@ export default async function betsRoutes(app: FastifyInstance) {
       ip: request.ip ?? null,
       userAgent: request.headers["user-agent"] ?? null,
       zillaFlashLiveBoost,
+      quoteIssuedAtMs,
     });
     // Best-effort engagement nudge — bumps the right `bets_prematch`
     // or `bets_live` ZillaPass task based on the ticket's leg

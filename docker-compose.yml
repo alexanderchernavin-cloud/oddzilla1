@@ -352,6 +352,13 @@ services:
     environment:
       SERVICE_NAME: ws-gateway
       PORT: ${WS_GATEWAY_PORT:-3002}
+      # Require an Origin header on every WebSocket upgrade (2026-09-03).
+      # Browsers always send one; a bare script or curl does not, so this
+      # turns away the naive odds scraper for free. Nothing server-side
+      # opens /ws — SSR reads Postgres, the Android app is a WebView — so
+      # there is no legitimate Origin-less client to tolerate. Override
+      # with CORS_ORIGINS_STRICT=false in .env if one ever appears.
+      CORS_ORIGINS_STRICT: ${CORS_ORIGINS_STRICT:-true}
     healthcheck:
       <<: *hc
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${WS_GATEWAY_PORT:-3002}/healthz"]

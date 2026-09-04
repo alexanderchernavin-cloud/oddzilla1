@@ -178,7 +178,14 @@ async function buildMarketLabels(
 }
 
 export default async function zillaboostBannersRoutes(app: FastifyInstance) {
-  app.get("/catalog/zillaboost-banners", async (request, reply) => {
+  app.get(
+    "/catalog/zillaboost-banners",
+    // Per-IP scraper friction (2026-09-03). The lobby polls this every
+    // 10 s; the cap fits a NAT worth of tabs while bounding a bulk reader.
+    // See the /catalog/sports/:slug note for how request.ip stays the
+    // real visitor.
+    { config: { rateLimit: { max: 600, timeWindow: "1 minute" } } },
+    async (request, reply) => {
     reply.header("cache-control", "no-store");
 
     const ruleRows = await app.db

@@ -601,7 +601,12 @@ constraint that lets the client retry POST /bets safely. `stake_micro`,
 `potential_payout_micro`, and `currency` are fixed at placement.
 `actual_payout_micro` is written at settlement; NULL until then. Settlement
 uses `currency` to find the right `(user_id, currency)` wallet row when
-crediting payouts, refunds, and rollback adjustments.
+crediting payouts, refunds, and rollback adjustments. `quote_to_place_ms`
+(migration 0097) is the gap between the placement intent token being
+issued (`POST /bets/intent`) and `POST /bets` landing — NULL for rows
+placed before the migration or while `intent_required` is off. Humans
+spread widely; automation clusters just above the configured minimum, so
+the RiskZilla behaviour rollup reads it as a confirm-time signal.
 
 States:
 - `pending_delay` — bet-delay worker hasn't finalized yet (user has
@@ -781,6 +786,14 @@ authed flush (`COALESCE` on conflict — a session never switches owner).
 Denormalised `page_view_count` / `click_count` / `event_count` are bumped
 by the number of event rows that actually inserted, so KPI and list
 queries never aggregate the events table per session.
+`behaviour_score` / `behaviour_features` / `behaviour_scored_at`
+(migration 0098) are written by the RiskZilla behaviour sweeper once a
+signed-in session has been quiet for two minutes: the automation
+likelihood in [0, 1], the per-component measurements as JSON, and when
+it was scored. NULL score with a non-NULL scored_at means "too little
+data to say" (touch devices, brief visits) — deliberately not a guess.
+The partial index `analytics_sessions_behaviour_pending_idx` is the
+sweeper's work queue (signed-in sessions never scored or seen again since).
 
 **`analytics_events`** — append-only journey log (`page_view`, `click`,
 `heartbeat`, `session_end`). The client stamps a per-session monotonic
@@ -799,6 +812,40 @@ payload->>'label'`).
 per flush segment with viewport dims for replay scaling. Shares the
 per-session `seq` counter space with events. By far the heaviest table,
 hence the shorter 14-day retention and its own `created_at` sweep index.
+
+### RiskZilla bot controls + behaviour scoring
+
+Migrations 0096–0098 (2026-09-03). Bet placement cannot be restricted to
+a physical mouse click — the server only sees HTTP — so these tables back
+the controls that make automation gain nothing and get noticed. None of
+them sit on the placement hot path beyond one memoised singleton read.
+
+**`riskzilla_bot_controls`** — singleton (`id = 1`) operator knobs:
+`intent_required` (POST /bets demands a placement intent token from
+POST /bets/intent; the emergency off-switch), `intent_ttl_seconds`,
+`min_human_ms` (quote → place floor; `intent_too_fast` below it),
+`velocity_enabled` + `max_bets_per_minute` / `max_matches_per_minute`
+(base caps at risk score 1.000; effective cap = `max(1, round(base × RS))`),
+`behaviour_alert_threshold` + `behaviour_min_sessions` (when the rollup
+below raises an alert). CHECK-bounded, audit-logged on every PUT. Lives in
+Postgres rather than Redis for the same reason `feed_control` does.
+
+**`riskzilla_decision`** gains `rejected_velocity` (0096, its own file
+because a new enum value cannot be referenced in the transaction that
+added it) so velocity rejections land in `riskzilla_event_log` next to
+every other gate.
+
+**`bettor_behaviour_scores`** — one row per bettor the sweeper has looked
+at. `score` blends the sample-weighted mean of `analytics_sessions.
+behaviour_score` over 30 days (80%) with the confirm-time signal from
+`tickets.quote_to_place_ms` (20%, only with ≥ 10 tickets); `max_session_
+score`, `sessions_scored`, `sessions_insufficient` and a `features` JSON
+summary (per-component averages, reason counts, confirm-time stats) feed
+the admin panel. `alert` follows the threshold with 0.1 of hysteresis;
+`alert_since` keeps the original raise time while it holds, and a newly
+raised alert clears `acknowledged_at` / `acknowledged_by` so a fresh spike
+needs a fresh review. Partial index on `alert = TRUE` for the alerts
+list, plain index on `score DESC NULLS LAST` for the bettors sort.
 
 ## Common queries
 

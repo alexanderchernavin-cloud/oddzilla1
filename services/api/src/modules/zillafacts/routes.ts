@@ -419,7 +419,13 @@ function lineFamilyKey(
 }
 
 export default async function zillafactsRoutes(app: FastifyInstance) {
-  app.get("/catalog/matches/:matchId/zillafacts", async (request) => {
+  app.get(
+    "/catalog/matches/:matchId/zillafacts",
+    // Per-IP scraper friction (2026-09-03) — one call per match-page
+    // mount. See the /catalog/sports/:slug note for how request.ip stays
+    // the real visitor.
+    { config: { rateLimit: { max: 300, timeWindow: "1 minute" } } },
+    async (request) => {
     const { matchId } = z
       .object({ matchId: z.coerce.bigint() })
       .parse(request.params);
