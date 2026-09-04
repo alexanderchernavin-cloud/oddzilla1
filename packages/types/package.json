@@ -23,7 +23,8 @@
     "./odds": "./src/odds.ts",
     "./live-chat": "./src/live-chat.ts",
     "./support": "./src/support.ts",
-    "./video": "./src/video.ts"
+    "./video": "./src/video.ts",
+    "./sportradar": "./src/sportradar.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

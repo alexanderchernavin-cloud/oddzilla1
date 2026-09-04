@@ -23,3 +23,4 @@ export * from "./boosted-odds.js";
 export * from "./zillabuild.js";
 export * from "./zillapass.js";
 export * from "./analytics.js";
+export * from "./sportradar.js";

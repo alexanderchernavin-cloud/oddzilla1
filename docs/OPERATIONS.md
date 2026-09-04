@@ -1473,6 +1473,78 @@ ssh team@178.104.174.24 "sudo -n docker exec oddzilla-postgres-1 psql -U oddzill
 Note images cascade away with their rule: deleting a boost rule deletes
 its job row and image.
 
+## Sportradar match mapping runbook
+
+The Live Match Tracker on a traditional-sport match page needs a
+**Sportradar** match id. Oddzilla's own id (`matches.id`) and the feed's
+id (`matches.provider_urn`) come free with every fixture; the Sportradar
+one does not exist in either feed and has to be supplied here. Desk:
+`/admin/sportradar` (Catalog group).
+
+**Where the ids come from.** Not automatically, today. Fonbet's line
+carries no external id of any kind (checked 2026-09-04 over a full
+13 667-event snapshot) and their statistics are first-party, not Betradar.
+Sportradar's own `gismo` feed — the one their widgets read — answers
+
+```
+{"doc":[{"event":"exception","data":{"message":"Unauthorized feed ","code":403}}]}
+```
+
+to any request that is not on a licensed origin, including a plain
+server-to-server request with no `Origin` header at all. The public
+`betradar` client is licensed for localhost and Sportradar's own hosts
+only, which is exactly why the tracker itself is embedded through their
+hosted standalone page rather than the widget loader. **Until Sportradar
+issues Oddzilla's Client ID (blocked on their side as of Sept 2026), or a
+Sportradar REST API key exists, fixtures are supplied by an operator.**
+
+**Importing a batch.** Open `/admin/sportradar` → *Import Sportradar
+fixtures*, pick the sport, paste, press **Preview** (a dry run: it matches
+and reports, and writes nothing), then **Import**. Accepted input:
+
+- Sportradar schedule JSON, `{"sport_events": [...]}` — so the day a
+  licensed key exists, the raw API response works unmodified;
+- a JSON array of `{srMatchId, startsAt, homeTeam, awayTeam}`;
+- one fixture per line, `id · kickoff · home · away · competition`,
+  separated by tab, semicolon, pipe or comma. Ids may be written
+  `72221238` or `sr:match:72221238`; a bare `2026-09-06 13:00` is read
+  as UTC. A header line is skipped, `#` comments are ignored, and
+  unreadable lines are reported by line number without failing the batch.
+
+The sport is chosen once for the whole batch, not per row.
+
+**What the matcher will and will not do.** It pairs on kickoff time and
+team names only. A pair more than 20 minutes apart on kickoff is never
+proposed. Strong, unambiguous pairs are confirmed automatically; anything
+weaker waits in the review queue. It will **not** overwrite a decision a
+human made — rows with `source='admin'`, and any `rejected` row, are left
+alone by every subsequent import.
+
+**Working the queue.** The default tab is the review queue, ordered
+weakest-confidence first. Each row shows all three ids side by side, the
+Sportradar-side team names, the kickoff delta, and any runners-up. Confirm,
+Reject, Edit (type an id by hand) or Clear.
+
+**Only `confirmed` rows render.** An unworked queue means a *missing*
+tracker, never a wrong one. That is the intended failure direction: a
+mis-mapped fixture would show another match's live statistics on the page.
+
+Useful reads:
+
+```bash
+ssh team@178.104.174.24 "sudo -n docker exec oddzilla-postgres-1 psql -U oddzilla -d oddzilla -c \"SELECT status, source, COUNT(*) FROM match_sportradar_ids GROUP BY 1,2 ORDER BY 1,2\""
+```
+
+```bash
+ssh team@178.104.174.24 "sudo -n docker exec oddzilla-postgres-1 psql -U oddzilla -d oddzilla -c \"SELECT * FROM match_external_ids WHERE match_id = 1183756\""
+```
+
+**When the Client ID arrives.** Swap `betradar` for it in
+`apps/web/src/components/widgets/sportradar-lmt.tsx`, have `oddzilla.cc`
+whitelisted by Sportradar, and add a fixture puller behind the existing
+`SportradarFixture` shape — the matcher, the review queue and the
+storefront gate all stay as they are.
+
 ## OZ demo currency backfill
 
 When migration 0014 runs on an existing environment, pre-existing users
