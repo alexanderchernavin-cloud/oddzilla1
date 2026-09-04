@@ -41,6 +41,7 @@
 import { sql } from "drizzle-orm";
 import type { DbClient } from "@oddzilla/db";
 import { riskzillaEventLog } from "@oddzilla/db";
+import { velocityCapFor, type BotControls } from "./bot-controls.js";
 
 // A tournament with no Oddin risk tier is priced as the STRICTEST tier
 // rather than the tier-0 global fallback. Oddin's meta API is the only
@@ -65,7 +66,10 @@ export type RiskzillaDecision =
   | "rejected_bet_factor"
   | "rejected_bank_limit"
   | "rejected_user_blocked"
-  | "rejected_market_factor";
+  | "rejected_market_factor"
+  // Per-account velocity cap (bets / distinct matches per minute, scaled
+  // by risk score) — evaluateVelocity(), migration 0096/0097.
+  | "rejected_velocity";
 
 export interface RiskzillaIntentLeg {
   marketId: bigint;
@@ -146,6 +150,15 @@ export interface RiskzillaDecisionMeta {
     bettorBucketLiabilityBeforeMicro: string;
     bettorBucketLiabilityAfterMicro: string;
   }>;
+  // Present on velocity decisions only (evaluateVelocity): what the
+  // bettor had placed in the trailing minute versus the effective caps.
+  velocity?: {
+    betsLastMinute: number;
+    betsCap: number;
+    matchesLastMinute: number;
+    matchesAfterThisBet: number;
+    matchesCap: number;
+  };
 }
 
 interface BucketRow {
@@ -176,6 +189,18 @@ interface MarketFactorRow {
 interface BankRow {
   bank_limit_micro: string;
   open_liability_micro: string;
+}
+
+// postgres-js hands `text[]` back as a JS array; keep the Postgres
+// `{a,b}` literal form parseable too in case the driver setting differs.
+function parseTextArray(v: string[] | string | null | undefined): string[] {
+  if (v == null) return [];
+  if (Array.isArray(v)) return v.map(String);
+  const s = String(v).trim();
+  if (s.length < 2 || s[0] !== "{" || s[s.length - 1] !== "}") return [];
+  const inner = s.slice(1, -1);
+  if (inner === "") return [];
+  return inner.split(",").map((x) => x.replace(/^"|"$/g, ""));
 }
 
 function bigintMax(a: bigint, b: bigint): bigint {
@@ -647,6 +672,80 @@ export class RiskzillaEngine {
     }
 
     return { decision: "accepted", meta };
+  }
+
+  /**
+   * Per-account velocity gate (migration 0097). Unlike evaluate() this
+   * runs for EVERY currency — it is an anti-automation control, not a
+   * solvency check, and an OZ bot still pollutes the community feed and
+   * the database. The caller holds the user row FOR UPDATE, which
+   * serialises placements per bettor, so the trailing-minute count is
+   * race-free without any extra lock.
+   *
+   * Caps scale with risk score exactly like the liability slice does:
+   * cap = max(1, round(base × RS)). A bettor the operator has dialled
+   * down gets fewer placements per minute; a trusted one gets more.
+   */
+  async evaluateVelocity(
+    tx: SqlRunner,
+    intent: RiskzillaIntent,
+    controls: BotControls,
+  ): Promise<RiskzillaResult> {
+    if (!controls.velocityEnabled) {
+      return {
+        decision: "accepted",
+        meta: this.emptyMeta({ reason: "velocity_disabled" }),
+      };
+    }
+    const betsCap = velocityCapFor(controls.maxBetsPerMinute, intent.userRiskScore);
+    const matchesCap = velocityCapFor(controls.maxMatchesPerMinute, intent.userRiskScore);
+
+    const rows = (await tx.execute(sql`
+      WITH recent AS (
+        SELECT id
+          FROM tickets
+         WHERE user_id = ${intent.userId}::uuid
+           AND placed_at >= now() - INTERVAL '60 seconds'
+      )
+      SELECT
+        (SELECT COUNT(*) FROM recent)::int AS bets,
+        COALESCE(
+          (SELECT array_agg(DISTINCT mk.match_id::text)
+             FROM recent r
+             JOIN ticket_selections ts ON ts.ticket_id = r.id
+             JOIN markets mk           ON mk.id = ts.market_id),
+          ARRAY[]::text[]
+        ) AS match_ids
+    `)) as unknown as Array<{ bets: number | string; match_ids: string[] | string | null }>;
+    const row = rows[0];
+    const betsLastMinute = Number(row?.bets ?? 0);
+    const recentMatches = new Set<string>(parseTextArray(row?.match_ids));
+    const matchesLastMinute = recentMatches.size;
+    for (const leg of intent.legs) recentMatches.add(leg.matchId.toString());
+    const matchesAfterThisBet = recentMatches.size;
+
+    const velocity = {
+      betsLastMinute,
+      betsCap,
+      matchesLastMinute,
+      matchesAfterThisBet,
+      matchesCap,
+    };
+    if (betsLastMinute + 1 > betsCap) {
+      return {
+        decision: "rejected_velocity",
+        reason: "velocity_bets_per_minute_exceeded",
+        meta: this.emptyMeta({ velocity }),
+      };
+    }
+    if (matchesAfterThisBet > matchesCap) {
+      return {
+        decision: "rejected_velocity",
+        reason: "velocity_matches_per_minute_exceeded",
+        meta: this.emptyMeta({ velocity }),
+      };
+    }
+    return { decision: "accepted", meta: this.emptyMeta({ velocity }) };
   }
 
   /**

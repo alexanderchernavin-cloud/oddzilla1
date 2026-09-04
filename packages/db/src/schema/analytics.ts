@@ -7,6 +7,7 @@ import {
   integer,
   bigint,
   jsonb,
+  numeric,
   index,
   unique,
   check,
@@ -39,6 +40,14 @@ export const analyticsSessions = pgTable(
     pageViewCount: integer().notNull().default(0),
     clickCount: integer().notNull().default(0),
     eventCount: integer().notNull().default(0),
+    // Migration 0098: behavioural automation score for this session,
+    // computed off the hot path by the RiskZilla behaviour sweeper from
+    // the mouse batches + click events. NULL = not yet scored OR too
+    // little data to say (touch devices, brief visits). `features`
+    // keeps the per-component measurements for the admin panel.
+    behaviourScore: numeric("behaviour_score", { precision: 4, scale: 3 }),
+    behaviourFeatures: jsonb("behaviour_features"),
+    behaviourScoredAt: timestamp("behaviour_scored_at", { withTimezone: true }),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

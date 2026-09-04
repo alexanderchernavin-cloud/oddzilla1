@@ -19,6 +19,10 @@ export interface BettorDto {
   payoutMicro: string;
   winRate: number;
   lastBetAt: string | null;
+  // Behaviour-scoring rollup (migration 0098). Null until scored.
+  botScore: number | null;
+  botAlert: boolean;
+  botAcknowledged: boolean;
 }
 
 const SORTS = [
@@ -27,7 +31,35 @@ const SORTS = [
   { key: "pnl", label: "PnL (worst first)" },
   { key: "stake", label: "Total staked" },
   { key: "win_rate", label: "Win rate" },
+  { key: "bot_score", label: "Bot score (alerts first)" },
 ] as const;
+
+// Automation likelihood as a percentage with an alert marker. Null
+// means the sweeper has not scored any of this bettor's sessions yet.
+function BotCell({ row }: { row: BettorDto }) {
+  if (row.botScore == null) {
+    return <span style={{ color: "var(--color-fg-subtle)" }}>—</span>;
+  }
+  const pct = Math.round(row.botScore * 100);
+  const color = row.botAlert ? "#dc2626" : pct >= 50 ? "#f59e0b" : "var(--color-fg-muted)";
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color }}>
+      {row.botAlert && (
+        <span
+          aria-label={row.botAcknowledged ? "alert acknowledged" : "alert"}
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: 999,
+            background: row.botAcknowledged ? "#f59e0b" : "#dc2626",
+            display: "inline-block",
+          }}
+        />
+      )}
+      <span style={{ fontVariantNumeric: "tabular-nums" }}>{pct}%</span>
+    </span>
+  );
+}
 
 export function BettorsClient({
   initial,
@@ -129,6 +161,7 @@ export function BettorsClient({
           <tr>
             <Th>Bettor</Th>
             <Th align="right">RS</Th>
+            <Th align="right">Bot</Th>
             <Th align="right">Tickets</Th>
             <Th align="right">Win rate</Th>
             <Th align="right">Staked ({currency})</Th>
@@ -141,7 +174,7 @@ export function BettorsClient({
           {rows.length === 0 ? (
             <tr>
               <Td>—</Td>
-              <Td colSpan={7} align="right">
+              <Td colSpan={8} align="right">
                 <span style={{ color: "var(--color-fg-muted)" }}>
                   No bettors match.
                 </span>
@@ -160,6 +193,9 @@ export function BettorsClient({
                 </Td>
                 <Td align="right" mono>
                   {r.riskScore}
+                </Td>
+                <Td align="right" mono>
+                  <BotCell row={r} />
                 </Td>
                 <Td align="right" mono>
                   {r.ticketsCount}

@@ -33,7 +33,14 @@ import { getActiveOffers } from "./engine.js";
 import { loadZillaFlashViewerPrefs } from "./viewer-prefs.js";
 
 export default async function zillaflashRoutes(app: FastifyInstance) {
-  app.get("/catalog/zillaflash", async (request, reply) => {
+  app.get(
+    "/catalog/zillaflash",
+    // Per-IP scraper friction (2026-09-03). The slip polls this every 2 s
+    // (30/min per open tab), so the cap leaves room for a NAT worth of
+    // tabs while still bounding a bulk reader. See the note on
+    // /catalog/sports/:slug for how request.ip stays the real visitor.
+    { config: { rateLimit: { max: 900, timeWindow: "1 minute" } } },
+    async (request, reply) => {
     reply.header("cache-control", "no-store");
     const response = await getActiveOffers(app);
 

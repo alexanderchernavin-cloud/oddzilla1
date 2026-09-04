@@ -35,6 +35,8 @@ import { SportGlyph } from "@/components/ui/sport-glyph";
 import { useMobileDrawers } from "./mobile-drawer-context";
 import { useWallets } from "@/lib/wallets";
 import { useZillapass } from "@/lib/zillapass";
+import { useSessionUserId } from "@/lib/session-user";
+import { intentWaitMs, useBetIntent } from "@/lib/use-bet-intent";
 import { useTranslations } from "@/lib/i18n";
 import { RailMatchPanel } from "@/components/widgets/rail-match-panel";
 import type {
@@ -89,6 +91,23 @@ const TICKET_POLL_LEAD_MS = 1200;
 const TICKET_POLL_INTERVAL_MS = 2000;
 const TICKET_POLL_MAX_ATTEMPTS = 10;
 
+// Placement intent (migration 0097). These rejections mean the token the
+// slip attached was stale / for a different selection set / already
+// spent — a fresh quote and one retry recovers them without bothering
+// the bettor. `intent_too_fast` just needs the remainder of the minimum
+// human confirm time to pass.
+const INTENT_REQUOTE_CODES = new Set([
+  "intent_required",
+  "intent_invalid",
+  "intent_expired",
+  "intent_selection_mismatch",
+  "intent_replayed",
+]);
+// Never sit on a placement for longer than this waiting for the human-
+// time window — the server default is 600 ms.
+const INTENT_MAX_WAIT_MS = 3000;
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 // Live countdown to an absolute timestamp. Returns whole seconds remaining,
 // clamped at 0. Re-renders every second while > 0 and stops the interval
 // once the deadline passes (avoids needless re-renders for tickets that
@@ -131,6 +150,14 @@ export function BetSlipRail() {
   const router = useRouter();
   const { optimisticDeduct: optimisticDeductWallet } = useWallets();
   const { refresh: refreshZillapass } = useZillapass();
+  const sessionUserId = useSessionUserId();
+  // Placement intent (migration 0097): quote the selection set ahead of
+  // placement so POST /bets can pin the slip and measure the human
+  // confirm time. Signed-in only — anonymous slips can't place anyway.
+  const betIntent = useBetIntent(
+    selections,
+    sessionUserId != null && selections.length > 0,
+  );
   const t = useTranslations("betSlip");
   const [stakeInput, setStakeInput] = useState("10");
   const [submitting, setSubmitting] = useState(false);
@@ -741,48 +768,81 @@ export function BetSlipRail() {
           return;
         }
       }
-      const res = await clientApi<{ ticket: TicketSummary }>("/bets", {
-        method: "POST",
-        body: JSON.stringify({
-          stakeMicro,
-          idempotencyKey,
-          currency,
-          // Send explicit betType so the server knows to apply tiple/
-          // tippot/betbuilder pricing — without this, ≥2 legs default
-          // to "combo".
-          betType: effectiveMode,
-          selections: selections.map((s) => ({
-            marketId: s.marketId,
-            outcomeId: s.outcomeId,
-            odds: s.odds,
-            // Forward the ZillaFlash offer id when the leg came from a
-            // boosted offer; server re-validates the id + boosted odds
-            // and shaves -2 s off the live-bet acceptance delay.
-            ...(s.zillaFlashOfferId
-              ? { zillaFlashOfferId: s.zillaFlashOfferId }
+      const placeOnce = (intentToken: string | undefined) =>
+        clientApi<{ ticket: TicketSummary }>("/bets", {
+          method: "POST",
+          body: JSON.stringify({
+            stakeMicro,
+            idempotencyKey,
+            currency,
+            // Send explicit betType so the server knows to apply tiple/
+            // tippot/betbuilder pricing — without this, ≥2 legs default
+            // to "combo".
+            betType: effectiveMode,
+            selections: selections.map((s) => ({
+              marketId: s.marketId,
+              outcomeId: s.outcomeId,
+              odds: s.odds,
+              // Forward the ZillaFlash offer id when the leg came from a
+              // boosted offer; server re-validates the id + boosted odds
+              // and shaves -2 s off the live-bet acceptance delay.
+              ...(s.zillaFlashOfferId
+                ? { zillaFlashOfferId: s.zillaFlashOfferId }
+                : null),
+              // Forward the Custom Boosted Odds rule id (migration 0085);
+              // server re-validates the rule + recomputes the boosted
+              // price before debiting.
+              ...(s.customBoostRuleId
+                ? { boostedOddsRuleId: s.customBoostRuleId }
+                : null),
+            })),
+            // Bettor opt-in for the bet-delay window. Server gates the
+            // effect to single + combo; sending for other modes is a
+            // harmless no-op.
+            acceptOddsChanges,
+            // Placement intent (migration 0097) — pins this placement
+            // to the quote step and carries the quote timestamp.
+            ...(intentToken ? { intentToken } : null),
+            ...(effectiveMode === "betbuilder" && builderQuote
+              ? {
+                  betBuilder: {
+                    sessionId: builderQuote.sessionId,
+                    expectedOddsX10000: builderQuote.oddsX10000,
+                    selectionIds: builderQuote.selectionIds,
+                  },
+                }
               : null),
-            // Forward the Custom Boosted Odds rule id (migration 0085);
-            // server re-validates the rule + recomputes the boosted
-            // price before debiting.
-            ...(s.customBoostRuleId
-              ? { boostedOddsRuleId: s.customBoostRuleId }
-              : null),
-          })),
-          // Bettor opt-in for the bet-delay window. Server gates the
-          // effect to single + combo; sending for other modes is a
-          // harmless no-op.
-          acceptOddsChanges,
-          ...(effectiveMode === "betbuilder" && builderQuote
-            ? {
-                betBuilder: {
-                  sessionId: builderQuote.sessionId,
-                  expectedOddsX10000: builderQuote.oddsX10000,
-                  selectionIds: builderQuote.selectionIds,
-                },
-              }
-            : null),
-        }),
-      });
+          }),
+        });
+
+      // Make sure we hold a token for the current selection set and that
+      // the server's minimum human time has elapsed since it was issued.
+      // A human composing a slip has nearly always waited longer than
+      // this already; the wait only bites on an instant add-then-place.
+      let intent = await betIntent.ensure();
+      const wait = Math.min(intentWaitMs(intent), INTENT_MAX_WAIT_MS);
+      if (wait > 0) await sleep(wait);
+
+      let res: { ticket: TicketSummary };
+      try {
+        res = await placeOnce(intent?.token);
+      } catch (err) {
+        if (!(err instanceof ApiFetchError)) throw err;
+        const code = err.body.error;
+        if (code === "intent_too_fast") {
+          await sleep(Math.min(intent?.minHumanMs ?? 600, INTENT_MAX_WAIT_MS));
+        } else if (INTENT_REQUOTE_CODES.has(code)) {
+          betIntent.invalidate();
+          intent = await betIntent.ensure();
+          const again = Math.min(intentWaitMs(intent), INTENT_MAX_WAIT_MS);
+          if (again > 0) await sleep(again);
+        } else {
+          throw err;
+        }
+        // Same idempotencyKey: if the first attempt actually landed the
+        // server returns that ticket instead of placing a second one.
+        res = await placeOnce(intent?.token);
+      }
       setPlacedTicket(res.ticket);
       // Snapshot the slip composition at placement time so the
       // pending-tracking useEffect above can detect when the user
@@ -1892,6 +1952,19 @@ function mapError(err: ApiFetchError): string {
       return "BetBuilder needs every leg from the same match.";
     case "betbuilder_odds_too_low":
       return "BetBuilder returned odds below 1.01 — try a different combination.";
+    // Placement intent (migration 0097). The slip already re-quoted and
+    // retried once before surfacing these, so a second failure means the
+    // quote step itself is failing.
+    case "intent_required":
+    case "intent_invalid":
+    case "intent_expired":
+    case "intent_selection_mismatch":
+    case "intent_replayed":
+      return "Your slip needs a fresh quote. Please try again.";
+    case "intent_too_fast":
+      return "Hold on a moment, then place your bet again.";
+    case "rejected_velocity":
+      return "You are placing bets too quickly. Wait a moment and try again.";
     case "internal_error":
       // The api error handler returns this for unhandled exceptions
       // (status 500). Show a stable message; details land in the api

@@ -137,6 +137,30 @@ export interface PlaceBetRequest {
    * published price. Suspended / inactive checks still reject regardless.
    */
   acceptOddsChanges?: boolean;
+  /**
+   * Placement intent token from `POST /bets/intent` (migration 0097).
+   * Pins the placement to the quote step the slip performed for this
+   * exact selection set and carries the quote timestamp the server
+   * measures the minimum human confirm time against. Required when the
+   * operator's bot controls say so (`intent_required`, on by default);
+   * a missing / stale / mismatched token rejects with `intent_*`.
+   */
+  intentToken?: string;
+}
+
+/** Body of `POST /bets/intent` — the selection SET only, never odds. */
+export interface BetIntentRequest {
+  selections: Array<{ marketId: string; outcomeId: string }>;
+}
+
+export interface BetIntentResponse {
+  token: string;
+  /** Server clock, epoch ms. The slip may not place before issuedAt + minHumanMs. */
+  issuedAt: number;
+  expiresAt: number;
+  minHumanMs: number;
+  /** Whether POST /bets currently rejects placements without a token. */
+  required: boolean;
 }
 
 export interface PlaceBetResponse {

@@ -7,6 +7,8 @@ import { eq, sql } from "drizzle-orm";
 import { users, adminAuditLog } from "@oddzilla/db";
 import { SUPPORTED_CURRENCIES } from "@oddzilla/types/currencies";
 import { BadRequestError, NotFoundError } from "../../../lib/errors.js";
+import { loadBotControls } from "../../../lib/riskzilla/bot-controls.js";
+import { loadBehaviourProfile } from "../../../lib/riskzilla/behaviour-sweeper.js";
 
 const currencySchema = z
   .string()
@@ -19,7 +21,9 @@ const listQuery = z.object({
   offset: z.coerce.number().int().min(0).default(0),
   // Sort knobs — most-risky first by default. The dashboard surfaces
   // negative-PnL whales here.
-  sort: z.enum(["risk_score", "pnl", "stake", "win_rate", "recent"]).default("recent"),
+  sort: z
+    .enum(["risk_score", "pnl", "stake", "win_rate", "recent", "bot_score"])
+    .default("recent"),
   // Stats aggregation currency. USDC = real-money view; OZ = demo view.
   currency: currencySchema.default("USDC"),
 });
@@ -41,6 +45,11 @@ interface BettorRow {
   payoutMicro: string;
   winRate: number;
   lastBetAt: string | null;
+  // Behaviour scoring rollup (migration 0098). Null until the sweeper
+  // has scored at least one of the bettor's sessions.
+  botScore: number | null;
+  botAlert: boolean;
+  botAcknowledged: boolean;
 }
 
 export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
@@ -64,6 +73,8 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
           return sql`(CASE WHEN COALESCE(stats.tickets_count, 0) > 0
                            THEN stats.won_count::float / stats.tickets_count
                            ELSE 0 END) DESC`;
+        case "bot_score":
+          return sql`bbs.alert DESC NULLS LAST, bbs.score DESC NULLS LAST, COALESCE(stats.last_bet_at, u.created_at) DESC`;
         case "recent":
         default:
           return sql`COALESCE(stats.last_bet_at, u.created_at) DESC`;
@@ -105,9 +116,13 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
         COALESCE(stats.pnl_micro, '0')                            AS pnl_micro,
         COALESCE(stats.staked_micro, '0')                         AS staked_micro,
         COALESCE(stats.payout_micro, '0')                         AS payout_micro,
-        stats.last_bet_at                                         AS last_bet_at
+        stats.last_bet_at                                         AS last_bet_at,
+        bbs.score::text                                           AS bot_score,
+        COALESCE(bbs.alert, FALSE)                                AS bot_alert,
+        (bbs.acknowledged_at IS NOT NULL)                         AS bot_acknowledged
         FROM users u
         LEFT JOIN stats ON stats.user_id = u.id
+        LEFT JOIN bettor_behaviour_scores bbs ON bbs.user_id = u.id
        WHERE u.role = 'user'
          AND u.is_ai = false
          ${search ? sql`AND (u.email ILIKE ${search} OR u.nickname ILIKE ${search})` : sql``}
@@ -126,6 +141,9 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
       staked_micro: string;
       payout_micro: string;
       last_bet_at: Date | string | null;
+      bot_score: string | null;
+      bot_alert: boolean;
+      bot_acknowledged: boolean;
     }>;
 
     const entries: BettorRow[] = rows.map((r) => ({
@@ -149,6 +167,9 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
           : r.last_bet_at instanceof Date
             ? r.last_bet_at.toISOString()
             : String(r.last_bet_at),
+      botScore: r.bot_score == null ? null : Number(r.bot_score),
+      botAlert: Boolean(r.bot_alert),
+      botAcknowledged: Boolean(r.bot_acknowledged),
     }));
 
     return { entries };
@@ -423,6 +444,14 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
       created_at: Date | string;
     }>;
 
+    // Behaviour-scoring rollup (migration 0098) — precomputed by the
+    // sweeper, so this is a single indexed read plus a pending count.
+    const behaviour = await loadBehaviourProfile(
+      app.db,
+      params.id,
+      await loadBotControls(app.db),
+    );
+
     const s = stats[0];
     const stakedMicro = BigInt(s?.staked_micro ?? "0");
     const payoutMicro = BigInt(s?.payout_micro ?? "0");
@@ -546,6 +575,7 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
             ? d.created_at.toISOString()
             : String(d.created_at),
       })),
+      behaviour,
     };
   });
 

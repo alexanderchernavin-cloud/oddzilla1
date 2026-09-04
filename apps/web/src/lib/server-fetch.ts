@@ -4,6 +4,29 @@ import { AUTH_COOKIE_NAMES } from "@/lib/auth";
 import { LOCALE_COOKIE } from "@/lib/i18n";
 
 const REQUEST_ID_HEADER = "x-request-id";
+const FORWARDED_FOR_HEADER = "x-forwarded-for";
+const REAL_IP_HEADER = "x-real-ip";
+
+// Loose IPv4 / IPv6 shape. Anything else is dropped rather than
+// forwarded, so a hostile inbound header can never become an injected
+// value on our outbound request.
+const IP_SHAPE = /^[0-9a-fA-F:.]{3,45}$/;
+
+// The visitor's IP as Caddy reported it. Caddy overwrites
+// X-Forwarded-For with the real peer on the web upstream (Caddyfile), so
+// this is a single value in production; take the LAST entry defensively
+// in case a hop ever appends, since the last one is the address the
+// nearest trusted proxy saw.
+function clientIpFrom(h: Headers): string | null {
+  const xff = h.get(FORWARDED_FOR_HEADER);
+  if (xff) {
+    const parts = xff.split(",");
+    const last = parts[parts.length - 1]?.trim() ?? "";
+    if (IP_SHAPE.test(last)) return last;
+  }
+  const real = h.get(REAL_IP_HEADER)?.trim() ?? "";
+  return IP_SHAPE.test(real) ? real : null;
+}
 
 // Cookie names the SSR fetch forwards to the API. Auth cookies gate
 // the session; oz_locale lets `/catalog/matches/:id` pull
@@ -36,6 +59,13 @@ export async function serverApi<T>(path: string): Promise<T | null> {
 
   const requestHeaders = await headers();
   const requestId = requestHeaders.get(REQUEST_ID_HEADER);
+  // Forward the visitor's IP so the api's per-IP catalog rate limits key
+  // on the person browsing, not on this replica. Fastify runs with
+  // `trustProxy: 1`, and this container is the api's immediate peer, so
+  // the api takes exactly this value as request.ip. Without it every
+  // SSR render site-wide would share three buckets (web1/2/3) and the
+  // storefront would throttle itself under ordinary load.
+  const clientIp = clientIpFrom(requestHeaders);
 
   // `??` would treat empty strings as set — but the documented
   // `.env.example` ships `NEXT_PUBLIC_API_URL=` (empty for "same
@@ -57,6 +87,7 @@ export async function serverApi<T>(path: string): Promise<T | null> {
         accept: "application/json",
         ...(cookieHeader ? { cookie: cookieHeader } : {}),
         ...(requestId ? { [REQUEST_ID_HEADER]: requestId } : {}),
+        ...(clientIp ? { [FORWARDED_FOR_HEADER]: clientIp } : {}),
       },
       cache: "no-store",
     });

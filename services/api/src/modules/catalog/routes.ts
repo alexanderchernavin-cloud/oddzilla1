@@ -969,7 +969,18 @@ export default async function catalogRoutes(app: FastifyInstance) {
   });
 
   // ── One sport + its upcoming/live matches ───────────────────────────
-  app.get("/catalog/sports/:slug", async (request) => {
+  // Per-IP cap on the odds-bearing catalog reads (2026-09-03). Friction
+  // for the naive scraper, not a wall: ~5 req/s sustained, so enumerating
+  // the whole offer takes minutes instead of seconds while a human — or an
+  // office / carrier NAT worth of humans — never gets close. request.ip is
+  // the real visitor on both paths: Caddy pins X-Forwarded-For for browser
+  // calls, and the web tier forwards the same value on its SSR fetches
+  // (apps/web/src/lib/server-fetch.ts), so the three replicas don't share
+  // three buckets. Search keeps its own tighter 60/min below.
+  app.get(
+    "/catalog/sports/:slug",
+    { config: { rateLimit: { max: 300, timeWindow: "1 minute" } } },
+    async (request) => {
     const params = z.object({ slug: z.string().min(1).max(32) }).parse(request.params);
     const q = matchListQuery.parse(request.query);
 
@@ -1264,7 +1275,11 @@ export default async function catalogRoutes(app: FastifyInstance) {
   });
 
   // ── One match (+ tournament/sport + active markets + outcomes) ──────
-  app.get("/catalog/matches/:id", async (request) => {
+  app.get(
+    "/catalog/matches/:id",
+    // Per-IP scraper friction — see the /catalog/sports/:slug note.
+    { config: { rateLimit: { max: 300, timeWindow: "1 minute" } } },
+    async (request) => {
     const params = z
       .object({ id: z.coerce.bigint() })
       .parse(request.params);
@@ -1851,7 +1866,11 @@ export default async function catalogRoutes(app: FastifyInstance) {
   // broker leaves some matches stuck at status='live' for hours with
   // no corresponding odds flow — those shouldn't appear in the live
   // list because the user can't place a bet on them anyway.
-  app.get("/catalog/matches", async (request) => {
+  app.get(
+    "/catalog/matches",
+    // Per-IP scraper friction — see the /catalog/sports/:slug note.
+    { config: { rateLimit: { max: 300, timeWindow: "1 minute" } } },
+    async (request) => {
     const q = z
       .object({
         status: z.enum(["live", "upcoming"]).default("live"),
@@ -2110,7 +2129,11 @@ export default async function catalogRoutes(app: FastifyInstance) {
   // the top, NULLs last so unbackfilled rows don't crowd out the ones
   // we know about, then live-first, then more-matches-first, then
   // alphabetical.
-  app.get("/catalog/sports/:slug/tournaments", async (request) => {
+  app.get(
+    "/catalog/sports/:slug/tournaments",
+    // Per-IP scraper friction — see the /catalog/sports/:slug note.
+    { config: { rateLimit: { max: 300, timeWindow: "1 minute" } } },
+    async (request) => {
     const params = z.object({ slug: z.string().min(1).max(32) }).parse(request.params);
     const [sport] = await app.db
       .select()

@@ -8,6 +8,7 @@ import {
   char,
   text,
   numeric,
+  integer,
   timestamp,
   inet,
   unique,
@@ -46,6 +47,12 @@ export const tickets = pgTable(
     // odds instead of rejecting on odds_drift_exceeded. Single + combo
     // only; ignored for tiple / tippot / betbuilder.
     acceptOddsChanges: boolean().notNull().default(false),
+    // Migration 0097: ms between the placement intent (POST /bets/intent)
+    // being issued and POST /bets landing. NULL when no token accompanied
+    // the placement (pre-migration rows, or intent_required switched
+    // off). Humans spread widely; automation clusters just above the
+    // configured minimum — feeds the RiskZilla behaviour rollup.
+    quoteToPlaceMs: integer("quote_to_place_ms"),
   },
   (t) => [
     check("tickets_stake_pos", sql`${t.stakeMicro} > 0`),

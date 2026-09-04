@@ -14,6 +14,7 @@ const TABS = [
   { href: "/admin/riskzilla/settings", label: "Settings" },
   { href: "/admin/riskzilla/market-factors", label: "Market factors" },
   { href: "/admin/riskzilla/live-delay", label: "Live delay" },
+  { href: "/admin/riskzilla/bot-controls", label: "Bot controls" },
   { href: "/admin/riskzilla/bank", label: "Bank" },
   { href: "/admin/riskzilla/betticker", label: "Betticker" },
   { href: "/admin/riskzilla/bets", label: "Bets" },
