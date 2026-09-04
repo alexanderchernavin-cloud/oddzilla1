@@ -157,6 +157,8 @@ export function SportradarDesk({
         <Kpi label="Sports LMT covers" value={summary.lmtSports} />
       </div>
 
+      <SyncPanel sports={sports.filter((s) => s.srSportId !== null)} />
+
       <ImportPanel sports={sports.filter((s) => s.srSportId !== null)} />
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -465,6 +467,146 @@ function StatusChip({
       {status}
       {source ? ` · ${source}` : ""}
     </span>
+  );
+}
+
+interface SyncResult {
+  dryRun: boolean;
+  proposed: number;
+  autoConfirmed: number;
+  written: number;
+  fetchErrors: string[];
+  sports: Array<{
+    sportSlug: string;
+    days: number;
+    fixturesFetched: number;
+    matchesConsidered: number;
+    proposed: number;
+    autoConfirmed: number;
+    queuedForReview: number;
+    written: number;
+  }>;
+}
+
+// The primary path: pull the fixtures from Sportradar's statistics feed
+// and match them. The paste import below stays for anything the feed does
+// not carry, and for a one-off correction.
+function SyncPanel({ sports }: { sports: SportOption[] }) {
+  const router = useRouter();
+  const [sportSlug, setSportSlug] = useState("");
+  const [result, setResult] = useState<SyncResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const run = async (dryRun: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await clientApi<SyncResult>("/admin/sportradar/sync", {
+        method: "POST",
+        body: JSON.stringify({
+          ...(sportSlug ? { sportSlug } : {}),
+          dryRun,
+        }),
+      });
+      setResult(res);
+      if (!dryRun) router.refresh();
+    } catch (e) {
+      setError(e instanceof ApiFetchError ? e.body.message : "Sync failed.");
+      setResult(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        border: "1px solid var(--color-border, #333)",
+        borderRadius: 10,
+        padding: 14,
+      }}
+    >
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>Sync from Sportradar</div>
+      <p style={{ fontSize: 13, color: "var(--color-fg-muted, #888)", maxWidth: 760, margin: "4px 0 10px" }}>
+        Fetches each sport&apos;s fixtures for the days our own open matches
+        fall on and pairs them automatically. Strong, unambiguous pairs are
+        confirmed; the rest queue below. Decisions you have already made are
+        never overwritten. <strong>Preview</strong> writes nothing.
+      </p>
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <select
+          value={sportSlug}
+          onChange={(e) => setSportSlug(e.target.value)}
+          style={{ padding: "6px 10px", borderRadius: 6 }}
+        >
+          <option value="">All covered sports</option>
+          {sports.map((s) => (
+            <option key={s.slug} value={s.slug}>
+              {s.name}
+            </option>
+          ))}
+        </select>
+        <button type="button" style={btn()} disabled={busy} onClick={() => run(true)}>
+          {busy ? "Working…" : "Preview"}
+        </button>
+        <button type="button" style={btn("ok")} disabled={busy} onClick={() => run(false)}>
+          Sync now
+        </button>
+      </div>
+
+      {error ? <div style={{ color: "#e66", fontSize: 13, marginTop: 8 }}>{error}</div> : null}
+
+      {result ? (
+        <div style={{ fontSize: 13, marginTop: 10 }}>
+          <div>
+            {result.dryRun ? "Preview" : "Synced"}: {result.proposed} paired ·{" "}
+            {result.autoConfirmed} auto-confirmed
+            {result.dryRun ? "" : ` · ${result.written} written`}
+          </div>
+          {result.fetchErrors.length > 0 ? (
+            <details style={{ marginTop: 6 }}>
+              <summary style={{ cursor: "pointer", color: "#c93" }}>
+                {result.fetchErrors.length} day
+                {result.fetchErrors.length === 1 ? "" : "s"} could not be fetched
+              </summary>
+              {result.fetchErrors.map((e) => (
+                <div key={e} className="mono" style={{ fontSize: 12 }}>
+                  {e}
+                </div>
+              ))}
+            </details>
+          ) : null}
+          {result.sports.length > 0 ? (
+            <table style={{ borderCollapse: "collapse", fontSize: 12, marginTop: 8 }}>
+              <thead>
+                <tr style={{ textAlign: "left", color: "var(--color-fg-muted, #888)" }}>
+                  <th style={{ padding: "2px 10px 2px 0" }}>Sport</th>
+                  <th style={{ padding: "2px 10px" }}>Ours</th>
+                  <th style={{ padding: "2px 10px" }}>SR</th>
+                  <th style={{ padding: "2px 10px" }}>Paired</th>
+                  <th style={{ padding: "2px 10px" }}>Auto</th>
+                  <th style={{ padding: "2px 10px" }}>Review</th>
+                </tr>
+              </thead>
+              <tbody>
+                {result.sports.map((s) => (
+                  <tr key={s.sportSlug}>
+                    <td style={{ padding: "2px 10px 2px 0" }}>{s.sportSlug}</td>
+                    <td style={{ padding: "2px 10px" }}>{s.matchesConsidered}</td>
+                    <td style={{ padding: "2px 10px" }}>{s.fixturesFetched}</td>
+                    <td style={{ padding: "2px 10px" }}>{s.proposed}</td>
+                    <td style={{ padding: "2px 10px", color: "#3a7" }}>{s.autoConfirmed}</td>
+                    <td style={{ padding: "2px 10px", color: "#c93" }}>{s.queuedForReview}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

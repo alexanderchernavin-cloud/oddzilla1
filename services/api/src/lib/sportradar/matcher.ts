@@ -163,10 +163,27 @@ export function normaliseTeamName(raw: string): {
   return { tokens, age, gender };
 }
 
-/** Two tokens agree if they are equal, or one is a >=3-char prefix of the other. */
+/**
+ * Two tokens agree if they are equal, one is a >=3-char prefix of the
+ * other, or one is a bare INITIAL for the other.
+ *
+ * The initial rule is what makes individual sports work at all. Fonbet
+ * names a player "Hoshko N"; Sportradar names the same player
+ * "Hoshko, Nazar". Without it those score 0.5 — one matched token out of
+ * four — which sits just under MIN_TEAM_SCORE, and every tennis, table
+ * tennis, darts and badminton fixture falls out. Measured against
+ * production 2026-09-04: table tennis paired 0 of 541 before this rule.
+ *
+ * It does make "Smith J" agree with both "Smith, John" and "Smith, James".
+ * That is handled where it belongs rather than here: both candidates then
+ * score identically, and `proposeMappings` refuses to auto-confirm a
+ * winner that its runner-up is within AMBIGUITY_MARGIN of, so the pair
+ * goes to a human instead of to a coin flip.
+ */
 function tokensAgree(a: string, b: string): boolean {
   if (a === b) return true;
   const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  if (short.length === 1) return long.startsWith(short);
   return short.length >= 3 && long.startsWith(short);
 }
 

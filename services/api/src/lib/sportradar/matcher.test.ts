@@ -97,6 +97,23 @@ describe("teamSimilarity", () => {
     assert.equal(teamSimilarity("Real Madrid", "Real Madrid U19"), 0);
   });
 
+  it("matches an initial against the full first name", () => {
+    // Individual sports: Fonbet writes "Hoshko N", Sportradar writes
+    // "Hoshko, Nazar". Without this every tennis / table-tennis / darts
+    // fixture scores 0.5 and falls under the floor.
+    assert.equal(teamSimilarity("Hoshko N", "Hoshko, Nazar"), 1);
+    assert.equal(teamSimilarity("Orlowski P", "Orlowski, Petr"), 1);
+    // Doubles pairs too.
+    assert.equal(
+      teamSimilarity("Krawietz K / Puetz T", "Krawietz, Kevin / Puetz, Tim"),
+      1,
+    );
+  });
+
+  it("does not let an initial match an unrelated surname", () => {
+    assert.ok(teamSimilarity("Hoshko N", "Dedek, Jiri") < 0.6);
+  });
+
   it("still pairs two youth sides that use different vocabularies", () => {
     // Fonbet says "(youth)", Sportradar says "U21" — same squad, and a
     // mismatch BETWEEN qualifiers is only a weak signal, not a veto.

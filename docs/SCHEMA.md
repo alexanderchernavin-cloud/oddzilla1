@@ -391,13 +391,18 @@ kickoff, the per-team scores, and any runners-up), and
 Why a table at all, when the other two id spaces need none: `matches.id`
 is already Oddzilla's own id for every fixture from every feed, and
 `matches.provider_urn` already carries the feed's (`od:match:<n>` /
-`fb:match:<n>`). Sportradar's is the one id nothing we ingest carries —
-measured 2026-09-04, a full 13 667-event Fonbet snapshot has no
-external-id field on any event and their match pages load statistics only
-from their own hosts, while Sportradar's gismo feed answers
-`403 Unauthorized feed` to any request off a licensed origin. So the SR id
-is supplied rather than derived, which also makes it the only one that can
-be *wrong* — hence the review state and the provenance columns.
+`fb:match:<n>`). Sportradar's is carried by neither — measured
+2026-09-04, a full 13 667-event Fonbet snapshot has no external-id field
+on any event, and their match pages load statistics only from their own
+hosts.
+
+It *is* fetchable from Sportradar's statistics host
+(`sport_matches/<srSportId>/<date>`, which answers ordinary
+server-to-server requests — their LMT host is a different matter and
+refuses everything off a licensed origin), but with no shared key on
+either side the link has to be **inferred** from kickoff time and team
+names. That inference is what the review state and the provenance columns
+exist for: the SR id is the only one of the three that can be *wrong*.
 
 Two indexes carry rules rather than performance. `match_sportradar_srid_uniq`
 is UNIQUE on `sr_match_id` **`WHERE status <> 'rejected'`**: one live

@@ -4,16 +4,20 @@
 -- matches.id (bigserial), with matches.provider_urn carrying the source
 -- id as 'od:match:<n>' (Oddin, esports) or 'fb:match:<n>' (Fonbet,
 -- traditional sports). That covers two of the three id spaces the
--- storefront needs. The third — Sportradar — has no feed of its own
--- here: neither Oddin's fixture endpoint nor Fonbet's line carries an
--- SR id (measured 2026-09-04 across a full 13 667-event Fonbet
--- snapshot: no external-id field of any kind), and Sportradar's own
--- gismo feed answers `403 Unauthorized feed` to anything that is not on
--- a licensed origin.
+-- storefront needs. The third — Sportradar — is carried by neither
+-- feed: measured 2026-09-04 across a full 13 667-event Fonbet snapshot,
+-- no event has an external-id field of any kind, and Oddin's fixture
+-- endpoint has none either.
 --
--- So the SR id is the only one that has to be STORED rather than
--- derived, and the only one that can be WRONG. This table holds it,
--- along with the provenance needed to judge it:
+-- It IS obtainable from Sportradar's statistics host, which answers
+-- ordinary server-to-server requests (see
+-- services/api/src/lib/sportradar/fixture-source.ts — note that their
+-- LMT host is a different matter and refuses everything off a licensed
+-- origin). But obtaining it means MATCHING on kickoff time and team
+-- names, because there is no shared key to join on. So the SR id is the
+-- only one that has to be STORED rather than derived, and the only one
+-- that can be WRONG. This table holds it, along with the provenance
+-- needed to judge it:
 --
 --   * one row per match (match_id PK) — a match has at most one SR fixture
 --   * status: 'confirmed' renders on the storefront, 'candidate' waits in

@@ -1477,28 +1477,52 @@ its job row and image.
 
 The Live Match Tracker on a traditional-sport match page needs a
 **Sportradar** match id. Oddzilla's own id (`matches.id`) and the feed's
-id (`matches.provider_urn`) come free with every fixture; the Sportradar
-one does not exist in either feed and has to be supplied here. Desk:
+id (`matches.provider_urn`) come free with every fixture. The Sportradar
+one is in neither feed, and there is no shared key to join on, so it is
+fetched from Sportradar separately and paired on kickoff time and team
+names — which is why it needs a review step and a desk of its own:
 `/admin/sportradar` (Catalog group).
 
-**Where the ids come from.** Not automatically, today. Fonbet's line
-carries no external id of any kind (checked 2026-09-04 over a full
-13 667-event snapshot) and their statistics are first-party, not Betradar.
-Sportradar's own `gismo` feed — the one their widgets read — answers
+**Where the ids come from.** Sportradar runs two feed hosts and they
+behave differently:
+
+- `lmt.fn.sportradar.com` — the Live Match Tracker's own data feed.
+  Licensed per embedding origin; answers `403 Unauthorized feed` to
+  anything else, including a plain server-to-server request with no
+  `Origin` header. This is why the tracker is embedded through their
+  hosted standalone page rather than the widget loader.
+- `stats.fn.sportradar.com` — the statistics feed. Answers ordinary
+  server-to-server requests with no token and no `Origin` (verified
+  2026-09-04 across all 17 sports we carry that LMT covers).
+
+The second one carries what we need:
 
 ```
-{"doc":[{"event":"exception","data":{"message":"Unauthorized feed ","code":403}}]}
+GET https://stats.fn.sportradar.com/betradar/en/Etc:UTC/gismo/sport_matches/<srSportId>/<YYYY-MM-DD>
 ```
 
-to any request that is not on a licensed origin, including a plain
-server-to-server request with no `Origin` header at all. The public
-`betradar` client is licensed for localhost and Sportradar's own hosts
-only, which is exactly why the tracker itself is embedded through their
-hosted standalone page rather than the widget loader. **Until Sportradar
-issues Oddzilla's Client ID (blocked on their side as of Sept 2026), or a
-Sportradar REST API key exists, fixtures are supplied by an operator.**
+per match `_id` (the Sportradar match id), `_sid`, `_dt.uts` (kickoff,
+UTC), both team names, and `coverage.lmtsupport`. Nothing is bypassed and
+no credential is involved — but get the same written confirmation from
+Sportradar that covers the standalone-page embed, and if they would
+rather we pull from a licensed API once the Client ID exists, only
+`services/api/src/lib/sportradar/fixture-source.ts` changes.
 
-**Importing a batch.** Open `/admin/sportradar` → *Import Sportradar
+**Normal operation: press Sync.** `/admin/sportradar` → *Sync from
+Sportradar* → pick a sport or leave it on all → **Preview** (writes
+nothing) → **Sync now**. It fetches only the days our own open matches
+fall on, so a sport with nothing to map costs no requests.
+
+Expect roughly a quarter of open matches to pair, because Fonbet's line
+is much broader than Sportradar's statistics coverage. Measured
+2026-09-04 over 3 418 open matches in LMT-covered sports: 926 paired, 473
+auto-confirmed — football 751/1 926, tennis 58/218, rugby 27/75. Where a
+match does not pair it is nearly always because Sportradar does not carry
+that fixture at all (regional and lower-tier leagues, some women's and
+youth competitions); the diagnostic tell is that the best Sportradar
+candidate is an unrelated match rather than a near-miss.
+
+**Importing a batch by hand.** Open `/admin/sportradar` → *Import Sportradar
 fixtures*, pick the sport, paste, press **Preview** (a dry run: it matches
 and reports, and writes nothing), then **Import**. Accepted input:
 
@@ -1540,10 +1564,11 @@ ssh team@178.104.174.24 "sudo -n docker exec oddzilla-postgres-1 psql -U oddzill
 ```
 
 **When the Client ID arrives.** Swap `betradar` for it in
-`apps/web/src/components/widgets/sportradar-lmt.tsx`, have `oddzilla.cc`
-whitelisted by Sportradar, and add a fixture puller behind the existing
-`SportradarFixture` shape — the matcher, the review queue and the
-storefront gate all stay as they are.
+`apps/web/src/components/widgets/sportradar-lmt.tsx` and have
+`oddzilla.cc` whitelisted by Sportradar. If a licensed fixture API comes
+with it, point `createStatsFixtureSource` at it (or add a sibling
+implementation of `SportradarFixtureSource`) — the matcher, the review
+queue and the storefront gate all stay as they are.
 
 ## OZ demo currency backfill
 
