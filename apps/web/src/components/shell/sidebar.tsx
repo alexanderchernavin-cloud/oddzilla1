@@ -561,17 +561,29 @@ function SportsSection({
     });
   }
 
-  // Move applies only inside the visible bucket. We re-derive the
-  // new slug order by reading `partitioned.visible` (the bucket the
-  // arrows are visible against), swapping the two indices, and
-  // emitting the resulting slug list as the new order. Hidden sports
+  // Which half of the rail a sport belongs to. `sports.kind` is the
+  // discriminator; anything that isn't explicitly traditional is an
+  // esport, so a new kind from the feed lands with the esports rather
+  // than vanishing from both lists.
+  const inTab = (s: SportItem, t: SportKindTab) =>
+    (s.kind === "traditional" ? "traditional" : "esport") === t;
+
+  // Move applies within the visible bucket of the CURRENT tab, which
+  // is the only list the arrows are rendered against. The saved
+  // preference is still ONE global slug list, so we swap the two
+  // sports at their positions in the full visible order: sports of the
+  // other kind keep their slots and their relative order, and "up"
+  // means "above the next sport you can actually see". Hidden sports
   // are not included in `sport_order` because their position is
   // already fully determined by the hidden bucket.
-  function move(index: number, dir: -1 | 1) {
+  function move(list: SportItem[], index: number, dir: -1 | 1) {
     const swapWith = index + dir;
-    if (swapWith < 0 || swapWith >= partitioned.visible.length) return;
+    if (swapWith < 0 || swapWith >= list.length) return;
     const next = partitioned.visible.slice();
-    [next[index], next[swapWith]] = [next[swapWith]!, next[index]!];
+    const a = next.indexOf(list[index]!);
+    const b = next.indexOf(list[swapWith]!);
+    if (a < 0 || b < 0) return;
+    [next[a], next[b]] = [next[b]!, next[a]!];
     const slugs = next.map((s) => s.slug);
     setLocalOrder(slugs);
     persistOrder(slugs);
@@ -675,18 +687,70 @@ function SportsSection({
     )
   ) : null;
 
+  // Section header, shared by both modes. With both halves on offer
+  // it's the segmented tab control; with only one (a feed outage, or
+  // Fonbet switched off) it's a plain label rather than a toggle with
+  // a dead half.
+  const sectionHeader = (bothKinds: boolean, activeTab: SportKindTab) =>
+    bothKinds ? (
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "14px 2px 8px",
+        }}
+      >
+        <SportKindTabs
+          value={activeTab}
+          onChange={setTab}
+          esportsLabel={tShell("esportsSection")}
+          sportsLabel={tShell("sports")}
+        />
+        {trailing}
+      </div>
+    ) : (
+      <SectionLabel trailing={trailing}>
+        {activeTab === "traditional"
+          ? tShell("sports")
+          : tShell("esportsSection")}
+      </SectionLabel>
+    );
+
+  // Edit mode shows the SAME half of the rail the bettor is looking
+  // at, not both kinds stacked into one flat list. Flat, reordering a
+  // traditional sport meant scrolling past ~16 esports to reach the
+  // row, and the arrows on that row moved it through sports that were
+  // never on screen together. The tab strip stays live while editing,
+  // so the other half is one click away and `move` keeps emitting a
+  // single global order underneath.
+  //
+  // The universe here is visible + hidden, not just what renders
+  // outside edit mode: a bettor who hid every traditional sport must
+  // still be able to reach that tab to un-hide one.
   if (editing) {
+    const universe = [...partitioned.visible, ...partitioned.hidden];
+    const hasEsports = universe.some((s) => inTab(s, "esport"));
+    const hasTraditional = universe.some((s) => inTab(s, "traditional"));
+    const bothKinds = hasEsports && hasTraditional;
+    const editTab: SportKindTab = bothKinds
+      ? tab
+      : hasTraditional
+        ? "traditional"
+        : "esport";
+    const editVisible = partitioned.visible.filter((s) => inTab(s, editTab));
+    const editHidden = partitioned.hidden.filter((s) => inTab(s, editTab));
     return (
       <>
-        <SectionLabel trailing={trailing}>{tShell("sports")}</SectionLabel>
-        {partitioned.visible.map((s, idx) => (
+        {sectionHeader(bothKinds, editTab)}
+        {editVisible.map((s, idx) => (
           <SportEditRow
             key={s.slug}
             sport={s}
             canMoveUp={idx > 0}
-            canMoveDown={idx < partitioned.visible.length - 1}
-            onMoveUp={() => move(idx, -1)}
-            onMoveDown={() => move(idx, 1)}
+            canMoveDown={idx < editVisible.length - 1}
+            onMoveUp={() => move(editVisible, idx, -1)}
+            onMoveDown={() => move(editVisible, idx, 1)}
             onHide={() => hide(s.slug)}
             hidden={false}
             upLabel={tShell("moveSportUp")}
@@ -695,10 +759,10 @@ function SportsSection({
             showLabel={tShell("showSport")}
           />
         ))}
-        {partitioned.hidden.length > 0 && (
+        {editHidden.length > 0 && (
           <>
             <HiddenSportsHeader label={tShell("hiddenSportsHeader")} />
-            {partitioned.hidden.map((s) => (
+            {editHidden.map((s) => (
               <SportEditRow
                 key={s.slug}
                 sport={s}
@@ -726,8 +790,8 @@ function SportsSection({
   // of the two lists is rendered at a time; the saved sport order and
   // hidden set stay global slug lists, so ordering inside each still
   // honours whatever the bettor arranged.
-  const esports = renderList.filter((s) => s.kind !== "traditional");
-  const traditional = renderList.filter((s) => s.kind === "traditional");
+  const esports = renderList.filter((s) => inTab(s, "esport"));
+  const traditional = renderList.filter((s) => inTab(s, "traditional"));
 
   const renderSport = (s: SportItem) => {
     const sportActive = isActive(`/sport/${s.slug}`);
@@ -781,39 +845,18 @@ function SportsSection({
   };
 
   // Nothing to switch between when only one kind is on offer (a feed
-  // outage, or Fonbet switched off) — render that list under a plain
-  // label rather than a toggle with a dead half.
-  if (esports.length === 0 || traditional.length === 0) {
-    const only = esports.length > 0 ? esports : traditional;
-    const label =
-      esports.length > 0 ? tShell("esportsSection") : tShell("sports");
-    return (
-      <>
-        <SectionLabel trailing={trailing}>{label}</SectionLabel>
-        {only.map(renderSport)}
-      </>
-    );
-  }
-
-  const list = tab === "traditional" ? traditional : esports;
+  // outage, or Fonbet switched off) — `sectionHeader` then renders a
+  // plain label rather than a toggle with a dead half.
+  const bothKinds = esports.length > 0 && traditional.length > 0;
+  const activeTab: SportKindTab = bothKinds
+    ? tab
+    : traditional.length > 0
+      ? "traditional"
+      : "esport";
+  const list = activeTab === "traditional" ? traditional : esports;
   return (
     <>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          padding: "14px 2px 8px",
-        }}
-      >
-        <SportKindTabs
-          value={tab}
-          onChange={setTab}
-          esportsLabel={tShell("esportsSection")}
-          sportsLabel={tShell("sports")}
-        />
-        {trailing}
-      </div>
+      {sectionHeader(bothKinds, activeTab)}
       {list.map(renderSport)}
     </>
   );
@@ -961,6 +1004,7 @@ function CategoryGroup({
     <div>
       <CategoryHeader
         label={group.label}
+        logoUrl={group.logoUrl}
         liveCount={group.liveCount}
         tournamentCount={group.tournaments.length}
         expanded={expanded}
@@ -1124,6 +1168,14 @@ interface TournamentGroup {
   key: string;
   /** Null renders the tournaments without a header (ungrouped bucket). */
   label: string | null;
+  /**
+   * Logo to stand for the whole bucket, when one unambiguously does.
+   * Set only when every tournament in the bucket that carries a logo
+   * carries the SAME one — a cycling category is one race whose stages
+   * all wear the race's crest, whereas a country bucket holds several
+   * unrelated leagues and must not borrow whichever league sorted first.
+   */
+  logoUrl: string | null;
   liveCount: number;
   tournaments: Tournament[];
 }
@@ -1147,6 +1199,7 @@ interface TournamentGroup {
 function groupTournamentsByCategory(tournaments: Tournament[]): TournamentGroup[] {
   const ungrouped: Tournament[] = [];
   const byCategory = new Map<string, TournamentGroup>();
+  const ambiguousLogo = new Map<string, boolean>();
   for (const t of tournaments) {
     const label = t.category?.name?.trim();
     if (!label) {
@@ -1156,11 +1209,20 @@ function groupTournamentsByCategory(tournaments: Tournament[]): TournamentGroup[
     const key = String(t.category?.id ?? label);
     let group = byCategory.get(key);
     if (!group) {
-      group = { key, label, liveCount: 0, tournaments: [] };
+      group = { key, label, logoUrl: null, liveCount: 0, tournaments: [] };
       byCategory.set(key, group);
+      ambiguousLogo.set(key, false);
     }
     group.tournaments.push(t);
     group.liveCount += t.liveCount;
+    const logo = t.logoUrl ?? null;
+    if (logo) {
+      if (group.logoUrl == null) group.logoUrl = logo;
+      else if (group.logoUrl !== logo) ambiguousLogo.set(key, true);
+    }
+  }
+  for (const [key, group] of byCategory) {
+    if (ambiguousLogo.get(key)) group.logoUrl = null;
   }
   const groups = [...byCategory.values()].sort((a, b) =>
     (a.label ?? "").localeCompare(b.label ?? "", undefined, {
@@ -1168,7 +1230,13 @@ function groupTournamentsByCategory(tournaments: Tournament[]): TournamentGroup[
     }),
   );
   if (ungrouped.length > 0) {
-    groups.unshift({ key: "__ungrouped", label: null, liveCount: 0, tournaments: ungrouped });
+    groups.unshift({
+      key: "__ungrouped",
+      label: null,
+      logoUrl: null,
+      liveCount: 0,
+      tournaments: ungrouped,
+    });
   }
   return groups;
 }
@@ -1182,16 +1250,19 @@ function groupTournamentsByCategory(tournaments: Tournament[]): TournamentGroup[
 //   - It's a button, so it gets a hover surface and a caret. A header
 //     that toggles must look like it toggles.
 //   - The flag comes from Fonbet's circle-flag set via the api proxy
-//     (see lib/category-flags.ts); non-country categories fall back to
-//     an initials mark so every row keeps the same left-edge alignment.
+//     (see lib/category-flags.ts); a category that isn't a country
+//     falls back to the bucket's own logo when it has one, and to
+//     nothing at all when it doesn't.
 function CategoryHeader({
   label,
+  logoUrl,
   liveCount,
   tournamentCount,
   expanded,
   onToggle,
 }: {
   label: string;
+  logoUrl: string | null;
   liveCount: number;
   tournamentCount: number;
   expanded: boolean;
@@ -1226,7 +1297,7 @@ function CategoryHeader({
       }}
     >
       <Caret open={expanded} size={9} />
-      <CategoryMark label={label} />
+      <CategoryMark label={label} logoUrl={logoUrl} />
       <span
         style={{
           flex: 1,
@@ -1272,14 +1343,21 @@ function CategoryHeader({
   );
 }
 
-// 15-px round mark for a category: the country's flag when we have one,
-// otherwise the first two letters over a tinted disc. The fallback is
-// what makes non-country buckets ("NBA 2K26", "Friendly games", "WC
-// 2026") line up with their neighbours instead of shifting the label.
-function CategoryMark({ label }: { label: string }) {
+// 15-px mark for a category: the country's flag when we have one,
+// otherwise the bucket's own logo (a cycling category IS a race, and
+// the race's crest is on its tournaments), otherwise NOTHING.
+//
+// There used to be a two-letter initials disc here so every row kept
+// the same left edge. It was the wrong trade: on a cycling tree it
+// stamped invented monograms — "TO" on Tour of Britain, "VE" on Vuelta
+// Espana, "ZT" on ZLM Tour — beside names that already say those words,
+// which reads as machine filler rather than as branding. A missing
+// logo is better shown as absent; the caret still holds the left edge.
+function CategoryMark({ label, logoUrl }: { label: string; logoUrl: string | null }) {
   const url = categoryFlagUrl(label);
-  const [errored, setErrored] = useState(false);
-  if (url && !errored) {
+  const [flagErrored, setFlagErrored] = useState(false);
+  const [logoErrored, setLogoErrored] = useState(false);
+  if (url && !flagErrored) {
     return (
       <img
         src={url}
@@ -1287,7 +1365,7 @@ function CategoryMark({ label }: { label: string }) {
         aria-hidden
         width={15}
         height={15}
-        onError={() => setErrored(true)}
+        onError={() => setFlagErrored(true)}
         style={{
           width: 15,
           height: 15,
@@ -1298,43 +1376,25 @@ function CategoryMark({ label }: { label: string }) {
       />
     );
   }
-  return (
-    <span
-      aria-hidden
-      className="mono"
-      style={{
-        width: 15,
-        height: 15,
-        borderRadius: "50%",
-        flexShrink: 0,
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "var(--surface-2)",
-        border: "1px solid var(--hairline)",
-        color: "var(--fg-muted)",
-        fontSize: 7,
-        fontWeight: 700,
-        letterSpacing: 0,
-        lineHeight: 1,
-      }}
-    >
-      {initialsFor(label)}
-    </span>
-  );
-}
-
-// Two-character mark: initials of the first two words when the label
-// has several ("WC 2026" -> "WC"), otherwise the first two letters.
-function initialsFor(label: string): string {
-  const words = label
-    .split(/[\s.\-_]+/)
-    .map((w) => w.trim())
-    .filter(Boolean);
-  if (words.length >= 2) {
-    return (words[0]![0]! + words[1]![0]!).toUpperCase();
+  if (logoUrl && !logoErrored) {
+    return (
+      <img
+        src={logoUrl}
+        alt=""
+        aria-hidden
+        width={15}
+        height={15}
+        onError={() => setLogoErrored(true)}
+        style={{
+          width: 15,
+          height: 15,
+          objectFit: "contain",
+          flexShrink: 0,
+        }}
+      />
+    );
   }
-  return (words[0] ?? label).slice(0, 2).toUpperCase();
+  return null;
 }
 
 // Disclosure caret. Rotates rather than swapping glyphs so the

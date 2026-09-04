@@ -230,7 +230,8 @@ const FLAG_FILES: Record<string, string> = {
   // measured against the 347 category rows on production 2026-09-04.
   // Every other unmatched row there is a competition or format
   // ("Euroleague", "Copa Libertadores", "NBA 2K26", "Test matches"),
-  // which correctly gets the initials mark rather than a flag.
+  // which correctly gets no flag (the sidebar then falls back to the
+  // bucket's own tournament logo, or to no mark at all).
   "czech": "Czech_Republic",
   "dominicana": "Dominican_Republic",
   "salvador": "El_Salvador",
