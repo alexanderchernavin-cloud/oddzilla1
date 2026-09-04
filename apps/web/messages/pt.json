@@ -1089,15 +1089,6 @@
     "intro": "Escolha um apelido público, escreva uma bio curta, selecione seu avatar e decida se seus boletins resolvidos aparecem no feed da comunidade.",
     "yourPublicProfile": "Seu perfil público:"
   },
-  "logos": {
-    "title": "Logos dos times",
-    "subtitle": "Navegue pela biblioteca de logos por esporte, categoria e liga.",
-    "allLeagues": "Todas as ligas",
-    "filterPlaceholder": "Filtrar times…",
-    "pickHint": "Escolha à esquerda um esporte, depois uma categoria e uma liga (ou “Todas as ligas”) para ver os logos dos times.",
-    "teamsCount": "{count, plural, one {# time} other {# times}}",
-    "teamsOfCount": "{shown} de {total, plural, one {# time} other {# times}}"
-  },
   "languages": {
     "en": "English",
     "cs": "Čeština",

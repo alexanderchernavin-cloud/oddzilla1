@@ -1089,15 +1089,6 @@
     "intro": "Pick a public handle, write a short bio, choose your avatar, and decide whether your settled tickets show up in the community feed.",
     "yourPublicProfile": "Your public profile:"
   },
-  "logos": {
-    "title": "Team logos",
-    "subtitle": "Browse the logo library by sport, category, and league.",
-    "allLeagues": "All Leagues",
-    "filterPlaceholder": "Filter teams…",
-    "pickHint": "Pick a sport, then a category, then a league (or “All Leagues”) on the left to view its team logos.",
-    "teamsCount": "{count, plural, one {# team} other {# teams}}",
-    "teamsOfCount": "{shown} of {total, plural, one {# team} other {# teams}}"
-  },
   "languages": {
     "en": "English",
     "cs": "Čeština",
