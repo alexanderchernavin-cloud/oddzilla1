@@ -48,6 +48,54 @@ form [`packages/types/src/specifiers.ts`](../packages/types/src/specifiers.ts)
 hashes. A Bifrost outcome therefore maps onto a `market_outcomes` row with
 no lookup table (`bifrost.ParseOutcomeID`).
 
+### One specifier value is not the AMQP feed's: `handicap`
+
+**Bifrost states a handicap from the opposite side to Oddin's AMQP feed, so
+`bifrost.NormalizeSpecifiers` flips its sign at parse time** — a Bifrost
+`handicap=-1.5` becomes the `handicap=1.5` the AMQP feed would have sent.
+`parseMarketSegment` is the only place a market key is built, so the
+correction covers `odds_change` and `bet_settlement` in one step, and the
+storefront needs nothing: it renders the line straight from the specifier
+(home as-is, away negated), which is correct once the key is.
+
+Measured on production 2026-09-04, before the fix: every backup-fed market
+keyed `handicap=-1.5` priced the HOME outcome *shorter* than that same
+team's moneyline. CS2 match 1163395 (Falcons vs G2) carried a 1.55
+moneyline with "-1.5" at 1.15 and "+1.5" at 2.70 — and a -1.5 line can
+never be shorter than the moneyline, so 1.15 was the +1.5 price wearing
+the wrong label. Correct score agreed to two decimals: P(2:0) = 0.42
+against the 2.70 cell, 1 - P(0:2) = 0.88 against the 1.15 one.
+
+It is systematic, not per-market. Of the same-match ±1.5 pairs across all
+nine handicap-bearing market ids (2, 11, 66, 88, 95, 96, 125, 132, 136 —
+match scope and per-map), **100% inverted on the backup feed against 100%
+standard on AMQP**, flipping on the day the source was switched:
+
+```
+2026-08-15 .. 09-02   standard: all   inverted: 0     (AMQP)
+2026-09-03            standard: 24    inverted: 15    (switch at 16:02 UTC)
+2026-09-04            standard: 0     inverted: 49    (backup)
+```
+
+Oddin's own AMQP feed shipped this same inversion from launch until
+**2026-06-02** (April 626/626 inverted, May 2160/2160, clean from June 2),
+so Bifrost appears to be serving the pre-fix convention. Worth raising
+with Oddin — the durable fix is on their side.
+
+**Why this had to be corrected at key level and not in the label.** Market
+identity is `(match, provider_market_id, specifiers_hash)` and settlement
+is dual-source by design, so an inverted key is not cosmetic: Oddin's
+`bet_settlement` keeps arriving during a backup window and lands on the
+row the backup feed priced. Of the 26 backup-era margin-1 (2:1 / 1:2)
+±1.5 pairs settled before the fix, 19 were graded on the AMQP convention,
+4 on Bifrost's, and 3 contradicted each other — i.e. a bettor taking
+"-1.5" at 1.15 would mostly have been graded as a genuine -1.5. Only one
+ticket (OZ demo, no handicap leg) was placed in that window, so no money
+moved.
+
+`handicap` is the only specifier key that ever carries a negative value
+(checked against every live market row), so no other key needs this.
+
 ### Operations the backup uses
 
 | Operation | Role |
@@ -207,6 +255,7 @@ dark.
 | `probabilities` | `1/odds` normalised by the market's overround (two-way 1.95 / 1.78 → 0.4775 / 0.5225; Oddin's own feed carried 0.48 / 0.52) |
 | `simpleScore.periods` | `<period_scores>`; per-sport family fills `home_won_rounds` (CS2, CS2 Duels, Valorant, Rainbow Six, Crossfire), `home_kills` (Dota 2, Dota 2 Duels, LoL, King of Glory, MLBB, Arena of Valor, Wild Rift, Deadlock) or `home_goals` (eFootball, FIFA); other sports carry `home_score` only. The live period (`activePeriodIdx`, STARTED only) gets `match_status_code="6"` and fills `<scoreboard>`. |
 | `datePlannedStart` change | `<fixture_change change_type="2" start_time=…>`; feed-ingester re-fetches the fixture (REST, then Bifrost) |
+| `handicap=-1.5` | `handicap=1.5` — sign flipped onto the AMQP convention at parse time (see "One specifier value is not the AMQP feed's") |
 
 Pure functions in
 [`services/bifrost-feed/internal/translate`](../services/bifrost-feed/internal/translate/),
@@ -345,6 +394,7 @@ again.
 | Markets MaxBet hides from its Bifrost are not fed. | Accepted: such markets simply stay suspended from the watchdog flush, which is the safe direction. |
 | `matches.status` for a CLOSED match with zero markets is not moved by the backup. | The settlement service's all-markets-terminal close covers the settled case; the "cancelled look-alike" falls under the first row. |
 | Payload hash of a backup settlement can differ from Oddin's. | Harmless double `settlements` row; every downstream write is idempotent. |
+| Bifrost states `handicap` from the opposite side to the AMQP feed. | **Corrected on our side** (`bifrost.NormalizeSpecifiers`, 2026-09-04) so both sources key the same market row. Still open upstream: Oddin fixed this on AMQP on 2026-06-02 and Bifrost did not follow, so if they ever align, this flip has to come back out — pin the direction with the moneyline check above before changing it. |
 
 ## 4b. What the operator sees it called
 
