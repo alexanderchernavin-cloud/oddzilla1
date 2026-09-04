@@ -85,7 +85,8 @@
     "matchFrameTitle": "Match {id}",
     "esportsSection": "Esports",
     "showTournaments": "Show tournaments",
-    "hideTournaments": "Hide tournaments"
+    "hideTournaments": "Hide tournaments",
+    "categoryHiddenFromLists": "Shown only when selected"
   },
   "wallet": {
     "title": "Wallet",
@@ -393,8 +394,9 @@
     "live": "Live",
     "upcoming": "Pre-match",
     "topTournaments": "Top tournaments",
-    "filterTournament": "Tournament: {name}",
-    "filterTeam": "Team: {name}",
+    "filterKindCategory": "Category",
+    "filterKindTournament": "Tournament",
+    "filterKindTeam": "Team",
     "clearFilter": "Clear filter",
     "noMatches": "No matches right now.",
     "matchCount": "{count, plural, one {# match} other {# matches}}"

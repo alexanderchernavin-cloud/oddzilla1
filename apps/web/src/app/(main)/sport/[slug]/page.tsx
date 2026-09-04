@@ -15,6 +15,10 @@ import { SportViewTracker } from "@/lib/zillapass-track";
 interface SportResponse {
   sport: { id: number; slug: string; name: string };
   filteredTeam: { id: number; name: string } | null;
+  // Set when ?category= resolved to a real category under this sport.
+  // Null for an id that doesn't belong here, which is what keeps a
+  // hand-typed URL from rendering an empty chip over an empty list.
+  filteredCategory: { id: number; name: string } | null;
   matches: ListMatch[];
 }
 
@@ -35,15 +39,21 @@ export default async function SportPage({
   searchParams,
 }: {
   params: Promise<{ slug: string }>;
-  searchParams: Promise<{ tournament?: string; team?: string }>;
+  searchParams: Promise<{
+    tournament?: string;
+    team?: string;
+    category?: string;
+  }>;
 }) {
   const { slug } = await params;
   const sp = await searchParams;
   const tournamentId = sp.tournament && /^\d+$/.test(sp.tournament) ? sp.tournament : null;
   const teamId = sp.team && /^\d+$/.test(sp.team) ? sp.team : null;
+  const categoryId = sp.category && /^\d+$/.test(sp.category) ? sp.category : null;
   const qs = new URLSearchParams({ limit: "100" });
   if (tournamentId) qs.set("tournament", tournamentId);
   if (teamId) qs.set("team", teamId);
+  if (categoryId) qs.set("category", categoryId);
   const [data, t, tShell, tCommon] = await Promise.all([
     serverApi<SportResponse>(`/catalog/sports/${slug}?${qs.toString()}`),
     getTranslations("sport"),
@@ -56,12 +66,19 @@ export default async function SportPage({
     ? data.matches.find((m) => String(m.tournament.id) === tournamentId)?.tournament.name ?? null
     : null;
   const filteredTeamName = data.filteredTeam?.name ?? null;
-  const clearTeamHref = tournamentId
-    ? `/sport/${slug}?tournament=${tournamentId}`
-    : `/sport/${slug}`;
-  const clearTournamentHref = teamId
-    ? `/sport/${slug}?team=${teamId}`
-    : `/sport/${slug}`;
+  const filteredCategoryName = data.filteredCategory?.name ?? null;
+
+  // Dropping one chip keeps the others. Built from the live set instead
+  // of hand-listing combinations — two filters were already six branches
+  // of ternary, and this adds a third.
+  const clearHref = (drop: "tournament" | "team" | "category") => {
+    const rest = new URLSearchParams();
+    if (tournamentId && drop !== "tournament") rest.set("tournament", tournamentId);
+    if (teamId && drop !== "team") rest.set("team", teamId);
+    if (categoryId && drop !== "category") rest.set("category", categoryId);
+    const query = rest.toString();
+    return query ? `/sport/${slug}?${query}` : `/sport/${slug}`;
+  };
 
   const sportShort = shortName(data.sport.name);
   const enriched = data.matches.map((m) => enrich(m, slug, sportShort));
@@ -139,7 +156,7 @@ export default async function SportPage({
         </div>
       </header>
 
-      {(tournamentId || teamId) && (
+      {(tournamentId || teamId || categoryId) && (
         <div
           style={{
             display: "flex",
@@ -149,19 +166,27 @@ export default async function SportPage({
             gap: 8,
           }}
         >
+          {categoryId && filteredCategoryName && (
+            <FilterChip
+              label={t("filterKindCategory")}
+              value={filteredCategoryName}
+              clearHref={clearHref("category")}
+              clearAriaLabel={t("clearFilter")}
+            />
+          )}
           {tournamentId && (
             <FilterChip
-              label={tShell("sports")}
+              label={t("filterKindTournament")}
               value={filteredTournamentName ?? ""}
-              clearHref={clearTournamentHref}
+              clearHref={clearHref("tournament")}
               clearAriaLabel={t("clearFilter")}
             />
           )}
           {teamId && (
             <FilterChip
-              label={t("filterTeam", { name: filteredTeamName ?? "" })}
+              label={t("filterKindTeam")}
               value={filteredTeamName ?? ""}
-              clearHref={clearTeamHref}
+              clearHref={clearHref("team")}
               clearAriaLabel={t("clearFilter")}
             />
           )}

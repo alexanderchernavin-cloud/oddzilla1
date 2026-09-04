@@ -43,6 +43,13 @@ interface TournamentCategory {
   id: number;
   name: string;
   slug: string;
+  /**
+   * Category the operator keeps out of the match lists (migration 0102) —
+   * EA FC simulations under Football, and anything else flagged on
+   * /admin/categories. The tree still carries it and this header is the
+   * only way in, so the bucket wears a quiet marker rather than hiding.
+   */
+  hiddenFromLists?: boolean;
 }
 
 interface Tournament {
@@ -109,6 +116,7 @@ export function Sidebar({
 
   const activeSportSlug = extractSportSlug(pathname);
   const activeTournamentId = searchParams?.get("tournament") ?? null;
+  const activeCategoryId = searchParams?.get("category") ?? null;
 
   // Cache tournaments per sport so navigating away and back doesn't
   // re-fetch. Keyed by slug; value is the loaded list or undefined while
@@ -279,6 +287,7 @@ export function Sidebar({
         signedIn={signedIn}
         activeSportSlug={activeSportSlug}
         activeTournamentId={activeTournamentId}
+        activeCategoryId={activeCategoryId}
         isActive={isActive}
         tournamentsBySport={tournamentsBySport}
         isSportExpanded={isSportExpanded}
@@ -449,6 +458,7 @@ function SportsSection({
   signedIn,
   activeSportSlug,
   activeTournamentId,
+  activeCategoryId,
   isActive,
   tournamentsBySport,
   isSportExpanded,
@@ -461,6 +471,7 @@ function SportsSection({
   signedIn: boolean;
   activeSportSlug: string | null;
   activeTournamentId: string | null;
+  activeCategoryId: string | null;
   isActive: (href: string) => boolean;
   tournamentsBySport: Record<string, Tournament[]>;
   isSportExpanded: (slug: string) => boolean;
@@ -802,7 +813,9 @@ function SportsSection({
         <Item
           href={`/sport/${s.slug}`}
           icon={<SportGlyph sport={s.slug} size={16} />}
-          active={sportActive && activeTournamentId == null}
+          active={
+            sportActive && activeTournamentId == null && activeCategoryId == null
+          }
           label={s.name}
           liveCount={liveCounts[s.slug] ?? 0}
           boosted={boostedSports.has(s.slug)}
@@ -836,6 +849,7 @@ function SportsSection({
                 group={group}
                 sportSlug={s.slug}
                 activeTournamentId={activeTournamentId}
+                activeCategoryId={activeCategoryId}
               />
             ))}
           </div>
@@ -953,20 +967,26 @@ function SportKindTabs({
 // category, which holds every esports tournament — has no header to
 // click and stays open, so esports look exactly as they did before.
 //
-// Auto-opens when the currently-filtered tournament lives inside it,
-// otherwise the active row would be hidden behind a collapsed header.
+// Auto-opens when the currently-filtered tournament lives inside it, or
+// when the bucket IS the current category filter — otherwise the active
+// row would sit behind a collapsed header.
 function CategoryGroup({
   group,
   sportSlug,
   activeTournamentId,
+  activeCategoryId,
 }: {
   group: TournamentGroup;
   sportSlug: string;
   activeTournamentId: string | null;
+  activeCategoryId: string | null;
 }) {
+  const isActiveCategory =
+    group.categoryId != null && String(group.categoryId) === activeCategoryId;
   const holdsActive =
-    activeTournamentId != null &&
-    group.tournaments.some((t) => String(t.id) === activeTournamentId);
+    isActiveCategory ||
+    (activeTournamentId != null &&
+      group.tournaments.some((t) => String(t.id) === activeTournamentId));
   // `open` stays the single source of truth so the caret can still
   // close a bucket that auto-opened; the effect only ever forces it
   // open (deriving `expanded` from holdsActive directly would make the
@@ -1004,9 +1024,16 @@ function CategoryGroup({
     <div>
       <CategoryHeader
         label={group.label}
+        href={
+          group.categoryId != null
+            ? `/sport/${sportSlug}?category=${group.categoryId}`
+            : null
+        }
         logoUrl={group.logoUrl}
         liveCount={group.liveCount}
         tournamentCount={group.tournaments.length}
+        hiddenFromLists={group.hiddenFromLists}
+        active={isActiveCategory}
         expanded={expanded}
         onToggle={() => setOpen((v) => !v)}
       />
@@ -1168,6 +1195,10 @@ interface TournamentGroup {
   key: string;
   /** Null renders the tournaments without a header (ungrouped bucket). */
   label: string | null;
+  /** Category id, so the header can link to `?category=`. Null when unlabelled. */
+  categoryId: number | null;
+  /** True when this bucket only shows up in lists once it's the one selected. */
+  hiddenFromLists: boolean;
   /**
    * Logo to stand for the whole bucket, when one unambiguously does.
    * Set only when every tournament in the bucket that carries a logo
@@ -1209,7 +1240,15 @@ function groupTournamentsByCategory(tournaments: Tournament[]): TournamentGroup[
     const key = String(t.category?.id ?? label);
     let group = byCategory.get(key);
     if (!group) {
-      group = { key, label, logoUrl: null, liveCount: 0, tournaments: [] };
+      group = {
+        key,
+        label,
+        categoryId: t.category?.id ?? null,
+        hiddenFromLists: t.category?.hiddenFromLists === true,
+        logoUrl: null,
+        liveCount: 0,
+        tournaments: [],
+      };
       byCategory.set(key, group);
       ambiguousLogo.set(key, false);
     }
@@ -1233,6 +1272,8 @@ function groupTournamentsByCategory(tournaments: Tournament[]): TournamentGroup[
     groups.unshift({
       key: "__ungrouped",
       label: null,
+      categoryId: null,
+      hiddenFromLists: false,
       logoUrl: null,
       liveCount: 0,
       tournaments: ungrouped,
@@ -1241,62 +1282,85 @@ function groupTournamentsByCategory(tournaments: Tournament[]): TournamentGroup[
   return groups;
 }
 
-// Clickable header for a category bucket.
+// Header for a category bucket: two controls sharing one row.
 //
-// Rendering notes, all of which are fixes for the previous version:
+// The caret collapses the bucket; the label FILTERS the sport page to
+// this category (`/sport/<slug>?category=<id>`). They were a single
+// button until the list-exclusion flag landed (migration 0102) — a
+// bucket the match lists deliberately skip has to be reachable, and
+// "expand it, then pick one of seventeen tournaments" is not reachable
+// in any useful sense. Splitting them also pays off on the ordinary
+// country buckets: one click on "England" is now every English league.
+//
+// Kept from the previous version:
 //   - Reads as normal text, not tiny letterspaced uppercase mono. The
 //     old treatment was 9.5px --fg-dim on the page background, which
 //     failed on contrast and was the operator's first complaint.
-//   - It's a button, so it gets a hover surface and a caret. A header
-//     that toggles must look like it toggles.
+//   - The hover surface spans the whole row, so the two halves still
+//     read as one header and not as two unrelated widgets.
 //   - The flag comes from Fonbet's circle-flag set via the api proxy
 //     (see lib/category-flags.ts); a category that isn't a country
 //     falls back to the bucket's own logo when it has one, and to
 //     nothing at all when it doesn't.
 function CategoryHeader({
   label,
+  href,
   logoUrl,
   liveCount,
   tournamentCount,
+  hiddenFromLists,
+  active,
   expanded,
   onToggle,
 }: {
   label: string;
+  /** Null when the bucket carries no category id — the label falls back to toggling. */
+  href: string | null;
   logoUrl: string | null;
   liveCount: number;
   tournamentCount: number;
+  hiddenFromLists: boolean;
+  active: boolean;
   expanded: boolean;
   onToggle: () => void;
 }) {
+  const tShell = useTranslations("shell");
   const [hover, setHover] = useState(false);
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      aria-expanded={expanded}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      title={label}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 6,
-        width: "100%",
-        padding: "6px 6px",
-        marginTop: 2,
-        border: 0,
-        borderRadius: 6,
-        background: hover ? "var(--surface-2)" : "transparent",
-        color: "var(--fg)",
-        font: "inherit",
-        fontSize: 12,
-        fontWeight: 600,
-        textAlign: "left",
-        cursor: "pointer",
-        transition: "background 140ms var(--ease)",
-      }}
-    >
-      <Caret open={expanded} size={9} />
+
+  const count =
+    liveCount > 0 ? (
+      <span
+        className="mono tnum"
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 3,
+          fontSize: 10,
+          color: "var(--live)",
+          fontWeight: 600,
+          flexShrink: 0,
+        }}
+        title={`${liveCount} live now`}
+      >
+        <LiveDot size={5} />
+        {liveCount}
+      </span>
+    ) : (
+      <span
+        className="mono tnum"
+        style={{
+          fontSize: 10,
+          color: "var(--fg-dim)",
+          fontWeight: 500,
+          flexShrink: 0,
+        }}
+      >
+        {tournamentCount}
+      </span>
+    );
+
+  const inner = (
+    <>
       <CategoryMark label={label} logoUrl={logoUrl} />
       <span
         style={{
@@ -1309,37 +1373,88 @@ function CategoryHeader({
       >
         {label}
       </span>
-      {liveCount > 0 ? (
-        <span
-          className="mono tnum"
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 3,
-            fontSize: 10,
-            color: "var(--live)",
-            fontWeight: 600,
-            flexShrink: 0,
-          }}
-          title={`${liveCount} live now`}
-        >
-          <LiveDot size={5} />
-          {liveCount}
-        </span>
-      ) : (
-        <span
-          className="mono tnum"
-          style={{
-            fontSize: 10,
-            color: "var(--fg-dim)",
-            fontWeight: 500,
-            flexShrink: 0,
-          }}
-        >
-          {tournamentCount}
-        </span>
+      {/* Quiet marker, not a warning: the bucket exists, the lists just
+          skip it, and this header is the way in. Without it a bettor has
+          nothing to explain why the sport's own live badge is smaller
+          than the counts in its tree add up to. */}
+      {hiddenFromLists && (
+        <I.EyeOff size={11} style={{ color: "var(--fg-dim)", flexShrink: 0 }} />
       )}
-    </button>
+      {count}
+    </>
+  );
+
+  const labelStyle = {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    flex: 1,
+    minWidth: 0,
+    padding: "6px 6px 6px 2px",
+    borderRadius: 6,
+    color: active ? "var(--accent)" : "var(--fg)",
+    font: "inherit",
+    fontSize: 12,
+    fontWeight: 600,
+    textAlign: "left" as const,
+    textDecoration: "none",
+    border: 0,
+    background: "transparent",
+    cursor: "pointer",
+  };
+
+  return (
+    <div
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        marginTop: 2,
+        borderRadius: 6,
+        background: active || hover ? "var(--surface-2)" : "transparent",
+        transition: "background 140ms var(--ease)",
+      }}
+    >
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        aria-label={
+          expanded ? tShell("hideTournaments") : tShell("showTournaments")
+        }
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          padding: "6px 2px 6px 6px",
+          border: 0,
+          background: "transparent",
+          color: "inherit",
+          cursor: "pointer",
+          flexShrink: 0,
+        }}
+      >
+        <Caret open={expanded} size={9} />
+      </button>
+      {href ? (
+        <Link
+          href={href}
+          title={
+            hiddenFromLists
+              ? `${label} — ${tShell("categoryHiddenFromLists")}`
+              : label
+          }
+          aria-current={active ? "page" : undefined}
+          style={labelStyle}
+        >
+          {inner}
+        </Link>
+      ) : (
+        <button type="button" onClick={onToggle} title={label} style={labelStyle}>
+          {inner}
+        </button>
+      )}
+    </div>
   );
 }
 

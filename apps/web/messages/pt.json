@@ -85,7 +85,8 @@
     "matchFrameTitle": "Partida {id}",
     "esportsSection": "Esports",
     "showTournaments": "Mostrar torneios",
-    "hideTournaments": "Ocultar torneios"
+    "hideTournaments": "Ocultar torneios",
+    "categoryHiddenFromLists": "Exibida apenas quando selecionada"
   },
   "wallet": {
     "title": "Carteira",
@@ -393,8 +394,9 @@
     "live": "Ao vivo",
     "upcoming": "Pré-jogo",
     "topTournaments": "Principais torneios",
-    "filterTournament": "Torneio: {name}",
-    "filterTeam": "Equipe: {name}",
+    "filterKindCategory": "Categoria",
+    "filterKindTournament": "Torneio",
+    "filterKindTeam": "Equipe",
     "clearFilter": "Limpar filtro",
     "noMatches": "Nenhuma partida agora.",
     "matchCount": "{count, plural, one {# partida} other {# partidas}}"

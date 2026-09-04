@@ -48,6 +48,7 @@ import {
   startSportradarSyncSweeper,
   type SportradarSweeperHandle,
 } from "./lib/sportradar/sweeper.js";
+import adminCategoriesRoutes from "./modules/admin/categories.js";
 import adminMonitoringRoutes, { startMonitoringSampler } from "./modules/admin/monitoring.js";
 import adminDeployRoutes from "./modules/admin/deploy.js";
 import communityRoutes from "./modules/community/routes.js";
@@ -307,6 +308,7 @@ await app.register(adminFeSettingsRoutes);
 await app.register(adminCompetitorsRoutes);
 await app.register(adminTournamentsRoutes);
 await app.register(adminSportradarRoutes);
+await app.register(adminCategoriesRoutes);
 await app.register(adminMonitoringRoutes);
 await app.register(adminDeployRoutes);
 await app.register(communityRoutes);

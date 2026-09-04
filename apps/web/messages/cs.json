@@ -85,7 +85,8 @@
     "matchFrameTitle": "Zápas {id}",
     "esportsSection": "Esporty",
     "showTournaments": "Zobrazit turnaje",
-    "hideTournaments": "Skrýt turnaje"
+    "hideTournaments": "Skrýt turnaje",
+    "categoryHiddenFromLists": "Zobrazuje se jen po výběru"
   },
   "wallet": {
     "title": "Peněženka",
@@ -393,8 +394,9 @@
     "live": "Živě",
     "upcoming": "Předzápas",
     "topTournaments": "Top turnaje",
-    "filterTournament": "Turnaj: {name}",
-    "filterTeam": "Tým: {name}",
+    "filterKindCategory": "Kategorie",
+    "filterKindTournament": "Turnaj",
+    "filterKindTeam": "Tým",
     "clearFilter": "Zrušit filtr",
     "noMatches": "Aktuálně žádné zápasy.",
     "matchCount": "{count, plural, one {# zápas} few {# zápasy} other {# zápasů}}"
