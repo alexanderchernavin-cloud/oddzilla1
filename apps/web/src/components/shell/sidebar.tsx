@@ -32,6 +32,13 @@ interface SportItem {
   active: boolean;
 }
 
+// Which half of the sport rail is showing. `sports.kind` is the
+// discriminator ("esport" | "traditional"); anything not explicitly
+// traditional counts as esport, matching the catalog's own default.
+type SportKindTab = "esport" | "traditional";
+
+const SPORT_TAB_KEY = "oz:sport-tab";
+
 interface TournamentCategory {
   id: number;
   name: string;
@@ -464,6 +471,38 @@ function SportsSection({
   // ZillaBoost sport banners (migration 0086) — slugs wearing the bolt.
   const boostedSports = useZillaBoostSportSet();
 
+  // Which of the two lists is showing. Read from localStorage on mount
+  // rather than in the initializer: the server renders the default, so
+  // seeding from storage during the first render would hydrate a
+  // different tree than the HTML and React would discard it.
+  const [tab, setTab] = useState<SportKindTab>("esport");
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(SPORT_TAB_KEY);
+      if (saved === "esport" || saved === "traditional") setTab(saved);
+    } catch {
+      // Private mode / blocked storage — the default tab is fine.
+    }
+  }, []);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SPORT_TAB_KEY, tab);
+    } catch {
+      // Non-fatal; the choice just doesn't survive a reload.
+    }
+  }, [tab]);
+
+  // Follow the page. Landing on /sport/football while the rail shows
+  // Esports would hide the very row the user is looking at — and with
+  // it the tournament tree that just auto-expanded underneath it.
+  const activeSportKind = activeSportSlug
+    ? sports.find((s) => s.slug === activeSportSlug)?.kind
+    : undefined;
+  useEffect(() => {
+    if (activeSportKind === "traditional") setTab("traditional");
+    else if (activeSportKind) setTab("esport");
+  }, [activeSportKind]);
+
   // Local override of the user's saved order + hidden set. Initialized
   // from the server props, and updated optimistically when the user
   // clicks arrow / hide / show / reset. Stays sticky across edit-mode
@@ -681,11 +720,12 @@ function SportsSection({
     );
   }
 
-  // Two sub-sections. Esports leads because that's the product's
-  // identity (and preserves the pre-split order, where the four pinned
-  // esports sat at the top); the Fonbet traditional line follows. The
-  // saved sport order + hidden set are global slug lists, so ordering
-  // inside each section still honours whatever the bettor arranged.
+  // Two sub-sections, switched side by side rather than stacked. The
+  // stacked version meant the Fonbet traditional line always sat below
+  // ~16 esports, so reaching Football was a scroll on every visit. One
+  // of the two lists is rendered at a time; the saved sport order and
+  // hidden set stay global slug lists, so ordering inside each still
+  // honours whatever the bettor arranged.
   const esports = renderList.filter((s) => s.kind !== "traditional");
   const traditional = renderList.filter((s) => s.kind === "traditional");
 
@@ -740,19 +780,124 @@ function SportsSection({
     );
   };
 
+  // Nothing to switch between when only one kind is on offer (a feed
+  // outage, or Fonbet switched off) — render that list under a plain
+  // label rather than a toggle with a dead half.
+  if (esports.length === 0 || traditional.length === 0) {
+    const only = esports.length > 0 ? esports : traditional;
+    const label =
+      esports.length > 0 ? tShell("esportsSection") : tShell("sports");
+    return (
+      <>
+        <SectionLabel trailing={trailing}>{label}</SectionLabel>
+        {only.map(renderSport)}
+      </>
+    );
+  }
+
+  const list = tab === "traditional" ? traditional : esports;
   return (
     <>
-      <SectionLabel trailing={trailing}>
-        {tShell("esportsSection")}
-      </SectionLabel>
-      {esports.map(renderSport)}
-      {traditional.length > 0 && (
-        <>
-          <SectionLabel>{tShell("sports")}</SectionLabel>
-          {traditional.map(renderSport)}
-        </>
-      )}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "14px 2px 8px",
+        }}
+      >
+        <SportKindTabs
+          value={tab}
+          onChange={setTab}
+          esportsLabel={tShell("esportsSection")}
+          sportsLabel={tShell("sports")}
+        />
+        {trailing}
+      </div>
+      {list.map(renderSport)}
     </>
+  );
+}
+
+// Side-by-side switch between the esports and traditional lists. A
+// segmented control rather than two nav links: the two halves are
+// mutually exclusive views of the same rail, and a bettor flipping
+// between them is changing what they're browsing, not navigating.
+//
+// Built from the shell's own tokens. The pair is --bg-sunken for the
+// track and --surface-2 for the active segment, chosen because it is
+// the only pair that stays "raised" in BOTH themes: light goes
+// #ecebe5 -> #faf8f3 and dark #050506 -> #1a1a1c, so the active pill
+// is lighter than its track either way. The obvious-looking
+// --surface-2 / --bg-elevated inverts on dark (#1a1a1c track, #131314
+// pill), which reads as a recess — the opposite of what a selected
+// segment should say.
+function SportKindTabs({
+  value,
+  onChange,
+  esportsLabel,
+  sportsLabel,
+}: {
+  value: SportKindTab;
+  onChange: (v: SportKindTab) => void;
+  esportsLabel: string;
+  sportsLabel: string;
+}) {
+  return (
+    <div
+      role="tablist"
+      style={{
+        display: "flex",
+        flex: 1,
+        minWidth: 0,
+        padding: 2,
+        gap: 2,
+        borderRadius: 8,
+        background: "var(--bg-sunken)",
+        border: "1px solid var(--hairline)",
+      }}
+    >
+      {(
+        [
+          ["esport", esportsLabel],
+          ["traditional", sportsLabel],
+        ] as const
+      ).map(([kind, label]) => {
+        const active = value === kind;
+        return (
+          <button
+            key={kind}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(kind)}
+            className="mono"
+            style={{
+              flex: 1,
+              minWidth: 0,
+              padding: "5px 4px",
+              border: 0,
+              borderRadius: 6,
+              background: active ? "var(--surface-2)" : "transparent",
+              color: active ? "var(--fg)" : "var(--fg-muted)",
+              boxShadow: active ? "var(--shadow-sm)" : "none",
+              fontSize: 9.5,
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+              fontWeight: 600,
+              cursor: "pointer",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              transition:
+                "background 140ms var(--ease), color 140ms var(--ease)",
+            }}
+          >
+            {label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
