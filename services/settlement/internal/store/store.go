@@ -245,13 +245,21 @@ UPDATE ticket_selections ts
        settled_at  = NOW()
   FROM market_outcomes mo
   JOIN markets m ON m.id = mo.market_id
-  JOIN tickets t ON t.id = ts.ticket_id
  WHERE ts.market_id  = mo.market_id
    AND ts.outcome_id = mo.outcome_id
    AND ts.result IS NULL
    AND mo.result IS NOT NULL
    AND m.status IN (-3, -4)
-   AND t.status = 'accepted'`)
+   -- The ticket check is an EXISTS, not a join, because Postgres does
+   -- not allow the UPDATE target (ts) to be referenced from a
+   -- FROM-clause join condition. Joining tickets ON t.id = ts.ticket_id
+   -- raised 42P01 "invalid reference to FROM-clause entry for table ts"
+   -- on every sweep, so this repair had never actually run.
+   AND EXISTS (
+     SELECT 1 FROM tickets t
+      WHERE t.id = ts.ticket_id
+        AND t.status = 'accepted'
+   )`)
 	if err != nil {
 		return 0, fmt.Errorf("heal stranded selections: %w", err)
 	}
