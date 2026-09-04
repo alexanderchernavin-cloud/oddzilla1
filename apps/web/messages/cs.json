@@ -760,6 +760,9 @@
     "send": "Odeslat"
   },
   "matchWidgets": {
+    "lmt": {
+      "title": "Živé sledování zápasu"
+    },
     "onBetSlip": "Na tiketu",
     "addToBetSlip": "Přidat na tiket",
     "betbuilderOn": "Zapnout BetBuilder — kombinujte více tipů z tohoto zápasu",

@@ -760,6 +760,9 @@
     "send": "Send"
   },
   "matchWidgets": {
+    "lmt": {
+      "title": "Live match tracker"
+    },
     "onBetSlip": "On bet slip",
     "addToBetSlip": "Add to bet slip",
     "betbuilderOn": "Turn BetBuilder on — combine multiple selections from this match",

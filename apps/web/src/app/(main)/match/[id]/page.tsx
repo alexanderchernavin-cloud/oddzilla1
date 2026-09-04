@@ -11,6 +11,7 @@ import { type MatchStream } from "@/components/match/match-streams";
 import { MatchHeaderStatusPill } from "@/components/match/header-status-pill";
 import { MatchLiveMedia } from "@/components/widgets/match-live-media";
 import { MatchPrematchMobile } from "@/components/widgets/match-prematch-mobile";
+import { SportradarLmt } from "@/components/widgets/sportradar-lmt";
 import { ZillaFactsCards } from "@/components/match/zillafacts-cards";
 import { ZillaBuildCards } from "@/components/match/zillabuild-cards";
 import { MatchPageRegistrar } from "@/lib/match-page-context";
@@ -38,6 +39,17 @@ interface MatchResponse {
   markets: MarketSnapshot[];
   marketGroups: MarketGroup[];
 }
+
+// TEST (2026-09-04): Sportradar Live Match Tracker trial on ONE storefront
+// match page. LMT takes a SPORTRADAR match id and Oddzilla's esports catalog
+// carries no Sportradar ids, so there is no mapping yet — this pins Everton v
+// Manchester United (Premier League, Sat 2026-09-06 13:00 UTC, sr match
+// 72221238, from stats.fn.sportradar.com stats_team_nextx/35) under the video
+// block of /match/1160886 to see the hosted standalone embed live on the site.
+// Remove, or replace with a per-match mapping, once Oddin / Sportradar ids
+// are linked. Mechanism + why it is an iframe: components/widgets/sportradar-lmt.tsx.
+const LMT_TEST_ODDZILLA_MATCH_ID = "1160886";
+const LMT_TEST_SR_MATCH_ID = 72221238;
 
 export default async function MatchPage({
   params,
@@ -163,6 +175,10 @@ export default async function MatchPage({
         parentHost={parentHost}
         initialStatus={match.status}
       />
+
+      {String(match.id) === LMT_TEST_ODDZILLA_MATCH_ID ? (
+        <SportradarLmt srMatchId={LMT_TEST_SR_MATCH_ID} sportId={1} />
+      ) : null}
 
       {/* ZillaFacts surfaces hard, consecutive-from-newest streaks on
           the open match: a team has won its last N matches on the

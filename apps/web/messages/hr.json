@@ -760,6 +760,9 @@
     "send": "Pošalji"
   },
   "matchWidgets": {
+    "lmt": {
+      "title": "Praćenje utakmice uživo"
+    },
     "onBetSlip": "Na listiću",
     "addToBetSlip": "Dodaj na listić",
     "betbuilderOn": "Uključi BetBuilder — kombinirajte više parova iz ovog meča",
