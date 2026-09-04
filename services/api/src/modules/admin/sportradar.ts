@@ -10,6 +10,7 @@
 //   DELETE /admin/sportradar/mappings/:matchId      drop the mapping
 //   POST   /admin/sportradar/import                 paste fixtures, auto-match
 //   POST   /admin/sportradar/sync                   fetch fixtures, auto-match
+//   POST   /admin/sportradar/adjudicate             LLM-review the queue
 //
 // Every mutation is audit-logged.
 //
@@ -35,7 +36,12 @@ import {
   SPORTRADAR_SPORT_IDS,
   sportradarSportIdFor,
 } from "@oddzilla/types/sportradar";
-import { BadRequestError, ConflictError, NotFoundError } from "../../lib/errors.js";
+import {
+  BadRequestError,
+  ConflictError,
+  NotFoundError,
+  ServiceUnavailableError,
+} from "../../lib/errors.js";
 import { parseFixturesInput } from "../../lib/sportradar/fixtures-input.js";
 import {
   importWindow,
@@ -43,6 +49,10 @@ import {
   matchAndPersist,
   syncSports,
 } from "../../lib/sportradar/sync.js";
+import {
+  adjudicateCandidates,
+  adjudicatorConfigFromEnv,
+} from "../../lib/sportradar/adjudicator.js";
 
 const writeRateLimit = { rateLimit: { max: 60, timeWindow: "1 minute" } };
 // An import walks every candidate pair in the batch; it is cheap but not
@@ -85,6 +95,11 @@ const importBody = z
 const syncBody = z.object({
   // Omitted = sweep every sport the tracker covers.
   sportSlug: z.string().trim().min(1).max(64).optional(),
+  dryRun: z.boolean().default(false),
+});
+
+const adjudicateBody = z.object({
+  limit: z.coerce.number().int().min(1).max(500).default(200),
   dryRun: z.boolean().default(false),
 });
 
@@ -498,6 +513,55 @@ export default async function adminSportradarRoutes(app: FastifyInstance) {
         },
       });
       return { ...result, fetchErrors: result.fetchErrors.slice(0, 20) };
+    },
+  );
+
+  // ── LLM adjudication of the review queue ──────────────────────────
+  //
+  // The matcher queues what it cannot settle, and almost all of that is
+  // one provider abbreviating the other ("Ipswich" vs "Ipswich Town").
+  // A model decides those; see lib/sportradar/adjudicator.ts for why it
+  // cannot do damage beyond confirming or rejecting a pair the matcher
+  // already proposed. Runs automatically on every sweep too — this is
+  // the on-demand handle.
+  app.post(
+    "/admin/sportradar/adjudicate",
+    { config: importRateLimit },
+    async (request) => {
+      const admin = request.requireRole("admin");
+      const body = adjudicateBody.parse(request.body);
+
+      if (!adjudicatorConfigFromEnv()) {
+        throw new ServiceUnavailableError(
+          "no adjudication model is configured (SPORTRADAR_LLM_API_KEY)",
+          "adjudicator_disabled",
+        );
+      }
+
+      const result = await adjudicateCandidates(app, {
+        limit: body.limit,
+        dryRun: body.dryRun,
+      });
+
+      if (!body.dryRun && result.reviewed > 0) {
+        await app.db.insert(adminAuditLog).values({
+          actorUserId: admin.id,
+          action: "sportradar.adjudicate",
+          targetType: "sport",
+          targetId: "*",
+          beforeJson: null,
+          afterJson: {
+            eligible: result.eligible,
+            reviewed: result.reviewed,
+            confirmed: result.confirmed,
+            rejected: result.rejected,
+            unsure: result.unsure,
+          },
+          ipInet: request.ip ?? null,
+        });
+      }
+
+      return { ...result, errors: result.errors.slice(0, 10) };
     },
   );
 }

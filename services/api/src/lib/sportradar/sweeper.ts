@@ -20,8 +20,12 @@
 
 import type { FastifyInstance } from "fastify";
 import { lmtSportSlugs, syncSports } from "./sync.js";
+import { adjudicateCandidates, adjudicatorConfigFromEnv } from "./adjudicator.js";
 
 const LOCK_KEY = "sportradar:sync:lock";
+// Per sweep. A backlog drains over successive passes rather than in one
+// long burst of requests.
+const ADJUDICATE_PER_SWEEP = 150;
 
 export interface SportradarSweeperHandle {
   close(): void;
@@ -86,6 +90,31 @@ export function startSportradarSyncSweeper(
       }
       for (const err of result.fetchErrors.slice(0, 5)) {
         app.log.warn({ component: "sportradar-sync", err }, "sportradar fixture fetch failed");
+      }
+
+      // Adjudicate whatever the matcher could not settle. Skipped
+      // silently when no model is configured — the queue then stays
+      // human-reviewed, which is the pre-existing behaviour.
+      if (adjudicatorConfigFromEnv()) {
+        const adj = await adjudicateCandidates(app, { limit: ADJUDICATE_PER_SWEEP });
+        if (adj.reviewed > 0 || adj.errors.length > 0) {
+          app.log.info(
+            {
+              component: "sportradar-adjudicator",
+              eligible: adj.eligible,
+              reviewed: adj.reviewed,
+              confirmed: adj.confirmed,
+              rejected: adj.rejected,
+              unsure: adj.unsure,
+              batches: adj.batches,
+              errors: adj.errors.length,
+            },
+            "sportradar candidate adjudication complete",
+          );
+        }
+        for (const err of adj.errors.slice(0, 3)) {
+          app.log.warn({ component: "sportradar-adjudicator", err }, "adjudication batch failed");
+        }
       }
     } catch (err) {
       app.log.error({ err, component: "sportradar-sync" }, "sportradar mapping sweep failed");

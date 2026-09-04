@@ -1,0 +1,22 @@
+-- Adds 'llm' to sportradar_map_source.
+--
+-- The matcher pairs on kickoff time and team names, and it queues
+-- anything it is not sure of. Almost all of that queue turns out to be
+-- one provider abbreviating: Sportradar says "Ipswich" where Fonbet says
+-- "Ipswich Town", which is two tokens against one and drags an otherwise
+-- perfect pair (0-minute kickoff delta, identical away team) below the
+-- auto-confirm bar. No amount of string metric fixes that, because the
+-- missing ingredient is knowing that Ipswich Town is called Ipswich.
+--
+-- So a language model adjudicates the queue, and this records that it
+-- was the deciding party — the same reason `admin` and `auto` are
+-- distinguished. It matters twice over: an operator reading the desk can
+-- see who decided, and a bad batch is revertible in one statement
+-- (`... WHERE source = 'llm'`) without touching a matcher or human
+-- decision.
+--
+-- Its own file because Postgres forbids REFERENCING a new enum value in
+-- the transaction that added it, and the migration runner wraps each
+-- file in one transaction — the same reason migration 0087 stands alone.
+
+ALTER TYPE sportradar_map_source ADD VALUE IF NOT EXISTS 'llm';
