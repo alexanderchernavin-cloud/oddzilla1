@@ -35,22 +35,14 @@ interface MatchResponse {
     streams?: MatchStream[];
     tournament: { id: number; name: string; riskTier?: number | null };
     sport: { id: number; slug: string; name: string };
+    // Operator-confirmed Sportradar mapping (migration 0100). Null when
+    // this fixture has no confirmed SR id — which is most of them, and
+    // always will be for sports the tracker does not cover.
+    sportradar?: { srMatchId: number; srSportId: number } | null;
   };
   markets: MarketSnapshot[];
   marketGroups: MarketGroup[];
 }
-
-// TEST (2026-09-04): Sportradar Live Match Tracker trial on ONE storefront
-// match page. LMT takes a SPORTRADAR match id and our catalog carries no
-// Sportradar ids, so there is no mapping yet — this pins the tracker for
-// Everton v Manchester United (Premier League, Sat 2026-09-06 13:00 UTC,
-// sr match 72221238, from stats.fn.sportradar.com stats_team_nextx/35) under
-// the video block of /match/1183756, which is that same fixture as carried by
-// the Fonbet KZ football feed. Replace with a per-match mapping once the
-// provider ids are linked. Mechanism + why it is an iframe:
-// components/widgets/sportradar-lmt.tsx.
-const LMT_TEST_ODDZILLA_MATCH_ID = "1183756";
-const LMT_TEST_SR_MATCH_ID = 72221238;
 
 export default async function MatchPage({
   params,
@@ -177,8 +169,16 @@ export default async function MatchPage({
         initialStatus={match.status}
       />
 
-      {String(match.id) === LMT_TEST_ODDZILLA_MATCH_ID ? (
-        <SportradarLmt srMatchId={LMT_TEST_SR_MATCH_ID} sportId={1} />
+      {/* Sportradar Live Match Tracker. Renders only for a fixture an
+          operator has confirmed a Sportradar mapping for — the id is
+          Sportradar's, not ours, and cannot be derived from either feed
+          (see packages/db/migrations/0100_sportradar_match_map.sql). No
+          mapping, no tracker, no gap in the layout. */}
+      {match.sportradar ? (
+        <SportradarLmt
+          srMatchId={match.sportradar.srMatchId}
+          sportId={match.sportradar.srSportId}
+        />
       ) : null}
 
       {/* ZillaFacts surfaces hard, consecutive-from-newest streaks on

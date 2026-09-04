@@ -31,6 +31,7 @@ import {
   feMarketGroups,
   isCustomScope,
   combiBoostConfig,
+  matchSportradarIds,
 } from "@oddzilla/db";
 import { NotFoundError } from "../../lib/errors.js";
 import { cached } from "../../lib/cache.js";
@@ -1393,7 +1394,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
     //
     // market_descriptions is joined later (per distinct market id) to expand
     // {specifier} placeholders; missing ones fall back to "Market #N".
-    const [rows, cascade, orderRows, groupConfigRows] = await Promise.all([
+    const [rows, cascade, orderRows, groupConfigRows, srMapping] = await Promise.all([
       app.db
         .select({
           marketId: markets.id,
@@ -1438,6 +1439,22 @@ export default async function catalogRoutes(app: FastifyInstance) {
         })
         .from(feMarketGroups)
         .where(eq(feMarketGroups.sportId, match.sportId)),
+      // Sportradar mapping (migration 0100). CONFIRMED only — a candidate
+      // is a guess nobody has signed off, and a wrong one would put
+      // another fixture's live statistics on this page.
+      app.db
+        .select({
+          srMatchId: matchSportradarIds.srMatchId,
+          srSportId: matchSportradarIds.srSportId,
+        })
+        .from(matchSportradarIds)
+        .where(
+          and(
+            eq(matchSportradarIds.matchId, match.id),
+            eq(matchSportradarIds.status, "confirmed"),
+          ),
+        )
+        .limit(1),
     ]);
     // Per-bettor adjustment for this match. Used by the full markets render
     // path below and the related-tab helpers downstream.
@@ -1898,6 +1915,16 @@ export default async function catalogRoutes(app: FastifyInstance) {
           slug: match.sportSlug,
           name: match.sportName,
         },
+        // Set only when an operator-confirmed Sportradar mapping exists.
+        // The storefront mounts the Live Match Tracker on it, and renders
+        // no tracker at all when this is null.
+        sportradar:
+          srMapping[0] === undefined
+            ? null
+            : {
+                srMatchId: Number(srMapping[0].srMatchId),
+                srSportId: srMapping[0].srSportId,
+              },
       },
       markets: marketList,
       marketGroups: groups,

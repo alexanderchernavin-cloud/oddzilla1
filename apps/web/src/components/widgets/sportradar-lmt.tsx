@@ -28,8 +28,11 @@
 //     changes the src hash; the iframe does not reload.
 // There is no cross-origin resize message, so the height is fixed.
 //
-// `matchId` is a SPORTRADAR match id, not an Oddin `od:match:N`. Oddzilla's
-// catalog carries no Sportradar ids today; the caller owns the mapping.
+// `matchId` is a SPORTRADAR match id, not an Oddin `od:match:N` or a
+// Fonbet `fb:match:N`. Neither feed carries one, so the mapping is stored
+// (migration 0100, `match_sportradar_ids`) and managed at
+// /admin/sportradar. The caller passes an operator-CONFIRMED pair; this
+// component never guesses.
 
 import { useTranslations } from "@/lib/i18n";
 

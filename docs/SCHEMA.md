@@ -378,6 +378,58 @@ resolver only writes when at least one row carries a stream_url so a
 later refresh can't blank a known list with placeholders). Display-only;
 bet placement does not consult it.
 
+**`match_sportradar_ids`** (migration 0100) — the Oddzilla ↔ Sportradar
+link, one row per match (`match_id` PK, `ON DELETE CASCADE`). Columns:
+`sr_match_id`, `sr_sport_id` (Sportradar's own sport taxonomy — 1 soccer,
+12 rugby, 137 esoccer; stored per row rather than looked up so a one-off
+correction is expressible), `status` (`candidate` / `confirmed` /
+`rejected`), `source` (`admin` / `auto`), `confidence` (0..1, NULL when a
+human typed the id), `evidence` jsonb (the Sportradar-side names and
+kickoff, the per-team scores, and any runners-up), and
+`reviewed_by_user_id` / `reviewed_at`.
+
+Why a table at all, when the other two id spaces need none: `matches.id`
+is already Oddzilla's own id for every fixture from every feed, and
+`matches.provider_urn` already carries the feed's (`od:match:<n>` /
+`fb:match:<n>`). Sportradar's is carried by neither — measured
+2026-09-04, a full 13 667-event Fonbet snapshot has no external-id field
+on any event, and their match pages load statistics only from their own
+hosts.
+
+It *is* fetchable from Sportradar's statistics host
+(`sport_matches/<srSportId>/<date>`, which answers ordinary
+server-to-server requests — their LMT host is a different matter and
+refuses everything off a licensed origin), but with no shared key on
+either side the link has to be **inferred** from kickoff time and team
+names. That inference is what the review state and the provenance columns
+exist for: the SR id is the only one of the three that can be *wrong*.
+
+Two indexes carry rules rather than performance. `match_sportradar_srid_uniq`
+is UNIQUE on `sr_match_id` **`WHERE status <> 'rejected'`**: one live
+mapping per Sportradar fixture, while a rejected row stays as a tombstone
+that never blocks the correct match from claiming the same id.
+`match_sportradar_status_idx` on `(status, confidence)` orders the admin
+review queue weakest-first. CHECKs pin `confidence` to [0, 1] and require
+`reviewed_by_user_id` and `reviewed_at` to be set together.
+
+Only `confirmed` rows reach the storefront (`/catalog/matches/:id` filters
+on it) — a wrong mapping would put another fixture's live statistics on the
+match page, so an unworked review queue means a missing tracker, never a
+wrong one.
+
+**`match_external_ids`** (view, migration 0100) — every id this platform
+holds for a match in one shape: `(match_id, provider, external_id, status,
+confidence)`. The `oddin` and `fonbet` rows are DERIVED from
+`matches.provider_urn` with `substring(provider_urn FROM 10)` (both
+prefixes are exactly 9 characters) rather than copied into a table, because
+a copy could only ever drift from the unique-indexed original. The
+`sportradar` rows come from `match_sportradar_ids`. Rows whose URN is
+`od:tournament:%` — the auto-mapper's tournament-outright placeholders, 587
+of them on 2026-09-04 — are deliberately excluded: they live in `matches`
+but are not fixtures, have no kickoff or opponents, and have no Sportradar
+counterpart. If outrights become first-class they want their own provider
+label here rather than being folded in as matches.
+
 ### Markets & odds
 
 **`markets`** — parents of outcomes. Unique key
