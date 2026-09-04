@@ -77,10 +77,19 @@ function buildCsp(nonce: string, frameAncestors: "none" | "self"): string {
   // hostile site can't iframe the storefront, but the shell-less
   // `/embed/match/[id]` route runs at `'self'` because it ships inside
   // the side-panel iframes mounted by the (main) layout (same-origin).
-  const wsOrigins =
-    "wss://oddzilla.cc wss://*.oddzilla.cc wss://localhost:* ws://localhost:*";
-  const apiOrigins =
-    "https://oddzilla.cc https://*.oddzilla.cc http://localhost:*";
+  //
+  // localhost:* is dev-only: pnpm dev runs api / ws-gateway on 3001 / 3002
+  // and the browser needs CSP to permit those calls. Shipping localhost in
+  // the production CSP would let any local app on the visitor machine
+  // (debug server, ADB bridge, devtools) be reachable from the page, so it
+  // is gated on NODE_ENV, the same switch next.config.ts already uses.
+  const isDev = process.env.NODE_ENV !== "production";
+  const wsOrigins = isDev
+    ? "wss://oddzilla.cc wss://*.oddzilla.cc wss://localhost:* ws://localhost:*"
+    : "wss://oddzilla.cc wss://*.oddzilla.cc";
+  const apiOrigins = isDev
+    ? "https://oddzilla.cc https://*.oddzilla.cc http://localhost:*"
+    : "https://oddzilla.cc https://*.oddzilla.cc";
   return [
     "default-src 'self'",
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`,

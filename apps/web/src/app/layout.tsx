@@ -45,6 +45,12 @@ export async function generateMetadata(): Promise<Metadata> {
   // Twitter copy so social previews carry the brand image with proper
   // titles instead of the bare URL.
   return {
+    // Absolute base Next.js uses to resolve the auto-emitted icon /
+    // opengraph-image / twitter:image URLs. Without it Next falls back to
+    // http://localhost:3000, so production HTML shipped
+    // <meta og:image content="http://localhost:3000/..."> and every link
+    // preview (Twitter / Slack / Discord) was broken.
+    metadataBase: new URL("https://oddzilla.cc"),
     title,
     description: c.appDescription,
     openGraph: {
