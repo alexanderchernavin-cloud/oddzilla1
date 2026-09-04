@@ -1,0 +1,262 @@
+// Category flags for the sidebar's country groupings.
+//
+// The Fonbet line names its categories after the country ("Spain",
+// "Brazil", "Hong Kong" — derived from the segment-name prefix), and
+// Fonbet's static CDN carries a circle-flag set keyed by that same
+// English name. The api proxies + caches those bytes at
+// GET /catalog/flags/:name (see services/api/src/modules/catalog/flags.ts)
+// so the browser never hot-links a scraped provider's CDN.
+//
+// The upstream file names are NOT a clean transform of the country
+// name — the set mixes hyphens and underscores inconsistently
+// ("Costa-Rica" but "Czech_Republic", "South-Korea-2" for Korea,
+// "Madagaskar" for Madagascar), so the mapping is an explicit table
+// verified against the live CDN rather than a string rewrite. Keys are
+// lowercased country names; values are the upstream file stem.
+//
+// Anything not in the table (esports categories like "NBA 2K26",
+// Fonbet's "Other" / "Friendly games" / "WC 2026") resolves to null and
+// the sidebar renders a monogram instead — no request is made, so a
+// non-country grouping costs nothing.
+
+import { apiAssetBase } from "./api-client";
+
+const FLAG_FILES: Record<string, string> = {
+  "afghanistan": "Afghanistan",
+  "albania": "Albania",
+  "algeria": "Algeria",
+  "andorra": "Andorra",
+  "angola": "Angola",
+  "antigua and barbuda": "Antigua_and_Barbuda",
+  "argentina": "Argentina",
+  "armenia": "Armenia",
+  "aruba": "Aruba",
+  "australia": "Australia",
+  "austria": "Austria",
+  "azerbaijan": "Azerbaijan",
+  "bahamas": "Bahamas",
+  "bahrain": "Bahrain",
+  "bangladesh": "Bangladesh",
+  "barbados": "Barbados",
+  "belarus": "Belarus",
+  "belgium": "Belgium",
+  "belize": "Belize",
+  "benin": "Benin",
+  "bermuda": "Bermuda",
+  "bhutan": "Bhutan",
+  "bolivia": "Bolivia",
+  "bosnia and herzegovina": "Bosnia_and_Herzegovina",
+  "botswana": "Botswana",
+  "brazil": "Brazil",
+  "brunei": "Brunei",
+  "bulgaria": "Bulgaria",
+  "burkina faso": "Burkina_Faso",
+  "burundi": "Burundi",
+  "cambodia": "Cambodia",
+  "cameroon": "Cameroon",
+  "canada": "Canada",
+  "cape verde": "Cape_Verde",
+  "cayman islands": "Cayman_Islands",
+  "central african republic": "Central_African_Republic",
+  "chad": "Chad",
+  "chile": "Chile",
+  "china": "China",
+  "chinese taipei": "Taiwan",
+  "colombia": "Colombia",
+  "comoros": "Comoros",
+  "congo": "Congo",
+  "costa rica": "Costa-Rica",
+  "croatia": "Croatia",
+  "cuba": "Cuba",
+  "cyprus": "Cyprus",
+  "czech republic": "Czech_Republic",
+  "czechia": "Czech_Republic",
+  "denmark": "Denmark",
+  "djibouti": "Djibouti",
+  "dominica": "Dominica",
+  "dominican republic": "Dominican_Republic",
+  "dr congo": "DR_Congo",
+  "ecuador": "Ecuador",
+  "egypt": "Egypt",
+  "el salvador": "El_Salvador",
+  "england": "England",
+  "equatorial guinea": "Equatorial_Guinea",
+  "eritrea": "Eritrea",
+  "estonia": "Estonia",
+  "eswatini": "Eswatini",
+  "ethiopia": "Ethiopia",
+  "faroe islands": "Faroe_Islands",
+  "fiji": "Fiji",
+  "finland": "Finland",
+  "france": "France",
+  "gabon": "Gabon",
+  "gambia": "Gambia",
+  "georgia": "Georgia",
+  "germany": "Germany",
+  "ghana": "Ghana",
+  "gibraltar": "Gibraltar",
+  "great britain": "United_Kingdom",
+  "greece": "Greece",
+  "grenada": "Grenada",
+  "guatemala": "Guatemala",
+  "guinea": "Guinea",
+  "guinea-bissau": "Guinea-Bissau",
+  "guyana": "Guyana",
+  "haiti": "Haiti",
+  "holland": "Netherlands",
+  "honduras": "Honduras",
+  "hong kong": "Hong-Kong",
+  "hungary": "Hungary",
+  "iceland": "Iceland",
+  "india": "India",
+  "indonesia": "Indonesia",
+  "iran": "Iran",
+  "iraq": "Iraq",
+  "ireland": "Ireland",
+  "israel": "Israel",
+  "italy": "Italy",
+  "jamaica": "Jamaica",
+  "japan": "Japan",
+  "jordan": "Jordan",
+  "kazakhstan": "Kazakhstan",
+  "kenya": "Kenya",
+  "korea republic": "South-Korea-2",
+  "kosovo": "Kosovo",
+  "kuwait": "Kuwait",
+  "kyrgyzstan": "Kyrgyzstan",
+  "laos": "Laos",
+  "latvia": "Latvia",
+  "lebanon": "Lebanon",
+  "lesotho": "Lesotho",
+  "liberia": "Liberia",
+  "libya": "Libya",
+  "liechtenstein": "Liechtenstein",
+  "lithuania": "Lithuania",
+  "luxembourg": "Luxembourg",
+  "macau": "Macau",
+  "macedonia": "Macedonia",
+  "madagascar": "Madagaskar",
+  "malawi": "Malawi",
+  "malaysia": "Malaysia",
+  "maldives": "Maldives",
+  "mali": "Mali",
+  "malta": "Malta",
+  "mauritania": "Mauritania",
+  "mauritius": "Mauritius",
+  "mexico": "Mexico",
+  "moldova": "Moldova",
+  "monaco": "Monaco",
+  "mongolia": "Mongolia",
+  "montenegro": "Montenegro",
+  "morocco": "Morocco",
+  "mozambique": "Mozambique",
+  "myanmar": "Myanmar",
+  "namibia": "Namibia",
+  "nepal": "Nepal",
+  "netherlands": "Netherlands",
+  "new zealand": "New-Zealand",
+  "nicaragua": "Nicaragua",
+  "niger": "Niger",
+  "nigeria": "Nigeria",
+  "north korea": "North-Korea",
+  "north macedonia": "Macedonia",
+  "northern ireland": "Northern-Ireland",
+  "norway": "Norway",
+  "oman": "Oman",
+  "pakistan": "Pakistan",
+  "palestine": "Palestine",
+  "panama": "Panama",
+  "papua new guinea": "Papua_New_Guinea",
+  "paraguay": "Paraguay",
+  "peru": "Peru",
+  "philippines": "Philippines",
+  "poland": "Poland",
+  "portugal": "Portugal",
+  "puerto rico": "Puerto-Rico",
+  "qatar": "Qatar",
+  "romania": "Romania",
+  "russia": "Russia",
+  "rwanda": "Rwanda",
+  "saint kitts and nevis": "Saint_Kitts_and_Nevis",
+  "saint lucia": "Saint_Lucia",
+  "samoa": "Samoa",
+  "san marino": "San-Marino",
+  "saudi arabia": "Saudi-Arabia",
+  "scotland": "Scotland",
+  "senegal": "Senegal",
+  "serbia": "Serbia",
+  "seychelles": "Seychelles",
+  "sierra leone": "Sierra_Leone",
+  "singapore": "Singapore",
+  "slovakia": "Slovakia",
+  "slovenia": "Slovenia",
+  "somalia": "Somalia",
+  "south africa": "South-Africa",
+  "south korea": "South-Korea-2",
+  "south sudan": "South_Sudan",
+  "spain": "Spain",
+  "sri lanka": "Sri_Lanka",
+  "sudan": "Sudan",
+  "suriname": "Suriname",
+  "sweden": "Sweden",
+  "switzerland": "Switzerland",
+  "syria": "Syria",
+  "taiwan": "Taiwan",
+  "tajikistan": "Tajikistan",
+  "tanzania": "Tanzania",
+  "thailand": "Thailand",
+  "togo": "Togo",
+  "trinidad and tobago": "Trinidad-and-Tobago",
+  "tunisia": "Tunisia",
+  "turkey": "Turkey",
+  "turkmenistan": "Turkmenistan",
+  "uae": "United-Arab-Emirates",
+  "uganda": "Uganda",
+  "ukraine": "Ukraine",
+  "united arab emirates": "United-Arab-Emirates",
+  "united kingdom": "United_Kingdom",
+  "united states": "United-States",
+  "uruguay": "Uruguay",
+  "usa": "United-States",
+  "uzbekistan": "Uzbekistan",
+  "venezuela": "Venezuela",
+  "vietnam": "Vietnam",
+  "wales": "Wales",
+  "yemen": "Yemen",
+  "zambia": "Zambia",
+  "zimbabwe": "Zimbabwe",
+
+  // Short forms the live fon.bet line actually emits as a category —
+  // measured against the 347 category rows on production 2026-09-04.
+  // Every other unmatched row there is a competition or format
+  // ("Euroleague", "Copa Libertadores", "NBA 2K26", "Test matches"),
+  // which correctly gets the initials mark rather than a flag.
+  "czech": "Czech_Republic",
+  "dominicana": "Dominican_Republic",
+  "salvador": "El_Salvador",
+  "rsa": "South-Africa",
+};
+
+/**
+ * Resolves a category name to the api flag URL, or null when the
+ * category is not a country we have artwork for.
+ *
+ * Tolerant of the shapes the two feeds actually produce: trailing
+ * punctuation from the segment-prefix split, an "(women)" / "(w)"
+ * qualifier, and case differences.
+ */
+export function categoryFlagUrl(name: string | null | undefined): string | null {
+  const file = categoryFlagFile(name);
+  return file ? `${apiAssetBase}/catalog/flags/${file}` : null;
+}
+
+export function categoryFlagFile(name: string | null | undefined): string | null {
+  if (!name) return null;
+  const key = name
+    .toLowerCase()
+    .replace(/\((?:w|women|men|u\d+)\)/g, " ")
+    .replace(/[.,;:]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return FLAG_FILES[key] ?? null;
+}

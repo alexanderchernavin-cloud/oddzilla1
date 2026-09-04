@@ -7,6 +7,14 @@ const RAW_API_URL = process.env.NEXT_PUBLIC_API_URL;
 const BROWSER_API_URL =
   RAW_API_URL && RAW_API_URL.length > 0 ? RAW_API_URL : "/api";
 
+/**
+ * Base for non-JSON api URLs the browser loads directly — byte-serve
+ * routes fed to `<img src>` rather than fetched. Exported so those
+ * callers resolve the same base as `clientApi` instead of hard-coding
+ * "/api" and breaking under a non-empty NEXT_PUBLIC_API_URL in dev.
+ */
+export const apiAssetBase = BROWSER_API_URL;
+
 export interface ApiErrorBody {
   error: string;
   message: string;

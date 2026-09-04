@@ -82,7 +82,10 @@
     "leftPanel": "Panel izquierdo",
     "rightPanel": "Panel derecho",
     "closePanel": "Cerrar panel",
-    "matchFrameTitle": "Partido {id}"
+    "matchFrameTitle": "Partido {id}",
+    "esportsSection": "Esports",
+    "showTournaments": "Mostrar torneos",
+    "hideTournaments": "Ocultar torneos"
   },
   "wallet": {
     "title": "Cartera",

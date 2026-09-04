@@ -82,7 +82,10 @@
     "leftPanel": "Lijeva ploča",
     "rightPanel": "Desna ploča",
     "closePanel": "Zatvori ploču",
-    "matchFrameTitle": "Meč {id}"
+    "matchFrameTitle": "Meč {id}",
+    "esportsSection": "Esport",
+    "showTournaments": "Prikaži turnire",
+    "hideTournaments": "Sakrij turnire"
   },
   "wallet": {
     "title": "Novčanik",

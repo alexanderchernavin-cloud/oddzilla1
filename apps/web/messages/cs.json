@@ -82,7 +82,10 @@
     "leftPanel": "Levý panel",
     "rightPanel": "Pravý panel",
     "closePanel": "Zavřít panel",
-    "matchFrameTitle": "Zápas {id}"
+    "matchFrameTitle": "Zápas {id}",
+    "esportsSection": "Esporty",
+    "showTournaments": "Zobrazit turnaje",
+    "hideTournaments": "Skrýt turnaje"
   },
   "wallet": {
     "title": "Peněženka",

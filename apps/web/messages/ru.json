@@ -82,7 +82,10 @@
     "leftPanel": "Левая панель",
     "rightPanel": "Правая панель",
     "closePanel": "Закрыть панель",
-    "matchFrameTitle": "Матч {id}"
+    "matchFrameTitle": "Матч {id}",
+    "esportsSection": "Киберспорт",
+    "showTournaments": "Показать турниры",
+    "hideTournaments": "Скрыть турниры"
   },
   "wallet": {
     "title": "Кошелёк",
