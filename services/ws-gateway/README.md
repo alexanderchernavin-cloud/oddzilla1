@@ -9,9 +9,14 @@ cookie) — authenticated clients additionally subscribe to a private
 (missing or invalid cookie) are accepted and receive only the public
 `odds:match:{id}` fan-out, which is the same data SSR already serves
 to logged-out visitors. Per-client subscription table; Redis pub/sub
-refcounted fanout; 5 msg/s/client token bucket (capacity 5, refill
-200 ms); subscription cap 100 matches per client; healthz reports
-connected clients + subscription count.
+refcounted fanout; subscription cap 100 matches per client; healthz
+reports connected clients, subscription counts, heap usage and
+outbound-buffer stats.
+
+Outbound odds fanout is **not** rate-limited (the old 5 msg/s token
+bucket was removed in `c005882` — dropping price ticks is not
+acceptable in a sportsbook). It is bounded by memory instead: see
+`WS_MAX_BUFFERED_BYTES` under Invariants.
 
 ## Run
 
@@ -49,7 +54,22 @@ not replay from WS.
   public odds fan-out only; the `user:{id}` Redis subscription is gated
   on a valid JWT, so a logged-out browser can never receive another
   user's ticket frames.
-- Rate cap (5 msg/s/client) protects the box from runaway fanout.
+- **A socket's identity is fixed at upgrade time.** The cookie is read
+  once and never re-read, so a socket opened while logged out stays
+  anonymous for its whole life and never joins `user:{id}`. The
+  storefront reconciles this and reconnects on a mismatch
+  (`apps/web/src/lib/ws-session-sync.tsx`); any UI waiting on a
+  `user:{id}` frame needs a transport-independent fallback too, since a
+  reconnect lands anonymous whenever the access cookie has expired.
+- **Outbound buffering is capped, not rated.** `ws.send()` queues
+  in-process when a consumer stops draining, so one wedged socket can
+  accumulate the entire feed in this process's heap — growth tracks feed
+  volume, not client count. Every fan-out send goes through
+  `sendToClient()`, which terminates a socket past
+  `WS_MAX_BUFFERED_BYTES` (default 1 MiB). Terminating is safe because
+  Postgres is the source of truth on reconnect; silently skipping frames
+  would leave that client quoting a stale price with no signal. Four
+  OOM kills on 2026-09-03 came from the unbounded version.
 - Never trust message payloads from clients — JSON-schema validate.
 - Every upgrade must carry an `Origin` in `CORS_ORIGINS`. Compose sets
   `CORS_ORIGINS_STRICT=true` (2026-09-03), so an upgrade with no Origin

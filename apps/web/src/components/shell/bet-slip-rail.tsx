@@ -79,6 +79,17 @@ function effectiveMarginBp(baseBp: number, perLegBp: number, n: number): number 
 
 const DRIFT_ERROR_MESSAGE = "The odds moved since you clicked. Try again.";
 const SUSPENDED_ERROR_MESSAGE = "This market is suspended. Try again in a moment.";
+const SIGNED_OUT_ERROR_MESSAGE =
+  "You're signed out. Sign in and place this bet again — your selections are kept.";
+// HTTP fallback for resolving a ticket through the bet-delay window when
+// the WS ticket frame doesn't arrive. The first request lands just after
+// the worker's decision point (`notBeforeTs`) — nothing is knowable
+// before it. In practice the pending-card timeout drops tracking at
+// notBeforeTs + 15 s and cancels the poll first; the attempt budget is
+// the backstop for the case where that timeout is ever relaxed.
+const TICKET_POLL_LEAD_MS = 1200;
+const TICKET_POLL_INTERVAL_MS = 2000;
+const TICKET_POLL_MAX_ATTEMPTS = 10;
 
 // Placement intent (migration 0097). These rejections mean the token the
 // slip attached was stale / for a different selection set / already
@@ -231,16 +242,19 @@ export function BetSlipRail() {
     return () => window.clearTimeout(id);
   }, [placedTicket, router]);
 
-  // Rail-level ticket-frame subscription. When the bet-delay worker
-  // resolves the ticket we either clear the slip + switch to history
-  // (accepted — the slip is done) or keep the slip populated (rejected
-  // — user can edit + retry). The HistoryPane has its own subscription
-  // for live list updates; the two run independently.
-  useTicketStream(
-    useCallback((frame) => {
+  // Apply a resolved ticket state. Two transports feed this: the WS
+  // ticket frame (fast path) and the HTTP poll below (fallback). Both
+  // land here so the slip behaves identically whichever one wins.
+  const applyTicketResolution = useCallback(
+    (
+      ticketId: string,
+      status: TicketStatus,
+      rejectReason: string | null,
+    ) => {
       setPlacedTicket((prev) => {
-        if (!prev || prev.id !== frame.ticketId) return prev;
-        if (frame.status === "accepted") {
+        if (!prev || prev.id !== ticketId) return prev;
+        if (prev.status === status) return prev;
+        if (status === "accepted") {
           slip.clear();
           setActiveTab("history");
           // Refresh wallets/server data so any debit/refund settles.
@@ -248,7 +262,7 @@ export function BetSlipRail() {
           // Drop the pending card — the new ticket lives in History now.
           return null;
         }
-        if (frame.status === "rejected") {
+        if (status === "rejected") {
           // Stake was refunded by the worker. Reconcile balances. Slip
           // selections stay populated so the bettor can re-place with
           // the latest pendingOdds (the WS odds ticks have been flowing
@@ -258,15 +272,93 @@ export function BetSlipRail() {
           return {
             ...prev,
             status: "rejected",
-            rejectReason: frame.rejectReason ?? "rejected",
+            rejectReason: rejectReason ?? "rejected",
           };
         }
         // Other terminal statuses (settled / voided / cashed_out) can't
         // reach a pending ticket, but pass them through for completeness.
-        return { ...prev, status: frame.status };
+        return { ...prev, status };
       });
-    }, [slip, router]),
+    },
+    [slip, router],
   );
+
+  // Rail-level ticket-frame subscription. When the bet-delay worker
+  // resolves the ticket we either clear the slip + switch to history
+  // (accepted — the slip is done) or keep the slip populated (rejected
+  // — user can edit + retry). The HistoryPane has its own subscription
+  // for live list updates; the two run independently.
+  useTicketStream(
+    useCallback(
+      (frame) => {
+        applyTicketResolution(
+          frame.ticketId,
+          frame.status,
+          frame.rejectReason ?? null,
+        );
+      },
+      [applyTicketResolution],
+    ),
+  );
+
+  // HTTP fallback for the acceptance-delay window.
+  //
+  // The WS frame is the fast path, but it only reaches this tab if the
+  // socket is authenticated — ws-gateway resolves identity once, at
+  // upgrade time (see ws-session-sync.tsx) — and if the gateway stayed
+  // up between placement and decision. When neither held, the button sat
+  // on "Placing…" until its timeout and then reverted to "Place bet"
+  // with the slip STILL POPULATED, even though the bet had been accepted
+  // and the stake debited. Nothing upstream catches the resulting
+  // double-click: every submit mints a fresh idempotencyKey, so the
+  // second one is a genuinely new ticket. Polling the ticket directly
+  // makes the outcome independent of the socket.
+  useEffect(() => {
+    if (!placedTicket || placedTicket.status !== "pending_delay") return;
+    const ticketId = placedTicket.id;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let attempts = 0;
+
+    const poll = async () => {
+      if (cancelled) return;
+      attempts += 1;
+      try {
+        const res = await clientApi<{ ticket: TicketSummary }>(
+          `/bets/${ticketId}`,
+        );
+        if (cancelled) return;
+        if (res.ticket.status !== "pending_delay") {
+          applyTicketResolution(
+            ticketId,
+            res.ticket.status,
+            res.ticket.rejectReason,
+          );
+          return;
+        }
+      } catch {
+        // Transient (offline, api blip) — keep trying until the budget
+        // runs out. A signed-out 401 burns the budget the same way; the
+        // pending-card timeout above is the final backstop.
+      }
+      if (cancelled || attempts >= TICKET_POLL_MAX_ATTEMPTS) return;
+      timer = setTimeout(poll, TICKET_POLL_INTERVAL_MS);
+    };
+
+    // Nothing to learn before the worker's decision point — wait for it,
+    // then start asking.
+    const decisionAt = placedTicket.notBeforeTs
+      ? new Date(placedTicket.notBeforeTs).getTime()
+      : Date.now();
+    timer = setTimeout(
+      poll,
+      Math.max(0, decisionAt - Date.now()) + TICKET_POLL_LEAD_MS,
+    );
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [placedTicket, applyTicketResolution]);
 
   // When a new selection is added (count goes up) while the user is on the
   // history tab, jump back to the slip so the freshly clicked pick is
@@ -795,7 +887,18 @@ export function BetSlipRail() {
       slip.clear();
       setActiveTab("history");
     } catch (err) {
-      setError(err instanceof ApiFetchError ? mapError(err) : "Placement failed.");
+      // 401 is its own case, not a placement rejection. The generic
+      // handler fell through to mapError's default and printed the api's
+      // raw `unauthorized` body, which reads like a bet-level refusal
+      // and says nothing about the actual fix. The slip is untouched
+      // either way — selections survive the sign-in round trip.
+      if (err instanceof ApiFetchError && err.status === 401) {
+        setError(SIGNED_OUT_ERROR_MESSAGE);
+      } else {
+        setError(
+          err instanceof ApiFetchError ? mapError(err) : "Placement failed.",
+        );
+      }
     } finally {
       setSubmitting(false);
     }

@@ -138,13 +138,30 @@ service and `news_articles` table were removed via migration 0003.)
 5. It PUBLISHes the result on Redis pub/sub channel `odds:match:{match_id}`.
 6. `ws-gateway` holds an ioredis subscriber. For each connected WS client it
    tracks which matches they subscribed to. When a message arrives, it fans
-   it out — clipped to 5 msg/s/client by a token bucket to protect the
-   Hetzner box from runaway fanout costs.
+   it out to every interested socket. Outbound is deliberately **not**
+   rate-limited — a sportsbook cannot drop price ticks, and the token
+   bucket that used to sit here was removed in `c005882`. What bounds the
+   fanout instead is memory: `ws.send()` queues in-process when a consumer
+   stops draining, so a socket whose outbound buffer passes
+   `WS_MAX_BUFFERED_BYTES` (1 MiB) is disconnected rather than allowed to
+   accumulate the feed in the gateway's heap. See the ws-gateway OOM entry
+   in [OPERATIONS.md](./OPERATIONS.md).
 7. Browser JS updates the DOM; odds values animate with a brief highlight.
 
 **Recovery on reconnect:** the frontend fetches the current `published_odds`
 from the REST API, then reopens the WS and resubscribes. Pub/sub drops are
-therefore safe.
+therefore safe — and this is exactly why disconnecting a slow consumer is
+the right remedy rather than silently skipping its frames.
+
+**Socket identity:** authentication happens once, during the HTTP upgrade,
+from the `oddzilla_access` cookie. A socket is anonymous or a given user
+for its whole life. Because sign-in is a client-side route change, the
+storefront reconciles the gateway's `hello.userId` against the session it
+knows about and reconnects on a mismatch — see
+[`ws-session-sync.tsx`](../apps/web/src/lib/ws-session-sync.tsx). Any UI
+that waits on a `user:{id}` frame also needs a transport-independent
+fallback, because a reconnect can land anonymous whenever the access
+cookie has expired.
 
 ### Bet placement
 
