@@ -760,6 +760,9 @@
     "send": "Enviar"
   },
   "matchWidgets": {
+    "lmt": {
+      "title": "Seguimiento del partido en vivo"
+    },
     "onBetSlip": "En el boleto",
     "addToBetSlip": "Añadir al boleto",
     "betbuilderOn": "Activar BetBuilder — combina varias selecciones de este partido",

@@ -112,7 +112,11 @@ function buildCsp(nonce: string, frameAncestors: "none" | "self"): string {
     // host.vpplayer.tech is Gjirafa's white-label player host. Oddin labels
     // those channels "Gjirafa" but serves them from this domain rather than
     // video.gjirafa.com, so it needs its own entry or the iframe is blocked.
-    "frame-src 'self' https://player.twitch.tv https://www.twitch.tv https://www.youtube.com https://www.youtube-nocookie.com https://player.kick.com https://video.gjirafa.com https://host.vpplayer.tech https://*.oddin.gg",
+    // widgets.sir.sportradar.com hosts the Sportradar Live Match Tracker
+    // standalone page (components/widgets/sportradar-lmt.tsx) — an iframe,
+    // because the widgetloader licenses per embedding origin and Oddzilla
+    // has no Client ID yet.
+    "frame-src 'self' https://player.twitch.tv https://www.twitch.tv https://www.youtube.com https://www.youtube-nocookie.com https://player.kick.com https://video.gjirafa.com https://host.vpplayer.tech https://*.oddin.gg https://widgets.sir.sportradar.com",
     `frame-ancestors '${frameAncestors}'`,
     "base-uri 'self'",
     "form-action 'self'",
