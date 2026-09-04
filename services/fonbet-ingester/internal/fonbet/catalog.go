@@ -69,6 +69,27 @@ var sideCaptions = map[string]string{
 	"Да": "yes", "Нет": "no", "Yes": "yes", "No": "no",
 }
 
+// overUnderWords is the display form of a total column caption. Fonbet
+// prints those as column heads above a shared line column ("O" / "U" in
+// English, "Б" / "М" in Russian), which reads fine in its own grid but
+// IS the entire outcome label once the storefront renders each cell on
+// its own. Keyed by the side id sideCaptions already resolves, so the two
+// lists cannot drift. Display-only: the settlement grader keys totals off
+// that side id ("over" / "under"), never off the label.
+var overUnderWords = map[string]map[string]string{
+	"over":  {"en": "Over", "ru": "Больше"},
+	"under": {"en": "Under", "ru": "Меньше"},
+}
+
+// captionWord expands one column caption for the outcome label, leaving
+// captions with no expansion (team sides, yes/no, correct scores) alone.
+func captionWord(col, lang string) string {
+	if w := overUnderWords[sideCaptions[col]][lang]; w != "" {
+		return w
+	}
+	return col
+}
+
 // RowFactors returns every value factor on the same line as this factor.
 func (m *FactorMeta) RowFactors() []int {
 	if m.Row < 0 || m.Row >= len(m.Table.Rows) {
@@ -165,7 +186,7 @@ func BuildIndex(cat *Catalog) *Index {
 					if ci < len(tm.Header) {
 						col = tm.Header[ci]
 					}
-					label := strings.TrimSpace(strings.TrimSpace(rowLabel + " " + col))
+					label := strings.TrimSpace(strings.TrimSpace(rowLabel + " " + captionWord(col, idx.Lang)))
 					if label == "" {
 						label = strconv.Itoa(c.FactorID)
 					}
