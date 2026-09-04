@@ -1041,6 +1041,17 @@ func runAMQP(ctx context.Context, cfg config.Config, deps handler.Deps, rdb *red
 			// (status=-1 fails the storefront filter) instead of silently
 			// keeping its pre-outage snapshot.
 			startConnectedStamp()
+			// A switch back to Oddin performs the flush and the replay
+			// request itself, and it now also un-pauses this consumer — so
+			// the dial that follows would otherwise repeat both. Flushing
+			// twice is harmless (suspend is idempotent) but a second
+			// recovery request is a needless call against Oddin's
+			// rate-limited endpoint. The hand-off is an explicit CAS
+			// rather than a time window so it cannot mis-fire.
+			if switchBackRecoveryDone.CompareAndSwap(true, false) {
+				log.Info().Msg("amqp connected after a switch back to Oddin; flush + recovery already issued by the switch")
+				return nil
+			}
 			if feedSourceIsBackup.Load() {
 				// The backup is feeding the catalogue: flushing it here
 				// would wipe what Bifrost just fed, and the replay request
@@ -1059,6 +1070,11 @@ func runAMQP(ctx context.Context, cfg config.Config, deps handler.Deps, rdb *red
 		log,
 	)
 	cons.OnDisconnect = stopConnectedStamp
+	// Forced Backup means we do not dial Oddin's broker at all. Gated on
+	// feedSourceIsBackup rather than dropAMQP because the switch back
+	// clears that one FIRST, so the reconnect can start while the replay
+	// window is still being set up.
+	cons.Paused = func() bool { return feedSourceIsBackup.Load() }
 
 	if err := cons.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Error().Err(err).Msg("amqp consumer exited")
@@ -1085,6 +1101,12 @@ var dropAMQP atomic.Bool
 // while dropAMQP stays set until that request is sent (a concurrent
 // BumpAfterTs would otherwise narrow the rewound recovery window).
 var feedSourceIsBackup atomic.Bool
+
+// switchBackRecoveryDone is set by runSourceSwitch when it has already
+// flushed and asked Oddin to replay for a switch back to prod, and
+// consumed by the AMQP OnConnect hook that follows so the pair happens
+// exactly once. See the comment at the consume site.
+var switchBackRecoveryDone atomic.Bool
 
 // currentFeedSource is what runSourceSwitch last observed, for /healthz.
 var currentFeedSource atomic.Pointer[string]
@@ -1208,6 +1230,9 @@ func runSourceSwitch(ctx context.Context, pool *pgxpool.Pool, deps handler.Deps,
 			if deps.Rest != nil {
 				flushBeforeRecover(ctx, deps, log)
 				handler.TriggerRecovery(ctx, deps, log)
+				// The consumer un-pauses on the line above and will dial
+				// in a moment; tell its OnConnect that this pair is done.
+				switchBackRecoveryDone.Store(true)
 			} else {
 				log.Warn().Msg("no Oddin REST client; catalogue left as the backup last fed it")
 			}

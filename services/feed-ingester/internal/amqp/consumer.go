@@ -60,6 +60,19 @@ type Consumer struct {
 	// after New. feed-ingester uses it to drop the "AMQP connected"
 	// liveness stamp the backup feed's gate reads.
 	OnDisconnect func()
+
+	// Paused, when set and returning true, stops Run from dialling at
+	// all. It is polled on pauseInterval, so clearing it reconnects
+	// within a couple of seconds.
+	//
+	// feed-ingester sets this from the operator's feed-source switch. The
+	// point is that a forced Backup should mean we do not talk to Oddin's
+	// broker, full stop — not that we hold a connection whose deliveries
+	// we throw away. With revoked or rotated credentials there is no
+	// connection to hold anyway, and the reconnect loop below just logs a
+	// 403 every 30 s forever against a source the operator has explicitly
+	// switched off (observed in production 2026-09-04).
+	Paused func() bool
 }
 
 func New(cfg Config, handler Handler, onConnect OnConnect, log zerolog.Logger) *Consumer {
@@ -86,13 +99,40 @@ func New(cfg Config, handler Handler, onConnect OnConnect, log zerolog.Logger) *
 	}
 }
 
+// pauseInterval is how often Run re-checks Paused. It matches the
+// feed-source switch watcher's own cadence, so resuming is prompt.
+const pauseInterval = 2 * time.Second
+
 // Run blocks until ctx is cancelled. It dials, consumes, and reconnects
-// forever, with exponential backoff capped at 30 s.
+// forever, with exponential backoff capped at 30 s — except while Paused
+// reports true, when it does not dial at all.
 func (c *Consumer) Run(ctx context.Context) error {
 	var backoff = time.Second
+	paused := false
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if c.Paused != nil && c.Paused() {
+			// Log the transition, not the poll: the whole point is to stop
+			// a switched-off source producing a line every 30 s.
+			if !paused {
+				c.log.Warn().Msg("amqp dialling paused (feed source is not Oddin); will reconnect when it is switched back")
+				paused = true
+			}
+			// A pause is not a failure, so the next real dial should not
+			// inherit a grown backoff.
+			backoff = time.Second
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(pauseInterval):
+			}
+			continue
+		}
+		if paused {
+			c.log.Warn().Msg("amqp dialling resumed (feed source is Oddin again)")
+			paused = false
 		}
 		err := c.runOnce(ctx)
 		if err == nil || errors.Is(err, context.Canceled) {

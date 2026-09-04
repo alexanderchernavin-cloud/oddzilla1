@@ -1,5 +1,21 @@
 # Bifrost backup feed
 
+> **Forced Backup means feed-ingester does not talk to Oddin's broker at
+> all.** Since 2026-09-04 the AMQP consumer is gated by
+> `amqp.Consumer.Paused` (wired to `feedSourceIsBackup`, re-checked every
+> 2 s), so a forced Backup stops dialling instead of holding a connection
+> whose deliveries are discarded. It logs the pause once, not once per
+> retry. Switching back to `prod`/`auto` resumes the dial within a couple
+> of seconds; `runSourceSwitch` still owns that switch-back's flush and
+> replay request, and hands off to the reconnect's `OnConnect` through the
+> `switchBackRecoveryDone` CAS so the pair is issued exactly once rather
+> than twice.
+>
+> `services/settlement` keeps its own AMQP consumer running regardless —
+> that is deliberate (dual-source always; apply-once makes it safe, and
+> `bet_cancel` / `rollback_*` exist only on AMQP), so it will keep
+> retrying and logging while Oddin's credentials are bad.
+
 Backup path for odds, scores, fixtures and settlements when Oddin's AMQP
 feed or REST meta API is down. Sourced from **Bifrost**, Oddin's own
 white-label esports front end — the iframe behind `maxbet.rs/en/esport`.
