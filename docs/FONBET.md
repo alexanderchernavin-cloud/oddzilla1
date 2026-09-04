@@ -108,6 +108,22 @@ address Fonbet markets with these ids.
   `ODDS_HISTORY_SKIP_PMID_MIN=1000000` on odds-publisher to stop writing
   history for the Fonbet namespace. See docs/OPERATIONS.md "odds_history
   retention".
+- **Switch.** The feed is turned on and off from the **Fonbet feed** card
+  on `/admin/feed` (`PUT /admin/feed/fonbet`, migration 0096), no
+  container restart. The position lives in `feed_control.fonbet_enabled`
+  (Postgres, not Redis — see 0095 for why) and wins over `FONBET_ENABLED`
+  once set; the env var is only the default while the column is NULL.
+  fonbet-ingester reads it every 2 s: **Off** runs `SuspendAll` (every
+  Fonbet market to `-1`, prices kept, so nothing is listed or bettable),
+  stops polling Fonbet and stops the settlement worker — tickets on Fonbet
+  markets stay open until the feed is on again or settled by hand;
+  **On** boots the feed in place (catalogue, previous state from pg,
+  workers) and the first cycle re-activates whatever Fonbet still quotes.
+  A boot failure while On (Fonbet unreachable) retries every 30 s rather
+  than crashing the container. The ingester acknowledges what it applied
+  in `fonbet_applied_*` and publishes live counters to the Redis hash
+  `fonbet:feed:status` (5 s refresh, 120 s TTL) so the card can tell
+  "service offline" from "feed switched off".
 - **Boot.** Previous state is loaded from Postgres so restarts do not
   republish unchanged prices onto `odds.raw` (which is trimmed at ~100k
   entries).
@@ -166,9 +182,12 @@ settlement service's reconcile sweeper then pays the tickets.
 apply-once path as Oddin settlements, and its rules have only been checked
 by hand against a handful of matches. Order of operations on prod:
 
-1. `FONBET_ENABLED=true`, `FONBET_SETTLE_ENABLED=false` — the line is
-   live, Fonbet markets stay open after the final whistle, tickets sit
-   `accepted`. Watch `fonbet-ingester` `/healthz` (staleness, match count),
+1. Turn the feed **On** from the Fonbet feed card on `/admin/feed` (or
+   set `FONBET_ENABLED=true` as the env default) with
+   `FONBET_SETTLE_ENABLED=false` — the line is live, Fonbet markets stay
+   open after the final whistle, tickets sit `accepted`. The card's Off
+   button is the emergency brake at any point: one click suspends every
+   Fonbet market within 2 s. Watch `fonbet-ingester` `/healthz` (staleness, match count),
    `docker stats` for the 768m limit, and `odds_history` partition sizes.
 2. On a staging stack with the same build, run `FONBET_SETTLE_ENABLED=true`
    for at least a week and compare every automatic settlement against

@@ -998,6 +998,25 @@ and settlements when Oddin's AMQP feed goes silent. Full design in
 [`docs/BIFROST_BACKUP_FEED.md`](./BIFROST_BACKUP_FEED.md); this is the
 operator view.
 
+**Fonbet feed switch.** The **Fonbet feed** card on the same page turns the
+second provider on and off at runtime (`PUT /admin/feed/fonbet`, column
+`feed_control.fonbet_enabled`, migration 0096). Off is one click and the
+emergency brake: within 2 s fonbet-ingester suspends every Fonbet market
+(status `-1`, prices kept — nothing listed, placement rejects), stops
+polling Fonbet and stops its settlement worker, so tickets on Fonbet
+markets stay open until the feed is on again or you settle them by hand.
+On asks for confirmation, then the service boots the feed in place and the
+first cycle re-activates whatever Fonbet still quotes (the cold-start
+republish is paced against odds-publisher's group lag). The position wins
+over `FONBET_ENABLED` once set and survives restarts and deploys; the env
+var applies only while nothing was ever set here. The card shows the
+service heartbeat, whether the feed is running / off / suspended by the
+staleness watchdog, match and outcome counts, last snapshot age, whether
+settlement is armed (`FONBET_SETTLE_ENABLED`), and the acknowledgement
+fonbet-ingester writes to `fonbet_applied_*`. "fonbet-ingester is offline"
+on the card means the container is down or not deployed — the stored
+position applies when it starts.
+
 **State model.** The **Feed source** switch on `/admin/feed` (Postgres
 singleton `feed_control`, migration 0095; `PUT /admin/feed/source`,
 audit-logged) has three positions:

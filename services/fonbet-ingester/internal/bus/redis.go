@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -84,6 +85,28 @@ func (b *Bus) OddsBacklog(ctx context.Context) (int64, bool) {
 		return g.Lag + g.Pending, true
 	}
 	return 0, false
+}
+
+// StatusKey is the Redis hash the backoffice reads for the "Fonbet feed"
+// card on /admin/feed (GET /admin/feed/fonbet-status). Refreshed every few
+// seconds with a TTL so a dead service reads as offline rather than frozen.
+// A cache, not state: the operator's switch position lives in Postgres
+// (feed_control), this only reports what the service is doing.
+const (
+	StatusKey = "fonbet:feed:status"
+	statusTTL = 120 * time.Second
+)
+
+// WriteStatus HSETs the status fields and refreshes the TTL in one
+// transaction.
+func (b *Bus) WriteStatus(ctx context.Context, fields map[string]any) error {
+	pipe := b.rdb.TxPipeline()
+	pipe.HSet(ctx, StatusKey, fields)
+	pipe.Expire(ctx, StatusKey, statusTTL)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("status hset: %w", err)
+	}
+	return nil
 }
 
 // PublishOddsBatch pipelines N XADDs in one round trip.

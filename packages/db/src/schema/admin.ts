@@ -8,6 +8,7 @@ import {
   text,
   jsonb,
   timestamp,
+  boolean,
   inet,
   unique,
   index,
@@ -101,6 +102,15 @@ export const feedControl = pgTable("feed_control", {
   flushedAt: timestamp({ withTimezone: true }),
   appliedSource: text(),
   appliedAt: timestamp({ withTimezone: true }),
+  // Fonbet feed on/off switch (migration 0096). NULL = follow the
+  // FONBET_ENABLED env default; TRUE / FALSE = explicit operator position,
+  // read every 2 s by services/fonbet-ingester and acknowledged in
+  // fonbetApplied*.
+  fonbetEnabled: boolean(),
+  fonbetSwitchedAt: timestamp({ withTimezone: true }),
+  fonbetSwitchedBy: uuid().references(() => users.id, { onDelete: "set null" }),
+  fonbetAppliedEnabled: boolean(),
+  fonbetAppliedAt: timestamp({ withTimezone: true }),
   updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 });
 

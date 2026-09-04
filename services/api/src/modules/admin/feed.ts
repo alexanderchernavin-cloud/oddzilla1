@@ -350,6 +350,108 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
   },
   );
 
+  // ── Fonbet feed on/off switch ─────────────────────────────────────────
+  //
+  // Same state model as the source switch: the feed_control singleton
+  // (migration 0096 adds fonbet_enabled + handshake columns), read every
+  // 2 s by services/fonbet-ingester. NULL = never switched from here, the
+  // FONBET_ENABLED env default applies; TRUE / FALSE wins over env and
+  // survives restarts and deploys. OFF suspends every Fonbet market
+  // (status -1, prices kept — invisible to the catalog, placement rejects)
+  // and stops polling Fonbet; ON boots the feed and re-activates whatever
+  // Fonbet still quotes. The settlement worker runs only while the feed is
+  // on (and only with FONBET_SETTLE_ENABLED), so tickets on Fonbet markets
+  // stay open while the switch is off.
+  const fonbetBody = z.object({ enabled: z.boolean() });
+
+  // PUT /admin/feed/fonbet  { enabled: boolean }
+  app.put("/admin/feed/fonbet", { config: sourceRateLimit }, async (request) => {
+    const admin = request.requireRole("admin");
+    const body = fonbetBody.parse(request.body ?? {});
+    const nowUnix = Math.floor(Date.now() / 1000);
+    const before = await app.db.transaction(async (tx) => {
+      const [prev] = await tx
+        .select({ enabled: feedControl.fonbetEnabled })
+        .from(feedControl)
+        .where(eq(feedControl.id, 1))
+        .for("update");
+      await tx
+        .update(feedControl)
+        .set({
+          fonbetEnabled: body.enabled,
+          fonbetSwitchedAt: sql`NOW()`,
+          fonbetSwitchedBy: admin.id,
+          updatedAt: sql`NOW()`,
+        })
+        .where(eq(feedControl.id, 1));
+      await tx.insert(adminAuditLog).values({
+        actorUserId: admin.id,
+        action: "feed.fonbet_switch",
+        targetType: "feed_control",
+        targetId: "1",
+        beforeJson: { enabled: prev?.enabled ?? null },
+        afterJson: { enabled: body.enabled, switchedUnix: nowUnix },
+        ipInet: request.ip ?? null,
+      });
+      return prev?.enabled ?? null;
+    });
+    request.log.warn({ from: before, to: body.enabled, admin: admin.id }, "fonbet feed switched");
+    return { ok: true, enabled: body.enabled, switchedUnix: nowUnix };
+  });
+
+  // GET /admin/feed/fonbet-status — switch position + what the ingester
+  // applied (Postgres) and the service's live status hash (Redis,
+  // refreshed every 5 s with a 120 s TTL; absent = service offline).
+  app.get("/admin/feed/fonbet-status", async (request) => {
+    request.requireRole("admin");
+    const [hash, controlRows] = await Promise.all([
+      app.redis.hgetall("fonbet:feed:status"),
+      app.db.select().from(feedControl).where(eq(feedControl.id, 1)).limit(1),
+    ]);
+    const control = controlRows[0];
+    const nowUnix = Math.floor(Date.now() / 1000);
+    const num = (key: string): number | null => {
+      const v = hash[key];
+      if (v == null || v === "") return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const flag = (key: string): boolean | null => {
+      const v = hash[key];
+      if (v == null || v === "") return null;
+      return v === "1";
+    };
+    const dateUnix = (d: Date | null | undefined): number | null =>
+      d ? Math.floor(d.getTime() / 1000) : null;
+    const heartbeat = num("heartbeat_unix");
+    return {
+      switch: {
+        // null = never switched from the backoffice; env default applies.
+        enabled: control?.fonbetEnabled ?? null,
+        switchedUnix: dateUnix(control?.fonbetSwitchedAt),
+        switchedBy: control?.fonbetSwitchedBy ?? null,
+        appliedEnabled: control?.fonbetAppliedEnabled ?? null,
+        appliedUnix: dateUnix(control?.fonbetAppliedAt),
+      },
+      service: {
+        online: heartbeat != null && nowUnix - heartbeat < 120,
+        heartbeatUnix: heartbeat,
+        // What the service is doing right now and why.
+        envDefault: flag("env_default"),
+        effectiveEnabled: flag("effective_enabled"),
+        switchSource: hash.switch_source || null, // "admin" | "env"
+        running: flag("running") === true,
+        catalogSuspended: flag("catalog_suspended") === true,
+        settleEnabled: flag("settle_enabled") === true,
+        matches: num("matches"),
+        outcomes: num("outcomes"),
+        lastSnapshotUnix: num("last_snapshot_unix"),
+        lastError: hash.last_error || null,
+        lastErrorUnix: num("last_error_unix"),
+      },
+    };
+  });
+
   // Backup feed (services/bifrost-feed) status. The service refreshes a
   // Redis hash every 5 s with a 120 s TTL; feed-ingester stamps the
   // primary-liveness key on every AMQP delivery. Both are read here so

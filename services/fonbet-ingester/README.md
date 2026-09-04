@@ -5,8 +5,16 @@ Go 1.23 / `net/http` + `encoding/json` + `pgx/v5` + `go-redis`. Writes the
 same tables and Redis stream as `feed-ingester`, so odds-publisher,
 ws-gateway and the storefront serve Fonbet matches unchanged.
 
-Gracefully idles (health only) unless `FONBET_ENABLED=true`. No
-credentials are needed — the line is public.
+No credentials are needed — the line is public. Whether the feed runs is
+decided by the **Fonbet feed** switch on `/admin/feed`
+(`feed_control.fonbet_enabled`, migration 0096), read every 2 s by the
+`switchWatcher` in `cmd/fonbet-ingester/main.go`; `FONBET_ENABLED` is only
+the default while nothing was ever set there. Off = `SuspendAll` + stop
+polling + settlement worker stopped (the service keeps serving `/healthz`
+and the `fonbet:feed:status` Redis hash); On = `runFeed` boots the
+catalogue, previous state and workers in place. A boot failure while On
+retries every 30 s instead of exiting, so the container never crashloops on
+a Fonbet outage.
 
 **Read [`../../docs/FONBET.md`](../../docs/FONBET.md) before enabling on
 prod.** Settlement is graded from Fonbet's results feed (`internal/settle`)
