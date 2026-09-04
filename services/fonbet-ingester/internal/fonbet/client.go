@@ -1,11 +1,16 @@
-// HTTP client for the Fonbet KZ line API. No credentials — the line is
+// HTTP client for the Fonbet line API. No credentials — the line is
 // public. Hosts rotate, so we bootstrap them from urls.json and fall back
 // to a static list; a failing host is moved to the back of the queue.
 //
-// Endpoints (verified 2026-09-03, see docs/FONBET.md):
-//   GET https://fonbet.kz/urls.json                       host discovery
-//   GET <line>/events/list?lang=ru&version=0&scopeMarket=1800   full snapshot
-//   GET <line>/line/factorsCatalog/tables?version=0&lang=ru&sysId=NN
+// Endpoints (verified 2026-09-04 against fon.bet, see docs/FONBET.md):
+//   GET https://fon.bet/urls.json                              host discovery
+//   GET <line>/events/list?lang=en&version=0&scopeMarket=1600   full snapshot
+//   GET <line>/line/factorsCatalog/tables?version=0&lang=en&sysId=NN
+//
+// The site the line belongs to picks both the scopeMarket and the
+// Origin / Referer the hosts expect: fon.bet answers scopeMarket 1600,
+// fonbet.kz answers 1800 and 404s on 1600. Everything else — event ids,
+// catalogue table numbers, factor ids — is identical across the two.
 //
 // Responses are gzip-encoded even when not requested, so the body is
 // sniffed for the gzip magic before decoding.
@@ -33,11 +38,14 @@ import (
 )
 
 const (
-	// maxResponseBytes caps a decoded body. The full KZ line is ~1.2 MB
+	// maxResponseBytes caps a decoded body. The full line is ~1.4 MB
 	// decoded; 64 MiB leaves headroom without letting a misbehaving
 	// upstream exhaust memory.
 	maxResponseBytes = 64 << 20
 	userAgent        = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/128 Safari/537.36 oddzilla-fonbet-ingester"
+	// DefaultSiteOrigin is the site whose line we read. It rides on every
+	// request as Origin / Referer.
+	DefaultSiteOrigin = "https://fon.bet"
 )
 
 type Config struct {
@@ -47,6 +55,12 @@ type Config struct {
 	Lang        string
 	ScopeMarket int
 	Timeout     time.Duration
+	// SiteOrigin is sent as Origin / Referer on every request. Empty falls
+	// back to DefaultSiteOrigin.
+	SiteOrigin string
+	// LogoCDN is the static host the logo paths hang off. Empty falls back
+	// to DefaultLogoCDN.
+	LogoCDN string
 }
 
 type Client struct {
@@ -69,6 +83,12 @@ var hostNumRe = regexp.MustCompile(`line(\d+)`)
 func New(cfg Config, log zerolog.Logger) *Client {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 30 * time.Second
+	}
+	if cfg.SiteOrigin == "" {
+		cfg.SiteOrigin = DefaultSiteOrigin
+	}
+	if cfg.LogoCDN == "" {
+		cfg.LogoCDN = DefaultLogoCDN
 	}
 	return &Client{
 		cfg:     cfg,
@@ -291,8 +311,7 @@ func (c *Client) getURL(ctx context.Context, u string) ([]byte, error) {
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("Accept-Encoding", "gzip")
-	req.Header.Set("Origin", "https://fonbet.kz")
-	req.Header.Set("Referer", "https://fonbet.kz/")
+	c.setSiteHeaders(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
@@ -306,6 +325,13 @@ func (c *Client) getURL(ctx context.Context, u string) ([]byte, error) {
 		return nil, fmt.Errorf("read body: %w", err)
 	}
 	return decodeBody(raw, resp.Header.Get("Content-Encoding"))
+}
+
+// setSiteHeaders stamps the Origin / Referer of the site whose line we
+// read. The hosts serve a plain 403 without them.
+func (c *Client) setSiteHeaders(req *http.Request) {
+	req.Header.Set("Origin", c.cfg.SiteOrigin)
+	req.Header.Set("Referer", strings.TrimSuffix(c.cfg.SiteOrigin, "/")+"/")
 }
 
 // decodeBody enforces the size cap and transparently gunzips (the line

@@ -1,5 +1,5 @@
-// fonbet-ingester — polls the public Fonbet KZ line and writes it into the
-// oddzilla catalog (sports, tournaments, matches, markets, outcomes,
+// fonbet-ingester — polls the public Fonbet line (fon.bet) and writes it
+// into the oddzilla catalog (sports, tournaments, matches, markets, outcomes,
 // odds_history) + Redis (odds.raw stream, odds:match:{id} pub/sub), so the
 // existing odds-publisher → ws-gateway → storefront chain serves
 // traditional sports next to Oddin's esports.
@@ -251,6 +251,8 @@ func runFeed(ctx context.Context, cfg config.Config, st *store.Store, b *bus.Bus
 		URLsJSON:    cfg.Fonbet.URLsJSON,
 		Hosts:       cfg.Fonbet.Hosts,
 		CommonHosts: cfg.Fonbet.CommonHosts,
+		SiteOrigin:  cfg.Fonbet.SiteOrigin,
+		LogoCDN:     cfg.Fonbet.LogoCDN,
 		Lang:        cfg.Fonbet.Lang,
 		ScopeMarket: cfg.Fonbet.ScopeMarket,
 		Timeout:     cfg.Fonbet.HTTPTimeout,
@@ -267,8 +269,12 @@ func runFeed(ctx context.Context, cfg config.Config, st *store.Store, b *bus.Bus
 	}
 	ing := ingest.New(st, b, log)
 
-	// Catalogue in the feed language (labels used for variant rows) plus
-	// English for the default storefront locale.
+	// Catalogue in the feed language — the labels the sub-event rows and
+	// the settlement grader read — plus every other storefront locale
+	// Fonbet publishes, so a bettor reading /ru still gets Russian market
+	// names off an English feed. Only the feed language is authoritative:
+	// a secondary catalogue that will not load is a warning, not a boot
+	// failure.
 	idx, err := loadCatalog(ctx, client, cfg.Fonbet.Lang, log)
 	if err != nil {
 		return fmt.Errorf("factor catalogue: %w", err)
@@ -276,11 +282,14 @@ func runFeed(ctx context.Context, cfg config.Config, st *store.Store, b *bus.Bus
 	if err := ing.WriteStaticDescriptions(ctx, mapper.StaticDescriptions(idx, opt)); err != nil {
 		return fmt.Errorf("write descriptions: %w", err)
 	}
-	if cfg.Fonbet.Lang != "en" {
-		if idxEN, err := loadCatalog(ctx, client, "en", log); err != nil {
-			log.Warn().Err(err).Msg("english catalogue unavailable; storefront falls back to feed language")
-		} else if err := ing.WriteStaticDescriptions(ctx, mapper.StaticDescriptions(idxEN, opt)); err != nil {
-			log.Warn().Err(err).Msg("write english descriptions")
+	for _, lang := range secondaryLangs(cfg.Fonbet.Lang) {
+		idxAlt, err := loadCatalog(ctx, client, lang, log)
+		if err != nil {
+			log.Warn().Err(err).Str("lang", lang).Msg("secondary catalogue unavailable; that storefront locale falls back to the feed language")
+			continue
+		}
+		if err := ing.WriteStaticDescriptions(ctx, mapper.StaticDescriptions(idxAlt, opt)); err != nil {
+			log.Warn().Err(err).Str("lang", lang).Msg("write secondary descriptions")
 		}
 	}
 	if err := ing.Bootstrap(ctx); err != nil {
@@ -416,6 +425,22 @@ func cycle(ctx context.Context, client *fonbet.Client, idx *fonbet.Index, opt ma
 		ev = ev.Interface("skipped", stats.Skipped)
 	}
 	ev.Msg("cycle")
+}
+
+// descriptionLangs are the languages market_descriptions rows are written
+// in. The feed language always gets one; the rest are the storefront
+// locales Fonbet's catalogue also covers.
+var descriptionLangs = []string{"en", "ru"}
+
+// secondaryLangs is descriptionLangs minus the feed language.
+func secondaryLangs(primary string) []string {
+	var out []string
+	for _, l := range descriptionLangs {
+		if l != primary {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 func loadCatalog(ctx context.Context, client *fonbet.Client, lang string, log zerolog.Logger) (*fonbet.Index, error) {

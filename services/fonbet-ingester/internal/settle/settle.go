@@ -23,8 +23,30 @@ import (
 	"github.com/oddzilla/fonbet-ingester/internal/store"
 )
 
-// Almaty is Fonbet KZ's line-day timezone.
-var Almaty = time.FixedZone("Asia/Almaty", 5*3600)
+// lineDay is Fonbet's line-day timezone: a results document covers the
+// events that start in one UTC+3 (Moscow) calendar day. Measured on both
+// estates 2026-09-04 — fon.bet and fonbet.kz each answered lineDate
+// 2026-09-03 with startTimes spanning exactly 2026-09-02 21:00 UTC to
+// 2026-09-03 20:59 UTC. This was previously labelled Asia/Almaty (UTC+5)
+// and still worked because RunOnce also fetches the PREVIOUS day for
+// every pending match, which absorbed the two-hour error; keep that
+// second fetch, it is what makes the boundary a margin rather than a
+// cliff.
+var lineDay = time.FixedZone("UTC+3", 3*3600)
+
+// overtimeRows / shootoutRows are the statistic rows that carry the
+// tie-breaking scores, in every language the results feed is fetched in
+// (`locale` follows FONBET_LANG). Names verified against the live feed
+// 2026-09-04 by pairing the ru and en documents row for row: "дополнительное
+// время" == "extra time", and both "серия пенальти" (football) and "серия
+// буллитов" (hockey) == "penalty shootouts". Missing them is not
+// a benign gap: without the overtime row a basketball two-way market
+// grades on regular time, which is a wrong settlement rather than a
+// deferred one.
+var (
+	overtimeRows = []string{"дополнительное время", "extra time"}
+	shootoutRows = []string{"серия пенальти", "серия буллитов", "penalty shootouts", "penalty shootout"}
+)
 
 type Worker struct {
 	st       *store.Store
@@ -198,7 +220,7 @@ func (w *Worker) RunOnce(ctx context.Context) (Stats, error) {
 	// the previous day: late kick-offs are filed under the day they started).
 	days := map[string]struct{}{}
 	for _, m := range pending {
-		d := time.Unix(m.StartTime, 0).In(Almaty)
+		d := time.Unix(m.StartTime, 0).In(lineDay)
 		days[d.Format("2006-01-02")] = struct{}{}
 		days[d.AddDate(0, 0, -1).Format("2006-01-02")] = struct{}{}
 	}
@@ -251,12 +273,16 @@ func (w *Worker) RunOnce(ctx context.Context) (Stats, error) {
 			continue
 		}
 		ss := ScoreSet{Main: main, Stats: rm.stats}
-		if ot, ok := rm.stats["дополнительное время"]; ok {
-			ss.OT = &ot
+		for _, k := range overtimeRows {
+			if ot, ok := rm.stats[k]; ok {
+				ss.OT = &ot
+				break
+			}
 		}
-		for _, k := range []string{"серия пенальти", "серия буллитов"} {
+		for _, k := range shootoutRows {
 			if sh, ok := rm.stats[k]; ok {
 				ss.Shoot = &sh
+				break
 			}
 		}
 		sport := ri.sports[m.SegmentID]

@@ -1,4 +1,4 @@
-// Wire types for the Fonbet KZ public line API. Only the fields the
+// Wire types for the Fonbet public line API. Only the fields the
 // ingester reads are declared; everything else in the (large) JSON is
 // ignored by encoding/json. See docs/FONBET.md for the endpoint map and
 // the observed payload shapes.
