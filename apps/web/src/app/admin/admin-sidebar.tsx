@@ -101,6 +101,12 @@ const SECTIONS: Section[] = [
         Icon: I.Clock,
         matchPrefix: "/admin/wedged-matches",
       },
+      {
+        href: "/admin/unsettled",
+        label: "Unsettled",
+        Icon: I.Clock,
+        matchPrefix: "/admin/unsettled",
+      },
       { href: "/admin/logs", label: "Logs", Icon: I.Bell, matchPrefix: "/admin/logs" },
       { href: "/admin/analytics", label: "Analytics", Icon: I.Activity, matchPrefix: "/admin/analytics" },
       { href: "/admin/monitoring", label: "Performance", Icon: I.Activity, matchPrefix: "/admin/monitoring" },
