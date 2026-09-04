@@ -70,13 +70,28 @@ export async function fetchMyBet(
 // for logged-out visitors). Returns 0 for any matchId without an
 // active room — ws-gateway DELs the key on the 0-viewer transition,
 // so absent === empty room.
+//
+// The endpoint caps one call at MAX_VIEWERS_BATCH (200) ids; the /sports
+// tab lists live + upcoming across every traditional sport and routinely
+// exceeds that, so the lookup is chunked and merged here instead of 400ing.
+const VIEWERS_BATCH = 200;
+
 export async function fetchViewerCounts(
   matchIds: readonly string[],
 ): Promise<Record<string, number>> {
   if (matchIds.length === 0) return {};
-  const qs = matchIds.join(",");
-  const res = await clientApi<{ counts: Record<string, number> }>(
-    `/live-chat/viewers?matchIds=${encodeURIComponent(qs)}`,
+  const chunks: string[][] = [];
+  for (let i = 0; i < matchIds.length; i += VIEWERS_BATCH) {
+    chunks.push(matchIds.slice(i, i + VIEWERS_BATCH));
+  }
+  const results = await Promise.all(
+    chunks.map((ids) =>
+      clientApi<{ counts: Record<string, number> }>(
+        `/live-chat/viewers?matchIds=${encodeURIComponent(ids.join(","))}`,
+      ),
+    ),
   );
-  return res.counts;
+  const counts: Record<string, number> = {};
+  for (const r of results) Object.assign(counts, r.counts);
+  return counts;
 }
