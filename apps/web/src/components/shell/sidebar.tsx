@@ -5,6 +5,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   useTransition,
   type ReactNode,
@@ -16,6 +17,7 @@ import { LiveDot } from "@/components/ui/primitives";
 import { useZillaBoostSportSet } from "@/lib/use-zillaboost-banners";
 import { TierMark, isFeaturedTier } from "@/components/ui/tier-mark";
 import { clientApi } from "@/lib/api-client";
+import { categoryFlagUrl } from "@/lib/category-flags";
 import {
   orderSportsForSidebar,
   partitionSportsForEdit,
@@ -108,28 +110,82 @@ export function Sidebar({
     Record<string, Tournament[]>
   >({});
 
+  // Sports the user has expanded with the caret, independent of where
+  // they've navigated. The active sport is always treated as expanded
+  // (unless explicitly collapsed) so landing on /sport/:slug still
+  // reveals its tree — but browsing the tournament list of a sport no
+  // longer requires leaving the page you're on.
+  const [expandedSports, setExpandedSports] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [collapsedSports, setCollapsedSports] = useState<Set<string>>(
+    () => new Set(),
+  );
+
+  const isSportExpanded = (slug: string) =>
+    expandedSports.has(slug) ||
+    (slug === activeSportSlug && !collapsedSports.has(slug));
+
+  function toggleSport(slug: string) {
+    const open = isSportExpanded(slug);
+    setExpandedSports((prev) => {
+      const next = new Set(prev);
+      if (open) next.delete(slug);
+      else next.add(slug);
+      return next;
+    });
+    // The active sport auto-expands, so closing it needs an explicit
+    // "user collapsed this" marker the auto-rule can't override.
+    setCollapsedSports((prev) => {
+      const next = new Set(prev);
+      if (open) next.add(slug);
+      else next.delete(slug);
+      return next;
+    });
+  }
+
+  // Fetch the tournament list for every sport whose tree is open —
+  // the caret-expanded ones plus the active sport. Each slug is
+  // fetched at most once per session; `wanted` is joined into a
+  // primitive so the effect doesn't re-run on every Set identity.
+  const wantedSlugs = useMemo(() => {
+    const set = new Set(expandedSports);
+    if (activeSportSlug && !collapsedSports.has(activeSportSlug)) {
+      set.add(activeSportSlug);
+    }
+    return [...set].sort();
+  }, [expandedSports, collapsedSports, activeSportSlug]);
+  const wantedKey = wantedSlugs.join(",");
+
+  // Slugs already requested this session. A ref rather than state
+  // because it must be checked and set synchronously, before React
+  // commits anything — a state flag would let a second render fire a
+  // duplicate fetch for the same slug, and StrictMode's double-invoke
+  // in dev would do it every time.
+  const requestedSlugs = useRef<Set<string>>(new Set());
+
   useEffect(() => {
-    if (!activeSportSlug) return;
-    if (tournamentsBySport[activeSportSlug]) return;
+    if (wantedKey === "") return;
     let cancelled = false;
-    clientApi<TournamentsResponse>(
-      `/catalog/sports/${activeSportSlug}/tournaments`,
-    )
-      .then((data) => {
-        if (cancelled) return;
-        setTournamentsBySport((prev) => ({
-          ...prev,
-          [activeSportSlug]: data.tournaments,
-        }));
-      })
-      .catch(() => {
-        // Sidebar gracefully omits the tournament list on failure —
-        // the top-level sport link still works.
-      });
+    for (const slug of wantedKey.split(",")) {
+      if (requestedSlugs.current.has(slug)) continue;
+      requestedSlugs.current.add(slug);
+      clientApi<TournamentsResponse>(`/catalog/sports/${slug}/tournaments`)
+        .then((data) => {
+          if (cancelled) return;
+          setTournamentsBySport((cur) => ({ ...cur, [slug]: data.tournaments }));
+        })
+        .catch(() => {
+          // Sidebar gracefully omits the tournament list on failure —
+          // the top-level sport link still works. Drop the slug so
+          // re-opening the sport retries instead of staying empty.
+          requestedSlugs.current.delete(slug);
+        });
+    }
     return () => {
       cancelled = true;
     };
-  }, [activeSportSlug, tournamentsBySport]);
+  }, [wantedKey]);
 
   return (
     <aside
@@ -218,6 +274,8 @@ export function Sidebar({
         activeTournamentId={activeTournamentId}
         isActive={isActive}
         tournamentsBySport={tournamentsBySport}
+        isSportExpanded={isSportExpanded}
+        onToggleSport={toggleSport}
       />
 
       <SectionLabel>{tShell("account")}</SectionLabel>
@@ -386,6 +444,8 @@ function SportsSection({
   activeTournamentId,
   isActive,
   tournamentsBySport,
+  isSportExpanded,
+  onToggleSport,
 }: {
   sports: SportItem[];
   liveCounts: Record<string, number>;
@@ -396,6 +456,8 @@ function SportsSection({
   activeTournamentId: string | null;
   isActive: (href: string) => boolean;
   tournamentsBySport: Record<string, Tournament[]>;
+  isSportExpanded: (slug: string) => boolean;
+  onToggleSport: (slug: string) => void;
 }) {
   const tShell = useTranslations("shell");
   const [editing, setEditing] = useState(false);
@@ -619,64 +681,148 @@ function SportsSection({
     );
   }
 
+  // Two sub-sections. Esports leads because that's the product's
+  // identity (and preserves the pre-split order, where the four pinned
+  // esports sat at the top); the Fonbet traditional line follows. The
+  // saved sport order + hidden set are global slug lists, so ordering
+  // inside each section still honours whatever the bettor arranged.
+  const esports = renderList.filter((s) => s.kind !== "traditional");
+  const traditional = renderList.filter((s) => s.kind === "traditional");
+
+  const renderSport = (s: SportItem) => {
+    const sportActive = isActive(`/sport/${s.slug}`);
+    const expanded = isSportExpanded(s.slug);
+    const tournaments = tournamentsBySport[s.slug];
+    return (
+      <div key={s.slug}>
+        <Item
+          href={`/sport/${s.slug}`}
+          icon={<SportGlyph sport={s.slug} size={16} />}
+          active={sportActive && activeTournamentId == null}
+          label={s.name}
+          liveCount={liveCounts[s.slug] ?? 0}
+          boosted={boostedSports.has(s.slug)}
+          expanded={expanded}
+          onToggleExpand={() => onToggleSport(s.slug)}
+          expandLabel={
+            expanded ? tShell("hideTournaments") : tShell("showTournaments")
+          }
+        />
+        {expanded && tournaments && tournaments.length > 0 && (
+          <div
+            style={{
+              // Deliberately shallow: the panel is 240px wide, so every
+              // pixel of indent is a pixel off the tournament name. One
+              // step in for the tree, one more for tournaments inside a
+              // category — enough to read the hierarchy, not enough to
+              // squeeze the labels.
+              marginLeft: 14,
+              paddingLeft: 8,
+              borderLeft: "1px solid var(--hairline)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 1,
+              marginTop: 2,
+              marginBottom: 6,
+            }}
+          >
+            {groupTournamentsByCategory(tournaments).map((group) => (
+              <CategoryGroup
+                key={group.key}
+                group={group}
+                sportSlug={s.slug}
+                activeTournamentId={activeTournamentId}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <>
-      <SectionLabel trailing={trailing}>{tShell("sports")}</SectionLabel>
-      {renderList.map((s) => {
-        const sportActive = isActive(`/sport/${s.slug}`);
-        const expanded = sportActive && s.slug === activeSportSlug;
-        const tournaments = tournamentsBySport[s.slug];
-        return (
-          <div key={s.slug}>
-            <Item
-              href={`/sport/${s.slug}`}
-              icon={<SportGlyph sport={s.slug} size={16} />}
-              active={sportActive && activeTournamentId == null}
-              label={s.name}
-              liveCount={liveCounts[s.slug] ?? 0}
-              boosted={boostedSports.has(s.slug)}
-            />
-            {expanded && tournaments && tournaments.length > 0 && (
-              <div
-                style={{
-                  marginLeft: 22,
-                  paddingLeft: 10,
-                  borderLeft: "1px solid var(--hairline)",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 2,
-                  marginTop: 2,
-                  marginBottom: 4,
-                }}
-              >
-                {groupTournamentsByCategory(tournaments).map((group) => (
-                  <div key={group.key}>
-                    {group.label && <CategoryHeader label={group.label} liveCount={group.liveCount} />}
-                    <div
-                      style={{
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 2,
-                        marginLeft: group.label ? 8 : 0,
-                      }}
-                    >
-                      {group.tournaments.map((t) => (
-                        <TournamentItem
-                          key={t.id}
-                          sportSlug={s.slug}
-                          tournament={t}
-                          active={activeTournamentId === String(t.id)}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        );
-      })}
+      <SectionLabel trailing={trailing}>
+        {tShell("esportsSection")}
+      </SectionLabel>
+      {esports.map(renderSport)}
+      {traditional.length > 0 && (
+        <>
+          <SectionLabel>{tShell("sports")}</SectionLabel>
+          {traditional.map(renderSport)}
+        </>
+      )}
     </>
+  );
+}
+
+// One category bucket in a sport's tournament tree.
+//
+// Collapsed by default (operator request 2026-09-04): the Fonbet line
+// puts 50+ leagues under a single sport across a dozen countries, and
+// rendering all of them flat turned the sidebar into an unscannable
+// wall. The unlabelled bucket — Oddin's synthetic "Auto-mapped"
+// category, which holds every esports tournament — has no header to
+// click and stays open, so esports look exactly as they did before.
+//
+// Auto-opens when the currently-filtered tournament lives inside it,
+// otherwise the active row would be hidden behind a collapsed header.
+function CategoryGroup({
+  group,
+  sportSlug,
+  activeTournamentId,
+}: {
+  group: TournamentGroup;
+  sportSlug: string;
+  activeTournamentId: string | null;
+}) {
+  const holdsActive =
+    activeTournamentId != null &&
+    group.tournaments.some((t) => String(t.id) === activeTournamentId);
+  // `open` stays the single source of truth so the caret can still
+  // close a bucket that auto-opened; the effect only ever forces it
+  // open (deriving `expanded` from holdsActive directly would make the
+  // toggle a no-op on whichever bucket holds the active filter).
+  const [open, setOpen] = useState(holdsActive);
+  useEffect(() => {
+    if (holdsActive) setOpen(true);
+  }, [holdsActive]);
+  const expanded = group.label == null || open;
+
+  const list = (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 1,
+        marginLeft: group.label ? 10 : 0,
+      }}
+    >
+      {group.tournaments.map((t) => (
+        <TournamentItem
+          key={t.id}
+          sportSlug={sportSlug}
+          tournament={t}
+          active={activeTournamentId === String(t.id)}
+          stripPrefix={group.label}
+        />
+      ))}
+    </div>
+  );
+
+  if (group.label == null) return list;
+
+  return (
+    <div>
+      <CategoryHeader
+        label={group.label}
+        liveCount={group.liveCount}
+        tournamentCount={group.tournaments.length}
+        expanded={expanded}
+        onToggle={() => setOpen((v) => !v)}
+      />
+      {expanded && list}
+    </div>
   );
 }
 
@@ -846,9 +992,13 @@ interface TournamentGroup {
 //     the API nulls out) collect into one unlabelled bucket rendered FIRST
 //     and without a header, so every esport looks exactly as it did before
 //     grouping existed.
-//   - Labelled buckets sort by live count first, then by name. A bettor
-//     opening a sport wants the country that has matches running now at the
-//     top, not whichever one starts with "A".
+//   - Labelled buckets sort by NAME. They used to sort by live count
+//     first, which made the list jump around as matches went live and
+//     finished — with the buckets now collapsed by default the header
+//     row is a navigation target, and a target that moves is worse than
+//     one that's occasionally below the fold. Operator-configurable
+//     ordering is a backoffice follow-up; alphabetical is the stable
+//     default until then.
 function groupTournamentsByCategory(tournaments: Tournament[]): TournamentGroup[] {
   const ungrouped: Tournament[] = [];
   const byCategory = new Map<string, TournamentGroup>();
@@ -867,10 +1017,10 @@ function groupTournamentsByCategory(tournaments: Tournament[]): TournamentGroup[
     group.tournaments.push(t);
     group.liveCount += t.liveCount;
   }
-  const groups = [...byCategory.values()].sort(
-    (a, b) =>
-      b.liveCount - a.liveCount ||
-      (a.label ?? "").localeCompare(b.label ?? "", undefined, { sensitivity: "base" }),
+  const groups = [...byCategory.values()].sort((a, b) =>
+    (a.label ?? "").localeCompare(b.label ?? "", undefined, {
+      sensitivity: "base",
+    }),
   );
   if (ungrouped.length > 0) {
     groups.unshift({ key: "__ungrouped", label: null, liveCount: 0, tournaments: ungrouped });
@@ -878,27 +1028,64 @@ function groupTournamentsByCategory(tournaments: Tournament[]): TournamentGroup[
   return groups;
 }
 
-// Quiet mono label introducing a category bucket. Same treatment as the
-// hidden-sports sub-header so the sidebar keeps one visual language for
-// "this is a grouping, not something you click".
-function CategoryHeader({ label, liveCount }: { label: string; liveCount: number }) {
+// Clickable header for a category bucket.
+//
+// Rendering notes, all of which are fixes for the previous version:
+//   - Reads as normal text, not tiny letterspaced uppercase mono. The
+//     old treatment was 9.5px --fg-dim on the page background, which
+//     failed on contrast and was the operator's first complaint.
+//   - It's a button, so it gets a hover surface and a caret. A header
+//     that toggles must look like it toggles.
+//   - The flag comes from Fonbet's circle-flag set via the api proxy
+//     (see lib/category-flags.ts); non-country categories fall back to
+//     an initials mark so every row keeps the same left-edge alignment.
+function CategoryHeader({
+  label,
+  liveCount,
+  tournamentCount,
+  expanded,
+  onToggle,
+}: {
+  label: string;
+  liveCount: number;
+  tournamentCount: number;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const [hover, setHover] = useState(false);
   return (
-    <div
-      className="mono"
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={expanded}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title={label}
       style={{
         display: "flex",
         alignItems: "center",
         gap: 6,
-        padding: "8px 8px 3px",
-        fontSize: 9.5,
-        letterSpacing: "0.12em",
-        textTransform: "uppercase",
-        color: "var(--fg-dim)",
+        width: "100%",
+        padding: "6px 6px",
+        marginTop: 2,
+        border: 0,
+        borderRadius: 6,
+        background: hover ? "var(--surface-2)" : "transparent",
+        color: "var(--fg)",
+        font: "inherit",
+        fontSize: 12,
         fontWeight: 600,
+        textAlign: "left",
+        cursor: "pointer",
+        transition: "background 140ms var(--ease)",
       }}
     >
+      <Caret open={expanded} size={9} />
+      <CategoryMark label={label} />
       <span
         style={{
+          flex: 1,
+          minWidth: 0,
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
@@ -906,25 +1093,128 @@ function CategoryHeader({ label, liveCount }: { label: string; liveCount: number
       >
         {label}
       </span>
-      {liveCount > 0 && (
+      {liveCount > 0 ? (
         <span
           className="mono tnum"
           style={{
             display: "inline-flex",
             alignItems: "center",
-            gap: 4,
-            fontSize: 9.5,
+            gap: 3,
+            fontSize: 10,
             color: "var(--live)",
             fontWeight: 600,
-            letterSpacing: 0,
+            flexShrink: 0,
           }}
           title={`${liveCount} live now`}
         >
           <LiveDot size={5} />
           {liveCount}
         </span>
+      ) : (
+        <span
+          className="mono tnum"
+          style={{
+            fontSize: 10,
+            color: "var(--fg-dim)",
+            fontWeight: 500,
+            flexShrink: 0,
+          }}
+        >
+          {tournamentCount}
+        </span>
       )}
-    </div>
+    </button>
+  );
+}
+
+// 15-px round mark for a category: the country's flag when we have one,
+// otherwise the first two letters over a tinted disc. The fallback is
+// what makes non-country buckets ("NBA 2K26", "Friendly games", "WC
+// 2026") line up with their neighbours instead of shifting the label.
+function CategoryMark({ label }: { label: string }) {
+  const url = categoryFlagUrl(label);
+  const [errored, setErrored] = useState(false);
+  if (url && !errored) {
+    return (
+      <img
+        src={url}
+        alt=""
+        aria-hidden
+        width={15}
+        height={15}
+        onError={() => setErrored(true)}
+        style={{
+          width: 15,
+          height: 15,
+          borderRadius: "50%",
+          objectFit: "cover",
+          flexShrink: 0,
+        }}
+      />
+    );
+  }
+  return (
+    <span
+      aria-hidden
+      className="mono"
+      style={{
+        width: 15,
+        height: 15,
+        borderRadius: "50%",
+        flexShrink: 0,
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "var(--surface-2)",
+        border: "1px solid var(--hairline)",
+        color: "var(--fg-muted)",
+        fontSize: 7,
+        fontWeight: 700,
+        letterSpacing: 0,
+        lineHeight: 1,
+      }}
+    >
+      {initialsFor(label)}
+    </span>
+  );
+}
+
+// Two-character mark: initials of the first two words when the label
+// has several ("WC 2026" -> "WC"), otherwise the first two letters.
+function initialsFor(label: string): string {
+  const words = label
+    .split(/[\s.\-_]+/)
+    .map((w) => w.trim())
+    .filter(Boolean);
+  if (words.length >= 2) {
+    return (words[0]![0]! + words[1]![0]!).toUpperCase();
+  }
+  return (words[0] ?? label).slice(0, 2).toUpperCase();
+}
+
+// Disclosure caret. Rotates rather than swapping glyphs so the
+// open/close transition reads as one control.
+function Caret({ open, size = 10 }: { open: boolean; size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={3}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+      style={{
+        flexShrink: 0,
+        opacity: 0.75,
+        transform: open ? "rotate(90deg)" : "none",
+        transition: "transform 140ms var(--ease)",
+      }}
+    >
+      <path d="M9 5l7 7-7 7" />
+    </svg>
   );
 }
 
@@ -932,25 +1222,34 @@ function TournamentItem({
   sportSlug,
   tournament,
   active,
+  stripPrefix,
 }: {
   sportSlug: string;
   tournament: Tournament;
   active: boolean;
+  // Category the row is rendered under, if any. Fonbet's tournament
+  // names carry their own country prefix ("Russia. IPBL. Pro Division"),
+  // which is pure duplication once the row sits under a "Russia"
+  // header — and on a 240px panel it's duplication that costs the part
+  // of the name you actually need to tell two leagues apart.
+  stripPrefix?: string | null;
 }) {
   const tMatch = useTranslations("match");
   const tier = tournament.riskTier ?? null;
   const featured = isFeaturedTier(tier);
   const hasLive = tournament.liveCount > 0;
+  const displayName = stripCategoryPrefix(tournament.name, stripPrefix);
   return (
     <Link
       href={`/sport/${sportSlug}?tournament=${tournament.id}`}
+      title={tournament.name}
       style={{
         display: "flex",
         alignItems: "center",
         gap: 6,
-        padding: "6px 10px",
+        padding: "5px 6px",
         borderRadius: 6,
-        fontSize: 12.5,
+        fontSize: 12,
         textDecoration: "none",
         color: active || featured ? "var(--fg)" : "var(--fg-muted)",
         background: active ? "var(--surface-2)" : "transparent",
@@ -963,13 +1262,14 @@ function TournamentItem({
       <span
         style={{
           flex: 1,
+          minWidth: 0,
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
           fontWeight: featured ? 600 : undefined,
         }}
       >
-        {tournament.name}
+        {displayName}
       </span>
       {hasLive && (
         <span
@@ -997,6 +1297,29 @@ function TournamentItem({
           in the parent list. */}
     </Link>
   );
+}
+
+// Drops a redundant leading category prefix from a tournament name.
+// Fonbet composes its segment names as "<Country>. <League>. <Season>",
+// and the category is derived from that same first token — so under a
+// "Russia" header, "Russia. IPBL. Pro Division" spends a third of the
+// available width restating where you already are. Matches only a
+// whole leading token followed by a separator, case-insensitively, so
+// "Russian Championship" under "Russia" is left alone. The full name
+// stays on the link's title attribute.
+function stripCategoryPrefix(
+  name: string,
+  prefix: string | null | undefined,
+): string {
+  if (!prefix) return name;
+  const p = prefix.trim();
+  if (p.length === 0 || name.length <= p.length) return name;
+  if (name.slice(0, p.length).toLowerCase() !== p.toLowerCase()) return name;
+  const rest = name.slice(p.length).replace(/^\s*[.\-:—]\s*/, "");
+  // No separator consumed means the prefix ran into the middle of a
+  // word ("Russian" starts with "Russia"); leave the name untouched.
+  if (rest === name.slice(p.length) || rest.length === 0) return name;
+  return rest;
 }
 
 // 16-px square renderer for an admin-uploaded tournament logo. Falls
@@ -1089,6 +1412,9 @@ function Item({
   tag,
   liveCount,
   boosted,
+  expanded,
+  onToggleExpand,
+  expandLabel,
 }: {
   href: string;
   icon: ReactNode;
@@ -1099,9 +1425,17 @@ function Item({
   // ZillaBoost sport banner (migration 0086): a banner-enabled
   // sport-scope boost renders a small green bolt next to the sport.
   boosted?: boolean;
+  // Sport rows carry a disclosure caret that opens the tournament tree
+  // WITHOUT navigating. Before this the tree only appeared once you
+  // were on /sport/:slug, so there was no way to look at what's on
+  // offer in another sport without leaving the page you were reading.
+  // Omitted (with onToggleExpand) on the non-sport nav entries.
+  expanded?: boolean;
+  onToggleExpand?: () => void;
+  expandLabel?: string;
 }) {
   const hasLive = (liveCount ?? 0) > 0;
-  return (
+  const row = (
     <Link
       href={href}
       style={{
@@ -1110,7 +1444,9 @@ function Item({
         gap: 12,
         justifyContent: "flex-start",
         width: "100%",
-        padding: "8px 10px",
+        // Reserve the caret's column so a long sport name or a live
+        // badge never slides underneath it.
+        padding: onToggleExpand ? "8px 30px 8px 10px" : "8px 10px",
         background: active ? "var(--surface-2)" : "transparent",
         color: active ? "var(--fg)" : "var(--fg-muted)",
         borderRadius: 8,
@@ -1123,7 +1459,7 @@ function Item({
       }}
     >
       {icon}
-      <span style={{ flex: 1 }}>{label}</span>
+      <span style={{ flex: 1, minWidth: 0 }}>{label}</span>
       {boosted && (
         <svg
           width={11}
@@ -1179,5 +1515,47 @@ function Item({
         />
       )}
     </Link>
+  );
+
+  if (!onToggleExpand) return row;
+
+  // The caret is a SIBLING of the link, absolutely positioned over the
+  // padding the link reserves for it — not a child. Nesting a button
+  // inside an <a> is non-conforming HTML, and the alternative (a
+  // role="button" span cancelling the click) leaves a control that
+  // screen readers announce as part of the link and that swallows
+  // events the router has already seen.
+  return (
+    <div style={{ position: "relative" }}>
+      {row}
+      <button
+        type="button"
+        aria-expanded={expanded ?? false}
+        aria-label={expandLabel}
+        title={expandLabel}
+        onClick={() => onToggleExpand()}
+        style={{
+          position: "absolute",
+          right: 4,
+          top: "50%",
+          transform: "translateY(-50%)",
+          // 24px keeps the tap target usable in the mobile drawer; the
+          // row itself is ~33px tall so this doesn't change its height.
+          width: 24,
+          height: 24,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "transparent",
+          border: 0,
+          borderRadius: 5,
+          padding: 0,
+          color: "var(--fg-dim)",
+          cursor: "pointer",
+        }}
+      >
+        <Caret open={expanded ?? false} size={10} />
+      </button>
+    </div>
   );
 }

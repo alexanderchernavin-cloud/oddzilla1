@@ -82,7 +82,10 @@
     "leftPanel": "Left panel",
     "rightPanel": "Right panel",
     "closePanel": "Close panel",
-    "matchFrameTitle": "Match {id}"
+    "matchFrameTitle": "Match {id}",
+    "esportsSection": "Esports",
+    "showTournaments": "Show tournaments",
+    "hideTournaments": "Hide tournaments"
   },
   "wallet": {
     "title": "Wallet",
