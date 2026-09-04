@@ -104,6 +104,12 @@ export default async function MainLayout({ children }: { children: React.ReactNo
               <EmailVerificationBanner email={user.email} />
             )}
             {children}
+            {/* Absorbs the leftover height on pages shorter than the
+                viewport so the footer stays at the bottom of the page
+                instead of floating up under the content. Collapses to
+                zero on tall pages — see `.oz-main-spacer` in
+                globals.css. */}
+            <div className="oz-main-spacer" aria-hidden />
             <ShellFooter />
           </div>
         </main>

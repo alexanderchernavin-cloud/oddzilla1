@@ -303,6 +303,30 @@ body {
 .oz-main-inner {
   width: 100%;
   max-width: 1200px;
+  /* Column flex purely so the footer can be pinned to the bottom of
+     the main cell. `.oz-main` is a flex row with the default
+     `align-items: stretch`, so this box already spans the full height
+     of the grid cell (at least 100vh minus the top bar) — a short page
+     just left the leftover height empty BELOW the footer, which is why
+     the responsible-gambling notice floated up into the middle of the
+     screen. `.oz-main-spacer` (rendered by the (main) layout right
+     before the footer) now absorbs that leftover height instead. */
+  display: flex;
+  flex-direction: column;
+}
+/* Page content keeps its natural height — never squeezed to make room
+   for the footer. Equivalent to the block flow this replaced. */
+.oz-main-inner > * { flex: 0 0 auto; }
+/* Eats whatever height a short page leaves over, so the footer lands at
+   the bottom of the viewport. Zero-height when the page already fills
+   the cell, so tall pages render exactly as they did before. The
+   padding reset opts out of the mobile `.oz-main-inner > *` blanket
+   (bet-slip bottom slot + side gutters) — the footer itself carries
+   those; the same opt-out `.oz-shell-search` needs. */
+.oz-main-inner > .oz-main-spacer {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0 !important;
 }
 
 .oz-side { grid-area: side; }
