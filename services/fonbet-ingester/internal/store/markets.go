@@ -225,6 +225,25 @@ type MatchMarketRef struct {
 // status flips only instead of re-emitting ~200k prices onto odds.raw —
 // a burst that the shared stream's MAXLEN would trim. Only `fb:` URNs are
 // touched. Race-safe (UPDATE only).
+// CountActiveProviderMarkets reports how many Fonbet markets the DATABASE
+// currently considers active. The ingester compares it against its own
+// in-memory picture to notice a write it did not make - see
+// Ingester.ReconcileExternalSuspend.
+func CountActiveProviderMarkets(ctx context.Context, db pgxRunner) (int64, error) {
+	var n int64
+	err := db.QueryRow(ctx, `
+SELECT count(*)
+  FROM markets mk
+  JOIN matches ma ON ma.id = mk.match_id
+ WHERE ma.provider_urn LIKE 'fb:match:%'
+   AND mk.status = 1
+   AND ma.status IN ('not_started', 'live')`).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count active provider markets: %w", err)
+	}
+	return n, nil
+}
+
 func SuspendProviderCatalog(ctx context.Context, db pgxRunner) ([]MatchMarketRef, int64, error) {
 	rows, err := db.Query(ctx, `
 UPDATE markets

@@ -335,6 +335,11 @@ func runFeed(ctx context.Context, cfg config.Config, st *store.Store, b *bus.Bus
 	defer catalogRefresh.Stop()
 	logoTicker := time.NewTicker(10 * time.Minute) // cheap: only NULL logo rows are touched
 	defer logoTicker.Stop()
+	// One COUNT a minute, so a foreign write that suspends our catalog
+	// costs at most a minute of dark odds instead of lasting until the
+	// next restart. See ingest.ReconcileExternalSuspend.
+	reconcileTicker := time.NewTicker(time.Minute)
+	defer reconcileTicker.Stop()
 	for {
 		cycle(ctx, client, idx, opt, ing, log)
 		if logos != nil {
@@ -366,6 +371,10 @@ func runFeed(ctx context.Context, cfg config.Config, st *store.Store, b *bus.Bus
 				if err := ing.WriteStaticDescriptions(ctx, mapper.StaticDescriptions(idx, opt)); err != nil {
 					log.Warn().Err(err).Msg("refresh descriptions")
 				}
+			}
+		case <-reconcileTicker.C:
+			if _, err := ing.ReconcileExternalSuspend(ctx); err != nil {
+				log.Warn().Err(err).Msg("external-suspend reconcile failed")
 			}
 		case <-logoTicker.C:
 			if l, err := client.FetchLogos(ctx); err != nil {

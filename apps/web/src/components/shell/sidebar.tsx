@@ -30,9 +30,20 @@ interface SportItem {
   active: boolean;
 }
 
+interface TournamentCategory {
+  id: number;
+  name: string;
+  slug: string;
+}
+
 interface Tournament {
   id: number;
   name: string;
+  // Country / competition the tournament sits under, used to group the
+  // sub-tree. Null for Oddin's synthetic "Auto-mapped" category, which
+  // holds every esports tournament and would only add a meaningless
+  // header — those render flat, exactly as they did before grouping.
+  category?: TournamentCategory | null;
   riskTier?: number | null;
   // Admin-uploaded or admin-pasted logo URL. Null falls back to the
   // sport's logo (gold-tier rendering keeps using TierMark either way).
@@ -638,17 +649,28 @@ function SportsSection({
                   marginBottom: 4,
                 }}
               >
-                {tournaments.map((t) => {
-                  const active = activeTournamentId === String(t.id);
-                  return (
-                    <TournamentItem
-                      key={t.id}
-                      sportSlug={s.slug}
-                      tournament={t}
-                      active={active}
-                    />
-                  );
-                })}
+                {groupTournamentsByCategory(tournaments).map((group) => (
+                  <div key={group.key}>
+                    {group.label && <CategoryHeader label={group.label} liveCount={group.liveCount} />}
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 2,
+                        marginLeft: group.label ? 8 : 0,
+                      }}
+                    >
+                      {group.tournaments.map((t) => (
+                        <TournamentItem
+                          key={t.id}
+                          sportSlug={s.slug}
+                          tournament={t}
+                          active={activeTournamentId === String(t.id)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -805,6 +827,105 @@ function moveBtnStyle(enabled: boolean): React.CSSProperties {
     alignItems: "center",
     justifyContent: "center",
   };
+}
+
+interface TournamentGroup {
+  key: string;
+  /** Null renders the tournaments without a header (ungrouped bucket). */
+  label: string | null;
+  liveCount: number;
+  tournaments: Tournament[];
+}
+
+// groupTournamentsByCategory turns the flat API list into category
+// buckets, preserving the caller's tournament order inside each one (the
+// endpoint already sorts by tier then name).
+//
+// Two deliberate choices:
+//   - Tournaments with no category (Oddin's synthetic "Auto-mapped", which
+//     the API nulls out) collect into one unlabelled bucket rendered FIRST
+//     and without a header, so every esport looks exactly as it did before
+//     grouping existed.
+//   - Labelled buckets sort by live count first, then by name. A bettor
+//     opening a sport wants the country that has matches running now at the
+//     top, not whichever one starts with "A".
+function groupTournamentsByCategory(tournaments: Tournament[]): TournamentGroup[] {
+  const ungrouped: Tournament[] = [];
+  const byCategory = new Map<string, TournamentGroup>();
+  for (const t of tournaments) {
+    const label = t.category?.name?.trim();
+    if (!label) {
+      ungrouped.push(t);
+      continue;
+    }
+    const key = String(t.category?.id ?? label);
+    let group = byCategory.get(key);
+    if (!group) {
+      group = { key, label, liveCount: 0, tournaments: [] };
+      byCategory.set(key, group);
+    }
+    group.tournaments.push(t);
+    group.liveCount += t.liveCount;
+  }
+  const groups = [...byCategory.values()].sort(
+    (a, b) =>
+      b.liveCount - a.liveCount ||
+      (a.label ?? "").localeCompare(b.label ?? "", undefined, { sensitivity: "base" }),
+  );
+  if (ungrouped.length > 0) {
+    groups.unshift({ key: "__ungrouped", label: null, liveCount: 0, tournaments: ungrouped });
+  }
+  return groups;
+}
+
+// Quiet mono label introducing a category bucket. Same treatment as the
+// hidden-sports sub-header so the sidebar keeps one visual language for
+// "this is a grouping, not something you click".
+function CategoryHeader({ label, liveCount }: { label: string; liveCount: number }) {
+  return (
+    <div
+      className="mono"
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "8px 8px 3px",
+        fontSize: 9.5,
+        letterSpacing: "0.12em",
+        textTransform: "uppercase",
+        color: "var(--fg-dim)",
+        fontWeight: 600,
+      }}
+    >
+      <span
+        style={{
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {label}
+      </span>
+      {liveCount > 0 && (
+        <span
+          className="mono tnum"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
+            fontSize: 9.5,
+            color: "var(--live)",
+            fontWeight: 600,
+            letterSpacing: 0,
+          }}
+          title={`${liveCount} live now`}
+        >
+          <LiveDot size={5} />
+          {liveCount}
+        </span>
+      )}
+    </div>
+  );
 }
 
 function TournamentItem({
