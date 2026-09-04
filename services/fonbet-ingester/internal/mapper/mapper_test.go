@@ -250,7 +250,7 @@ func TestDescriptions(t *testing.T) {
 	if h := byPMID[1000304]; h.Name != "Фора {handicap}" || h.Outcomes["h1"] != "1" || h.Outcomes["h2"] != "2" || h.Outcomes["910"] != "1" {
 		t.Fatalf("handicap description: %+v", h)
 	}
-	if tt := byPMID[1000305]; tt.Name != "Тотал {threshold}" || tt.Outcomes["over"] != "Б" || tt.Outcomes["under"] != "М" {
+	if tt := byPMID[1000305]; tt.Name != "Тотал {threshold}" || tt.Outcomes["over"] != "Больше" || tt.Outcomes["under"] != "Меньше" {
 		t.Fatalf("total description: %+v", tt)
 	}
 	if got := VariantTemplate("1-й тайм", "Фора {handicap}"); got != "1-й тайм: Фора {handicap}" {
