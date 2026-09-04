@@ -27,9 +27,14 @@ export const sportradarMapStatusEnum = pgEnum("sportradar_map_status", [
   "rejected",
 ]);
 
+// `llm` (migration 0101) is the language model that adjudicates the
+// matcher's queue. Recorded separately from `auto` so the desk can show
+// who decided, and so a bad batch is revertible without touching a
+// matcher or human decision.
 export const sportradarMapSourceEnum = pgEnum("sportradar_map_source", [
   "admin",
   "auto",
+  "llm",
 ]);
 
 export const matchSportradarIds = pgTable(

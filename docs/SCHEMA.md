@@ -383,8 +383,10 @@ link, one row per match (`match_id` PK, `ON DELETE CASCADE`). Columns:
 `sr_match_id`, `sr_sport_id` (Sportradar's own sport taxonomy — 1 soccer,
 12 rugby, 137 esoccer; stored per row rather than looked up so a one-off
 correction is expressible), `status` (`candidate` / `confirmed` /
-`rejected`), `source` (`admin` / `auto`), `confidence` (0..1, NULL when a
-human typed the id), `evidence` jsonb (the Sportradar-side names and
+`rejected`), `source` (`admin` / `auto` / `llm` — migration 0101; `llm` is the model
+that adjudicates the matcher's queue, recorded separately so the desk can
+show who decided and a bad batch is revertible in one statement),
+`confidence` (0..1, NULL when a human typed the id), `evidence` jsonb (the Sportradar-side names and
 kickoff, the per-team scores, and any runners-up), and
 `reviewed_by_user_id` / `reviewed_at`.
 

@@ -41,7 +41,7 @@ export interface MappingRow {
   srMatchId: number | null;
   srSportId: number | null;
   mapStatus: "candidate" | "confirmed" | "rejected" | null;
-  source: "admin" | "auto" | null;
+  source: "admin" | "auto" | "llm" | null;
   confidence: number | null;
   evidence: {
     srHomeTeam?: string;
@@ -58,6 +58,7 @@ export interface MappingRow {
       homeTeam: string;
       awayTeam: string;
     }>;
+    llm?: { verdict?: string; reason?: string; model?: string; at?: string };
   } | null;
   reviewedAt: string | null;
 }
@@ -388,6 +389,14 @@ function Row({ row }: { row: MappingRow }) {
             kickoff Δ {ev.kickoffDeltaMinutes} min
           </div>
         ) : null}
+        {ev?.llm?.reason ? (
+          <div
+            title={ev.llm.model ? `decided by ${ev.llm.model}` : undefined}
+            style={{ fontSize: 11, color: "var(--color-fg-muted, #888)", marginTop: 2 }}
+          >
+            AI: {ev.llm.reason}
+          </div>
+        ) : null}
       </td>
 
       <td style={td()}>
@@ -554,6 +563,7 @@ function SyncPanel({ sports }: { sports: SportOption[] }) {
         <button type="button" style={btn("ok")} disabled={busy} onClick={() => run(false)}>
           Sync now
         </button>
+        <AdjudicateButton />
       </div>
 
       {error ? <div style={{ color: "#e66", fontSize: 13, marginTop: 8 }}>{error}</div> : null}
@@ -607,6 +617,57 @@ function SyncPanel({ sports }: { sports: SportOption[] }) {
         </div>
       ) : null}
     </div>
+  );
+}
+
+interface AdjudicateResult {
+  eligible: number;
+  reviewed: number;
+  confirmed: number;
+  rejected: number;
+  unsure: number;
+  errors: string[];
+}
+
+// The matcher queues what it cannot settle, and nearly all of that is one
+// provider abbreviating the other. A model decides those on every sweep;
+// this is the on-demand handle for an operator who wants it now.
+function AdjudicateButton() {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<AdjudicateResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await clientApi<AdjudicateResult>("/admin/sportradar/adjudicate", {
+        method: "POST",
+        body: JSON.stringify({ limit: 200 }),
+      });
+      setResult(res);
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof ApiFetchError ? e.body.message : "Review failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <button type="button" style={btn()} disabled={busy} onClick={run}>
+        {busy ? "Reviewing…" : "AI-review queue"}
+      </button>
+      {result ? (
+        <span style={{ fontSize: 12, color: "var(--color-fg-muted, #888)" }}>
+          {result.reviewed} reviewed · {result.confirmed} confirmed ·{" "}
+          {result.rejected} rejected · {result.unsure} left for you
+        </span>
+      ) : null}
+      {error ? <span style={{ fontSize: 12, color: "#e66" }}>{error}</span> : null}
+    </>
   );
 }
 

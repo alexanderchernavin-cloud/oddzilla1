@@ -1554,7 +1554,29 @@ weaker waits in the review queue. It will **not** overwrite a decision a
 human made — rows with `source='admin'`, and any `rejected` row, are left
 alone by every subsequent import.
 
-**Working the queue.** The default tab is the review queue, ordered
+**The queue adjudicates itself.** At the end of every sweep a language
+model reviews whatever the matcher could not settle. That queue is almost
+entirely abbreviation rather than ambiguity — on the first production run
+all 471 candidates had no runner-up and a 0-minute kickoff delta, and were
+held back purely because Sportradar writes "Ipswich" where Fonbet writes
+"Ipswich Town". No string metric fixes that.
+
+The model can only confirm or reject a pair the matcher already proposed
+— it never picks the fixture, never sees a human decision, and anything
+but a clean verdict (including a malformed reply) leaves the row in the
+queue for a person. Its reasoning is stored on the row and shown on the
+desk as `AI: ...`; rows it decided carry `source = 'llm'`, so a bad batch
+is revertible without touching matcher or human decisions:
+
+```bash
+ssh team@178.104.174.24 "sudo -n docker exec oddzilla-postgres-1 psql -U oddzilla -d oddzilla -c \"UPDATE match_sportradar_ids SET status='candidate', source='auto' WHERE source='llm'\""
+```
+
+Turn it off by clearing `SPORTRADAR_LLM_API_KEY` — the sweep and the
+storefront are unaffected, the queue just stays human-reviewed. Force a
+pass now with **AI-review queue** on the desk.
+
+**Working the queue by hand.** The default tab is the review queue, ordered
 weakest-confidence first. Each row shows all three ids side by side, the
 Sportradar-side team names, the kickoff delta, and any runners-up. Confirm,
 Reject, Edit (type an id by hand) or Clear.
