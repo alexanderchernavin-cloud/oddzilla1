@@ -44,6 +44,10 @@ import adminFeSettingsRoutes from "./modules/admin/fe-settings.js";
 import adminCompetitorsRoutes from "./modules/admin/competitors.js";
 import adminTournamentsRoutes from "./modules/admin/tournaments.js";
 import adminSportradarRoutes from "./modules/admin/sportradar.js";
+import {
+  startSportradarSyncSweeper,
+  type SportradarSweeperHandle,
+} from "./lib/sportradar/sweeper.js";
 import adminMonitoringRoutes, { startMonitoringSampler } from "./modules/admin/monitoring.js";
 import adminDeployRoutes from "./modules/admin/deploy.js";
 import communityRoutes from "./modules/community/routes.js";
@@ -390,6 +394,15 @@ if (process.env.ANALYTICS_SWEEPER_DISABLED !== "1") {
   analyticsSweeperHandle = startAnalyticsRetentionSweeper(app);
 }
 
+// Sportradar match mapping (migration 0100). Every 30 min, Redis-lock
+// guarded: pulls Sportradar fixtures for the days our own open matches
+// fall on and pairs them, so the Live Match Tracker keeps appearing on
+// new fixtures without anyone pressing Sync. Only strong, unambiguous
+// pairs are confirmed; the rest queue for review at /admin/sportradar.
+// Set SPORTRADAR_SYNC_DISABLED=1 to skip.
+const sportradarSweeperHandle: SportradarSweeperHandle | null =
+  startSportradarSyncSweeper(app);
+
 // RiskZilla behaviour scoring (migration 0098). Every 5 min, Redis-lock
 // guarded: scores settled signed-in analytics sessions for automation
 // signals (pointer geometry, click rhythm) and rolls them up per bettor
@@ -430,6 +443,7 @@ async function shutdown() {
   stopZillaFlashRotation();
   analyticsSweeperHandle?.close();
   behaviourSweeperHandle?.close();
+  sportradarSweeperHandle?.close();
   if (matchWatcherHandle) {
     try {
       await matchWatcherHandle.close();

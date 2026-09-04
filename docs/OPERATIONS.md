@@ -1508,10 +1508,20 @@ Sportradar that covers the standalone-page embed, and if they would
 rather we pull from a licensed API once the Client ID exists, only
 `services/api/src/lib/sportradar/fixture-source.ts` changes.
 
-**Normal operation: press Sync.** `/admin/sportradar` → *Sync from
-Sportradar* → pick a sport or leave it on all → **Preview** (writes
-nothing) → **Sync now**. It fetches only the days our own open matches
-fall on, so a sport with nothing to map costs no requests.
+**Normal operation: nothing.** A background sweep runs every 30 minutes
+inside the api (Redis-lock guarded, so three replicas still do one pass)
+and keeps the mapping current as fixtures arrive. `SPORTRADAR_SYNC_DISABLED=1`
+turns it off; `SPORTRADAR_SYNC_INTERVAL_MINUTES` retunes it (floor 5).
+It fetches only the days our own open matches fall on, so a sport with
+nothing to map costs no requests. Watch it with:
+
+```bash
+ssh team@178.104.174.24 "sudo -n docker logs --since 2h oddzilla-api-1 2>&1 | grep sportradar-sync"
+```
+
+**To force it now:** `/admin/sportradar` → *Sync from Sportradar* → pick
+a sport or leave it on all → **Preview** (writes nothing) → **Sync now**.
+Same pipeline the sweep runs.
 
 Expect roughly a quarter of open matches to pair, because Fonbet's line
 is much broader than Sportradar's statistics coverage. Measured
