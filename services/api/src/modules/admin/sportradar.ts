@@ -35,31 +35,22 @@ import {
   SPORTRADAR_SPORT_IDS,
   sportradarSportIdFor,
 } from "@oddzilla/types/sportradar";
-import type { SportradarFixture } from "@oddzilla/types/sportradar";
 import { BadRequestError, ConflictError, NotFoundError } from "../../lib/errors.js";
 import { parseFixturesInput } from "../../lib/sportradar/fixtures-input.js";
-import { createStatsFixtureSource } from "../../lib/sportradar/fixture-source.js";
-import { proposeMappings, type OddzillaFixture } from "../../lib/sportradar/matcher.js";
+import {
+  importWindow,
+  lmtSportSlugs,
+  matchAndPersist,
+  syncSports,
+} from "../../lib/sportradar/sync.js";
 
 const writeRateLimit = { rateLimit: { max: 60, timeWindow: "1 minute" } };
 // An import walks every candidate pair in the batch; it is cheap but not
 // free, and it writes. Tighter than the ordinary write budget.
 const importRateLimit = { rateLimit: { max: 10, timeWindow: "1 minute" } };
 
-/** How far back a match stays worth mapping. LMT is a LIVE tracker. */
-const LOOKBACK_HOURS = 6;
-/** How far ahead we bother pairing. Beyond this, kickoffs still move. */
-const LOOKAHEAD_DAYS = 8;
 /** Ceiling on one pasted batch — a day of one sport is a few hundred rows. */
 const MAX_IMPORT_FIXTURES = 2000;
-
-function importWindow(): { from: Date; to: Date } {
-  const now = Date.now();
-  return {
-    from: new Date(now - LOOKBACK_HOURS * 3_600_000),
-    to: new Date(now + LOOKAHEAD_DAYS * 86_400_000),
-  };
-}
 
 const listQuery = z.object({
   // `unmapped` is the interesting default view for an operator starting
@@ -467,20 +458,22 @@ export default async function adminSportradarRoutes(app: FastifyInstance) {
         sportSlug: body.sportSlug,
         fixtures: parsed.fixtures,
         dryRun: body.dryRun,
-        adminId: admin.id,
-        ip: request.ip ?? null,
-        action: "sportradar.import",
         parseErrors: parsed.errors.slice(0, 20),
+        audit: {
+          adminId: admin.id,
+          ip: request.ip ?? null,
+          action: "sportradar.import",
+        },
       });
     },
   );
 
   // ── Pull fixtures from Sportradar and auto-match ──────────────────
   //
-  // Same pipeline as the paste import, with the fixtures fetched rather
-  // than typed. Unlike the gated LMT feed, Sportradar's statistics host
-  // answers ordinary server-to-server requests, so this needs no
-  // credential — see lib/sportradar/fixture-source.ts.
+  // Same pipeline the background sweeper runs, triggered by hand. Unlike
+  // the gated LMT feed, Sportradar's statistics host answers ordinary
+  // server-to-server requests, so this needs no credential — see
+  // lib/sportradar/fixture-source.ts.
   app.post(
     "/admin/sportradar/sync",
     { config: importRateLimit },
@@ -488,285 +481,25 @@ export default async function adminSportradarRoutes(app: FastifyInstance) {
       const admin = request.requireRole("admin");
       const body = syncBody.parse(request.body);
 
-      const slugs =
-        body.sportSlug === undefined
-          ? Object.keys(SPORTRADAR_SPORT_IDS)
-          : [body.sportSlug];
+      if (body.sportSlug !== undefined && sportradarSportIdFor(body.sportSlug) === null) {
+        throw new BadRequestError(
+          `the Live Match Tracker has no coverage for "${body.sportSlug}"`,
+          "sport_not_covered_by_lmt",
+        );
+      }
 
-      const source = createStatsFixtureSource();
-      const perSport: Array<Record<string, unknown>> = [];
-      const fetchErrors: string[] = [];
-      let written = 0;
-      let autoConfirmed = 0;
-      let proposed = 0;
-
-      for (const slug of slugs) {
-        const srSportId = sportradarSportIdFor(slug);
-        if (srSportId === null) {
-          if (body.sportSlug !== undefined) {
-            throw new BadRequestError(
-              `the Live Match Tracker has no coverage for "${slug}"`,
-              "sport_not_covered_by_lmt",
-            );
-          }
-          continue;
-        }
-
-        // Only fetch the days our own open matches actually fall on —
-        // one request per (sport, day), and none at all for a sport with
-        // nothing to map.
-        const days = await openMatchDays(app, slug);
-        if (days.length === 0) continue;
-
-        const fixtures: SportradarFixture[] = [];
-        for (const day of days) {
-          try {
-            fixtures.push(...(await source.fetchDay(srSportId, day)));
-          } catch (err) {
-            // One bad day must not abandon the rest of the sweep.
-            fetchErrors.push(`${slug} ${day}: ${(err as Error).message}`);
-          }
-        }
-        if (fixtures.length === 0) continue;
-
-        const result = await matchAndPersist(app, {
-          sportSlug: slug,
-          fixtures,
-          dryRun: body.dryRun,
+      const result = await syncSports(app, {
+        sportSlugs: body.sportSlug === undefined ? lmtSportSlugs() : [body.sportSlug],
+        dryRun: body.dryRun,
+        audit: {
           adminId: admin.id,
           ip: request.ip ?? null,
           action: "sportradar.sync",
-          parseErrors: [],
-        });
-        written += result.written ?? 0;
-        autoConfirmed += result.wouldAutoConfirm;
-        proposed += result.proposed;
-        perSport.push({
-          sportSlug: slug,
-          days: days.length,
-          fixturesFetched: fixtures.length,
-          matchesConsidered: result.matchesConsidered,
-          proposed: result.proposed,
-          autoConfirmed: result.wouldAutoConfirm,
-          queuedForReview: result.queuedForReview,
-          written: result.written ?? 0,
-        });
-      }
-
-      return {
-        dryRun: body.dryRun,
-        sports: perSport,
-        proposed,
-        autoConfirmed,
-        written,
-        fetchErrors: fetchErrors.slice(0, 20),
-      };
+        },
+      });
+      return { ...result, fetchErrors: result.fetchErrors.slice(0, 20) };
     },
   );
-}
-
-/**
- * The distinct UTC days our own open matches for a sport fall on, so the
- * sweep fetches exactly the Sportradar days it can use.
- */
-async function openMatchDays(
-  app: FastifyInstance,
-  sportSlug: string,
-): Promise<string[]> {
-  const { from, to } = importWindow();
-  const rows = await app.db
-    .select({ day: sql<string>`DISTINCT to_char(${matches.scheduledAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD')` })
-    .from(matches)
-    .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
-    .innerJoin(categories, eq(categories.id, tournaments.categoryId))
-    .innerJoin(sports, eq(sports.id, categories.sportId))
-    .where(
-      and(
-        eq(sports.slug, sportSlug),
-        inArray(matches.status, ["not_started", "live"]),
-        gte(matches.scheduledAt, from),
-        lte(matches.scheduledAt, to),
-      ),
-    );
-  return rows.map((r) => r.day).sort();
-}
-
-interface PersistResult {
-  dryRun: boolean;
-  fixturesParsed: number;
-  parseErrors: Array<{ line: number; reason: string; raw: string }>;
-  matchesConsidered: number;
-  proposed: number;
-  wouldAutoConfirm: number;
-  queuedForReview: number;
-  unmatched: number;
-  preview: Array<Record<string, unknown>>;
-  written?: number;
-  skippedTaken?: number;
-}
-
-/**
- * Pair a batch of Sportradar fixtures against our open matches for one
- * sport and persist the result. Shared by the paste import and the
- * fetch-based sync so the two can never drift in what they accept.
- */
-async function matchAndPersist(
-  app: FastifyInstance,
-  opts: {
-    sportSlug: string;
-    fixtures: SportradarFixture[];
-    dryRun: boolean;
-    adminId: string;
-    ip: string | null;
-    action: string;
-    parseErrors: Array<{ line: number; reason: string; raw: string }>;
-  },
-): Promise<PersistResult> {
-  const srSportId = sportradarSportIdFor(opts.sportSlug);
-  if (srSportId === null) {
-    throw new BadRequestError(
-      `the Live Match Tracker has no coverage for "${opts.sportSlug}"`,
-      "sport_not_covered_by_lmt",
-    );
-  }
-
-  const { from, to } = importWindow();
-  // Candidates: our matches in this sport, inside the window, that no
-  // human has already ruled on. An `admin`-sourced row or a rejection
-  // is a decision — the matcher does not get to overwrite either.
-  const ourRows = await app.db
-    .select({
-      matchId: matches.id,
-      homeTeam: matches.homeTeam,
-      awayTeam: matches.awayTeam,
-      scheduledAt: matches.scheduledAt,
-    })
-    .from(matches)
-    .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
-    .innerJoin(categories, eq(categories.id, tournaments.categoryId))
-    .innerJoin(sports, eq(sports.id, categories.sportId))
-    .leftJoin(matchSportradarIds, eq(matchSportradarIds.matchId, matches.id))
-    .where(
-      and(
-        eq(sports.slug, opts.sportSlug),
-        inArray(matches.status, ["not_started", "live"]),
-        gte(matches.scheduledAt, from),
-        lte(matches.scheduledAt, to),
-        sql`(${matchSportradarIds.matchId} IS NULL OR (${matchSportradarIds.source} = 'auto' AND ${matchSportradarIds.status} = 'candidate'))`,
-      ),
-    );
-
-  const ourFixtures: OddzillaFixture[] = ourRows.map((r) => ({
-    matchId: r.matchId.toString(),
-    srSportId,
-    scheduledAt: r.scheduledAt,
-    homeTeam: r.homeTeam,
-    awayTeam: r.awayTeam,
-  }));
-
-  const proposals = proposeMappings(ourFixtures, opts.fixtures);
-  const autoCount = proposals.filter((p) => p.autoConfirm).length;
-
-  const preview = proposals.slice(0, 50).map((p) => {
-    const ours = ourRows.find((r) => r.matchId.toString() === p.matchId);
-    return {
-      matchId: p.matchId,
-      homeTeam: ours?.homeTeam ?? "",
-      awayTeam: ours?.awayTeam ?? "",
-      srMatchId: p.srMatchId,
-      srHomeTeam: p.evidence.srHomeTeam,
-      srAwayTeam: p.evidence.srAwayTeam,
-      confidence: p.confidence,
-      autoConfirm: p.autoConfirm,
-      sidesSwapped: p.evidence.sidesSwapped,
-    };
-  });
-
-  const summary: PersistResult = {
-    dryRun: opts.dryRun,
-    fixturesParsed: opts.fixtures.length,
-    parseErrors: opts.parseErrors,
-    matchesConsidered: ourFixtures.length,
-    proposed: proposals.length,
-    wouldAutoConfirm: autoCount,
-    queuedForReview: proposals.length - autoCount,
-    unmatched: ourFixtures.length - proposals.length,
-    preview,
-  };
-
-  if (opts.dryRun || proposals.length === 0) return summary;
-
-  let written = 0;
-  let skippedTaken = 0;
-  await app.db.transaction(async (tx) => {
-    for (const p of proposals) {
-      // A Sportradar fixture already claimed by a DIFFERENT match —
-      // typically one an operator confirmed by hand — is left alone.
-      // The partial unique index would reject the insert anyway;
-      // checking first turns a failed batch into a reported skip.
-      const [taken] = await tx
-        .select({ matchId: matchSportradarIds.matchId })
-        .from(matchSportradarIds)
-        .where(
-          and(
-            eq(matchSportradarIds.srMatchId, BigInt(p.srMatchId)),
-            sql`${matchSportradarIds.status} <> 'rejected'`,
-            sql`${matchSportradarIds.matchId} <> ${BigInt(p.matchId)}`,
-          ),
-        )
-        .limit(1);
-      if (taken) {
-        skippedTaken += 1;
-        continue;
-      }
-
-      await tx
-        .insert(matchSportradarIds)
-        .values({
-          matchId: BigInt(p.matchId),
-          srMatchId: BigInt(p.srMatchId),
-          srSportId: p.srSportId,
-          status: p.autoConfirm ? "confirmed" : "candidate",
-          source: "auto",
-          confidence: p.confidence.toFixed(3),
-          evidence: p.evidence,
-        })
-        .onConflictDoUpdate({
-          target: matchSportradarIds.matchId,
-          set: {
-            srMatchId: BigInt(p.srMatchId),
-            srSportId: p.srSportId,
-            status: p.autoConfirm ? "confirmed" : "candidate",
-            source: "auto",
-            confidence: p.confidence.toFixed(3),
-            evidence: p.evidence,
-            updatedAt: new Date(),
-          },
-          // Belt and braces alongside the query above: never let an
-          // automatic pass overwrite a human decision.
-          setWhere: sql`${matchSportradarIds.source} = 'auto' AND ${matchSportradarIds.status} = 'candidate'`,
-        });
-      written += 1;
-    }
-
-    await tx.insert(adminAuditLog).values({
-      actorUserId: opts.adminId,
-      action: opts.action,
-      targetType: "sport",
-      targetId: opts.sportSlug,
-      beforeJson: null,
-      afterJson: {
-        fixtures: opts.fixtures.length,
-        proposed: proposals.length,
-        autoConfirmed: autoCount,
-        written,
-        skippedTaken,
-      },
-      ipInet: opts.ip,
-    });
-  });
-
-  return { ...summary, written, skippedTaken };
 }
 
 /**
