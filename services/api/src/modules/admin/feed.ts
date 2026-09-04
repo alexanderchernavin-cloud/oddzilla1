@@ -243,11 +243,20 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
         let suspendedMatchIds: string[] = [];
 
         if (flush) {
-          // Full odds flush: suspend EVERY active market on a
-          // not_started/live fixture and null its outcome prices. No
+          // Full odds flush: suspend every active market on a
+          // not_started/live ODDIN fixture and null its outcome prices. No
           // DELETE — see the header comment for why (deadlock + FK race
           // against the live feed). Storefront end-state is identical:
           // status=-1 is invisible to the catalog filter.
+          //
+          // The `od:match:%` scope is load-bearing: this endpoint recovers
+          // the ODDIN feed, and without it an operator pressing Recovery
+          // would take the whole Fonbet offer down as collateral. Fonbet
+          // would then stay dark until fonbet-ingester restarted, because
+          // it diffs against an in-memory snapshot of its own writes and
+          // would see nothing to re-assert. Mirrors the same fix in
+          // feed-ingester's store.FlushAndSuspendActiveCatalog, which
+          // caused exactly that outage on 2026-09-04.
           const marketResult = await tx.execute(sql`
             UPDATE markets
                SET status = -1, updated_at = NOW()
@@ -255,6 +264,7 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
              WHERE ma.id = markets.match_id
                AND markets.status = 1
                AND ma.status IN ('not_started', 'live')
+               AND ma.provider_urn LIKE 'od:match:%'
           `);
           flushedMarkets =
             typeof (marketResult as { count?: number }).count === "number"
@@ -272,6 +282,7 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
               JOIN matches ma ON ma.id = m.match_id
              WHERE market_outcomes.market_id = m.id
                AND ma.status IN ('not_started', 'live')
+               AND ma.provider_urn LIKE 'od:match:%'
           `);
           flushedOutcomes =
             typeof (outcomeResult as { count?: number }).count === "number"
@@ -290,6 +301,7 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
             UPDATE matches
                SET status = 'suspended'::match_status, updated_at = NOW()
              WHERE status = 'live'
+               AND provider_urn LIKE 'od:match:%'
             RETURNING id
           `)) as unknown as Array<{ id: string | number }>;
           suspendedMatchIds = (matchResult ?? []).map((r) => String(r.id));

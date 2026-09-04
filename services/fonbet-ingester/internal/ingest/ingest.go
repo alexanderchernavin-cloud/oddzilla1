@@ -226,6 +226,74 @@ func (in *Ingester) Suspended() bool { return in.suspended }
 // SuspendAll suspends every active Fonbet market (feed silent / shutdown)
 // and marks the in-memory state so the next successful snapshot
 // re-activates everything it still carries.
+// externalSuspendRatio is how far the DB has to fall below our own
+// picture before we call it a foreign write rather than ordinary drift.
+// Half is decisive: normal per-cycle churn moves a few hundred markets out
+// of ~100k, while a catalog flush takes essentially all of them.
+const externalSuspendRatio = 2
+
+// ReconcileExternalSuspend detects that something outside this service
+// suspended our markets, and makes the next cycle re-assert them.
+//
+// Apply only writes what CHANGED against an in-memory picture of what this
+// service last wrote. That makes a foreign write invisible: if another
+// process flips our rows to status -1, our picture still says 1, the diff
+// sees nothing to do, and the markets stay suspended until the container
+// restarts. It is not hypothetical - on 2026-09-04 feed-ingester's
+// Oddin-recovery flush (which matched on match status alone, with no
+// provider filter) suspended ~104 000 Fonbet markets and nulled their
+// prices, and the traditional-sports offer stayed dark until this service
+// was restarted by hand.
+//
+// That flush is now scoped to `od:match:%`, so the known trigger is gone.
+// This is the guard for the unknown ones: the admin recovery endpoint,
+// hand-run SQL, a third provider. One COUNT per call, and the expensive
+// part only runs when the two pictures actually disagree.
+//
+// Mirroring the flip in memory (rather than writing the DB here) is what
+// makes the repair cheap and idempotent: the next Apply sees "-1 in
+// memory, 1 in the snapshot" for each market and re-upserts exactly the
+// rows Fonbet still quotes.
+func (in *Ingester) ReconcileExternalSuspend(ctx context.Context) (bool, error) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if in.suspended {
+		// We suspended on purpose (watchdog / switch off). The DB being
+		// suspended is the intended state, not a divergence.
+		return false, nil
+	}
+	expected := 0
+	for _, ms := range in.matches {
+		for _, mk := range ms.Markets {
+			if mk.Status == 1 {
+				expected++
+			}
+		}
+	}
+	if expected == 0 {
+		return false, nil
+	}
+	actual, err := store.CountActiveProviderMarkets(ctx, in.st.Pool())
+	if err != nil {
+		return false, err
+	}
+	if actual >= int64(expected/externalSuspendRatio) {
+		return false, nil
+	}
+	for _, ms := range in.matches {
+		for _, mk := range ms.Markets {
+			if mk.Status == 1 {
+				mk.Status = -1
+			}
+		}
+	}
+	in.log.Warn().
+		Int("expected_active", expected).
+		Int64("db_active", actual).
+		Msg("fonbet markets were suspended by another writer; re-asserting on the next cycle")
+	return true, nil
+}
+
 func (in *Ingester) SuspendAll(ctx context.Context, nowMs int64) error {
 	in.mu.Lock()
 	defer in.mu.Unlock()

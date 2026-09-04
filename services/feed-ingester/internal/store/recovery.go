@@ -57,6 +57,26 @@ type FlushSuspendedRef struct {
 // markets/market_outcomes doesn't trigger FK checks on settlements or
 // ticket_selections, so it can run during live settlement traffic.
 // Closed/cancelled matches are untouched (terminal history).
+// OddinMatchURNPrefix scopes every catalog-wide write in this file to
+// Oddin's own fixtures.
+//
+// This is load-bearing, not tidiness. The flush predates the second odds
+// provider and matched on `matches.status` alone, so an Oddin feed outage
+// suspended the ENTIRE catalog - including every Fonbet market and
+// outcome. It happened in production on 2026-09-04: the Oddin AMQP
+// credentials started returning `403 username or password not allowed`,
+// the alive watchdog correctly flushed, and it took 116 079 markets and
+// 1 976 370 outcomes with it, of which ~104 000 markets were Fonbet's.
+//
+// Fonbet's traditional-sports offer then stayed dark until fonbet-ingester
+// was restarted by hand, because that service diffs against an in-memory
+// snapshot of what it last wrote: its own view still said `status = 1`, so
+// it saw no change to re-assert and never rewrote the rows. A provider
+// must only ever flush its own catalog - fonbet-ingester already scopes
+// every catalog-wide write it makes with `fb:match:%`, and this is the
+// matching filter on the Oddin side.
+const OddinMatchURNPrefix = "od:match:"
+
 func FlushAndSuspendActiveCatalog(ctx context.Context, pool *pgxpool.Pool) (FlushSummary, error) {
 	var s FlushSummary
 	tx, err := pool.Begin(ctx)
@@ -80,6 +100,7 @@ func FlushAndSuspendActiveCatalog(ctx context.Context, pool *pgxpool.Pool) (Flus
 		 WHERE ma.id = markets.match_id
 		   AND markets.status = 1
 		   AND ma.status IN ('not_started', 'live')
+		   AND ma.provider_urn LIKE '`+OddinMatchURNPrefix+`%'
 		RETURNING markets.match_id, markets.id
 	`)
 	if err != nil {
@@ -119,6 +140,7 @@ func FlushAndSuspendActiveCatalog(ctx context.Context, pool *pgxpool.Pool) (Flus
 		  JOIN matches ma ON ma.id = m.match_id
 		 WHERE market_outcomes.market_id = m.id
 		   AND ma.status IN ('not_started', 'live')
+		   AND ma.provider_urn LIKE '`+OddinMatchURNPrefix+`%'
 	`)
 	if err != nil {
 		return s, fmt.Errorf("flush: null outcomes: %w", err)
@@ -148,6 +170,7 @@ func FlushAndSuspendActiveCatalog(ctx context.Context, pool *pgxpool.Pool) (Flus
 		UPDATE matches
 		   SET status = 'suspended'::match_status, updated_at = NOW()
 		 WHERE status = 'live'
+		   AND provider_urn LIKE '`+OddinMatchURNPrefix+`%'
 		RETURNING id
 	`)
 	if err != nil {

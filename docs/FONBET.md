@@ -111,6 +111,18 @@ rows[1..]   cells: {name} text | {kind:"param", factorId} line value |
 - Group `%1` / `%2` = per-team tables (rendered with `{side}`).
 - Table `num` is unique across the catalogue (580 tables, ru and en share
   the same nums).
+- An outcome's label is `<row caption> <column caption>` (e.g. `goals Over`,
+  or just `Over` when the row carries only the line). The **total columns
+  are captioned with one letter** — `O` / `U` in English, `Б` / `М` in
+  Russian — which reads fine above Fonbet's own line column but IS the
+  whole label once the storefront renders each cell on its own row, so
+  `captionWord` expands those two to words (`Over` / `Under`,
+  `Больше` / `Меньше`) as the label is built. Measured on the live
+  catalogue: 363 bare over + 363 bare under captions per language, and the
+  only short captions left unexpanded are the handicap sides `1` / `2`.
+  Display-only — the grader keys totals off the `over` / `under` side id
+  (`sideCaptions`), never off the label, and both lists are keyed by that
+  same side id so they cannot drift.
 
 ## Mapping into the oddzilla schema
 
@@ -195,6 +207,20 @@ address Fonbet markets with these ids.
   (the 2026-09-03 incident). `settlement.external` is capped at 20k.
 - **Esports.** Root 29086 is blocked by default — Oddin already covers
   it and two providers for one match would double-list it.
+- **The other provider can suspend this one.** Fonbet writes the same
+  `markets` / `market_outcomes` / `matches` tables as the Oddin feed, so a
+  catalog-wide suspend on either side must be scoped by
+  `matches.provider_urn` (CLAUDE.md invariant 10). It was not, until
+  2026-09-04: an Oddin credential failure tripped the alive watchdog,
+  whose flush matched on match status alone, and ~104 000 Fonbet markets
+  were suspended with their prices nulled while Oddin's own offer stayed
+  up on the backup feed. Both copies of that flush are scoped now, and
+  `Ingester.ReconcileExternalSuspend` is the backstop: this service only
+  writes what changed against an in-memory picture of its own writes, so a
+  foreign write is otherwise invisible to it and the offer stays dark
+  until a restart. One `COUNT` a minute; when the DB holds under half the
+  markets we believe are active, the flip is mirrored in memory and the
+  next cycle re-asserts everything Fonbet still quotes.
 - **Geo.** The hosts answered from the Hetzner box's region in testing;
   if Fonbet geo-blocks the datacentre, `/healthz` shows a growing
   `snapshotStaleSeconds` and the watchdog suspends the catalog. Both

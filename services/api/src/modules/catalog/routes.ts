@@ -2223,6 +2223,17 @@ export default async function catalogRoutes(app: FastifyInstance) {
         riskTier: tournaments.riskTier,
         logoUrl: tournaments.logoUrl,
         brandColor: tournaments.brandColor,
+        // The category is what the storefront groups the sidebar list by
+        // (England > Premier League, rather than 50 dotted names in a
+        // flat column). `isDummy` matters: Oddin's auto-mapper files every
+        // esports tournament under one synthetic "Auto-mapped" category,
+        // so a header there would be noise on every esport - the client
+        // renders those flat. Fonbet's are real (country / competition,
+        // derived from the segment-name prefix).
+        categoryId: categories.id,
+        categoryName: categories.name,
+        categorySlug: categories.slug,
+        categoryIsDummy: categories.isDummy,
         matchCount: matchCountExpr,
         liveCount: liveCountExpr,
       })
@@ -2242,6 +2253,10 @@ export default async function catalogRoutes(app: FastifyInstance) {
         tournaments.riskTier,
         tournaments.logoUrl,
         tournaments.brandColor,
+        categories.id,
+        categories.name,
+        categories.slug,
+        categories.isDummy,
       )
       .having(sql`${matchCountExpr}::int > 0`);
 
@@ -2252,6 +2267,10 @@ export default async function catalogRoutes(app: FastifyInstance) {
         riskTier: r.riskTier,
         logoUrl: r.logoUrl,
         brandColor: r.brandColor,
+        category:
+          r.categoryIsDummy || !r.categoryName
+            ? null
+            : { id: r.categoryId, name: r.categoryName, slug: r.categorySlug },
         matchCount: Number(r.matchCount),
         liveCount: Number(r.liveCount),
       }))
