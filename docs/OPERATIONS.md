@@ -972,6 +972,50 @@ address derivation) — that's the only process that has it. Notes:
 4. Scale out: spawn a second ws-gateway container. Caddy config needs
    sticky sessions by client id — see Phase 4 design.
 
+### ws-gateway OOM (heap limit, container restart loop)
+
+Symptom in the logs is V8's own death notice and nothing else:
+`FATAL ERROR: Reached heap limit Allocation failed`, preceded by
+Mark-Compact lines that free almost nothing (`252.3 -> 251.6 MB`). The
+container restarts, every socket drops, and browsers reconnect.
+
+Happened four times on 2026-09-03 (14:59, 18:15, 18:30, 18:54), each
+within half an hour of the feed stack restarting — that is when
+odds-publisher's replay volume peaks. Client count was low throughout,
+which is the tell: the growth tracked **feed volume, not connections**.
+
+Cause: `ws.send()` never blocks. When a consumer stops draining — a
+throttled phone, a laptop asleep on a half-open TCP connection whose
+`readyState` is still OPEN, an OS-frozen tab — every subsequent frame
+for its subscriptions queues in the sender and is reachable from the
+socket, so no GC can free it. Nothing bounded that queue.
+
+Now bounded by `WS_MAX_BUFFERED_BYTES` (default 1 MiB): a socket past
+the ceiling is `terminate()`d and the browser reconnects, resubscribes,
+and re-reads current prices from Postgres — invariant 7's reconnect
+path, which exists so pub/sub is allowed to be lossy.
+
+Triage:
+
+```bash
+sudo -n docker compose exec ws-gateway wget -qO- http://127.0.0.1:3002/healthz
+```
+
+`heapUsedMb` is the number that matters; `slowClientDrops` climbing
+means the ceiling is doing its job, and a large `maxBufferedBytes` with
+zero drops means a consumer is falling behind but has not crossed it
+yet. The same fields are logged once a minute as `gateway stats`, so
+the growth curve before any future OOM is recoverable from the logs:
+
+```bash
+sudo -n docker compose logs --since 6h ws-gateway | grep '"msg":"gateway stats"'
+```
+
+If `heapUsedMb` climbs steadily while `bufferedBytes` stays near zero,
+the buffering fix is not the whole story — that would be a genuine
+retention leak and wants a heap snapshot (`kill -USR1 <pid>` inside the
+container opens the inspector on 9229).
+
 ### Postgres unhealthy
 
 1. `docker compose logs --tail=200 postgres`.

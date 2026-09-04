@@ -88,6 +88,7 @@ import {
   loadPromoVisibilityCascades,
   resolveVisible,
 } from "../../lib/bettor-promo-visibility.js";
+import { loadBotControls } from "../../lib/riskzilla/bot-controls.js";
 
 // Internal sentinel: thrown from inside the placement tx when
 // RiskZilla rejects the bet. The tx rolls back on throw; we catch in
@@ -205,6 +206,12 @@ interface PlaceContext {
   // delay. Prematch ZillaFlash legs don't trigger this — pure-prematch
   // placements already get zero delay.
   zillaFlashLiveBoost?: boolean;
+  // Issued-at (epoch ms) of the placement intent token routes.ts
+  // verified (migration 0097). Recorded on the ticket as
+  // quote_to_place_ms so the RiskZilla behaviour rollup can see how
+  // long the bettor took between quote and confirm. Null when no token
+  // accompanied the placement (intent_required off).
+  quoteIssuedAtMs?: number | null;
 }
 
 export class BetsService {
@@ -923,6 +930,30 @@ export class BetsService {
           };
         }),
       };
+      // ── Bot controls: per-account velocity (migration 0097) ──────────
+      // Runs for EVERY currency, unlike evaluate() which fences OZ — this
+      // is an anti-automation control, not a solvency check. The user row
+      // is held FOR UPDATE above, so the trailing-minute count is
+      // race-free per bettor. Rejections ride the same sentinel as
+      // engine rejections so USDC ones land in riskzilla_event_log and
+      // the betticker shows them as `rejected_velocity`.
+      const botControls = await loadBotControls(this.db);
+      const velocityResult = await this.riskzilla.evaluateVelocity(
+        tx,
+        riskIntent,
+        botControls,
+      );
+      if (velocityResult.decision !== "accepted") {
+        // eslint-disable-next-line no-console
+        console.info("riskzilla.velocity_rejected", {
+          userId: ctx.userId,
+          currency,
+          reason: velocityResult.reason,
+          velocity: velocityResult.meta.velocity ?? null,
+        });
+        throw new RiskzillaRejectError(velocityResult, riskIntent, matchContext);
+      }
+
       // Wrap the engine call so any unexpected throw becomes a typed
       // error with structured logs instead of a 500 "Something went
       // wrong". Engine bugs (a missing config row, a SQL hiccup, etc.)
@@ -1103,6 +1134,12 @@ export class BetsService {
           userAgent: ctx.userAgent,
           betMeta: betMeta as unknown as Record<string, unknown> | null,
           acceptOddsChanges,
+          // Quote -> place gap from the placement intent (migration
+          // 0097); null when no token accompanied the request.
+          quoteToPlaceMs:
+            ctx.quoteIssuedAtMs != null && Number.isFinite(ctx.quoteIssuedAtMs)
+              ? Math.max(0, Math.round(now.getTime() - ctx.quoteIssuedAtMs))
+              : null,
         })
         // Two concurrent placements with the same idempotencyKey both
         // pass the SELECT-then-INSERT check above; the unique

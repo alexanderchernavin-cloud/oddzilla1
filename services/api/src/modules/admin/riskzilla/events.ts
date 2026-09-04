@@ -371,6 +371,7 @@ const listQuery = z.object({
       "rejected_bank_limit",
       "rejected_user_blocked",
       "rejected_market_factor",
+      "rejected_velocity",
     ])
     .optional(),
   // accepted | rejected | all  — convenience pill on the betticker UI

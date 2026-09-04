@@ -41,7 +41,14 @@ const EMPTY = (): CustomBoostedOddsResponse => ({
 });
 
 export default async function boostedOddsRoutes(app: FastifyInstance) {
-  app.get("/catalog/matches/:matchId/boosted-odds", async (request, reply) => {
+  app.get(
+    "/catalog/matches/:matchId/boosted-odds",
+    // Per-IP scraper friction (2026-09-03). The match page polls this
+    // every 5 s (12/min per open match), so the cap fits many tabs behind
+    // one NAT while bounding a bulk reader. See the /catalog/sports/:slug
+    // note for how request.ip stays the real visitor.
+    { config: { rateLimit: { max: 600, timeWindow: "1 minute" } } },
+    async (request, reply) => {
     reply.header("cache-control", "no-store");
     const { matchId } = paramsSchema.parse(request.params);
 

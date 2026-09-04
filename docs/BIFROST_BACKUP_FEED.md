@@ -346,6 +346,15 @@ again.
 | `matches.status` for a CLOSED match with zero markets is not moved by the backup. | The settlement service's all-markets-terminal close covers the settled case; the "cancelled look-alike" falls under the first row. |
 | Payload hash of a backup settlement can differ from Oddin's. | Harmless double `settlements` row; every downstream write is idempotent. |
 
+## 4b. What the operator sees it called
+
+In the backoffice the Backup position on `/admin/feed` is branded
+**CommZilla**, a.k.a. **Communism Mode** — everything gets redistributed
+from a single central source. It is display copy only. The stored
+`feed_control.source` value is still `backup`, the env var is still
+`BIFROST_MODE`, and the service is still `services/bifrost-feed`, so
+nothing in the switch, the gate or the runbook below changes name.
+
 ## 5. Runbook
 
 **Enable.** Put the key in `.env` on the box (`sed -i` a single key,

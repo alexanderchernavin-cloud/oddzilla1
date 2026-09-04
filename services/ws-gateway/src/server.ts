@@ -110,6 +110,26 @@ const WS_MAX_CLIENTS_PER_IP = Number(process.env.WS_MAX_CLIENTS_PER_IP ?? 50);
 // (TCP-RST without a clean close, GFW-style packet drops). Defensive:
 // the close handler is the primary cleanup path.
 const STALE_SWEEP_INTERVAL_MS = 60_000;
+// Per-socket outbound backpressure ceiling. `ws.send()` never blocks: when
+// the kernel socket buffer is full it queues the frame in the sender and
+// returns, so a consumer that stops draining (throttled mobile, a laptop
+// asleep on a half-open TCP connection whose readyState is still OPEN, a
+// browser tab the OS has frozen) accumulates every subsequent odds frame
+// in this process's heap. Nothing bounded that before: the growth tracks
+// FEED VOLUME, not client count, which is why this container OOM-killed
+// four times on 2026-09-03 while serving a couple of dozen sockets, each
+// time within half an hour of the feed stack restarting and replaying.
+//
+// A slow consumer past the ceiling is disconnected rather than having
+// frames silently dropped. Dropping would leave that client quoting a
+// price the book has moved off of with no signal that it happened;
+// closing makes the browser reconnect (exponential backoff with jitter,
+// see use-live-odds.ts), resubscribe, and re-read current state from
+// Postgres via SSR — invariant 7's reconnect path, which exists exactly
+// so pub/sub is allowed to be lossy.
+const WS_MAX_BUFFERED_BYTES = Number(
+  process.env.WS_MAX_BUFFERED_BYTES ?? 1024 * 1024,
+);
 
 interface HelloMessage {
   type: "hello";
@@ -155,8 +175,11 @@ const jwtKey = secretKey(auth.jwtSecret);
 // rejected outright.
 const allowedOrigins = new Set(corsOrigins(env).map(normalizeOrigin));
 // When set to "true", require the Origin header on every upgrade.
-// Default (false) tolerates same-origin upgrades from server-side
-// runtimes that omit Origin. Browsers always send it on WS upgrades.
+// docker-compose.yml defaults this to true (2026-09-03): browsers always
+// send Origin on WS upgrades, nothing server-side opens /ws, and a bare
+// script or curl does not send one — so strict mode turns away the naive
+// odds scraper for free. The code default stays false so a local
+// `pnpm dev` without Compose keeps the tolerant behaviour.
 const corsOriginsStrict = process.env.CORS_ORIGINS_STRICT === "true";
 
 function normalizeOrigin(origin: string): string {
@@ -237,9 +260,20 @@ interface ClientState {
   // Per-connection inbound-message token bucket (see WS_MSG_* consts).
   msgTokens: number;
   msgLastRefillMs: number;
+  // Set by cleanupClient so the three paths that can reach it (close
+  // event, stale sweep, slow-consumer eviction mid-dispatch) each run
+  // the teardown once. Without it a socket evicted during dispatch is
+  // torn down again by its own close event and double-decrements the
+  // per-IP counter.
+  cleanedUp: boolean;
 }
 
 const clients = new Set<ClientState>();
+// Count of sockets disconnected for exceeding WS_MAX_BUFFERED_BYTES.
+// Surfaced on /healthz: a non-zero and climbing value is the signal
+// that outbound volume is outrunning some consumer, which is the shape
+// the pre-fix OOMs had.
+let slowClientDrops = 0;
 const matchRefs = new Map<string, number>();
 // User channels carry ticket state changes pushed by services/api (on
 // placement) and services/bet-delay (on finalize). Refcounted identically
@@ -317,6 +351,7 @@ const http = createServer(async (req, res) => {
         userSubscriptions: userRefs.size,
         chatSubscriptions: chatMatchRefs.size,
         uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
+        ...memoryStats(),
       }),
     );
     return;
@@ -427,6 +462,7 @@ wss.on("connection", (ws: WebSocket, _req: IncomingMessage, claims: AccessTokenC
     ip,
     msgTokens: WS_MSG_BURST,
     msgLastRefillMs: Date.now(),
+    cleanedUp: false,
   };
   clients.add(state);
   ipCounts.set(ip, (ipCounts.get(ip) ?? 0) + 1);
@@ -501,6 +537,8 @@ wss.on("connection", (ws: WebSocket, _req: IncomingMessage, claims: AccessTokenC
 // and the periodic stale sweep; the two paths previously inlined
 // identical cleanup logic.
 function cleanupClient(client: ClientState) {
+  if (client.cleanedUp) return;
+  client.cleanedUp = true;
   for (const matchId of client.matchIds) {
     removeMatchSubscriber(matchId, client);
     decrementMatchRef(matchId);
@@ -818,7 +856,7 @@ function dispatchOdds(matchId: string, payload: string) {
   for (const client of subs) {
     if (client.socket.readyState !== WebSocket.OPEN) continue;
     const userId = client.userId;
-    let outbound = payload;
+    let outbound: string = payload;
 
     if (userId !== null) {
       const cascade = cascadeCache.get(userId);
@@ -866,11 +904,7 @@ function dispatchOdds(matchId: string, payload: string) {
       }
     }
 
-    try {
-      client.socket.send(outbound);
-    } catch (err) {
-      log.debug({ err: (err as Error).message }, "send failed");
-    }
+    sendToClient(client, outbound);
   }
 }
 
@@ -878,12 +912,7 @@ function dispatchUser(userId: string, payload: string) {
   const subs = userSockets.get(userId);
   if (!subs) return;
   for (const client of subs) {
-    if (client.socket.readyState !== WebSocket.OPEN) continue;
-    try {
-      client.socket.send(payload);
-    } catch (err) {
-      log.debug({ err: (err as Error).message }, "send user failed");
-    }
+    sendToClient(client, payload);
   }
 }
 
@@ -891,12 +920,7 @@ function dispatchChat(matchId: string, payload: string) {
   const subs = chatMatchSubscribers.get(matchId);
   if (!subs) return;
   for (const client of subs) {
-    if (client.socket.readyState !== WebSocket.OPEN) continue;
-    try {
-      client.socket.send(payload);
-    } catch (err) {
-      log.debug({ err: (err as Error).message }, "send chat failed");
-    }
+    sendToClient(client, payload);
   }
 }
 
@@ -906,6 +930,68 @@ function send(ws: WebSocket, msg: OutboundFrame) {
   } catch {
     // Socket may have closed between check and send — ignore.
   }
+}
+
+// The single outbound path for every fan-out frame (odds, user, chat).
+// Enforces the backpressure ceiling documented on WS_MAX_BUFFERED_BYTES:
+// a socket that has stopped draining is disconnected instead of being
+// allowed to queue the feed in this process's heap.
+//
+// Safe to call while iterating a subscriber Set: cleanupClient() deletes
+// the client from those Sets, and deleting the current element during a
+// Set for...of is well-defined in JS.
+function sendToClient(client: ClientState, payload: string) {
+  if (client.socket.readyState !== WebSocket.OPEN) return;
+  if (client.socket.bufferedAmount > WS_MAX_BUFFERED_BYTES) {
+    slowClientDrops += 1;
+    log.warn(
+      {
+        ip: client.ip,
+        userId: client.userId,
+        bufferedBytes: client.socket.bufferedAmount,
+        limit: WS_MAX_BUFFERED_BYTES,
+        matchSubs: client.matchIds.size,
+      },
+      "dropping slow consumer — outbound buffer over limit",
+    );
+    // terminate() rather than close(): a socket this far behind is not
+    // going to complete a closing handshake, and close() would leave it
+    // in CLOSING with the queued frames still referenced until the
+    // handshake times out — which is the memory we are trying to free.
+    client.socket.terminate();
+    cleanupClient(client);
+    return;
+  }
+  try {
+    client.socket.send(payload);
+  } catch (err) {
+    log.debug({ err: (err as Error).message }, "send failed");
+  }
+}
+
+// Heap + outbound-buffer snapshot. Reported on /healthz and logged once
+// per sweep so a slow climb is visible in the logs BEFORE the container
+// hits mem_limit — the four OOM kills on 2026-09-03 left nothing behind
+// but V8's own death notice, which says the heap was full and nothing
+// about what filled it.
+function memoryStats() {
+  const mem = process.memoryUsage();
+  let bufferedBytes = 0;
+  let maxBufferedBytes = 0;
+  for (const client of clients) {
+    const buffered = client.socket.bufferedAmount;
+    bufferedBytes += buffered;
+    if (buffered > maxBufferedBytes) maxBufferedBytes = buffered;
+  }
+  return {
+    heapUsedMb: Math.round(mem.heapUsed / 1048576),
+    heapTotalMb: Math.round(mem.heapTotal / 1048576),
+    rssMb: Math.round(mem.rss / 1048576),
+    externalMb: Math.round(mem.external / 1048576),
+    bufferedBytes,
+    maxBufferedBytes,
+    slowClientDrops,
+  };
 }
 
 http.listen(env.WS_GATEWAY_PORT, "0.0.0.0", () => {
@@ -928,6 +1014,15 @@ const staleSweep = setInterval(() => {
     }
   }
   if (dropped > 0) log.info({ dropped, remaining: clients.size }, "stale sweep");
+  log.info(
+    {
+      clients: clients.size,
+      matchSubscriptions: matchRefs.size,
+      userSubscriptions: userRefs.size,
+      ...memoryStats(),
+    },
+    "gateway stats",
+  );
 }, STALE_SWEEP_INTERVAL_MS);
 // Don't block process exit on the timer.
 staleSweep.unref();

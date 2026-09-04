@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { serverApi } from "@/lib/server-fetch";
 import { fromMicro } from "@oddzilla/types/money";
 import { readRzCurrencyFromSearchParams } from "./currency";
@@ -25,6 +26,7 @@ interface DashboardKpis {
     openMaxLossMicro: string;
   }>;
   bettorRsHistogram: Array<{ bucket: string; count: number }>;
+  automationAlerts: { active: number; unacknowledged: number };
 }
 
 const REJECTION_LABELS: Record<string, string> = {
@@ -35,6 +37,7 @@ const REJECTION_LABELS: Record<string, string> = {
   rejected_bank_limit: "Bank",
   rejected_user_blocked: "User blocked",
   rejected_market_factor: "Market factor",
+  rejected_velocity: "Velocity",
 };
 
 export default async function RiskzillaDashboardPage({
@@ -138,7 +141,49 @@ export default async function RiskzillaDashboardPage({
           value={String(data.rejections24h.total)}
           sub={`${cur} placements only`}
         />
+        <Kpi
+          label="Automation alerts"
+          value={String(data.automationAlerts.unacknowledged)}
+          valueColor={data.automationAlerts.unacknowledged > 0 ? "#dc2626" : undefined}
+          sub={
+            data.automationAlerts.active === 0
+              ? "No bettor over the behaviour threshold"
+              : `${data.automationAlerts.active} active · unacknowledged shown`
+          }
+          subSmall="Behaviour scoring — see Bot controls"
+        />
       </section>
+
+      {data.automationAlerts.active > 0 && (
+        <div
+          role="status"
+          style={{
+            border: `1px solid ${data.automationAlerts.unacknowledged > 0 ? "#dc2626" : "var(--color-border)"}`,
+            borderRadius: 8,
+            padding: "10px 14px",
+            background: "var(--color-bg-subtle)",
+            fontSize: 13,
+            display: "flex",
+            gap: 12,
+            alignItems: "center",
+            flexWrap: "wrap",
+          }}
+        >
+          <span>
+            {data.automationAlerts.active} bettor{data.automationAlerts.active === 1 ? "" : "s"} currently
+            score above the automation threshold
+            {data.automationAlerts.unacknowledged > 0
+              ? `, ${data.automationAlerts.unacknowledged} not yet reviewed.`
+              : ", all reviewed."}
+          </span>
+          <Link
+            href="/admin/riskzilla/bot-controls"
+            style={{ marginLeft: "auto", fontSize: 12, color: "var(--color-fg)" }}
+          >
+            Open alerts
+          </Link>
+        </div>
+      )}
 
       <section>
         <SectionHeader title={`Rejections by reason (24h, ${cur})`} />

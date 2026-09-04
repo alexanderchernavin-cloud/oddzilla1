@@ -26,6 +26,14 @@
 //       deleted one, and bet placement / Tiple / Tippot can't price off
 //       stale snapshots until the replay refills them.
 //
+//     - Every `live` MATCH is moved to status='suspended', so the match
+//       leaves the offer with its markets. Suspending markets alone left
+//       matches asserting `live` with nothing able to walk the claim
+//       back: the replay re-asserts only what Oddin still carries, and a
+//       match it has dropped has no route to a terminal status. This
+//       mirrors step 3 of feed-ingester's
+//       store.FlushAndSuspendActiveCatalog; keep the two in step.
+//
 //   We deliberately do NOT `DELETE FROM markets`: a bulk delete deadlocks
 //   against the live feed-ingester's concurrent market upserts (the
 //   "something went wrong" 500 this path used to throw) and FK-races
@@ -232,6 +240,7 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
 
         let flushedMarkets = 0;
         let flushedOutcomes = 0;
+        let suspendedMatchIds: string[] = [];
 
         if (flush) {
           // Full odds flush: suspend EVERY active market on a
@@ -268,6 +277,22 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
             typeof (outcomeResult as { count?: number }).count === "number"
               ? (outcomeResult as { count: number }).count
               : 0;
+
+          // Third step: take the MATCHES off the offer too, mirroring
+          // feed-ingester's store.FlushAndSuspendActiveCatalog. Without
+          // it this endpoint performs a half-flush — markets suspended
+          // while every match keeps asserting `live` — and nothing walks
+          // that claim back, because the replay re-asserts only what
+          // Oddin still carries and a match it has dropped has no route
+          // to a terminal status. `live` only: a `not_started` match
+          // makes no false claim and its markets are already suspended.
+          const matchResult = (await tx.execute(sql`
+            UPDATE matches
+               SET status = 'suspended'::match_status, updated_at = NOW()
+             WHERE status = 'live'
+            RETURNING id
+          `)) as unknown as Array<{ id: string | number }>;
+          suspendedMatchIds = (matchResult ?? []).map((r) => String(r.id));
         }
 
         // Rewind the cursor for both producers. Force it backwards, so
@@ -302,15 +327,26 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
             mode: "suspend",
             flushedMarkets,
             flushedOutcomes,
+            flushedMatches: suspendedMatchIds.length,
           },
           ipInet: request.ip ?? null,
         });
 
-        return { activeMarkets, flushedMarkets, flushedOutcomes };
+        return {
+          activeMarkets,
+          flushedMarkets,
+          flushedOutcomes,
+          suspendedMatchIds,
+        };
       });
 
     let txResult:
-      | { activeMarkets: number; flushedMarkets: number; flushedOutcomes: number }
+      | {
+          activeMarkets: number;
+          flushedMarkets: number;
+          flushedOutcomes: number;
+          suspendedMatchIds: string[];
+        }
       | undefined;
     for (let attempt = 1; ; attempt++) {
       try {
@@ -339,12 +375,43 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
       }
     }
 
+    // Tell open pages the matches left the offer, so the LIVE pill goes
+    // in the same moment the prices do rather than surviving until a hard
+    // reload. Same envelope feed-ingester's Bus.PublishMatchStatus emits
+    // on the shared odds:match:{id} channel. Strictly after commit and
+    // best-effort: pub/sub is a fan-out, the source of truth is the row
+    // we just wrote, and a publish failure must not undo a durable flush.
+    if (txResult.suspendedMatchIds.length > 0) {
+      const ts = Date.now();
+      await Promise.all(
+        txResult.suspendedMatchIds.map(async (matchId) => {
+          try {
+            await app.redis.publish(
+              `odds:match:${matchId}`,
+              JSON.stringify({
+                type: "matchStatus",
+                matchId,
+                status: "suspended",
+                ts,
+              }),
+            );
+          } catch (err) {
+            request.log.debug(
+              { err, matchId },
+              "publish match status after admin flush failed",
+            );
+          }
+        }),
+      );
+    }
+
     return {
       ok: true,
       cursorMs,
       hours,
       flushedMarkets: txResult.flushedMarkets,
       flushedOutcomes: txResult.flushedOutcomes,
+      flushedMatches: txResult.suspendedMatchIds.length,
       activeMarketsBefore: txResult.activeMarkets,
     };
   },

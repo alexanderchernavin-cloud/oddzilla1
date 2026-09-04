@@ -147,7 +147,39 @@ interface SharedConnection {
   // Listeners notified whenever `connected` flips so React state can
   // catch up without us polling.
   connectionListeners: Set<() => void>;
+  // ── Session identity of the socket ────────────────────────────────
+  // ws-gateway authenticates ONCE, from the `oddzilla_access` cookie
+  // present on the HTTP upgrade, and never re-reads it. A socket opened
+  // while logged out is anonymous for its entire life: it receives
+  // public odds but is never subscribed to the private `user:{id}`
+  // channel that carries ticket frames. Signing in is a client-side
+  // route change (login-form.tsx does router.push, not a reload), so
+  // without this reconciliation the pre-login socket survives the login
+  // and the bettor places a live bet whose acceptance frame can never
+  // arrive — the bet slip then sits on "Placing…" until its timeout,
+  // and does not clear, inviting a duplicate placement.
+  //
+  // `helloUserId` is what the gateway said this socket is (from the
+  // `hello` frame); `expectedUserId` is what the app knows the session
+  // to be (SSR-resolved, published via setExpectedSessionUser). A
+  // mismatch means the socket's identity is stale — reconnect so the
+  // upgrade re-reads the current cookie.
+  helloUserId: string | null;
+  helloSeen: boolean;
+  expectedUserId: string | null;
+  expectedUserKnown: boolean;
+  // Bounded so a genuinely expired access cookie can't spin: after
+  // MAX_AUTH_RECONNECTS the socket is left as-is and the UI falls back
+  // to polling (bet-slip-rail.tsx polls GET /bets/:id through the
+  // delay window for exactly this reason).
+  authReconnects: number;
 }
+
+// Two attempts covers the case this exists for — a socket opened before
+// login, reconnecting once with the fresh cookie. Beyond that the cookie
+// itself is the problem (expired access token; only a navigation through
+// the Next.js middleware refreshes it) and retrying just burns upgrades.
+const MAX_AUTH_RECONNECTS = 2;
 
 let shared: SharedConnection | null = null;
 
@@ -170,9 +202,46 @@ export function getShared(): SharedConnection {
       connectionGeneration: 0,
       connected: false,
       connectionListeners: new Set(),
+      helloUserId: null,
+      helloSeen: false,
+      expectedUserId: null,
+      expectedUserKnown: false,
+      authReconnects: 0,
     };
   }
   return shared;
+}
+
+// Publish the SSR-resolved session identity to the shared socket. Called
+// from <WsSessionSync /> in the (main) layout on mount and on every
+// change (login, logout, account switch). Reconnects the socket when its
+// authenticated identity no longer matches the session's.
+export function setExpectedSessionUser(userId: string | null): void {
+  const conn = getShared();
+  if (conn.expectedUserKnown && conn.expectedUserId === userId) return;
+  conn.expectedUserId = userId;
+  conn.expectedUserKnown = true;
+  // A real session change earns a fresh retry budget — the previous
+  // budget may have been spent reconciling the previous identity.
+  conn.authReconnects = 0;
+  reconcileSocketIdentity(conn);
+}
+
+// Close the socket when the gateway's view of who it is disagrees with
+// the app's. The close handler's existing backoff reconnects, and that
+// upgrade carries whatever cookie the browser holds now.
+function reconcileSocketIdentity(conn: SharedConnection): void {
+  if (!conn.helloSeen || !conn.expectedUserKnown) return;
+  if (conn.helloUserId === conn.expectedUserId) {
+    conn.authReconnects = 0;
+    return;
+  }
+  if (conn.authReconnects >= MAX_AUTH_RECONNECTS) return;
+  conn.authReconnects += 1;
+  // Mark stale immediately: the close event is async and another hello
+  // can't arrive before it, but a second reconcile call could.
+  conn.helloSeen = false;
+  conn.socket?.close();
 }
 
 function setConnected(conn: SharedConnection, value: boolean): void {
@@ -244,7 +313,19 @@ function ensureConnected(conn: SharedConnection) {
         status?: TicketFrame["status"] | LiveMatchStatusTick["status"] | number;
         rejectReason?: string | null;
         actualPayoutMicro?: string | null;
+        // `hello` only — the identity ws-gateway authenticated this
+        // socket as, or null for an anonymous upgrade.
+        userId?: string | null;
       };
+      // First frame on every connection. Carries the identity the
+      // gateway resolved from the upgrade's cookie; reconcile it
+      // against the session the app believes it has.
+      if (payload.type === "hello") {
+        conn.helloUserId = payload.userId ?? null;
+        conn.helloSeen = true;
+        reconcileSocketIdentity(conn);
+        return;
+      }
       if (payload.type === "odds") {
         const { matchId, marketId, outcomeId, publishedOdds, probability, active, ts } = payload;
         if (!matchId || !marketId || !outcomeId || !publishedOdds || ts == null) return;
@@ -354,6 +435,10 @@ function ensureConnected(conn: SharedConnection) {
   ws.addEventListener("close", () => {
     conn.opening = false;
     conn.socket = null;
+    // The next connection re-authenticates from scratch; until its
+    // hello lands we know nothing about the new socket's identity.
+    conn.helloSeen = false;
+    conn.helloUserId = null;
     setConnected(conn, false);
     const hasSubscribers =
       conn.subscriptionCounts.size > 0 ||

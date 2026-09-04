@@ -35,6 +35,8 @@ import { SportGlyph } from "@/components/ui/sport-glyph";
 import { useMobileDrawers } from "./mobile-drawer-context";
 import { useWallets } from "@/lib/wallets";
 import { useZillapass } from "@/lib/zillapass";
+import { useSessionUserId } from "@/lib/session-user";
+import { intentWaitMs, useBetIntent } from "@/lib/use-bet-intent";
 import { useTranslations } from "@/lib/i18n";
 import { RailMatchPanel } from "@/components/widgets/rail-match-panel";
 import type {
@@ -77,6 +79,34 @@ function effectiveMarginBp(baseBp: number, perLegBp: number, n: number): number 
 
 const DRIFT_ERROR_MESSAGE = "The odds moved since you clicked. Try again.";
 const SUSPENDED_ERROR_MESSAGE = "This market is suspended. Try again in a moment.";
+const SIGNED_OUT_ERROR_MESSAGE =
+  "You're signed out. Sign in and place this bet again — your selections are kept.";
+// HTTP fallback for resolving a ticket through the bet-delay window when
+// the WS ticket frame doesn't arrive. The first request lands just after
+// the worker's decision point (`notBeforeTs`) — nothing is knowable
+// before it. In practice the pending-card timeout drops tracking at
+// notBeforeTs + 15 s and cancels the poll first; the attempt budget is
+// the backstop for the case where that timeout is ever relaxed.
+const TICKET_POLL_LEAD_MS = 1200;
+const TICKET_POLL_INTERVAL_MS = 2000;
+const TICKET_POLL_MAX_ATTEMPTS = 10;
+
+// Placement intent (migration 0097). These rejections mean the token the
+// slip attached was stale / for a different selection set / already
+// spent — a fresh quote and one retry recovers them without bothering
+// the bettor. `intent_too_fast` just needs the remainder of the minimum
+// human confirm time to pass.
+const INTENT_REQUOTE_CODES = new Set([
+  "intent_required",
+  "intent_invalid",
+  "intent_expired",
+  "intent_selection_mismatch",
+  "intent_replayed",
+]);
+// Never sit on a placement for longer than this waiting for the human-
+// time window — the server default is 600 ms.
+const INTENT_MAX_WAIT_MS = 3000;
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 // Live countdown to an absolute timestamp. Returns whole seconds remaining,
 // clamped at 0. Re-renders every second while > 0 and stops the interval
@@ -120,6 +150,14 @@ export function BetSlipRail() {
   const router = useRouter();
   const { optimisticDeduct: optimisticDeductWallet } = useWallets();
   const { refresh: refreshZillapass } = useZillapass();
+  const sessionUserId = useSessionUserId();
+  // Placement intent (migration 0097): quote the selection set ahead of
+  // placement so POST /bets can pin the slip and measure the human
+  // confirm time. Signed-in only — anonymous slips can't place anyway.
+  const betIntent = useBetIntent(
+    selections,
+    sessionUserId != null && selections.length > 0,
+  );
   const t = useTranslations("betSlip");
   const [stakeInput, setStakeInput] = useState("10");
   const [submitting, setSubmitting] = useState(false);
@@ -204,16 +242,19 @@ export function BetSlipRail() {
     return () => window.clearTimeout(id);
   }, [placedTicket, router]);
 
-  // Rail-level ticket-frame subscription. When the bet-delay worker
-  // resolves the ticket we either clear the slip + switch to history
-  // (accepted — the slip is done) or keep the slip populated (rejected
-  // — user can edit + retry). The HistoryPane has its own subscription
-  // for live list updates; the two run independently.
-  useTicketStream(
-    useCallback((frame) => {
+  // Apply a resolved ticket state. Two transports feed this: the WS
+  // ticket frame (fast path) and the HTTP poll below (fallback). Both
+  // land here so the slip behaves identically whichever one wins.
+  const applyTicketResolution = useCallback(
+    (
+      ticketId: string,
+      status: TicketStatus,
+      rejectReason: string | null,
+    ) => {
       setPlacedTicket((prev) => {
-        if (!prev || prev.id !== frame.ticketId) return prev;
-        if (frame.status === "accepted") {
+        if (!prev || prev.id !== ticketId) return prev;
+        if (prev.status === status) return prev;
+        if (status === "accepted") {
           slip.clear();
           setActiveTab("history");
           // Refresh wallets/server data so any debit/refund settles.
@@ -221,7 +262,7 @@ export function BetSlipRail() {
           // Drop the pending card — the new ticket lives in History now.
           return null;
         }
-        if (frame.status === "rejected") {
+        if (status === "rejected") {
           // Stake was refunded by the worker. Reconcile balances. Slip
           // selections stay populated so the bettor can re-place with
           // the latest pendingOdds (the WS odds ticks have been flowing
@@ -231,15 +272,93 @@ export function BetSlipRail() {
           return {
             ...prev,
             status: "rejected",
-            rejectReason: frame.rejectReason ?? "rejected",
+            rejectReason: rejectReason ?? "rejected",
           };
         }
         // Other terminal statuses (settled / voided / cashed_out) can't
         // reach a pending ticket, but pass them through for completeness.
-        return { ...prev, status: frame.status };
+        return { ...prev, status };
       });
-    }, [slip, router]),
+    },
+    [slip, router],
   );
+
+  // Rail-level ticket-frame subscription. When the bet-delay worker
+  // resolves the ticket we either clear the slip + switch to history
+  // (accepted — the slip is done) or keep the slip populated (rejected
+  // — user can edit + retry). The HistoryPane has its own subscription
+  // for live list updates; the two run independently.
+  useTicketStream(
+    useCallback(
+      (frame) => {
+        applyTicketResolution(
+          frame.ticketId,
+          frame.status,
+          frame.rejectReason ?? null,
+        );
+      },
+      [applyTicketResolution],
+    ),
+  );
+
+  // HTTP fallback for the acceptance-delay window.
+  //
+  // The WS frame is the fast path, but it only reaches this tab if the
+  // socket is authenticated — ws-gateway resolves identity once, at
+  // upgrade time (see ws-session-sync.tsx) — and if the gateway stayed
+  // up between placement and decision. When neither held, the button sat
+  // on "Placing…" until its timeout and then reverted to "Place bet"
+  // with the slip STILL POPULATED, even though the bet had been accepted
+  // and the stake debited. Nothing upstream catches the resulting
+  // double-click: every submit mints a fresh idempotencyKey, so the
+  // second one is a genuinely new ticket. Polling the ticket directly
+  // makes the outcome independent of the socket.
+  useEffect(() => {
+    if (!placedTicket || placedTicket.status !== "pending_delay") return;
+    const ticketId = placedTicket.id;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let attempts = 0;
+
+    const poll = async () => {
+      if (cancelled) return;
+      attempts += 1;
+      try {
+        const res = await clientApi<{ ticket: TicketSummary }>(
+          `/bets/${ticketId}`,
+        );
+        if (cancelled) return;
+        if (res.ticket.status !== "pending_delay") {
+          applyTicketResolution(
+            ticketId,
+            res.ticket.status,
+            res.ticket.rejectReason,
+          );
+          return;
+        }
+      } catch {
+        // Transient (offline, api blip) — keep trying until the budget
+        // runs out. A signed-out 401 burns the budget the same way; the
+        // pending-card timeout above is the final backstop.
+      }
+      if (cancelled || attempts >= TICKET_POLL_MAX_ATTEMPTS) return;
+      timer = setTimeout(poll, TICKET_POLL_INTERVAL_MS);
+    };
+
+    // Nothing to learn before the worker's decision point — wait for it,
+    // then start asking.
+    const decisionAt = placedTicket.notBeforeTs
+      ? new Date(placedTicket.notBeforeTs).getTime()
+      : Date.now();
+    timer = setTimeout(
+      poll,
+      Math.max(0, decisionAt - Date.now()) + TICKET_POLL_LEAD_MS,
+    );
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [placedTicket, applyTicketResolution]);
 
   // When a new selection is added (count goes up) while the user is on the
   // history tab, jump back to the slip so the freshly clicked pick is
@@ -649,48 +768,81 @@ export function BetSlipRail() {
           return;
         }
       }
-      const res = await clientApi<{ ticket: TicketSummary }>("/bets", {
-        method: "POST",
-        body: JSON.stringify({
-          stakeMicro,
-          idempotencyKey,
-          currency,
-          // Send explicit betType so the server knows to apply tiple/
-          // tippot/betbuilder pricing — without this, ≥2 legs default
-          // to "combo".
-          betType: effectiveMode,
-          selections: selections.map((s) => ({
-            marketId: s.marketId,
-            outcomeId: s.outcomeId,
-            odds: s.odds,
-            // Forward the ZillaFlash offer id when the leg came from a
-            // boosted offer; server re-validates the id + boosted odds
-            // and shaves -2 s off the live-bet acceptance delay.
-            ...(s.zillaFlashOfferId
-              ? { zillaFlashOfferId: s.zillaFlashOfferId }
+      const placeOnce = (intentToken: string | undefined) =>
+        clientApi<{ ticket: TicketSummary }>("/bets", {
+          method: "POST",
+          body: JSON.stringify({
+            stakeMicro,
+            idempotencyKey,
+            currency,
+            // Send explicit betType so the server knows to apply tiple/
+            // tippot/betbuilder pricing — without this, ≥2 legs default
+            // to "combo".
+            betType: effectiveMode,
+            selections: selections.map((s) => ({
+              marketId: s.marketId,
+              outcomeId: s.outcomeId,
+              odds: s.odds,
+              // Forward the ZillaFlash offer id when the leg came from a
+              // boosted offer; server re-validates the id + boosted odds
+              // and shaves -2 s off the live-bet acceptance delay.
+              ...(s.zillaFlashOfferId
+                ? { zillaFlashOfferId: s.zillaFlashOfferId }
+                : null),
+              // Forward the Custom Boosted Odds rule id (migration 0085);
+              // server re-validates the rule + recomputes the boosted
+              // price before debiting.
+              ...(s.customBoostRuleId
+                ? { boostedOddsRuleId: s.customBoostRuleId }
+                : null),
+            })),
+            // Bettor opt-in for the bet-delay window. Server gates the
+            // effect to single + combo; sending for other modes is a
+            // harmless no-op.
+            acceptOddsChanges,
+            // Placement intent (migration 0097) — pins this placement
+            // to the quote step and carries the quote timestamp.
+            ...(intentToken ? { intentToken } : null),
+            ...(effectiveMode === "betbuilder" && builderQuote
+              ? {
+                  betBuilder: {
+                    sessionId: builderQuote.sessionId,
+                    expectedOddsX10000: builderQuote.oddsX10000,
+                    selectionIds: builderQuote.selectionIds,
+                  },
+                }
               : null),
-            // Forward the Custom Boosted Odds rule id (migration 0085);
-            // server re-validates the rule + recomputes the boosted
-            // price before debiting.
-            ...(s.customBoostRuleId
-              ? { boostedOddsRuleId: s.customBoostRuleId }
-              : null),
-          })),
-          // Bettor opt-in for the bet-delay window. Server gates the
-          // effect to single + combo; sending for other modes is a
-          // harmless no-op.
-          acceptOddsChanges,
-          ...(effectiveMode === "betbuilder" && builderQuote
-            ? {
-                betBuilder: {
-                  sessionId: builderQuote.sessionId,
-                  expectedOddsX10000: builderQuote.oddsX10000,
-                  selectionIds: builderQuote.selectionIds,
-                },
-              }
-            : null),
-        }),
-      });
+          }),
+        });
+
+      // Make sure we hold a token for the current selection set and that
+      // the server's minimum human time has elapsed since it was issued.
+      // A human composing a slip has nearly always waited longer than
+      // this already; the wait only bites on an instant add-then-place.
+      let intent = await betIntent.ensure();
+      const wait = Math.min(intentWaitMs(intent), INTENT_MAX_WAIT_MS);
+      if (wait > 0) await sleep(wait);
+
+      let res: { ticket: TicketSummary };
+      try {
+        res = await placeOnce(intent?.token);
+      } catch (err) {
+        if (!(err instanceof ApiFetchError)) throw err;
+        const code = err.body.error;
+        if (code === "intent_too_fast") {
+          await sleep(Math.min(intent?.minHumanMs ?? 600, INTENT_MAX_WAIT_MS));
+        } else if (INTENT_REQUOTE_CODES.has(code)) {
+          betIntent.invalidate();
+          intent = await betIntent.ensure();
+          const again = Math.min(intentWaitMs(intent), INTENT_MAX_WAIT_MS);
+          if (again > 0) await sleep(again);
+        } else {
+          throw err;
+        }
+        // Same idempotencyKey: if the first attempt actually landed the
+        // server returns that ticket instead of placing a second one.
+        res = await placeOnce(intent?.token);
+      }
       setPlacedTicket(res.ticket);
       // Snapshot the slip composition at placement time so the
       // pending-tracking useEffect above can detect when the user
@@ -735,7 +887,18 @@ export function BetSlipRail() {
       slip.clear();
       setActiveTab("history");
     } catch (err) {
-      setError(err instanceof ApiFetchError ? mapError(err) : "Placement failed.");
+      // 401 is its own case, not a placement rejection. The generic
+      // handler fell through to mapError's default and printed the api's
+      // raw `unauthorized` body, which reads like a bet-level refusal
+      // and says nothing about the actual fix. The slip is untouched
+      // either way — selections survive the sign-in round trip.
+      if (err instanceof ApiFetchError && err.status === 401) {
+        setError(SIGNED_OUT_ERROR_MESSAGE);
+      } else {
+        setError(
+          err instanceof ApiFetchError ? mapError(err) : "Placement failed.",
+        );
+      }
     } finally {
       setSubmitting(false);
     }
@@ -1789,6 +1952,19 @@ function mapError(err: ApiFetchError): string {
       return "BetBuilder needs every leg from the same match.";
     case "betbuilder_odds_too_low":
       return "BetBuilder returned odds below 1.01 — try a different combination.";
+    // Placement intent (migration 0097). The slip already re-quoted and
+    // retried once before surfacing these, so a second failure means the
+    // quote step itself is failing.
+    case "intent_required":
+    case "intent_invalid":
+    case "intent_expired":
+    case "intent_selection_mismatch":
+    case "intent_replayed":
+      return "Your slip needs a fresh quote. Please try again.";
+    case "intent_too_fast":
+      return "Hold on a moment, then place your bet again.";
+    case "rejected_velocity":
+      return "You are placing bets too quickly. Wait a moment and try again.";
     case "internal_error":
       // The api error handler returns this for unhandled exceptions
       // (status 500). Show a stable message; details land in the api

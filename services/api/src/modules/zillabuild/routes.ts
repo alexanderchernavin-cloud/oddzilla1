@@ -24,7 +24,13 @@ import {
 import { getZillaBuildForMatch } from "./engine.js";
 
 export default async function zillabuildRoutes(app: FastifyInstance) {
-  app.get("/catalog/matches/:matchId/zillabuild", async (request, reply) => {
+  app.get(
+    "/catalog/matches/:matchId/zillabuild",
+    // Per-IP scraper friction (2026-09-03) — one call per prematch
+    // match-page mount. See the /catalog/sports/:slug note for how
+    // request.ip stays the real visitor.
+    { config: { rateLimit: { max: 300, timeWindow: "1 minute" } } },
+    async (request, reply) => {
     reply.header("cache-control", "no-store");
     const { matchId } = z
       .object({ matchId: z.coerce.bigint() })

@@ -70,6 +70,13 @@
 		health_uri /healthz
 		health_interval 5s
 		health_timeout 2s
+		# Overwrite (not append) X-Forwarded-For with the real peer, the
+		# same way api_proxy and ws_proxy do. The web tier forwards this
+		# value on its server-side /api fetches (lib/server-fetch.ts) so
+		# the api's per-IP catalog rate limits key on the visitor rather
+		# than on the three replica addresses — without it every SSR
+		# render site-wide would share three buckets.
+		header_up X-Forwarded-For {remote_host}
 	}
 }
 

@@ -106,7 +106,13 @@ const LOOKBACK_DAYS = 365;
 const CACHE_TTL_SECONDS = 300;
 
 export default async function zillatipsRoutes(app: FastifyInstance) {
-  app.get("/catalog/matches/:matchId/zillatips", async (request) => {
+  app.get(
+    "/catalog/matches/:matchId/zillatips",
+    // Per-IP scraper friction (2026-09-03) — one call per match-page
+    // mount, so 300/min is far above any human. See the note on
+    // /catalog/sports/:slug for how request.ip stays the real visitor.
+    { config: { rateLimit: { max: 300, timeWindow: "1 minute" } } },
+    async (request) => {
     const { matchId } = z
       .object({ matchId: z.coerce.bigint() })
       .parse(request.params);
