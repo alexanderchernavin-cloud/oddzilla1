@@ -348,7 +348,7 @@ bifrost-feed waits for `flushed_at >= switched_at` before re-emitting) and
 (audit-logged), read every 2 s by feed-ingester and bifrost-feed. In
 Postgres, not Redis, because production Redis is an `allkeys-lru` cache
 that evicted the first cut's keys on day one and silently undid a forced
-Backup. Migration 0096 adds the **Fonbet feed on/off switch** to the same
+Backup. Migration 0099 adds the **Fonbet feed on/off switch** to the same
 row: `fonbet_enabled BOOLEAN NULL` (NULL = follow the `FONBET_ENABLED` env
 default; TRUE / FALSE = the operator's explicit position, which wins over
 env and survives restarts and deploys), `fonbet_switched_at` /

@@ -1000,7 +1000,7 @@ operator view.
 
 **Fonbet feed switch.** The **Fonbet feed** card on the same page turns the
 second provider on and off at runtime (`PUT /admin/feed/fonbet`, column
-`feed_control.fonbet_enabled`, migration 0096). Off is one click and the
+`feed_control.fonbet_enabled`, migration 0099). Off is one click and the
 emergency brake: within 2 s fonbet-ingester suspends every Fonbet market
 (status `-1`, prices kept — nothing listed, placement rejects), stops
 polling Fonbet and stops its settlement worker, so tickets on Fonbet

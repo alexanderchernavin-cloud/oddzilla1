@@ -353,7 +353,7 @@ export default async function adminFeedRoutes(app: FastifyInstance) {
   // ── Fonbet feed on/off switch ─────────────────────────────────────────
   //
   // Same state model as the source switch: the feed_control singleton
-  // (migration 0096 adds fonbet_enabled + handshake columns), read every
+  // (migration 0099 adds fonbet_enabled + handshake columns), read every
   // 2 s by services/fonbet-ingester. NULL = never switched from here, the
   // FONBET_ENABLED env default applies; TRUE / FALSE wins over env and
   // survives restarts and deploys. OFF suspends every Fonbet market

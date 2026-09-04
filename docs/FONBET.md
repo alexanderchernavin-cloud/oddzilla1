@@ -109,7 +109,7 @@ address Fonbet markets with these ids.
   history for the Fonbet namespace. See docs/OPERATIONS.md "odds_history
   retention".
 - **Switch.** The feed is turned on and off from the **Fonbet feed** card
-  on `/admin/feed` (`PUT /admin/feed/fonbet`, migration 0096), no
+  on `/admin/feed` (`PUT /admin/feed/fonbet`, migration 0099), no
   container restart. The position lives in `feed_control.fonbet_enabled`
   (Postgres, not Redis — see 0095 for why) and wins over `FONBET_ENABLED`
   once set; the env var is only the default while the column is NULL.

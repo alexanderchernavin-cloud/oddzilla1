@@ -1,4 +1,4 @@
--- 0096_feed_control_fonbet
+-- 0099_feed_control_fonbet
 --
 -- Runtime on/off switch for the Fonbet KZ feed (services/fonbet-ingester),
 -- driven from /admin/feed next to the Oddin feed source switch.

@@ -9,7 +9,7 @@ import (
 )
 
 // ReadFonbetSwitch returns the operator's Fonbet feed position from the
-// feed_control singleton (migration 0096): nil when never switched from
+// feed_control singleton (migration 0099): nil when never switched from
 // the backoffice (the FONBET_ENABLED env default applies), otherwise the
 // explicit true / false, which wins over env. Also nil when the row is
 // missing (fresh database before the api has written it).

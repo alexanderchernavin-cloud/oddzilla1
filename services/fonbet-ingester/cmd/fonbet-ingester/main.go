@@ -10,7 +10,7 @@
 //  3. /healthz on HEALTH_PORT (default 8087); status hash for the
 //     backoffice card refreshed every 5 s.
 //  4. Control loop: the operator switch in feed_control.fonbet_enabled
-//     (PUT /admin/feed/fonbet, migration 0096) is read every 2 s; NULL
+//     (PUT /admin/feed/fonbet, migration 0099) is read every 2 s; NULL
 //     means "follow FONBET_ENABLED". While OFF the service idles (health +
 //     status only). When it turns ON: discover line hosts, fetch the
 //     factor catalogue (FONBET_LANG + en), write market / outcome

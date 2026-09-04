@@ -7,7 +7,7 @@ ws-gateway and the storefront serve Fonbet matches unchanged.
 
 No credentials are needed — the line is public. Whether the feed runs is
 decided by the **Fonbet feed** switch on `/admin/feed`
-(`feed_control.fonbet_enabled`, migration 0096), read every 2 s by the
+(`feed_control.fonbet_enabled`, migration 0099), read every 2 s by the
 `switchWatcher` in `cmd/fonbet-ingester/main.go`; `FONBET_ENABLED` is only
 the default while nothing was ever set there. Off = `SuspendAll` + stop
 polling + settlement worker stopped (the service keeps serving `/healthz`
