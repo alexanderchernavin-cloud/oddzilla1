@@ -41,14 +41,15 @@ interface MatchResponse {
 }
 
 // TEST (2026-09-04): Sportradar Live Match Tracker trial on ONE storefront
-// match page. LMT takes a SPORTRADAR match id and Oddzilla's esports catalog
-// carries no Sportradar ids, so there is no mapping yet — this pins Everton v
-// Manchester United (Premier League, Sat 2026-09-06 13:00 UTC, sr match
-// 72221238, from stats.fn.sportradar.com stats_team_nextx/35) under the video
-// block of /match/1160886 to see the hosted standalone embed live on the site.
-// Remove, or replace with a per-match mapping, once Oddin / Sportradar ids
-// are linked. Mechanism + why it is an iframe: components/widgets/sportradar-lmt.tsx.
-const LMT_TEST_ODDZILLA_MATCH_ID = "1160886";
+// match page. LMT takes a SPORTRADAR match id and our catalog carries no
+// Sportradar ids, so there is no mapping yet — this pins the tracker for
+// Everton v Manchester United (Premier League, Sat 2026-09-06 13:00 UTC,
+// sr match 72221238, from stats.fn.sportradar.com stats_team_nextx/35) under
+// the video block of /match/1183756, which is that same fixture as carried by
+// the Fonbet KZ football feed. Replace with a per-match mapping once the
+// provider ids are linked. Mechanism + why it is an iframe:
+// components/widgets/sportradar-lmt.tsx.
+const LMT_TEST_ODDZILLA_MATCH_ID = "1183756";
 const LMT_TEST_SR_MATCH_ID = 72221238;
 
 export default async function MatchPage({
