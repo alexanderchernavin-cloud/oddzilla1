@@ -1,6 +1,7 @@
 # services/fonbet-ingester
 
-Second odds provider: the public **Fonbet KZ** line (traditional sports).
+Second odds provider: the public **Fonbet** line (traditional sports),
+read from **fon.bet in English** by default.
 Go 1.23 / `net/http` + `encoding/json` + `pgx/v5` + `go-redis`. Writes the
 same tables and Redis stream as `feed-ingester`, so odds-publisher,
 ws-gateway and the storefront serve Fonbet matches unchanged.
@@ -15,6 +16,31 @@ and the `fonbet:feed:status` Redis hash); On = `runFeed` boots the
 catalogue, previous state and workers in place. A boot failure while On
 retries every 30 s instead of exiting, so the container never crashloops on
 a Fonbet outage.
+
+## Site and language
+
+Defaults read `fon.bet` in English (`FONBET_SITE_ORIGIN`,
+`FONBET_URLS_JSON`, `FONBET_LINE_HOSTS`, `FONBET_COMMON_HOSTS`,
+`FONBET_LOGO_CDN`, `FONBET_SCOPE_MARKET`, `FONBET_LANG`). The Kazakhstan
+estate `fonbet.kz` serves the **same line** — same event ids, same
+catalogue table numbers, same outcome ids — so switching between them
+changes no market identity, only display text; `.env.example` carries the
+full KZ variable set. `scopeMarket` is per site (1600 fon.bet /
+1800 fonbet.kz) and each 404s on the other's value, and the host lists are
+the trust anchor for `urls.json` discovery, so the site vars move as a set.
+
+`FONBET_LANG` is **not** display-only: the settlement grader
+(`internal/settle`) reads the catalogue table names, the sub-event labels
+and the results feed in that language. `rules.go` carries English and
+Russian vocabularies; anything else leaves it unable to recognise periods,
+statistic rows, or the market shapes it must refuse.
+
+To check the configured site end to end with no database — host
+discovery, snapshot, both catalogues, logos, one day of results:
+
+```bash
+go test -tags livesmoke ./internal/fonbet/ -run TestLiveSmoke -v
+```
 
 **Read [`../../docs/FONBET.md`](../../docs/FONBET.md) before enabling on
 prod.** Settlement is graded from Fonbet's results feed (`internal/settle`)
@@ -57,7 +83,7 @@ internal/
 
 ## Cycle
 
-1. `GET <line>/events/list?lang=ru&version=0&scopeMarket=1800` (~1 MB gz).
+1. `GET <line>/events/list?lang=en&version=0&scopeMarket=1600` (~1 MB gz).
 2. `mapper.Build` → matches with markets keyed by
    `(provider_market_id, canonical specifiers)`.
 3. `ingest.Apply` diffs against the in-memory previous snapshot (seeded

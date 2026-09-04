@@ -19,8 +19,12 @@ import (
 	"strings"
 )
 
-// LogoCDN is the static host every logo path hangs off.
-const LogoCDN = "https://cdn-cf.kzac51-resources.kz"
+// DefaultLogoCDN is the static host every logo path hangs off. It follows
+// the site: fon.bet serves them from cdn-ec.bk6bba-resources.com, fonbet.kz
+// from cdn-cf.kzac51-resources.kz. Both carry the same paths, so a mismatch
+// still resolves — the default just keeps the assets on the same estate as
+// the line. Overridable via FONBET_LOGO_CDN.
+const DefaultLogoCDN = "https://cdn-ec.bk6bba-resources.com"
 
 // Logos is the resolved logo map: Fonbet entity id → absolute URL.
 type Logos struct {
@@ -77,12 +81,16 @@ func (c *Client) FetchLogos(ctx context.Context) (*Logos, error) {
 		if err := json.Unmarshal(body, &resp); err != nil {
 			return nil, fmt.Errorf("line/logos decode: %w", err)
 		}
-		return resolveLogos(&resp), nil
+		return resolveLogos(&resp, c.cfg.LogoCDN), nil
 	}
 	return nil, fmt.Errorf("line/logos: all hosts failed: %s", strings.Join(errs, "; "))
 }
 
-func resolveLogos(r *logosResponse) *Logos {
+func resolveLogos(r *logosResponse, cdn string) *Logos {
+	if cdn == "" {
+		cdn = DefaultLogoCDN
+	}
+	cdn = strings.TrimSuffix(cdn, "/")
 	out := &Logos{Teams: map[int64]string{}, Competitions: map[int]string{}, Sports: map[int]string{}}
 	for teamID, logoID := range r.Teams {
 		id, err := strconv.ParseInt(teamID, 10, 64)
@@ -90,7 +98,7 @@ func resolveLogos(r *logosResponse) *Logos {
 			continue
 		}
 		if p := r.TeamLogos[logoID].path("logoMedium", "logoLarge", "logoSmall"); p != "" {
-			out.Teams[id] = LogoCDN + p
+			out.Teams[id] = cdn + p
 		}
 	}
 	for segID, logoID := range r.Competitions {
@@ -99,7 +107,7 @@ func resolveLogos(r *logosResponse) *Logos {
 			continue
 		}
 		if p := r.CompetitionLogos[logoID].path("logoVector", "logoLargeVector", "logoLarge", "logoMedium"); p != "" {
-			out.Competitions[id] = LogoCDN + p
+			out.Competitions[id] = cdn + p
 		}
 	}
 	for sportID, logoID := range r.SportKinds {
@@ -108,7 +116,7 @@ func resolveLogos(r *logosResponse) *Logos {
 			continue
 		}
 		if p := r.SportKindLogos[logoID].path("logoColor2", "logoColor", "logoMonochromeBlack2", "logoMonochromeBlack"); p != "" {
-			out.Sports[id] = LogoCDN + p
+			out.Sports[id] = cdn + p
 		}
 	}
 	return out
@@ -126,8 +134,7 @@ func (c *Client) postJSON(ctx context.Context, u string, payload any) ([]byte, e
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/plain, */*")
-	req.Header.Set("Origin", "https://fonbet.kz")
-	req.Header.Set("Referer", "https://fonbet.kz/")
+	c.setSiteHeaders(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err

@@ -44,6 +44,20 @@ type ScoreSet struct {
 	Stats map[string]fonbet.Score // statistic rows keyed by lower-cased name ("угловые")
 }
 
+// halfKind says what an English "Nth half" label means for a sport.
+// Russian spells the two apart — "тайм" is one period of a two-part game,
+// "половина" is two periods of a quarter-based one — and English uses one
+// word for both, so the sport has to decide. halfUnknown refuses to grade
+// the label rather than guess; verified against the live line
+// (2026-09-04), only the sports marked below emit it at all.
+type halfKind int
+
+const (
+	halfUnknown      halfKind = iota // refuse: no known convention
+	halfIsPeriod                     // football-style: 1st half == period 1
+	halfIsTwoPeriods                 // quarter-style: 1st half == periods 1+2
+)
+
 // sportRule says how a sport's main-time score relates to its markets.
 type sportRule struct {
 	// setBased: headline counts sets; handicaps / totals without "сет" in
@@ -52,59 +66,151 @@ type sportRule struct {
 	// otIncluded: two-way markets (no draw) include overtime — add the OT
 	// row to the headline (basketball, american football).
 	otIncluded bool
+	// half is what an English "Nth half" resolves to. Left at halfUnknown
+	// for sports that play neither shape (hockey periods, 3x3 basketball).
+	half halfKind
 }
 
 var sportRules = map[int]sportRule{
-	1:     {},                 // football — headline is regular time
-	1434:  {},                 // futsal
-	8:     {},                 // handball
-	2:     {},                 // ice hockey — OT / shootout tables are skipped by name
-	11627: {},                 // floorball
-	1219:  {},                 // water polo
-	16:    {},                 // rugby
-	3:     {otIncluded: true}, // basketball
-	47041: {otIncluded: true}, // basketball 3x3
-	6:     {otIncluded: true}, // american football
-	5:     {otIncluded: true}, // baseball (extra innings come as OT rows)
-	4:     {setBased: true},   // tennis
-	3088:  {setBased: true},   // table tennis
-	9:     {setBased: true},   // volleyball
-	11630: {setBased: true},   // badminton
-	11624: {setBased: true},   // beach volleyball
+	1:     {half: halfIsPeriod},                       // football — headline is regular time
+	1434:  {half: halfIsPeriod},                       // futsal
+	8:     {half: halfIsPeriod},                       // handball
+	2:     {},                                         // ice hockey — periods, no halves; OT / shootout tables are skipped by name
+	11627: {},                                         // floorball — periods
+	1219:  {},                                         // water polo
+	16:    {half: halfIsPeriod},                       // rugby
+	3:     {otIncluded: true, half: halfIsTwoPeriods}, // basketball
+	47041: {otIncluded: true},                         // basketball 3x3 — one period, no halves
+	6:     {otIncluded: true, half: halfIsTwoPeriods}, // american football
+	5:     {otIncluded: true},                         // baseball (extra innings come as OT rows)
+	4:     {setBased: true},                           // tennis
+	3088:  {setBased: true},                           // table tennis
+	9:     {setBased: true},                           // volleyball
+	11630: {setBased: true},                           // badminton
+	11624: {setBased: true},                           // beach volleyball
 }
 
 // unsafeTableWords: table names that settle on something the headline
 // score does not carry unambiguously.
 // Matched as whole words (Cyrillic-aware tokenisation) so "тотал" does
 // not trip on "от"; prefixes cover inflections ("дополнительное",
-// "точный", "буллитов").
-var unsafeTableWords = []string{"от", "пенальти", "доп", "чет", "нечет", "серия"}
-var unsafePrefixWords = []string{"дополнит", "точн", "минут", "буллит", "овертайм"}
+// "точный", "буллитов", and "сери" for "серия" / "серии" — it was a
+// whole word until 2026-09-04, which left the inflected playoff-series
+// markets "Фора серии" / "Тотал серии" / "Победа в серии"
+// gradable off a single match's score).
+//
+// BOTH languages are listed because the guard reads whatever catalogue
+// FONBET_LANG asked for. With only the Russian words an English catalogue
+// left "Total missed penalties" and "Team total missed penalties" looking
+// like ordinary over/under markets, and they would have been graded off
+// the goal score. Checked against the live catalogue (2026-09-04): the
+// English words flag every gradable-by-shape table the Russian ones do.
+var unsafeTableWords = []string{
+	"от", "пенальти", "доп", "чет", "нечет",
+	"ot", "odd", "even", "exact", "correct", "shootout", "shootouts", "series",
+}
+var unsafePrefixWords = []string{
+	"дополнит", "точн", "минут", "буллит", "овертайм", "сери",
+	"overtim", "penalt", "minute",
+}
 
+// periodRe matches a Russian period prefix ("1-й тайм", "2-я половина").
 var periodRe = regexp.MustCompile(`^(\d+)-(?:ый|ой|ая|й|я|е)\s+(тайм|период|сет|четверть|половина|иннинг|партия|карта)(?:\s+|$)`)
+
+// English puts the period marker at either end of the label — "1st half
+// corners" but "Yellow cards — 1st half" — so both ends are tried. The
+// unit list is only what the live line emits (2026-09-04); plural
+// "innings" is deliberately absent because Fonbet uses it for a cumulative
+// "first N innings" row rather than the Nth one.
+const enPeriodUnits = `half|period|set|quarter|inning|map`
+
+var (
+	periodEnPrefixRe = regexp.MustCompile(`^(\d+)(?:st|nd|rd|th)\s+(` + enPeriodUnits + `)\b`)
+	periodEnSuffixRe = regexp.MustCompile(`\s*[—–-]?\s*(\d+)(?:st|nd|rd|th)\s+(` + enPeriodUnits + `)$`)
+)
 
 // labelTarget describes which score a sub-event label points at.
 type labelTarget struct {
-	period int    // 1-based period, 0 = whole match
-	half   int    // 1 or 2 when the label says "половина" (two periods each)
-	stat   string // statistic row name, "" = the match score itself
+	period int // 1-based period, 0 = whole match
+	half   int // 1 or 2 when the label says "половина" (two periods each)
+	// ambiguousHalf carries an English "Nth half" until resolveHalf knows
+	// the sport — see halfKind.
+	ambiguousHalf int
+	stat          string // statistic row name, "" = the match score itself
 }
 
 func parseLabel(label string) labelTarget {
 	l := strings.ToLower(strings.TrimSpace(label))
 	var t labelTarget
-	if m := periodRe.FindStringSubmatch(l); m != nil {
-		n, _ := strconv.Atoi(m[1])
-		switch m[2] {
-		case "половина":
-			t.half = n
-		default:
-			t.period = n
-		}
-		l = strings.TrimSpace(l[len(m[0]):])
+	if !matchRussianPeriod(&t, &l) {
+		matchEnglishPeriod(&t, &l)
 	}
-	t.stat = l
+	t.stat = strings.TrimSpace(strings.Trim(l, "—–- "))
 	return t
+}
+
+func matchRussianPeriod(t *labelTarget, l *string) bool {
+	m := periodRe.FindStringSubmatch(*l)
+	if m == nil {
+		return false
+	}
+	n, _ := strconv.Atoi(m[1])
+	switch m[2] {
+	case "половина":
+		t.half = n
+	default:
+		t.period = n
+	}
+	*l = strings.TrimSpace((*l)[len(m[0]):])
+	return true
+}
+
+// matchEnglishPeriod strips an English period marker from either end of
+// the label. Whatever is left is a statistic row name, and it has to exist
+// in the results feed before it grades anything — that is what keeps
+// aggregate specials out of scope: "8 matches 1st half" and "Red card in
+// the 1st half" both parse here, then fail the statistic lookup in
+// scoreFor and stay open for manual settlement, exactly as they do in
+// Russian.
+func matchEnglishPeriod(t *labelTarget, l *string) bool {
+	var rest string
+	m := periodEnPrefixRe.FindStringSubmatch(*l)
+	if m != nil {
+		rest = (*l)[len(m[0]):]
+	} else {
+		if m = periodEnSuffixRe.FindStringSubmatch(*l); m == nil {
+			return false
+		}
+		rest = (*l)[:len(*l)-len(m[0])]
+	}
+	n, _ := strconv.Atoi(m[1])
+	if m[2] == "half" {
+		t.ambiguousHalf = n
+	} else {
+		t.period = n
+	}
+	*l = strings.TrimSpace(rest)
+	return true
+}
+
+// resolveHalf turns an English "Nth half" into the score target the sport
+// actually plays. ok=false when we have no convention for that sport: the
+// market then stays open instead of being graded on a guess.
+func resolveHalf(t labelTarget, sport int) (labelTarget, bool) {
+	if t.ambiguousHalf == 0 {
+		return t, true
+	}
+	n := t.ambiguousHalf
+	t.ambiguousHalf = 0
+	switch sportRules[sport].half {
+	case halfIsPeriod:
+		t.period = n
+	case halfIsTwoPeriods:
+		t.half = n
+	default:
+		return t, false
+	}
+	return t, true
 }
 
 // scoreFor resolves the (home, away) numbers a market settles on.
@@ -209,7 +315,10 @@ func Grade(mk Market, idx *fonbet.Index, label string, sport int, ss ScoreSet) (
 	}
 	target := labelTarget{}
 	if label != "" {
-		target = parseLabel(label)
+		var ok bool
+		if target, ok = resolveHalf(parseLabel(label), sport); !ok {
+			return nil, false, "ambiguous half label"
+		}
 	}
 	ids := map[string]bool{}
 	for _, id := range mk.OutcomeIDs {

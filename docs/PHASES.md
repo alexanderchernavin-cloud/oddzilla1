@@ -938,16 +938,31 @@ Independent of phase numbering — these must all be true:
 6. Runbook for feed outage, settlement lag, wallet-watcher chain reorg,
    ws-gateway storm.
 
-## Fonbet KZ sports feed (started 2026-09-03, off by default)
+## Fonbet sports feed (started 2026-09-03, off by default)
 
 Goal: add traditional sports (football, tennis, hockey, basketball, …)
-next to Oddin's esports by scraping the public Fonbet KZ line.
+next to Oddin's esports by scraping the public Fonbet line.
 
 **Delivered:**
 - `services/fonbet-ingester` — Go poller: host discovery via `urls.json`,
-  factor catalogue → market / outcome descriptions (ru + en), snapshot
+  factor catalogue → market / outcome descriptions (en + ru), snapshot
   mapper with unit tests on real fixtures, delta ingest into the existing
   tables + `odds.raw`, staleness watchdog, SIGTERM suspend, `/healthz`.
+- **fon.bet in English (2026-09-04).** The feed read `fonbet.kz` in
+  Russian, so traditional-sport market names reached the storefront in
+  Russian. Switched to the `fon.bet` estate (`FONBET_SITE_ORIGIN` /
+  `FONBET_URLS_JSON` / `FONBET_LINE_HOSTS` / `FONBET_COMMON_HOSTS` /
+  `FONBET_LOGO_CDN` / `FONBET_SCOPE_MARKET` 1600) with `FONBET_LANG=en`.
+  Verified identity-neutral: the two sites share the event id space, the
+  sports tree and the catalogue table / factor ids, so no market, outcome
+  or specifier hash changed. The grader was the real work — `internal/settle`
+  was Russian-coupled, so English needed its own vocabulary for the
+  refused-table names, the period labels (English marks the period at
+  either end of a label, and its single word "half" covers two different
+  Russian units) and the results-feed overtime / shootout rows. Closed a
+  pre-existing Russian gap in passing: `серия` was matched as a whole
+  word, leaving inflected playoff-series markets ("Тотал серии") gradable
+  off a single match's score.
 - Compose / dev compose / Makefile / CI wiring; `FONBET_*` env block.
 - `loadMatchWinnerOdds` accepts Fonbet match-winner rows so list cards
   show 1 / X / 2 for Fonbet matches.

@@ -1,11 +1,52 @@
-# Fonbet KZ line — second odds provider
+# Fonbet line — second odds provider
 
-`services/fonbet-ingester` scrapes the public Fonbet Kazakhstan line to put
+`services/fonbet-ingester` scrapes the public Fonbet line to put
 traditional sports (football, tennis, hockey, basketball, …) next to
 Oddin's esports. This page is the protocol + mapping cheat sheet; the
 service README covers the code layout.
 
-Verified against the live site on 2026-09-03. Fonbet has no public API
+## Which site, which language
+
+**`fon.bet`, in English** (defaults since 2026-09-04; the service read the
+Kazakhstan site `fonbet.kz` in Russian before that). Moving sites means
+moving a matched set of env vars, because `scopeMarket`, the request
+`Origin` and the asset CDN are all per site:
+
+| Site        | `FONBET_SITE_ORIGIN`   | `FONBET_URLS_JSON`             | `FONBET_SCOPE_MARKET` | `FONBET_LOGO_CDN`                   |
+| ----------- | ---------------------- | ------------------------------ | --------------------- | ----------------------------------- |
+| fon.bet     | `https://fon.bet`      | `https://fon.bet/urls.json`    | `1600`                | `https://cdn-ec.bk6bba-resources.com` |
+| fonbet.kz   | `https://fonbet.kz`    | `https://fonbet.kz/urls.json`  | `1800`                | `https://cdn-cf.kzac51-resources.kz` |
+
+Crossing them fails loudly rather than silently: the KZ hosts answer
+`404` to `scopeMarket=1600` and vice versa. `FONBET_LINE_HOSTS` /
+`FONBET_COMMON_HOSTS` must be moved with the site too — they are also the
+trust anchor for `urls.json` discovery (a host is adopted only if its
+registrable domain matches one of the configured ones), so leaving the KZ
+lists in place while pointing `FONBET_URLS_JSON` at fon.bet makes every
+discovered host get rejected.
+
+**The two sites are the same line.** Measured 2026-09-04, English,
+scopeMarket paired per site: 13 303 of ~13 380 events shared by id
+(the rest is a minute of line movement between the two fetches), the same
+965-node sports tree with the same 32 root sport ids, and byte-identical
+catalogues — 580 tables with the same numbers and names, and identical
+`IsMatchWinner` / param-kind / outcome-id derivation for every factor. So
+switching sites (or languages) changes **no** market or outcome identity:
+`provider_market_id`, `outcome_id` and `specifiers_hash` are unaffected
+and existing tickets keep resolving. Only display text moves.
+
+**Language is not display-only.** `FONBET_LANG` picks the language of the
+snapshot (team, tournament and sub-event names), of the factor catalogue
+(market and outcome labels) and of the results feed (`locale`), and the
+settlement grader reads all three — see "Settlement → language". English
+and Russian are both supported end to end; a third language would leave
+the grader unable to recognise periods, statistic rows, or the market
+shapes it must refuse. `market_descriptions` rows are written for the feed
+language plus every other locale in `descriptionLangs` (en, ru), so the
+storefront's `/ru` still shows Russian market names off an English feed.
+
+Verified against the live site on 2026-09-04 (2026-09-03 for the parts not
+touched by the fon.bet switch). Fonbet has no public API
 contract — everything below is observed behaviour and can change without
 notice. The ingester is defensive (unknown factors are skipped, hosts
 rotate, staleness suspends), but treat a sudden drop in
@@ -15,22 +56,31 @@ rotate, staleness suspends), but treat a sudden drop in
 
 | Step             | Request                                                            | Notes                                                                                                                                                                   |
 | ---------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Host discovery   | `GET https://fonbet.kz/urls.json`                                  | `line[]` = `//lineNN-w.kzac51-resources.kz` hosts (rotate; fallback list in `FONBET_LINE_HOSTS`). `common[]` = clientsapi hosts (results feed; fallback `FONBET_COMMON_HOSTS`). **Trust filter:** a discovered host is adopted only if it is `https` (or scheme-relative `//`) AND its registrable domain matches one of the operator-configured hosts / `FONBET_URLS_JSON`; anything else is logged and ignored, the static lists stay in force. The document is third-party network input that sets where we fetch prices and results from, so it must not be able to downgrade us to plaintext or point us at an arbitrary or internal origin. A genuine Fonbet domain move shows up as the skipped-hosts warning and needs the env lists updated. |
-| Full line        | `GET <line>/events/list?lang=ru&version=0&scopeMarket=1800`        | ~1.2 MB JSON, gzip-encoded even without `Accept-Encoding`. **`scopeMarket` must be 1800** for the KZ hosts (the RU site's 1600 → `404 Not Found`). `lang` ∈ ru, en, kk. |
-| Factor catalogue | `GET <line>/line/factorsCatalog/tables?version=0&lang=ru&sysId=NN` | Market layouts + labels. `sysId` = the host number (`line05` → 5). Covers 100 % of the factors seen in the line.                                                        |
-| Live only        | `GET <line>/line/liveEvents?lang=ru`                               | Not used (the full snapshot already carries live).                                                                                                                      |
+| Host discovery   | `GET https://fon.bet/urls.json`                                    | `line[]` = `//line-lbNN.bk6bba-resources.{com,ru}` hosts (rotate; fallback list in `FONBET_LINE_HOSTS`). `common[]` = clientsapi hosts (results feed; fallback `FONBET_COMMON_HOSTS`). **Trust filter:** a discovered host is adopted only if it is `https` (or scheme-relative `//`) AND its registrable domain matches one of the operator-configured hosts / `FONBET_URLS_JSON`; anything else is logged and ignored, the static lists stay in force. The document is third-party network input that sets where we fetch prices and results from, so it must not be able to downgrade us to plaintext or point us at an arbitrary or internal origin. A genuine Fonbet domain move shows up as the skipped-hosts warning and needs the env lists updated. |
+| Full line        | `GET <line>/events/list?lang=en&version=0&scopeMarket=1600`        | ~1.4 MB JSON, gzip-encoded even without `Accept-Encoding`. **`scopeMarket` is per site**: 1600 on fon.bet, 1800 on fonbet.kz, and each 404s on the other's value. `lang` ∈ en, ru, kk. |
+| Factor catalogue | `GET <line>/line/factorsCatalog/tables?version=0&lang=en&sysId=NN` | Market layouts + labels. `sysId` = the host number (`line05` → 5); the fon.bet hosts carry no number and ignore it. Covers 100 % of the factors seen in the line.       |
+| Live only        | `GET <line>/line/liveEvents?lang=en`                               | Not used (the full snapshot already carries live).                                                                                                                      |
 | Deltas           | `events/list?version=<packetVersion>`                              | Returns partial `customFactors` (only changed factors, no removal markers) — not safe for a full-snapshot model, so the ingester always refetches `version=0`.          |
 
-Headers sent: browser-like `User-Agent`, `Origin: https://fonbet.kz`,
-`Referer: https://fonbet.kz/`. No cookies, no auth.
+Headers sent: browser-like `User-Agent`, `Origin` + `Referer` for
+`FONBET_SITE_ORIGIN` (`https://fon.bet` by default). No cookies, no auth.
+
+`internal/fonbet/livesmoke_test.go` exercises this whole surface against
+the configured site with no database — host discovery, the snapshot, both
+catalogues, the logo catalogue and one day of results:
+
+```bash
+cd services/fonbet-ingester && go test -tags livesmoke ./internal/fonbet/ -run TestLiveSmoke -v
+```
 
 ## `events/list` shape (fields we read)
 
 ```
 packetVersion        int64   monotonic snapshot id
 sports[]             {id, parentId?, kind: "sport"|"segment", name, alias?, regionId}
-                     kind=sport && !parentId → root sport (Футбол=1, Теннис=4,
-                     Хоккей=2, Баскетбол=3, Киберспорт=29086 …)
+                     kind=sport && !parentId → root sport (ids are stable
+                     across sites and languages: Football=1, Tennis=4,
+                     Ice Hockey=2, Basketball=3, Esports=29086 …)
                      kind=segment → league, parentId = root
 events[]             {id, parentId?, level, sportId (segment), kind, team1, team2,
                       team1Id, team2Id, name, startTime (unix s), place}
@@ -67,17 +117,17 @@ rows[1..]   cells: {name} text | {kind:"param", factorId} line value |
 | Fonbet              | oddzilla                                                                                                                                   | Rule                                                                                                                                                                |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | root sport          | `sports` (`provider='fonbet'`, `provider_urn='fb:sport:<id>'`)                                                                             | slug + English name from `internal/mapper/sports.go`; unknown roots → `fb-<id>`; `kind='traditional'` (esports root → `esport`)                                     |
-| segment name prefix | `categories` (`(sport_id, slug)`)                                                                                                          | `"Испания. Примера дивизион"` → category `Испания`; single-segment names → `Other`                                                                                  |
+| segment name prefix | `categories` (`(sport_id, slug)`)                                                                                                          | `"Spain. Primera Division. Season 26/27"` → category `Spain`; single-segment names → `Other`                                                                                  |
 | segment             | `tournaments` (`provider_urn='fb:tournament:<id>'`)                                                                                        | slug = slugified name + `-<id>`                                                                                                                                     |
 | team                | `competitors` (`provider='fonbet'`, `provider_urn='fb:competitor:<teamId>'`)                                                               | slug = slugified name + `-<teamId>`                                                                                                                                 |
 | level-1 event       | `matches` (`provider_urn='fb:match:<eventId>'`)                                                                                            | `place=live` → `live`, `line` → `not_started`; `finished` or a live match that vanished → `closed`; events without two teams (outrights) skipped                    |
 | catalogue table     | `markets.provider_market_id = 1_000_000 + num`                                                                                             | double-chance cells of a match-winner table are split off to `1_900_000 + num`                                                                                      |
 | line                | `specifiers.handicap` / `specifiers.threshold`                                                                                             | value = side-1 `pt` normalised (`+2.5` → `2.5`, `-0` → `0`); both sides of one row share the market                                                                 |
-| sub-event           | `specifiers.variant = "fb:<kind>[/<childKind>][:<team1Id>]"` (nested children inherit the parent: "1-й тайм угловые" → `fb:100201/400100`) | esports maps (`1-я карта`) → `specifiers.map = N` instead                                                                                                           |
+| sub-event           | `specifiers.variant = "fb:<kind>[/<childKind>][:<team1Id>]"` (nested children inherit the parent: "1st half corners" → `fb:100201/400100`) | esports maps (`1st map`) → `specifiers.map = N` instead                                                                                                           |
 | per-team table      | `specifiers.side = home / away`                                                                                                            | template `{side}: Тотал {threshold}` renders the team name                                                                                                          |
 | factor              | `market_outcomes.outcome_id = <factorId>`                                                                                                  | match-winner tables use `1` (home) / `2` (away) / `3` (draw) so `loadMatchWinnerOdds` pairs them like Oddin's                                                       |
 | blocked event       | `markets.status = -1`, outcomes `active=false`                                                                                             | partial blocks flip only the listed factors inactive                                                                                                                |
-| labels              | `market_descriptions` / `outcome_descriptions`                                                                                             | written on boot from the catalogue in `FONBET_LANG` and `en`; variant rows (`"1-й тайм: Фора {handicap}"`) written lazily the first time a sub-event market is seen |
+| labels              | `market_descriptions` / `outcome_descriptions`                                                                                             | written on boot from the catalogue in `FONBET_LANG` plus every other locale in `descriptionLangs` (en, ru); variant rows (`"1st half: Handicap {handicap}"`) written lazily the first time a sub-event market is seen. The sub-event half of a variant row is always in the FEED language — it comes from the snapshot, which is fetched once — so a `ru` row off an English feed reads "1st half: Фора {handicap}" |
 
 `provider_market_id ≥ 1_000_000` is the Fonbet namespace: `odds_config`
 `market_type` scopes, `fe_market_display_order` and `fe_market_groups`
@@ -145,9 +195,10 @@ address Fonbet markets with these ids.
   (the 2026-09-03 incident). `settlement.external` is capped at 20k.
 - **Esports.** Root 29086 is blocked by default — Oddin already covers
   it and two providers for one match would double-list it.
-- **Geo.** The KZ hosts answered from the Hetzner box's region in testing;
+- **Geo.** The hosts answered from the Hetzner box's region in testing;
   if Fonbet geo-blocks the datacentre, `/healthz` shows a growing
-  `snapshotStaleSeconds` and the watchdog suspends the catalog.
+  `snapshotStaleSeconds` and the watchdog suspends the catalog. Both
+  estates are worth trying if one is blocked — they serve the same line.
 
 ## Settlement
 
@@ -160,11 +211,61 @@ frames, all-terminal match close).
 
 | Step                               | Where                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Results source                     | `GET <common>/results/results.json.php?locale=ru&lineDate=YYYY-MM-DD` on the `common` (clientsapi) hosts. `events[]` carry `name` ("A – B"), `score` ("2:2 (1-0 1-1 0-1 1-0)" — headline is the **main-time** score, periods in brackets), `startTime`, `status` (3 finished, 4 cancelled); `sections[]` map `fonbetCompetitionId` (= our segment / tournament id) to result rows. Statistic rows ("угловые", "желтые карты", "эйсы", "дополнительное время", "серия пенальти") follow their match with the same `startTime`. Result ids are document-local, so matching is by (competition, startTime, normalised "home – away"). Exact name first; the fallback accepts a row that contains both names **home before away** (sponsor / city decoration) and rejects the mirrored row — an order-blind substring match bound "Рубин – Оренбург" to home=Оренбург and inverted every grade on the match. A fixture the two feeds order differently therefore stays pending for manual settlement.                                                                                                                                                  |
+| Results source                     | `GET <common>/results/results.json.php?locale=<FONBET_LANG>&lineDate=YYYY-MM-DD` on the `common` (clientsapi) hosts. `events[]` carry `name` ("A – B"), `score` ("2:2 (1-0 1-1 0-1 1-0)" — headline is the **main-time** score, periods in brackets), `startTime`, `status` (3 finished, 4 cancelled); `sections[]` map `fonbetCompetitionId` (= our segment / tournament id) to result rows. Statistic rows ("Corners", "Yellow cards", "aces", "extra time", "penalty shootouts" — "угловые", "желтые карты", "эйсы", "дополнительное время", "серия пенальти" under `locale=ru`) follow their match with the same `startTime`. One document covers one **UTC+3 (Moscow) calendar day** — measured on both estates 2026-09-04, `lineDate=2026-09-03` spans startTimes 2026-09-02 21:00 UTC to 2026-09-03 20:59 UTC — and the worker fetches each pending match's day plus the previous one, so the boundary is a margin rather than a cliff. Result ids are document-local, so matching is by (competition, startTime, normalised "home – away"). Exact name first; the fallback accepts a row that contains both names **home before away** (sponsor / city decoration) and rejects the mirrored row — an order-blind substring match bound "Рубин – Оренбург" to home=Оренбург and inverted every grade on the match. A fixture the two feeds order differently therefore stays pending for manual settlement.                                                                                                                                                  |
 | Worker                             | `internal/settle` in fonbet-ingester — every `FONBET_SETTLE_INTERVAL_MS`: `store.LoadPendingSettlement` (closed `fb:` matches with non-terminal markets, last 7 days) → results for the involved line days → `Grade` per market → `XADD settlement.external`. Cancelled results (`status 4`) void every market of the match. **Gated by `FONBET_SETTLE_ENABLED`, default `false` — separate from `FONBET_ENABLED`** (see "Before enabling settlement"). A market is remembered as emitted only after its message is confirmed on the stream (per 500-message chunk); a failed XADD returns the error and the next pass retries everything unsent, instead of hiding the whole pass for an hour.                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Rules (`internal/settle/rules.go`) | match winner 1/2/3 · double chance · handicap `h1/h2` · total `over/under` (whole, half and quarter lines, team totals via `side`) · the same on halves / periods / sets and on statistic rows. Sports: football, futsal, handball, hockey, floorball, water polo, rugby (headline = main time), basketball / 3x3 / american football / baseball (two-way markets add the "дополнительное время" row), tennis / table tennis / volleyball / badminton / beach volleyball (winner by sets; handicaps and totals on games / points unless the table says "сет"). Tables whose name mentions ОТ / овертайм / буллит / пенальти / чет / точный and every other sport or market shape are **left open** for manual settlement and counted in the `settlement pass` log line (`skipped`). |
+| Rules (`internal/settle/rules.go`) | match winner 1/2/3 · double chance · handicap `h1/h2` · total `over/under` (whole, half and quarter lines, team totals via `side`) · the same on halves / periods / sets and on statistic rows. Sports: football, futsal, handball, hockey, floorball, water polo, rugby (headline = main time), basketball / 3x3 / american football / baseball (two-way markets add the "extra time" / "дополнительное время" row), tennis / table tennis / volleyball / badminton / beach volleyball (winner by sets; handicaps and totals on games / points unless the table says "set" / "сет"). Tables whose name mentions overtime / shootout / penalt… / odd / even / exact / correct / series (ОТ / овертайм / буллит / пенальти / чет / точный / сери…) and every other sport or market shape are **left open** for manual settlement and counted in the `settlement pass` log line (`skipped`). |
 | Consumer                           | `services/settlement/internal/extstream` — XREADGROUP on `settlement.external` (group `settlement`), builds an `oddinxml.Market` and calls `Settler.ApplyExternalSettlement` / `ApplyExternalCancel`. Failures stay pending and are re-claimed after 60 s (cursor-paginated, so a backlog larger than one batch drains in one tick). The group is created from `0`, not `$`, and is **recreated inline on `NOGROUP`** (CLAUDE.md invariant 7): production Redis is allkeys-lru and can evict the stream key, which destroys the group — without the branch no Fonbet market would settle again until a manual restart, and a restart creating the group at `$` would skip every message published in the gap. Stream capped at 20k entries (~6 MB). `SETTLEMENT_EXTERNAL_STREAM` (default `settlement.external`, empty disables).                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | Message                            | `type` settle\|cancel, `event_urn`, `provider_market_id`, `specifiers` (canonical, sorted), `ts` ms, `outcomes` JSON `[{id,result,void_factor}]` — result `1`/`0`, void_factor `1` void, `0.5` half. Specifiers and outcome order feed the apply-once payload hash, so a resend of the same grading is a no-op.                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+
+### Language
+
+The grader reads the catalogue, the sub-event labels and the results feed
+in `FONBET_LANG`, so `rules.go` carries **both** vocabularies. This is not
+cosmetic — measured against the live catalogue on 2026-09-04, running the
+Russian word lists against an English catalogue left three
+gradable-by-shape tables unguarded ("Total missed penalties", two "Team
+total missed penalties"), which would have been settled off the goal
+score, and dropped the "extra time" / "penalty shootouts" rows so a
+basketball two-way market would have graded on regular time. What the two
+vocabularies now cover:
+
+- **Refused table names** — the two lists flag identical sets: every
+  table the Russian words catch that Grade could otherwise accept by
+  shape, the English words catch too, and vice versa. Pinned by
+  `TestTableUnsafeEnglish`. Fixing this also closed a pre-existing
+  Russian gap: `серия` was a whole word, so the inflected "Фора серии",
+  "Тотал серии" and "Победа в серии" playoff-series markets were
+  gradable off a single match's score; it is now the prefix `сери`.
+- **Period labels** — English puts the marker at either end ("1st half
+  corners" but "Yellow cards — 1st half"), so both positions are parsed.
+  Units are only what the line emits: half, period, set, quarter, inning,
+  map. Plural "innings" is excluded on purpose — Fonbet uses it for a
+  cumulative "first N innings" row, not the Nth one.
+- **"Nth half" is ambiguous in English.** Russian separates "тайм" (one
+  period of a two-part game) from "половина" (two periods of a
+  quarter-based one); English says "1st half" for both. `resolveHalf`
+  decides per sport (`sportRule.half`): football / futsal / handball /
+  rugby → period N, basketball / american football → periods 2N-1 + 2N.
+  Any other sport **refuses** the label (`ambiguous half label`) instead
+  of guessing.
+- **Aggregate specials stay out of scope in both languages.** "8 matches
+  1st half", "Red card in the 1st half" and "Match to be finished in
+  tie-break of 5th set" do parse a period in English, but the leftover
+  text becomes a statistic name that the results feed does not carry, so
+  `scoreFor` reports no score and the market stays open — the same
+  outcome Russian reaches by not matching the prefix at all.
+
+Coverage was measured by pairing every sub-event label on the live line by
+event id across the two languages (2026-09-04): of 493 distinct
+(ru, en, sport) labels, 82 kinds / 5 574 events grade in **both**, none
+grade only in English, **none grade to a different score**, and exactly
+one kind / 23 events grades only in Russian.
+That one is football's "hit the woodwork": Fonbet's English line
+calls the sub-event "1st half hit the woodwork" while its English results
+feed spells the row "To hit the woodwork", so 23 events stay open for
+manual settlement. Deliberately not papered over with fuzzy matching —
+on a payout path a missed row costs a manual settlement, a wrong match
+costs money.
 
 Two-way markets tied after main time (hockey without an OT row, basketball
 without the OT row) stay open rather than guess. For sports whose two-way

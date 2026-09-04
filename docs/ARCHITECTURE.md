@@ -119,13 +119,15 @@ models on `127.0.0.1`; the production box never connects inward. See
 (news-scraper was scoped for Phase 8 but cancelled mid-phase; the
 service and `news_articles` table were removed via migration 0003.)
 
-## Second provider: Fonbet KZ (fonbet-ingester)
+## Second provider: Fonbet (fonbet-ingester)
 
-Traditional sports come from the public Fonbet KZ line instead of Oddin.
+Traditional sports come from the public Fonbet line instead of Oddin —
+`fon.bet` in English by default (the Kazakhstan estate `fonbet.kz` serves
+the same line under a different `scopeMarket`; see docs/FONBET.md).
 `services/fonbet-ingester` is a sibling Go service (own module, duplicated
 `store` / `bus` / specifier helpers per the per-service rule) that:
 
-- polls `GET <line>/events/list?lang=ru&version=0&scopeMarket=1800` every
+- polls `GET <line>/events/list?lang=en&version=0&scopeMarket=1600` every
   `FONBET_POLL_INTERVAL_MS` (≈1 MB gzipped, ~5.8k matches / 200k prices);
 - maps the snapshot onto the Oddin-shaped schema — `fb:match:<id>` URNs,
   `provider_market_id = 1_000_000 + Fonbet table`, lines as `handicap` /

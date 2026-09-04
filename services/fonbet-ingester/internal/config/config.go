@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/oddzilla/fonbet-ingester/internal/fonbet"
 )
 
 type Config struct {
@@ -32,16 +34,29 @@ type FonbetConfig struct {
 	Enabled bool
 
 	// URLsJSON is the public bootstrap document that lists the current
-	// line API hosts (they rotate). Default https://fonbet.kz/urls.json.
+	// line API hosts (they rotate). Default https://fon.bet/urls.json.
 	URLsJSON string
 	// Hosts is the static fallback when urls.json is unreachable.
 	Hosts []string
+	// SiteOrigin is the site the line belongs to; it rides on every
+	// request as Origin / Referer, and the hosts 403 without it.
+	SiteOrigin string
+	// LogoCDN is the static host the logo paths hang off (follows the
+	// site).
+	LogoCDN string
 	// Lang is the catalogue / event language requested from Fonbet.
-	// Sub-event labels (halves, maps, players) come back in this language
-	// and are written to market_descriptions for both `Lang` and "en".
+	// Sub-event labels (halves, maps, players) and every team / tournament
+	// name come back in this language. Default "en" — the storefront's
+	// default locale. Descriptions are written for `Lang` plus "en", so a
+	// non-English feed language still leaves the storefront readable.
+	//
+	// The settlement grader reads the same language (rules.go carries
+	// Russian AND English vocabularies); a third language would leave it
+	// unable to recognise periods, statistic rows or the market shapes it
+	// must refuse — see docs/FONBET.md "Settlement".
 	Lang string
-	// ScopeMarket is the Fonbet market scope. 1800 = Kazakhstan. The RU
-	// site uses 1600; the KZ line servers 404 on it.
+	// ScopeMarket is the Fonbet market scope, and it is paired with the
+	// site: fon.bet answers 1600, fonbet.kz answers 1800 and 404s on 1600.
 	ScopeMarket int
 
 	// PollInterval is how often the full line snapshot is refetched.
@@ -110,10 +125,12 @@ func Load() (Config, error) {
 
 	cfg.Fonbet = FonbetConfig{
 		Enabled:            strings.EqualFold(getEnvDefault("FONBET_ENABLED", "false"), "true"),
-		URLsJSON:           getEnvDefault("FONBET_URLS_JSON", "https://fonbet.kz/urls.json"),
-		Hosts:              splitList(getEnvDefault("FONBET_LINE_HOSTS", "https://line01-w.kzac51-resources.kz,https://line05-w.kzac51-resources.kz,https://line21-w.kzac51-resources.kz,https://line31-w.kzac51-resources.kz,https://line51-w.kzac51-resources.kz")),
-		Lang:               getEnvDefault("FONBET_LANG", "ru"),
-		ScopeMarket:        atoiDefault("FONBET_SCOPE_MARKET", 1800),
+		URLsJSON:           getEnvDefault("FONBET_URLS_JSON", "https://fon.bet/urls.json"),
+		Hosts:              splitList(getEnvDefault("FONBET_LINE_HOSTS", "https://line-lb51.bk6bba-resources.com,https://line-lb52.bk6bba-resources.ru,https://line-vk-w.bk6bba-resources.ru")),
+		SiteOrigin:         getEnvDefault("FONBET_SITE_ORIGIN", fonbet.DefaultSiteOrigin),
+		LogoCDN:            getEnvDefault("FONBET_LOGO_CDN", fonbet.DefaultLogoCDN),
+		Lang:               getEnvDefault("FONBET_LANG", "en"),
+		ScopeMarket:        atoiDefault("FONBET_SCOPE_MARKET", 1600),
 		PollInterval:       time.Duration(atoiDefault("FONBET_POLL_INTERVAL_MS", 5000)) * time.Millisecond,
 		HTTPTimeout:        time.Duration(atoiDefault("FONBET_HTTP_TIMEOUT_MS", 30000)) * time.Millisecond,
 		StaleSuspendAfter:  time.Duration(atoiDefault("FONBET_STALE_SUSPEND_SECONDS", 60)) * time.Second,
@@ -124,7 +141,7 @@ func Load() (Config, error) {
 		SettleEnabled:      strings.EqualFold(getEnvDefault("FONBET_SETTLE_ENABLED", "false"), "true"),
 		SettleInterval:     time.Duration(atoiDefault("FONBET_SETTLE_INTERVAL_MS", 120000)) * time.Millisecond,
 		OddsPublisherGroup: getEnvDefault("ODDS_PUBLISHER_GROUP", "odds-publisher"),
-		CommonHosts:        splitList(getEnvDefault("FONBET_COMMON_HOSTS", "https://clientsapi05-w.kzac51-resources.kz,https://clientsapi21-w.kzac51-resources.kz,https://clientsapi51-w.kzac51-resources.kz,https://clientsapi54-w.kzac51-resources.kz")),
+		CommonHosts:        splitList(getEnvDefault("FONBET_COMMON_HOSTS", "https://clientsapi-lb51.bk6bba-resources.com,https://clientsapi-lb52.bk6bba-resources.ru,https://clientsapi-vk-w.bk6bba-resources.ru")),
 	}
 	if cfg.Fonbet.SettleInterval < 10*time.Second {
 		cfg.Fonbet.SettleInterval = 10 * time.Second
