@@ -1089,15 +1089,6 @@
     "intro": "Elige un apodo público, escribe una breve bio, selecciona tu avatar y decide si tus boletos resueltos aparecen en el feed de la comunidad.",
     "yourPublicProfile": "Tu perfil público:"
   },
-  "logos": {
-    "title": "Logos de equipos",
-    "subtitle": "Explora la biblioteca de logos por deporte, categoría y liga.",
-    "allLeagues": "Todas las ligas",
-    "filterPlaceholder": "Filtrar equipos…",
-    "pickHint": "Elige a la izquierda un deporte, luego una categoría y una liga (o «Todas las ligas») para ver los logos de sus equipos.",
-    "teamsCount": "{count, plural, one {# equipo} other {# equipos}}",
-    "teamsOfCount": "{shown} de {total, plural, one {# equipo} other {# equipos}}"
-  },
   "languages": {
     "en": "English",
     "cs": "Čeština",

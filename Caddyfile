@@ -190,30 +190,6 @@
 		header @json Content-Type "application/json; charset=utf-8"
 	}
 
-	# Team-logo library for the /logos browser. The image tree is ~2.5 GB
-	# (21k+ logos) — far too large to bake into the web image (× 3 replicas)
-	# or commit to git, so — exactly like the APK distribution above — it
-	# lives in a host-mounted directory and Caddy serves it directly. New
-	# logos sync in via rsync to /srv/oddzilla-logos (no rebuild, no Caddy
-	# restart). Bootstrap once with infra/hetzner/oddzilla-logos-init.sh.
-	#
-	# Access model: the /logos *page* (the HTML UI) is gated by the Next
-	# middleware (PROTECTED_PREFIXES → /login). These are the static logo
-	# assets it loads — public sports trademarks, same posture as avatars
-	# and the APKs above. Images are immutable (each filename is a fixed
-	# badge) so they cache hard; manifest.json stays no-store so a re-sync
-	# shows up immediately. handle_path strips the /logos prefix, so the
-	# bare /logos page route still falls through to the web upstream below.
-	handle_path /logos/* {
-		root * /srv/oddzilla-logos
-		file_server
-		@img path *.png
-		header @img Cache-Control "public, max-age=2592000, immutable"
-		@manifest path /manifest.json
-		header @manifest Cache-Control "no-store"
-		header @manifest Content-Type "application/json; charset=utf-8"
-	}
-
 	handle {
 		import web_upstream
 	}

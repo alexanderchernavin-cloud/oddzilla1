@@ -1089,15 +1089,6 @@
     "intro": "Zvolte si veřejnou přezdívku, napište krátké bio, vyberte avatar a rozhodněte, zda se vaše vyhodnocené tikety mají zobrazovat v komunitním feedu.",
     "yourPublicProfile": "Váš veřejný profil:"
   },
-  "logos": {
-    "title": "Loga týmů",
-    "subtitle": "Procházejte knihovnu log podle sportu, kategorie a ligy.",
-    "allLeagues": "Všechny ligy",
-    "filterPlaceholder": "Filtrovat týmy…",
-    "pickHint": "Vlevo vyberte sport, poté kategorii a ligu (nebo „Všechny ligy“) pro zobrazení log týmů.",
-    "teamsCount": "{count, plural, one {# tým} few {# týmy} other {# týmů}}",
-    "teamsOfCount": "{shown} z {total, plural, one {# týmu} few {# týmů} other {# týmů}}"
-  },
   "languages": {
     "en": "English",
     "cs": "Čeština",

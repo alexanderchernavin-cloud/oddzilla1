@@ -1089,15 +1089,6 @@
     "intro": "Odaberite javni nadimak, napišite kratki opis, izaberite avatar i odlučite hoće li se vaši riješeni listići prikazivati u feedu zajednice.",
     "yourPublicProfile": "Vaš javni profil:"
   },
-  "logos": {
-    "title": "Logotipi timova",
-    "subtitle": "Pregledajte biblioteku logotipa po sportu, kategoriji i ligi.",
-    "allLeagues": "Sve lige",
-    "filterPlaceholder": "Filtriraj timove…",
-    "pickHint": "Slijeva odaberite sport, zatim kategoriju i ligu (ili „Sve lige“) za prikaz logotipa timova.",
-    "teamsCount": "{count, plural, one {# tim} few {# tima} other {# timova}}",
-    "teamsOfCount": "{shown} od {total, plural, one {# tima} few {# tima} other {# timova}}"
-  },
   "languages": {
     "en": "English",
     "cs": "Čeština",
