@@ -66,6 +66,14 @@ export const categories = pgTable(
     name: text().notNull(),
     isDummy: boolean().notNull().default(false),
     active: boolean().notNull().default(true),
+    // Kept in the sidebar tree, kept out of the match lists (migration
+    // 0102). Fonbet files EA FC simulations under the real Football
+    // sport; flagging the category drops its matches from the lobby,
+    // /live, /upcoming and the sport page default view, while selecting
+    // the category or one of its tournaments still shows every match.
+    // Not the same thing as `active = false` — these matches are real
+    // and bettable, they just don't belong in an unasked-for list.
+    hiddenFromLists: boolean("hidden_from_lists").notNull().default(false),
   },
   (t) => [
     unique("categories_sport_slug").on(t.sportId, t.slug),

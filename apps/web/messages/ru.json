@@ -85,7 +85,8 @@
     "matchFrameTitle": "Матч {id}",
     "esportsSection": "Киберспорт",
     "showTournaments": "Показать турниры",
-    "hideTournaments": "Скрыть турниры"
+    "hideTournaments": "Скрыть турниры",
+    "categoryHiddenFromLists": "Показывается только при выборе"
   },
   "wallet": {
     "title": "Кошелёк",
@@ -393,8 +394,9 @@
     "live": "Live",
     "upcoming": "Прематч",
     "topTournaments": "Топ турниры",
-    "filterTournament": "Турнир: {name}",
-    "filterTeam": "Команда: {name}",
+    "filterKindCategory": "Категория",
+    "filterKindTournament": "Турнир",
+    "filterKindTeam": "Команда",
     "clearFilter": "Сбросить фильтр",
     "noMatches": "Матчей пока нет.",
     "matchCount": "{count, plural, one {# матч} few {# матча} many {# матчей} other {# матча}}"

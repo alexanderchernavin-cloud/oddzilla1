@@ -339,6 +339,32 @@ real categories (countries like "England", or "International").
 **`categories`** — child of sport. `is_dummy=true` when auto-created for an
 esport. `provider_urn` may be NULL (dummy) or hold a real Oddin URN later.
 
+`hidden_from_lists BOOLEAN NOT NULL DEFAULT FALSE` (migration 0102) keeps a
+category in the sidebar tree but out of every match list a bettor gets
+WITHOUT asking: the lobby, `/live`, `/upcoming`, the sport page's default
+view, and the per-sport live badge on `/catalog/live-counts`. Any explicit
+narrowing — `?category=`, `?tournament=` or `?team=` on
+`/catalog/sports/:slug` — drops the predicate, so the offer stays one click
+away; the tree's own per-category and per-tournament counts deliberately
+still count the hidden rows, because the tree is where a bettor goes to find
+them.
+
+The case it exists for: Fonbet files EA FC simulations
+("FC 26. ESportsBattle. La Liga. 2x4 min.") under the real Football sport,
+so 184 of ~1770 bookable Football matches — and 10 of 23 live ones — were
+computer-played 2x4-minute games sitting above the actual football offer.
+The same shape recurs as NBA 2K26 under Basketball and NHL 26 under Ice
+Hockey. The migration seeds `TRUE` for `name ~ '^FC [0-9]{2}$'` (exactly
+`FC 24` + `FC 26` on the current line, verified before shipping); everything
+else is an operator call on `/admin/categories`.
+
+Deliberately NOT `categories.active = false`: these matches are real,
+bettable and settle normally, so this is a merchandising decision and the
+two flags stay independent. Also deliberately not the
+`HIDDEN_TOURNAMENT_NAMES` treatment in the catalog routes — that one hides
+rows that should never be reachable (Oddin's integration-test tournament),
+this one hides rows that shouldn't be the default.
+
 **`feed_control`** (migration 0095) — singleton row (`id = 1`) holding the
 operator's feed source switch: `source` (`auto` / `prod` / `backup`),
 `switched_at`, `switched_by`, plus feed-ingester's acknowledgements

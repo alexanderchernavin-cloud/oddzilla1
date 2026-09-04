@@ -85,7 +85,8 @@
     "matchFrameTitle": "Meč {id}",
     "esportsSection": "Esport",
     "showTournaments": "Prikaži turnire",
-    "hideTournaments": "Sakrij turnire"
+    "hideTournaments": "Sakrij turnire",
+    "categoryHiddenFromLists": "Prikazuje se samo kad je odabrana"
   },
   "wallet": {
     "title": "Novčanik",
@@ -393,8 +394,9 @@
     "live": "Uživo",
     "upcoming": "Prije meča",
     "topTournaments": "Top turniri",
-    "filterTournament": "Turnir: {name}",
-    "filterTeam": "Tim: {name}",
+    "filterKindCategory": "Kategorija",
+    "filterKindTournament": "Turnir",
+    "filterKindTeam": "Momčad",
     "clearFilter": "Ukloni filtar",
     "noMatches": "Trenutačno nema mečeva.",
     "matchCount": "{count, plural, one {# meč} few {# meča} other {# mečeva}}"

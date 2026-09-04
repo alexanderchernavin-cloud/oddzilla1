@@ -193,6 +193,10 @@ const matchListQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
   tournament: z.coerce.number().int().positive().optional(),
   team: z.coerce.number().int().positive().optional(),
+  // Narrows the list to one category, and is the only way to see a
+  // category flagged `hidden_from_lists` (migration 0102). The sidebar's
+  // category header links here.
+  category: z.coerce.number().int().positive().optional(),
 });
 
 // Postgres returns NUMERIC(10,4) as "3.1400" or "1.0030" with trailing
@@ -401,6 +405,21 @@ const hasActiveMarket = sql`EXISTS (
 // resolve so admin/debug tooling keeps working.
 const HIDDEN_TOURNAMENT_NAMES = ["Integration testing"];
 const notHiddenTournament = notInArray(tournaments.name, HIDDEN_TOURNAMENT_NAMES);
+
+// Categories an operator has flagged as list-excluded (migration 0102).
+// Fonbet files EA FC simulations under the real Football sport, so 10 of
+// Football's 23 live matches — and 184 of its upcoming ones — were
+// computer-played 2x4-minute games crowding out the actual football offer
+// (measured on production 2026-09-04). The flag removes them from every
+// list a bettor gets WITHOUT asking — the lobby, /live, /upcoming, the
+// sport page default view, and the per-sport live badge that labels them.
+//
+// It is NOT a hidden-tournament-style blackout: the sidebar tree still
+// carries the category, and any EXPLICIT narrowing (?category=, ?tournament=
+// or ?team=) drops this predicate so the offer is one click away. That is
+// the whole distinction — HIDDEN_TOURNAMENT_NAMES hides rows that should
+// never be reachable, this one hides rows that shouldn't be the default.
+const notHiddenCategory = eq(categories.hiddenFromLists, false);
 
 // loadMatchWinnerOdds fetches the match-winner outcomes for a batch of
 // matches and pairs them by Oddin's canonical outcome_id ("1" = home,
@@ -1018,6 +1037,24 @@ export default async function catalogRoutes(app: FastifyInstance) {
       .limit(1);
     if (!sport) throw new NotFoundError("sport_not_found", "sport_not_found");
 
+    // Resolve the category filter before the matches query, for the same
+    // reason the team filter is resolved below: the chip needs a name, and
+    // an id that doesn't belong to this sport must produce an empty list
+    // rather than silently widening back to "all matches". Simpler than
+    // the team lookup — a category belongs to exactly one sport, so an
+    // (id, sport_id) probe settles it.
+    let filteredCategory: { id: number; name: string } | null = null;
+    if (q.category) {
+      const [c] = await app.db
+        .select({ id: categories.id, name: categories.name })
+        .from(categories)
+        .where(
+          and(eq(categories.id, q.category), eq(categories.sportId, sport.id)),
+        )
+        .limit(1);
+      if (c) filteredCategory = c;
+    }
+
     // Resolve the team filter (if any) before the matches query so we can
     // surface the team's name back to the storefront for the chip. Scoped
     // by ACTUAL gameplay rather than `competitors.sport_id`: a team's
@@ -1088,6 +1125,14 @@ export default async function catalogRoutes(app: FastifyInstance) {
           // Skip matches with zero active markets — nothing to bet on.
           hasActiveMarket,
           notHiddenTournament,
+          // List-excluded categories (EA FC and friends) are dropped from
+          // the DEFAULT view only. Any explicit narrowing — a category, a
+          // tournament or a team the bettor picked out of the tree or the
+          // search box — means they asked for these rows, so the predicate
+          // comes off. Leaving it on would render a chip for a filter that
+          // then returns nothing, which is worse than not offering it.
+          q.category || q.tournament || q.team ? undefined : notHiddenCategory,
+          q.category ? eq(categories.id, q.category) : undefined,
           q.tournament ? eq(tournaments.id, q.tournament) : undefined,
           q.team
             ? or(
@@ -1182,6 +1227,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
       },
       topConfigured: (topIdsBySport.get(sport.id) ?? []).length > 0,
       filteredTeam,
+      filteredCategory,
       matches: rows.map((r) => {
         const o = oddsByMatch.get(r.matchId.toString());
         const top = topMarkets.get(r.matchId.toString()) ?? null;
@@ -1286,7 +1332,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
     };
     };
     if (!request.user) {
-      const key = `catalog:sport:v1:${params.slug}:${q.live ? 1 : 0}:${q.tournament ?? ""}:${q.team ?? ""}:${q.limit}`;
+      const key = `catalog:sport:v1:${params.slug}:${q.live ? 1 : 0}:${q.tournament ?? ""}:${q.team ?? ""}:${q.category ?? ""}:${q.limit}`;
       return cached(app.redis, key, ANON_LIST_CACHE_TTL_SECONDS, build);
     }
     return build();
@@ -2005,6 +2051,10 @@ export default async function catalogRoutes(app: FastifyInstance) {
           q.kind ? eq(sports.kind, q.kind) : undefined,
           hasActiveMarket,
           notHiddenTournament,
+          // Unconditional here: this endpoint backs the lobby, /live and
+          // /upcoming, none of which take a category filter. A bettor who
+          // wants EA FC goes through the sport tree.
+          notHiddenCategory,
         ),
       )
       .orderBy(
@@ -2261,6 +2311,10 @@ export default async function catalogRoutes(app: FastifyInstance) {
         categoryName: categories.name,
         categorySlug: categories.slug,
         categoryIsDummy: categories.isDummy,
+        // Surfaced so the sidebar can mark the bucket as list-excluded.
+        // The tree itself is NOT filtered by it — a category kept out of
+        // the lists still has to be reachable, and this is where from.
+        categoryHiddenFromLists: categories.hiddenFromLists,
         matchCount: matchCountExpr,
         liveCount: liveCountExpr,
       })
@@ -2284,6 +2338,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         categories.name,
         categories.slug,
         categories.isDummy,
+        categories.hiddenFromLists,
       )
       .having(sql`${matchCountExpr}::int > 0`);
 
@@ -2297,7 +2352,12 @@ export default async function catalogRoutes(app: FastifyInstance) {
         category:
           r.categoryIsDummy || !r.categoryName
             ? null
-            : { id: r.categoryId, name: r.categoryName, slug: r.categorySlug },
+            : {
+                id: r.categoryId,
+                name: r.categoryName,
+                slug: r.categorySlug,
+                hiddenFromLists: r.categoryHiddenFromLists,
+              },
         matchCount: Number(r.matchCount),
         liveCount: Number(r.liveCount),
       }))
@@ -2550,7 +2610,17 @@ export default async function catalogRoutes(app: FastifyInstance) {
             count: sql<string>`COUNT(${matches.id})::text`,
           })
           .from(sports)
-          .leftJoin(categories, eq(categories.sportId, sports.id))
+          // The count has to agree with the list it labels. A "Football
+          // 23" badge over a list of 13 real matches is worse than no
+          // badge at all — so the same exclusion the lists apply is
+          // applied here. This is the SPORT-level badge only; the per-category
+          // and per-tournament counts in the sidebar tree deliberately
+          // still count hidden rows, because that tree is where a bettor
+          // goes to find them.
+          .leftJoin(
+            categories,
+            and(eq(categories.sportId, sports.id), notHiddenCategory),
+          )
           .leftJoin(
             tournaments,
             and(
