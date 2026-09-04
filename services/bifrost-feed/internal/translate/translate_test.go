@@ -221,9 +221,11 @@ func TestOddsChangeRoundTrip(t *testing.T) {
 	if math.Abs(p0+p1-1) > 0.001 || p0 > p1 {
 		t.Fatalf("probabilities must normalise to 1 with the favourite higher: %v %v", p0, p1)
 	}
+	// Bifrost said `handicap=-1.5`; the emitted market carries the AMQP
+	// feed's opposite sign, so both sources name the same market row.
 	handicap := got.Odds.Markets[1]
-	if handicap.ID != 2 || handicap.Specifiers != "handicap=-1.5" || handicap.Status != -1 {
-		t.Fatalf("suspended market must map to -1 with specifiers intact: %+v", handicap)
+	if handicap.ID != 2 || handicap.Specifiers != "handicap=1.5" || handicap.Status != -1 {
+		t.Fatalf("suspended market must map to -1 with the handicap sign flipped: %+v", handicap)
 	}
 	if *handicap.Outcomes[0].Active != 0 || handicap.Outcomes[0].Odds != "5.3" {
 		t.Fatalf("suspended outcome keeps its last price but is not active: %+v", handicap.Outcomes[0])

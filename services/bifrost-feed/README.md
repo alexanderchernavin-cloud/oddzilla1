@@ -95,3 +95,9 @@ land in Redis hash `bifrost:feed:status` for the backoffice card on
 - Probabilities are derived from odds (margin-normalised implied
   probability), not Oddin's own model output.
 - Tournament risk tier is not on Bifrost; assign it in `/admin/tournaments`.
+- Bifrost states a `handicap` specifier from the opposite side to Oddin's
+  AMQP feed, so `bifrost.NormalizeSpecifiers` flips its sign at parse time
+  (a Bifrost `handicap=-1.5` is the AMQP `handicap=1.5`). Corrected here,
+  still wrong upstream — Oddin fixed the same inversion on AMQP on
+  2026-06-02 and Bifrost did not follow. Evidence and the moneyline test
+  that pins the direction are in docs/BIFROST_BACKUP_FEED.md.

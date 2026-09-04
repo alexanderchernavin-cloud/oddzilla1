@@ -15,6 +15,10 @@
 // rest of Oddzilla keys on — provider market id, specifier string, outcome
 // id — fall straight out of the id. No lookup table is needed to map a
 // Bifrost outcome onto a `market_outcomes` row.
+//
+// One value does NOT fall straight out: Bifrost states a `handicap` from
+// the opposite side to Oddin's AMQP feed, so parsing flips its sign to
+// land on the same market row either source would. See flipHandicapSign.
 
 package bifrost
 
@@ -240,7 +244,77 @@ func parseMarketSegment(seg string) (MarketKey, error) {
 	if err != nil {
 		return MarketKey{}, fmt.Errorf("market segment %q: bad market id", seg)
 	}
-	return MarketKey{ProviderMarketID: mid, Specifiers: CanonicalSpecifiers(specPart)}, nil
+	return MarketKey{ProviderMarketID: mid, Specifiers: NormalizeSpecifiers(specPart)}, nil
+}
+
+// NormalizeSpecifiers canonicalises a Bifrost specifier string and corrects
+// its handicap sign onto the convention Oddin's AMQP feed uses. Every
+// Bifrost market key goes through here, so odds and settlement agree.
+//
+// The correction has to happen at key level rather than in the storefront
+// label. Market identity is (match, provider_market_id, specifiers_hash)
+// and settlement is dual-source by design, so a key that disagrees with
+// the AMQP form is not cosmetic: an Oddin bet_settlement lands on the row
+// the backup feed priced and grades the opposite line of the one the
+// bettor was shown.
+func NormalizeSpecifiers(raw string) string {
+	return flipHandicapSign(CanonicalSpecifiers(raw))
+}
+
+// flipHandicapSign inverts the value of a `handicap` specifier.
+//
+// Bifrost states the handicap from the opposite side to Oddin's AMQP feed.
+// Measured on production 2026-09-04: every backup-fed market keyed
+// `handicap=-1.5` priced the HOME outcome SHORTER than that same team's
+// moneyline (CS2 match 1163395 — moneyline 1.55, "-1.5" 1.15, "+1.5"
+// 2.70), and a -1.5 line can never be shorter than the moneyline, so 1.15
+// is the +1.5 price wearing the wrong label. Correct score agreed to two
+// decimals (P(2:0)=0.42 against the 2.70 cell, 1-P(0:2)=0.88 against the
+// 1.15 one). It is systematic rather than per-market: of the same-match
+// +-1.5 pairs across all nine handicap-bearing market ids, 100% inverted
+// on the backup feed against 100% standard on AMQP, flipping on the day
+// the source was switched. Oddin's own AMQP feed carried this same
+// inversion until 2026-06-02, so Bifrost appears to be serving the
+// pre-fix convention.
+//
+// `handicap` is the only specifier key that ever holds a negative value
+// (checked against every live market row), so this is the whole of it.
+func flipHandicapSign(spec string) string {
+	if !strings.Contains(spec, "handicap=") {
+		return spec
+	}
+	pairs := strings.Split(spec, "|")
+	for i, p := range pairs {
+		k, v, ok := strings.Cut(p, "=")
+		if !ok || k != "handicap" {
+			continue
+		}
+		pairs[i] = k + "=" + flipDecimalSign(v)
+	}
+	return strings.Join(pairs, "|")
+}
+
+// flipDecimalSign flips a decimal's sign, preserving the magnitude text
+// verbatim — the emitted specifier has to byte-match the AMQP spelling
+// because specifiers_hash is taken over the string, so a float round-trip
+// (which would rewrite "1.50" as "1.5") is not safe here. A non-numeric
+// value is left alone, and zero has no sign to flip.
+func flipDecimalSign(v string) string {
+	mag, neg := v, false
+	switch {
+	case strings.HasPrefix(v, "-"):
+		mag, neg = v[1:], true
+	case strings.HasPrefix(v, "+"):
+		mag = v[1:]
+	}
+	f, err := strconv.ParseFloat(mag, 64)
+	if err != nil {
+		return v
+	}
+	if f == 0 || neg {
+		return mag
+	}
+	return "-" + mag
 }
 
 // CanonicalSpecifiers re-serialises a `k=v|k=v` string with keys sorted
