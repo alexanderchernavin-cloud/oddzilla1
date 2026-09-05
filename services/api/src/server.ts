@@ -52,6 +52,10 @@ import {
   startZagiRiskTierSweeper,
   type ZagiRiskTierSweeperHandle,
 } from "./lib/zagi/sweeper.js";
+import {
+  startTournamentLogoSweeper,
+  type TournamentLogoSweeperHandle,
+} from "./lib/tournament-logos/sweeper.js";
 import adminCategoriesRoutes from "./modules/admin/categories.js";
 import adminMonitoringRoutes, { startMonitoringSampler } from "./modules/admin/monitoring.js";
 import adminDeployRoutes from "./modules/admin/deploy.js";
@@ -418,6 +422,14 @@ const sportradarSweeperHandle: SportradarSweeperHandle | null =
 const zagiRiskTierSweeperHandle: ZagiRiskTierSweeperHandle | null =
   startZagiRiskTierSweeper(app);
 
+// Tournament logo sourcing (migration 0108). Hourly, Redis-lock guarded,
+// time-budgeted because Liquipedia asks for 2 s between calls. Fills the
+// marks neither feed carries: Fonbet's catalogue is fully consumed and
+// the Oddin esports half has no first-party source at all.
+// Idle without ZAGI_API_KEY. TOURNAMENT_LOGO_SWEEPER_DISABLED=1 skips.
+const tournamentLogoSweeperHandle: TournamentLogoSweeperHandle | null =
+  startTournamentLogoSweeper(app);
+
 // RiskZilla behaviour scoring (migration 0098). Every 5 min, Redis-lock
 // guarded: scores settled signed-in analytics sessions for automation
 // signals (pointer geometry, click rhythm) and rolls them up per bettor
@@ -460,6 +472,7 @@ async function shutdown() {
   behaviourSweeperHandle?.close();
   sportradarSweeperHandle?.close();
   zagiRiskTierSweeperHandle?.close();
+  tournamentLogoSweeperHandle?.close();
   if (matchWatcherHandle) {
     try {
       await matchWatcherHandle.close();

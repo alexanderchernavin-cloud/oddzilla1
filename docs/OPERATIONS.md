@@ -953,6 +953,53 @@ behaviour; check for a running dump and retry:
 ssh team@178.104.174.24 'ps -eo etime,cmd | grep [p]g_dump'
 ```
 
+### Tournament logos runbook
+
+462 of ~1 880 tournaments carry a logo from Fonbet's own catalogue. That
+catalogue is **fully consumed** — the missing ones are not a mapping bug,
+Fonbet simply has no mark for them. The Oddin esports half has none at
+all and no first-party source: the Oddin REST token returns 403 and the
+stack has run on the Bifrost backup feed since 2026-09-03, which carries
+a sport icon but no tournament icon.
+
+An hourly sweep fills what it can from **Liquipedia** (esports) and
+**Wikidata** (everything else), with ZillaAGI supplying the canonical
+competition name. To drive it by hand:
+
+```bash
+# what is left
+curl -s https://sadmin.oddzilla.cc/api/admin/tournaments/logo-status
+# preview a run without writing anything
+curl -s -X POST https://sadmin.oddzilla.cc/api/admin/tournaments/logo-fetch \
+  -H 'content-type: application/json' -d '{"limit":20,"dryRun":true}'
+```
+
+(Both need an admin session cookie.)
+
+Expect roughly **60% of the tournaments that could plausibly have a
+logo**. The rest — county championships, third divisions, weekly duel
+cups, simulated FC/NBA 2K fixtures — have no logo anywhere, and ZAGI
+declines them rather than guessing. `logo_attempts` stops a row being
+re-checked after three misses; reset it to re-open one:
+
+```sql
+UPDATE tournaments SET logo_attempts = 0 WHERE id = <id> AND logo_url IS NULL;
+```
+
+**Reverting a source.** Every auto-sourced row records `logo_source` and
+`logo_source_url`. Liquipedia's marks are largely non-free, so if that
+call is ever revisited, one statement undoes the set:
+
+```sql
+UPDATE tournaments
+   SET logo_url = NULL, logo_data = NULL, logo_mime = NULL,
+       logo_source = NULL, logo_source_url = NULL
+ WHERE logo_source = 'liquipedia';
+```
+
+An operator's upload always wins — the resolver only ever touches rows
+where `logo_url IS NULL`.
+
 ### Team logos runbook
 
 Logos hot-link directly to Oddin's CDN (`cdn.oddin.gg`). They're our

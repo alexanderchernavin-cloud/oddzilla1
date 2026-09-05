@@ -59,6 +59,10 @@ import { tournaments, categories, sports, adminAuditLog } from "@oddzilla/db";
 import { BadRequestError, NotFoundError } from "../../lib/errors.js";
 import { reorderPinned, type PinAction } from "../../lib/pin-order.js";
 import { assignRiskTiers, riskTierBacklog } from "../../lib/zagi/risk-tier.js";
+import {
+  logoBacklog,
+  resolveTournamentLogos,
+} from "../../lib/tournament-logos/resolver.js";
 import multipart from "@fastify/multipart";
 
 const MAX_UPLOAD_BYTES = 1 * 1024 * 1024;
@@ -168,6 +172,14 @@ const zagiReviewBody = z.object({
   // cap is well below the sweeper's: 200 rows is ~8 requests at roughly
   // 15 s each. The backlog drains across several clicks or on its own.
   limit: z.coerce.number().int().min(1).max(200).default(50),
+  sportId: z.coerce.number().int().positive().optional(),
+  dryRun: z.boolean().optional(),
+});
+
+const logoFetchBody = z.object({
+  // Lower cap than the tier review: Liquipedia's 2 s floor means a
+  // tournament can take ten seconds of wall clock on its own.
+  limit: z.coerce.number().int().min(1).max(60).default(20),
   sportId: z.coerce.number().int().positive().optional(),
   dryRun: z.boolean().optional(),
 });
@@ -419,6 +431,67 @@ export default async function adminTournamentsRoutes(app: FastifyInstance) {
             app.redis.del(`catalog:tournaments:v1:${id}`).catch(() => null),
           ),
         );
+      }
+
+      return result;
+    },
+  );
+
+  // ─── Automatic logo sourcing ────────────────────────────────────────
+  //
+  // Fills the marks neither feed carries. Preview first: a wrong crest —
+  // the women's competition on a men's league, or a team badge on a
+  // tournament — is worse than a blank one, so the guards in
+  // lib/tournament-logos refuse far more than they accept and an
+  // operator should see what a run would do before it does it.
+
+  app.get("/admin/tournaments/logo-status", async (request) => {
+    request.requireRole("admin");
+    return logoBacklog(app);
+  });
+
+  app.post(
+    "/admin/tournaments/logo-fetch",
+    // Liquipedia is rate-limited to one call every 2 s and every
+    // tournament costs several, so a run is minutes of wall clock.
+    { config: { rateLimit: { max: 10, timeWindow: "1 hour" } } },
+    async (request) => {
+      const admin = request.requireRole("admin");
+      const body = logoFetchBody.parse(request.body ?? {});
+
+      const result = await resolveTournamentLogos(app, {
+        limit: body.limit,
+        dryRun: body.dryRun ?? false,
+        ...(body.sportId ? { sportId: body.sportId } : {}),
+      });
+
+      if (result.errors.includes("zagi_not_configured")) {
+        throw new BadRequestError(
+          "zagi_not_configured",
+          "ZillaAGI is not configured — set ZAGI_API_KEY and ZAGI_BASE_URL.",
+        );
+      }
+
+      if (!result.dryRun && result.applied > 0) {
+        await app.db.insert(adminAuditLog).values({
+          actorUserId: admin.id,
+          action: "tournament.logo_fetch",
+          targetType: "sport",
+          targetId: body.sportId ? String(body.sportId) : "*",
+          beforeJson: { eligible: result.eligible },
+          afterJson: {
+            model: result.model,
+            named: result.named,
+            declined: result.declined,
+            unmatched: result.unmatched,
+            applied: result.applied,
+            sources: result.proposals.reduce<Record<string, number>>((acc, p) => {
+              acc[p.source] = (acc[p.source] ?? 0) + 1;
+              return acc;
+            }, {}),
+          },
+          ipInet: request.ip ?? null,
+        });
       }
 
       return result;

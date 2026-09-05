@@ -135,6 +135,14 @@ export const tournaments = pgTable(
     brandColor: text("brand_color"),
     logoData: bytea("logo_data"),
     logoMime: text("logo_mime"),
+    // Migration 0108: where the logo came from. 'fonbet' (feed
+    // catalogue), 'wikidata' (auto-sourced and adjudicated), 'manual'
+    // (operator). Provenance matters here because a wrong crest — the
+    // women's competition on a men's league — is worse than a blank one.
+    logoSource: text("logo_source"),
+    logoSourceUrl: text("logo_source_url"),
+    logoAttempts: smallint("logo_attempts").notNull().default(0),
+    logoCheckedAt: timestamp("logo_checked_at", { withTimezone: true }),
     active: boolean().notNull().default(true),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },
