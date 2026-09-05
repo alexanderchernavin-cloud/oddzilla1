@@ -73,7 +73,14 @@ const MOBILE_MAX_WIDTH = 1099;
 // chosen to fit the two states rather than measured: collapsed shows the
 // scoreboard plus the momentum strip (what `collapseTo=momentum` leaves
 // behind), expanded shows the pitch and the tab strip under it.
-const COLLAPSED_HEIGHT = 260;
+//
+// 260 -> 180 on 2026-09-05. 260 was set for the mobile-only collapse and
+// was already generous there; on desktop it left a visible band of white
+// under the momentum strip. Erring small would CLIP the strip, which is
+// worse than a gap, so this stays a little loose on purpose — if a
+// sport's collapsed header runs taller, raise it rather than let the
+// widget scroll inside the frame.
+const COLLAPSED_HEIGHT = 180;
 
 export function buildLmtStandaloneUrl({
   srMatchId,
@@ -109,14 +116,13 @@ export function SportradarLmt({ height = 620, ...rest }: Props) {
   // rather than in the initializer so SSR and hydration agree on the same
   // markup; the hash change that follows on a phone is same-document, so
   // the iframe re-reads its props without reloading.
-  const [isMobile, setIsMobile] = useState(false);
   const [expanded, setExpanded] = useState(true);
   useEffect(() => {
     const mq = window.matchMedia(`(max-width: ${MOBILE_MAX_WIDTH}px)`);
-    const apply = (matches: boolean) => {
-      setIsMobile(matches);
-      setExpanded(!matches);
-    };
+    // Viewport only picks the DEFAULT state — the toggle itself renders
+    // on every breakpoint now, so the width no longer needs tracking of
+    // its own.
+    const apply = (matches: boolean) => setExpanded(!matches);
     apply(mq.matches);
     const onChange = (e: MediaQueryListEvent) => apply(e.matches);
     mq.addEventListener("change", onChange);
@@ -124,11 +130,21 @@ export function SportradarLmt({ height = 620, ...rest }: Props) {
   }, []);
 
   const src = buildLmtStandaloneUrl({ ...rest, expanded });
-  // The widget carries its own expand control, but it lives inside the
-  // iframe and cannot tell us it was used — so on mobile we drive the
-  // state from outside, where we can also give the frame the height the
-  // new state needs. On desktop the widget starts expanded and the
-  // in-frame control is enough.
+  // The widget carries its own collapse chevron, but it lives inside the
+  // iframe and cannot tell us it was used — so WE drive the state from
+  // outside, where we can also give the frame the height the new state
+  // needs. This used to be mobile-only, on the reasoning that desktop
+  // opens expanded and the in-frame chevron is enough. It is not: the
+  // chevron collapses the content and the frame stays 620px, so the
+  // markets get pushed down behind ~450px of white space. Reported on
+  // production 2026-09-05.
+  //
+  // The in-frame chevron still exists and still desyncs us — it cannot be
+  // observed or suppressed across origins. Our toggle is self-healing
+  // though: whatever the widget is currently showing, the next press
+  // sends an explicit `expanded=` and sizes the frame to match. The real
+  // fix is the direct widgetloader's `onSizeChange`, which is blocked on
+  // Sportradar issuing our Client ID.
   const frameHeight = expanded ? height : COLLAPSED_HEIGHT;
 
   return (
@@ -156,27 +172,25 @@ export function SportradarLmt({ height = 620, ...rest }: Props) {
         >
           {t("lmt.title")}
         </span>
-        {isMobile ? (
-          <button
-            type="button"
-            onClick={() => setExpanded((v) => !v)}
-            className="mono"
-            style={{
-              marginLeft: "auto",
-              fontSize: 10,
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-              color: "var(--fg-muted)",
-              background: "transparent",
-              border: "1px solid var(--border)",
-              borderRadius: 999,
-              padding: "3px 10px",
-              cursor: "pointer",
-            }}
-          >
-            {expanded ? t("lmt.collapse") : t("lmt.expand")}
-          </button>
-        ) : null}
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="mono"
+          style={{
+            marginLeft: "auto",
+            fontSize: 10,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            color: "var(--fg-muted)",
+            background: "transparent",
+            border: "1px solid var(--border)",
+            borderRadius: 999,
+            padding: "3px 10px",
+            cursor: "pointer",
+          }}
+        >
+          {expanded ? t("lmt.collapse") : t("lmt.expand")}
+        </button>
       </div>
       <iframe
         src={src}
