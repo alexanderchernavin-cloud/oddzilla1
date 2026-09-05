@@ -17,8 +17,10 @@
 // Height is fixed because the hosted page cannot report its size across
 // origins, and it is sized to the tab the widget OPENS on, not to its
 // tallest one. That first tab (competition line, score, both crests,
-// card chips) measured ~245px at the rail's 348px frame width on
-// production (2026-09-05); the frame had been 560, which left ~315px of
+// card chips) measured ~245px on two live fixtures with a ruler overlaid
+// on the stretched frame at the rail's 348px width on production
+// (2026-09-05), and the stats-comparison tab ~200px; the frame had been
+// 560, which left ~315px of
 // the hosted page's blank white under it — reported as "too much empty
 // space". The other tabs (game pulse, lineups, season table, previous
 // meetings) are taller and scroll inside the frame, which they did at
