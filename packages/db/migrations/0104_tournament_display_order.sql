@@ -1,0 +1,22 @@
+-- Operator pin ordering for tournaments, scoped to their category.
+--
+-- Completes the set started by 0103 (sports, categories). The sidebar
+-- tree is three levels deep — sport > category > tournament — and the
+-- first two could be arranged from the backoffice while the third could
+-- not. Tournaments sort by Oddin's risk_tier, then live count, then
+-- match count, then name; that is a reasonable default and a poor
+-- merchandising position, because it cannot put the league an operator
+-- leads with at the top of its country.
+--
+-- Scope is the CATEGORY, matching where the rows render: a tournament
+-- only ever appears inside one category's bucket, so "second from the
+-- top" is a statement about England, not about football as a whole.
+-- Esports tournaments all sit under one synthetic dummy category per
+-- sport, so there the scope is effectively the sport — which is also
+-- where the storefront renders them, as one unlabelled bucket.
+--
+-- NULL means unpinned, which is what every existing row gets, so the
+-- tree is byte-identical until an operator pins something. Same dense
+-- 1..N sequence, same renumber-on-every-action writer, same absence of
+-- an index and a unique constraint, for the reasons 0103 records.
+ALTER TABLE tournaments ADD COLUMN display_order INTEGER;

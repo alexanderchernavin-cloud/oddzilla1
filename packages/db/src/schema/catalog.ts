@@ -105,6 +105,12 @@ export const tournaments = pgTable(
     name: text().notNull(),
     startAt: timestamp({ withTimezone: true }),
     endAt: timestamp({ withTimezone: true }),
+    // Operator pin position within this tournament's own CATEGORY
+    // (migration 0104). NULL = unpinned; pinned tournaments head their
+    // country's bucket in this order and the rest keep the tier / live
+    // count / name default behind them. Maintained as a dense 1..N
+    // sequence by POST /admin/tournaments/:id/order.
+    displayOrder: integer("display_order"),
     // Oddin risk_tier: sidebar lists tournaments higher-tier first.
     // Nullable until the backfill runs or auto-mapping populates it.
     riskTier: smallint(),
