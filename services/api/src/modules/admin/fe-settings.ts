@@ -1,27 +1,38 @@
 // /admin/fe-settings endpoints. Storefront-display knobs that don't fit
 // into odds/cashout/bet-product config (which all carry money math).
 //
-// Currently: per-sport per-scope ordering of market types. Scopes:
-//   match        — markets without a `map` specifier (the Match tab on
-//                  /match/:id and the match-cards Match-tab inline odds).
+// Currently: per-sport per-scope ordering of market types, plus the tab
+// (group) set itself. A "scope" is one tab on /match/:id:
+//   match        — the base event: no `map`, no sub-event.
+//   map_<N>      — one tab per esports map (`map=<N>`), independently
+//                  configurable.
+//   fb_<kinds>   — a Fonbet sub-event: halves, periods, corners, cards and
+//                  their nestings, plus `fb_players` for every per-player
+//                  market. The tab id comes from the `variant` specifier,
+//                  the title from the market description's prefix.
 //   top          — curated highlights tab. Empty by default. Rendered as a
-//                  "Top" scope tab on /match/:id AND inline on match cards
-//                  when the list is in Top mode.
-//   map_<N>      — markets carrying `map=<N>`. One independently configurable
-//                  list per map tab (Map 1 / Map 2 / Map 3 / …). Replaces the
-//                  pre-0057 shared `map` scope; existing rows were backfilled
-//                  to map_1..map_5 by the migration.
+//                  "Top" tab on /match/:id AND inline on match cards when
+//                  the list is in Top mode.
 //   custom_<key> — admin-created curated tab (migration 0084). Content
 //                  semantics identical to `top`; the tab label + position
 //                  live in fe_market_groups.
 //
+// The tab set is NOT stored — the match-detail endpoint derives it per
+// request from the markets it renders. So this module re-derives it over
+// the sport's current offer (lib/fe-market-scopes.ts) rather than
+// enumerating a fixed list. Until 2026-09-05 it did enumerate one, and
+// every sport was offered the esports shape: Match plus Map 1..5, which no
+// football fixture has ever had, while the tabs bettors were actually
+// looking at (1st half, Corners, Yellow cards) could not be configured at
+// all.
+//
 // Group (tab) order: fe_market_groups rows carry display_order per
 // (sport, scope). Tabs with a row render first (by display_order); tabs
-// without one fall back to the default order (top, match, map_1..N).
-// Writes keep this all-or-nothing per sport: creating the first custom
-// group or saving a tab order seeds anchor rows for every built-in tab,
-// so a freshly created group always lands at the end instead of jumping
-// in front of unconfigured built-ins.
+// without one fall back to the storefront default (top, match, map_1..N,
+// then sub-events by Fonbet kind). Writes keep this all-or-nothing per
+// sport: creating the first custom group or saving a tab order seeds
+// anchor rows for every other tab, so a freshly created group always lands
+// at the end instead of jumping in front of unconfigured built-ins.
 //
 // Read by /catalog/matches/:id (match-detail page) and the catalog list
 // endpoints when ?tab=top — no in-memory cache. The tables are small.
@@ -35,22 +46,23 @@ import {
   feMarketGroups,
   adminAuditLog,
   sports,
-  categories,
-  tournaments,
-  matches,
-  markets,
   marketDescriptions,
   isMarketScope,
-  isMapScope,
   isCustomScope,
   isCuratedScope,
-  mapScopeNumber,
   type FeMarketScope,
 } from "@oddzilla/db";
+import { defaultScopeOrder } from "@oddzilla/types/market-scope";
+import {
+  discoverScopes,
+  discoverSportScopes,
+  type DiscoveredScope,
+  type ScopeMarket,
+} from "../../lib/fe-market-scopes.js";
 import { BadRequestError, NotFoundError } from "../../lib/errors.js";
 
-// match | top | map_<N> where N is a positive integer (no leading zeros).
-// Matches the DB CHECK and the storefront's MarketScope.id encoding.
+// match | top | map_<N> | fb_<kinds> | custom_<key>. Matches the DB CHECK
+// and the storefront's MarketScope.id encoding.
 const scopeSchema = z
   .string()
   .refine(isMarketScope, { message: "invalid_scope" })
@@ -78,30 +90,43 @@ const groupLabelSchema = z.string().trim().min(1).max(40);
 
 const MAX_CUSTOM_GROUPS_PER_SPORT = 20;
 
-// Sort weight a tab gets when it has NO fe_market_groups row. Mirrors the
-// storefront default: Top renders first, then Match, then Map 1..N.
-// Customs always have a row, so the fallthrough never applies to them.
-function defaultTabOrder(scope: string): number {
-  if (scope === "top") return -1;
-  if (scope === "match") return 0;
-  const n = mapScopeNumber(scope);
-  return n ?? Number.MAX_SAFE_INTEGER;
-}
-
 type GroupRow = { scope: string; label: string | null; displayOrder: number };
 
-// Effective tab list for a sport: built-ins (top / match / map_1..maxMap)
-// unioned with every configured row, sorted the way the storefront sorts
-// them — configured tabs first by display_order, unconfigured after by
-// default order. `label` is null for built-ins (the UI localises those).
+interface Tab {
+  scope: string;
+  /**
+   * Feed-derived title for sub-event tabs and the operator's own for custom
+   * groups. Null for match / map_N / top, which the UI labels itself.
+   */
+  label: string | null;
+  custom: boolean;
+}
+
+// The sport's tab strip as the storefront renders it: every tab its current
+// offer produces, plus `top`, plus anything an operator has already
+// configured (a tab whose markets are between fixtures must not vanish from
+// the screen that configures it). Configured tabs sort first by their
+// stored display_order, the rest by the storefront default.
 function effectiveTabs(
+  discovered: DiscoveredScope[],
   rows: GroupRow[],
-  maxMapNumber: number,
-): Array<{ scope: string; label: string | null; custom: boolean }> {
+  configuredScopes: Iterable<string>,
+): Tab[] {
   const byScope = new Map(rows.map((r) => [r.scope, r]));
+  const labels = new Map<string, string | null>();
+  // `top` and `match` are always offered: Top is curated (it has no feed
+  // side to discover) and Match is where the storefront falls back, so a
+  // sport whose offer is empty right now still opens on a real tab.
   const scopes = new Set<string>(["top", "match"]);
-  for (let n = 1; n <= maxMapNumber; n++) scopes.add(`map_${n}`);
-  for (const r of rows) scopes.add(r.scope);
+  for (const d of discovered) {
+    scopes.add(d.scope);
+    labels.set(d.scope, d.label);
+  }
+  for (const s of configuredScopes) scopes.add(s);
+  for (const r of rows) {
+    scopes.add(r.scope);
+    if (r.label != null) labels.set(r.scope, r.label);
+  }
 
   return Array.from(scopes)
     .map((scope) => ({ scope, row: byScope.get(scope) }))
@@ -109,14 +134,14 @@ function effectiveTabs(
       const ba = a.row ? 0 : 1;
       const bb = b.row ? 0 : 1;
       if (ba !== bb) return ba - bb;
-      const oa = a.row ? a.row.displayOrder : defaultTabOrder(a.scope);
-      const ob = b.row ? b.row.displayOrder : defaultTabOrder(b.scope);
+      const oa = a.row ? a.row.displayOrder : defaultScopeOrder(a.scope);
+      const ob = b.row ? b.row.displayOrder : defaultScopeOrder(b.scope);
       if (oa !== ob) return oa - ob;
       return a.scope.localeCompare(b.scope);
     })
-    .map(({ scope, row }) => ({
+    .map(({ scope }) => ({
       scope,
-      label: row?.label ?? null,
+      label: labels.get(scope) ?? null,
       custom: isCustomScope(scope),
     }));
 }
@@ -136,133 +161,95 @@ async function loadGroupRows(
     .orderBy(asc(feMarketGroups.displayOrder));
 }
 
-// Largest `map` specifier seen on a sport's markets, floored at 5 (BO5 is
-// the deepest format the supported sports play; the 0057 backfill seeded
-// map_1..map_5 everywhere, so admins always see at least 5 map tabs).
-async function sportMaxMapNumber(
-  app: FastifyInstance,
-  sportId: number,
-): Promise<number> {
-  const [row] = await app.db
+// provider_market_id -> configured position, per scope, for one sport.
+async function loadOrderRows(app: FastifyInstance, sportId: number) {
+  return app.db
     .select({
-      maxMap: sql<string | null>`MAX((${markets.specifiersJson}->>'map')::int)`,
+      scope: feMarketDisplayOrder.scope,
+      providerMarketId: feMarketDisplayOrder.providerMarketId,
+      displayOrder: feMarketDisplayOrder.displayOrder,
     })
-    .from(markets)
-    .innerJoin(matches, eq(matches.id, markets.matchId))
-    .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
-    .innerJoin(categories, eq(categories.id, tournaments.categoryId))
-    .where(
-      and(
-        eq(categories.sportId, sportId),
-        sql`(${markets.specifiersJson} ? 'map') AND (${markets.specifiersJson}->>'map') ~ '^[0-9]+$'`,
-      ),
-    );
-  const observed = row?.maxMap ? Number(row.maxMap) : 0;
-  return Math.max(5, Number.isFinite(observed) ? observed : 0);
+    .from(feMarketDisplayOrder)
+    .where(eq(feMarketDisplayOrder.sportId, sportId))
+    .orderBy(asc(feMarketDisplayOrder.displayOrder));
 }
 
 export default async function feSettingsRoutes(app: FastifyInstance) {
-  // ── Sport list with per-scope row counts ────────────────────────────
-  // Used by the FE Settings landing screen as a sport picker. Counts are
-  // per scope so the admin can see at a glance which sports + scopes have
-  // overrides applied. Also exposes `maxMapNumber` per sport (the largest
-  // `map` specifier observed on the sport's markets) so the picker can
-  // render the right number of Map N columns dynamically — sports that
-  // never go past Map 3 don't render Map 4/5 chips.
+  // ── Sport list with its real tab set ───────────────────────────────
+  // The FE Settings landing screen. Each sport carries the tabs its own
+  // offer produces — a football row lists Match / 1st half / Corners /
+  // Players, an esports row Match / Map 1..5 — each with the number of
+  // markets the operator has explicitly ordered on it.
   app.get("/admin/fe-settings/markets-order", async (request) => {
     request.requireRole("admin");
 
-    const sportRows = await app.db
-      .select({ id: sports.id, slug: sports.slug, name: sports.name })
-      .from(sports)
-      .where(eq(sports.active, true))
-      .orderBy(sports.slug);
+    const [sportRows, discovered, counts, groupRowsAll] = await Promise.all([
+      app.db
+        .select({ id: sports.id, slug: sports.slug, name: sports.name })
+        .from(sports)
+        .where(eq(sports.active, true))
+        .orderBy(sports.slug),
+      discoverScopes(app),
+      app.db
+        .select({
+          sportId: feMarketDisplayOrder.sportId,
+          scope: feMarketDisplayOrder.scope,
+          configured: sql<string>`COUNT(*)::text`,
+        })
+        .from(feMarketDisplayOrder)
+        .groupBy(feMarketDisplayOrder.sportId, feMarketDisplayOrder.scope),
+      app.db
+        .select({
+          sportId: feMarketGroups.sportId,
+          scope: feMarketGroups.scope,
+          label: feMarketGroups.label,
+          displayOrder: feMarketGroups.displayOrder,
+        })
+        .from(feMarketGroups)
+        .orderBy(asc(feMarketGroups.sportId), asc(feMarketGroups.displayOrder)),
+    ]);
 
-    const counts = await app.db
-      .select({
-        sportId: feMarketDisplayOrder.sportId,
-        scope: feMarketDisplayOrder.scope,
-        configured: sql<string>`COUNT(*)::text`,
-      })
-      .from(feMarketDisplayOrder)
-      .groupBy(feMarketDisplayOrder.sportId, feMarketDisplayOrder.scope);
-
-    // Largest map specifier value seen per sport. The cast filters out any
-    // non-numeric `map` values (none today, but defensive against future
-    // specifier shapes). LIMIT via MAX so the planner can index-only scan.
-    const maxMapRows = await app.db
-      .select({
-        sportId: categories.sportId,
-        maxMap: sql<string | null>`MAX((${markets.specifiersJson}->>'map')::int)`,
-      })
-      .from(markets)
-      .innerJoin(matches, eq(matches.id, markets.matchId))
-      .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
-      .innerJoin(categories, eq(categories.id, tournaments.categoryId))
-      .where(sql`(${markets.specifiersJson} ? 'map') AND (${markets.specifiersJson}->>'map') ~ '^[0-9]+$'`)
-      .groupBy(categories.sportId);
-
-    const maxMapBySport = new Map<number, number>();
-    for (const r of maxMapRows) {
-      const n = r.maxMap == null ? 0 : Number(r.maxMap);
-      if (Number.isFinite(n) && n > 0) maxMapBySport.set(r.sportId, n);
-    }
-
-    // Custom groups per sport, in tab order — the landing table renders
-    // them as extra chips after the built-in scopes.
-    const groupRowsAll = await app.db
-      .select({
-        sportId: feMarketGroups.sportId,
-        scope: feMarketGroups.scope,
-        label: feMarketGroups.label,
-      })
-      .from(feMarketGroups)
-      .orderBy(asc(feMarketGroups.sportId), asc(feMarketGroups.displayOrder));
-    const customGroupsBySport = new Map<
-      number,
-      Array<{ scope: string; label: string | null }>
-    >();
-    for (const g of groupRowsAll) {
-      if (!isCustomScope(g.scope)) continue;
-      const cur = customGroupsBySport.get(g.sportId) ?? [];
-      cur.push({ scope: g.scope, label: g.label });
-      customGroupsBySport.set(g.sportId, cur);
-    }
-
-    // Counts come back as a flat scope -> count dict. Keys are exactly the
-    // scope values stored in the DB (match | top | map_<N>) so the UI can
-    // index in directly without re-deriving them.
-    const countsBySport = new Map<number, Record<string, number>>();
+    const countsBySport = new Map<number, Map<string, number>>();
     for (const c of counts) {
-      const cur = countsBySport.get(c.sportId) ?? {};
-      cur[c.scope] = Number(c.configured);
+      const cur = countsBySport.get(c.sportId) ?? new Map<string, number>();
+      cur.set(c.scope as string, Number(c.configured));
       countsBySport.set(c.sportId, cur);
+    }
+    const groupsBySport = new Map<number, GroupRow[]>();
+    for (const g of groupRowsAll) {
+      const cur = groupsBySport.get(g.sportId) ?? [];
+      cur.push({ scope: g.scope, label: g.label, displayOrder: g.displayOrder });
+      groupsBySport.set(g.sportId, cur);
     }
 
     return {
-      sports: sportRows.map((s) => ({
-        id: s.id,
-        slug: s.slug,
-        name: s.name,
-        // BO5 is the deepest format on the supported sports; the migration
-        // backfilled map_1..map_5 for every legacy `map` row, so admins
-        // always see at least 5 map columns. Discovery can lift the
-        // ceiling higher for any sport that actually carries map > 5.
-        maxMapNumber: Math.max(5, maxMapBySport.get(s.id) ?? 0),
-        configured: countsBySport.get(s.id) ?? {},
-        customGroups: customGroupsBySport.get(s.id) ?? [],
-      })),
+      sports: sportRows.map((s) => {
+        const configured = countsBySport.get(s.id) ?? new Map<string, number>();
+        const tabs = effectiveTabs(
+          discovered.get(s.id)?.scopes ?? [],
+          groupsBySport.get(s.id) ?? [],
+          configured.keys(),
+        );
+        return {
+          id: s.id,
+          slug: s.slug,
+          name: s.name,
+          tabs: tabs.map((t) => ({
+            ...t,
+            configured: configured.get(t.scope) ?? 0,
+          })),
+        };
+      }),
     };
   });
 
   // ── Detail: ordered + unranked markets for one (sport, scope) ───────
-  // The "available" pool depends on the scope:
-  //   match    — distinct provider_market_id values seen on this sport's
-  //              markets WITHOUT a `map` specifier.
-  //   map_<N>  — distinct provider_market_id seen WITH `map=<N>` exactly.
-  //   top      — union of every market on this sport (admin can curate
-  //              from any market type, regardless of scope).
-  // Markets with no description fall back to "Market #N".
+  // The "available" pool is whatever the sport's current offer puts on
+  // that tab — the same derivation the match page runs, so what an
+  // operator orders here is what a bettor sees. Curated tabs (`top` and
+  // custom groups) have no implicit pool and draw from every market on the
+  // sport instead. Markets an operator already ordered are always listed,
+  // even if nothing is live under them right now.
   app.get("/admin/fe-settings/markets-order/:sportId/:scope", async (request) => {
     request.requireRole("admin");
     const params = z
@@ -279,89 +266,61 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
       .limit(1);
     if (!sport) throw new NotFoundError("sport_not_found", "sport_not_found");
 
-    // Largest `map` specifier seen on this sport's markets. Drives the
-    // nav strip in the editor page so the admin can hop between sibling
-    // Map N tabs without going back to the sport picker.
-    const maxMapNumber = await sportMaxMapNumber(app, params.sportId);
+    const [discovered, groupRows, orderRowsAll] = await Promise.all([
+      discoverSportScopes(app, params.sportId),
+      loadGroupRows(app, params.sportId),
+      loadOrderRows(app, params.sportId),
+    ]);
 
-    // Group config rows: the nav strip renders every tab (incl. custom
-    // groups) in its effective storefront order, and a custom scope in
-    // the URL must actually exist as a group for this sport.
-    const groupRows = await loadGroupRows(app, params.sportId);
-    if (
-      isCustomScope(params.scope) &&
-      !groupRows.some((g) => g.scope === params.scope)
-    ) {
-      throw new NotFoundError("group_not_found", "group_not_found");
+    const tabs = effectiveTabs(
+      discovered.scopes,
+      groupRows,
+      orderRowsAll.map((r) => r.scope as string),
+    );
+    const tab = tabs.find((t) => t.scope === params.scope);
+    if (!tab) {
+      // A custom scope with no group row is a deleted group; anything else
+      // is a tab this sport does not have (a Map 3 URL on football).
+      throw isCustomScope(params.scope)
+        ? new NotFoundError("group_not_found", "group_not_found")
+        : new NotFoundError("scope_not_found", "scope_not_found");
     }
 
-    // jsonb `?` is the "key-exists" operator. Test against the raw column
-    // because Drizzle's pgcore doesn't expose it directly. For map_<N>
-    // we additionally pin the value with `->>'map' = '<N>'` (the cast
-    // would also work but text compare avoids a parser hop).
-    // Curated scopes (top + custom groups) draw from every market on the
-    // sport — the admin can feature any market type regardless of scope.
-    let scopeFilter = sql`NOT (${markets.specifiersJson} ? 'map')`;
-    if (isCuratedScope(params.scope)) {
-      scopeFilter = sql`TRUE`;
-    } else if (isMapScope(params.scope)) {
-      const n = mapScopeNumber(params.scope);
-      // n is non-null because isMapScope already matched the regex.
-      scopeFilter = sql`(${markets.specifiersJson}->>'map') = ${String(n)}`;
-    }
+    const pool: ScopeMarket[] = isCuratedScope(params.scope)
+      ? discovered.allMarkets
+      : (discovered.scopes.find((s) => s.scope === params.scope)?.markets ?? []);
 
-    const seenMarketRows = await app.db
-      .selectDistinct({ providerMarketId: markets.providerMarketId })
-      .from(markets)
-      .innerJoin(matches, eq(matches.id, markets.matchId))
-      .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
-      .innerJoin(categories, eq(categories.id, tournaments.categoryId))
-      .where(and(eq(categories.sportId, params.sportId), scopeFilter));
-    const seenIds = seenMarketRows.map((r) => r.providerMarketId);
-
-    const orderRows = await app.db
-      .select({
-        providerMarketId: feMarketDisplayOrder.providerMarketId,
-        displayOrder: feMarketDisplayOrder.displayOrder,
-      })
-      .from(feMarketDisplayOrder)
-      .where(
-        and(
-          eq(feMarketDisplayOrder.sportId, params.sportId),
-          eq(feMarketDisplayOrder.scope, params.scope),
-        ),
-      )
-      .orderBy(asc(feMarketDisplayOrder.displayOrder));
-
-    const configuredIds = new Set(orderRows.map((r) => r.providerMarketId));
-    const allIds = Array.from(
-      new Set([...seenIds, ...orderRows.map((r) => r.providerMarketId)]),
+    const orderRows = orderRowsAll.filter((r) => r.scope === params.scope);
+    const labelByID = new Map<number, string>(
+      pool.map((m) => [m.providerMarketId, m.label]),
     );
 
-    const descRows = allIds.length
-      ? await app.db
-          .select({
-            providerMarketId: marketDescriptions.providerMarketId,
-            variant: marketDescriptions.variant,
-            nameTemplate: marketDescriptions.nameTemplate,
-          })
-          .from(marketDescriptions)
-          .where(
-            and(
-              inArray(marketDescriptions.providerMarketId, allIds),
-              // Admin UI is backoffice-English; pinning to 'en' also
-              // sidesteps the post-migration-0051 duplicate-row issue
-              // where the same provider_market_id ships once per
-              // language now.
-              eq(marketDescriptions.language, "en"),
-            ),
-          )
-      : [];
-    const labelByID = new Map<number, string>();
-    for (const d of descRows) {
-      const existing = labelByID.get(d.providerMarketId);
-      if (!existing || d.variant === "") {
-        labelByID.set(d.providerMarketId, d.nameTemplate);
+    // Ordered ids the current offer doesn't carry still need a name. The
+    // description table is small, so one targeted read covers them.
+    const missing = orderRows
+      .map((r) => r.providerMarketId)
+      .filter((id) => !labelByID.has(id));
+    if (missing.length > 0) {
+      const descRows = await app.db
+        .select({
+          providerMarketId: marketDescriptions.providerMarketId,
+          variant: marketDescriptions.variant,
+          nameTemplate: marketDescriptions.nameTemplate,
+        })
+        .from(marketDescriptions)
+        .where(
+          and(
+            inArray(marketDescriptions.providerMarketId, missing),
+            // Backoffice is English; pinning the language also sidesteps
+            // the one-row-per-language duplication market descriptions
+            // have carried since the Fonbet line landed.
+            eq(marketDescriptions.language, "en"),
+          ),
+        );
+      for (const d of descRows) {
+        if (!labelByID.has(d.providerMarketId) || d.variant === "") {
+          labelByID.set(d.providerMarketId, d.nameTemplate);
+        }
       }
     }
 
@@ -372,29 +331,27 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
       };
     }
 
+    const configuredIds = new Set(orderRows.map((r) => r.providerMarketId));
     const ordered = orderRows.map((r) => ({
       ...entry(r.providerMarketId),
       displayOrder: r.displayOrder,
     }));
-
-    const unranked = allIds
-      .filter((id) => !configuredIds.has(id))
-      .sort((a, b) => a - b)
-      .map(entry);
+    const unranked = pool
+      .filter((m) => !configuredIds.has(m.providerMarketId))
+      .map((m) => entry(m.providerMarketId));
 
     return {
       sport,
       scope: params.scope,
-      maxMapNumber,
+      label: tab.label,
       // Every tab in effective storefront order — the editor's nav strip
       // mirrors what bettors see, custom groups included.
-      groups: effectiveTabs(groupRows, maxMapNumber),
+      groups: tabs,
       ordered,
       unranked,
     };
   });
 
-  // ── Replace the order list for a (sport, scope) in one shot ────────
   app.put(
     "/admin/fe-settings/markets-order/:sportId/:scope",
     { config: writeRateLimit },
@@ -580,29 +537,27 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
     const params = sportParamSchema.parse(request.params);
     const sport = await requireSport(params.sportId);
 
-    const [maxMapNumber, groupRows, counts] = await Promise.all([
-      sportMaxMapNumber(app, params.sportId),
+    const [discovered, groupRows, orderRowsAll] = await Promise.all([
+      discoverSportScopes(app, params.sportId),
       loadGroupRows(app, params.sportId),
-      app.db
-        .select({
-          scope: feMarketDisplayOrder.scope,
-          configured: sql<string>`COUNT(*)::text`,
-        })
-        .from(feMarketDisplayOrder)
-        .where(eq(feMarketDisplayOrder.sportId, params.sportId))
-        .groupBy(feMarketDisplayOrder.scope),
+      loadOrderRows(app, params.sportId),
     ]);
-    const countByScope = new Map<string, number>(
-      counts.map((c) => [c.scope as string, Number(c.configured)]),
-    );
+    const countByScope = new Map<string, number>();
+    for (const r of orderRowsAll) {
+      const scope = r.scope as string;
+      countByScope.set(scope, (countByScope.get(scope) ?? 0) + 1);
+    }
 
     return {
       sport,
-      maxMapNumber,
       // True once any row exists — i.e. the tab order is admin-managed
       // rather than the built-in default.
       ordered: groupRows.length > 0,
-      groups: effectiveTabs(groupRows, maxMapNumber).map((g) => ({
+      groups: effectiveTabs(
+        discovered.scopes,
+        groupRows,
+        countByScope.keys(),
+      ).map((g) => ({
         ...g,
         marketCount: countByScope.get(g.scope) ?? 0,
       })),
@@ -622,8 +577,8 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
       const body = z.object({ label: groupLabelSchema }).parse(request.body);
       const sport = await requireSport(params.sportId);
 
-      const [maxMapNumber, groupRows] = await Promise.all([
-        sportMaxMapNumber(app, params.sportId),
+      const [discovered, groupRows] = await Promise.all([
+        discoverSportScopes(app, params.sportId),
         loadGroupRows(app, params.sportId),
       ]);
 
@@ -639,13 +594,14 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
       await app.db.transaction(async (tx) => {
         let nextOrder: number;
         if (groupRows.length === 0) {
-          // First configuration for this sport: pin every built-in tab
-          // at its current default position so the tab order stays
-          // stable when the custom group appends after them.
-          const seeds: FeMarketScope[] = ["top", "match"];
-          for (let n = 1; n <= maxMapNumber; n++) {
-            seeds.push(`map_${n}` as FeMarketScope);
-          }
+          // First configuration for this sport: pin every existing tab at
+          // its current default position so the tab order stays stable
+          // when the custom group appends after it. Which tabs those are
+          // is the sport's own business — Map 1..5 for an esport, halves
+          // and corners for football.
+          const seeds = effectiveTabs(discovered.scopes, [], [])
+            .filter((t) => !t.custom)
+            .map((t) => t.scope as FeMarketScope);
           await tx
             .insert(feMarketGroups)
             .values(
