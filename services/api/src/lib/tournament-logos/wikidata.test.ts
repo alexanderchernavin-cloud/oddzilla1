@@ -24,9 +24,76 @@ function cand(over: Partial<WikidataCandidate> = {}): WikidataCandidate {
     description: "English men's association football league",
     logoFile: "Pl-logo-light.svg",
     sportQids: ["Q2736"],
+    instanceOf: ["Q623109"], // sports league
     ...over,
   };
 }
+
+describe("domain guard (the two production mis-matches)", () => {
+  it("REFUSES a scripting language for an esports tournament", () => {
+    // Shipped and reverted: "TCL 2026 Spring" matched Q5288, Tcl the
+    // scripting language. Exact label, real logo, no sport claim, and
+    // nothing else objected. Claims below are the ones Wikidata
+    // actually returns for Q5288.
+    const tcl = cand({
+      qid: "Q5288",
+      label: "Tcl",
+      logoFile: "Tcl.svg",
+      sportQids: [],
+      instanceOf: ["Q187432", "Q28922885", "Q899523", "Q12772052", "Q1993334"],
+    });
+    assert.equal(pickCandidate([tcl], { canonicalName: "Tcl", sportSlug: "lol" }), null);
+  });
+
+  it("REFUSES a snooker event for a League of Legends tournament", () => {
+    // Shipped and reverted: "EMEA Masters" resolved through its alias to
+    // Q22336953, the European Masters SNOOKER tournament (P641 = Q11015).
+    // The sport gate never fired because SPORT_QIDS had no esports entry.
+    const snooker = cand({
+      qid: "Q22336953",
+      label: "European Masters",
+      logoFile: "European Masters.png",
+      sportQids: ["Q11015"], // snooker
+      instanceOf: ["Q18608583"], // recurring sporting event
+    });
+    assert.equal(
+      pickCandidate([snooker], { canonicalName: "European Masters", sportSlug: "lol" }),
+      null,
+    );
+  });
+
+  it("still accepts the real esports competitions it found", () => {
+    // Every one of these is a genuine match from the same sweep, with
+    // the claims Wikidata returns. They must survive the new guard.
+    const real: Array<[string, Partial<WikidataCandidate>]> = [
+      ["League of Legends Champions Korea", { sportQids: ["Q300920", "Q223341"], instanceOf: ["Q623109", "Q48004378"] }],
+      ["League of Legends Championship Pacific", { sportQids: ["Q223341"], instanceOf: ["Q63349452"] }],
+      ["League Championship Series", { sportQids: ["Q300920"], instanceOf: ["Q623109"] }],
+      ["Intel Extreme Masters", { sportQids: ["Q300920"], instanceOf: ["Q133250"] }],
+      ["Call of Duty League", { sportQids: [], instanceOf: ["Q63349452"] }],
+      ["Esports World Cup", { sportQids: ["Q300920"], instanceOf: ["Q18608583", "Q48004378"] }],
+    ];
+    for (const [name, over] of real) {
+      const m = pickCandidate([cand({ label: name, logoFile: "x.svg", ...over })], {
+        canonicalName: name,
+        sportSlug: "lol",
+      });
+      assert.ok(m, `${name} should still resolve`);
+    }
+  });
+
+  it("REFUSES a non-competition even for a traditional sport", () => {
+    const notAComp = cand({
+      label: "Serie A",
+      sportQids: [],
+      instanceOf: ["Q7725634"], // literary work
+    });
+    assert.equal(
+      pickCandidate([notAComp], { canonicalName: "Serie A", sportSlug: "football" }),
+      null,
+    );
+  });
+});
 
 describe("normaliseLabel", () => {
   it("ignores case, accents and punctuation", () => {
@@ -110,13 +177,27 @@ describe("pickCandidate", () => {
     assert.equal(pickCandidate([cand()], { canonicalName: "", sportSlug: "football" }), null);
   });
 
-  it("does not gate on sport for a sport we have no QID for", () => {
+  it("still requires esports evidence for an esports slug with no QID list", () => {
+    // This test previously asserted the OPPOSITE — that an unknown sport
+    // waved the gate through. That permissiveness is what let a snooker
+    // event onto a League of Legends tournament, so it is inverted now:
+    // an esports slug needs an esports competition type or an esports
+    // sport claim, and an unrelated sport is not it.
     assert.deepEqual(sportQids("geoguessr"), []);
-    const m = pickCandidate([cand({ label: "Some Series", sportQids: ["Q999"] })], {
-      canonicalName: "Some Series",
-      sportSlug: "geoguessr",
+    const unrelated = cand({
+      label: "Some Series",
+      sportQids: ["Q999"],
+      instanceOf: ["Q18608583"],
     });
-    assert.ok(m);
+    assert.equal(
+      pickCandidate([unrelated], { canonicalName: "Some Series", sportSlug: "geoguessr" }),
+      null,
+    );
+    // With real esports evidence it resolves.
+    const esports = cand({ label: "Some Series", sportQids: [], instanceOf: ["Q63349452"] });
+    assert.ok(
+      pickCandidate([esports], { canonicalName: "Some Series", sportSlug: "geoguessr" }),
+    );
   });
 });
 
