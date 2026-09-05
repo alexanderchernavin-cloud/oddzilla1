@@ -24,10 +24,22 @@ import { zagiConfigFromEnv } from "./client.js";
 const LOCK_KEY = "zagi:risk-tier:lock";
 
 /**
- * Rows per pass. Sized so one sweep is a couple of minutes of model time
- * (25 per request, ~15 s per request) rather than a quarter of an hour.
+ * Rows per call into the reviewer. Small enough that a pass makes visible
+ * progress early and a crash loses little.
  */
-const PER_SWEEP = 200;
+const CHUNK = 200;
+
+/**
+ * How long one sweep may keep going while a backlog remains.
+ *
+ * A fixed rows-per-sweep cap is the wrong shape for the initial 1 231-row
+ * backlog: at 200 every 30 minutes it would take three and a half hours to
+ * work through a queue the model can actually clear in about ten minutes.
+ * So a sweep keeps taking chunks until the queue is empty or this budget
+ * is spent, and in the steady state — a handful of new tournaments — it
+ * finishes on the first chunk and costs nothing.
+ */
+const SWEEP_BUDGET_MS = 10 * 60_000;
 
 export interface ZagiRiskTierSweeperHandle {
   close(): void;
@@ -61,7 +73,14 @@ export function startZagiRiskTierSweeper(
   }
 
   const intervalMs = readIntervalMs();
-  const lockTtlS = Math.max(300, Math.floor((intervalMs / 1000) * 0.8));
+  // Must outlive a full-budget sweep, or a second replica picks up the
+  // lock while the first is still working through the backlog. The floor
+  // is the budget plus slack, not a fraction of the interval — at the
+  // 5-minute minimum interval those are very different numbers.
+  const lockTtlS = Math.max(
+    Math.floor(SWEEP_BUDGET_MS / 1000) + 120,
+    Math.floor((intervalMs / 1000) * 0.8),
+  );
 
   const sweep = async () => {
     let locked = false;
@@ -77,28 +96,59 @@ export function startZagiRiskTierSweeper(
       locked = true;
 
       const started = Date.now();
-      const result = await assignRiskTiers(app, { limit: PER_SWEEP });
+      const total = {
+        eligible: 0,
+        reviewed: 0,
+        assigned: 0,
+        clamped: 0,
+        undecided: 0,
+        batches: 0,
+        chunks: 0,
+      };
+      const errors: string[] = [];
+      let model: string | null = null;
+
+      while (Date.now() - started < SWEEP_BUDGET_MS) {
+        const result = await assignRiskTiers(app, { limit: CHUNK });
+        model = result.model;
+        total.chunks += 1;
+        total.eligible += result.eligible;
+        total.reviewed += result.reviewed;
+        total.assigned += result.assigned;
+        total.clamped += result.clamped;
+        total.undecided += result.undecided;
+        total.batches += result.batches;
+        errors.push(...result.errors);
+
+        // Queue drained.
+        if (result.eligible === 0) break;
+        // No progress — every batch failed in transport, which burns no
+        // attempt, so looping would just repeat the same failure until
+        // the budget ran out. Leave it for the next sweep.
+        if (result.reviewed === 0 && result.undecided === 0) break;
+      }
 
       // Silence when there was nothing to do — this runs every 30 min
       // and a quiet log is what makes the noisy one legible.
-      if (result.eligible > 0 || result.errors.length > 0) {
+      if (total.eligible > 0 || errors.length > 0) {
         app.log.info(
           {
             component: "zagi-risk-tier",
-            model: result.model,
-            eligible: result.eligible,
-            reviewed: result.reviewed,
-            assigned: result.assigned,
-            clamped: result.clamped,
-            undecided: result.undecided,
-            batches: result.batches,
-            errors: result.errors.length,
+            model,
+            chunks: total.chunks,
+            eligible: total.eligible,
+            reviewed: total.reviewed,
+            assigned: total.assigned,
+            clamped: total.clamped,
+            undecided: total.undecided,
+            batches: total.batches,
+            errors: errors.length,
             ms: Date.now() - started,
           },
           "zagi tournament risk-tier sweep complete",
         );
       }
-      for (const err of result.errors.slice(0, 3)) {
+      for (const err of errors.slice(0, 3)) {
         app.log.warn({ component: "zagi-risk-tier", err }, "risk-tier batch failed");
       }
     } catch (err) {

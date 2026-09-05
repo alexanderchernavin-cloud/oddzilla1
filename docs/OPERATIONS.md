@@ -882,9 +882,11 @@ an unreviewed tournament is never over-exposed. It is under-traded and
 invisible. Every tier assigned to one therefore *raises* what the book can
 lose on it, and there is no assignment that is cautious by omission.
 
-ZillaAGI reviews them automatically every 30 minutes (200 rows a pass, one
-api replica at a time under a Redis lock). To drive it by hand, go to
-`/admin/tournaments`:
+ZillaAGI reviews them automatically every 30 minutes, one api replica at a
+time under a Redis lock. A sweep keeps working in 200-row chunks until the
+queue is empty or ten minutes are up, so a fresh backlog clears in one pass
+rather than over hours, and an ordinary sweep with nothing to do costs a
+single query. To drive it by hand, go to `/admin/tournaments`:
 
 - **Preview** runs the model and shows the tiers it would assign, writing
   nothing. Use this first on a new sport.
