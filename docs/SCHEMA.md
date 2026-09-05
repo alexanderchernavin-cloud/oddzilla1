@@ -63,6 +63,17 @@ Canonical SQL lives in [`../packages/db/migrations/`](../packages/db/migrations/
   ordered. The scope grammar for all four families lives in
   `packages/types/src/market-scope.ts`; the CHECK constraints on both
   tables mirror it.
+  `0109_fe_market_order_variant` then added `variant` to
+  `fe_market_display_order` and re-keyed its unique to
+  `(sport_id, scope, provider_market_id, variant)`. A curated tab picks a
+  market, not a market TYPE: `provider_market_id` is the catalogue table,
+  which Fonbet reuses across every sub-event, so football's ~470 markets
+  collapse to 14 ids and "Corners: Total" could not be featured without
+  also meaning "Total". The empty string keeps its original meaning — any
+  copy, resolved by the storefront's representative pick — so no row was
+  backfilled and every pre-existing configuration resolves as before.
+  Meaningful only for the curated scopes; a feed tab is already one
+  sub-event and leaves it empty.
 - `0021_competitor_logos.sql` — adds `competitors.logo_url TEXT` and
   `competitors.brand_color TEXT` for storefront team branding. Both
   are nullable; a CHECK constraint requires

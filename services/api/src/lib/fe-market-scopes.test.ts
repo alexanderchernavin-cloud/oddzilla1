@@ -14,6 +14,11 @@ const descs = [
   { providerMarketId: 1000305, variant: "fb:100201", nameTemplate: "1st half: Total {threshold}" },
   { providerMarketId: 1000120, variant: "fb:400100", nameTemplate: "Corners: Match result" },
   {
+    providerMarketId: 1000305,
+    variant: "fb:400100",
+    nameTemplate: "Corners: Total {threshold}",
+  },
+  {
     providerMarketId: 1000120,
     variant: "fb:400100/10100201",
     nameTemplate: "1st half corners: Match result",
@@ -152,5 +157,74 @@ describe("buildScopes", () => {
       ["match", "fb_100201"],
     );
     assert.equal(out.get(CS2)!.scopes.some((s) => s.scope === "fb_100201"), false);
+  });
+});
+
+// The curated pool is what the Top / custom-group picker offers. It is the
+// one place that has to be per (market type, sub-event): provider_market_id
+// alone is the catalogue table, and Fonbet reuses one table across every
+// sub-event, so football's ~470 markets collapse to 14 ids.
+describe("curated pool", () => {
+  it("offers the same market type once per sub-event", () => {
+    const out = buildScopes(
+      [
+        row(FOOTBALL, 1000305),
+        row(FOOTBALL, 1000305, null, "fb:100201"),
+        row(FOOTBALL, 1000305, null, "fb:400100"),
+        row(FOOTBALL, 1000120, null, "fb:400100"),
+      ],
+      descs,
+    );
+    const all = out.get(FOOTBALL)!.allMarkets;
+    assert.deepEqual(
+      all.map((m) => [m.providerMarketId, m.variant, m.label, m.scope]),
+      [
+        [1000305, "", "Total {threshold}", "match"],
+        [1000305, "fb:100201", "1st half: Total {threshold}", "fb_100201"],
+        [1000120, "fb:400100", "Corners: Match result", "fb_400100"],
+        [1000305, "fb:400100", "Corners: Total {threshold}", "fb_400100"],
+      ],
+    );
+  });
+
+  it("keeps the per-tab list keyed by market type", () => {
+    // Inside one tab the sub-event is fixed, so splitting by variant there
+    // would just fragment the list.
+    const out = buildScopes(
+      [row(FOOTBALL, 1000305, null, "fb:100201"), row(FOOTBALL, 1000120, null, "fb:100201")],
+      descs,
+    );
+    const half = out.get(FOOTBALL)!.scopes.find((s) => s.scope === "fb_100201")!;
+    assert.deepEqual(half.markets.map((m) => m.providerMarketId), [1000120, 1000305]);
+    assert.deepEqual(half.markets.map((m) => m.label), [
+      "Match result",
+      "Total {threshold}",
+    ]);
+  });
+
+  it("collapses per-player markets to one wildcard pick", () => {
+    // One entry per footballer would be thousands of picks, and the tab
+    // itself is already collapsed.
+    const out = buildScopes([row(FOOTBALL, 1020200, null, "fb:90/91:0")], descs);
+    const all = out.get(FOOTBALL)!.allMarkets;
+    assert.equal(all.length, 1);
+    assert.equal(all[0]?.variant, "");
+    assert.equal(all[0]?.scope, "fb_players");
+  });
+
+  it("names a market whose whole caption is its sub-event prefix", () => {
+    // Fonbet ships a few tables with no name of their own; they rendered as
+    // blank, unpickable rows.
+    const out = buildScopes(
+      [row(FOOTBALL, 1002800, null, "fb:100201")],
+      [
+        ...descs,
+        { providerMarketId: 1002800, variant: "fb:100201", nameTemplate: "1st half: " },
+      ],
+    );
+    const all = out.get(FOOTBALL)!.allMarkets;
+    assert.equal(all[0]?.label, "1st half: Market #1002800");
+    const tab = out.get(FOOTBALL)!.scopes.find((s) => s.scope === "fb_100201")!;
+    assert.equal(tab.markets[0]?.label, "Market #1002800");
   });
 });

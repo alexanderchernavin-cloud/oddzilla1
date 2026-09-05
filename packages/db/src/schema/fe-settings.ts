@@ -90,6 +90,11 @@ export const feMarketDisplayOrder = pgTable(
       .references(() => sports.id, { onDelete: "cascade" }),
     scope: text().notNull().default("match").$type<FeMarketScope>(),
     providerMarketId: integer().notNull(),
+    // Fonbet sub-event this row targets (`specifiers.variant`). Empty =
+    // any copy of the market type, which is what every row meant before
+    // migration 0109. Only curated tabs set it; a feed tab IS one
+    // sub-event already.
+    variant: text().notNull().default(""),
     displayOrder: integer().notNull(),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
@@ -100,6 +105,7 @@ export const feMarketDisplayOrder = pgTable(
       t.sportId,
       t.scope,
       t.providerMarketId,
+      t.variant,
     ),
     index("fe_market_display_order_sport_scope_idx").on(
       t.sportId,

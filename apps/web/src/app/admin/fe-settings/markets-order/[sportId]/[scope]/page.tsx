@@ -14,6 +14,8 @@ interface DetailResponse {
   sport: { id: number; slug: string; name: string };
   scope: string;
   label: string | null;
+  /** Curated tabs are opt-in membership; feed tabs are order-only. */
+  curated: boolean;
   groups: ScopeTab[];
   ordered: Array<MarketEntry & { displayOrder: number }>;
   unranked: MarketEntry[];
@@ -24,7 +26,7 @@ function scopeHint(data: DetailResponse): string {
   if (s === "match")
     return "Order the markets on the Match tab — the base event, with no map and no sub-event.";
   if (s === "top")
-    return "Curated highlights tab. Empty by default; markets you add render on the storefront's Top tab and inline on match cards.";
+    return "Curated highlights tab. Empty by default; markets you add render on the storefront's Top tab and inline on match cards. The list on the right is every market this sport offers — the same market type appears once per sub-event, so you can feature the corners total without featuring the match total.";
   const n = mapScopeNumber(s);
   if (n != null) {
     return `Order the markets on the Map ${n} tab — markets carrying \`map=${n}\`. Independent from every other Map N list.`;
@@ -104,10 +106,16 @@ export default async function ScopeEditorPage({
       <MarketOrderEditor
         sportId={data.sport.id}
         scope={data.scope}
-        initialOrdered={data.ordered.map(({ providerMarketId, label }) => ({
-          providerMarketId,
-          label,
-        }))}
+        curated={data.curated}
+        tabs={data.groups}
+        initialOrdered={data.ordered.map(
+          ({ providerMarketId, variant, label, tab }) => ({
+            providerMarketId,
+            variant,
+            label,
+            tab,
+          }),
+        )}
         initialUnranked={data.unranked}
       />
     </div>
