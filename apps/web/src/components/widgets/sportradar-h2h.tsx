@@ -15,9 +15,16 @@
 // shape Bet Assist uses, not this one: here the rail IS the surface.
 //
 // Height is fixed because the hosted page cannot report its size across
-// origins. The panel is long (game pulse, averages, previous meetings,
-// both teams' form tables), so the frame scrolls internally rather than
-// pretending to fit — a rail this narrow could not show it all anyway.
+// origins, and it is sized to the tab the widget OPENS on, not to its
+// tallest one. That first tab (competition line, score, both crests,
+// card chips) measured ~245px at the rail's 348px frame width on
+// production (2026-09-05); the frame had been 560, which left ~315px of
+// the hosted page's blank white under it — reported as "too much empty
+// space". The other tabs (game pulse, lineups, season table, previous
+// meetings) are taller and scroll inside the frame, which they did at
+// 560 as well; a rail this narrow was never going to show a lineup
+// whole. Erring tall costs a blank band on every visit; erring short
+// costs a scrollbar on the tabs a bettor opens on purpose.
 
 import { useTranslations } from "@/lib/i18n";
 
@@ -47,7 +54,7 @@ export function buildHeadToHeadStandaloneUrl({
   return `${HOST}/${encodeURIComponent(client)}/${encodeURIComponent(language)}/standalone/headToHead.standalone#${hash}`;
 }
 
-export function SportradarHeadToHead({ height = 560, ...rest }: Props) {
+export function SportradarHeadToHead({ height = 280, ...rest }: Props) {
   const t = useTranslations("matchWidgets");
   const src = buildHeadToHeadStandaloneUrl(rest);
 
