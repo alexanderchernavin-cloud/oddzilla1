@@ -1,59 +1,40 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { serverApi } from "@/lib/server-fetch";
 import {
-  MarketOrderEditor,
-  type MarketEntry,
-} from "./market-order-editor";
-
-interface GroupTab {
-  scope: string;
-  label: string | null; // null for built-ins (label derived client-side)
-  custom: boolean;
-}
+  isCustomScope,
+  isMarketScope,
+  isSubEventScope,
+  mapScopeNumber,
+} from "@oddzilla/types/market-scope";
+import { serverApi } from "@/lib/server-fetch";
+import { tabLabel, type ScopeTab } from "../../scope-label";
+import { MarketOrderEditor, type MarketEntry } from "./market-order-editor";
 
 interface DetailResponse {
   sport: { id: number; slug: string; name: string };
   scope: string;
-  maxMapNumber: number;
-  groups: GroupTab[];
+  label: string | null;
+  groups: ScopeTab[];
   ordered: Array<MarketEntry & { displayOrder: number }>;
   unranked: MarketEntry[];
 }
 
-const MAP_SCOPE_RE = /^map_([1-9][0-9]*)$/;
-const CUSTOM_SCOPE_RE = /^custom_[a-z0-9]{4,32}$/;
-
-function isValidScope(s: string): boolean {
-  return (
-    s === "match" || s === "top" || MAP_SCOPE_RE.test(s) || CUSTOM_SCOPE_RE.test(s)
-  );
-}
-
-function mapScopeIndex(s: string): number | null {
-  const m = s.match(MAP_SCOPE_RE);
-  return m ? Number(m[1]) : null;
-}
-
-function tabLabel(tab: GroupTab): string {
-  if (tab.label) return tab.label;
-  if (tab.scope === "match") return "Match";
-  if (tab.scope === "top") return "Top";
-  const n = mapScopeIndex(tab.scope);
-  return n != null ? `Map ${n}` : tab.scope;
-}
-
-function scopeHint(s: string, groups: GroupTab[]): string {
+function scopeHint(data: DetailResponse): string {
+  const s = data.scope;
   if (s === "match")
-    return "Order the markets that appear on the Match tab — i.e. those without a `map` specifier.";
+    return "Order the markets on the Match tab — the base event, with no map and no sub-event.";
   if (s === "top")
     return "Curated highlights tab. Empty by default; markets you add render on the storefront's Top tab and inline on match cards.";
-  const n = mapScopeIndex(s);
+  const n = mapScopeNumber(s);
   if (n != null) {
-    return `Order the markets that appear on the Map ${n} tab — markets carrying \`map=${n}\`. Independent from every other Map N list.`;
+    return `Order the markets on the Map ${n} tab — markets carrying \`map=${n}\`. Independent from every other Map N list.`;
   }
-  if (CUSTOM_SCOPE_RE.test(s)) {
-    const label = groups.find((g) => g.scope === s)?.label ?? "this group";
+  if (isSubEventScope(s)) {
+    const label = data.label ?? "this sub-event";
+    return `Order the markets on the "${label}" tab. This is a sub-event the feed carries for this sport; its markets and its title are the feed's, only the order is yours.`;
+  }
+  if (isCustomScope(s)) {
+    const label = data.groups.find((g) => g.scope === s)?.label ?? "this group";
     return `Curated custom tab "${label}". Empty by default; add markets from anywhere on this sport and they render as their own tab on the match-detail page.`;
   }
   return "";
@@ -65,8 +46,10 @@ export default async function ScopeEditorPage({
   params: Promise<{ sportId: string; scope: string }>;
 }) {
   const { sportId, scope } = await params;
-  if (!isValidScope(scope)) notFound();
+  if (!isMarketScope(scope)) notFound();
 
+  // 404s for a tab this sport does not have — a Map 3 URL on football, or a
+  // deleted custom group.
   const data = await serverApi<DetailResponse>(
     `/admin/fe-settings/markets-order/${sportId}/${scope}`,
   );
@@ -93,6 +76,7 @@ export default async function ScopeEditorPage({
               <Link
                 key={tab.scope}
                 href={`/admin/fe-settings/markets-order/${sportId}/${tab.scope}`}
+                title={tab.scope}
                 className={
                   "rounded px-3 py-1.5 uppercase tracking-[0.15em] " +
                   (active
@@ -114,7 +98,7 @@ export default async function ScopeEditorPage({
       </div>
 
       <p className="mt-3 text-sm text-[var(--color-fg-muted)]">
-        {scopeHint(data.scope, data.groups)}
+        {scopeHint(data)}
       </p>
 
       <MarketOrderEditor

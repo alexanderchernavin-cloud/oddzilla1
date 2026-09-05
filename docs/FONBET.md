@@ -149,10 +149,23 @@ rows[1..]   cells: {name} text | {kind:"param", factorId} line value |
 | factor              | `market_outcomes.outcome_id = <factorId>`                                                                                                  | match-winner tables use `1` (home) / `2` (away) / `3` (draw) so `loadMatchWinnerOdds` pairs them like Oddin's                                                       |
 | blocked event       | `markets.status = -1`, outcomes `active=false`                                                                                             | partial blocks flip only the listed factors inactive                                                                                                                |
 | labels              | `market_descriptions` / `outcome_descriptions`                                                                                             | written on boot from the catalogue in `FONBET_LANG` plus every other locale in `descriptionLangs` (en, ru); variant rows (`"1st half: Handicap {handicap}"`) written lazily the first time a sub-event market is seen. The sub-event half of a variant row is always in the FEED language — it comes from the snapshot, which is fetched once — so a `ru` row off an English feed reads "1st half: Фора {handicap}" |
+| per-team table (by number) | market NAME carries the team | Fonbet numbers the sides instead of naming them — `Team 1 totals {threshold}` / `Инд. тоталы-1`, `Team Totals-1`, `1 to win` / `Победа 1`, and a couple of captions where its `%1` / `%2` placeholder leaks into the name. `applyTeamNumberLabel` (services/api/src/lib/market-naming.ts) swaps the number for the team at render time — 1 is home, 2 is away, the same convention the factor ids use — so the storefront and the bet slip read "Swansea totals 2.5". Market names only: outcome captions keep the number, since the header above them already names the team. |
 
 `provider_market_id ≥ 1_000_000` is the Fonbet namespace: `odds_config`
 `market_type` scopes, `fe_market_display_order` and `fe_market_groups`
 address Fonbet markets with these ids.
+
+A sub-event is also a TAB on the match-detail page: the storefront groups
+markets by `variant`, taking the tab title from the description prefix
+("1st half corners: Match result" → **1st half corners**), and every
+per-player variant collapses into one **Players** tab. Since migration
+0106 those tabs are addressable as `fb_<kinds>` scopes
+(`fb:400100/10100201` → `fb_400100_10100201`), so the backoffice at
+`/admin/fe-settings/markets-order` orders the markets inside each and
+reorders the tabs themselves. It discovers them by re-deriving the same
+scopes over the sport's current offer — nothing stores the tab set — so a
+sub-event Fonbet adds shows up there on its own, and one it drops stops
+being offered (an ordering already saved for it survives).
 
 ## Operating notes
 

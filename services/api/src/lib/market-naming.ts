@@ -14,6 +14,11 @@
 // always pass them so the market reads as "Team Astralis total goals
 // 2.5" instead. Admin / debug callers that have no match context can
 // keep the no-arg form.
+import {
+  deriveMarketScope,
+  type MarketScope,
+} from "@oddzilla/types/market-scope";
+
 export interface TeamNamePair {
   homeTeam: string;
   awayTeam: string;
@@ -112,7 +117,81 @@ function resolveUrn(value: string, profiles?: OutcomeProfiles): string {
   return value;
 }
 
-export function substituteTemplate(
+// Feed catalogues name a per-team market by NUMBER, not by team: Fonbet
+// ships "Team 1 totals {threshold}" / "Инд. тоталы-1 {threshold}" for the
+// home side and the -2 twin for the away side, "1 to win" / "Победа 1",
+// and a handful of captions where its own `%1` / `%2` team placeholder
+// leaked into the market name instead of an outcome label. Rendered
+// verbatim that reads "Team 1 totals 2.5" on a page showing Swansea vs
+// Wrexham: the market is about exactly one of them and does not say
+// which — and the same string is what the bet slip stores as the leg
+// label, so the bettor cannot tell afterwards either.
+//
+// Number 1 is always the home side and 2 the away side, the same
+// convention Fonbet's own factor ids use (`1` home / `2` away / `3` draw)
+// and the one `{side}` and the bare "home" / "away" outcome templates
+// already follow.
+//
+// Every pattern is anchored over the whole label so nothing else in the
+// catalogue can be caught by accident. Measured against the full live
+// catalogue (2026-09-05, 6 282 description rows in en + ru): these six
+// shapes cover every team-numbered label, and the near misses stay
+// untouched — "1x2", "Score after 2 goals scored", "Score after 2 maps",
+// "Score after 2 sets", "score in the series after 2 matches". Anything
+// that matches nothing is returned unchanged, so a caption Fonbet adds
+// later degrades to today's wording rather than to a wrong team.
+const TEAM_NUMBER_RULES: Array<{
+  re: RegExp;
+  build: (team: string, rest: string) => string;
+}> = [
+  // en: "Team 1 totals {threshold}"
+  { re: /^Team ([12])\s+(.+)$/i, build: (team, rest) => `${team} ${rest}` },
+  // en: "Team Totals-1 {threshold}" — same market, different table.
+  {
+    re: /^Team Totals-([12])\b\s*(.*)$/i,
+    build: (team, rest) => `${team} totals ${rest}`,
+  },
+  // en: "1 to win"
+  { re: /^([12]) to win$/i, build: (team) => `${team} to win` },
+  // ru: "Инд. тоталы-1 {threshold}"
+  {
+    re: /^Инд\.\s*тотал[а-я]*-([12])\b\s*(.*)$/i,
+    build: (team, rest) => `Инд. тотал ${team} ${rest}`,
+  },
+  // ru: "Победа 1"
+  { re: /^Победа ([12])$/i, build: (team) => `Победа ${team}` },
+  // Either language: "%1 Total round in 1st half {threshold}".
+  { re: /^%([12])\s+(.+)$/, build: (team, rest) => `${team} ${rest}` },
+];
+
+// Swaps a team-numbered label for the team's actual name. Runs on the
+// rendered string (placeholders already substituted) so a team name can
+// never be re-read as a placeholder, and on the part after any sub-event
+// prefix so "1st half: Team 1 totals 2.5" keeps its tab label.
+export function applyTeamNumberLabel(
+  label: string,
+  teams: TeamNamePair,
+): string {
+  const sep = label.indexOf(": ");
+  const prefix = sep > 0 ? label.slice(0, sep + 2) : "";
+  const base = sep > 0 ? label.slice(sep + 2) : label;
+  for (const rule of TEAM_NUMBER_RULES) {
+    const m = rule.re.exec(base);
+    if (!m) continue;
+    const team = m[1] === "1" ? teams.homeTeam : teams.awayTeam;
+    if (!team) return label;
+    return (prefix + rule.build(team, (m[2] ?? "").trim())).trim();
+  }
+  return label;
+}
+
+// Placeholder substitution alone. Used directly for OUTCOME labels,
+// which must not pick up the team-number rewrite below: an outcome sits
+// under a market header that already names the team, and Fonbet writes
+// some of them mid-sentence ("Фрейм %P: инд. тотал-2 ударов Больше"),
+// where swapping the number for a team name reads as broken grammar
+// rather than as a clarification.
+function substituteCore(
   template: string,
   specs: Record<string, string>,
   teams?: TeamNamePair,
@@ -172,6 +251,23 @@ export function substituteTemplate(
   return cleaned.replace(/\s{2,}/g, " ").trim();
 }
 
+// Renders a MARKET name. On top of placeholder substitution it swaps a
+// team-numbered caption for the team it means, so a caller holding the
+// match gets "Swansea totals 2.5" where the catalogue said "Team 1
+// totals 2.5". Callers without teams — the admin feed log, the
+// backoffice market pickers — keep the generic caption, which is the
+// right label there: no fixture is in hand to name.
+export function substituteTemplate(
+  template: string,
+  specs: Record<string, string>,
+  teams?: TeamNamePair,
+  profiles?: OutcomeProfiles,
+  locale?: string,
+): string {
+  const rendered = substituteCore(template, specs, teams, profiles, locale);
+  return teams ? applyTeamNumberLabel(rendered, teams) : rendered;
+}
+
 export function renderOutcomeLabel(
   template: string,
   specs: Record<string, string>,
@@ -189,7 +285,9 @@ export function renderOutcomeLabel(
     const resolved = resolveUrn(template, profiles);
     if (resolved !== template) return resolved;
   }
-  const sub = substituteTemplate(template, specs, { homeTeam, awayTeam }, profiles, locale);
+  // substituteCore, not substituteTemplate: the team-number rewrite is a
+  // market-name rule (see the comment on substituteCore).
+  const sub = substituteCore(template, specs, { homeTeam, awayTeam }, profiles, locale);
   const lower = sub.trim().toLowerCase();
   if (lower === "home") return homeTeam;
   if (lower === "away") return awayTeam;
@@ -220,8 +318,18 @@ export function outcomeDescKey(
 }
 
 // Group tag a market lands in on the storefront (Match / Map 1 / …).
-// `order` is used as the inter-group sort key (lower = earlier).
-export type MarketScope = { id: string; label: string; order: number };
+// The grammar, the full derivation (Fonbet sub-events included) and the
+// tab-ordering defaults live in `@oddzilla/types/market-scope`, shared
+// with the web admin and mirrored by the DB CHECK constraints.
+export type { MarketScope };
+export { deriveMarketScope };
+
+// Specifier-only scope: Match or Map N. A Fonbet sub-event tab also needs
+// the market's name template — that is where the label lives — so callers
+// holding one (the match-detail endpoint, the admin scope discovery) call
+// `deriveMarketScope` instead. This narrower form stays for callers that
+// only ever see Oddin markets (admin feed logs, ZillaBuild), where a
+// `variant` never opens a tab.
 
 export function deriveScope(specs: Record<string, string>): MarketScope {
   if (specs.map) {

@@ -11,6 +11,7 @@
     "./currencies": "./src/currencies.ts",
     "./products": "./src/products.ts",
     "./specifiers": "./src/specifiers.ts",
+    "./market-scope": "./src/market-scope.ts",
     "./community": "./src/community.ts",
     "./combi-boost": "./src/combi-boost.ts",
     "./competitions-catalog": "./src/competitions-catalog.ts",

@@ -55,7 +55,7 @@ import {
 import {
   substituteTemplate,
   renderOutcomeLabel,
-  deriveScope,
+  deriveMarketScope,
   outcomeSortWeight,
   type OutcomeProfiles,
 } from "../../lib/market-naming.js";
@@ -1685,49 +1685,33 @@ export default async function catalogRoutes(app: FastifyInstance) {
           homeTeam: match.homeTeam,
           awayTeam: match.awayTeam,
         };
-        // Fonbet sub-events (halves, periods, corners, player props) ride
-        // the `variant` specifier and their templates carry the sub-event
-        // label as a prefix ("1-й тайм: Исходы"). Split the prefix off
-        // into its own tab so the match page groups like Fonbet's event
-        // view does — Match / 1-й тайм / угловые / Players — instead of
-        // one long "Match" list with prefixed names. Player props share a
-        // single tab and keep the player's name in the market title.
-        let scope = deriveScope(specs);
-        let baseNameTemplate = baseTemplate;
-        const fbVariant = /^fb:([\d/]+)(?::(\d+))?$/.exec(variant);
-        if (fbVariant) {
-          const sep = template.indexOf(": ");
-          if (fbVariant[2]) {
-            scope = { id: "fb_players", label: locale === "ru" ? "Игроки" : "Players", order: 90 };
-          } else if (sep > 0) {
-            const label = template.slice(0, sep);
-            // Nested sub-events ("fb:100201/400100" = corners of the 1st
-            // half) sort after their parent kind and tab id stays a
-            // plain identifier.
-            const kinds = (fbVariant[1] ?? "").split("/");
-            scope = {
-              id: `fb_${kinds.join("_")}`,
-              label,
-              order: 10 + Number(kinds[0] ?? 0) / 1e8 + kinds.length / 1e3,
-            };
-            // The sub-event label is deliberately LEFT ON the market
-            // name. It used to be sliced off here, on the reasoning that
-            // the tab already says "3rd set aces" so repeating it on the
-            // card is noise. That reasoning only holds where the tab is
-            // on screen. `market.name` is also what the bet slip stores
-            // as its leg label, what bet history renders, and what a
-            // copied community ticket shows — none of which carry the
-            // tab. The result was a slip leg reading "MATCH RESULT / 1"
-            // for a bet on the 3rd set ACES count, at odds nothing like
-            // the real match-winner price: the bettor could not tell
-            // what they had backed, and neither could support reading it
-            // back. Repetition inside one tab is a cosmetic cost; an
-            // unidentifiable leg on a money surface is not.
-            if (baseTemplate.startsWith(label + ": ")) {
-              baseNameTemplate = baseTemplate.slice(sep + 2);
-            }
-          }
-        }
+        // Tab this market lands in — Match, Map N, or a Fonbet sub-event
+        // (halves, corners, cards, player props). The sub-event label is
+        // the prefix on the description template, so the derivation needs
+        // the template as well as the specifiers; see
+        // packages/types/src/market-scope.ts, which the backoffice reads
+        // too so the tabs it offers are the tabs bettors get.
+        //
+        // The label is deliberately LEFT ON the market name and stripped
+        // only from `baseName`. It used to come off both, on the reasoning
+        // that the tab already says "3rd set aces" so repeating it on the
+        // card is noise. That reasoning only holds where the tab is on
+        // screen. `market.name` is also what the bet slip stores as its
+        // leg label, what bet history renders, and what a copied community
+        // ticket shows — none of which carry the tab. The result was a slip
+        // leg reading "MATCH RESULT / 1" for a bet on the 3rd set ACES
+        // count, at odds nothing like the real match-winner price: the
+        // bettor could not tell what they had backed, and neither could
+        // support reading it back. Repetition inside one tab is a cosmetic
+        // cost; an unidentifiable leg on a money surface is not.
+        const derived = deriveMarketScope({
+          specifiers: specs,
+          template,
+          baseTemplate,
+          playersLabel: locale === "ru" ? "Игроки" : "Players",
+        });
+        const scope = derived.scope;
+        const baseNameTemplate = derived.baseTemplate;
         m = {
           id: key,
           providerMarketId: r.providerMarketId,

@@ -172,3 +172,116 @@ describe("outcomeSortWeight", () => {
     assert.equal(outcomeSortWeight("over"), null);
   });
 });
+
+// Team-numbered market captions. Every string below is a real label from
+// the live catalogue (2026-09-05); the negatives are the near misses that
+// share the shape but say nothing about a team.
+describe("team-numbered market names", () => {
+  const teams = { homeTeam: "Swansea", awayTeam: "Wrexham" };
+
+  it("names the home side for a Fonbet team-1 table", () => {
+    assert.equal(
+      substituteTemplate("Team 1 totals {threshold}", { threshold: "1.5" }, teams),
+      "Swansea totals 1.5",
+    );
+  });
+
+  it("names the away side for the team-2 twin", () => {
+    assert.equal(
+      substituteTemplate("Team 2 totals {threshold}", { threshold: "1.5" }, teams),
+      "Wrexham totals 1.5",
+    );
+  });
+
+  it("handles the other table wording for the same market", () => {
+    assert.equal(
+      substituteTemplate("Team Totals-1 {threshold}", { threshold: "20.5" }, teams),
+      "Swansea totals 20.5",
+    );
+    assert.equal(
+      substituteTemplate("Team Totals-2 {threshold}", { threshold: "20.5" }, teams),
+      "Wrexham totals 20.5",
+    );
+  });
+
+  it("keeps the sub-event prefix, which is the tab the market sits on", () => {
+    assert.equal(
+      substituteTemplate(
+        "1st half corners: Team 1 totals {threshold}",
+        { threshold: "3.5" },
+        teams,
+      ),
+      "1st half corners: Swansea totals 3.5",
+    );
+  });
+
+  it("names the team in Russian too", () => {
+    assert.equal(
+      substituteTemplate("Инд. тоталы-1 {threshold}", { threshold: "1.5" }, teams, undefined, "ru"),
+      "Инд. тотал Swansea 1.5",
+    );
+    assert.equal(
+      substituteTemplate("Победа 2", {}, teams, undefined, "ru"),
+      "Победа Wrexham",
+    );
+  });
+
+  it("covers the win tables and the leaked %1 / %2 placeholder", () => {
+    assert.equal(substituteTemplate("1 to win", {}, teams), "Swansea to win");
+    assert.equal(substituteTemplate("2 to win", {}, teams), "Wrexham to win");
+    assert.equal(
+      substituteTemplate("%2 Total round in 1st half {threshold}", { threshold: "12.5" }, teams),
+      "Wrexham Total round in 1st half 12.5",
+    );
+  });
+
+  it("leaves captions that merely contain a digit alone", () => {
+    for (const label of [
+      "1x2",
+      "Score after 2 goals scored",
+      "Score after 2 maps",
+      "Score after 2 sets",
+      "score in the series after 2 matches",
+      "Счет после 2-х забитых голов",
+      "Total {threshold}",
+    ]) {
+      assert.equal(substituteTemplate(label, { threshold: "2.5" }, teams), label.replace("{threshold}", "2.5"));
+    }
+  });
+
+  it("keeps the generic caption when the caller has no match", () => {
+    // The admin feed log and the backoffice market pickers render markets
+    // with no fixture in hand — there is no team to name there.
+    assert.equal(
+      substituteTemplate("Team 1 totals {threshold}", { threshold: "1.5" }),
+      "Team 1 totals 1.5",
+    );
+  });
+});
+
+describe("team numbers in outcome labels", () => {
+  it("leaves them alone — the market header above already names the team", () => {
+    // Fonbet writes some outcome captions mid-sentence ("individual total
+    // of shots for team 2"); swapping the number for a name in there reads
+    // as broken grammar rather than as a clarification, and the market
+    // name above the cell has already said which team it is. Measured
+    // across all 25 096 outcome templates on the live catalogue: this is
+    // the only shape the market-name rules would otherwise have caught.
+    assert.equal(
+      renderOutcomeLabel(
+        "Фрейм {threshold}: инд. тотал-2 ударов Больше",
+        { threshold: "2.5" },
+        "Swansea",
+        "Wrexham",
+        undefined,
+        "ru",
+      ),
+      "Фрейм 2.5: инд. тотал-2 ударов Больше",
+    );
+  });
+
+  it("still resolves the home / away outcome templates", () => {
+    assert.equal(renderOutcomeLabel("home", {}, "Swansea", "Wrexham"), "Swansea");
+    assert.equal(renderOutcomeLabel("away", {}, "Swansea", "Wrexham"), "Wrexham");
+  });
+});

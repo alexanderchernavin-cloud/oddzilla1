@@ -13,17 +13,20 @@ export default async function MarketsOrderIndex() {
     <div>
       <h2 className="text-lg font-medium">Markets display order</h2>
       <p className="mt-2 text-sm text-[var(--color-fg-muted)]">
-        Override the default order of market types per sport, with a separate
-        list for each tab on the match-detail page: <strong>Match</strong>{" "}
-        (markets without a map specifier), one list per <strong>Map N</strong>{" "}
-        tab (independently configurable), <strong>Top</strong> (a curated
-        highlights tab; empty by default and only shows ids you add), and any
-        number of <strong>custom groups</strong> (curated tabs you create and
-        name yourself — see the Groups chip per sport, which also lets you
-        reorder the tabs). The storefront <strong>All</strong> tab is not
-        configurable — it just aggregates every market in its native order.
+        Override the default order of market types per sport. Each sport lists
+        the tabs its own offer produces on the match-detail page —{" "}
+        <strong>Match</strong> (the base event), one list per{" "}
+        <strong>Map N</strong> tab for the esports that play maps, and one per
+        sub-event the feed carries (<strong>1st half</strong>,{" "}
+        <strong>Corners</strong>, <strong>Yellow cards</strong>,{" "}
+        <strong>Players</strong> …) — each independently configurable. Plus{" "}
+        <strong>Top</strong> (a curated highlights tab; empty by default and
+        only shows ids you add) and any number of <strong>custom groups</strong>{" "}
+        (curated tabs you create and name yourself — see the Groups chip per
+        sport, which also lets you reorder the tabs). The storefront{" "}
+        <strong>All</strong> tab is not configurable — it just aggregates every
+        market in its native order.
       </p>
-
       {sports.length === 0 ? (
         <p className="mt-6 text-sm text-[var(--color-fg-muted)]">No active sports.</p>
       ) : (

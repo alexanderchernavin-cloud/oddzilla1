@@ -53,7 +53,16 @@ Canonical SQL lives in [`../packages/db/migrations/`](../packages/db/migrations/
   a NOT NULL `label`, built-in scopes get label-NULL anchor rows that
   carry `display_order` when the admin reorders tabs; tabs with a row
   sort first by `display_order`, the rest keep the default Top, Match,
-  Map 1..N order).
+  Map 1..N order). `0106_fe_market_scope_sub_events` added the fourth
+  family, `fb_<kinds>` — one scope per Fonbet sub-event, id derived from
+  the `variant` specifier (`fb:400100/10100201` → `fb_400100_10100201`,
+  every per-player variant collapsing into `fb_players`). Those tabs had
+  been rendered by the match page since the Fonbet line landed but were
+  not addressable, so the backoffice offered every sport the esports
+  shape (Match + Map 1..5) and the tabs bettors actually saw could not be
+  ordered. The scope grammar for all four families lives in
+  `packages/types/src/market-scope.ts`; the CHECK constraints on both
+  tables mirror it.
 - `0021_competitor_logos.sql` — adds `competitors.logo_url TEXT` and
   `competitors.brand_color TEXT` for storefront team branding. Both
   are nullable; a CHECK constraint requires
