@@ -9,6 +9,7 @@ import {
   type ChangeEvent,
   type FormEvent,
 } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { PinOrderControls } from "@/components/admin/pin-order-controls";
@@ -127,6 +128,29 @@ export interface SportOption {
   missingLogoCount: number;
 }
 
+export interface CategoryOption {
+  id: number;
+  name: string;
+  tournamentCount: number;
+}
+
+/** Mirrors the API allowlist in services/api/src/modules/admin/tournaments.ts. */
+export const SORT_KEYS = [
+  "default",
+  "name",
+  "sport",
+  "category",
+  "tier",
+  "source",
+] as const;
+export type SortKey = (typeof SORT_KEYS)[number];
+
+const SOURCE_LABELS: Record<string, string> = {
+  auto: "Auto (unreviewed or from feed)",
+  zagi: "ZAGI (reviewed by ZillaAGI)",
+  manual: "Manual (set by an operator)",
+};
+
 interface ListShape {
   total: number;
   missingLogoCount: number;
@@ -137,19 +161,56 @@ interface ListShape {
 
 interface Filters {
   sportId: string;
+  categoryId: string;
+  /** "" | "1".."10" | "unset" */
+  tier: string;
+  /** "" | "auto" | "zagi" | "manual" */
+  source: string;
+  sort: SortKey;
+  dir: "asc" | "desc";
   q: string;
   missingLogo: boolean;
   offset: number;
   limit: number;
 }
 
+/**
+ * One place that turns the filter state into a query string, so the
+ * filter bar, the column headers and the pager cannot disagree about
+ * which filters survive a click. Paging is the only thing that keeps its
+ * offset; changing a filter or a sort resets to the first page, because
+ * page 4 of the old result set says nothing about the new one.
+ */
+function filtersToQuery(f: Filters, overrides: Partial<Filters> = {}): string {
+  const next = { ...f, ...overrides };
+  const p = new URLSearchParams();
+  if (next.sportId) p.set("sportId", next.sportId);
+  // A category is only meaningful inside its sport.
+  if (next.sportId && next.categoryId) p.set("categoryId", next.categoryId);
+  if (next.tier) p.set("tier", next.tier);
+  if (next.source) p.set("source", next.source);
+  if (next.sort !== "default") {
+    p.set("sort", next.sort);
+    p.set("dir", next.dir);
+  }
+  if (next.q.trim()) p.set("q", next.q.trim());
+  if (next.missingLogo) p.set("missingLogo", "1");
+  if (overrides.offset !== undefined && overrides.offset > 0) {
+    p.set("offset", String(overrides.offset));
+  }
+  const qs = p.toString();
+  return `/admin/tournaments${qs ? `?${qs}` : ""}`;
+}
+
 export function TournamentsEditor({
   initialList,
   sports,
+  categories,
   currentFilters,
 }: {
   initialList: ListShape;
   sports: SportOption[];
+  categories: CategoryOption[];
   currentFilters: Filters;
 }) {
   return (
@@ -157,11 +218,12 @@ export function TournamentsEditor({
       <ZagiTierPanel currentSportId={currentFilters.sportId} />
       <FilterBar
         sports={sports}
+        categories={categories}
         current={currentFilters}
         total={initialList.total}
         missingLogoCount={initialList.missingLogoCount}
       />
-      <TournamentTable list={initialList} />
+      <TournamentTable list={initialList} current={currentFilters} />
       <Pager list={initialList} current={currentFilters} />
     </div>
   );
@@ -184,6 +246,7 @@ interface ZagiProposal {
   tier: number;
   proposedTier: number;
   clamped: boolean;
+  outright: boolean;
   why: string;
 }
 
@@ -192,6 +255,7 @@ interface ZagiRunResult {
   reviewed: number;
   assigned: number;
   clamped: number;
+  outrights: number;
   undecided: number;
   batches: number;
   model: string | null;
@@ -270,10 +334,14 @@ function ZagiTierPanel({ currentSportId }: { currentSportId: string }) {
             A tournament with no tier is underwritten at <strong>T10</strong>, the
             strictest setting — so it is never over-exposed, just invisible and
             under-traded. ZillaAGI reads each competition&apos;s name, sport and
-            category and assigns a tier, capped in code by a per-sport ceiling
-            (only football, basketball, tennis and American football can reach
-            T1; a handball world title stops at T2). It runs automatically every
-            30 minutes and never touches a tier an operator has set.
+            category and proposes a tier; code then tightens it and never
+            loosens it: <strong>+1</strong> always, because no verdict here is
+            reviewed by a person first (so ZAGI can never assign T1),{" "}
+            <strong>+3</strong> for season-long outright markets, and a
+            per-sport ceiling on top (only football, basketball, tennis and
+            American football can reach T1 at all; a handball world title stops
+            at T2). It runs automatically every 30 minutes and never touches a
+            tier an operator has set.
           </p>
         </div>
         {status && (
@@ -382,7 +450,8 @@ function ZagiTierPanel({ currentSportId }: { currentSportId: string }) {
             {result.dryRun ? "preview" : "applied"} · considered {result.eligible} ·
             decided {result.reviewed} ·{" "}
             {result.dryRun ? "would assign" : "assigned"} {result.dryRun ? result.reviewed : result.assigned} ·
-            clamped {result.clamped} · undecided {result.undecided}
+            outrights {result.outrights} · ceiling-clamped {result.clamped} ·
+            undecided {result.undecided}
             {result.errors.length > 0 ? ` · errors ${result.errors.length}` : ""}
           </p>
           {result.errors.length > 0 && (
@@ -409,15 +478,22 @@ function ZagiTierPanel({ currentSportId }: { currentSportId: string }) {
                     >
                       <td className="px-3 py-1.5 font-mono">
                         T{p.tier}
-                        {p.clamped && (
-                          <span
-                            className="ml-1 text-[10px]"
-                            style={{ color: "var(--color-warning)" }}
-                            title={`Model proposed T${p.proposedTier}; the per-sport ceiling tightened it.`}
-                          >
-                            ↑T{p.proposedTier}
-                          </span>
-                        )}
+                        <span
+                          className="ml-1 text-[10px] text-[var(--color-fg-subtle)]"
+                          title={[
+                            `ZillaAGI proposed T${p.proposedTier}`,
+                            "+1 safety margin",
+                            p.outright ? "+3 outright market" : null,
+                            p.clamped ? "tightened further by the sport ceiling" : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        >
+                          ←T{p.proposedTier}
+                          {p.outright && (
+                            <span style={{ color: "var(--color-warning)" }}> outright</span>
+                          )}
+                        </span>
                       </td>
                       <td className="px-3 py-1.5">{p.name}</td>
                       <td className="px-3 py-1.5 text-[var(--color-fg-muted)]">
@@ -443,11 +519,13 @@ function ZagiTierPanel({ currentSportId }: { currentSportId: string }) {
 
 function FilterBar({
   sports,
+  categories,
   current,
   total,
   missingLogoCount,
 }: {
   sports: SportOption[];
+  categories: CategoryOption[];
   current: Filters;
   total: number;
   missingLogoCount: number;
@@ -455,25 +533,53 @@ function FilterBar({
   const router = useRouter();
   const [q, setQ] = useState(current.q);
   const [sportId, setSportId] = useState(current.sportId);
+  const [categoryId, setCategoryId] = useState(current.categoryId);
+  const [tier, setTier] = useState(current.tier);
+  const [source, setSource] = useState(current.source);
   const [missingOnly, setMissingOnly] = useState(current.missingLogo);
 
   function applyFilters(e?: FormEvent) {
     e?.preventDefault();
-    const params = new URLSearchParams();
-    if (sportId) params.set("sportId", sportId);
-    if (q.trim()) params.set("q", q.trim());
-    if (missingOnly) params.set("missingLogo", "1");
-    router.push(`/admin/tournaments${params.toString() ? `?${params.toString()}` : ""}`);
+    router.push(
+      filtersToQuery(current, {
+        sportId,
+        categoryId,
+        tier,
+        source,
+        q,
+        missingLogo: missingOnly,
+      }),
+    );
   }
 
   function clearFilters() {
     setQ("");
     setSportId("");
+    setCategoryId("");
+    setTier("");
+    setSource("");
     setMissingOnly(false);
     router.push("/admin/tournaments");
   }
 
+  // The category list is fetched for the sport the PAGE was rendered
+  // with, so a freshly-picked sport has none yet. Reset the selection and
+  // disable the control rather than offering another sport's countries.
+  function onSportChange(next: string) {
+    setSportId(next);
+    if (next !== current.sportId) setCategoryId("");
+  }
+
+  const categoriesReady = sportId !== "" && sportId === current.sportId;
   const totalTournaments = sports.reduce((acc, s) => acc + s.tournamentCount, 0);
+  const anyFilter =
+    current.q ||
+    current.sportId ||
+    current.categoryId ||
+    current.tier ||
+    current.source ||
+    current.missingLogo ||
+    current.sort !== "default";
 
   return (
     <form
@@ -484,13 +590,70 @@ function FilterBar({
         <span className="block text-xs text-[var(--color-fg-subtle)]">Sport</span>
         <select
           value={sportId}
-          onChange={(e) => setSportId(e.target.value)}
+          onChange={(e) => onSportChange(e.target.value)}
           className="mt-1 min-w-[200px] rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-3 py-2 outline-none focus:border-[var(--color-accent)]"
         >
           <option value="">All sports ({totalTournaments} tournaments)</option>
           {sports.map((s) => (
             <option key={s.id} value={String(s.id)}>
               {s.name} — {s.tournamentCount} · {s.missingLogoCount} missing
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label className="block">
+        <span className="block text-xs text-[var(--color-fg-subtle)]">Category</span>
+        <select
+          value={categoryId}
+          onChange={(e) => setCategoryId(e.target.value)}
+          disabled={!categoriesReady}
+          title={
+            categoriesReady
+              ? undefined
+              : "Pick a sport and apply first — categories belong to one sport."
+          }
+          className="mt-1 min-w-[170px] rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-3 py-2 outline-none focus:border-[var(--color-accent)] disabled:opacity-50"
+        >
+          <option value="">
+            {categoriesReady ? `All categories (${categories.length})` : "Pick a sport"}
+          </option>
+          {categories.map((c) => (
+            <option key={c.id} value={String(c.id)}>
+              {c.name} — {c.tournamentCount}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label className="block">
+        <span className="block text-xs text-[var(--color-fg-subtle)]">Risk tier</span>
+        <select
+          value={tier}
+          onChange={(e) => setTier(e.target.value)}
+          className="mt-1 min-w-[130px] rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-3 py-2 outline-none focus:border-[var(--color-accent)]"
+        >
+          <option value="">Any tier</option>
+          <option value="unset">Unset (priced as T10)</option>
+          {RISK_TIERS.map((t) => (
+            <option key={t} value={String(t)}>
+              T{t}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label className="block">
+        <span className="block text-xs text-[var(--color-fg-subtle)]">Assigned by</span>
+        <select
+          value={source}
+          onChange={(e) => setSource(e.target.value)}
+          className="mt-1 min-w-[150px] rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-3 py-2 outline-none focus:border-[var(--color-accent)]"
+        >
+          <option value="">Any source</option>
+          {(["auto", "zagi", "manual"] as const).map((s) => (
+            <option key={s} value={s}>
+              {SOURCE_LABELS[s]}
             </option>
           ))}
         </select>
@@ -519,7 +682,7 @@ function FilterBar({
       <button type="submit" className="btn btn-primary">
         Apply
       </button>
-      {(current.q || current.sportId || current.missingLogo) && (
+      {anyFilter && (
         <button
           type="button"
           onClick={clearFilters}
@@ -536,7 +699,56 @@ function FilterBar({
   );
 }
 
-function TournamentTable({ list }: { list: ListShape }) {
+/**
+ * A column header that sorts.
+ *
+ * Clicking the active column flips direction; clicking a new one starts
+ * ascending. Clicking the active column while already descending returns
+ * to the default order — the pin-order view — because that is the only
+ * arrangement in which the reorder arrows are meaningful, and it would
+ * otherwise be unreachable without clearing every filter.
+ */
+function SortHeader({
+  label,
+  sortKey,
+  current,
+  className = "",
+}: {
+  label: string;
+  sortKey: SortKey;
+  current: Filters;
+  className?: string;
+}) {
+  const active = current.sort === sortKey;
+  const next: Partial<Filters> = active
+    ? current.dir === "asc"
+      ? { sort: sortKey, dir: "desc" }
+      : { sort: "default", dir: "asc" }
+    : { sort: sortKey, dir: "asc" };
+
+  return (
+    <th className={`px-4 py-3 text-left ${className}`}>
+      <Link
+        href={filtersToQuery(current, next)}
+        scroll={false}
+        className="inline-flex items-center gap-1 uppercase tracking-[0.15em] hover:text-[var(--color-fg)]"
+        style={active ? { color: "var(--color-accent)" } : undefined}
+        title={
+          active && current.dir === "desc"
+            ? "Sorted descending — click again for the default pin order"
+            : `Sort by ${label.toLowerCase()}`
+        }
+      >
+        {label}
+        <span aria-hidden className="text-[9px]">
+          {active ? (current.dir === "asc" ? "▲" : "▼") : "↕"}
+        </span>
+      </Link>
+    </th>
+  );
+}
+
+function TournamentTable({ list, current }: { list: ListShape; current: Filters }) {
   if (list.tournaments.length === 0) {
     return (
       <p className="text-sm text-[var(--color-fg-muted)]">
@@ -550,9 +762,10 @@ function TournamentTable({ list }: { list: ListShape }) {
         <thead className="border-b border-[var(--color-border)] text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
           <tr>
             <th className="px-4 py-3 text-left">Logo</th>
-            <th className="px-4 py-3 text-left">Tournament</th>
-            <th className="px-4 py-3 text-left">Sport</th>
-            <th className="px-4 py-3 text-left">Risk tier</th>
+            <SortHeader label="Tournament" sortKey="name" current={current} />
+            <SortHeader label="Sport" sortKey="sport" current={current} />
+            <SortHeader label="Category" sortKey="category" current={current} />
+            <SortHeader label="Risk tier" sortKey="tier" current={current} />
             <th className="px-4 py-3 text-left">Order in category</th>
             <th className="px-4 py-3 text-left">Logo URL</th>
             <th className="px-4 py-3 text-left">Color</th>
@@ -730,6 +943,7 @@ function TournamentEditableRow({
         <div className="font-mono text-[10px] text-[var(--color-fg-subtle)]">{row.slug}</div>
       </td>
       <td className="px-4 py-3 text-[var(--color-fg-muted)]">{row.sportSlug}</td>
+      <td className="px-4 py-3 text-[var(--color-fg-muted)]">{row.categoryName}</td>
       <td className="px-4 py-3 align-top">
         {editing ? (
           <select
@@ -984,15 +1198,10 @@ function Pager({ list, current }: { list: ListShape; current: Filters }) {
   const page = Math.floor(list.offset / list.limit) + 1;
   const lastPage = Math.ceil(list.total / list.limit);
 
+  // Through the shared builder, or page 2 quietly drops the category,
+  // tier, source and sort the operator is looking at.
   function go(offset: number) {
-    const params = new URLSearchParams();
-    if (current.sportId) params.set("sportId", current.sportId);
-    if (current.q) params.set("q", current.q);
-    if (current.missingLogo) params.set("missingLogo", "1");
-    if (offset > 0) params.set("offset", String(offset));
-    router.push(
-      `/admin/tournaments${params.toString() ? `?${params.toString()}` : ""}`,
-    );
+    router.push(filtersToQuery(current, { offset }));
   }
 
   return (

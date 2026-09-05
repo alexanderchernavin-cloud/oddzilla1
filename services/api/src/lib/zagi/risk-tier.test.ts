@@ -17,13 +17,16 @@ import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import {
   DEFAULT_TIER_CEILING,
+  OUTRIGHT_TIER_STEPS,
+  SAFETY_MARGIN_STEPS,
   SIMULATED_MIN_TIER,
   ceilingForSport,
-  clampTier,
+  looksOutright,
   looksSimulated,
   normaliseSportSlug,
   parseTierVerdicts,
   renderBatch,
+  resolveTier,
   type RiskTierItem,
 } from "./risk-tier.js";
 
@@ -103,80 +106,131 @@ describe("looksSimulated", () => {
   });
 });
 
-describe("clampTier", () => {
-  it("lets a genuine tier-1 competition through untouched", () => {
-    const r = clampTier({
+describe("looksOutright", () => {
+  it("catches competition-wide markets", () => {
+    assert.ok(looksOutright("England. Premier League. Season 26/27"));
+    assert.ok(looksOutright("Italy. Serie A. Head-to-head in the tournament"));
+    assert.ok(looksOutright("Russia. Premier League. Head-to-head in tournament"));
+    assert.ok(looksOutright("Spain. Primera Division. Head-to-head after 10 rounds in tournament"));
+    assert.ok(looksOutright("Champions League UEFA. League phase. Head-to-head"));
+    assert.ok(looksOutright("Some League. Outright winner"));
+  });
+
+  it("leaves SINGLE-event head-to-heads alone", () => {
+    // These are ordinary one-off fixtures, not season-long positions —
+    // 12 of the 31 head-to-head rows on production are this shape.
+    assert.ok(!looksOutright("Vuelta a Espana. Stage 13. Head-to-head"));
+    assert.ok(!looksOutright("Formula-1. Grand Prix. Italy. Race. Head-to-head"));
+    assert.ok(!looksOutright("Tour of Britain. 5 Stage. Head-to-head"));
+    assert.ok(!looksOutright("GP Industria & Artigianato. Head-to-head"));
+  });
+
+  it("does not mistake a league called Championship for an outright", () => {
+    assert.ok(!looksOutright("Scotland. Championship"));
+    assert.ok(!looksOutright("Gaelic football. Galway Championship"));
+    assert.ok(!looksOutright("CIS LAN Championship #6"));
+  });
+});
+
+describe("resolveTier", () => {
+  it("adds the safety margin to every verdict, so ZAGI can never assign T1", () => {
+    const r = resolveTier({
       proposed: 1,
       sportSlug: "football",
       tournamentName: "World Cup. Final stage",
     });
-    assert.equal(r.tier, 1);
-    assert.equal(r.clampedFrom, null);
-    assert.equal(r.bound, null);
+    assert.equal(r.tier, 1 + SAFETY_MARGIN_STEPS);
+    assert.equal(r.proposed, 1);
+    assert.equal(r.safetyStep, SAFETY_MARGIN_STEPS);
+    assert.equal(r.outrightStep, 0);
+    assert.equal(r.floorBound, null);
+  });
+
+  it("steps a season outright down three further tiers", () => {
+    const r = resolveTier({
+      proposed: 2,
+      sportSlug: "football",
+      tournamentName: "Italy. Serie A. Season 26/27",
+    });
+    assert.equal(r.tier, 2 + SAFETY_MARGIN_STEPS + OUTRIGHT_TIER_STEPS);
+    assert.equal(r.outrightStep, OUTRIGHT_TIER_STEPS);
+  });
+
+  it("does not step a per-stage head-to-head as an outright", () => {
+    const r = resolveTier({
+      proposed: 3,
+      sportSlug: "cycling",
+      tournamentName: "Vuelta a Espana. Stage 13. Head-to-head",
+    });
+    assert.equal(r.tier, 3 + SAFETY_MARGIN_STEPS);
+    assert.equal(r.outrightStep, 0);
   });
 
   it("enforces the operator's rule: a handball world title is not tier 1", () => {
-    const r = clampTier({
+    // The margin alone would give T2; the sport ceiling is also 2, so the
+    // margin is what binds and the floor reports as not having acted.
+    const r = resolveTier({
       proposed: 1,
       sportSlug: "handball",
       tournamentName: "World Championship. Final stage",
     });
     assert.equal(r.tier, 2);
-    assert.equal(r.clampedFrom, 1);
-    assert.equal(r.bound, "sport");
+    assert.ok(r.tier >= ceilingForSport("handball"));
   });
 
-  it("never loosens a tier the model set stricter than the ceiling", () => {
-    const r = clampTier({
+  it("reports the floor only when it tightens beyond the steps", () => {
+    // Unlisted sport, ceiling 4. Proposed 1 + margin = 2, so the ceiling
+    // does the remaining work and must say so.
+    const r = resolveTier({ proposed: 1, sportSlug: "lacrosse", tournamentName: "World Cup" });
+    assert.equal(r.tier, DEFAULT_TIER_CEILING);
+    assert.equal(r.floorBound, "sport");
+  });
+
+  it("never loosens a tier the model set stricter than every bound", () => {
+    const r = resolveTier({
       proposed: 8,
       sportSlug: "football",
       tournamentName: "Bosnia and Herzegovina. League 2",
     });
-    assert.equal(r.tier, 8);
-    assert.equal(r.clampedFrom, null);
+    assert.equal(r.tier, 8 + SAFETY_MARGIN_STEPS);
+    assert.equal(r.floorBound, null);
   });
 
   it("floors simulated fixtures filed under a real sport", () => {
-    const r = clampTier({
+    const r = resolveTier({
       proposed: 1,
       sportSlug: "football",
       tournamentName: "FC 26. ESportsBattle. La Liga. 2x4 min.",
       categoryName: "FC 26",
     });
     assert.equal(r.tier, SIMULATED_MIN_TIER);
-    assert.equal(r.clampedFrom, 1);
-    assert.equal(r.bound, "simulated");
+    assert.equal(r.floorBound, "simulated");
   });
 
   it("floors Oddin's bot sports whatever the tournament is called", () => {
-    const r = clampTier({
+    const r = resolveTier({
       proposed: 2,
       sportSlug: "efootballbots",
       tournamentName: "Some Cup",
     });
     assert.equal(r.tier, SIMULATED_MIN_TIER);
-    assert.equal(r.bound, "bots");
-  });
-
-  it("keeps a simulated fixture the model already rated T10 at T10", () => {
-    const r = clampTier({
-      proposed: 10,
-      sportSlug: "basketball",
-      tournamentName: "NBA 2K26. H2H. LIGA-3",
-    });
-    assert.equal(r.tier, 10);
-    assert.equal(r.clampedFrom, null);
-  });
-
-  it("holds an unlisted sport to the cautious default", () => {
-    const r = clampTier({ proposed: 1, sportSlug: "lacrosse", tournamentName: "World Cup" });
-    assert.equal(r.tier, DEFAULT_TIER_CEILING);
-    assert.equal(r.bound, "sport");
+    assert.equal(r.floorBound, "bots");
   });
 
   it("keeps the result inside the scale even for absurd input", () => {
-    assert.equal(clampTier({ proposed: 99, sportSlug: "football" }).tier, 10);
-    assert.equal(clampTier({ proposed: -5, sportSlug: "football" }).tier, 1);
+    assert.equal(resolveTier({ proposed: 99, sportSlug: "football" }).tier, 10);
+    // -5 + margin is still below the scale; the floor is 1, and football's
+    // ceiling is 1, so it lands at the ceiling.
+    assert.equal(resolveTier({ proposed: -5, sportSlug: "football" }).tier, 1);
+  });
+
+  it("cannot exceed T10 even when every step stacks", () => {
+    const r = resolveTier({
+      proposed: 9,
+      sportSlug: "football",
+      tournamentName: "England. Premier League. Season 26/27",
+    });
+    assert.equal(r.tier, 10);
   });
 });
 
