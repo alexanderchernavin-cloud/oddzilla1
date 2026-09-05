@@ -95,6 +95,13 @@ export function startTournamentLogoSweeper(
         total.unmatched += r.unmatched;
         total.applied += r.applied;
         errors.push(...r.errors);
+        if (r.rateLimited) {
+          app.log.warn(
+            { component: "tournament-logos" },
+            "logo sweep stopped early: Liquipedia rate-limited us",
+          );
+          break;
+        }
         if (r.eligible === 0) break;
         // No progress at all means every batch failed in transport,
         // which burns no attempt — looping would just repeat it.

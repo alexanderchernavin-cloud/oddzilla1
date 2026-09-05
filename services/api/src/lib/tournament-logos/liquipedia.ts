@@ -25,6 +25,19 @@
 // is a heavier act than linking, so every row records
 // logo_source='liquipedia' and its source page — one query reverts the
 // entire set if that call is ever revisited.
+//
+// OFF BY DEFAULT, AND THAT IS NOT CAUTION FOR ITS OWN SAKE. The first
+// production sweep obeyed the documented 2 s floor — 612 s of wall clock
+// for ~160 calls proves the pacing was applied — and Liquipedia still
+// answered HTTP 429 to 75 of 76 lookups. An 8-call probe had passed
+// cleanly, so the limit is not about interval, it is about sustained
+// anonymous bulk, which their terms address by pointing heavy users at
+// an API key. Running this without one is asking a volunteer wiki to
+// absorb our backlog, so it now requires LIQUIPEDIA_API_KEY to be set at
+// all; with no key the resolver simply uses Wikidata and accepts the
+// lower coverage. `handleRateLimit` additionally trips a Redis-backed
+// cooldown so a 429 stops the whole sweep rather than grinding through
+// its budget one rejection at a time.
 
 /** Our sport slug → Liquipedia wiki. Absent = no wiki worth asking. */
 const WIKI_BY_SPORT: Readonly<Record<string, string>> = {
@@ -57,6 +70,34 @@ const WIKI_BY_SPORT: Readonly<Record<string, string>> = {
 
 export function wikiForSport(slug: string): string | null {
   return WIKI_BY_SPORT[slug.trim().toLowerCase()] ?? null;
+}
+
+/**
+ * Raised when Liquipedia rate-limits us. Distinct from a generic HTTP
+ * error because the correct response is different in kind: stop the
+ * whole sweep, not retry the next row.
+ */
+export class LiquipediaRateLimited extends Error {
+  constructor(readonly retryAfterSeconds: number | null) {
+    super(
+      `liquipedia rate-limited (HTTP 429)${
+        retryAfterSeconds !== null ? `, retry after ${retryAfterSeconds}s` : ""
+      }`,
+    );
+    this.name = "LiquipediaRateLimited";
+  }
+}
+
+/**
+ * Liquipedia is used only with an API key.
+ *
+ * Their terms ask sustained users to take one, and the first production
+ * sweep demonstrated why: correct 2 s pacing still drew 429 on 75 of 76
+ * lookups. Without a key this returns null and the resolver falls back
+ * to Wikidata alone.
+ */
+export function liquipediaEnabled(): boolean {
+  return (process.env.LIQUIPEDIA_API_KEY ?? "").trim().length > 0;
 }
 
 export function normaliseTitle(value: string): string {
@@ -138,10 +179,24 @@ export function createLiquipediaClient(
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
+        const apiKey = (process.env.LIQUIPEDIA_API_KEY ?? "").trim();
         const res = await doFetch(url.toString(), {
           signal: controller.signal,
-          headers: { "user-agent": USER_AGENT, "accept-encoding": "gzip", accept: "application/json" },
+          headers: {
+            "user-agent": USER_AGENT,
+            "accept-encoding": "gzip",
+            accept: "application/json",
+            ...(apiKey ? { authorization: `Apikey ${apiKey}` } : {}),
+          },
         });
+        if (res.status === 429) {
+          // Never retried in place: a 429 means back off, and grinding
+          // through the sweep budget one rejection at a time is the
+          // behaviour that made this a problem rather than a hiccup.
+          const raw = res.headers.get("retry-after");
+          const secs = raw !== null && /^\d+$/u.test(raw.trim()) ? Number(raw.trim()) : null;
+          throw new LiquipediaRateLimited(secs);
+        }
         if (!res.ok) throw new Error(`liquipedia HTTP ${res.status}`);
         return (await res.json()) as Record<string, any>;
       } finally {
