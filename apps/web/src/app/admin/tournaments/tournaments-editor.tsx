@@ -12,6 +12,7 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
+import type { SortKey } from "./sort";
 import { PinOrderControls } from "@/components/admin/pin-order-controls";
 
 // Mirrors the API allowlist (services/api/src/modules/admin/tournaments.ts).
@@ -134,16 +135,9 @@ export interface CategoryOption {
   tournamentCount: number;
 }
 
-/** Mirrors the API allowlist in services/api/src/modules/admin/tournaments.ts. */
-export const SORT_KEYS = [
-  "default",
-  "name",
-  "sport",
-  "category",
-  "tier",
-  "source",
-] as const;
-export type SortKey = (typeof SORT_KEYS)[number];
+// SORT_KEYS lives in ./sort because it is a runtime VALUE that the server
+// page also needs — see the note there before moving it back.
+export type { SortKey } from "./sort";
 
 const SOURCE_LABELS: Record<string, string> = {
   auto: "Auto (unreviewed or from feed)",
