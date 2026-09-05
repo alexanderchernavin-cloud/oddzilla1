@@ -9,6 +9,7 @@ import {
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
+import { PinOrderControls } from "@/components/admin/pin-order-controls";
 
 // Mirrors the API allowlist (services/api/src/modules/admin/sports.ts).
 // Kept in sync by hand: a mismatch only changes the failure mode (415
@@ -32,6 +33,13 @@ export interface SportRow {
   active: boolean;
   logoUrl: string | null;
   brandColor: string | null;
+  /**
+   * Operator pin position in the storefront's sport rail (migration
+   * 0103), or null when unpinned. Pinned sports lead the rail in this
+   * order; unpinned ones keep the flagship-slugs-then-alphabetical
+   * default behind them. A bettor's own saved sport order still wins.
+   */
+  displayOrder: number | null;
 }
 
 interface ListShape {
@@ -169,7 +177,7 @@ function SportTable({ list }: { list: ListShape }) {
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "60px 1fr 1.4fr 1fr 130px",
+          gridTemplateColumns: "60px 1fr 190px 1.4fr 1fr 130px",
           gap: 12,
           padding: "10px 14px",
           background: "var(--color-bg-subtle, var(--surface-2))",
@@ -183,13 +191,22 @@ function SportTable({ list }: { list: ListShape }) {
       >
         <span>Logo</span>
         <span>Sport</span>
+        <span>Order</span>
         <span>Logo URL / upload</span>
         <span>Brand colour</span>
         <span style={{ textAlign: "right" }}>Save</span>
       </div>
       <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
         {list.sports.map((s) => (
-          <SportRowEditor key={s.id} sport={s} />
+          <SportRowEditor
+            key={s.id}
+            sport={s}
+            // Ends of the PINNED run. The list is ordered pinned-first,
+            // so the run is the head of the page and both ends are
+            // readable from it without a second API field.
+            first={s.displayOrder === 1}
+            last={isLastPinned(list.sports, s)}
+          />
         ))}
         {list.sports.length === 0 && (
           <li
@@ -208,7 +225,28 @@ function SportTable({ list }: { list: ListShape }) {
   );
 }
 
-function SportRowEditor({ sport }: { sport: SportRow }) {
+// True when no pinned sport sits below this one — the down arrow then
+// has nowhere to go. Unpinned rows report true so the arrow they never
+// render stays consistent with the server's own no-op.
+//
+// Caveat: with 100 rows a page, a pinned run longer than the page would
+// clip. Pinned runs are a handful of rows by construction, and the
+// server treats an out-of-range move as a no-op regardless.
+function isLastPinned(rows: SportRow[], row: SportRow): boolean {
+  const position = row.displayOrder;
+  if (position == null) return true;
+  return !rows.some((r) => r.displayOrder != null && r.displayOrder > position);
+}
+
+function SportRowEditor({
+  sport,
+  first,
+  last,
+}: {
+  sport: SportRow;
+  first: boolean;
+  last: boolean;
+}) {
   const router = useRouter();
   const [logoUrl, setLogoUrl] = useState(sport.logoUrl ?? "");
   const [brandColor, setBrandColor] = useState(sport.brandColor ?? "");
@@ -329,7 +367,7 @@ function SportRowEditor({ sport }: { sport: SportRow }) {
     <li
       style={{
         display: "grid",
-        gridTemplateColumns: "60px 1fr 1.4fr 1fr 130px",
+        gridTemplateColumns: "60px 1fr 190px 1.4fr 1fr 130px",
         gap: 12,
         alignItems: "center",
         padding: "10px 14px",
@@ -346,6 +384,16 @@ function SportRowEditor({ sport }: { sport: SportRow }) {
           {sport.slug}
         </span>
       </div>
+      {/* Pinned sports lead the storefront rail in this order; the rest
+          keep the flagship-then-alphabetical default behind them. */}
+      <PinOrderControls
+        basePath="/admin/sports"
+        id={sport.id}
+        displayOrder={sport.displayOrder}
+        first={first}
+        last={last}
+        label={sport.name}
+      />
       <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
         <input
           type="text"

@@ -767,7 +767,9 @@
   },
   "matchWidgets": {
     "lmt": {
-      "title": "Praćenje utakmice uživo"
+      "title": "Praćenje utakmice uživo",
+      "expand": "Proširi",
+      "collapse": "Sažmi"
     },
     "onBetSlip": "Na listiću",
     "addToBetSlip": "Dodaj na listić",
@@ -822,7 +824,7 @@
     },
     "streams": {
       "liveStream": "Prijenos uživo",
-      "oddinLabel": "Oddin HD"
+      "oddinLabel": "HD prijenos"
     },
     "oddinVideo": {
       "signInTitle": "Prijavite se za gledanje prijenosa",
@@ -840,6 +842,19 @@
       "towers": "Tornjevi",
       "turrets": "Kule",
       "gold": "Zlato"
+    },
+    "h2h": {
+      "title": "Međusobni susreti"
+    },
+    "betAssist": {
+      "label": "Bet Assist",
+      "title": "Bet Assist",
+      "openAria": "Otvori Bet Assist za {market}",
+      "dialogAria": "Bet Assist — {market}",
+      "close": "Zatvori"
+    },
+    "liveTable": {
+      "title": "Ljestvica uživo"
     }
   },
   "analyses": {
@@ -1110,7 +1125,7 @@
     "catNecessaryTitle": "Strogo nužni",
     "catNecessaryBody": "Kolačići za prijavu, sigurnost i postavke. Uvijek uključeni.",
     "catEmbedsTitle": "Mediji trećih strana",
-    "catEmbedsBody": "Prijenosi uživo i widgeti sa statistikom s platformi Twitch, YouTube, Kick, Gjirafa i Oddin. Ti pružatelji mogu postavljati vlastite kolačiće.",
+    "catEmbedsBody": "Prijenosi uživo s Twitcha, YouTubea, Kicka i Gjirafe te widgeti sa statistikom i praćenjem susreta koje poslužuju vanjski pružatelji podataka. Ti pružatelji mogu postavljati vlastite kolačiće.",
     "catAnalyticsTitle": "Analitika",
     "catAnalyticsBody": "Vlastita statistika korištenja (posjećene stranice, klikovi, trajanje posjeta) obrađuje se isključivo na našim poslužiteljima. Nikada je ne dijelimo s trećim stranama.",
     "embedsBlockedTitle": "Sadržaj trećih strana nije uključen",

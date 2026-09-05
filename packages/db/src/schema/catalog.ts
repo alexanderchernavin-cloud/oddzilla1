@@ -42,6 +42,12 @@ export const sports = pgTable(
     // public/sports/<slug>.svg, then to the FallbackGlyph.
     logoUrl: text("logo_url"),
     brandColor: text("brand_color"),
+    // Operator pin position for the sidebar rail and every sport-ordered
+    // list (migration 0103). NULL = unpinned, which is every row until an
+    // operator says otherwise: pinned sports sort first by this value,
+    // unpinned ones keep the old flagship-slugs-then-alphabetical rule.
+    // Maintained as a dense 1..N sequence by POST /admin/sports/:id/order.
+    displayOrder: integer("display_order"),
     // Admin-uploaded icon bytes. Mirrors avatar_templates.image_data:
     // the BYTEA + MIME pair is served by GET /sports/:slug/logo. When
     // a row carries bytes, the upload endpoint also writes a self-
@@ -74,6 +80,11 @@ export const categories = pgTable(
     // Not the same thing as `active = false` — these matches are real
     // and bettable, they just don't belong in an unasked-for list.
     hiddenFromLists: boolean("hidden_from_lists").notNull().default(false),
+    // Operator pin position within the sport's sidebar tree (migration
+    // 0103). NULL = unpinned; pinned categories head the tree in this
+    // order and the rest stay alphabetical. Scoped per sport — the dense
+    // 1..N sequence is maintained by POST /admin/categories/:id/order.
+    displayOrder: integer("display_order"),
   },
   (t) => [
     unique("categories_sport_slug").on(t.sportId, t.slug),

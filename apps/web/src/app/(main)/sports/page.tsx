@@ -19,7 +19,10 @@ import { getTranslations } from "@/lib/i18n/server";
 // per-sport chip row.
 
 interface ListMatchWithSport extends ListMatch {
-  sport: { slug: string; name: string };
+  // `displayOrder` is the operator's pin position for the sport
+  // (migration 0103) — carried per match so the cross-sport lists
+  // group in the same order the sidebar rail shows.
+  sport: { slug: string; name: string; displayOrder?: number | null };
 }
 
 interface Response {

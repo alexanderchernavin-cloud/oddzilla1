@@ -17,6 +17,20 @@
 //                                         browser cache via the ?v param.
 //   DELETE /admin/sports/:id/logo         clear logo_data + logo_mime +
 //                                         logo_url in one transaction.
+//   POST   /admin/sports/:id/order        pin / move / unpin in the
+//                                         storefront's sport rail.
+//                                         Audit-logged.
+//
+// What the ordering does (migration 0103): the sidebar rail and every
+// sport-grouped match list have ordered sports by a hard-coded flagship
+// list (cs2, dota2, lol, valorant) then alphabetically, with no operator
+// input at all. A pinned sport carries a `display_order` and leads that
+// sequence; everything unpinned keeps the old rule behind it, so the
+// rail is unchanged until somebody pins something. Two things this
+// deliberately does NOT move: a bettor's own saved sport order, which
+// still wins (this sets the default, not their preference), and the
+// lobby's chip strip, which is a curated seven-slug allowlist with its
+// own hard-coded sequence rather than an ordering of the whole set.
 //
 // Mirrors the /admin/competitors + /admin/avatars shapes so the editor UI
 // can be cloned with only minor field changes. Sports are a small set
@@ -24,9 +38,10 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { and, asc, eq, isNull, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
 import { sports, adminAuditLog } from "@oddzilla/db";
 import { BadRequestError, NotFoundError } from "../../lib/errors.js";
+import { reorderPinned, type PinAction } from "../../lib/pin-order.js";
 import multipart from "@fastify/multipart";
 
 // 1 MB upload cap. Sport icons are small — 256×256 PNG @ ~80% quality
@@ -92,6 +107,10 @@ const patchBody = z
     message: "at least one field is required",
   });
 
+const orderBody = z.object({
+  action: z.enum(["top", "up", "down", "clear"]),
+});
+
 interface SportRow {
   id: number;
   provider: string;
@@ -102,6 +121,7 @@ interface SportRow {
   active: boolean;
   logoUrl: string | null;
   brandColor: string | null;
+  displayOrder: number | null;
 }
 
 // Build the storefront-facing URL we stamp onto sports.logo_url after a
@@ -164,10 +184,14 @@ export default async function adminSportsRoutes(app: FastifyInstance) {
           active: sports.active,
           logoUrl: sports.logoUrl,
           brandColor: sports.brandColor,
+          displayOrder: sports.displayOrder,
         })
         .from(sports)
         .where(where)
-        .orderBy(asc(sports.slug))
+        // Pinned first, in operator order, then the old alphabetical
+        // list — the same sequence the storefront rail renders, so the
+        // arrows on a row point where the operator expects.
+        .orderBy(sql`${sports.displayOrder} ASC NULLS LAST`, asc(sports.slug))
         .limit(q.limit)
         .offset(q.offset),
       app.db
@@ -421,6 +445,101 @@ export default async function adminSportsRoutes(app: FastifyInstance) {
       await app.redis.del(SPORTS_CATALOG_CACHE_KEY).catch(() => null);
 
       return { ok: true, id: params.id };
+    },
+  );
+
+  // ─── Rail ordering ───────────────────────────────────────────────────
+  //
+  // Pin / move / unpin one sport in the storefront's sport rail. Scope is
+  // global: unlike categories, a sport belongs to no parent, so the
+  // pinned set is one sequence over the whole table.
+  //
+  // Inactive sports are allowed. A sport is dropped from the rail when it
+  // has nothing bookable, which is a transient state — refusing to
+  // position one now would mean the operator has to come back and do it
+  // during the window when the fixtures land.
+  app.post(
+    "/admin/sports/:id/order",
+    { config: writeRateLimit },
+    async (request) => {
+      const admin = request.requireRole("admin");
+      const params = z
+        .object({ id: z.coerce.number().int().positive() })
+        .parse(request.params);
+      const { action } = orderBody.parse(request.body) as { action: PinAction };
+
+      let before: number | null = null;
+      let after: number | null = null;
+
+      const [scope] = await app.db
+        .select({ slug: sports.slug, name: sports.name })
+        .from(sports)
+        .where(eq(sports.id, params.id))
+        .limit(1);
+      if (!scope) throw new NotFoundError("sport_not_found", "sport_not_found");
+
+      await app.db.transaction(async (tx) => {
+        // The target plus the whole pinned set, locked in ONE statement
+        // ordered by primary key — see the twin in admin/categories.ts:
+        // two acquisitions in click-dependent order is how two admins
+        // reordering at once deadlock each other.
+        const locked = await tx
+          .select({ id: sports.id, displayOrder: sports.displayOrder })
+          .from(sports)
+          .where(or(eq(sports.id, params.id), isNotNull(sports.displayOrder)))
+          .orderBy(asc(sports.id))
+          .for("update");
+
+        const target = locked.find((r) => r.id === params.id);
+        if (!target) throw new NotFoundError("sport_not_found", "sport_not_found");
+        before = target.displayOrder;
+
+        const pinned = locked
+          .filter((r) => r.displayOrder != null)
+          .sort((a, b) => a.displayOrder! - b.displayOrder! || a.id - b.id)
+          .map((r) => r.id);
+
+        const next = reorderPinned(pinned, params.id, action);
+        const position = next.indexOf(params.id);
+        after = position === -1 ? null : position + 1;
+
+        // Clear, then stamp the new sequence — see the twin in
+        // admin/categories.ts for why the stamp is a loop.
+        await tx
+          .update(sports)
+          .set({ displayOrder: null })
+          .where(isNotNull(sports.displayOrder));
+
+        for (const [i, sportId] of next.entries()) {
+          await tx
+            .update(sports)
+            .set({ displayOrder: i + 1 })
+            .where(eq(sports.id, sportId));
+        }
+
+        await tx.insert(adminAuditLog).values({
+          actorUserId: admin.id,
+          action: "sport.order_update",
+          targetType: "sport",
+          targetId: String(params.id),
+          beforeJson: { displayOrder: before },
+          afterJson: {
+            slug: scope.slug,
+            name: scope.name,
+            operation: action,
+            displayOrder: after,
+            pinnedOrder: next,
+          },
+          ipInet: request.ip ?? null,
+        });
+      });
+
+      // /catalog/sports is cached 60 s and read by every storefront
+      // layout render; without the bust an operator would watch their
+      // reorder do nothing for a minute.
+      await app.redis.del(SPORTS_CATALOG_CACHE_KEY).catch(() => null);
+
+      return { id: params.id, displayOrder: after };
     },
   );
 }

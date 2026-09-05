@@ -1475,6 +1475,17 @@ its job row and image.
 
 ## Sportradar match mapping runbook
 
+**A confirmed mapping now drives three surfaces, not one** (2026-09-05):
+the Live Match Tracker on the match page — which also REPLACES our own
+scoreboard in the header card, since the tracker draws the teams and the
+score itself — the per-market **Bet Assist** button in the markets tree,
+and **Head to Head** in the right rail under the bet slip. All three take
+the same Sportradar match id, so a wrong pairing no longer just shows the
+wrong pitch: it puts another fixture's statistics beside our prices in
+three places. That raises the cost of a bad confirm, not the procedure —
+reject is still the way to undo one, and a rejected row is a tombstone
+that never blocks the right match from claiming that id.
+
 The Live Match Tracker on a traditional-sport match page needs a
 **Sportradar** match id. Oddzilla's own id (`matches.id`) and the feed's
 id (`matches.provider_urn`) come free with every fixture. The Sportradar

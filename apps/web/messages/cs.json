@@ -767,7 +767,9 @@
   },
   "matchWidgets": {
     "lmt": {
-      "title": "Živé sledování zápasu"
+      "title": "Živé sledování zápasu",
+      "expand": "Rozbalit",
+      "collapse": "Sbalit"
     },
     "onBetSlip": "Na tiketu",
     "addToBetSlip": "Přidat na tiket",
@@ -822,7 +824,7 @@
     },
     "streams": {
       "liveStream": "Živý přenos",
-      "oddinLabel": "Oddin HD"
+      "oddinLabel": "HD přenos"
     },
     "oddinVideo": {
       "signInTitle": "Pro sledovani prenosu se prihlaste",
@@ -840,6 +842,19 @@
       "towers": "Věže",
       "turrets": "Turrety",
       "gold": "Zlato"
+    },
+    "h2h": {
+      "title": "Vzájemné zápasy"
+    },
+    "betAssist": {
+      "label": "Bet Assist",
+      "title": "Bet Assist",
+      "openAria": "Otevřít Bet Assist pro {market}",
+      "dialogAria": "Bet Assist — {market}",
+      "close": "Zavřít"
+    },
+    "liveTable": {
+      "title": "Živá tabulka"
     }
   },
   "analyses": {
@@ -1110,7 +1125,7 @@
     "catNecessaryTitle": "Nezbytně nutné",
     "catNecessaryBody": "Cookies pro přihlášení, zabezpečení a předvolby. Vždy zapnuté.",
     "catEmbedsTitle": "Média třetích stran",
-    "catEmbedsBody": "Živé přenosy a widgety se statistikami od Twitch, YouTube, Kick, Gjirafa a Oddin. Tito poskytovatelé mohou ukládat vlastní cookies.",
+    "catEmbedsBody": "Živé přenosy z Twitch, YouTube, Kick a Gjirafa a dále widgety se statistikami a sledováním zápasu od poskytovatelů dat třetích stran. Tito poskytovatelé mohou ukládat vlastní cookies.",
     "catAnalyticsTitle": "Analytika",
     "catAnalyticsBody": "Vlastní statistiky používání (navštívené stránky, kliknutí, délka návštěvy) zpracovávané výhradně na našich serverech. Nikdy je nesdílíme s třetími stranami.",
     "embedsBlockedTitle": "Obsah třetích stran je vypnutý",

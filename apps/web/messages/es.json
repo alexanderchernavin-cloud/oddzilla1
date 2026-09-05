@@ -767,7 +767,9 @@
   },
   "matchWidgets": {
     "lmt": {
-      "title": "Seguimiento del partido en vivo"
+      "title": "Seguimiento del partido en vivo",
+      "expand": "Ampliar",
+      "collapse": "Contraer"
     },
     "onBetSlip": "En el boleto",
     "addToBetSlip": "Añadir al boleto",
@@ -822,7 +824,7 @@
     },
     "streams": {
       "liveStream": "Transmisión en vivo",
-      "oddinLabel": "Oddin HD"
+      "oddinLabel": "Transmisión HD"
     },
     "oddinVideo": {
       "signInTitle": "Inicia sesion para ver esta transmision",
@@ -840,6 +842,19 @@
       "towers": "Torres",
       "turrets": "Torretas",
       "gold": "Oro"
+    },
+    "h2h": {
+      "title": "Cara a cara"
+    },
+    "betAssist": {
+      "label": "Bet Assist",
+      "title": "Bet Assist",
+      "openAria": "Abrir Bet Assist para {market}",
+      "dialogAria": "Bet Assist — {market}",
+      "close": "Cerrar"
+    },
+    "liveTable": {
+      "title": "Clasificación en vivo"
     }
   },
   "analyses": {
@@ -1110,7 +1125,7 @@
     "catNecessaryTitle": "Estrictamente necesarias",
     "catNecessaryBody": "Cookies de inicio de sesión, seguridad y preferencias. Siempre activas.",
     "catEmbedsTitle": "Medios de terceros",
-    "catEmbedsBody": "Transmisiones en vivo y widgets de estadísticas de Twitch, YouTube, Kick, Gjirafa y Oddin. Estos proveedores pueden instalar sus propias cookies.",
+    "catEmbedsBody": "Transmisiones en vivo de Twitch, YouTube, Kick y Gjirafa, además de widgets de estadísticas y seguimiento de partidos servidos por proveedores de datos externos. Estos proveedores pueden instalar sus propias cookies.",
     "catAnalyticsTitle": "Analítica",
     "catAnalyticsBody": "Estadísticas de uso propias (páginas visitadas, clics, duración de la sesión) procesadas solo en nuestros servidores. Nunca se comparten con terceros.",
     "embedsBlockedTitle": "Contenido de terceros desactivado",

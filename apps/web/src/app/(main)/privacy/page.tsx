@@ -180,11 +180,6 @@ export default function PrivacyPage() {
         <H3>4. Who we share it with</H3>
         <ul style={{ paddingLeft: 20, margin: "0 0 12px" }}>
           <Li>
-            Oddin.gg — our licensed esports odds and data partner. Match,
-            market, and settlement data flows between us; widget embeds are
-            served from their infrastructure.
-          </Li>
-          <Li>
             Hetzner Online GmbH (Germany) — server hosting inside the EU.
           </Li>
           <Li>
@@ -196,8 +191,9 @@ export default function PrivacyPage() {
             Android app, if you opt in.
           </Li>
           <Li>
-            Streaming platforms (Twitch, YouTube, Kick, Gjirafa) — only when
-            you accept cookies and load an embedded stream.
+            Streaming platforms (Twitch, YouTube, Kick, Gjirafa) and the
+            third-party providers behind embedded match statistics — only
+            when you open a page that loads one.
           </Li>
           <Li>
             Public authorities where the law requires it.
@@ -324,10 +320,11 @@ export default function PrivacyPage() {
 
         <H3>Third-party media</H3>
         <P>
-          Match pages can embed live streams and statistics widgets from
-          Twitch, YouTube, Kick, Gjirafa, and Oddin. These providers may set
-          their own cookies and process your IP address under their own
-          privacy policies whenever a page embedding them is open.
+          Match pages can embed live streams from Twitch, YouTube, Kick and
+          Gjirafa, plus statistics and match-tracker widgets served by
+          third-party data providers. These providers may set their own
+          cookies and process your IP address under their own privacy
+          policies whenever a page embedding them is open.
         </P>
 
         <H3>First-party analytics</H3>

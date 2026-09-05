@@ -30,6 +30,12 @@ interface SportItem {
   name: string;
   kind: string;
   active: boolean;
+  /**
+   * Operator pin position from /admin/sports (migration 0103). Null on
+   * every unpinned sport, which then keeps the old flagship-slugs-then-
+   * alphabetical order. A bettor's own saved order still wins over both.
+   */
+  displayOrder?: number | null;
 }
 
 // Which half of the sport rail is showing. `sports.kind` is the
@@ -50,6 +56,12 @@ interface TournamentCategory {
    * only way in, so the bucket wears a quiet marker rather than hiding.
    */
   hiddenFromLists?: boolean;
+  /**
+   * Operator pin position within this sport's tree (migration 0103).
+   * Null leaves the bucket in the alphabetical tail, which is where
+   * every bucket sat before the column existed.
+   */
+  displayOrder?: number | null;
 }
 
 interface Tournament {
@@ -915,9 +927,13 @@ function SportKindTabs({
       }}
     >
       {(
+        // Sports on the left, esports on the right (operator call,
+        // 2026-09-05). Only the render order moves — `esport` is still
+        // the tab a fresh visitor lands on, and the stored preference
+        // key is unchanged, so nobody's saved side flips under them.
         [
-          ["esport", esportsLabel],
           ["traditional", sportsLabel],
+          ["esport", esportsLabel],
         ] as const
       ).map(([kind, label]) => {
         const active = value === kind;
@@ -1199,6 +1215,8 @@ interface TournamentGroup {
   categoryId: number | null;
   /** True when this bucket only shows up in lists once it's the one selected. */
   hiddenFromLists: boolean;
+  /** Operator pin position, or null for the alphabetical tail. */
+  displayOrder: number | null;
   /**
    * Logo to stand for the whole bucket, when one unambiguously does.
    * Set only when every tournament in the bucket that carries a logo
@@ -1220,13 +1238,14 @@ interface TournamentGroup {
 //     the API nulls out) collect into one unlabelled bucket rendered FIRST
 //     and without a header, so every esport looks exactly as it did before
 //     grouping existed.
-//   - Labelled buckets sort by NAME. They used to sort by live count
-//     first, which made the list jump around as matches went live and
-//     finished — with the buckets now collapsed by default the header
-//     row is a navigation target, and a target that moves is worse than
-//     one that's occasionally below the fold. Operator-configurable
-//     ordering is a backoffice follow-up; alphabetical is the stable
-//     default until then.
+//   - Labelled buckets sort by the operator's pin order first (migration
+//     0103, set on /admin/categories), then by NAME. They used to sort by
+//     live count first, which made the list jump around as matches went
+//     live and finished — with the buckets now collapsed by default the
+//     header row is a navigation target, and a target that moves is worse
+//     than one that's occasionally below the fold. The pin tier is the
+//     operator saying which countries lead the tree; it is a fixed
+//     sequence, so it keeps that property.
 function groupTournamentsByCategory(tournaments: Tournament[]): TournamentGroup[] {
   const ungrouped: Tournament[] = [];
   const byCategory = new Map<string, TournamentGroup>();
@@ -1245,6 +1264,7 @@ function groupTournamentsByCategory(tournaments: Tournament[]): TournamentGroup[
         label,
         categoryId: t.category?.id ?? null,
         hiddenFromLists: t.category?.hiddenFromLists === true,
+        displayOrder: t.category?.displayOrder ?? null,
         logoUrl: null,
         liveCount: 0,
         tournaments: [],
@@ -1263,17 +1283,24 @@ function groupTournamentsByCategory(tournaments: Tournament[]): TournamentGroup[
   for (const [key, group] of byCategory) {
     if (ambiguousLogo.get(key)) group.logoUrl = null;
   }
-  const groups = [...byCategory.values()].sort((a, b) =>
-    (a.label ?? "").localeCompare(b.label ?? "", undefined, {
+  const groups = [...byCategory.values()].sort((a, b) => {
+    // MAX_SAFE_INTEGER for an unpinned bucket drops it below every
+    // pinned one without a second branch — same shape the tournament
+    // tier sort just above uses for a null risk_tier.
+    const pa = a.displayOrder ?? Number.MAX_SAFE_INTEGER;
+    const pb = b.displayOrder ?? Number.MAX_SAFE_INTEGER;
+    if (pa !== pb) return pa - pb;
+    return (a.label ?? "").localeCompare(b.label ?? "", undefined, {
       sensitivity: "base",
-    }),
-  );
+    });
+  });
   if (ungrouped.length > 0) {
     groups.unshift({
       key: "__ungrouped",
       label: null,
       categoryId: null,
       hiddenFromLists: false,
+      displayOrder: null,
       logoUrl: null,
       liveCount: 0,
       tournaments: ungrouped,

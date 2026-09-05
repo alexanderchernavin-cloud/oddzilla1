@@ -24,7 +24,8 @@
     "./live-chat": "./src/live-chat.ts",
     "./support": "./src/support.ts",
     "./video": "./src/video.ts",
-    "./sportradar": "./src/sportradar.ts"
+    "./sportradar": "./src/sportradar.ts",
+    "./bet-assist": "./src/bet-assist.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -767,7 +767,9 @@
   },
   "matchWidgets": {
     "lmt": {
-      "title": "Трекер матча в реальном времени"
+      "title": "Трекер матча в реальном времени",
+      "expand": "Развернуть",
+      "collapse": "Свернуть"
     },
     "onBetSlip": "В купоне",
     "addToBetSlip": "Добавить в купон",
@@ -822,7 +824,7 @@
     },
     "streams": {
       "liveStream": "Прямая трансляция",
-      "oddinLabel": "Oddin HD"
+      "oddinLabel": "HD-трансляция"
     },
     "oddinVideo": {
       "signInTitle": "Войдите, чтобы смотреть трансляцию",
@@ -840,6 +842,19 @@
       "towers": "Башни",
       "turrets": "Турели",
       "gold": "Золото"
+    },
+    "h2h": {
+      "title": "Личные встречи"
+    },
+    "betAssist": {
+      "label": "Bet Assist",
+      "title": "Bet Assist",
+      "openAria": "Открыть Bet Assist для {market}",
+      "dialogAria": "Bet Assist — {market}",
+      "close": "Закрыть"
+    },
+    "liveTable": {
+      "title": "Турнирная таблица"
     }
   },
   "analyses": {
@@ -1110,7 +1125,7 @@
     "catNecessaryTitle": "Строго необходимые",
     "catNecessaryBody": "Cookies для входа, безопасности и настроек. Всегда включены.",
     "catEmbedsTitle": "Медиа третьих сторон",
-    "catEmbedsBody": "Прямые трансляции и виджеты статистики от Twitch, YouTube, Kick, Gjirafa и Oddin. Эти провайдеры могут устанавливать собственные cookies.",
+    "catEmbedsBody": "Прямые трансляции от Twitch, YouTube, Kick и Gjirafa, а также виджеты статистики и трекера матча от сторонних поставщиков данных. Эти поставщики могут устанавливать собственные cookies.",
     "catAnalyticsTitle": "Аналитика",
     "catAnalyticsBody": "Собственная статистика использования (просмотренные страницы, клики, длительность сессии), обрабатываемая только на наших серверах. Никогда не передаётся третьим сторонам.",
     "embedsBlockedTitle": "Контент третьих сторон отключён",

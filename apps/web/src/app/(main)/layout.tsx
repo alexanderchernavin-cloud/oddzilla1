@@ -37,6 +37,8 @@ interface SportsResponse {
     active: boolean;
     logoUrl?: string | null;
     brandColor?: string | null;
+    /** Operator pin position for the rail (migration 0103); null = unpinned. */
+    displayOrder?: number | null;
   }>;
 }
 

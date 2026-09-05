@@ -27,6 +27,8 @@ import {
 } from "@oddzilla/types/netwinstable";
 // Subpath, never the barrel — see packages/types/src/odds.ts.
 import { isTeamShapedMarket } from "@oddzilla/types/boosted-odds";
+import { resolveBetAssistMarket } from "@oddzilla/types/bet-assist";
+import type { SportradarMatchRef } from "@oddzilla/types/sportradar";
 import type { ZillaFlashOffer } from "@oddzilla/types";
 import { useTranslations } from "@/lib/i18n";
 import type { ZillaTip } from "@oddzilla/types/zillatips";
@@ -36,6 +38,7 @@ import {
   BetBuilderTogglePill,
   useBetBuilderProbe,
 } from "@/components/match/betbuilder-toggle";
+import { BetAssistControl } from "@/components/match/bet-assist";
 import {
   ZillaTipsBadge,
   ZillaTipsProvider,
@@ -205,10 +208,16 @@ export function LiveMarkets({
   matchId,
   match,
   initialGroups,
+  sportradar,
 }: {
   matchId: string;
   match: MatchMeta;
   initialGroups: MarketGroup[];
+  // Operator-confirmed Sportradar mapping, or null. Present only for
+  // fixtures an operator has paired (migration 0100), which is what
+  // gates every Bet Assist control in this tree — the widget is keyed
+  // by Sportradar ids we cannot derive from either feed.
+  sportradar?: SportradarMatchRef | null;
 }) {
   const ticks = useLiveOdds(matchId);
   // Per-market live status (1 active / -1 suspended / -3 settled / -4
@@ -620,6 +629,7 @@ export function LiveMarkets({
                   flashNowMs={flashNowMs}
                   customNowMs={customNowMs}
                   flashKickerShort={tFlash("boostedTagShort")}
+                  sportradar={sportradar ?? null}
                 />
               ) : (
                 <LineFamilyCard
@@ -633,6 +643,7 @@ export function LiveMarkets({
                   flashNowMs={flashNowMs}
                   customNowMs={customNowMs}
                   flashKickerShort={tFlash("boostedTagShort")}
+                  sportradar={sportradar ?? null}
                 />
               ),
             )}
@@ -702,6 +713,7 @@ function SingleMarketCard({
   flashNowMs,
   customNowMs,
   flashKickerShort,
+  sportradar,
 }: {
   market: MarketSnapshot;
   match: MatchMeta;
@@ -712,7 +724,15 @@ function SingleMarketCard({
   flashNowMs: number;
   customNowMs: number;
   flashKickerShort: string;
+  sportradar: SportradarMatchRef | null;
 }) {
+  const betAssistMarket = sportradar
+    ? resolveBetAssistMarket({
+        srSportId: sportradar.srSportId,
+        providerMarketId: m.providerMarketId,
+        variant: m.variant,
+      })
+    : null;
   const suspended = !isMarketBettable(m);
   const cols = m.outcomes.length <= 2 ? 2 : m.outcomes.length <= 3 ? 3 : 4;
   // Group tips by their outcomeId so each outcome cell can render
@@ -760,6 +780,13 @@ function SingleMarketCard({
           inline
         />
         <div style={{ flex: 1 }} />
+        {betAssistMarket && sportradar ? (
+          <BetAssistControl
+            srMatchId={sportradar.srMatchId}
+            market={betAssistMarket}
+            marketLabel={m.name}
+          />
+        ) : null}
         {suspended && <SuspendedPill />}
       </div>
       <div
@@ -924,6 +951,7 @@ function LineFamilyCard({
   flashNowMs,
   customNowMs,
   flashKickerShort,
+  sportradar,
 }: {
   family: LineFamily;
   match: MatchMeta;
@@ -934,7 +962,17 @@ function LineFamilyCard({
   flashNowMs: number;
   customNowMs: number;
   flashKickerShort: string;
+  sportradar: SportradarMatchRef | null;
 }) {
+  // Every line in a family shares the market id and sub-event variant —
+  // they differ only in the line value — so one lookup covers the card.
+  const betAssistMarket = sportradar
+    ? resolveBetAssistMarket({
+        srSportId: sportradar.srSportId,
+        providerMarketId: family.providerMarketId,
+        variant: family.markets[0]?.variant ?? null,
+      })
+    : null;
   // Drop deactivated lines (status=0; Oddin closed them and they're
   // not coming back this session) and lines whose outcomes have no
   // live prices. Each line value is its own Oddin market, so partial
@@ -1058,6 +1096,13 @@ function LineFamilyCard({
           inline
         />
         <div style={{ flex: 1 }} />
+        {betAssistMarket && sportradar ? (
+          <BetAssistControl
+            srMatchId={sportradar.srMatchId}
+            market={betAssistMarket}
+            marketLabel={family.baseName}
+          />
+        ) : null}
       </div>
       <div
         style={{

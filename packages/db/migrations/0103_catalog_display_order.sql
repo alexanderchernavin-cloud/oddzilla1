@@ -1,0 +1,25 @@
+-- Operator-pinned ordering for sports and categories.
+--
+-- Both storefront lists have so far been ordered by a rule with no
+-- operator input: sports by a hard-coded flagship list (cs2, dota2, lol,
+-- valorant) then alphabetically, and the sidebar's category buckets
+-- purely alphabetically. That is a stable default and a poor
+-- merchandising position — with the Fonbet line in, Football's tree
+-- opens on Albania and the sport rail can't put Football above an
+-- esport the operator no longer leads with.
+--
+-- NULL means "not pinned", which is what every existing row gets, so
+-- ordering is byte-identical to today until an operator pins something.
+-- A pinned row sorts by this value ascending, ahead of every unpinned
+-- row; unpinned rows keep the old rule among themselves. The admin
+-- desk maintains the pinned set as a dense 1..N sequence per scope
+-- (globally for sports, per sport for categories) — it renumbers on
+-- every change, so gaps are not load-bearing and nothing depends on the
+-- absolute values.
+--
+-- No index: `sports` holds under a hundred rows and `categories` a few
+-- thousand, both read through queries that already scan the sport's
+-- whole set. An index here would cost writes to serve a sort that is
+-- free at this size.
+ALTER TABLE sports ADD COLUMN display_order INTEGER;
+ALTER TABLE categories ADD COLUMN display_order INTEGER;
