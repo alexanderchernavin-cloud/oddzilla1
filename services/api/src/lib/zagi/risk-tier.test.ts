@@ -120,8 +120,18 @@ describe("looksSimulated", () => {
 });
 
 describe("looksOutright", () => {
+  it("does NOT treat a league's season as an outright", () => {
+    // Shipped mistake, reverted by migration 0109. Fonbet names the
+    // current season of a LEAGUE this way: "England. Premier League.
+    // Season 26/27" carried 12 fixtures and 812 active markets, and
+    // stepping it as an outright cut the biggest football leagues in the
+    // book by three tiers. A real outright has no fixtures under it.
+    assert.ok(!looksOutright("England. Premier League. Season 26/27"));
+    assert.ok(!looksOutright("Italy. Serie A. Season 26/27"));
+    assert.ok(!looksOutright("Russia. Superleague. Season 26/27"));
+  });
+
   it("catches competition-wide markets", () => {
-    assert.ok(looksOutright("England. Premier League. Season 26/27"));
     assert.ok(looksOutright("Italy. Serie A. Head-to-head in the tournament"));
     assert.ok(looksOutright("Russia. Premier League. Head-to-head in tournament"));
     assert.ok(looksOutright("Spain. Primera Division. Head-to-head after 10 rounds in tournament"));
@@ -159,14 +169,26 @@ describe("resolveTier", () => {
     assert.equal(r.floorBound, null);
   });
 
-  it("steps a season outright down three further tiers", () => {
+  it("steps a genuine outright down three further tiers", () => {
     const r = resolveTier({
+      proposed: 2,
+      sportSlug: "football",
+      tournamentName: "Italy. Serie A. Head-to-head in the tournament",
+    });
+    assert.equal(r.tier, 2 + SAFETY_MARGIN_STEPS + OUTRIGHT_TIER_STEPS);
+    assert.equal(r.outrightStep, OUTRIGHT_TIER_STEPS);
+  });
+
+  it("does NOT step the league itself, only its outright markets", () => {
+    // The pair that made the bug visible: both are "Serie A", only one
+    // is a market resolving over the whole season.
+    const league = resolveTier({
       proposed: 2,
       sportSlug: "football",
       tournamentName: "Italy. Serie A. Season 26/27",
     });
-    assert.equal(r.tier, 2 + SAFETY_MARGIN_STEPS + OUTRIGHT_TIER_STEPS);
-    assert.equal(r.outrightStep, OUTRIGHT_TIER_STEPS);
+    assert.equal(league.outrightStep, 0);
+    assert.equal(league.tier, 2 + SAFETY_MARGIN_STEPS);
   });
 
   it("does not step a per-stage head-to-head as an outright", () => {
@@ -241,7 +263,7 @@ describe("resolveTier", () => {
     const r = resolveTier({
       proposed: 9,
       sportSlug: "football",
-      tournamentName: "England. Premier League. Season 26/27",
+      tournamentName: "England. Premier League. Head-to-head in the tournament",
     });
     assert.equal(r.tier, 10);
   });
