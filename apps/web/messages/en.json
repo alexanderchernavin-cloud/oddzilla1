@@ -343,7 +343,8 @@
   "home": {
     "lobby": "Lobby",
     "upcoming": "Pre-match",
-    "empty": "Nothing scheduled. Check individual sport pages for the full slate."
+    "empty": "Nothing scheduled. Check individual sport pages for the full slate.",
+    "topSports": "Top sports"
   },
   "lobby": {
     "today": "Today, {date}",

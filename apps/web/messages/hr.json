@@ -343,7 +343,8 @@
   "home": {
     "lobby": "Lobby",
     "upcoming": "Prije meča",
-    "empty": "Ništa nije na rasporedu. Cjelokupnu ponudu potražite na stranicama pojedinih sportova."
+    "empty": "Ništa nije na rasporedu. Cjelokupnu ponudu potražite na stranicama pojedinih sportova.",
+    "topSports": "Najbolji sportovi"
   },
   "lobby": {
     "today": "Danas, {date}",

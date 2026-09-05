@@ -131,6 +131,24 @@ export default async function HomePage() {
 
       <ZillaFlashRow />
 
+      {/*
+        Top sports. Operator-curated on /admin/sports (migration 0103) —
+        pin a sport there and it appears here, in pin order. The heading
+        exists because an unlabelled chip row reads as a filter bar
+        rather than as a recommendation, which is what it is.
+      */}
+      <div
+        className="mono"
+        style={{
+          fontSize: 11,
+          letterSpacing: "0.12em",
+          textTransform: "uppercase",
+          color: "var(--fg-muted)",
+          marginBottom: -4,
+        }}
+      >
+        {t("topSports")}
+      </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
         {filterSportsForLobbyChips(sports).map((s) => (
           <Link

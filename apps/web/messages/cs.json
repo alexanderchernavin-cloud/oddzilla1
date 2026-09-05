@@ -343,7 +343,8 @@
   "home": {
     "lobby": "Lobby",
     "upcoming": "Předzápas",
-    "empty": "Žádné naplánované zápasy. Podívejte se na jednotlivé sporty pro celý program."
+    "empty": "Žádné naplánované zápasy. Podívejte se na jednotlivé sporty pro celý program.",
+    "topSports": "Nejlepší sporty"
   },
   "lobby": {
     "today": "Dnes, {date}",

@@ -41,8 +41,11 @@ export default async function AdminSportsPage({
       </p>
       <p className="mt-2 max-w-4xl text-sm text-[var(--color-fg-muted)]">
         <strong>Order</strong> pins a sport to the top of the storefront
-        sidebar rail and of every sport-grouped match list (lobby, Live,
-        Pre-match). Pinned sports lead in the order shown; unpinned ones keep the
+        sidebar rail, of every sport-grouped match list (lobby, Live,
+        Pre-match), and of the lobby&apos;s <strong>Top sports</strong> strip
+        — pin a sport and it appears there, in this order; pin nothing and
+        the strip falls back to its old built-in list. Pinned sports lead
+        in the order shown; unpinned ones keep the
         default behind them (CS2, Dota 2, LoL, Valorant, then
         alphabetical). A bettor who has reordered their own sidebar still
         sees their arrangement — this sets the default, not their choice.

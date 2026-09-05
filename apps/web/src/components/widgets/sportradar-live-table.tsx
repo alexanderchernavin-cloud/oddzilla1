@@ -95,15 +95,25 @@ export function SportradarLiveTable({ height = 620, ...rest }: Props) {
           {t("liveTable.title")}
         </span>
       </div>
+      {/*
+        Full-bleed: the frame cancels the section's 16px side padding to
+        buy back 32px of table width. A ten-column league table needs
+        every pixel the rail can give it, and unlike the bet slip above
+        it this is a data grid, not a card — running it edge to edge
+        reads as deliberate rather than broken. Rounding and the side
+        borders go with the padding for the same reason.
+      */}
       <iframe
         src={src}
         title={t("liveTable.title")}
         loading="lazy"
         style={{
-          width: "100%",
+          width: "calc(100% + 32px)",
+          maxWidth: "none",
+          marginInline: -16,
           height,
-          border: "1px solid var(--border)",
-          borderRadius: 10,
+          borderTop: "1px solid var(--border)",
+          borderBottom: "1px solid var(--border)",
           background: "var(--surface-2)",
           display: "block",
         }}

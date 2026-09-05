@@ -245,7 +245,7 @@ body {
 
 .oz-shell {
   display: grid;
-  grid-template-columns: 240px 1fr 300px;
+  grid-template-columns: 240px 1fr 380px;
   /* 60px top bar carries the theme / bell / wallet / avatar cluster
      on desktop + tablet. The cluster is 36px tall so 60px gives 12px
      above + below — tight but not cramped, no big empty band. On
@@ -257,7 +257,7 @@ body {
      the full cluster without overflow. */
   grid-template-rows: 60px 1fr;
   grid-template-areas: "top top top" "side main rail";
-  /* 240 sidebar + 900 main cap + 300 rail = 1440. The match page
+  /* 240 sidebar + 900 main cap + 380 rail = 1520. The match page
      and the catalog list pages both cap their inner content around
      1000px; widening the shell beyond that just leaks an empty
      band between the central content and the right rail on wide
@@ -265,11 +265,18 @@ body {
      keeps match cards and ZillaFlash tiles from looking stretched
      at QHD+ viewports. The 1fr center cell still grows on smaller
      viewports (everything below 1440 + body padding fills naturally).
-     The rail is 300px — enough headroom for the wallet pill +
-     theme/bell/avatar cluster in the rail header to coexist without
-     wrapping (the cluster wants ~240–250px depending on balance
-     length). Bringing it tighter starts to crowd that row. */
-  max-width: 1440px;
+     The rail went 300 → 380px on 2026-09-05. 300 was sized for a
+     rail that held the bet slip and little else; it now also carries
+     the Sportradar Head to Head and Live Table embeds, and a league
+     table is ten columns wide. At 300 the table had ~267px of usable
+     width and clipped after GF, so the hosted frame grew its own
+     horizontal scrollbar — standings you have to scroll sideways to
+     read are not standings. NOTE: 380 has not been verified against
+     the widget's true minimum. The frame is cross-origin and served
+     from a host this environment cannot load, so its needed width
+     could not be measured; if the table still clips, this number and
+     the max-width below move together. */
+  max-width: 1520px;
   margin-inline: auto;
   /* Pin the shell to the viewport width on every breakpoint so a
      stubborn flex/grid child can't make the page wider than the
