@@ -252,12 +252,19 @@ function BetAssistOverlay({
             <I.Close size={14} />
           </button>
         </div>
+        {/* Fixed because the hosted page cannot report its size across
+            origins. Sized to what the widget actually draws for a market
+            — win probability, form split, last five games — which
+            measured ~230px at the panel's 460px width on production
+            (2026-09-05); 560 left over 300px of the hosted page's blank
+            white under it. A market kind with more blocks scrolls inside
+            the frame, as anything over 560 already did. */}
         <iframe
           src={src}
           title={`${t("betAssist.title")} — ${marketLabel}`}
           style={{
             width: "100%",
-            height: 560,
+            height: 300,
             maxHeight: "100%",
             border: 0,
             display: "block",
