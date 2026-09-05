@@ -8,11 +8,14 @@
 
 import Link from "next/link";
 import { serverApi } from "@/lib/server-fetch";
+// SORT_KEYS is a runtime value, so it must come from a module WITHOUT
+// "use client" — a client module's exports reach a server component as
+// reference proxies, not as the values themselves. Types are erased and
+// are safe to take from the editor.
+import { SORT_KEYS, type SortKey } from "./sort";
 import {
-  SORT_KEYS,
   TournamentsEditor,
   type CategoryOption,
-  type SortKey,
   type TournamentRow,
   type SportOption,
 } from "./tournaments-editor";
