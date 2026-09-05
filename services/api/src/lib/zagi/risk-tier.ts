@@ -221,9 +221,21 @@ export const OUTRIGHT_TIER_STEPS = 3;
  * "Champion" is not here either, for the same reason in reverse: it
  * matches "Scotland. Championship" and "Gaelic football. Galway
  * Championship", which are the names of ordinary leagues.
+ *
+ * NEITHER IS "Season 26/27", and that one was a shipped mistake worth
+ * recording. It reads like an outright and is not: Fonbet names the
+ * CURRENT SEASON OF A LEAGUE that way, so "England. Premier League.
+ * Season 26/27" carried 12 open fixtures and 812 active markets, and
+ * "Italy. Serie A. Season 26/27" 16 and 1 102. Stepping those as
+ * outrights cut the per-match budget on the biggest football leagues in
+ * the book by three tiers — Serie A from ~10 000 USDC a match to ~1 000
+ * — and pushed the Premier League below the Championship in the sidebar,
+ * which is how it was noticed. The pattern set had been validated against
+ * NAMES and never against what the rows contained. A genuine outright
+ * has no fixtures under it: 0-2 active markets against a league's
+ * hundreds. Migration 0109 reverted the eight leagues it caught.
  */
 export const OUTRIGHT_PATTERNS: readonly RegExp[] = [
-  /\bseason\s+\d{2}\s*\/\s*\d{2}/iu, // "England. Premier League. Season 26/27"
   /\bin\s+(the\s+)?tournament\b/iu, // "Head-to-head [after 10 rounds] in the tournament"
   /\boutrights?\b/iu,
   /\b(league|group)\s+phase\b.*head-to-head/iu, // "Champions League UEFA. League phase. Head-to-head"
