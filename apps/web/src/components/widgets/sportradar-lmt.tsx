@@ -27,8 +27,10 @@
 //     register an odds adapter.
 //   - it re-reads the hash on `hashchange`, so changing a prop only changes
 //     the src hash; the iframe does not reload.
-// There is no cross-origin resize message, so the height is ours to pick —
-// see the collapse handling below.
+// There is no cross-origin resize message — the standalone page's only
+// callback, `onDataChange`, just stamps a class on its own body and never
+// posts to the parent (read from the page source, 2026-09-05). So the
+// height is ours to pick; see the collapse handling below.
 //
 // `matchId` is a SPORTRADAR match id, not an Oddin `od:match:N` or a
 // Fonbet `fb:match:N`. Neither feed carries one, so the mapping is stored
@@ -74,13 +76,14 @@ const MOBILE_MAX_WIDTH = 1099;
 // scoreboard plus the momentum strip (what `collapseTo=momentum` leaves
 // behind), expanded shows the pitch and the tab strip under it.
 //
-// 260 -> 180 on 2026-09-05. 260 was set for the mobile-only collapse and
-// was already generous there; on desktop it left a visible band of white
-// under the momentum strip. Erring small would CLIP the strip, which is
-// worse than a gap, so this stays a little loose on purpose — if a
-// sport's collapsed header runs taller, raise it rather than let the
-// widget scroll inside the frame.
-const COLLAPSED_HEIGHT = 180;
+// 260 -> 115 across two passes on 2026-09-05. The first cut kept the
+// widget's own chevron, which occupies ~27px at the bottom of the
+// collapsed state; `hideExpand` now removes it, so the collapsed body is
+// just the scoreboard, the momentum strip and the format line — measured
+// at ~102px off a production screenshot, leaving ~13px of slack here.
+// Erring small CLIPS the strip, which is worse than a gap, so raise this
+// rather than tighten it if a sport's collapsed header runs taller.
+const COLLAPSED_HEIGHT = 115;
 
 export function buildLmtStandaloneUrl({
   srMatchId,
@@ -98,6 +101,19 @@ export function buildLmtStandaloneUrl({
     // the compact state the operator picked in Sportradar's configurator.
     `collapseTo=momentum`,
     `expanded=${expanded ? "true" : "false"}`,
+    // Hide the widget's OWN expand chevron and leave ours as the only
+    // control. `hideExpand` is the widget's own documented prop (its
+    // PropTypes block, chunk `match.lmtPlus`, declares
+    // `hideExpand: bool` next to `collapseTo` and `expanded`), and the
+    // standalone page forwards the whole hash into `addWidget`, so it
+    // reaches the widget unchanged.
+    //
+    // This is what makes the height honest. The chevron collapsed the
+    // content INSIDE the frame and could not tell us it had been used,
+    // so the frame kept its expanded height and left a band of white
+    // above the markets. Two controls, one of which silently desynced
+    // the layout, was never going to be right — now there is one.
+    `hideExpand=true`,
   ];
   if (VLMT_SPORT_IDS.has(sportId)) {
     parts.push(
@@ -139,12 +155,13 @@ export function SportradarLmt({ height = 620, ...rest }: Props) {
   // markets get pushed down behind ~450px of white space. Reported on
   // production 2026-09-05.
   //
-  // The in-frame chevron still exists and still desyncs us — it cannot be
-  // observed or suppressed across origins. Our toggle is self-healing
-  // though: whatever the widget is currently showing, the next press
-  // sends an explicit `expanded=` and sizes the frame to match. The real
-  // fix is the direct widgetloader's `onSizeChange`, which is blocked on
-  // Sportradar issuing our Client ID.
+  // The in-frame chevron is gone (`hideExpand`), so this toggle is the
+  // only thing that can change the state and the frame height can no
+  // longer drift out of sync with what the widget is showing. The
+  // height itself is still a constant rather than a measurement — the
+  // hosted page reports no size across origins — so `onSizeChange` via
+  // the direct widgetloader, blocked on our Client ID, remains the
+  // upgrade that would make it exact.
   const frameHeight = expanded ? height : COLLAPSED_HEIGHT;
 
   return (
