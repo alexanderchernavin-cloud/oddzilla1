@@ -57,6 +57,8 @@ export interface AdjudicationItem {
   awayTeam: string;
   srHomeTeam: string;
   srAwayTeam: string;
+  /** Sportradar's competition name, when the fixture source carried one. */
+  srTournament?: string;
   kickoffDeltaMinutes: number | null;
 }
 
@@ -92,7 +94,11 @@ export function renderBatch(items: readonly AdjudicationItem[]): string {
       return (
         `${i}. sport=${x.sportSlug} kickoff_diff=${dt}min\n` +
         `   ours:       ${x.homeTeam}  vs  ${x.awayTeam}   [${x.tournamentName}]\n` +
-        `   sportradar: ${x.srHomeTeam}  vs  ${x.srAwayTeam}`
+        // Sportradar says "women" / "U20" on the competition, not the
+        // team, so without this line "Chelsea vs Aston Villa" under
+        // "Super League, Women" would read as the men's fixture.
+        `   sportradar: ${x.srHomeTeam}  vs  ${x.srAwayTeam}` +
+        (x.srTournament ? `   [${x.srTournament}]` : "")
       );
     })
     .join("\n");
@@ -304,6 +310,9 @@ export async function adjudicateCandidates(
       awayTeam: r.awayTeam,
       srHomeTeam: typeof e.srHomeTeam === "string" ? e.srHomeTeam : "",
       srAwayTeam: typeof e.srAwayTeam === "string" ? e.srAwayTeam : "",
+      ...(typeof e.srTournament === "string" && e.srTournament
+        ? { srTournament: e.srTournament }
+        : {}),
       kickoffDeltaMinutes:
         typeof e.kickoffDeltaMinutes === "number" ? e.kickoffDeltaMinutes : null,
     };

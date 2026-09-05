@@ -8,6 +8,7 @@ import type { SportradarFixture } from "@oddzilla/types/sportradar";
 import {
   normaliseTeamName,
   proposeMappings,
+  qualifiersFromCompetition,
   scorePair,
   teamSimilarity,
   type OddzillaFixture,
@@ -110,14 +111,63 @@ describe("teamSimilarity", () => {
     );
   });
 
+  it("drops the hockey / handball club designator like the football ones", () => {
+    // "HC Dynamo" against "Dynamo Moscow" is two-vs-two sharing one word
+    // with the designator kept (0.5, under the floor) and a real partial
+    // without it. Measured on the KHL day 2026-09-05.
+    assert.ok(teamSimilarity("Dynamo Moscow", "HC Dynamo") >= 0.6);
+    assert.equal(teamSimilarity("HC Leipzig (w)", "Leipzig W"), 1);
+  });
+
   it("does not let an initial match an unrelated surname", () => {
     assert.ok(teamSimilarity("Hoshko N", "Dedek, Jiri") < 0.6);
+  });
+
+  it("reads B, C and W as initials in an individual sport, not as squad markers", () => {
+    // Production 2026-09-05: "Samrej K vs Tseng C H" sat unmapped beside
+    // "Samrej, Kasidit vs Tseng, Chun Hsin" because the C was taken for a
+    // reserve-squad marker and vetoed the pair. Same for every player
+    // whose initial is B (reserves) or W (women's side).
+    const individual = { individual: true };
+    assert.equal(teamSimilarity("Tseng C H", "Tseng, Chun Hsin", individual), 1);
+    assert.equal(teamSimilarity("Wang W", "Wang, Wei", individual), 1);
+    assert.equal(teamSimilarity("Stevens B", "Stevens, Bernard", individual), 1);
+    // Doubles, where Sportradar itself writes initials.
+    assert.equal(
+      teamSimilarity("Harrison C / Skupski N", "Harrison C / Skupski N", individual),
+      1,
+    );
+    // Club semantics stay the default: the same letters on a club name
+    // are still the qualifiers the veto exists for.
+    assert.equal(teamSimilarity("Tseng C H", "Tseng, Chun Hsin"), 0);
+    assert.equal(teamSimilarity("Atletico Madrid C", "Atletico Madrid", individual), 0.8);
+    assert.equal(teamSimilarity("Atletico Madrid C", "Atletico Madrid"), 0);
   });
 
   it("still pairs two youth sides that use different vocabularies", () => {
     // Fonbet says "(youth)", Sportradar says "U21" — same squad, and a
     // mismatch BETWEEN qualifiers is only a weak signal, not a veto.
     assert.ok(teamSimilarity("Rodina (youth)", "Rodina U21") > 0.9);
+  });
+});
+
+describe("qualifiersFromCompetition", () => {
+  it("reads the women's and age markers Sportradar puts on the competition", () => {
+    // Every form seen on the live feed 2026-09-05.
+    assert.deepEqual(qualifiersFromCompetition("Super League, Women"), { women: true, ageGroup: null });
+    assert.deepEqual(qualifiersFromCompetition("National Women's Soccer League"), { women: true, ageGroup: null });
+    assert.deepEqual(qualifiersFromCompetition("Primera Division Femenina"), { women: true, ageGroup: null });
+    assert.deepEqual(qualifiersFromCompetition("Première Ligue Féminine"), { women: true, ageGroup: null });
+    assert.deepEqual(qualifiersFromCompetition("U20 FIFA World Cup, Women, Group A"), { women: true, ageGroup: "u20" });
+    assert.deepEqual(qualifiersFromCompetition("Primavera 1"), { women: false, ageGroup: "youth" });
+  });
+
+  it("does not mistake a division letter for a reserve squad", () => {
+    // "Serie B", "Group B", "Pool B" are divisions; both providers name
+    // a reserve side on the TEAM ("Porto B"), so nothing is read here.
+    for (const name of ["Serie B", "Brasileiro Serie C, Group B", "Premiership Rugby Cup, Pool B", "Premier League", undefined]) {
+      assert.deepEqual(qualifiersFromCompetition(name), { women: false, ageGroup: null }, name);
+    }
   });
 });
 
@@ -148,6 +198,70 @@ describe("scorePair", () => {
     assert.ok(scored);
     assert.equal(scored.sidesSwapped, true);
     assert.ok(scored.score < 1);
+  });
+
+  it("lets the sport id decide whether a single letter is an initial", () => {
+    // The real pair from production, verbatim. Tennis is SR sport 5.
+    const tennis = scorePair(
+      ours({ srSportId: 5, scheduledAt: "2026-09-05T05:30:00Z", homeTeam: "Samrej K", awayTeam: "Tseng C H" }),
+      theirs({ srSportId: 5, startsAt: "2026-09-05T05:20:00.000Z", homeTeam: "Samrej, Kasidit", awayTeam: "Tseng, Chun Hsin" }),
+    );
+    assert.ok(tennis, "the tennis pair must clear the gates");
+    assert.equal(tennis.homeScore, 1);
+    assert.equal(tennis.awayScore, 1);
+    // The same shape in a club sport keeps the veto: a "C" side against
+    // the first team is a different team.
+    const football = scorePair(
+      ours({ homeTeam: "Atletico Madrid C", awayTeam: "Real Avila" }),
+      theirs({ homeTeam: "Atletico Madrid", awayTeam: "Real Avila" }),
+    );
+    assert.equal(football, null);
+  });
+
+  it("reads a women's or youth competition onto Sportradar's bare team names", () => {
+    // Production 2026-09-05: Fonbet "Chelsea (w) vs Aston Villa (w)" sat
+    // unpaired beside Sportradar's "Chelsea vs Aston Villa", whose only
+    // marker was the tournament "Super League, Women". Team-to-team that
+    // is marker-vs-none, the veto the file header describes.
+    const women = scorePair(
+      ours({ homeTeam: "Chelsea (w)", awayTeam: "Aston Villa (w)" }),
+      theirs({ homeTeam: "Chelsea", awayTeam: "Aston Villa", tournament: "Super League, Women" }),
+    );
+    assert.ok(women, "the women's pair must clear the gates");
+    assert.equal(women.homeScore, 1);
+    // The same bare names in the men's competition stay vetoed against
+    // our women's fixture, and Sportradar's women's fixture stays vetoed
+    // against our men's one — the marker is compared, not dropped.
+    assert.equal(
+      scorePair(
+        ours({ homeTeam: "Chelsea (w)", awayTeam: "Aston Villa (w)" }),
+        theirs({ homeTeam: "Chelsea", awayTeam: "Aston Villa", tournament: "Premier League" }),
+      ),
+      null,
+    );
+    assert.equal(
+      scorePair(
+        ours({ homeTeam: "Chelsea", awayTeam: "Aston Villa" }),
+        theirs({ homeTeam: "Chelsea", awayTeam: "Aston Villa", tournament: "Super League, Women" }),
+      ),
+      null,
+    );
+    // Youth stated on the competition meets youth stated on the team,
+    // whichever vocabulary each side uses.
+    const youth = scorePair(
+      ours({ homeTeam: "Poland U20 (w)", awayTeam: "Argentina U20 (w)" }),
+      theirs({ homeTeam: "Poland", awayTeam: "Argentina", tournament: "U20 FIFA World Cup, Women, Group A" }),
+    );
+    assert.ok(youth);
+    assert.equal(youth.homeScore, 1);
+    // People are left alone: a tennis draw's "Women" is not a marker on
+    // the player, and a bare "w" would read as an initial.
+    const tennis = scorePair(
+      ours({ srSportId: 5, homeTeam: "Bucsa C", awayTeam: "Gauff C" }),
+      theirs({ srSportId: 5, homeTeam: "Bucsa, Cristina", awayTeam: "Gauff, Coco", tournament: "WTA Guadalajara, Women, Singles" }),
+    );
+    assert.ok(tennis);
+    assert.equal(tennis.homeScore, 1);
   });
 
   it("rejects a pair where only one team agrees", () => {

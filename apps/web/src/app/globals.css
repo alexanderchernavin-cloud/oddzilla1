@@ -658,7 +658,8 @@ body {
 }
 
 /* Match-detail scoreboard. Desktop ships the original roomy bordered
-   SCORE box and 28px logos; the breakpoint block below swaps in
+   SCORE box and 34px logos (sized to the ~37px row that box sets, so
+   the crest fills the row without growing it); the breakpoint block below swaps in
    tighter variables so team names get the room they need on narrow
    phones. The two TeamMark spans per row let the logo size follow
    the breakpoint without resizing the primitive's inline width/height

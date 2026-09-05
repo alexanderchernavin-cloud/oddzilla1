@@ -39,6 +39,18 @@ describe("renderBatch", () => {
     assert.match(text, /\n1\. sport=football/u);
   });
 
+  it("shows Sportradar's competition when the fixture carried one", () => {
+    // Sportradar marks women's / youth on the competition, not the team,
+    // so without it the model reads "Chelsea vs Aston Villa" as the
+    // men's fixture.
+    const text = renderBatch([
+      item({ homeTeam: "Chelsea (w)", awayTeam: "Aston Villa (w)", srHomeTeam: "Chelsea", srAwayTeam: "Aston Villa", srTournament: "Super League, Women" }),
+    ]);
+    assert.match(text, /sportradar:\s+Chelsea\s+vs\s+Aston Villa\s+\[Super League, Women\]/u);
+    // And nothing dangling when it did not.
+    assert.match(renderBatch([item()]), /sportradar:\s+Ipswich\s+vs\s+Liverpool$/mu);
+  });
+
   it("renders a null kickoff delta as zero rather than 'null'", () => {
     assert.match(renderBatch([item({ kickoffDeltaMinutes: null })]), /kickoff_diff=0min/u);
   });

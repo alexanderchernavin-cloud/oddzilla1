@@ -28,12 +28,38 @@
 //     and would auto-confirm. So a gender or age qualifier present on one
 //     side and absent on the other zeroes the pair outright.
 //
+//     One exception, and it is per SPORT rather than per name. In an
+//     individual sport a "team" is a person, and both providers write
+//     people as surname + initials ("Tseng C H", "Harrison C / Skupski
+//     N"). There a single letter is an initial, never a squad marker —
+//     "Tseng C H" is not the C team of Tseng — so the one-letter markers
+//     are switched off for the sports where Sportradar itself tracks
+//     individuals. Measured on production 2026-09-05: every tennis, table
+//     tennis, darts, badminton and padel player with an initial B, C or W
+//     was being vetoed against their own Sportradar fixture (36 open
+//     tennis fixtures alone), which is how "Samrej K vs Tseng C H" sat
+//     unmapped 10 minutes from "Samrej, Kasidit vs Tseng, Chun Hsin".
+//
+//     And the two providers put the qualifier in DIFFERENT PLACES.
+//     Fonbet marks the team ("Chelsea (w)", "Poland U20"); Sportradar's
+//     day feed marks the competition ("Super League, Women", "U20 FIFA
+//     World Cup") and names the team bare ("Chelsea", "Poland"). Compared
+//     team-to-team that is marker-vs-none on every women's and youth
+//     fixture — a veto — which is why women's football, handball,
+//     volleyball, basketball and rugby paired at exactly zero (measured
+//     2026-09-05: ~350 open fixtures, "Chelsea (w) vs Aston Villa (w)"
+//     sitting beside "Chelsea vs Aston Villa" in "Super League, Women").
+//     So `scorePair` restates the competition's qualifiers on the
+//     Sportradar team names before comparing. Reserve sides need no such
+//     help: both feeds name those on the team ("Porto B").
+//
 // Auto-confirmation additionally requires that the winner be clearly
 // ahead of the runner-up (AMBIGUITY_MARGIN). A round of youth fixtures
 // kicking off together in one league produces several near-identical
 // candidates; when that happens the right answer is a human, not the
 // higher of two coin flips.
 
+import { sportradarSportIsIndividual } from "@oddzilla/types/sportradar";
 import type {
   SportradarFixture,
   SportradarMatchEvidence,
@@ -79,7 +105,7 @@ const SWAP_PENALTY = 0.97;
 // Manchester City from Manchester United and must survive.
 const DESIGNATORS = new Set([
   "fc", "cf", "afc", "sc", "ac", "ad", "cd", "ud", "sd", "rc", "cs", "as",
-  "us", "ss", "ssc", "fk", "nk", "hk", "bk", "ik", "if", "sk", "gk", "kf",
+  "us", "ss", "ssc", "fk", "nk", "hk", "hc", "bk", "ik", "if", "sk", "gk", "kf",
   "cfc", "club", "calcio", "futbol", "futebol", "kulubu", "spor", "sport",
   "team", "the", "of", "and",
 ]);
@@ -110,6 +136,17 @@ const GENDER_MARKERS = new Set([
   "frauen",
 ]);
 
+export interface NameOptions {
+  /**
+   * The names are people (or doubles pairs), not clubs. A single-letter
+   * token is then an initial and never a squad qualifier — see the file
+   * header. `scorePair` derives it from the Sportradar sport id; a caller
+   * comparing bare names gets club semantics, which is the safe default
+   * because it can only refuse a pair, never invent one.
+   */
+  individual?: boolean;
+}
+
 /**
  * Lowercase, strip diacritics and punctuation, expand known synonyms,
  * drop club designators, and split off squad qualifiers.
@@ -117,7 +154,10 @@ const GENDER_MARKERS = new Set([
  * Qualifiers come back separately rather than as tokens because they are
  * scored differently — as a veto, not as similarity.
  */
-export function normaliseTeamName(raw: string): {
+export function normaliseTeamName(
+  raw: string,
+  opts: NameOptions = {},
+): {
   tokens: string[];
   age: string | null;
   gender: string | null;
@@ -139,6 +179,13 @@ export function normaliseTeamName(raw: string): {
   for (const rawToken of flattened.split(" ")) {
     if (!rawToken) continue;
     const token = SYNONYMS[rawToken] ?? rawToken;
+    // A person's initial. "Tseng C H" carries no reserve squad and
+    // "Wang W" is not a women's side; both are one letter that the
+    // marker sets below would otherwise read as a qualifier and veto.
+    if (opts.individual && token.length === 1) {
+      tokens.push(token);
+      continue;
+    }
     if (AGE_MARKERS.has(token)) {
       // Keep the FIRST qualifier seen; "Ajax II" and "Ajax B" both mean
       // "not the first team" without meaning the same squad.
@@ -194,9 +241,13 @@ function tokensAgree(a: string, b: string): boolean {
  * about whether this is a women's or a youth/reserve team. See the file
  * header.
  */
-export function teamSimilarity(a: string, b: string): number {
-  const left = normaliseTeamName(a);
-  const right = normaliseTeamName(b);
+export function teamSimilarity(
+  a: string,
+  b: string,
+  opts: NameOptions = {},
+): number {
+  const left = normaliseTeamName(a, opts);
+  const right = normaliseTeamName(b, opts);
 
   // Qualifier veto. Present-vs-absent is a different team. Two DIFFERENT
   // qualifiers (say "youth" and "u19") are only a mild signal, because
@@ -225,6 +276,61 @@ export function teamSimilarity(a: string, b: string): number {
   return (2 * matched) / total;
 }
 
+// Words a competition name uses to say every side in it is a women's
+// team. Sportradar's English-locale feed mostly appends ", Women", and
+// keeps a handful of league names in their own language ("Primera
+// Division Femenina"). Matched after diacritics are stripped, so
+// "Féminine" reads as "feminine".
+const WOMEN_COMPETITION_RE =
+  /\b(women|womens|ladies|female|girls|femenin[ao]|feminin[ae]s?|frauen|damen|kvinner|kvinnor)\b/iu;
+// Age groups a competition states for every side in it ("U20 FIFA World
+// Cup", "Primavera 1"). Reserve markers are deliberately NOT read off a
+// competition: "Serie B", "Group B" and "Pool B" are divisions, not
+// squads, and both providers name a reserve side on the team anyway.
+const AGE_COMPETITION_RE = /\bu-?(1[4-9]|2[0-3])\b/iu;
+const YOUTH_COMPETITION_RE = /\b(youth|primavera)\b/iu;
+
+/**
+ * Squad qualifiers a competition name implies for every side in it.
+ *
+ * `ageGroup` comes back in the same vocabulary the team-name markers use
+ * ("u20", "youth") so the two sides of the veto compare like with like.
+ * Getting this wrong in either direction costs a pairing, never invents
+ * one: an over-read marker vetoes a men's fixture, an under-read one
+ * leaves a women's fixture where it was.
+ */
+export function qualifiersFromCompetition(name: string | undefined): {
+  women: boolean;
+  ageGroup: string | null;
+} {
+  if (!name) return { women: false, ageGroup: null };
+  const flat = name.normalize("NFD").replace(/\p{Mn}/gu, "");
+  const age = AGE_COMPETITION_RE.exec(flat);
+  return {
+    women: WOMEN_COMPETITION_RE.test(flat),
+    ageGroup: age
+      ? `u${age[1]}`
+      : YOUTH_COMPETITION_RE.test(flat)
+        ? "youth"
+        : null,
+  };
+}
+
+/**
+ * Restate on a Sportradar team name the qualifiers its competition
+ * carries, so "Chelsea" under "Super League, Women" meets Fonbet's
+ * "Chelsea (w)" as two women's sides rather than as a veto. Idempotent
+ * against a name that already carries the marker — `normaliseTeamName`
+ * keeps only the first qualifier it sees.
+ */
+function withCompetitionQualifiers(team: string, fixture: SportradarFixture): string {
+  const q = qualifiersFromCompetition(fixture.tournament);
+  const extra: string[] = [];
+  if (q.women) extra.push("w");
+  if (q.ageGroup) extra.push(q.ageGroup);
+  return extra.length === 0 ? team : `${team} ${extra.join(" ")}`;
+}
+
 export interface ScoredPair {
   score: number;
   homeScore: number;
@@ -251,13 +357,28 @@ export function scorePair(
   const deltaMinutes = Math.abs(ourKickoff - theirKickoff) / 60_000;
   if (deltaMinutes > KICKOFF_GATE_MINUTES) return null;
 
+  // Same sport on both sides (checked above), so the sport id decides
+  // once whether these names are clubs or people.
+  const names: NameOptions = {
+    individual: sportradarSportIsIndividual(theirs.srSportId),
+  };
+  // Clubs get the qualifiers their competition implies (see the file
+  // header). People do not: a player in a women's draw is not marked on
+  // either feed, and a bare "w" in individual mode would read as an
+  // initial and dilute the score.
+  const theirHome = names.individual
+    ? theirs.homeTeam
+    : withCompetitionQualifiers(theirs.homeTeam, theirs);
+  const theirAway = names.individual
+    ? theirs.awayTeam
+    : withCompetitionQualifiers(theirs.awayTeam, theirs);
   const direct = {
-    home: teamSimilarity(ours.homeTeam, theirs.homeTeam),
-    away: teamSimilarity(ours.awayTeam, theirs.awayTeam),
+    home: teamSimilarity(ours.homeTeam, theirHome, names),
+    away: teamSimilarity(ours.awayTeam, theirAway, names),
   };
   const swapped = {
-    home: teamSimilarity(ours.homeTeam, theirs.awayTeam),
-    away: teamSimilarity(ours.awayTeam, theirs.homeTeam),
+    home: teamSimilarity(ours.homeTeam, theirAway, names),
+    away: teamSimilarity(ours.awayTeam, theirHome, names),
   };
   const directMean = (direct.home + direct.away) / 2;
   const swappedMean = (swapped.home + swapped.away) / 2;

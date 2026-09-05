@@ -28,7 +28,7 @@ function gismoMatch(over: Record<string, unknown> = {}) {
   };
 }
 
-function body(matches: unknown[]) {
+function body(matches: unknown[], tournament = "Premier League") {
   // The feed nests matches inside a sport → category → tournament tree
   // whose exact shape varies by sport.
   return {
@@ -36,7 +36,21 @@ function body(matches: unknown[]) {
     doc: [
       {
         event: "sport_matches",
-        data: { sport: { _id: 1, realcategories: [{ tournaments: [{ matches }] }] } },
+        data: {
+          sport: {
+            _doc: "sport",
+            _id: 1,
+            name: "Soccer",
+            realcategories: [
+              {
+                _doc: "realcategory",
+                _id: 1,
+                name: "England",
+                tournaments: [{ _doc: "tournament", _id: 17, name: tournament, matches }],
+              },
+            ],
+          },
+        },
       },
     ],
   };
@@ -85,6 +99,19 @@ describe("parseSportMatches", () => {
     const fixtures = parseSportMatches(body([gismoMatch()]));
     assert.equal(fixtures.length, 1);
     assert.equal(fixtures[0]!.srMatchId, 72221238);
+  });
+
+  it("carries the enclosing tournament name onto the fixture", () => {
+    // The only place this feed says a fixture is women's or youth: the
+    // team is "Chelsea" whether it plays in the Premier League or in
+    // "Super League, Women", so the matcher needs the competition.
+    const [fixture] = parseSportMatches(body([gismoMatch()], "Super League, Women"));
+    assert.equal(fixture?.tournament, "Super League, Women");
+    // Nothing is invented when the tree has no named tournament.
+    const bare = parseSportMatches({
+      doc: [{ event: "sport_matches", data: { matches: [gismoMatch()] } }],
+    });
+    assert.equal(bare[0]?.tournament, undefined);
   });
 
   it("de-duplicates a match listed under more than one node", () => {
