@@ -51,10 +51,14 @@ export function startTournamentLogoSweeper(
   }
 
   const intervalMs = readIntervalMs();
-  const lockTtlS = Math.max(
-    Math.floor(SWEEP_BUDGET_MS / 1000) + 120,
-    Math.floor((intervalMs / 1000) * 0.8),
-  );
+  // The lock only has to outlive ONE sweep. Sizing it off the interval
+  // instead — max(budget, interval * 0.8) — made it 48 minutes for the
+  // hourly default, so a sweep killed mid-run by a deploy blocked the
+  // next one for most of an hour. That is exactly what happened on the
+  // first production run: the deploy that shipped this replaced the api
+  // mid-sweep, the lock survived its holder, and the next pass returned
+  // silently. Cadence is the interval timer's job, not the lock's.
+  const lockTtlS = Math.floor(SWEEP_BUDGET_MS / 1000) + 120;
 
   const sweep = async () => {
     let locked = false;
@@ -66,7 +70,16 @@ export function startTournamentLogoSweeper(
         lockTtlS,
         "NX",
       );
-      if (!acquired) return;
+      if (!acquired) {
+        // Worth a line: a held lock is indistinguishable from a sweeper
+        // that never started, and chasing that difference through an
+        // otherwise silent log cost real time once already.
+        app.log.info(
+          { component: "tournament-logos" },
+          "logo sweep skipped: another pass holds the lock",
+        );
+        return;
+      }
       locked = true;
 
       const started = Date.now();
