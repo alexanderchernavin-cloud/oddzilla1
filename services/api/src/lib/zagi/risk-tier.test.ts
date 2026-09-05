@@ -93,6 +93,19 @@ describe("looksSimulated", () => {
     assert.ok(looksSimulated("La Liga. Round 3", "FC 26"));
   });
 
+  it("does not flag a UFC numbered card as an EA FC simulation", () => {
+    // Near-miss found while verifying production: an unanchored
+    // "fc ?[0-9]{2}" matches "FC 33" inside "UFC 331", which would floor
+    // real UFC title fights at T9. The \b in the pattern is what stops
+    // it, and it is one careless edit away from being lost.
+    assert.ok(
+      !looksSimulated("MMA. UFC 331. Los Angeles. Title Bout. Welterweight. 5 rounds"),
+    );
+    assert.ok(!looksSimulated("MMA. UFC 333. Yas Island. Abu Dhabi. Title Bout"));
+    // The genuine article still has to match.
+    assert.ok(looksSimulated("FC 26. ESportsBattle. La Liga"));
+  });
+
   it("does not flag real competitions that share vocabulary", () => {
     assert.ok(!looksSimulated("Liga Pro. Men", "Table Tennis"));
     assert.ok(!looksSimulated("England. Premier League", "England"));
