@@ -246,7 +246,18 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
                  THEN t.potential_payout_micro
                ELSE 0 END
         ), 0)::bigint::text                                      AS open_potential_payout_micro,
-        MAX(t.placed_at)                                         AS last_bet_at
+        MAX(t.placed_at)                                         AS last_bet_at,
+        -- Ticket-level price the bettor took: potential payout over
+        -- stake already folds in boosts and combo products, so it is
+        -- the number an operator compares against the book's margin.
+        -- Rejected tickets never had a price accepted — excluded.
+        AVG(t.potential_payout_micro::numeric / t.stake_micro)
+          FILTER (WHERE t.status <> 'rejected')                  AS avg_odds,
+        COALESCE(AVG(t.stake_micro) FILTER (WHERE t.status <> 'rejected'), 0)
+          ::bigint::text                                         AS avg_stake_micro,
+        COALESCE(MAX(t.stake_micro) FILTER (WHERE t.status <> 'rejected'), 0)
+          ::bigint::text                                         AS max_stake_micro,
+        COUNT(*) FILTER (WHERE t.status = 'rejected')::int      AS rejected_count
       FROM tickets t
       WHERE t.user_id = ${params.id}::uuid AND t.currency = ${currency}
     `)) as unknown as Array<{
@@ -260,6 +271,10 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
       open_max_loss_micro: string;
       open_potential_payout_micro: string;
       last_bet_at: Date | string | null;
+      avg_odds: string | null;
+      avg_stake_micro: string;
+      max_stake_micro: string;
+      rejected_count: number;
     }>;
 
     // Live vs prematch split. A leg is "live at placement" when
@@ -502,6 +517,10 @@ export default async function riskzillaBettorsRoutes(app: FastifyInstance) {
         operatorPnlMicro: operatorPnlMicro.toString(),
         openMaxLossMicro: s?.open_max_loss_micro ?? "0",
         openPotentialPayoutMicro: s?.open_potential_payout_micro ?? "0",
+        avgOdds: s?.avg_odds == null ? null : Number(s.avg_odds),
+        avgStakeMicro: s?.avg_stake_micro ?? "0",
+        maxStakeMicro: s?.max_stake_micro ?? "0",
+        rejectedCount: Number(s?.rejected_count ?? 0),
         winRate:
           Number(s?.tickets_count ?? 0) > 0
             ? Number(s?.won_count ?? 0) / Number(s?.tickets_count ?? 0)

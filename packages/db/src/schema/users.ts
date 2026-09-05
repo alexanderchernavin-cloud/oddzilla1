@@ -79,6 +79,10 @@ export const users = pgTable(
     // problem gambling, watch closely", etc. NULL = no notes. Capped
     // at 4000 chars (DB CHECK) so a runaway paste can't bloat the row.
     notes: text(),
+    // Operator labels (migration 0104): closed vocabulary shared with
+    // packages/types/src/bettor-labels.ts and enforced by the CHECK
+    // below. Descriptive only — the placement path never reads them.
+    labels: text().array().notNull().default(sql`'{}'::text[]`),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     lastLoginAt: timestamp({ withTimezone: true }),
@@ -125,6 +129,14 @@ export const users = pgTable(
       "users_notes_length",
       sql`${t.notes} IS NULL OR length(${t.notes}) <= 4000`,
     ),
+    check(
+      "users_labels_allowed",
+      sql`${t.labels} <@ ARRAY['vip', 'sharp', 'regular', 'fraud', 'shady', 'suspicious', 'prematch', 'live']::text[]
+        AND COALESCE(array_length(${t.labels}, 1), 0) <= 8`,
+    ),
+    index("users_labels_gin_idx")
+      .using("gin", t.labels)
+      .where(sql`${t.role} = 'user'`),
   ],
 );
 

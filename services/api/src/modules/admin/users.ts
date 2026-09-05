@@ -22,7 +22,7 @@ import {
 } from "@oddzilla/db";
 import { hashPassword } from "@oddzilla/auth";
 import { randomUUID } from "node:crypto";
-import { SUPPORTED_CURRENCIES } from "@oddzilla/types";
+import { SUPPORTED_CURRENCIES, BETTOR_LABELS, BETTOR_LABEL_MAX } from "@oddzilla/types";
 import {
   BadRequestError,
   ConflictError,
@@ -43,6 +43,9 @@ const listQuery = z.object({
     .transform((s) => s.split(",").map((t) => t.trim()).filter(Boolean))
     .pipe(z.array(z.enum(["user", "admin", "support"])).min(1).max(3))
     .optional(),
+  // Operator label filter (migration 0104) — containment query on
+  // users.labels, served by the partial GIN index.
+  label: z.enum(BETTOR_LABELS).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });
@@ -68,7 +71,22 @@ const patchBody = z.object({
   role: z.enum(["user", "admin", "support"]).optional(),
   globalLimitMicro: z.string().regex(/^\d+$/).optional(),
   betDelaySeconds: z.number().int().min(0).max(300).optional(),
+  // Full replacement of the label set. Closed vocabulary — the DB CHECK
+  // rejects anything outside BETTOR_LABELS as well.
+  labels: z.array(z.enum(BETTOR_LABELS)).max(BETTOR_LABEL_MAX).optional(),
 });
+
+// Canonical label order for storage + audit diffs: vocabulary order,
+// deduplicated, so two operators toggling the same set never produce
+// a spurious "changed" audit row from ordering alone.
+function normalizeLabels(input: readonly string[]): string[] {
+  const set = new Set(input);
+  return BETTOR_LABELS.filter((l) => set.has(l));
+}
+
+function sameLabels(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
 
 interface AdminUserRow {
   id: string;
@@ -84,6 +102,8 @@ interface AdminUserRow {
   lastLoginAt: string | null;
   balanceMicro: string;
   lockedMicro: string;
+  labels: string[];
+  riskScore: string;
 }
 
 export default async function adminUsersRoutes(app: FastifyInstance) {
@@ -102,6 +122,9 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
       const like = `%${q.q}%`;
       const orExpr = or(ilike(users.email, like), ilike(users.displayName, like));
       if (orExpr) filters.push(orExpr);
+    }
+    if (q.label) {
+      filters.push(sql`${users.labels} @> ARRAY[${q.label}]::text[]`);
     }
     const whereClause = filters.length > 0 ? and(...filters) : sql`TRUE`;
 
@@ -122,6 +145,8 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
         lastLoginAt: users.lastLoginAt,
         balanceMicro: wallets.balanceMicro,
         lockedMicro: wallets.lockedMicro,
+        labels: users.labels,
+        riskScore: users.riskScore,
       })
       .from(users)
       .leftJoin(
@@ -148,6 +173,8 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
         lastLoginAt: r.lastLoginAt?.toISOString() ?? null,
         balanceMicro: (r.balanceMicro ?? 0n).toString(),
         lockedMicro: (r.lockedMicro ?? 0n).toString(),
+        labels: r.labels,
+        riskScore: r.riskScore,
       })),
       limit: q.limit,
       offset: q.offset,
@@ -171,6 +198,10 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
         globalLimitMicro: users.globalLimitMicro,
         betDelaySeconds: users.betDelaySeconds,
         notes: users.notes,
+        labels: users.labels,
+        riskScore: users.riskScore,
+        nickname: users.nickname,
+        emailVerifiedAt: users.emailVerifiedAt,
         createdAt: users.createdAt,
         lastLoginAt: users.lastLoginAt,
         balanceMicro: wallets.balanceMicro,
@@ -184,6 +215,32 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
       .where(eq(users.id, params.id))
       .limit(1);
     if (!user) throw new NotFoundError("user_not_found", "user_not_found");
+
+    // Identity footprint for the bettor card: distinct devices and IPs
+    // across every session (active or not) plus the most recent one.
+    // Sessions are the only first-party record of where a bettor logs
+    // in from — tickets.client_ip covers placements only.
+    const identityResult = (await app.db.execute(sql`
+      SELECT
+        COUNT(DISTINCT device_id) FILTER (WHERE device_id IS NOT NULL)::int AS devices_seen,
+        COUNT(DISTINCT ip_inet) FILTER (WHERE ip_inet IS NOT NULL)::int      AS ips_seen,
+        COUNT(*)::int                                                        AS sessions_total,
+        COUNT(*) FILTER (WHERE revoked_at IS NULL AND expires_at > NOW())::int AS sessions_active,
+        (ARRAY_AGG(host(ip_inet) ORDER BY last_used_at DESC)
+           FILTER (WHERE ip_inet IS NOT NULL))[1]                            AS last_ip,
+        (ARRAY_AGG(user_agent ORDER BY last_used_at DESC)
+           FILTER (WHERE user_agent IS NOT NULL))[1]                         AS last_user_agent
+      FROM sessions
+      WHERE user_id = ${params.id}
+    `)) as unknown as Array<{
+      devices_seen: number;
+      ips_seen: number;
+      sessions_total: number;
+      sessions_active: number;
+      last_ip: string | null;
+      last_user_agent: string | null;
+    }>;
+    const identity = identityResult[0];
 
     const statsResult = (await app.db.execute(sql`
       SELECT
@@ -242,10 +299,22 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
         globalLimitMicro: user.globalLimitMicro.toString(),
         betDelaySeconds: user.betDelaySeconds,
         notes: user.notes,
+        labels: user.labels,
+        riskScore: user.riskScore,
+        nickname: user.nickname,
+        emailVerifiedAt: user.emailVerifiedAt?.toISOString() ?? null,
         createdAt: user.createdAt.toISOString(),
         lastLoginAt: user.lastLoginAt?.toISOString() ?? null,
         balanceMicro: (user.balanceMicro ?? 0n).toString(),
         lockedMicro: (user.lockedMicro ?? 0n).toString(),
+      },
+      identity: {
+        devicesSeen: Number(identity?.devices_seen ?? 0),
+        ipsSeen: Number(identity?.ips_seen ?? 0),
+        sessionsTotal: Number(identity?.sessions_total ?? 0),
+        sessionsActive: Number(identity?.sessions_active ?? 0),
+        lastIp: identity?.last_ip ?? null,
+        lastUserAgent: identity?.last_user_agent ?? null,
       },
       stats: {
         totalTickets: Number(stats?.total_tickets ?? 0),
@@ -279,7 +348,8 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
       body.status === undefined &&
       body.role === undefined &&
       body.globalLimitMicro === undefined &&
-      body.betDelaySeconds === undefined
+      body.betDelaySeconds === undefined &&
+      body.labels === undefined
     ) {
       throw new BadRequestError("no_changes", "no_changes");
     }
@@ -343,6 +413,15 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
       patch.betDelaySeconds = body.betDelaySeconds;
       before.betDelaySeconds = existing.betDelaySeconds;
       after.betDelaySeconds = body.betDelaySeconds;
+    }
+    if (body.labels !== undefined) {
+      const next = normalizeLabels(body.labels);
+      const current = normalizeLabels(existing.labels);
+      if (!sameLabels(next, current)) {
+        patch.labels = next;
+        before.labels = current;
+        after.labels = next;
+      }
     }
 
     if (Object.keys(after).length === 0) {
