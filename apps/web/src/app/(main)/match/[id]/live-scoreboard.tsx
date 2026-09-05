@@ -174,6 +174,7 @@ function Scoreboard({
         <TeamRow
           name={homeTeam}
           logoUrl={homeLogoUrl}
+          markSlot={!!(homeLogoUrl || awayLogoUrl)}
           series={homeSeries}
           cols={cols}
           getValue={(n) => mapCellValue("home", n, periodByNumber.get(n), scoreboard, currentMap, sportSlug)}
@@ -184,6 +185,7 @@ function Scoreboard({
         <TeamRow
           name={awayTeam}
           logoUrl={awayLogoUrl}
+          markSlot={!!(homeLogoUrl || awayLogoUrl)}
           series={awaySeries}
           cols={cols}
           getValue={(n) => mapCellValue("away", n, periodByNumber.get(n), scoreboard, currentMap, sportSlug)}
@@ -235,6 +237,7 @@ function ColHeader({ label, live = false }: { label: string; live?: boolean }) {
 function TeamRow({
   name,
   logoUrl,
+  markSlot,
   series,
   cols,
   getValue,
@@ -242,6 +245,13 @@ function TeamRow({
 }: {
   name: string;
   logoUrl?: string | null;
+  /**
+   * TeamMark renders nothing without a picture. True when either side
+   * has one, so the row without keeps a same-sized empty slot and the
+   * two names stay flush; false when neither does, and the names sit at
+   * the left edge.
+   */
+  markSlot: boolean;
   series: number;
   cols: number[];
   getValue: (n: number) => number | null;
@@ -264,12 +274,25 @@ function TeamRow({
             moving. Mobile has no such headroom — its score cell is bare
             14px text — so the mark there is the tallest thing in the
             row and stays at 22. */}
-        <span className="oz-sb-mark-desktop">
-          <TeamMark tag={tag} size={34} logoUrl={logoUrl} name={name} />
-        </span>
-        <span className="oz-sb-mark-mobile">
-          <TeamMark tag={tag} size={22} logoUrl={logoUrl} name={name} />
-        </span>
+        {markSlot ? (
+          <>
+            {/* The breakpoint CSS flips these two with !important, which
+                wins over the inline display below; the inline width /
+                height are what hold the slot when the mark is empty. */}
+            <span
+              className="oz-sb-mark-desktop"
+              style={{ display: "inline-flex", width: 34, height: 34, flexShrink: 0 }}
+            >
+              <TeamMark tag={tag} size={34} logoUrl={logoUrl} name={name} />
+            </span>
+            <span
+              className="oz-sb-mark-mobile"
+              style={{ width: 22, height: 22, flexShrink: 0 }}
+            >
+              <TeamMark tag={tag} size={22} logoUrl={logoUrl} name={name} />
+            </span>
+          </>
+        ) : null}
         <span
           style={{
             fontWeight: 500,

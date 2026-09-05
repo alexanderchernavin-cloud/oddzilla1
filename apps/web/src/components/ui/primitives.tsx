@@ -499,13 +499,16 @@ export function OddButton({
 }
 
 // ── TeamMark ────────────────────────────────────────────────────────────
-// Renders the team's branded logo when `logoUrl` is supplied, falling back
-// to a monogram (up to 4 initials) when it isn't or when the image fails
-// to load. The fallback path matters: feeds add new teams faster than an
-// admin can paste logos, and a broken <img> would replace the row's leading
-// column with the alt-text default the browser picks (an icon, varies per
-// platform). The component owns the error state so the consumer doesn't
-// have to thread it through every call site.
+// Renders the team's branded logo when `logoUrl` is supplied, and NOTHING
+// when it isn't or when the image fails to load. It used to fall back to
+// a monogram of up to four initials; next to real crests those read as
+// fake badges ("KY/" beside a tennis doubles pair), so since 2026-09-05 a
+// team without a picture is just its name. The component still owns the
+// <img> error state — a broken image must vanish rather than leave the
+// browser's alt-text placeholder in the row — so consumers don't thread
+// it through every call site. Two-row surfaces (match list, scoreboard)
+// hold an empty same-sized slot when only one side has a picture so the
+// names stay flush.
 export function TeamMark({
   tag,
   color,
@@ -513,6 +516,8 @@ export function TeamMark({
   logoUrl,
   name,
 }: {
+  // Team abbreviation. Only ever the <img> alt now, when `name` is absent
+  // — the mark renders nothing without a picture.
   tag: string;
   color?: string;
   size?: number;
@@ -524,6 +529,13 @@ export function TeamMark({
   const letters = tag.slice(0, 4).toUpperCase();
   const [imgFailed, setImgFailed] = useState(false);
   const showImage = !!logoUrl && !imgFailed;
+  // No picture, no mark. This used to fall back to a monogram disc
+  // built from the name, and next to real crests those read as fake
+  // badges — "KY/" beside a tennis doubles pair (2026-09-05). A row
+  // with no picture is the name alone. Surfaces that stack two rows
+  // keep them aligned with a same-sized empty slot when only one side
+  // has a picture; see match-row.tsx and live-scoreboard.tsx.
+  if (!showImage) return null;
   return (
     <span
       style={{
@@ -533,13 +545,8 @@ export function TeamMark({
         width: size,
         height: size,
         borderRadius: 6,
-        background: showImage ? "var(--surface-1)" : "var(--surface-2)",
+        background: "var(--surface-1)",
         border: "1px solid var(--hairline)",
-        fontFamily: "var(--font-mono)",
-        fontSize: Math.max(9, size * 0.36),
-        fontWeight: 600,
-        letterSpacing: "0.02em",
-        color: "var(--fg)",
         position: "relative",
         overflow: "hidden",
         flexShrink: 0,
@@ -559,25 +566,21 @@ export function TeamMark({
           }}
         />
       ) : null}
-      {showImage ? (
-        <img
-          src={logoUrl}
-          alt={name ?? letters}
-          onError={() => setImgFailed(true)}
-          loading="lazy"
-          decoding="async"
-          style={{
-            width: "100%",
-            height: "100%",
-            objectFit: "contain",
-            // Subtle inset so the logo doesn't touch the rounded edge.
-            padding: Math.max(1, Math.round(size * 0.06)),
-            background: "transparent",
-          }}
-        />
-      ) : (
-        letters
-      )}
+      <img
+        src={logoUrl}
+        alt={name ?? letters}
+        onError={() => setImgFailed(true)}
+        loading="lazy"
+        decoding="async"
+        style={{
+          width: "100%",
+          height: "100%",
+          objectFit: "contain",
+          // Subtle inset so the logo doesn't touch the rounded edge.
+          padding: Math.max(1, Math.round(size * 0.06)),
+          background: "transparent",
+        }}
+      />
     </span>
   );
 }
