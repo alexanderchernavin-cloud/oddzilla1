@@ -14,15 +14,16 @@ export const HIDDEN_SPORT_SLUGS = new Set<string>([
   "ebasketballbots",
 ]);
 
-// Curated allowlist for the lobby chip row. The sidebar lists every
-// active sport; the lobby chip row stays tight on the headline titles
-// the storefront wants to feature up front. Order here defines render
-// order in the chip strip — pinned-first is intentional.
+// Fallback allowlist for the lobby's Top sports strip, used ONLY while
+// no sport carries an operator pin. It is the pre-0103 hard-coded list
+// and exists so a fresh estate shows something sensible rather than an
+// empty strip.
 //
-// Deliberately NOT affected by the operator pin order (migration 0103):
-// this is an allowlist of seven slugs with its own sequence, not an
-// ordering of the whole set, so a sport's rail position says nothing
-// about whether it belongs in this strip.
+// The strip is operator-controlled now: pin sports on /admin/sports and
+// they become Top sports, in that order. That replaced a seven-slug esports
+// allowlist nobody could change without a deploy — the operator asked
+// for real top sports, which on a line carrying Fonbet means Football
+// and Basketball can lead, not just CS2 and Dota.
 export const LOBBY_CHIP_SPORT_SLUGS = [
   "cs2",
   "dota2",
@@ -33,12 +34,28 @@ export const LOBBY_CHIP_SPORT_SLUGS = [
   "efootball",
 ] as const;
 
-export function filterSportsForLobbyChips<T extends { slug: string }>(
-  items: T[],
-): T[] {
+// Top sports for the lobby strip.
+//
+// Operator pins win: any sport with a `display_order` is a Top sport, in
+// pin order. Only when NOTHING is pinned does this fall back to the
+// hard-coded slug list, so the lobby is never empty on an estate that
+// has not been configured yet.
+//
+// Hidden bot slugs are dropped in both paths — a pin on one would
+// otherwise resurrect it here after every other surface filtered it out.
+export function filterSportsForLobbyChips<
+  T extends { slug: string } & Pinnable,
+>(items: T[]): T[] {
+  const visible = items.filter((s) => !HIDDEN_SPORT_SLUGS.has(s.slug));
+  const pinned = visible.filter((s) => s.displayOrder != null);
+  if (pinned.length > 0) {
+    return [...pinned].sort(
+      (a, b) => (a.displayOrder ?? 0) - (b.displayOrder ?? 0),
+    );
+  }
   const order = LOBBY_CHIP_SPORT_SLUGS as readonly string[];
   const rank = new Map(order.map((s, i) => [s, i] as const));
-  return items
+  return visible
     .filter((s) => rank.has(s.slug))
     .sort((a, b) => rank.get(a.slug)! - rank.get(b.slug)!);
 }

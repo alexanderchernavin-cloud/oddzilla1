@@ -268,16 +268,14 @@ export function Sidebar({
         label={tShell("upcoming")}
       />
       {/*
-        Traditional sports (the Fonbet feed) get their own tab so the
-        esports-first lobby / Live / Pre-match pages stay focused and
-        football / tennis / hockey have one obvious entry point.
+        No "Sports" nav item. It existed to give the Fonbet traditional
+        line one obvious entry point back when the sport rail was a
+        single esports-first list. The rail now opens on a Sports /
+        Esports switch sitting a few pixels below, which is both a
+        better entry point and the one bettors actually reach for, so
+        the nav row was two controls competing for the same job. The
+        /sports route still exists and still works if linked directly.
       */}
-      <Item
-        href="/sports"
-        icon={<I.Trophy size={15} />}
-        active={isActive("/sports")}
-        label={tShell("sportsNav")}
-      />
       {/*
         Community feed sits in the primary navigation cluster — same
         weight as Lobby / Live / Upcoming so the entry doesn't get

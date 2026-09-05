@@ -1693,7 +1693,6 @@ export default async function catalogRoutes(app: FastifyInstance) {
         // one long "Match" list with prefixed names. Player props share a
         // single tab and keep the player's name in the market title.
         let scope = deriveScope(specs);
-        let nameTemplate = template;
         let baseNameTemplate = baseTemplate;
         const fbVariant = /^fb:([\d/]+)(?::(\d+))?$/.exec(variant);
         if (fbVariant) {
@@ -1711,7 +1710,19 @@ export default async function catalogRoutes(app: FastifyInstance) {
               label,
               order: 10 + Number(kinds[0] ?? 0) / 1e8 + kinds.length / 1e3,
             };
-            nameTemplate = template.slice(sep + 2);
+            // The sub-event label is deliberately LEFT ON the market
+            // name. It used to be sliced off here, on the reasoning that
+            // the tab already says "3rd set aces" so repeating it on the
+            // card is noise. That reasoning only holds where the tab is
+            // on screen. `market.name` is also what the bet slip stores
+            // as its leg label, what bet history renders, and what a
+            // copied community ticket shows — none of which carry the
+            // tab. The result was a slip leg reading "MATCH RESULT / 1"
+            // for a bet on the 3rd set ACES count, at odds nothing like
+            // the real match-winner price: the bettor could not tell
+            // what they had backed, and neither could support reading it
+            // back. Repetition inside one tab is a cosmetic cost; an
+            // unidentifiable leg on a money surface is not.
             if (baseTemplate.startsWith(label + ": ")) {
               baseNameTemplate = baseTemplate.slice(sep + 2);
             }
@@ -1722,7 +1733,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
           providerMarketId: r.providerMarketId,
           specifiers: specs,
           variant,
-          name: substituteTemplate(nameTemplate, specs, teams, profiles, locale),
+          name: substituteTemplate(template, specs, teams, profiles, locale),
           baseName: substituteTemplate(baseNameTemplate, specs, teams, profiles, locale),
           scope,
           status: r.status,

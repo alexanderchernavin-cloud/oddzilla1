@@ -343,7 +343,8 @@
   "home": {
     "lobby": "Lobby",
     "upcoming": "Previa",
-    "empty": "Nada en agenda. Mira las páginas de cada deporte para el programa completo."
+    "empty": "Nada en agenda. Mira las páginas de cada deporte para el programa completo.",
+    "topSports": "Deportes destacados"
   },
   "lobby": {
     "today": "Hoy, {date}",

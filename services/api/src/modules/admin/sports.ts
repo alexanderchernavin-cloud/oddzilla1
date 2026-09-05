@@ -26,11 +26,10 @@
 // list (cs2, dota2, lol, valorant) then alphabetically, with no operator
 // input at all. A pinned sport carries a `display_order` and leads that
 // sequence; everything unpinned keeps the old rule behind it, so the
-// rail is unchanged until somebody pins something. Two things this
-// deliberately does NOT move: a bettor's own saved sport order, which
-// still wins (this sets the default, not their preference), and the
-// lobby's chip strip, which is a curated seven-slug allowlist with its
-// own hard-coded sequence rather than an ordering of the whole set.
+// rail is unchanged until somebody pins something. It also drives the
+// lobby's Top sports strip, which used to be a hard-coded esports
+// allowlist. What it does NOT move is a bettor's own saved sport order:
+// that still wins, because this sets the default, not their preference.
 //
 // Mirrors the /admin/competitors + /admin/avatars shapes so the editor UI
 // can be cloned with only minor field changes. Sports are a small set

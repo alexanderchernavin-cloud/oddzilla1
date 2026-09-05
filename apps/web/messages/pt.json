@@ -343,7 +343,8 @@
   "home": {
     "lobby": "Lobby",
     "upcoming": "Pré-jogo",
-    "empty": "Nada agendado. Confira as páginas de cada esporte para a programação completa."
+    "empty": "Nada agendado. Confira as páginas de cada esporte para a programação completa.",
+    "topSports": "Desportos em destaque"
   },
   "lobby": {
     "today": "Hoje, {date}",
