@@ -11,12 +11,14 @@
 // metadata, decision + reason).
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { toMicro } from "@oddzilla/types/money";
 import { useRiskzillaCurrency } from "../currency-switch";
 import {
   ColumnSettings,
   EventsTable,
+  ExportCsvButton,
   useColumnLayout,
   type EventDto,
   type SortKey,
@@ -40,11 +42,27 @@ interface SportOption {
   name: string;
 }
 
-type StatusKey = "all" | "accepted" | "rejected";
-const STATUS_OPTIONS: ReadonlyArray<{ key: StatusKey; label: string }> = [
-  { key: "all", label: "All" },
-  { key: "accepted", label: "Accepted" },
+type StateKey = "all" | "open" | "won" | "lost" | "rejected" | "void" | "cashed_out";
+const STATE_PILLS: ReadonlyArray<{ key: StateKey; label: string }> = [
+  { key: "all", label: "All states" },
+  { key: "open", label: "Open" },
+  { key: "won", label: "Won" },
+  { key: "lost", label: "Lost" },
   { key: "rejected", label: "Rejected" },
+  { key: "void", label: "Void" },
+  { key: "cashed_out", label: "Cashed out" },
+];
+
+type BetTypeKey = "" | "single" | "combo";
+const TYPE_PILLS: ReadonlyArray<{ key: BetTypeKey; label: string }> = [
+  { key: "single", label: "Single" },
+  { key: "combo", label: "Combo" },
+];
+
+type PhaseKey = "" | "prematch" | "live";
+const PHASE_PILLS: ReadonlyArray<{ key: PhaseKey; label: string }> = [
+  { key: "prematch", label: "Prematch" },
+  { key: "live", label: "Live" },
 ];
 
 const DECISION_OPTIONS = [
@@ -59,10 +77,20 @@ const DECISION_OPTIONS = [
 ] as const;
 
 interface Filters {
-  status: StatusKey;
+  state: StateKey;
   decision: string;
+  betType: BetTypeKey;
+  phase: PhaseKey;
   riskTier: string;
   sportId: string;
+  // Bettor UUID. Seeded from `?userId=` so the bettor card can deep-link
+  // into "every ticket of this account"; free-typed values are only
+  // sent once they parse as a UUID (the API 400s on anything else).
+  userId: string;
+  // Free text: bettor email / nickname (server-side ILIKE).
+  q: string;
+  // Comma-separated ticket UUIDs.
+  ticketIds: string;
   fromTs: string;
   toTs: string;
   minStake: string;
@@ -70,18 +98,39 @@ interface Filters {
 }
 
 const EMPTY_FILTERS: Filters = {
-  status: "all",
+  state: "all",
   decision: "",
+  betType: "",
+  phase: "",
   riskTier: "",
   sportId: "",
+  userId: "",
+  q: "",
+  ticketIds: "",
   fromTs: "",
   toTs: "",
   minStake: "",
   maxStake: "",
 };
 
+function parseTicketIds(raw: string): { valid: string[]; invalid: string[] } {
+  const valid: string[] = [];
+  const invalid: string[] = [];
+  for (const part of raw.split(",")) {
+    const t = part.trim();
+    if (!t) continue;
+    (UUID_RE.test(t) ? valid : invalid).push(t);
+  }
+  return { valid, invalid };
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export function BetsClient() {
   const currency = useRiskzillaCurrency();
+  const sp = useSearchParams();
+  const initialUserId = sp?.get("userId") ?? "";
+  const initialTicketIds = sp?.get("ticketIds") ?? "";
   const [rows, setRows] = useState<EventDto[]>([]);
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
@@ -90,7 +139,12 @@ export function BetsClient() {
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
+  const [loadedAt, setLoadedAt] = useState<Date | null>(null);
+  const [filters, setFilters] = useState<Filters>({
+    ...EMPTY_FILTERS,
+    userId: UUID_RE.test(initialUserId) ? initialUserId : "",
+    ticketIds: initialTicketIds,
+  });
   const [sports, setSports] = useState<SportOption[]>([]);
   const columnLayout = useColumnLayout(COLUMN_STORAGE_KEY);
 
@@ -122,14 +176,22 @@ export function BetsClient() {
     [],
   );
 
+  const ticketIdParse = useMemo(() => parseTicketIds(filters.ticketIds), [filters.ticketIds]);
+
   const stakeError = useMemo(() => {
     const min = stakeToMicroOrNull(filters.minStake);
     const max = stakeToMicroOrNull(filters.maxStake);
     if (min === "invalid" || max === "invalid") {
       return "Stake filter must be a positive decimal (e.g. 10 or 12.5).";
     }
+    if (ticketIdParse.invalid.length > 0) {
+      return `Ticket ids must be UUIDs: ${ticketIdParse.invalid.slice(0, 3).join(", ")}${ticketIdParse.invalid.length > 3 ? "…" : ""}`;
+    }
+    if (filters.userId.trim() && !UUID_RE.test(filters.userId.trim())) {
+      return "Bettor id must be a UUID. Use the search box for email / nickname.";
+    }
     return null;
-  }, [filters.minStake, filters.maxStake, stakeToMicroOrNull]);
+  }, [filters.minStake, filters.maxStake, filters.userId, ticketIdParse, stakeToMicroOrNull]);
 
   const queryString = useMemo(() => {
     const p = new URLSearchParams();
@@ -138,10 +200,17 @@ export function BetsClient() {
     p.set("sortBy", sortBy);
     p.set("sortDir", sortDir);
     p.set("currency", currency);
-    if (filters.status !== "all") p.set("status", filters.status);
+    if (filters.state !== "all") p.set("state", filters.state);
     if (filters.decision) p.set("decision", filters.decision);
+    if (filters.betType) p.set("betType", filters.betType);
+    if (filters.phase) p.set("phase", filters.phase);
     if (filters.riskTier) p.set("riskTier", filters.riskTier);
     if (filters.sportId) p.set("sportId", filters.sportId);
+    if (UUID_RE.test(filters.userId.trim())) p.set("userId", filters.userId.trim());
+    if (filters.q.trim()) p.set("q", filters.q.trim());
+    if (ticketIdParse.valid.length > 0 && ticketIdParse.invalid.length === 0) {
+      p.set("ticketIds", ticketIdParse.valid.join(","));
+    }
     if (filters.fromTs) p.set("fromTs", new Date(filters.fromTs).toISOString());
     if (filters.toTs) p.set("toTs", new Date(filters.toTs).toISOString());
     const minMicro = stakeToMicroOrNull(filters.minStake);
@@ -149,7 +218,7 @@ export function BetsClient() {
     const maxMicro = stakeToMicroOrNull(filters.maxStake);
     if (maxMicro && maxMicro !== "invalid") p.set("maxStakeMicro", maxMicro);
     return p.toString();
-  }, [filters, page, sortBy, sortDir, currency, stakeToMicroOrNull]);
+  }, [filters, page, sortBy, sortDir, currency, stakeToMicroOrNull, ticketIdParse]);
 
   const reload = useCallback(async () => {
     if (stakeError) return;
@@ -162,6 +231,7 @@ export function BetsClient() {
       setRows(res.entries);
       setTotal(res.total);
       setTotalPages(res.totalPages);
+      setLoadedAt(new Date());
     } catch (err) {
       setError(err instanceof ApiFetchError ? err.message : "fetch failed");
     } finally {
@@ -196,10 +266,15 @@ export function BetsClient() {
   };
 
   const hasAnyFilter =
-    filters.status !== "all" ||
+    filters.state !== "all" ||
     !!filters.decision ||
+    !!filters.betType ||
+    !!filters.phase ||
     !!filters.riskTier ||
     !!filters.sportId ||
+    !!filters.userId ||
+    !!filters.q ||
+    !!filters.ticketIds ||
     !!filters.fromTs ||
     !!filters.toTs ||
     !!filters.minStake ||
@@ -210,19 +285,73 @@ export function BetsClient() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+        <PillRow>
+          {STATE_PILLS.map((p) => (
+            <Pill
+              key={p.key}
+              active={filters.state === p.key}
+              onClick={() =>
+                setFiltersAndResetPage((f) => ({
+                  ...f,
+                  state: p.key,
+                  decision: p.key === "rejected" ? f.decision : "",
+                }))
+              }
+            >
+              {p.label}
+            </Pill>
+          ))}
+        </PillRow>
+        <Divider />
+        <PillRow>
+          {TYPE_PILLS.map((p) => (
+            <Pill
+              key={p.key}
+              active={filters.betType === p.key}
+              onClick={() => setF("betType", filters.betType === p.key ? "" : p.key)}
+            >
+              {p.label}
+            </Pill>
+          ))}
+        </PillRow>
+        <Divider />
+        <PillRow>
+          {PHASE_PILLS.map((p) => (
+            <Pill
+              key={p.key}
+              active={filters.phase === p.key}
+              onClick={() => setF("phase", filters.phase === p.key ? "" : p.key)}
+            >
+              {p.label}
+            </Pill>
+          ))}
+        </PillRow>
+      </div>
+
       <section style={filterRowStyle}>
-        <FilterLabel label="Status">
-          <select
-            value={filters.status}
-            onChange={(e) => setF("status", e.target.value as StatusKey)}
+        <FilterLabel label="Bettor email / nickname">
+          <input
+            type="search"
+            placeholder="search…"
+            value={filters.q}
+            onChange={(e) => setF("q", e.target.value)}
             style={selectStyle}
-          >
-            {STATUS_OPTIONS.map((o) => (
-              <option key={o.key} value={o.key}>
-                {o.label}
-              </option>
-            ))}
-          </select>
+            spellCheck={false}
+          />
+        </FilterLabel>
+        <FilterLabel label="Ticket IDs">
+          <input
+            type="text"
+            placeholder="comma-separated"
+            value={filters.ticketIds}
+            onChange={(e) => setF("ticketIds", e.target.value)}
+            style={{
+              ...selectStyle,
+              borderColor: ticketIdParse.invalid.length > 0 ? "#dc2626" : undefined,
+            }}
+            spellCheck={false}
+          />
         </FilterLabel>
         <FilterLabel label="Rejection reason">
           <select
@@ -232,7 +361,7 @@ export function BetsClient() {
               setFiltersAndResetPage((f) => ({
                 ...f,
                 decision: next,
-                status: next ? "rejected" : f.status,
+                state: next ? "rejected" : f.state,
               }));
             }}
             style={selectStyle}
@@ -273,6 +402,22 @@ export function BetsClient() {
               </option>
             ))}
           </select>
+        </FilterLabel>
+        <FilterLabel label="Bettor ID">
+          <input
+            type="text"
+            placeholder="uuid"
+            value={filters.userId}
+            onChange={(e) => setF("userId", e.target.value)}
+            style={{
+              ...selectStyle,
+              borderColor:
+                filters.userId.trim() && !UUID_RE.test(filters.userId.trim())
+                  ? "#dc2626"
+                  : undefined,
+            }}
+            spellCheck={false}
+          />
         </FilterLabel>
         <FilterLabel label={`Min stake (${currency})`}>
           <input
@@ -345,6 +490,17 @@ export function BetsClient() {
           endIndex={endIndex}
           currency={currency}
         />
+        {loadedAt ? (
+          <span className="mono" style={totalLineStyle}>
+            as of{" "}
+            {loadedAt.toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+            })}
+          </span>
+        ) : null}
+        <ExportCsvButton rows={rows} filenamePrefix="tickets" />
         <ColumnSettings layout={columnLayout} />
       </div>
 
@@ -550,6 +706,52 @@ function PageButton({
         fontWeight: active ? 600 : 500,
         cursor: disabled ? "default" : "pointer",
         opacity: disabled && !active ? 0.5 : 1,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function PillRow({ children }: { children: React.ReactNode }) {
+  return <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>{children}</div>;
+}
+
+function Divider() {
+  return (
+    <span
+      style={{
+        width: 1,
+        height: 22,
+        background: "var(--color-border)",
+        margin: "0 4px",
+      }}
+    />
+  );
+}
+
+function Pill({
+  children,
+  active,
+  onClick,
+}: {
+  children: React.ReactNode;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        height: 26,
+        padding: "0 10px",
+        borderRadius: 13,
+        border: "1px solid var(--color-border)",
+        background: active ? "var(--color-fg)" : "var(--color-bg-subtle)",
+        color: active ? "var(--color-bg)" : "var(--color-fg)",
+        fontSize: 12,
+        cursor: "pointer",
       }}
     >
       {children}

@@ -17,12 +17,13 @@ import { useRiskzillaCurrency } from "../currency-switch";
 import {
   ColumnSettings,
   EventsTable,
+  ExportCsvButton,
   useColumnLayout,
   type EventDto,
 } from "../events-table";
 import { toMicro } from "@oddzilla/types/money";
 
-const POLL_MS = 3000;
+const POLL_OPTIONS = [3000, 15000, 30000] as const;
 const MAX_ROWS = 250;
 const COLUMN_STORAGE_KEY = "oz:admin:riskzilla:betticker:columns:v1";
 
@@ -49,9 +50,18 @@ interface SportOption {
   name: string;
 }
 
+type Phase = "all" | "live" | "prematch";
+const PHASE_PILLS: ReadonlyArray<{ key: Phase; label: string }> = [
+  { key: "all", label: "All" },
+  { key: "live", label: "Live" },
+  { key: "prematch", label: "Prematch" },
+];
+
 interface Filters {
   status: "all" | "accepted" | "rejected";
   decision: string | null;
+  phase: Phase;
+  betType: "" | "single" | "combo";
   riskTier: string;
   sportId: string;
   minStake: string;
@@ -62,6 +72,8 @@ interface Filters {
 const EMPTY_FILTERS: Filters = {
   status: "all",
   decision: null,
+  phase: "all",
+  betType: "",
   riskTier: "",
   sportId: "",
   minStake: "",
@@ -69,10 +81,35 @@ const EMPTY_FILTERS: Filters = {
   paused: false,
 };
 
+// Client-side quick search over the rows already on screen: match,
+// tournament, bettor (email / nickname / id) or ticket id. Comma
+// separates alternatives so a batch of ticket ids pastes straight in.
+function matchesSearch(row: EventDto, needles: string[]): boolean {
+  if (needles.length === 0) return true;
+  const hay = [
+    row.matchLabel,
+    row.tournamentName,
+    row.userEmail,
+    row.userNickname,
+    row.userId,
+    row.ticketId,
+    row.id,
+    row.sportSlug,
+    ...row.selections.flatMap((s) => [s.matchLabel, s.marketName, s.outcomeName]),
+  ]
+    .filter((v): v is string => typeof v === "string" && v.length > 0)
+    .join(" \u0000 ")
+    .toLowerCase();
+  return needles.some((n) => hay.includes(n));
+}
+
 export function BettickerClient() {
   const currency = useRiskzillaCurrency();
   const [rows, setRows] = useState<EventDto[]>([]);
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
+  const [search, setSearch] = useState("");
+  const [pollMs, setPollMs] = useState<number>(POLL_OPTIONS[0]);
+  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [sports, setSports] = useState<SportOption[]>([]);
   const [error, setError] = useState<string | null>(null);
   const columnLayout = useColumnLayout(COLUMN_STORAGE_KEY);
@@ -120,6 +157,8 @@ export function BettickerClient() {
     p.set("currency", currency);
     if (filters.status !== "all") p.set("status", filters.status);
     if (filters.decision) p.set("decision", filters.decision);
+    if (filters.phase !== "all") p.set("phase", filters.phase);
+    if (filters.betType) p.set("betType", filters.betType);
     if (filters.riskTier) p.set("riskTier", filters.riskTier);
     if (filters.sportId) p.set("sportId", filters.sportId);
     const minMicro = stakeToMicroOrNull(filters.minStake);
@@ -130,6 +169,8 @@ export function BettickerClient() {
   }, [
     filters.status,
     filters.decision,
+    filters.phase,
+    filters.betType,
     filters.riskTier,
     filters.sportId,
     filters.minStake,
@@ -163,6 +204,7 @@ export function BettickerClient() {
         merged.sort((a, b) => (a.cursor < b.cursor ? 1 : -1));
         return merged;
       });
+      setLastRefresh(new Date());
       setError(null);
     } catch (err) {
       setError(err instanceof ApiFetchError ? err.message : "fetch failed");
@@ -180,9 +222,9 @@ export function BettickerClient() {
   // the state so admins can lock the view while inspecting a row.
   useEffect(() => {
     if (filters.paused) return;
-    const id = setInterval(() => void refresh(), POLL_MS);
+    const id = setInterval(() => void refresh(), pollMs);
     return () => clearInterval(id);
-  }, [filters.paused, refresh]);
+  }, [filters.paused, pollMs, refresh]);
 
   const setF = <K extends keyof Filters>(key: K, value: Filters[K]) =>
     setFilters((f) => ({ ...f, [key]: value }));
@@ -190,10 +232,32 @@ export function BettickerClient() {
   const hasAnyFilter =
     filters.status !== "all" ||
     !!filters.decision ||
+    filters.phase !== "all" ||
+    !!filters.betType ||
     !!filters.riskTier ||
     !!filters.sportId ||
     !!filters.minStake ||
     !!filters.maxStake;
+
+  const needles = useMemo(
+    () =>
+      search
+        .split(",")
+        .map((n) => n.trim().toLowerCase())
+        .filter(Boolean),
+    [search],
+  );
+  const visibleRows = useMemo(
+    () => rows.filter((r) => matchesSearch(r, needles)),
+    [rows, needles],
+  );
+  const openInView = useMemo(
+    () =>
+      visibleRows.filter(
+        (r) => r.decision === "accepted" || r.decision === "pending_delay",
+      ).length,
+    [visibleRows],
+  );
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -243,28 +307,119 @@ export function BettickerClient() {
             </Pill>
           ))}
         </PillRow>
+        <span
+          style={{
+            width: 1,
+            height: 22,
+            background: "var(--color-border)",
+            margin: "0 4px",
+          }}
+        />
+        <PillRow>
+          {PHASE_PILLS.map((p) => (
+            <Pill
+              key={p.key}
+              active={filters.phase === p.key}
+              onClick={() => setF("phase", p.key)}
+            >
+              {p.label}
+            </Pill>
+          ))}
+        </PillRow>
+        <span
+          style={{
+            width: 1,
+            height: 22,
+            background: "var(--color-border)",
+            margin: "0 4px",
+          }}
+        />
+        <PillRow>
+          {(
+            [
+              { key: "", label: "Any type" },
+              { key: "single", label: "Single" },
+              { key: "combo", label: "Combo" },
+            ] as const
+          ).map((p) => (
+            <Pill
+              key={p.key || "any"}
+              active={filters.betType === p.key}
+              onClick={() => setF("betType", p.key)}
+            >
+              {p.label}
+            </Pill>
+          ))}
+        </PillRow>
         <span style={{ flex: 1 }} />
+        <label
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            fontSize: 12,
+            color: "var(--color-fg)",
+            cursor: "pointer",
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={!filters.paused}
+            onChange={(e) => setF("paused", !e.target.checked)}
+          />
+          Auto-update
+        </label>
+        <select
+          value={pollMs}
+          onChange={(e) => setPollMs(Number(e.target.value))}
+          disabled={filters.paused}
+          aria-label="Auto-update interval"
+          style={{
+            height: 28,
+            padding: "0 8px",
+            border: "1px solid var(--color-border)",
+            background: "var(--color-bg)",
+            color: "var(--color-fg)",
+            borderRadius: 6,
+            fontSize: 12,
+          }}
+        >
+          {POLL_OPTIONS.map((ms) => (
+            <option key={ms} value={ms}>
+              {ms / 1000}s
+            </option>
+          ))}
+        </select>
         <button
           type="button"
-          onClick={() => setFilters((f) => ({ ...f, paused: !f.paused }))}
+          onClick={() => void refresh()}
+          title="Refresh now"
           style={{
             height: 28,
             padding: "0 10px",
             border: "1px solid var(--color-border)",
-            background: filters.paused
-              ? "var(--accent, #16a34a)"
-              : "var(--color-bg-subtle)",
-            color: filters.paused ? "#fff" : "var(--color-fg)",
+            background: "var(--color-bg-subtle)",
+            color: "var(--color-fg)",
             borderRadius: 6,
             fontSize: 12,
             cursor: "pointer",
           }}
         >
-          {filters.paused ? "Resume" : "Pause"}
+          Refresh
         </button>
       </div>
 
       <section style={filterRowStyle}>
+        <FilterLabel label="Search event / bettor / ticket id">
+          <input
+            type="search"
+            placeholder="comma-separated for a batch"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            style={selectStyle}
+            spellCheck={false}
+          />
+        </FilterLabel>
         <FilterLabel label="Risk tier">
           <select
             value={filters.riskTier}
@@ -356,11 +511,21 @@ export function BettickerClient() {
             textTransform: "uppercase",
           }}
         >
-          {rows.length.toLocaleString()} event{rows.length === 1 ? "" : "s"} ·{" "}
-          {filters.paused ? "paused" : `auto-refresh ${POLL_MS / 1000}s`} ·{" "}
-          {currency} view
+          {visibleRows.length.toLocaleString()} event{visibleRows.length === 1 ? "" : "s"}
+          {needles.length > 0 ? ` of ${rows.length.toLocaleString()}` : ""} ·{" "}
+          {openInView.toLocaleString()} open in view ·{" "}
+          {filters.paused ? "paused" : `auto-update ${pollMs / 1000}s`}
+          {lastRefresh
+            ? ` · as of ${lastRefresh.toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+              })}`
+            : ""}{" "}
+          · {currency} view
         </span>
         <span style={{ flex: 1 }} />
+        <ExportCsvButton rows={visibleRows} filenamePrefix="ticket-stream" />
         <ColumnSettings layout={columnLayout} />
       </div>
 
@@ -392,10 +557,14 @@ export function BettickerClient() {
       )}
 
       <EventsTable
-        rows={rows}
+        rows={visibleRows}
         loading={false}
         layout={columnLayout}
-        emptyText="No events yet. Place a bet on the storefront to see it here."
+        emptyText={
+          needles.length > 0
+            ? "Nothing on screen matches the search."
+            : "No events yet. Place a bet on the storefront to see it here."
+        }
       />
     </div>
   );
