@@ -987,3 +987,43 @@ next to Oddin's esports by scraping the public Fonbet line.
   (Fonbet payload carries `home` / `away` / `periods` / `scoreboard.time`).
 - Load check on the CPX31 box with the full line enabled (or scope it via
   `FONBET_ALLOWED_SPORT_IDS` / `FONBET_MAX_MATCHES`).
+
+## Backoffice: bettor card, labels, ticket views, alert center (2026-09-05, local)
+
+Built on `web/bettor-profile-card` against `main` @ #617; verified on the
+native Windows stack, not deployed.
+
+**Shipped:**
+- `/admin/users` rows open the bettor card; list shows labels + risk
+  factor and filters by label (`GET /admin/users?label=`).
+- `/admin/users/:id` rebuilt as a Corwyn-style card: KPI tiles (turnover,
+  company PnL + hold, win rate + live share, avg odds + reject rate, avg /
+  max stake, open exposure), Identity (devices / IPs / sessions from
+  `sessions`), Global constraints with inline editors (risk factor =
+  `users.risk_score` shown as % in 0.1 steps 0.1–10, stake limit, bet
+  delay, status), Labels (`users.labels`, migration 0104: vip, sharp,
+  regular, fraud, shady, suspicious, prematch, live), notes, PnL by sport,
+  live vs prematch; Bets / Settings / Log tabs. Admin / support accounts
+  keep the plain controls view.
+- `GET /admin/riskzilla/bettors/:id` adds `avgOdds`, `avgStakeMicro`,
+  `maxStakeMicro`, `rejectedCount`; `GET /admin/users/:id` adds
+  `identity`, `labels`, `riskScore`, `nickname`, `emailVerifiedAt`.
+- Betticker + Bets (`/admin/riskzilla/events`): `phase`, `betType`,
+  `state`, `ticketIds`, `q` filters; rows carry `isLive`, `betType`,
+  `legs`, `ticketStatus`, `actualPayoutMicro`, `settledAt`. Shared table
+  gains Live / Type / Paid / PnL / Reject-reason columns and CSV export;
+  Betticker gets type pills, quick search, auto-update interval and an
+  "open in view" count; Bets gets state / type / phase pills, ticket-id
+  and bettor search, deep links from the bettor card (`?userId=`) and
+  the alert center (`?ticketIds=`).
+- Alert center (migration 0105): `/admin/alerts` under Risk & limits with
+  queue + rules tabs, per-alert acknowledge / assign / comment / resolve /
+  reopen, sidebar badge, `AlertsBanner` on RiskZilla tabs, alerts section
+  on the bettor card. 14 rules, thresholds editable, sweeper every 60 s.
+
+**Open:**
+- Prod deploy + migrations 0104/0105; tune rule thresholds on real
+  volume before enabling notifications.
+- Alert notifications (email / push to the desk) — none yet; the queue is
+  pull-only.
+- PnL-by-sport drill-down to tournaments / matches on the card.
