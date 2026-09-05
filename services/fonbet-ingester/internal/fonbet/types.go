@@ -7,24 +7,37 @@ package fonbet
 
 // ListResponse is GET <line>/events/list?lang=..&version=0&scopeMarket=..
 type ListResponse struct {
-	PacketVersion  int64           `json:"packetVersion"`
-	Sports         []Sport         `json:"sports"`
-	Events         []Event         `json:"events"`
-	CustomFactors  []EventFactors  `json:"customFactors"`
-	EventBlocks    []EventBlock    `json:"eventBlocks"`
-	EventMiscs     []EventMisc     `json:"eventMiscs"`
-	LiveEventInfos []LiveEventInfo `json:"liveEventInfos"`
+	PacketVersion   int64            `json:"packetVersion"`
+	Sports          []Sport          `json:"sports"`
+	TournamentInfos []TournamentInfo `json:"tournamentInfos"`
+	Events          []Event          `json:"events"`
+	CustomFactors   []EventFactors   `json:"customFactors"`
+	EventBlocks     []EventBlock     `json:"eventBlocks"`
+	EventMiscs      []EventMisc      `json:"eventMiscs"`
+	LiveEventInfos  []LiveEventInfo  `json:"liveEventInfos"`
 }
 
 // Sport is one node of the sports tree. kind="sport" without parentId is a
 // root sport (Football, Tennis, ...); kind="segment" is a league /
 // tournament whose parentId points at the root.
 type Sport struct {
-	ID       int    `json:"id"`
-	ParentID *int   `json:"parentId"`
-	Kind     string `json:"kind"`
-	Name     string `json:"name"`
-	Alias    string `json:"alias"`
+	ID    int    `json:"id"`
+	Kind  string `json:"kind"`
+	Name  string `json:"name"`
+	Alias string `json:"alias"`
+	// TournamentInfoID points into TournamentInfos, which is the SECOND
+	// place Fonbet keeps a competition mark — see TournamentIcons.
+	TournamentInfoID *int `json:"tournamentInfoId"`
+	ParentID         *int `json:"parentId"`
+}
+
+// TournamentInfo is the per-competition metadata block riding on every
+// events/list snapshot. Only Icon is read: it is an absolute-from-root
+// CDN path ("/ContentCommon/Logotypes/Tournament/Football/england_pl.svg")
+// drawn from a different asset tree than line/logos serves.
+type TournamentInfo struct {
+	ID   int    `json:"id"`
+	Icon string `json:"icon"`
 }
 
 // Event: level 1 = match, level 2/3 = sub-event (half, map, corners,

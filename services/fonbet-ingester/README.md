@@ -93,6 +93,17 @@ internal/
    while the event is blocked), vanished live matches → `closed`.
 4. `marketStatus` / `matchStatus` / `score` frames on `odds:match:{id}`.
 
+Logos ride alongside, refreshed every 10 min and applied right after a
+cycle (only `logo_url IS NULL` rows, so an operator upload always wins).
+Tournaments have **two** upstream sources and `ingest.ApplyLogos` merges
+them, `line/logos` winning: its `competitions` map is keyed by segment id,
+and `fonbet.Client.TournamentIcons` reads the `tournamentInfos` block off
+the snapshot from step 1 (free — no extra request) for the marks that map
+has none of. Country flags are dropped from the second source on purpose;
+Fonbet has a real mark for only about half its leagues and falls back to
+the flag, which the storefront already shows on the category header. See
+[docs/FONBET.md](../../docs/FONBET.md#tournament-marks--coverage-and-why-half-the-rows-have-none).
+
 ## Invariants
 
 - **Specifier canonicalization is byte-identical** to the TS + Go copies

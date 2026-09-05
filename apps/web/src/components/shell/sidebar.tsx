@@ -1011,6 +1011,16 @@ function CategoryGroup({
   }, [holdsActive]);
   const expanded = group.label == null || open;
 
+  // Fonbet has a real competition mark for only about half its leagues
+  // (their own site falls back to the country flag, which this bucket's
+  // header already carries), so a group is normally a mix of logo'd and
+  // bare rows. Hold the icon slot open for every row in a group where at
+  // least one logo exists, so the names share a left edge instead of
+  // stepping in and out; a group with no logos at all keeps the full 240px
+  // panel width for names. Derived from the data, not from each row's
+  // <img> error state, so a logo that 404s doesn't reflow its neighbours.
+  const reserveLogoSlot = group.tournaments.some((t) => t.logoUrl);
+
   const list = (
     <div
       style={{
@@ -1027,6 +1037,7 @@ function CategoryGroup({
           tournament={t}
           active={activeTournamentId === String(t.id)}
           stripPrefix={group.label}
+          reserveLogoSlot={reserveLogoSlot}
         />
       ))}
     </div>
@@ -1570,6 +1581,7 @@ function TournamentItem({
   tournament,
   active,
   stripPrefix,
+  reserveLogoSlot,
 }: {
   sportSlug: string;
   tournament: Tournament;
@@ -1580,6 +1592,9 @@ function TournamentItem({
   // header — and on a 240px panel it's duplication that costs the part
   // of the name you actually need to tell two leagues apart.
   stripPrefix?: string | null;
+  // Keep the logo square occupied even with nothing to draw, so rows in
+  // a partly-logo'd group share a left edge. Set by CategoryGroup.
+  reserveLogoSlot?: boolean;
 }) {
   const tMatch = useTranslations("match");
   const tier = tournament.riskTier ?? null;
@@ -1605,7 +1620,11 @@ function TournamentItem({
       }}
     >
       <TierMark tier={tier} size={11} label={tMatch("topTournamentTitle")} />
-      <TournamentLogoMark logoUrl={tournament.logoUrl ?? null} name={tournament.name} />
+      <TournamentLogoMark
+        logoUrl={tournament.logoUrl ?? null}
+        name={tournament.name}
+        reserveSlot={reserveLogoSlot ?? false}
+      />
       <span
         style={{
           flex: 1,
@@ -1669,19 +1688,27 @@ function stripCategoryPrefix(
   return rest;
 }
 
-// 16-px square renderer for an admin-uploaded tournament logo. Falls
-// back to nothing (TierMark + name still carry the row) when logoUrl
-// is null OR when the <img> errors out, so a stale/blocked URL never
-// breaks the sidebar layout.
+// 14-px square renderer for a tournament logo. Draws nothing when logoUrl
+// is null OR when the <img> errors out, so a stale/blocked URL never breaks
+// the sidebar layout — deliberately no monogram or flag stand-in, same call
+// as TeamMark: an invented mark abbreviating the words already on the row
+// reads as a badge that means something. With reserveSlot the square is
+// still occupied, so the row keeps its neighbours' left edge.
 function TournamentLogoMark({
   logoUrl,
   name,
+  reserveSlot,
 }: {
   logoUrl: string | null;
   name: string;
+  reserveSlot: boolean;
 }) {
   const [errored, setErrored] = useState(false);
-  if (!logoUrl || errored) return null;
+  if (!logoUrl || errored) {
+    return reserveSlot ? (
+      <span aria-hidden style={{ width: 14, height: 14, flexShrink: 0 }} />
+    ) : null;
+  }
   return (
     <img
       src={logoUrl}
