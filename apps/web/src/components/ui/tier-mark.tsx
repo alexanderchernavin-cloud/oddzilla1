@@ -49,6 +49,15 @@ export function TierMark({
 // isFeaturedTier returns true for tournaments the user wants visually
 // promoted across the storefront. Single source of truth so card accent
 // rules and badge rendering can't drift.
+//
+// Widened from {1, 2} to 1..3 on 2026-09-05. The tier is now assigned by
+// ZillaAGI for the traditional line too (migration 0106), and that review
+// carries a standing +1 safety margin — so a machine verdict can never
+// produce a T1, and the old two-tier rule left the entire Fonbet offer
+// with four featured tournaments between them. Three tiers restores a
+// meaningful "Top" set on both halves of the catalogue without an
+// operator having to raise a competition's liability budget just to put a
+// star on it.
 export function isFeaturedTier(tier: number | null | undefined): boolean {
-  return tier === 1 || tier === 2;
+  return tier != null && tier >= 1 && tier <= 3;
 }
