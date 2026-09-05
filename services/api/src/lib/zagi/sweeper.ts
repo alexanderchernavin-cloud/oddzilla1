@@ -73,14 +73,12 @@ export function startZagiRiskTierSweeper(
   }
 
   const intervalMs = readIntervalMs();
-  // Must outlive a full-budget sweep, or a second replica picks up the
-  // lock while the first is still working through the backlog. The floor
-  // is the budget plus slack, not a fraction of the interval — at the
-  // 5-minute minimum interval those are very different numbers.
-  const lockTtlS = Math.max(
-    Math.floor(SWEEP_BUDGET_MS / 1000) + 120,
-    Math.floor((intervalMs / 1000) * 0.8),
-  );
+  // Must outlive a full-budget sweep and NOT MUCH MORE. The earlier
+  // max(budget, interval * 0.8) form made the lock 24 minutes at the
+  // 30-minute default, so a sweep killed mid-run by a deploy blocked the
+  // next one for most of that — the failure the logo sweeper hit in
+  // production. Cadence is the interval timer's job, not the lock's.
+  const lockTtlS = Math.floor(SWEEP_BUDGET_MS / 1000) + 120;
 
   const sweep = async () => {
     let locked = false;
@@ -92,7 +90,13 @@ export function startZagiRiskTierSweeper(
         lockTtlS,
         "NX",
       );
-      if (!acquired) return;
+      if (!acquired) {
+        app.log.info(
+          { component: "zagi-risk-tier" },
+          "risk-tier sweep skipped: another pass holds the lock",
+        );
+        return;
+      }
       locked = true;
 
       const started = Date.now();
