@@ -38,7 +38,8 @@
 // /admin/sportradar. The caller passes an operator-CONFIRMED pair; this
 // component never guesses.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { I } from "@/components/ui/icons";
 import { useTranslations } from "@/lib/i18n";
 
 interface Props {
@@ -84,6 +85,33 @@ const MOBILE_MAX_WIDTH = 1099;
 // Erring small CLIPS the strip, which is worse than a gap, so raise this
 // rather than tighten it if a sport's collapsed header runs taller.
 const COLLAPSED_HEIGHT = 115;
+
+// Expanded height is DERIVED, not fixed. The LMT's pitch is drawn to an
+// aspect ratio, so the widget's natural height tracks its width: the
+// scoreboard, momentum strip and tab strip are roughly constant, and the
+// pitch grows with the frame. A single constant is therefore only ever
+// right at one width — 620 was tuned for the ~900px main column and left
+// ~277px of white under a 370px phone, which is what a fixed height
+// looks like on mobile.
+//
+// Both numbers are measured off a production tennis fixture at 2.35x:
+// chrome 38 (scoreboard) + 62 (momentum) + 31 (tabs) = 131, pitch 211 on
+// a 358px frame = 0.59. The formula returns ~630 at desktop widths, which
+// is where the old 620 came from, so desktop is unchanged in practice.
+//
+// Other sports draw slightly different courts, so this is close rather
+// than exact; the clamp keeps a bad measurement from producing an absurd
+// frame, and erring tall costs a gap while erring short would crop the
+// pitch.
+const LMT_CHROME_HEIGHT = 131;
+const LMT_PITCH_RATIO = 0.59;
+const LMT_MIN_EXPANDED = 300;
+const LMT_MAX_EXPANDED = 760;
+
+function expandedHeightFor(width: number): number {
+  const raw = Math.round(LMT_CHROME_HEIGHT + LMT_PITCH_RATIO * width);
+  return Math.min(LMT_MAX_EXPANDED, Math.max(LMT_MIN_EXPANDED, raw));
+}
 
 export function buildLmtStandaloneUrl({
   srMatchId,
@@ -145,6 +173,23 @@ export function SportradarLmt({ height = 620, ...rest }: Props) {
     return () => mq.removeEventListener("change", onChange);
   }, []);
 
+  // Frame width drives the expanded height (see expandedHeightFor). The
+  // observer is the only way to get it: the rail, the main column and a
+  // phone are three different widths, and on the match page the same
+  // component renders in more than one of them.
+  const hostRef = useRef<HTMLElement>(null);
+  const [frameWidth, setFrameWidth] = useState<number | null>(null);
+  useEffect(() => {
+    const el = hostRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width;
+      if (w && w > 0) setFrameWidth(w);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   const src = buildLmtStandaloneUrl({ ...rest, expanded });
   // The widget carries its own collapse chevron, but it lives inside the
   // iframe and cannot tell us it was used — so WE drive the state from
@@ -162,10 +207,17 @@ export function SportradarLmt({ height = 620, ...rest }: Props) {
   // hosted page reports no size across origins — so `onSizeChange` via
   // the direct widgetloader, blocked on our Client ID, remains the
   // upgrade that would make it exact.
-  const frameHeight = expanded ? height : COLLAPSED_HEIGHT;
+  // `height` is the pre-measurement fallback, so the first server-rendered
+  // frame is a sane size before the observer reports.
+  const frameHeight = expanded
+    ? frameWidth == null
+      ? height
+      : expandedHeightFor(frameWidth)
+    : COLLAPSED_HEIGHT;
 
   return (
     <section
+      ref={hostRef}
       data-oz-track="sportradar-lmt"
       style={{ display: "flex", flexDirection: "column" }}
     >
@@ -189,25 +241,6 @@ export function SportradarLmt({ height = 620, ...rest }: Props) {
         >
           {t("lmt.title")}
         </span>
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="mono"
-          style={{
-            marginLeft: "auto",
-            fontSize: 10,
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
-            color: "var(--fg-muted)",
-            background: "transparent",
-            border: "1px solid var(--border)",
-            borderRadius: 999,
-            padding: "3px 10px",
-            cursor: "pointer",
-          }}
-        >
-          {expanded ? t("lmt.collapse") : t("lmt.expand")}
-        </button>
       </div>
       <iframe
         src={src}
@@ -217,11 +250,47 @@ export function SportradarLmt({ height = 620, ...rest }: Props) {
           width: "100%",
           height: frameHeight,
           border: "1px solid var(--border)",
-          borderRadius: 10,
+          borderBottom: "none",
+          borderRadius: "10px 10px 0 0",
           background: "var(--surface-2)",
           display: "block",
         }}
       />
+      {/*
+        The toggle sits UNDER the frame, full width, on every breakpoint.
+        It used to be a small pill up in the header beside the title,
+        which is easy to miss — and it is standing in for a control the
+        widget itself draws centred at the bottom of its own body, so
+        this is where a bettor already looks for it. Sharing the frame's
+        border and cancelling its bottom radius makes the two read as one
+        object rather than a widget with a stray button beneath it.
+      */}
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        className="mono"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 6,
+          width: "100%",
+          padding: "7px 10px",
+          fontSize: 10,
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+          color: "var(--fg-muted)",
+          background: "var(--surface-2)",
+          border: "1px solid var(--border)",
+          borderRadius: "0 0 10px 10px",
+          cursor: "pointer",
+          fontFamily: "inherit",
+        }}
+      >
+        {expanded ? t("lmt.collapse") : t("lmt.expand")}
+        {expanded ? <I.ChevU size={13} /> : <I.ChevD size={13} />}
+      </button>
     </section>
   );
 }
