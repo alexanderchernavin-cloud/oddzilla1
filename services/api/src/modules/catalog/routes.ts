@@ -14,7 +14,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { and, asc, desc, eq, gte, ilike, inArray, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import {
   sports,
@@ -421,6 +421,65 @@ const notHiddenTournament = notInArray(tournaments.name, HIDDEN_TOURNAMENT_NAMES
 // the whole distinction — HIDDEN_TOURNAMENT_NAMES hides rows that should
 // never be reachable, this one hides rows that shouldn't be the default.
 const notHiddenCategory = eq(categories.hiddenFromLists, false);
+
+/**
+ * How long before kickoff a top-tier match starts competing with the live
+ * offer for the top of the list.
+ */
+const FEATURED_PREMATCH_WINDOW = "12 hours";
+
+/**
+ * The tiers prominent enough to outrank a live match before they start.
+ * Deliberately narrower than `isFeaturedTier` on the storefront: a gold
+ * star is decoration, displacing live football is a merchandising claim.
+ */
+const HOISTABLE_TIERS = [1, 2];
+
+/**
+ * Storefront match ordering: prominence first, then time.
+ *
+ * The lists used to sort live-before-upcoming and then purely by kickoff,
+ * which on a broad line means whatever happens to have started. On
+ * production that put `Venezuela. Division 2` and `Brazil. Women. Series
+ * A1` at the top of Football's live list while the tier-3 leagues sat
+ * below the fold — the ordering carried no notion of which match anyone
+ * wants to see.
+ *
+ * Two rules, both the operator's:
+ *
+ *   1. Among matches competing for the top, LOWER risk tier ranks higher.
+ *      The tier is already our best statement of how big a competition is,
+ *      so it is the right sort key, and it now exists for the traditional
+ *      line as well as esports (ZillaAGI, migration 0106).
+ *   2. A tier 1 or 2 match joins that competition 12 HOURS BEFORE KICKOFF,
+ *      so an upcoming Champions League tie outranks a live tier-6 game.
+ *
+ * Everything else keeps chronological order — a "what's on soon" list
+ * sorted by prestige rather than time would be actively worse — with tier
+ * only breaking ties. Untiered rows sort as 99: last within their group,
+ * never promoted by the absence of information.
+ */
+function matchListOrder(): SQL[] {
+  const hoisted = sql`(
+    ${matches.status} = 'live'
+    OR (
+      ${tournaments.riskTier} IN (${sql.join(
+        HOISTABLE_TIERS.map((t) => sql`${t}`),
+        sql`, `,
+      )})
+      AND ${matches.scheduledAt} IS NOT NULL
+      AND ${matches.scheduledAt} <= now() + ${FEATURED_PREMATCH_WINDOW}::interval
+    )
+  )`;
+  return [
+    sql`CASE WHEN ${hoisted} THEN 0 ELSE 1 END ASC`,
+    sql`CASE WHEN ${hoisted} THEN COALESCE(${tournaments.riskTier}, 99) ELSE 99 END ASC`,
+    sql`${matches.scheduledAt} ASC NULLS LAST`,
+    // Deterministic tail so paging and repeated polls cannot reshuffle
+    // rows that tie on every key above.
+    sql`${matches.id} ASC`,
+  ];
+}
 
 // loadMatchWinnerOdds fetches the match-winner outcomes for a batch of
 // matches and pairs them by Oddin's canonical outcome_id ("1" = home,
@@ -1146,7 +1205,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
             : undefined,
         ),
       )
-      .orderBy(desc(matches.status), matches.scheduledAt)
+      .orderBy(...matchListOrder())
       .limit(q.limit);
 
     // These three reads are mutually independent (all keyed off `rows` +
@@ -2061,9 +2120,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
           notHiddenCategory,
         ),
       )
-      .orderBy(
-        q.status === "live" ? desc(matches.id) : matches.scheduledAt,
-      )
+      .orderBy(...matchListOrder())
       .limit(q.limit);
 
     // Independent reads (match-winner odds, per-bettor cascade, Top-market
