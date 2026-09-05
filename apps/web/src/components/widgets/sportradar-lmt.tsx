@@ -77,14 +77,19 @@ const MOBILE_MAX_WIDTH = 1099;
 // scoreboard plus the momentum strip (what `collapseTo=momentum` leaves
 // behind), expanded shows the pitch and the tab strip under it.
 //
-// 260 -> 115 across two passes on 2026-09-05. The first cut kept the
-// widget's own chevron, which occupies ~27px at the bottom of the
-// collapsed state; `hideExpand` now removes it, so the collapsed body is
-// just the scoreboard, the momentum strip and the format line — measured
-// at ~102px off a production screenshot, leaving ~13px of slack here.
-// Erring small CLIPS the strip, which is worse than a gap, so raise this
-// rather than tighten it if a sport's collapsed header runs taller.
-const COLLAPSED_HEIGHT = 115;
+// 260 -> 115 -> 104 across three passes on 2026-09-05. The first cut kept
+// the widget's own chevron (~27px); `hideExpand` removed it. The slack
+// left after that showed as a narrow bar between the widget's content and
+// our button, because the leftover frame renders as the iframe's own
+// background — so it came out too. The collapsed body measures ~103px on
+// a phone, hence 104.
+//
+// Residual is now hidden rather than merely small: the frame's background
+// matches the widget's own body (see the iframe), so a few px of overshoot
+// on some other sport reads as part of the widget instead of a band. That
+// only forgives being too TALL — too short still crops the momentum strip,
+// which is why the bias stays on this side.
+const COLLAPSED_HEIGHT = 104;
 
 // Expanded height is DERIVED, not fixed. The LMT's pitch is drawn to an
 // aspect ratio, so the widget's natural height tracks its width: the
@@ -95,15 +100,17 @@ const COLLAPSED_HEIGHT = 115;
 // looks like on mobile.
 //
 // Both numbers are measured off a production tennis fixture at 2.35x:
-// chrome 38 (scoreboard) + 62 (momentum) + 31 (tabs) = 131, pitch 211 on
-// a 358px frame = 0.59. The formula returns ~630 at desktop widths, which
-// is where the old 620 came from, so desktop is unchanged in practice.
+// chrome (scoreboard + momentum + tabs) and pitch 211 on a 358px frame =
+// 0.59. Chrome was first read as 131 and corrected to 118 once the
+// rendered result showed ~13px of frame left over below the tab strip.
+// The formula returns ~617 at desktop widths, which is essentially the
+// old fixed 620, so desktop is unchanged in practice.
 //
 // Other sports draw slightly different courts, so this is close rather
 // than exact; the clamp keeps a bad measurement from producing an absurd
 // frame, and erring tall costs a gap while erring short would crop the
 // pitch.
-const LMT_CHROME_HEIGHT = 131;
+const LMT_CHROME_HEIGHT = 118;
 const LMT_PITCH_RATIO = 0.59;
 const LMT_MIN_EXPANDED = 300;
 const LMT_MAX_EXPANDED = 760;
@@ -252,7 +259,13 @@ export function SportradarLmt({ height = 620, ...rest }: Props) {
           border: "1px solid var(--border)",
           borderBottom: "none",
           borderRadius: "10px 10px 0 0",
-          background: "var(--surface-2)",
+          // Matches the hosted page's own body, which sets no background
+          // and so paints white in both our themes (it does not follow
+          // the storefront's dark mode). With --surface-2 here, any frame
+          // height we over-estimate showed up as a tinted bar between the
+          // widget's content and the toggle below it; white makes that
+          // remainder indistinguishable from the widget itself.
+          background: "#fff",
           display: "block",
         }}
       />
