@@ -118,6 +118,15 @@ export const tournaments = pgTable(
     // the backoffice. feed-ingester's REST refresh skips locked rows, so
     // a manual tier survives the next fixture refresh and the backfill.
     riskTierLocked: boolean("risk_tier_locked").notNull().default(false),
+    // Migration 0106: who decided the tier. 'auto' = feed-assigned or
+    // never reviewed, 'manual' = operator (implies riskTierLocked),
+    // 'zagi' = ZillaAGI review. The distinction that matters is auto vs
+    // zagi: a NULL tier prices at the STRICTEST tier, so "unreviewed"
+    // and "reviewed and left alone" are very different positions.
+    riskTierSource: text("risk_tier_source").notNull().default("auto"),
+    riskTierNote: text("risk_tier_note"),
+    riskTierReviewedAt: timestamp("risk_tier_reviewed_at", { withTimezone: true }),
+    riskTierAttempts: smallint("risk_tier_attempts").notNull().default(0),
     // Optional per-tournament branding. Mirrors sports + competitors:
     // logo_url either external paste or auto-stamped /api/tournaments/
     // <id>/logo, brand_color "#RRGGBB" hex. Both nullable — when absent

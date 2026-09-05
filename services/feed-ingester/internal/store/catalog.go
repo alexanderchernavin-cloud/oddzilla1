@@ -160,8 +160,20 @@ func UpdateTournamentRiskTier(ctx context.Context, db pgxRunner, tournamentID in
 	// risk_tier_locked (migration 0094) marks a tier an operator assigned by
 	// hand in the backoffice; the automatic REST refresh must never
 	// overwrite it.
+	//
+	// risk_tier_source (migration 0106) has to follow the value. Oddin's
+	// own tier is the provider's assessment of its own competition and
+	// outranks a ZillaAGI guess, so this may overwrite one — but then the
+	// row is no longer a ZillaAGI decision and must stop saying it is. The
+	// stale note goes with it for the same reason.
 	if _, err := db.Exec(ctx,
-		`UPDATE tournaments SET risk_tier = $2 WHERE id = $1 AND NOT risk_tier_locked`,
+		`UPDATE tournaments
+		    SET risk_tier = $2,
+		        risk_tier_source = 'auto',
+		        risk_tier_note = NULL
+		  WHERE id = $1
+		    AND NOT risk_tier_locked
+		    AND (risk_tier IS DISTINCT FROM $2 OR risk_tier_source <> 'auto')`,
 		tournamentID, riskTier,
 	); err != nil {
 		return fmt.Errorf("update tournament risk_tier: %w", err)

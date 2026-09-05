@@ -1,6 +1,8 @@
 "use client";
 
 import {
+  useCallback,
+  useEffect,
   useRef,
   useState,
   useTransition,
@@ -33,6 +35,15 @@ export interface TournamentRow {
   riskTier: number | null;
   riskTierLocked: boolean;
   /**
+   * Who decided the tier (migration 0106): "manual" an operator,
+   * "zagi" a ZillaAGI review, "auto" the Oddin feed OR nothing yet.
+   * The last case is why this exists — "auto" on a row with no tier
+   * means unreviewed, not automatic.
+   */
+  riskTierSource: "auto" | "manual" | "zagi" | string;
+  /** ZillaAGI's one-line justification, when it set the tier. */
+  riskTierNote: string | null;
+  /**
    * Operator pin position within this tournament's own CATEGORY
    * (migration 0104), or null when unpinned. Pinned tournaments head
    * their country's bucket in the sidebar tree; the rest keep the
@@ -47,6 +58,66 @@ export interface TournamentRow {
 // RiskZilla's per-tier settings run 1..10; "auto" hands the tier back to
 // Oddin's REST metadata (migration 0094 lock semantics).
 const RISK_TIERS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
+
+/**
+ * Who decided this row's tier.
+ *
+ * The distinction worth drawing is not manual-vs-automatic, it is
+ * reviewed-vs-not. "auto" on a tiered row means Oddin supplied the
+ * number; "auto" on an untiered row means nobody has looked at it yet
+ * and RiskZilla is underwriting it at the strictest tier. Those are very
+ * different states and used to render identically.
+ */
+function TierSourceMark({ row }: { row: TournamentRow }) {
+  // The lock is the older, narrower signal; where the two disagree the
+  // lock wins, because it is what the feed actually honours.
+  const source = row.riskTierLocked ? "manual" : row.riskTierSource;
+
+  if (source === "manual") {
+    return (
+      <span
+        className="text-[10px] uppercase tracking-[0.12em]"
+        style={{ color: "var(--color-accent)" }}
+        title="Assigned by an operator. Neither the Oddin REST refresh nor ZillaAGI will overwrite it."
+      >
+        manual
+      </span>
+    );
+  }
+
+  if (source === "zagi") {
+    return (
+      <span
+        className="rounded-[4px] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em]"
+        style={{
+          color: "var(--color-positive)",
+          border: "1px solid var(--color-positive)",
+        }}
+        title={
+          row.riskTierNote
+            ? `ZillaAGI review: ${row.riskTierNote}`
+            : "Assigned by a ZillaAGI review. Pick a tier here to override it."
+        }
+      >
+        ZAGI
+      </span>
+    );
+  }
+
+  return (
+    <span
+      className="text-[10px] uppercase tracking-[0.12em]"
+      style={{ color: "var(--color-fg-subtle)" }}
+      title={
+        row.riskTier != null
+          ? "Filled from Oddin's tournament metadata."
+          : "Not reviewed yet. ZillaAGI picks these up automatically; until then RiskZilla underwrites at tier 10, the strictest."
+      }
+    >
+      auto
+    </span>
+  );
+}
 
 export interface SportOption {
   id: number;
@@ -83,6 +154,7 @@ export function TournamentsEditor({
 }) {
   return (
     <div className="space-y-6">
+      <ZagiTierPanel currentSportId={currentFilters.sportId} />
       <FilterBar
         sports={sports}
         current={currentFilters}
@@ -92,6 +164,280 @@ export function TournamentsEditor({
       <TournamentTable list={initialList} />
       <Pager list={initialList} current={currentFilters} />
     </div>
+  );
+}
+
+interface ZagiStatus {
+  untiered: number;
+  pending: number;
+  exhausted: number;
+  bySource: { auto: number; manual: number; zagi: number };
+  enabled: boolean;
+  model: string | null;
+}
+
+interface ZagiProposal {
+  tournamentId: number;
+  name: string;
+  sportSlug: string;
+  categoryName: string;
+  tier: number;
+  proposedTier: number;
+  clamped: boolean;
+  why: string;
+}
+
+interface ZagiRunResult {
+  eligible: number;
+  reviewed: number;
+  assigned: number;
+  clamped: number;
+  undecided: number;
+  batches: number;
+  model: string | null;
+  dryRun: boolean;
+  errors: string[];
+  proposals: ZagiProposal[];
+  proposalsTruncated: boolean;
+}
+
+/**
+ * ZillaAGI risk-tier review.
+ *
+ * The background sweeper does this on its own every 30 minutes; this
+ * panel exists so an operator can drain the backlog now, and — more
+ * usefully — see what the model WOULD do before it does it. Preview is
+ * the default action for that reason: assigning a tier always raises the
+ * book's exposure, because an unreviewed tournament is already priced at
+ * the strictest tier.
+ */
+function ZagiTierPanel({ currentSportId }: { currentSportId: string }) {
+  const router = useRouter();
+  const [status, setStatus] = useState<ZagiStatus | null>(null);
+  const [result, setResult] = useState<ZagiRunResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<"preview" | "run" | null>(null);
+  const [limit, setLimit] = useState(50);
+  const [scoped, setScoped] = useState(true);
+
+  const loadStatus = useCallback(async () => {
+    try {
+      setStatus(await clientApi<ZagiStatus>("/admin/tournaments/zagi-status"));
+    } catch {
+      // A missing status strip must not break the page it sits on.
+      setStatus(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadStatus();
+  }, [loadStatus]);
+
+  async function run(dryRun: boolean) {
+    setBusy(dryRun ? "preview" : "run");
+    setError(null);
+    setResult(null);
+    try {
+      const body: Record<string, unknown> = { limit, dryRun };
+      if (scoped && currentSportId) body.sportId = Number(currentSportId);
+      const res = await clientApi<ZagiRunResult>("/admin/tournaments/zagi-review", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      setResult(res);
+      await loadStatus();
+      // Written tiers change the rows underneath us.
+      if (!dryRun && res.assigned > 0) router.refresh();
+    } catch (err) {
+      setError(
+        err instanceof ApiFetchError
+          ? err.message
+          : "Could not reach the review endpoint.",
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <section className="card space-y-3 p-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold tracking-tight">
+            ZillaAGI risk-tier review
+          </h2>
+          <p className="mt-1 max-w-3xl text-xs text-[var(--color-fg-muted)]">
+            A tournament with no tier is underwritten at <strong>T10</strong>, the
+            strictest setting — so it is never over-exposed, just invisible and
+            under-traded. ZillaAGI reads each competition&apos;s name, sport and
+            category and assigns a tier, capped in code by a per-sport ceiling
+            (only football, basketball, tennis and American football can reach
+            T1; a handball world title stops at T2). It runs automatically every
+            30 minutes and never touches a tier an operator has set.
+          </p>
+        </div>
+        {status && (
+          <span
+            className="shrink-0 text-[10px] uppercase tracking-[0.12em]"
+            style={{
+              color: status.enabled
+                ? "var(--color-positive)"
+                : "var(--color-fg-subtle)",
+            }}
+            title={
+              status.enabled
+                ? `Model: ${status.model ?? "unknown"}`
+                : "Set ZAGI_API_KEY and ZAGI_BASE_URL to enable."
+            }
+          >
+            {status.enabled ? `online · ${status.model}` : "not configured"}
+          </span>
+        )}
+      </div>
+
+      {status && (
+        <div className="flex flex-wrap gap-x-6 gap-y-1 font-mono text-xs text-[var(--color-fg-muted)]">
+          <span>
+            untiered <strong className="text-[var(--color-fg)]">{status.untiered}</strong>
+          </span>
+          <span>
+            queued <strong className="text-[var(--color-fg)]">{status.pending}</strong>
+          </span>
+          <span>
+            reviewed <strong className="text-[var(--color-fg)]">{status.bySource.zagi}</strong>
+          </span>
+          <span>
+            manual <strong className="text-[var(--color-fg)]">{status.bySource.manual}</strong>
+          </span>
+          {status.exhausted > 0 && (
+            <span title="Untiered rows the model declined three times. Assign these by hand.">
+              stuck <strong style={{ color: "var(--color-warning)" }}>{status.exhausted}</strong>
+            </span>
+          )}
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="block">
+          <span className="block text-xs text-[var(--color-fg-subtle)]">Batch size</span>
+          <select
+            value={String(limit)}
+            onChange={(e) => setLimit(Number(e.target.value))}
+            disabled={busy !== null}
+            className="mt-1 rounded-[10px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)]"
+          >
+            {[25, 50, 100, 200].map((n) => (
+              <option key={n} value={String(n)}>
+                {n} tournaments
+              </option>
+            ))}
+          </select>
+        </label>
+
+        {currentSportId && (
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={scoped}
+              onChange={(e) => setScoped(e.target.checked)}
+              disabled={busy !== null}
+            />
+            Only the filtered sport
+          </label>
+        )}
+
+        <button
+          type="button"
+          className="btn"
+          disabled={busy !== null || status?.enabled === false}
+          onClick={() => void run(true)}
+        >
+          {busy === "preview" ? "Previewing…" : "Preview"}
+        </button>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy !== null || status?.enabled === false}
+          onClick={() => void run(false)}
+        >
+          {busy === "run" ? "Reviewing…" : "Review and assign"}
+        </button>
+        {busy !== null && (
+          <span className="text-xs text-[var(--color-fg-muted)]">
+            Model calls run {limit <= 25 ? "a batch" : `${Math.ceil(limit / 25)} batches`} at
+            a time — this can take a couple of minutes.
+          </span>
+        )}
+      </div>
+
+      {error && (
+        <p className="text-xs" style={{ color: "var(--color-negative)" }}>
+          {error}
+        </p>
+      )}
+
+      {result && (
+        <div className="space-y-2">
+          <p className="font-mono text-xs text-[var(--color-fg-muted)]">
+            {result.dryRun ? "preview" : "applied"} · considered {result.eligible} ·
+            decided {result.reviewed} ·{" "}
+            {result.dryRun ? "would assign" : "assigned"} {result.dryRun ? result.reviewed : result.assigned} ·
+            clamped {result.clamped} · undecided {result.undecided}
+            {result.errors.length > 0 ? ` · errors ${result.errors.length}` : ""}
+          </p>
+          {result.errors.length > 0 && (
+            <p className="text-xs" style={{ color: "var(--color-warning)" }}>
+              {result.errors.slice(0, 2).join("; ")}
+            </p>
+          )}
+          {result.proposals.length > 0 && (
+            <div className="max-h-[320px] overflow-auto rounded-[10px] border border-[var(--color-border)]">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-[var(--color-bg-elevated)] text-[var(--color-fg-subtle)]">
+                  <tr>
+                    <th className="px-3 py-2 text-left">Tier</th>
+                    <th className="px-3 py-2 text-left">Tournament</th>
+                    <th className="px-3 py-2 text-left">Sport</th>
+                    <th className="px-3 py-2 text-left">Reasoning</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.proposals.map((p) => (
+                    <tr
+                      key={p.tournamentId}
+                      className="border-t border-[var(--color-border)]"
+                    >
+                      <td className="px-3 py-1.5 font-mono">
+                        T{p.tier}
+                        {p.clamped && (
+                          <span
+                            className="ml-1 text-[10px]"
+                            style={{ color: "var(--color-warning)" }}
+                            title={`Model proposed T${p.proposedTier}; the per-sport ceiling tightened it.`}
+                          >
+                            ↑T{p.proposedTier}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-1.5">{p.name}</td>
+                      <td className="px-3 py-1.5 text-[var(--color-fg-muted)]">
+                        {p.sportSlug}
+                      </td>
+                      <td className="px-3 py-1.5 text-[var(--color-fg-muted)]">{p.why}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {result.proposalsTruncated && (
+            <p className="text-xs text-[var(--color-fg-subtle)]">
+              Showing the first {result.proposals.length}.
+            </p>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -393,7 +739,9 @@ function TournamentEditableRow({
             className="rounded-[8px] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-2 py-1 font-mono text-xs outline-none focus:border-[var(--color-accent)]"
           >
             <option value="auto">
-              Auto{row.riskTier != null ? ` (now T${row.riskTier})` : " (unset - priced as T10)"}
+              {row.riskTier != null
+                ? `Auto / ZAGI (now T${row.riskTier})`
+                : "Auto / ZAGI (unset - priced as T10)"}
             </option>
             {RISK_TIERS.map((t) => (
               <option key={t} value={String(t)}>
@@ -412,24 +760,12 @@ function TournamentEditableRow({
                   color: "var(--color-warning)",
                   border: "1px solid var(--color-warning)",
                 }}
-                title="No risk tier from Oddin. RiskZilla underwrites this tournament at tier 10, the strictest, until an operator assigns one here."
+                title="No risk tier. RiskZilla underwrites this tournament at tier 10, the strictest, until ZillaAGI reviews it or an operator assigns one here."
               >
                 unset
               </span>
             )}
-            <span
-              className="text-[10px] uppercase tracking-[0.12em]"
-              style={{
-                color: row.riskTierLocked ? "var(--color-accent)" : "var(--color-fg-subtle)",
-              }}
-              title={
-                row.riskTierLocked
-                  ? "Assigned by an operator; the Oddin REST refresh will not overwrite it"
-                  : "Filled from Oddin's tournament metadata when reachable"
-              }
-            >
-              {row.riskTierLocked ? "manual" : "auto"}
-            </span>
+            <TierSourceMark row={row} />
           </span>
         )}
       </td>

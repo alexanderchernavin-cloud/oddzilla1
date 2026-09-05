@@ -48,6 +48,10 @@ import {
   startSportradarSyncSweeper,
   type SportradarSweeperHandle,
 } from "./lib/sportradar/sweeper.js";
+import {
+  startZagiRiskTierSweeper,
+  type ZagiRiskTierSweeperHandle,
+} from "./lib/zagi/sweeper.js";
 import adminCategoriesRoutes from "./modules/admin/categories.js";
 import adminMonitoringRoutes, { startMonitoringSampler } from "./modules/admin/monitoring.js";
 import adminDeployRoutes from "./modules/admin/deploy.js";
@@ -405,6 +409,15 @@ if (process.env.ANALYTICS_SWEEPER_DISABLED !== "1") {
 const sportradarSweeperHandle: SportradarSweeperHandle | null =
   startSportradarSyncSweeper(app);
 
+// ZillaAGI tournament risk-tier review (migration 0106). Every 30 min,
+// Redis-lock guarded: assigns a risk_tier to tournaments that have none,
+// so a new competition does not sit indefinitely at the strictest tier
+// without anyone seeing it. The model proposes and a per-sport ceiling
+// in code disposes; anything an operator has locked is out of reach.
+// Idle without ZAGI_API_KEY. Set ZAGI_RISK_TIER_DISABLED=1 to skip.
+const zagiRiskTierSweeperHandle: ZagiRiskTierSweeperHandle | null =
+  startZagiRiskTierSweeper(app);
+
 // RiskZilla behaviour scoring (migration 0098). Every 5 min, Redis-lock
 // guarded: scores settled signed-in analytics sessions for automation
 // signals (pointer geometry, click rhythm) and rolls them up per bettor
@@ -446,6 +459,7 @@ async function shutdown() {
   analyticsSweeperHandle?.close();
   behaviourSweeperHandle?.close();
   sportradarSweeperHandle?.close();
+  zagiRiskTierSweeperHandle?.close();
   if (matchWatcherHandle) {
     try {
       await matchWatcherHandle.close();
