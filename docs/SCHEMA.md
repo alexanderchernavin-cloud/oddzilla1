@@ -465,6 +465,19 @@ no assignment here that is cautious by omission, which is why the reviewer
 clamps every verdict to a per-sport ceiling in code and writes nothing at
 all when it cannot parse a reply.
 
+Migration 0108 adds logo provenance: `logo_source` (`fonbet` /
+`wikidata` / `liquipedia` / `manual`), `logo_source_url`, `logo_attempts`
+(bounded retry) and `logo_checked_at`. It exists because the marks the
+feeds do not carry have to be sourced from third parties, and two
+properties follow from that. Liquipedia's logos are largely non-free, so
+`WHERE logo_source = 'liquipedia'` must be enough to revert the whole
+set. And automatic matching is wrong often enough to need auditing —
+measured on real names, Wikidata resolves "EuroLeague" to the WOMEN'S
+competition and Liquipedia's search for "PGL Wallachia" to a team page —
+so every automatic row records what decided it. The resolver only ever
+writes where `logo_url IS NULL`, so an operator's upload is never
+overwritten.
+
 Migration 0107 adds two standing tightenings on top, applied in code to
 every new verdict and retroactively to the rows the first sweep had
 already written: **+1 on every ZAGI verdict** (a machine judgement is not
