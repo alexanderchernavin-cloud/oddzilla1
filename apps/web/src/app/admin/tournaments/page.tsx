@@ -63,12 +63,20 @@ export default async function TournamentsPage({
     <div>
       <div className="mb-6 flex flex-wrap items-baseline justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Tournament logos</h1>
-          <p className="mt-2 text-sm text-[var(--color-fg-muted)]">
+          <h1 className="text-2xl font-semibold tracking-tight">Tournaments</h1>
+          <p className="mt-2 max-w-3xl text-sm text-[var(--color-fg-muted)]">
             Edit each tournament&apos;s logo and accent colour. Either paste
             an HTTPS URL or upload a file (SVG, PNG, JPEG, WebP — max 1 MB).
             Use <strong>Remove</strong> to clear an upload or pasted URL.
             Storefront sidebar picks the logo up on the next page load.
+          </p>
+          <p className="mt-2 max-w-3xl text-sm text-[var(--color-fg-muted)]">
+            <strong>Order in category</strong> pins a tournament to the top of
+            its own country&apos;s bucket in the sidebar tree — the same
+            control sports and categories have. Pinned tournaments lead in the
+            order shown; everything unpinned keeps the default behind them
+            (risk tier, then live matches, then name), which is how the whole
+            tree behaved before.
           </p>
         </div>
         <Link

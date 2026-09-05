@@ -2322,6 +2322,9 @@ export default async function catalogRoutes(app: FastifyInstance) {
         id: tournaments.id,
         name: tournaments.name,
         riskTier: tournaments.riskTier,
+        // Operator pin position within this tournament's category
+        // (migration 0104). NULL leaves it in the tier/name tail.
+        displayOrder: tournaments.displayOrder,
         logoUrl: tournaments.logoUrl,
         brandColor: tournaments.brandColor,
         // The category is what the storefront groups the sidebar list by
@@ -2359,6 +2362,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         tournaments.id,
         tournaments.name,
         tournaments.riskTier,
+        tournaments.displayOrder,
         tournaments.logoUrl,
         tournaments.brandColor,
         categories.id,
@@ -2375,6 +2379,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         id: r.id,
         name: r.name,
         riskTier: r.riskTier,
+        displayOrder: r.displayOrder,
         logoUrl: r.logoUrl,
         brandColor: r.brandColor,
         category:
@@ -2391,6 +2396,13 @@ export default async function catalogRoutes(app: FastifyInstance) {
         liveCount: Number(r.liveCount),
       }))
       .sort((a, b) => {
+        // Operator pin first (migration 0104). Buckets are formed client
+        // side and preserve this order within each one, so a pinned
+        // tournament heads its own category even though the sort here is
+        // across the whole sport.
+        const ap = a.displayOrder ?? Number.MAX_SAFE_INTEGER;
+        const bp = b.displayOrder ?? Number.MAX_SAFE_INTEGER;
+        if (ap !== bp) return ap - bp;
         // Number.MAX_SAFE_INTEGER puts NULL-tier rows after every
         // tiered row when sorting ASC, matching the SQL "NULLS LAST"
         // convention without an extra branch.

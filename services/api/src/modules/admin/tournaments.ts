@@ -13,6 +13,18 @@
 //                                             /admin/sports + /admin/
 //                                             competitors.
 //   DELETE /admin/tournaments/:id/logo        clear bytes + URL in one tx.
+//   POST   /admin/tournaments/:id/order       pin / move / unpin within
+//                                             the tournament's own
+//                                             category. Audit-logged.
+//
+// What the ordering does (migration 0104): tournaments sort by Oddin's
+// risk_tier, then live count, then match count, then name. That is a fine
+// default and a poor merchandising position — it cannot put the league an
+// operator leads with at the top of its country. A pinned tournament
+// heads its category's bucket; everything unpinned keeps the old rule
+// behind it. Scope is the CATEGORY because that is the bucket the rows
+// render in; esports tournaments all sit under one synthetic dummy
+// category per sport, which is also how the storefront draws them.
 //
 // Tournament rows ship without branding from the Oddin feed — the
 // admin manages it manually here. Storefront integration: the sidebar
@@ -21,9 +33,10 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { and, asc, eq, isNull, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
 import { tournaments, categories, sports, adminAuditLog } from "@oddzilla/db";
 import { BadRequestError, NotFoundError } from "../../lib/errors.js";
+import { reorderPinned, type PinAction } from "../../lib/pin-order.js";
 import multipart from "@fastify/multipart";
 
 const MAX_UPLOAD_BYTES = 1 * 1024 * 1024;
@@ -37,6 +50,10 @@ const ALLOWED_MIME = new Set([
 function buildTournamentLogoUrl(id: number, version: number): string {
   return `/api/tournaments/${id}/logo?v=${version}`;
 }
+
+const orderBody = z.object({
+  action: z.enum(["top", "up", "down", "clear"]),
+});
 
 const writeRateLimit = {
   rateLimit: { max: 30, timeWindow: "1 minute" },
@@ -150,6 +167,7 @@ export default async function adminTournamentsRoutes(app: FastifyInstance) {
           name: tournaments.name,
           riskTier: tournaments.riskTier,
           riskTierLocked: tournaments.riskTierLocked,
+          displayOrder: tournaments.displayOrder,
           active: tournaments.active,
           logoUrl: tournaments.logoUrl,
           brandColor: tournaments.brandColor,
@@ -158,7 +176,16 @@ export default async function adminTournamentsRoutes(app: FastifyInstance) {
         .innerJoin(categories, eq(categories.id, tournaments.categoryId))
         .innerJoin(sports, eq(sports.id, categories.sportId))
         .where(where)
-        .orderBy(asc(sports.slug), asc(tournaments.name))
+        // Mirrors the storefront: pinned tournaments head their category
+        // in operator order, the rest keep the default behind them. An
+        // admin reading a row's arrows has to see them in the sequence
+        // they take effect in.
+        .orderBy(
+          asc(sports.slug),
+          asc(categories.name),
+          sql`${tournaments.displayOrder} ASC NULLS LAST`,
+          asc(tournaments.name),
+        )
         .limit(q.limit)
         .offset(q.offset),
       app.db
@@ -431,6 +458,124 @@ export default async function adminTournamentsRoutes(app: FastifyInstance) {
       });
 
       return { ok: true, id: params.id };
+    },
+  );
+
+  // ─── Category ordering ───────────────────────────────────────────────
+  //
+  // Pin / move / unpin one tournament within its OWN category. Same
+  // transform and the same one-statement, primary-key-ordered lock as the
+  // sports and categories twins — see lib/pin-order.ts and
+  // admin/categories.ts for why both are shaped that way.
+  app.post(
+    "/admin/tournaments/:id/order",
+    { config: writeRateLimit },
+    async (request) => {
+      const admin = request.requireRole("admin");
+      const params = z
+        .object({ id: z.coerce.number().int().positive() })
+        .parse(request.params);
+      const { action } = orderBody.parse(request.body) as { action: PinAction };
+
+      // category_id and the labels are immutable for the life of the row,
+      // so reading them unlocked lets the transaction take every lock in
+      // one statement.
+      const [scope] = await app.db
+        .select({
+          categoryId: tournaments.categoryId,
+          name: tournaments.name,
+          slug: tournaments.slug,
+        })
+        .from(tournaments)
+        .where(eq(tournaments.id, params.id))
+        .limit(1);
+      if (!scope) {
+        throw new NotFoundError("tournament_not_found", "tournament_not_found");
+      }
+
+      let before: number | null = null;
+      let after: number | null = null;
+
+      await app.db.transaction(async (tx) => {
+        const locked = await tx
+          .select({ id: tournaments.id, displayOrder: tournaments.displayOrder })
+          .from(tournaments)
+          .where(
+            and(
+              eq(tournaments.categoryId, scope.categoryId),
+              or(
+                eq(tournaments.id, params.id),
+                isNotNull(tournaments.displayOrder),
+              ),
+            ),
+          )
+          .orderBy(asc(tournaments.id))
+          .for("update");
+
+        const target = locked.find((r) => r.id === params.id);
+        if (!target) {
+          throw new NotFoundError("tournament_not_found", "tournament_not_found");
+        }
+        before = target.displayOrder;
+
+        const pinned = locked
+          .filter((r) => r.displayOrder != null)
+          .sort((a, b) => a.displayOrder! - b.displayOrder! || a.id - b.id)
+          .map((r) => r.id);
+
+        const next = reorderPinned(pinned, params.id, action);
+        const position = next.indexOf(params.id);
+        after = position === -1 ? null : position + 1;
+
+        await tx
+          .update(tournaments)
+          .set({ displayOrder: null })
+          .where(
+            and(
+              eq(tournaments.categoryId, scope.categoryId),
+              isNotNull(tournaments.displayOrder),
+            ),
+          );
+
+        for (const [i, tournamentId] of next.entries()) {
+          await tx
+            .update(tournaments)
+            .set({ displayOrder: i + 1 })
+            .where(eq(tournaments.id, tournamentId));
+        }
+
+        await tx.insert(adminAuditLog).values({
+          actorUserId: admin.id,
+          action: "tournament.order_update",
+          targetType: "tournament",
+          targetId: String(params.id),
+          beforeJson: { displayOrder: before },
+          afterJson: {
+            slug: scope.slug,
+            name: scope.name,
+            categoryId: scope.categoryId,
+            operation: action,
+            displayOrder: after,
+            pinnedOrder: next,
+          },
+          ipInet: request.ip ?? null,
+        });
+      });
+
+      // The sidebar tree is cached per sport for 10 s; bust the sport this
+      // category belongs to so the reorder is not invisible for the TTL.
+      const [owner] = await app.db
+        .select({ sportId: categories.sportId })
+        .from(categories)
+        .where(eq(categories.id, scope.categoryId))
+        .limit(1);
+      if (owner) {
+        await app.redis
+          .del(`catalog:tournaments:v1:${owner.sportId}`)
+          .catch(() => null);
+      }
+
+      return { id: params.id, displayOrder: after };
     },
   );
 }

@@ -367,7 +367,14 @@ would fail mid-renumber — and **no index**, because both tables are small
 enough (under a hundred sports, a few thousand categories) that an index
 would cost writes to serve a sort that is already free.
 
-Written only by `POST /admin/sports/:id/order` and
+Migration 0104 extends the same column to `tournaments`, scoped to the
+CATEGORY — the bucket a tournament actually renders in, so a position is
+a statement about England rather than about football. Esports tournaments
+all sit under one synthetic dummy category per sport, which is also how
+the storefront draws them, so the scope matches there too.
+
+Written only by `POST /admin/sports/:id/order`,
+`POST /admin/tournaments/:id/order` and
 `POST /admin/categories/:id/order` (`{action: top|up|down|clear}`, both
 audit-logged). Each takes every lock in one primary-key-ordered
 `SELECT … FOR UPDATE`: locking the clicked row and then the pinned set is

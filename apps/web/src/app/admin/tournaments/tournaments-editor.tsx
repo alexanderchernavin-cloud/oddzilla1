@@ -9,6 +9,7 @@ import {
 } from "react";
 import { useRouter } from "next/navigation";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
+import { PinOrderControls } from "@/components/admin/pin-order-controls";
 
 // Mirrors the API allowlist (services/api/src/modules/admin/tournaments.ts).
 const ACCEPTED_MIME = [
@@ -31,6 +32,13 @@ export interface TournamentRow {
   name: string;
   riskTier: number | null;
   riskTierLocked: boolean;
+  /**
+   * Operator pin position within this tournament's own CATEGORY
+   * (migration 0104), or null when unpinned. Pinned tournaments head
+   * their country's bucket in the sidebar tree; the rest keep the
+   * tier / live-count / name default behind them.
+   */
+  displayOrder: number | null;
   active: boolean;
   logoUrl: string | null;
   brandColor: string | null;
@@ -199,6 +207,7 @@ function TournamentTable({ list }: { list: ListShape }) {
             <th className="px-4 py-3 text-left">Tournament</th>
             <th className="px-4 py-3 text-left">Sport</th>
             <th className="px-4 py-3 text-left">Risk tier</th>
+            <th className="px-4 py-3 text-left">Order in category</th>
             <th className="px-4 py-3 text-left">Logo URL</th>
             <th className="px-4 py-3 text-left">Color</th>
             <th className="px-4 py-3" />
@@ -206,7 +215,18 @@ function TournamentTable({ list }: { list: ListShape }) {
         </thead>
         <tbody className="divide-y divide-[var(--color-border)]">
           {list.tournaments.map((row) => (
-            <TournamentEditableRow key={row.id} row={row} />
+            <TournamentEditableRow
+              key={row.id}
+              row={row}
+              // Ends of the PINNED run inside this row's own category.
+              // Read from the page, which is ordered pinned-first per
+              // category, so the run is contiguous here. An active filter
+              // can hide part of it and grey an arrow that had somewhere
+              // to go — the server computes every move against the true
+              // list, so only the disabled state is ever affected.
+              first={row.displayOrder === 1}
+              last={isLastPinnedInCategory(list.tournaments, row)}
+            />
           ))}
         </tbody>
       </table>
@@ -214,7 +234,33 @@ function TournamentTable({ list }: { list: ListShape }) {
   );
 }
 
-function TournamentEditableRow({ row }: { row: TournamentRow }) {
+// True when no pinned tournament sits below this one in the same
+// category — the down arrow then has nowhere to go. Unpinned rows report
+// true so the arrow they never render stays consistent with the server's
+// own no-op.
+function isLastPinnedInCategory(
+  rows: TournamentRow[],
+  row: TournamentRow,
+): boolean {
+  const position = row.displayOrder;
+  if (position == null) return true;
+  return !rows.some(
+    (r) =>
+      r.categoryId === row.categoryId &&
+      r.displayOrder != null &&
+      r.displayOrder > position,
+  );
+}
+
+function TournamentEditableRow({
+  row,
+  first,
+  last,
+}: {
+  row: TournamentRow;
+  first: boolean;
+  last: boolean;
+}) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [editing, setEditing] = useState(false);
@@ -386,6 +432,18 @@ function TournamentEditableRow({ row }: { row: TournamentRow }) {
             </span>
           </span>
         )}
+      </td>
+      {/* Pinned tournaments head their category's bucket in the sidebar
+          tree; everything unpinned stays on tier / live count / name. */}
+      <td className="px-4 py-3 align-top">
+        <PinOrderControls
+          basePath="/admin/tournaments"
+          id={row.id}
+          displayOrder={row.displayOrder}
+          first={first}
+          last={last}
+          label={row.name}
+        />
       </td>
       <td className="px-4 py-3 align-top">
         {editing ? (

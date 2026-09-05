@@ -1229,7 +1229,9 @@ interface TournamentGroup {
 
 // groupTournamentsByCategory turns the flat API list into category
 // buckets, preserving the caller's tournament order inside each one (the
-// endpoint already sorts by tier then name).
+// endpoint sorts by operator pin, then tier, then live count, then name —
+// migration 0104 added the pin tier, and preserving order here is what
+// makes a pinned tournament head its own category).
 //
 // Two deliberate choices:
 //   - Tournaments with no category (Oddin's synthetic "Auto-mapped", which
