@@ -122,6 +122,59 @@ func resolveLogos(r *logosResponse, cdn string) *Logos {
 	return out
 }
 
+// TournamentIcons is the SECOND place Fonbet keeps competition marks, and
+// it is a different asset tree from the one line/logos serves: those paths
+// sit under /Logotypes/CompetitionLogos/, these under /Logotypes/Tournament/.
+// The data rides on every events/list snapshot (tournamentInfos, keyed by
+// the segment node's tournamentInfoId), so reading it costs no extra
+// request — hence a pure function over a response we already hold rather
+// than a fetch of its own.
+//
+// Country flags are deliberately DROPPED. Fonbet has a real mark for only
+// about half its leagues (measured 2026-09-05: 384 of 761 live segments)
+// and falls back to the country flag for the rest — their own England
+// Championship page draws /ContentCommon/NewFlags/Circle/England.svg. Our
+// sidebar already carries that flag on the category header the tournament
+// renders under, so importing it per row would stamp the same flag a dozen
+// times inside one country bucket. A row with no real mark shows none; see
+// TournamentLogoMark in apps/web/src/components/shell/sidebar.tsx, which
+// holds the slot open so the names still line up.
+func (c *Client) TournamentIcons(resp *ListResponse) map[int]string {
+	if resp == nil {
+		return nil
+	}
+	cdn := strings.TrimSuffix(c.cfg.LogoCDN, "/")
+	if cdn == "" {
+		cdn = DefaultLogoCDN
+	}
+	icons := make(map[int]string, len(resp.TournamentInfos))
+	for _, t := range resp.TournamentInfos {
+		if !strings.HasPrefix(t.Icon, "/") || isFlagPath(t.Icon) {
+			continue
+		}
+		icons[t.ID] = cdn + t.Icon
+	}
+	if len(icons) == 0 {
+		return nil
+	}
+	out := make(map[int]string)
+	for _, s := range resp.Sports {
+		if s.TournamentInfoID == nil {
+			continue
+		}
+		if url, ok := icons[*s.TournamentInfoID]; ok {
+			out[s.ID] = url
+		}
+	}
+	return out
+}
+
+// isFlagPath reports whether a CDN path is one of Fonbet's country flags
+// rather than a competition mark.
+func isFlagPath(p string) bool {
+	return strings.Contains(strings.ToLower(p), "/newflags/")
+}
+
 func (c *Client) postJSON(ctx context.Context, u string, payload any) ([]byte, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {

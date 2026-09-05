@@ -59,6 +59,7 @@ rotate, staleness suspends), but treat a sudden drop in
 | Host discovery   | `GET https://fon.bet/urls.json`                                    | `line[]` = `//line-lbNN.bk6bba-resources.{com,ru}` hosts (rotate; fallback list in `FONBET_LINE_HOSTS`). `common[]` = clientsapi hosts (results feed; fallback `FONBET_COMMON_HOSTS`). **Trust filter:** a discovered host is adopted only if it is `https` (or scheme-relative `//`) AND its registrable domain matches one of the operator-configured hosts / `FONBET_URLS_JSON`; anything else is logged and ignored, the static lists stay in force. The document is third-party network input that sets where we fetch prices and results from, so it must not be able to downgrade us to plaintext or point us at an arbitrary or internal origin. A genuine Fonbet domain move shows up as the skipped-hosts warning and needs the env lists updated. |
 | Full line        | `GET <line>/events/list?lang=en&version=0&scopeMarket=1600`        | ~1.4 MB JSON, gzip-encoded even without `Accept-Encoding`. **`scopeMarket` is per site**: 1600 on fon.bet, 1800 on fonbet.kz, and each 404s on the other's value. `lang` ∈ en, ru, kk. |
 | Factor catalogue | `GET <line>/line/factorsCatalog/tables?version=0&lang=en&sysId=NN` | Market layouts + labels. `sysId` = the host number (`line05` → 5); the fon.bet hosts carry no number and ignore it. Covers 100 % of the factors seen in the line.       |
+| Logo catalogue   | `POST <line>/line/logos`                                           | Body `{lang, sysId, teams:"actual", competitions:"actual", sportKinds:"actual"}`. Team crests (PNG), competition marks (PNG + SVG) and sport glyphs, as paths under `FONBET_LOGO_CDN`. `competitions` is keyed by **segment id**, so it joins straight onto `fb:tournament:<id>`. `"actual"` covers what is currently on the line; `"all"` returns 125 593 mappings instead of 767 but adds **nothing** for us — every id we hold is already in the `"actual"`-scoped answer, just often as the literal value `"none"` (measured 2026-09-05). |
 | Live only        | `GET <line>/line/liveEvents?lang=en`                               | Not used (the full snapshot already carries live).                                                                                                                      |
 | Deltas           | `events/list?version=<packetVersion>`                              | Returns partial `customFactors` (only changed factors, no removal markers) — not safe for a full-snapshot model, so the ingester always refetches `version=0`.          |
 
@@ -77,11 +78,19 @@ cd services/fonbet-ingester && go test -tags livesmoke ./internal/fonbet/ -run T
 
 ```
 packetVersion        int64   monotonic snapshot id
-sports[]             {id, parentId?, kind: "sport"|"segment", name, alias?, regionId}
+sports[]             {id, parentId?, kind: "sport"|"segment", name, alias?,
+                      regionId, tournamentInfoId?}
                      kind=sport && !parentId → root sport (ids are stable
                      across sites and languages: Football=1, Tennis=4,
                      Ice Hockey=2, Basketball=3, Esports=29086 …)
                      kind=segment → league, parentId = root
+                     tournamentInfoId → tournamentInfos[] (competition mark)
+tournamentInfos[]    {id, icon?, caption, …} — per-competition metadata.
+                     Only `icon` is read, and it is the SECOND source of
+                     tournament marks: a path in a different asset tree
+                     (/Logotypes/Tournament/) from the one line/logos
+                     serves (/Logotypes/CompetitionLogos/). Neither is a
+                     superset. See "Tournament marks" below.
 events[]             {id, parentId?, level, sportId (segment), kind, team1, team2,
                       team1Id, team2Id, name, startTime (unix s), place}
                      level 1 = match; level 2/3 = sub-event on parentId:
@@ -356,6 +365,41 @@ hatch for whatever the rules leave open.
 - Sport icons / team logos: `sports.logo_url`, `competitors.logo_url`,
   `tournaments.logo_url` from Fonbet's CDN; bundled SVGs for the nine
   sports without a Fonbet glyph.
+
+### Tournament marks — coverage, and why half the rows have none
+
+Measured against the live line on 2026-09-05, over the 761 segment nodes
+then on offer:
+
+| Source                                          | segments |
+| ----------------------------------------------- | -------- |
+| `line/logos` `competitions` (a real mark)        | 380      |
+| `tournamentInfos[].icon` only (a real mark)      | 4        |
+| `tournamentInfos[].icon` only, but a country flag | 107      |
+| nothing at all                                   | 270      |
+
+So **Fonbet itself has a competition mark for barely half its leagues.**
+England's Championship, League 1, League 2 and League Cup all come back as
+`"12018": "none"`; fon.bet's own Championship page draws
+`/ContentCommon/NewFlags/Circle/England.svg` instead. The country flag is
+their fallback, not a mark we are failing to fetch.
+
+Two consequences the ingester encodes:
+
+- Both sources are read and merged in `ingest.ApplyLogos`, `line/logos`
+  winning. `fonbet.Client.TournamentIcons` derives the second from the
+  `events/list` snapshot we already fetch, so it costs no extra request.
+- **Flag paths (`/ContentCommon/NewFlags/`) are dropped**, and a logo-less
+  tournament gets no `logo_url` at all. The storefront sidebar groups
+  tournaments under a category header that already carries the country
+  flag, so importing Fonbet's fallback would stamp the same flag down a
+  whole country bucket. `TournamentLogoMark` in `sidebar.tsx` instead holds
+  the 14px slot open across a group where any row has a mark, so the names
+  keep a shared left edge — the same call `TeamMark` makes in declining to
+  invent a monogram.
+
+Re-run the measurement with
+`go test -tags livesmoke ./internal/fonbet/ -run TestLiveSmoke -v`.
 
 ## Follow-ups
 
