@@ -2008,7 +2008,8 @@ function Item({
           // navigated away and — because the drawer auto-closes on
           // navigation — dismissed the sidebar the bettor was browsing.
           // `.oz-sport-caret` under `(pointer: coarse)` in globals.css
-          // grows this to 48x40 without moving the glyph.
+          // grows this to 48x36 without moving the glyph — the height
+          // is capped by the measured 39px row pitch, see that rule.
           width: 24,
           height: 24,
           display: "inline-flex",

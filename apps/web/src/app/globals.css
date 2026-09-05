@@ -368,20 +368,31 @@ body {
    the thing that matters is the input device, not the viewport — a
    touch laptop or a tablet in landscape has the same fingers.
 
-   Sizing: the glyph does not move, only the area around it. 48x40 for
-   the sport caret is comfortably past the 44px guidance in area while
-   staying SHORTER than the ~37px row pitch — a full 44px of height
-   would spill past the 4px row gap into the neighbouring sport's
-   caret, so two adjacent expanders would overlap and the fix would
-   trade one mis-tap for another. The glyph itself goes 10px -> 12px so
-   the larger target reads as a target. */
+   Sizing: the glyph does not move, only the area around it. The width
+   is what fixes the reported miss — this is a control pinned to the
+   right edge, so the finger lands left of it — and 48px triples the
+   area over the old 24x24.
+
+   Height is bounded by the row pitch, MEASURED at 39px on a 375px
+   viewport (35px row + 4px flex gap), not estimated: the caret is
+   absolutely positioned and vertically centred, so anything taller
+   than the pitch spills into the neighbouring sport's caret and two
+   adjacent expanders overlap — trading one mis-tap for another, in a
+   band that previously hit nothing at all. 36px leaves 3px of
+   clearance. That is short of the 44px in Apple's HIG, and the only
+   way to honour that number here would be to grow every row, which
+   costs ~6px x 30 sports of extra scrolling to fix a miss that is
+   horizontal. Well past the 24x24 of WCAG 2.5.8 either way.
+
+   The glyph itself goes 10px -> 12px so the larger target reads as a
+   target. */
 .oz-sport-caret { width: 24px; height: 24px; }
 
 @media (pointer: coarse) {
   .oz-sport-caret {
     right: 0 !important;
     width: 48px !important;
-    height: 40px !important;
+    height: 36px !important;
   }
   .oz-sport-caret svg { width: 12px !important; height: 12px !important; }
   /* Clear the widened hit area so a long sport name or a live badge
