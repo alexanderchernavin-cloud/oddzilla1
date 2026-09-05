@@ -32,6 +32,7 @@ import type { FastifyInstance } from "fastify";
 import {
   deriveMarketScope,
   isMapScope,
+  PLAYERS_SCOPE,
   MATCH_SCOPE,
 } from "@oddzilla/types/market-scope";
 
@@ -39,6 +40,22 @@ export interface ScopeMarket {
   providerMarketId: number;
   /** Market-kind name with the sub-event prefix removed ("Total {threshold}"). */
   label: string;
+}
+
+/**
+ * One market as a curated tab can pick it: a market TYPE on one specific
+ * sub-event. `provider_market_id` alone is the catalogue table, which
+ * Fonbet reuses across every sub-event — football's ~470 markets are 14
+ * ids — so the pair is what a Top tab has to address.
+ */
+export interface CuratedMarket {
+  providerMarketId: number;
+  /** `specifiers.variant`; empty for the base event. */
+  variant: string;
+  /** Full name including the sub-event prefix ("Corners: Total {threshold}"). */
+  label: string;
+  /** The feed tab this market sits on, so the picker can group by it. */
+  scope: string;
 }
 
 export interface DiscoveredScope {
@@ -56,8 +73,14 @@ export interface DiscoveredScope {
 
 export interface SportScopes {
   scopes: DiscoveredScope[];
-  /** Every market on the sport — the pool curated tabs (Top, customs) draw from. */
-  allMarkets: ScopeMarket[];
+  /**
+   * Every market on the sport, one entry per (type, sub-event) — the pool
+   * curated tabs (Top, customs) draw from. Feed tabs use `scopes[].markets`
+   * instead: inside one tab the sub-event is fixed, so the operator is
+   * ordering market types and a per-variant split would just fragment the
+   * list ("Match result way:two" beside "Match result way:three").
+   */
+  allMarkets: CuratedMarket[];
 }
 
 interface ShapeRow extends Record<string, unknown> {
@@ -79,7 +102,9 @@ interface DescRow extends Record<string, unknown> {
 // market kind taking up to this long to appear in the picker. Operator
 // configuration itself is always read fresh.
 const CACHE_TTL_SECONDS = 120;
-const CACHE_PREFIX = "fe:market-scopes:v1";
+// Bump on any payload-shape change — a cached entry from the previous
+// shape would otherwise be handed to the admin UI as-is.
+const CACHE_PREFIX = "fe:market-scopes:v2";
 
 // Deepest map tab the backoffice offers a sport that plays maps at all.
 // BO5 is the deepest format the supported esports play, and later maps
@@ -190,7 +215,7 @@ export function buildScopes(
 
   const bySport = new Map<
     number,
-    { scopes: Map<string, ScopeAcc>; all: Map<number, string> }
+    { scopes: Map<string, ScopeAcc>; all: Map<string, CuratedMarket> }
   >();
 
   for (const row of shape) {
@@ -199,15 +224,15 @@ export function buildScopes(
     if (row.map != null) specifiers.map = row.map;
     if (variant) specifiers.variant = variant;
 
-    const derived = deriveMarketScope({
-      specifiers,
-      template: templateFor(row.providerMarketId, variant),
-    });
+    const template = templateFor(row.providerMarketId, variant);
+    const derived = deriveMarketScope({ specifiers, template });
     // The tab says "1st half"; the row inside it says "Total". Same split
     // the storefront makes between market.name (which keeps the prefix,
     // because a bet-slip leg carries no tab with it) and the market-kind
-    // tag it renders in the card header.
-    const label = derived.baseTemplate;
+    // tag it renders in the card header. A few Fonbet tables have no name
+    // of their own — their whole caption IS the sub-event prefix — which
+    // left blank rows in the picker; those fall back to the id.
+    const label = nonEmpty(derived.baseTemplate, row.providerMarketId);
 
     let sportAcc = bySport.get(row.sportId);
     if (!sportAcc) {
@@ -231,8 +256,20 @@ export function buildScopes(
     if (!acc.markets.has(row.providerMarketId)) {
       acc.markets.set(row.providerMarketId, label);
     }
-    if (!sportAcc.all.has(row.providerMarketId)) {
-      sportAcc.all.set(row.providerMarketId, label);
+
+    // Curated pool. Keyed by (type, sub-event) so "Corners: Total" and
+    // "1st half: Total" are separate picks. Per-player variants are the
+    // exception: they are one tab and one market per FOOTBALLER, so they
+    // collapse to a wildcard row rather than thousands of picks.
+    const curatedVariant = derived.scope.id === PLAYERS_SCOPE ? "" : variant;
+    const key = `${row.providerMarketId}:${curatedVariant}`;
+    if (!sportAcc.all.has(key)) {
+      sportAcc.all.set(key, {
+        providerMarketId: row.providerMarketId,
+        variant: curatedVariant,
+        label: curatedLabel(template, derived.baseTemplate, row.providerMarketId),
+        scope: derived.scope.id,
+      });
     }
   }
 
@@ -255,9 +292,44 @@ export function buildScopes(
       }))
       .sort((a, b) => a.order - b.order || a.scope.localeCompare(b.scope));
 
-    out.set(sid, { scopes, allMarkets: toMarketList(sportAcc.all) });
+    // Curated pool in the order the tabs render, then by market id, so the
+    // picker reads like the match page rather than like a database dump.
+    const scopeOrder = new Map(scopes.map((s, idx) => [s.scope, idx]));
+    const allMarkets = Array.from(sportAcc.all.values()).sort(
+      (a, b) =>
+        (scopeOrder.get(a.scope) ?? Number.MAX_SAFE_INTEGER) -
+          (scopeOrder.get(b.scope) ?? Number.MAX_SAFE_INTEGER) ||
+        a.providerMarketId - b.providerMarketId ||
+        a.variant.localeCompare(b.variant),
+    );
+
+    out.set(sid, { scopes, allMarkets });
   }
   return out;
+}
+
+// A handful of Fonbet tables have no name of their own — their whole
+// caption is the sub-event prefix ("1st half: ") — which rendered as blank,
+// unpickable rows in the backoffice. Fall back to the id, which the
+// operator can at least match against the feed log, and keep the prefix so
+// the row still says which sub-event it belongs to.
+function nonEmpty(label: string, providerMarketId: number): string {
+  const trimmed = label.trim();
+  return trimmed === "" ? `Market #${providerMarketId}` : trimmed;
+}
+
+function curatedLabel(
+  template: string,
+  base: string,
+  providerMarketId: number,
+): string {
+  const full = template.trim();
+  if (base.trim() !== "") return full;
+  const sep = full.indexOf(":");
+  const prefix = sep > 0 ? full.slice(0, sep).trim() : "";
+  return prefix
+    ? `${prefix}: Market #${providerMarketId}`
+    : `Market #${providerMarketId}`;
 }
 
 // Map tabs share one market pool, and a sport that plays maps gets at

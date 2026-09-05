@@ -3,57 +3,89 @@
 import { useMemo, useState, useTransition, useRef, type DragEvent } from "react";
 import { useRouter } from "next/navigation";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
+import { tabLabel, type ScopeTab } from "../../scope-label";
 
 export interface MarketEntry {
   providerMarketId: number;
+  /** Fonbet sub-event (`specifiers.variant`); empty for the base event. */
+  variant: string;
   label: string;
+  /** Feed tab this market sits on. Null when only a config row knows it. */
+  tab: string | null;
 }
 
-// `match`, `top`, `map_<N>`, or `custom_<key>` — the scope string the
-// API stores verbatim in fe_market_display_order.scope. The editor
-// itself is scope-agnostic; the only place scope semantics matter here
-// is the empty-state copy below, which differs for the curated tabs
-// (`top` + custom groups: opt-in lists with no implicit pool).
-type Scope = string;
-
-function isCuratedScope(scope: Scope): boolean {
-  return scope === "top" || /^custom_[a-z0-9]{4,32}$/.test(scope);
+export function entryKey(m: MarketEntry): string {
+  return `${m.providerMarketId}:${m.variant}`;
 }
 
+// Two jobs, one screen.
+//
+// A FEED tab (Match / Map N / a sub-event) already holds its markets — the
+// feed decides membership, not the operator — so there is ONE list, in the
+// order bettors see, and dragging changes that order. It used to render as
+// "Ordered (0)" beside "Unranked (6)", which read as "this tab is empty"
+// when in fact all six markets were on it and merely unpinned.
+//
+// A CURATED tab (Top, custom groups) is opt-in membership, so it keeps two
+// columns: what's in the tab, and every market on the sport to pick from.
 export function MarketOrderEditor({
   sportId,
   scope,
+  curated,
+  tabs,
   initialOrdered,
   initialUnranked,
 }: {
   sportId: number;
-  scope: Scope;
+  scope: string;
+  curated: boolean;
+  tabs: ScopeTab[];
   initialOrdered: MarketEntry[];
   initialUnranked: MarketEntry[];
 }) {
   const router = useRouter();
-  const [ordered, setOrdered] = useState<MarketEntry[]>(initialOrdered);
-  const [unranked, setUnranked] = useState<MarketEntry[]>(initialUnranked);
+  // Feed mode has a single list; curated mode splits it in two.
+  const [ordered, setOrdered] = useState<MarketEntry[]>(
+    curated ? initialOrdered : [...initialOrdered, ...initialUnranked],
+  );
+  const [available, setAvailable] = useState<MarketEntry[]>(
+    curated ? initialUnranked : [],
+  );
+  const [query, setQuery] = useState("");
   const [busy, startTransition] = useTransition();
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
-  // Drag state lives in a ref so React renders don't reset it mid-drag.
-  // The drag source can be either the ordered or unranked list; the
-  // drop target is always the ordered list (drops onto unranked unrank
-  // the item via the dedicated → button instead, to keep the drop zones
-  // unambiguous when you're rearranging within ordered).
-  const dragRef = useRef<{ from: "ordered" | "unranked"; index: number } | null>(null);
-  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const savedKeys = useMemo(
+    () => initialOrdered.map(entryKey).join("|"),
+    [initialOrdered],
+  );
+  const dirty = ordered.map(entryKey).join("|") !== savedKeys;
 
-  const dirty = useMemo(() => {
-    if (ordered.length !== initialOrdered.length) return true;
-    for (let i = 0; i < ordered.length; i++) {
-      const a = ordered[i];
-      const b = initialOrdered[i];
-      if (!a || !b || a.providerMarketId !== b.providerMarketId) return true;
-    }
-    return false;
-  }, [ordered, initialOrdered]);
+  const tabTitle = useMemo(() => {
+    const byScope = new Map(tabs.map((t) => [t.scope, t]));
+    return (s: string | null) => {
+      if (!s) return null;
+      const hit = byScope.get(s);
+      return hit ? tabLabel(hit) : s;
+    };
+  }, [tabs]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return available;
+    return available.filter(
+      (m) =>
+        m.label.toLowerCase().includes(q) ||
+        String(m.providerMarketId).includes(q) ||
+        (tabTitle(m.tab) ?? "").toLowerCase().includes(q),
+    );
+  }, [available, query, tabTitle]);
+
+  // Drag state lives in a ref so React renders don't reset it mid-drag.
+  const dragRef = useRef<{ from: "ordered" | "available"; index: number } | null>(
+    null,
+  );
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
   function move(idx: number, delta: number) {
     setMsg(null);
@@ -69,24 +101,24 @@ export function MarketOrderEditor({
     });
   }
 
-  function unrank(idx: number) {
+  function remove(idx: number) {
     setMsg(null);
     setOrdered((cur) => {
       const item = cur[idx];
       if (!item) return cur;
       const next = cur.slice();
       next.splice(idx, 1);
-      setUnranked((u) =>
-        [...u, item].sort((a, b) => a.providerMarketId - b.providerMarketId),
+      setAvailable((a) =>
+        [...a, item].sort((x, y) => x.providerMarketId - y.providerMarketId),
       );
       return next;
     });
   }
 
-  function rank(providerMarketId: number) {
+  function add(key: string) {
     setMsg(null);
-    setUnranked((cur) => {
-      const idx = cur.findIndex((m) => m.providerMarketId === providerMarketId);
+    setAvailable((cur) => {
+      const idx = cur.findIndex((m) => entryKey(m) === key);
       if (idx < 0) return cur;
       const item = cur[idx];
       if (!item) return cur;
@@ -97,10 +129,7 @@ export function MarketOrderEditor({
     });
   }
 
-  // Drag handlers. The native HTML5 DnD API requires a non-empty
-  // setData call in dragstart for Firefox to actually fire dragend; we
-  // store a sentinel string and read the real source from the ref.
-  function handleDragStart(from: "ordered" | "unranked", index: number) {
+  function handleDragStart(from: "ordered" | "available", index: number) {
     return (ev: DragEvent<HTMLLIElement>) => {
       dragRef.current = { from, index };
       ev.dataTransfer.effectAllowed = "move";
@@ -115,57 +144,35 @@ export function MarketOrderEditor({
       setDragOverIndex(targetIdx);
     };
   }
-  function handleDragLeaveOrdered() {
-    setDragOverIndex(null);
-  }
-  function handleDropOrdered(targetIdx: number) {
-    return (ev: DragEvent<HTMLLIElement | HTMLOListElement>) => {
+  function handleDrop(targetIdx: number) {
+    return (ev: DragEvent<Element>) => {
       ev.preventDefault();
-      const drag = dragRef.current;
+      const src = dragRef.current;
       dragRef.current = null;
       setDragOverIndex(null);
-      if (!drag) return;
+      if (!src) return;
       setMsg(null);
-
-      if (drag.from === "ordered") {
+      if (src.from === "available") {
+        const item = available[src.index];
+        if (!item) return;
+        setAvailable((cur) => cur.filter((_, i) => i !== src.index));
         setOrdered((cur) => {
-          const item = cur[drag.index];
-          if (!item) return cur;
           const next = cur.slice();
-          next.splice(drag.index, 1);
-          // After removing, the indices shift. If we were dropping
-          // *after* the source item, adjust by one.
-          const insertAt = drag.index < targetIdx ? targetIdx - 1 : targetIdx;
-          next.splice(Math.max(0, Math.min(insertAt, next.length)), 0, item);
+          next.splice(Math.min(targetIdx, next.length), 0, item);
           return next;
         });
-      } else {
-        // Coming from unranked: pull item out of unranked, insert into
-        // ordered at targetIdx (clamped).
-        setUnranked((u) => {
-          const item = u[drag.index];
-          if (!item) return u;
-          const nextU = u.slice();
-          nextU.splice(drag.index, 1);
-          setOrdered((o) => {
-            const next = o.slice();
-            next.splice(Math.max(0, Math.min(targetIdx, next.length)), 0, item);
-            return next;
-          });
-          return nextU;
-        });
+        return;
       }
+      setOrdered((cur) => {
+        const next = cur.slice();
+        const item = next[src.index];
+        if (!item) return cur;
+        next.splice(src.index, 1);
+        const dest = src.index < targetIdx ? targetIdx - 1 : targetIdx;
+        next.splice(Math.max(0, Math.min(dest, next.length)), 0, item);
+        return next;
+      });
     };
-  }
-  // Drop on the empty bottom of the ordered list (or on the empty list
-  // itself) inserts at the end.
-  function handleDropAtEnd(ev: DragEvent<HTMLOListElement>) {
-    handleDropOrdered(ordered.length)(ev);
-  }
-  function handleDragOverEmpty(ev: DragEvent<HTMLOListElement>) {
-    if (!dragRef.current) return;
-    ev.preventDefault();
-    ev.dataTransfer.dropEffect = "move";
   }
 
   function save() {
@@ -175,7 +182,10 @@ export function MarketOrderEditor({
         await clientApi(`/admin/fe-settings/markets-order/${sportId}/${scope}`, {
           method: "PUT",
           body: JSON.stringify({
-            order: ordered.map((m) => m.providerMarketId),
+            order: ordered.map((m) => ({
+              providerMarketId: m.providerMarketId,
+              variant: m.variant,
+            })),
           }),
         });
         setMsg({ kind: "ok", text: "Saved." });
@@ -183,57 +193,111 @@ export function MarketOrderEditor({
       } catch (err) {
         setMsg({
           kind: "err",
-          text: err instanceof ApiFetchError ? err.body.message : "Save failed.",
+          text:
+            err instanceof ApiFetchError ? err.body.message : "Could not save.",
         });
       }
     });
   }
 
-  function reset() {
+  function revert() {
     setMsg(null);
     startTransition(async () => {
       try {
         await clientApi(`/admin/fe-settings/markets-order/${sportId}/${scope}`, {
           method: "DELETE",
         });
-        setMsg({ kind: "ok", text: "Reverted to default order." });
+        setMsg({ kind: "ok", text: "Reverted to the default order." });
         router.refresh();
       } catch (err) {
         setMsg({
           kind: "err",
-          text: err instanceof ApiFetchError ? err.body.message : "Reset failed.",
+          text:
+            err instanceof ApiFetchError ? err.body.message : "Could not revert.",
         });
       }
     });
   }
 
+  function Row({
+    m,
+    children,
+    draggable,
+    onDragStart,
+    onDragOver,
+    onDrop,
+    highlighted,
+  }: {
+    m: MarketEntry;
+    children?: React.ReactNode;
+    draggable?: boolean;
+    onDragStart?: (ev: DragEvent<HTMLLIElement>) => void;
+    onDragOver?: (ev: DragEvent<HTMLLIElement>) => void;
+    onDrop?: (ev: DragEvent<HTMLLIElement>) => void;
+    highlighted?: boolean;
+  }) {
+    const title = tabTitle(m.tab);
+    return (
+      <li
+        draggable={draggable}
+        onDragStart={onDragStart}
+        onDragOver={onDragOver}
+        onDrop={onDrop}
+        onDragEnd={() => {
+          dragRef.current = null;
+          setDragOverIndex(null);
+        }}
+        className={
+          "flex items-center gap-3 border-b border-[var(--color-border)] px-3 py-2 last:border-b-0 " +
+          (highlighted ? "bg-[var(--color-bg-elevated)]" : "")
+        }
+      >
+        <span className="cursor-grab select-none text-[var(--color-fg-subtle)]">⠿</span>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm">{m.label}</div>
+          <div className="flex items-center gap-2 font-mono text-[11px] text-[var(--color-fg-subtle)]">
+            <span>id {m.providerMarketId}</span>
+            {curated && title ? (
+              <span className="rounded border border-[var(--color-border)] px-1.5 py-px uppercase tracking-[0.08em]">
+                {title}
+              </span>
+            ) : null}
+          </div>
+        </div>
+        {children}
+      </li>
+    );
+  }
+
+  const btn =
+    "rounded border border-[var(--color-border)] px-2 py-1 text-xs disabled:opacity-30";
+
   return (
-    <div className="mt-6 space-y-4">
+    <div className="mt-6">
       <div className="flex flex-wrap items-center gap-3">
         <button
           type="button"
           onClick={save}
           disabled={busy || !dirty}
-          className="btn btn-primary"
+          className="rounded bg-[var(--color-fg)] px-4 py-2 text-sm text-[var(--color-bg)] disabled:opacity-40"
         >
           {busy ? "Saving…" : "Save order"}
         </button>
         <button
           type="button"
-          onClick={reset}
-          disabled={busy || (ordered.length === 0 && initialOrdered.length === 0)}
-          className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-muted)] hover:text-[var(--color-negative)] disabled:opacity-50"
+          onClick={revert}
+          disabled={busy || initialOrdered.length === 0}
+          className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)] disabled:opacity-30"
         >
           Revert to default
         </button>
         {msg ? (
           <span
-            role={msg.kind === "err" ? "alert" : "status"}
             className={
-              "text-sm " +
+              "text-xs " +
               (msg.kind === "ok"
-                ? "text-[var(--color-positive)]"
-                : "text-[var(--color-negative)]")
+                ? "text-[var(--color-fg-muted)]"
+                : "text-[var(--color-danger,#c0392b)]")
             }
           >
             {msg.text}
@@ -241,146 +305,129 @@ export function MarketOrderEditor({
         ) : null}
       </div>
 
-      <p className="text-xs text-[var(--color-fg-subtle)]">
-        Drag rows to reorder, drop into Ordered to add. Buttons work too.
+      <p className="mt-2 text-xs text-[var(--color-fg-subtle)]">
+        {curated
+          ? "Drag a market from the right into this tab, or use the arrow. Order top to bottom is the render order."
+          : "Every market on this tab, in the order bettors see. Drag to reorder; markets the feed adds later sort after these."}
       </p>
 
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div
+        className={
+          "mt-4 grid gap-6 " + (curated ? "lg:grid-cols-2" : "lg:grid-cols-1")
+        }
+      >
         <section>
           <h3 className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-            Ordered ({ordered.length})
+            {curated ? `In this tab (${ordered.length})` : `Markets (${ordered.length})`}
           </h3>
           <ol
-            className="card mt-2 divide-y divide-[var(--color-border)]"
-            onDragOver={handleDragOverEmpty}
-            onDrop={handleDropAtEnd}
+            className="mt-2 overflow-hidden rounded border border-[var(--color-border)]"
+            onDragOver={(ev) => {
+              if (dragRef.current) ev.preventDefault();
+            }}
+            onDrop={handleDrop(ordered.length)}
           >
             {ordered.length === 0 ? (
-              <li
-                className="px-4 py-3 text-sm text-[var(--color-fg-muted)]"
-                onDragOver={handleDragOver(0)}
-                onDrop={handleDropOrdered(0)}
-              >
-                {isCuratedScope(scope)
-                  ? "Drop markets here to feature them on this tab."
-                  : "No explicit order — markets fall back to provider market id ascending."}
+              <li className="px-3 py-6 text-center text-sm text-[var(--color-fg-muted)]">
+                {curated
+                  ? "Nothing featured yet — add markets from the right."
+                  : "No markets on this tab in the current offer."}
               </li>
             ) : (
-              ordered.map((m, idx) => {
-                const showInsertGuide = dragOverIndex === idx;
-                return (
-                  <li
-                    key={m.providerMarketId}
-                    draggable
-                    onDragStart={handleDragStart("ordered", idx)}
-                    onDragOver={handleDragOver(idx)}
-                    onDragLeave={handleDragLeaveOrdered}
-                    onDrop={handleDropOrdered(idx)}
-                    className={
-                      "flex items-center gap-3 px-4 py-2 cursor-grab active:cursor-grabbing " +
-                      (showInsertGuide
-                        ? "border-t-2 border-t-[var(--color-accent)]"
-                        : "")
-                    }
-                  >
-                    <span
-                      aria-hidden
-                      className="select-none text-[var(--color-fg-subtle)]"
-                      title="Drag to reorder"
+              ordered.map((m, idx) => (
+                <Row
+                  key={entryKey(m)}
+                  m={m}
+                  draggable
+                  highlighted={dragOverIndex === idx}
+                  onDragStart={handleDragStart("ordered", idx)}
+                  onDragOver={handleDragOver(idx)}
+                  onDrop={handleDrop(idx)}
+                >
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => move(idx, -1)}
+                      disabled={busy || idx === 0}
+                      className={btn}
+                      aria-label="Move up"
                     >
-                      ⋮⋮
-                    </span>
-                    <span className="w-8 text-right font-mono text-xs text-[var(--color-fg-subtle)]">
-                      {idx + 1}.
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <div className="truncate text-sm">{m.label}</div>
-                      <div className="font-mono text-[10px] text-[var(--color-fg-subtle)]">
-                        id {m.providerMarketId}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1">
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => move(idx, 1)}
+                      disabled={busy || idx === ordered.length - 1}
+                      className={btn}
+                      aria-label="Move down"
+                    >
+                      ↓
+                    </button>
+                    {curated ? (
                       <button
                         type="button"
-                        onClick={() => move(idx, -1)}
-                        disabled={busy || idx === 0}
-                        className="rounded border border-[var(--color-border)] px-2 py-1 text-xs disabled:opacity-30"
-                        aria-label="Move up"
-                      >
-                        ↑
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => move(idx, 1)}
-                        disabled={busy || idx === ordered.length - 1}
-                        className="rounded border border-[var(--color-border)] px-2 py-1 text-xs disabled:opacity-30"
-                        aria-label="Move down"
-                      >
-                        ↓
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => unrank(idx)}
+                        onClick={() => remove(idx)}
                         disabled={busy}
-                        className="rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]"
-                        aria-label="Move to unranked"
+                        className={btn}
+                        aria-label="Remove from this tab"
                       >
                         →
                       </button>
-                    </div>
-                  </li>
-                );
-              })
+                    ) : null}
+                  </div>
+                </Row>
+              ))
             )}
           </ol>
         </section>
 
-        <section>
-          <h3 className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-            Unranked ({unranked.length})
-          </h3>
-          <ul className="card mt-2 divide-y divide-[var(--color-border)]">
-            {unranked.length === 0 ? (
-              <li className="px-4 py-3 text-sm text-[var(--color-fg-muted)]">
-                {isCuratedScope(scope)
-                  ? "Curated tabs have no implicit pool — every known market id for this sport that isn't ordered yet is shown here."
-                  : "Every known market for this sport is in the ordered list."}
-              </li>
-            ) : (
-              unranked.map((m, idx) => (
-                <li
-                  key={m.providerMarketId}
-                  draggable
-                  onDragStart={handleDragStart("unranked", idx)}
-                  className="flex items-center gap-3 px-4 py-2 cursor-grab active:cursor-grabbing"
-                >
-                  <span
-                    aria-hidden
-                    className="select-none text-[var(--color-fg-subtle)]"
-                    title="Drag to ordered list"
-                  >
-                    ⋮⋮
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => rank(m.providerMarketId)}
-                    disabled={busy}
-                    className="rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]"
-                    aria-label="Add to ordered"
-                  >
-                    ←
-                  </button>
-                  <div className="flex-1 min-w-0">
-                    <div className="truncate text-sm">{m.label}</div>
-                    <div className="font-mono text-[10px] text-[var(--color-fg-subtle)]">
-                      id {m.providerMarketId}
-                    </div>
-                  </div>
+        {curated ? (
+          <section>
+            <div className="flex items-baseline justify-between gap-3">
+              <h3 className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
+                All markets ({filtered.length}
+                {filtered.length !== available.length ? ` of ${available.length}` : ""})
+              </h3>
+            </div>
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Filter by name, tab or id"
+              className="mt-2 w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm"
+            />
+            <ol className="mt-2 max-h-[70vh] overflow-y-auto rounded border border-[var(--color-border)]">
+              {filtered.length === 0 ? (
+                <li className="px-3 py-6 text-center text-sm text-[var(--color-fg-muted)]">
+                  {available.length === 0
+                    ? "Every market on this sport is already in this tab."
+                    : "No market matches that filter."}
                 </li>
-              ))
-            )}
-          </ul>
-        </section>
+              ) : (
+                filtered.map((m) => (
+                  <Row
+                    key={entryKey(m)}
+                    m={m}
+                    draggable
+                    onDragStart={handleDragStart(
+                      "available",
+                      available.indexOf(m),
+                    )}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => add(entryKey(m))}
+                      disabled={busy}
+                      className={btn}
+                      aria-label="Add to this tab"
+                    >
+                      ←
+                    </button>
+                  </Row>
+                ))
+              )}
+            </ol>
+          </section>
+        ) : null}
       </div>
     </div>
   );

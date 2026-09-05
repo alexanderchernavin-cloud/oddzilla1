@@ -68,13 +68,43 @@ const scopeSchema = z
   .refine(isMarketScope, { message: "invalid_scope" })
   .transform((s) => s as FeMarketScope);
 
+// One row of the editor: a market TYPE on a specific sub-event. The bare
+// number is the pre-0109 shape — kept accepted because it is still the
+// right thing to send for a feed tab, where the sub-event is the tab.
+const orderEntrySchema = z.union([
+  z.number().int().min(1).max(100000),
+  z.object({
+    providerMarketId: z.number().int().min(1).max(100000),
+    variant: z.string().max(200).default(""),
+  }),
+]);
+
 const reorderBody = z.object({
-  // Ordered list — index 0 renders first. Each provider_market_id appears
+  // Ordered list — index 0 renders first. Each (market, sub-event) appears
   // at most once (validated in the handler).
-  order: z
-    .array(z.number().int().min(1).max(100000))
-    .max(1000),
+  order: z.array(orderEntrySchema).max(2000),
 });
+
+function normaliseEntry(
+  e: z.infer<typeof orderEntrySchema>,
+): { providerMarketId: number; variant: string } {
+  return typeof e === "number"
+    ? { providerMarketId: e, variant: "" }
+    : { providerMarketId: e.providerMarketId, variant: e.variant };
+}
+
+// A row in the editor's pool.
+interface PoolEntry {
+  providerMarketId: number;
+  variant: string;
+  label: string;
+  /** Feed tab this market belongs to; null when only a config row knows it. */
+  tab: string | null;
+}
+
+function poolKey(m: { providerMarketId: number; variant: string }): string {
+  return `${m.providerMarketId}:${m.variant}`;
+}
 
 // Each PUT is a transactional DELETE+INSERT on fe_market_display_order
 // (held lock = O(N) where N is the supplied order length). Spamming
@@ -167,6 +197,7 @@ async function loadOrderRows(app: FastifyInstance, sportId: number) {
     .select({
       scope: feMarketDisplayOrder.scope,
       providerMarketId: feMarketDisplayOrder.providerMarketId,
+      variant: feMarketDisplayOrder.variant,
       displayOrder: feMarketDisplayOrder.displayOrder,
     })
     .from(feMarketDisplayOrder)
@@ -286,20 +317,42 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
         : new NotFoundError("scope_not_found", "scope_not_found");
     }
 
-    const pool: ScopeMarket[] = isCuratedScope(params.scope)
-      ? discovered.allMarkets
-      : (discovered.scopes.find((s) => s.scope === params.scope)?.markets ?? []);
+    // Two different jobs behind one screen, and they need different pools.
+    //
+    // A FEED tab (Match / Map N / a sub-event) already contains its markets
+    // — membership is the feed's call, not the operator's — so the pool is
+    // that tab's own market types and the only thing being configured is
+    // their order. A CURATED tab (Top, custom groups) is opt-in membership,
+    // so its pool is every market on the sport, one entry per (type,
+    // sub-event): "Total" exists on Match, on Corners and on 1st half, and
+    // picking which of those to feature is the whole point.
+    const curated = isCuratedScope(params.scope);
+    const pool: PoolEntry[] = curated
+      ? discovered.allMarkets.map((m) => ({
+          providerMarketId: m.providerMarketId,
+          variant: m.variant,
+          label: m.label,
+          tab: m.scope,
+        }))
+      : (
+          discovered.scopes.find((s) => s.scope === params.scope)?.markets ?? []
+        ).map((m) => ({
+          providerMarketId: m.providerMarketId,
+          // Feed-tab rows carry no variant: the tab IS the sub-event.
+          variant: "",
+          label: m.label,
+          tab: params.scope as string,
+        }));
 
     const orderRows = orderRowsAll.filter((r) => r.scope === params.scope);
-    const labelByID = new Map<number, string>(
-      pool.map((m) => [m.providerMarketId, m.label]),
-    );
+    const byKey = new Map<string, PoolEntry>(pool.map((m) => [poolKey(m), m]));
 
-    // Ordered ids the current offer doesn't carry still need a name. The
-    // description table is small, so one targeted read covers them.
-    const missing = orderRows
-      .map((r) => r.providerMarketId)
-      .filter((id) => !labelByID.has(id));
+    // A configured row the current offer doesn't carry still needs a name —
+    // it stays listed so an operator can see and remove it. The description
+    // table is small, so one targeted read covers them.
+    const missing = orderRows.filter(
+      (r) => !byKey.has(`${r.providerMarketId}:${r.variant}`),
+    );
     if (missing.length > 0) {
       const descRows = await app.db
         .select({
@@ -310,40 +363,57 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
         .from(marketDescriptions)
         .where(
           and(
-            inArray(marketDescriptions.providerMarketId, missing),
+            inArray(
+              marketDescriptions.providerMarketId,
+              missing.map((r) => r.providerMarketId),
+            ),
             // Backoffice is English; pinning the language also sidesteps
             // the one-row-per-language duplication market descriptions
             // have carried since the Fonbet line landed.
             eq(marketDescriptions.language, "en"),
           ),
         );
+      const templates = new Map<string, string>();
       for (const d of descRows) {
-        if (!labelByID.has(d.providerMarketId) || d.variant === "") {
-          labelByID.set(d.providerMarketId, d.nameTemplate);
-        }
+        templates.set(`${d.providerMarketId}:${d.variant}`, d.nameTemplate);
+      }
+      for (const r of missing) {
+        const label =
+          templates.get(`${r.providerMarketId}:${r.variant}`) ??
+          templates.get(`${r.providerMarketId}:`) ??
+          `Market #${r.providerMarketId}`;
+        byKey.set(`${r.providerMarketId}:${r.variant}`, {
+          providerMarketId: r.providerMarketId,
+          variant: r.variant,
+          label,
+          tab: null,
+        });
       }
     }
 
-    function entry(providerMarketId: number) {
+    const configured = new Set(
+      orderRows.map((r) => `${r.providerMarketId}:${r.variant}`),
+    );
+    const ordered = orderRows.map((r) => {
+      const key = `${r.providerMarketId}:${r.variant}`;
+      const hit = byKey.get(key);
       return {
-        providerMarketId,
-        label: labelByID.get(providerMarketId) ?? `Market #${providerMarketId}`,
+        providerMarketId: r.providerMarketId,
+        variant: r.variant,
+        label: hit?.label ?? `Market #${r.providerMarketId}`,
+        tab: hit?.tab ?? null,
+        displayOrder: r.displayOrder,
       };
-    }
-
-    const configuredIds = new Set(orderRows.map((r) => r.providerMarketId));
-    const ordered = orderRows.map((r) => ({
-      ...entry(r.providerMarketId),
-      displayOrder: r.displayOrder,
-    }));
-    const unranked = pool
-      .filter((m) => !configuredIds.has(m.providerMarketId))
-      .map((m) => entry(m.providerMarketId));
+    });
+    const unranked = pool.filter((m) => !configured.has(poolKey(m)));
 
     return {
       sport,
       scope: params.scope,
       label: tab.label,
+      // Curated tabs are opt-in membership; feed tabs are order-only. The
+      // editor renders one column or two off this flag.
+      curated,
       // Every tab in effective storefront order — the editor's nav strip
       // mirrors what bettors see, custom groups included.
       groups: tabs,
@@ -365,15 +435,25 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
       .parse(request.params);
     const body = reorderBody.parse(request.body);
 
-    const seen = new Set<number>();
-    for (const id of body.order) {
-      if (seen.has(id)) {
+    // A feed tab is one sub-event already, so its rows carry no variant —
+    // writing one there would fragment the list into "Match result way:two"
+    // beside "Match result way:three".
+    const entries = body.order
+      .map(normaliseEntry)
+      .map((e) =>
+        isCuratedScope(params.scope) ? e : { ...e, variant: "" },
+      );
+
+    const seen = new Set<string>();
+    for (const e of entries) {
+      const key = poolKey(e);
+      if (seen.has(key)) {
         throw new BadRequestError(
-          `duplicate_provider_market_id_${id}`,
-          `duplicate_provider_market_id_${id}_in_order`,
+          `duplicate_provider_market_id_${e.providerMarketId}`,
+          `duplicate_provider_market_id_${e.providerMarketId}_in_order`,
         );
       }
-      seen.add(id);
+      seen.add(key);
     }
 
     const [sport] = await app.db
@@ -403,6 +483,7 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
     const before = await app.db
       .select({
         providerMarketId: feMarketDisplayOrder.providerMarketId,
+        variant: feMarketDisplayOrder.variant,
         displayOrder: feMarketDisplayOrder.displayOrder,
       })
       .from(feMarketDisplayOrder)
@@ -424,12 +505,13 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
           ),
         );
 
-      if (body.order.length > 0) {
+      if (entries.length > 0) {
         await tx.insert(feMarketDisplayOrder).values(
-          body.order.map((providerMarketId, idx) => ({
+          entries.map((e, idx) => ({
             sportId: params.sportId,
             scope: params.scope,
-            providerMarketId,
+            providerMarketId: e.providerMarketId,
+            variant: e.variant,
             displayOrder: idx,
             updatedBy: admin.id,
           })),
@@ -445,7 +527,7 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
         afterJson: {
           sportSlug: sport.slug,
           scope: params.scope,
-          order: body.order,
+          order: entries,
         },
         ipInet: request.ip ?? null,
       });
@@ -455,7 +537,7 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
       ok: true,
       sportId: params.sportId,
       scope: params.scope,
-      count: body.order.length,
+      count: entries.length,
     };
   });
 

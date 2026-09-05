@@ -713,8 +713,15 @@ async function loadTopMarketIdsBySport(
     .orderBy(asc(feMarketDisplayOrder.sportId), asc(feMarketDisplayOrder.displayOrder));
   for (const r of rows) {
     const arr = out.get(r.sportId) ?? [];
-    arr.push(r.providerMarketId);
-    out.set(r.sportId, arr);
+    // Since migration 0109 a Top list can hold the same market type more
+    // than once, once per sub-event ("Total" on Match and on Corners). A
+    // list card renders ONE market inline and has no tab to say which
+    // sub-event it is, so it takes the first configured copy and ignores
+    // the rest — the match page is where the distinction is legible.
+    if (!arr.includes(r.providerMarketId)) {
+      arr.push(r.providerMarketId);
+      out.set(r.sportId, arr);
+    }
   }
   return out;
 }
@@ -1536,6 +1543,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         .select({
           scope: feMarketDisplayOrder.scope,
           providerMarketId: feMarketDisplayOrder.providerMarketId,
+          variant: feMarketDisplayOrder.variant,
           displayOrder: feMarketDisplayOrder.displayOrder,
         })
         .from(feMarketDisplayOrder)
@@ -1886,13 +1894,30 @@ export default async function catalogRoutes(app: FastifyInstance) {
     // same way the storefront tabs are: `match`, `top`, or `map_<N>`. Each
     // Map N tab gets its own independently configurable list (migration 0057).
     const orderByScope = new Map<string, Map<number, number>>();
+    // Curated tabs keep the rows whole: their membership is per
+    // (market type, sub-event), not per market type. Feed tabs stay keyed
+    // by type alone — inside one tab the sub-event is fixed.
+    const curatedByScope = new Map<
+      string,
+      Array<{ providerMarketId: number; variant: string; displayOrder: number }>
+    >();
     for (const r of orderRows) {
       let bucket = orderByScope.get(r.scope);
       if (!bucket) {
         bucket = new Map<number, number>();
         orderByScope.set(r.scope, bucket);
       }
-      bucket.set(r.providerMarketId, r.displayOrder);
+      // A wildcard row must not displace an explicit one for the same type.
+      if (r.variant === "" || !bucket.has(r.providerMarketId)) {
+        bucket.set(r.providerMarketId, r.displayOrder);
+      }
+      const list = curatedByScope.get(r.scope) ?? [];
+      list.push({
+        providerMarketId: r.providerMarketId,
+        variant: r.variant ?? "",
+        displayOrder: r.displayOrder,
+      });
+      curatedByScope.set(r.scope, list);
     }
     const EMPTY_ORDER = new Map<number, number>();
 
@@ -1924,34 +1949,45 @@ export default async function catalogRoutes(app: FastifyInstance) {
     }
 
     // Synthetic curated groups — markets the admin explicitly listed for
-    // this sport, regardless of their actual scope. Two kinds share the
-    // shape: the built-in "Top" tab and admin-created custom groups
-    // (migration 0084). We pick at most one representative market row per
-    // provider_market_id (preferring the match-scope copy if it exists,
-    // falling back to the lowest-order map copy) so a curated tab doesn't
-    // double up on totals/handicaps that exist for both Match and Map 1.
-    // Insertion order matches the admin configuration.
+    // this sport, regardless of which tab they normally sit on. Two kinds
+    // share the shape: the built-in "Top" tab and admin-created custom
+    // groups (migration 0084).
+    //
+    // A row names a market TYPE and, since migration 0109, the SUB-EVENT it
+    // means: provider_market_id alone is the catalogue table, which Fonbet
+    // reuses across every sub-event, so "Total" without a variant cannot
+    // distinguish the match total from the corners total. An empty variant
+    // keeps its original meaning — any copy — and every pre-0109 row is
+    // empty, so those resolve exactly as they did. Within the candidates a
+    // row admits we still pick one representative (preferring the
+    // match-scope copy, else the lowest-order map) so a curated tab doesn't
+    // double up on totals that exist for both Match and Map 1.
     function buildCuratedGroup(
       id: string,
       label: string,
       order: number,
     ): { id: string; label: string; order: number; markets: MarketRow[] } | null {
-      const curated = orderByScope.get(id);
-      if (!curated || curated.size === 0) return null;
+      const curated = curatedByScope.get(id);
+      if (!curated || curated.length === 0) return null;
       const group = { id, label, order, markets: [] as MarketRow[] };
-      const curatedIds = Array.from(curated.entries()).sort(
-        (a, b) => a[1] - b[1],
-      );
-      for (const [providerMarketId] of curatedIds) {
+      const seen = new Set<string>();
+      for (const row of [...curated].sort((a, b) => a.displayOrder - b.displayOrder)) {
         const candidates = marketList.filter(
-          (m) => m.providerMarketId === providerMarketId,
+          (m) =>
+            m.providerMarketId === row.providerMarketId &&
+            (row.variant === "" || m.variant === row.variant),
         );
         if (candidates.length === 0) continue;
         const matchCopy = candidates.find((m) => m.scope.id === "match");
         const pick =
           matchCopy ??
           candidates.sort((a, b) => a.scope.order - b.scope.order)[0];
-        if (pick) group.markets.push(pick);
+        // Two rows can resolve to the same market row (a wildcard and the
+        // explicit sub-event that wins it); render it once.
+        if (pick && !seen.has(pick.id)) {
+          seen.add(pick.id);
+          group.markets.push(pick);
+        }
       }
       return group.markets.length > 0 ? group : null;
     }
