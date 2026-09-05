@@ -146,6 +146,10 @@ export const SIMULATED_MIN_TIER = 9;
  *
  * The clock pattern accepts Cyrillic "х" as well as Latin "x": the feed
  * mixes them inside a single English-language catalogue ("2х3 min.").
+ *
+ * The `\b` anchors are load-bearing, not tidiness: without the leading
+ * one, `fc ?\d{2}` matches "FC 33" inside "**UFC 33**1" and would floor
+ * every real UFC title fight at T9. Pinned by a test.
  */
 export const SIMULATED_PATTERNS: readonly RegExp[] = [
   /\bfc\s?\d{2}\b/iu, // FC 24, FC 26
