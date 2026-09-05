@@ -206,8 +206,8 @@ function resolveTeamNames(
 }
 
 // 2-3 letter abbreviation derived from a team's display name, used as
-// the `tag` fallback in TeamMark when the competitor has no admin-
-// curated abbreviation. Prefers word initials ("Team Vitality" → "TV"),
+// TeamMark's `tag` (now only its <img> alt — the mark renders nothing
+// without a picture). Prefers word initials ("Team Vitality" → "TV"),
 // falls back to the first 3 chars of a single-word name ("NaVi" → "NAV").
 function teamTag(name: string): string {
   const words = name.trim().split(/\s+/).filter(Boolean);

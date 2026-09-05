@@ -476,6 +476,11 @@ function ScoreTable({
   const showSeries = isLive && mapCount > 1;
   const hasTrailing =
     homeTrailing != null || awayTrailing != null || drawTrailing != null;
+  // TeamMark renders nothing without a picture. When only one side has
+  // one, the other row still holds an empty slot of the same size so the
+  // two names stay flush; when neither does, no slot at all and the
+  // names sit at the left edge.
+  const markSlot = !!(homeLogoUrl || awayLogoUrl);
 
   // Grid template:
   //   name(1fr) [Σ] [map1..mapN] [trailing]
@@ -535,6 +540,7 @@ function ScoreTable({
         isLiveCol={(n) => currentMap === n}
         trailing={homeTrailing}
         hasTrailing={hasTrailing}
+        markSlot={markSlot}
       />
       {drawTrailing ? (
         <DrawScoreRow
@@ -556,6 +562,7 @@ function ScoreTable({
         isLiveCol={(n) => currentMap === n}
         trailing={awayTrailing}
         hasTrailing={hasTrailing}
+        markSlot={markSlot}
       />
     </div>
   );
@@ -644,6 +651,7 @@ function TeamScoreRow({
   isLiveCol,
   trailing,
   hasTrailing,
+  markSlot,
 }: {
   name: string;
   logoUrl?: string | null;
@@ -654,7 +662,10 @@ function TeamScoreRow({
   isLiveCol: (n: number) => boolean;
   trailing?: ReactNode;
   hasTrailing: boolean;
+  /** Hold a crest-sized slot even when this row has no picture. */
+  markSlot: boolean;
 }) {
+  const markSize = hasTrailing ? 28 : 24;
   return (
     <>
       <div
@@ -668,12 +679,18 @@ function TeamScoreRow({
         {/* Sized to the row's tallest neighbour so the crest grows without
             the row moving: the odds button in the trailing column is a
             fixed 30px, the score / map cells without it are ~24px. */}
-        <TeamMark
-          tag={teamTag(name)}
-          size={hasTrailing ? 28 : 24}
-          logoUrl={logoUrl}
-          name={name}
-        />
+        {markSlot ? (
+          <span
+            style={{
+              display: "inline-flex",
+              width: markSize,
+              height: markSize,
+              flexShrink: 0,
+            }}
+          >
+            <TeamMark tag={teamTag(name)} size={markSize} logoUrl={logoUrl} name={name} />
+          </span>
+        ) : null}
         <span
           style={{
             fontSize: 13.5,

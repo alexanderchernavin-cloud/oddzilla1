@@ -434,22 +434,26 @@ function CompetitorBanner({
       {art && (
         <BannerArtBackdrop url={art} onFail={() => setArtFailed(true)} />
       )}
-      <span
-        style={{
-          position: "relative",
-          zIndex: 2,
-          display: "inline-flex",
-          flexShrink: 0,
-        }}
-      >
-        <TeamMark
-          tag={(b.abbreviation || b.name).slice(0, 3).toUpperCase()}
-          name={b.name}
-          logoUrl={b.logoUrl}
-          color={accent}
-          size={30}
-        />
-      </span>
+      {/* TeamMark renders nothing without a picture; the wrapper goes
+          with it so no empty node holds a gap open. */}
+      {b.logoUrl ? (
+        <span
+          style={{
+            position: "relative",
+            zIndex: 2,
+            display: "inline-flex",
+            flexShrink: 0,
+          }}
+        >
+          <TeamMark
+            tag={(b.abbreviation || b.name).slice(0, 3).toUpperCase()}
+            name={b.name}
+            logoUrl={b.logoUrl}
+            color={accent}
+            size={30}
+          />
+        </span>
+      ) : null}
       <span
         style={{
           position: "relative",
@@ -700,7 +704,14 @@ function MatchBannerCard({
       : undefined;
     return (
       <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-        <TeamMark tag={name.slice(0, 2).toUpperCase()} name={name} logoUrl={logo} size={20} />
+        {/* TeamMark renders nothing without a picture. Hold a same-sized
+            slot while EITHER side has one so the two names stay flush;
+            with neither, no slot and both sit at the left edge. */}
+        {b.homeLogoUrl || b.awayLogoUrl ? (
+          <span style={{ display: "inline-flex", width: 20, height: 20, flexShrink: 0 }}>
+            <TeamMark tag={name.slice(0, 2).toUpperCase()} name={name} logoUrl={logo} size={20} />
+          </span>
+        ) : null}
         <span
           style={{
             flex: 1,
