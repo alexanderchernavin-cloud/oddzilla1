@@ -1,4 +1,5 @@
-// /admin/categories — control which categories appear in the match lists.
+// /admin/categories — control which categories appear in the match lists,
+// and which of them lead their sport's sidebar tree.
 //
 // Server component: parses ?sportId, ?q, ?hidden from the URL, fetches the
 // category list and the sport-filter options in parallel, hands both to the
@@ -62,7 +63,7 @@ export default async function CategoriesPage({
       <div className="mb-6 flex flex-wrap items-baseline justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">
-            Category visibility
+            Category visibility &amp; order
           </h1>
           <p className="mt-2 max-w-3xl text-sm text-[var(--color-fg-muted)]">
             A category marked <strong>hidden from lists</strong> is dropped from
@@ -77,6 +78,14 @@ export default async function CategoriesPage({
             would otherwise crowd out the real offer: Fonbet files EA FC
             simulations under Football, NBA 2K under Basketball, NHL under Ice
             Hockey.
+          </p>
+          <p className="mt-2 max-w-3xl text-sm text-[var(--color-fg-muted)]">
+            <strong>Order in sport</strong> pins a category to the top of that
+            sport&apos;s sidebar tree. Pinned categories lead in the order
+            shown; everything unpinned stays alphabetical behind them, which is
+            how the whole tree behaved before — so Football opens on England
+            rather than Albania. The order is per sport and applies to every
+            bettor.
           </p>
         </div>
         <Link

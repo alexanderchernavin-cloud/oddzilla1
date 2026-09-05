@@ -23,6 +23,7 @@ import {
 } from "react";
 
 import { useLiveMatchStatus } from "./use-live-odds";
+import type { SportradarMatchRef } from "@oddzilla/types/sportradar";
 
 export interface ActiveMatch {
   matchId: string;
@@ -41,6 +42,10 @@ export interface ActiveMatch {
   // the rationale.
   viewerId: string | null;
   loggedIn: boolean;
+  // Operator-confirmed Sportradar mapping (migration 0100), or null.
+  // The rail uses it to mount Head to Head under the bet slip; like the
+  // tracker on the page itself, no mapping means no widget.
+  sportradar: SportradarMatchRef | null;
 }
 
 interface MatchPageContextValue {
@@ -84,6 +89,12 @@ export function MatchPageRegistrar(props: ActiveMatch) {
   // bettor reloads.
   const liveStatus = useLiveMatchStatus(props.matchId);
   const effectiveStatus = liveStatus?.status ?? props.matchStatus;
+  // Depend on the two ids rather than the object: the mapping arrives as
+  // a fresh object on every parent render, and an object in the dep list
+  // would re-fire this effect (and the set/clear pair inside it) on ticks
+  // that changed nothing about the fixture.
+  const srMatchId = props.sportradar?.srMatchId ?? null;
+  const srSportId = props.sportradar?.srSportId ?? null;
   useEffect(() => {
     if (!set) return;
     set({
@@ -95,6 +106,10 @@ export function MatchPageRegistrar(props: ActiveMatch) {
       matchStatus: effectiveStatus,
       viewerId: props.viewerId,
       loggedIn: props.loggedIn,
+      sportradar:
+        srMatchId != null && srSportId != null
+          ? { srMatchId, srSportId }
+          : null,
     });
     return () => {
       set(null);
@@ -109,6 +124,8 @@ export function MatchPageRegistrar(props: ActiveMatch) {
     effectiveStatus,
     props.viewerId,
     props.loggedIn,
+    srMatchId,
+    srSportId,
   ]);
   return null;
 }

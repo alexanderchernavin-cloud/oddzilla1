@@ -62,6 +62,13 @@ export default async function MatchPage({
   const parentHost = await resolveEmbedHost();
   const initialLiveScore = match.liveScore ?? null;
 
+  // Sportradar's tracker already carries what our scoreboard does — both
+  // teams with their crests and the running score — so rendering both
+  // stacks two scoreboards on the same fixture. Where a confirmed mapping
+  // exists the tracker is the richer of the two, so ours steps aside and
+  // the header card keeps only the status pill + tournament line.
+  const hasLmt = Boolean(match.sportradar);
+
   // For the analyses section CTA, "logged in" presence-checks the access
   // cookie rather than round-tripping /auth/me. Server stays authoritative
   // — a publish attempt with an invalid cookie still hits the api's
@@ -111,7 +118,7 @@ export default async function MatchPage({
             display: "flex",
             alignItems: "center",
             gap: 10,
-            marginBottom: 18,
+            marginBottom: hasLmt ? 0 : 18,
             flexWrap: "wrap",
           }}
         >
@@ -146,17 +153,19 @@ export default async function MatchPage({
           </span>
         </div>
 
-        <LiveScoreboard
-          matchId={match.id}
-          homeTeam={match.homeTeam}
-          awayTeam={match.awayTeam}
-          homeLogoUrl={match.homeLogoUrl ?? null}
-          awayLogoUrl={match.awayLogoUrl ?? null}
-          bestOf={match.bestOf}
-          initialLiveScore={initialLiveScore}
-          initialStatus={match.status}
-          sportSlug={match.sport.slug}
-        />
+        {hasLmt ? null : (
+          <LiveScoreboard
+            matchId={match.id}
+            homeTeam={match.homeTeam}
+            awayTeam={match.awayTeam}
+            homeLogoUrl={match.homeLogoUrl ?? null}
+            awayLogoUrl={match.awayLogoUrl ?? null}
+            bestOf={match.bestOf}
+            initialLiveScore={initialLiveScore}
+            initialStatus={match.status}
+            sportSlug={match.sport.slug}
+          />
+        )}
       </div>
 
       <MatchLiveMedia
@@ -173,7 +182,9 @@ export default async function MatchPage({
           operator has confirmed a Sportradar mapping for — the id is
           Sportradar's, not ours, and cannot be derived from either feed
           (see packages/db/migrations/0100_sportradar_match_map.sql). No
-          mapping, no tracker, no gap in the layout. */}
+          mapping, no tracker, no gap in the layout. It also stands in for
+          our own scoreboard (hasLmt above) — the tracker draws both teams
+          and the score itself, so keeping ours would stack two. */}
       {match.sportradar ? (
         <SportradarLmt
           srMatchId={match.sportradar.srMatchId}
@@ -224,6 +235,7 @@ export default async function MatchPage({
         matchStatus={match.status}
         viewerId={viewer ? viewer.id : null}
         loggedIn={loggedIn}
+        sportradar={match.sportradar ?? null}
       />
 
       {/* Always mount LiveMarkets — even when the SSR snapshot has zero
@@ -249,6 +261,9 @@ export default async function MatchPage({
           sportSlug: match.sport.slug,
         }}
         initialGroups={marketGroups}
+        // Bet Assist rides the same confirmed mapping the tracker does;
+        // null for every unmapped fixture, which is most of them.
+        sportradar={match.sportradar ?? null}
       />
     </div>
   );

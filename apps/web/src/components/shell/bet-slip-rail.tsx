@@ -39,6 +39,8 @@ import { useSessionUserId } from "@/lib/session-user";
 import { intentWaitMs, useBetIntent } from "@/lib/use-bet-intent";
 import { useTranslations } from "@/lib/i18n";
 import { RailMatchPanel } from "@/components/widgets/rail-match-panel";
+import { RailHeadToHead } from "@/components/widgets/rail-head-to-head";
+import { RailLiveTable } from "@/components/widgets/rail-live-table";
 import type {
   SlipSelection,
   TicketListResponse,
@@ -1593,6 +1595,13 @@ export function BetSlipRail() {
         — bet slip + Place button stay above the fold, match-specific
         content stacks below where it competes only with itself.
       */}
+      {activeTab === "slip" && !placedTicket && <RailHeadToHead />}
+
+      {/* Live Table — tournament views only (/sport/:slug?tournament=N).
+          Self-hides on every other route and on tournaments with no
+          confirmed Sportradar mapping. */}
+      {activeTab === "slip" && !placedTicket && <RailLiveTable />}
+
       {activeTab === "slip" && !placedTicket && <RailMatchPanel />}
     </aside>
   );

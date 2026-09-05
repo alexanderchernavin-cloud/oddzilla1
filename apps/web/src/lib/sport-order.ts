@@ -18,6 +18,11 @@ export const HIDDEN_SPORT_SLUGS = new Set<string>([
 // active sport; the lobby chip row stays tight on the headline titles
 // the storefront wants to feature up front. Order here defines render
 // order in the chip strip — pinned-first is intentional.
+//
+// Deliberately NOT affected by the operator pin order (migration 0103):
+// this is an allowlist of seven slugs with its own sequence, not an
+// ordering of the whole set, so a sport's rail position says nothing
+// about whether it belongs in this strip.
 export const LOBBY_CHIP_SPORT_SLUGS = [
   "cs2",
   "dota2",
@@ -46,6 +51,45 @@ export function sportRank(slug: string): number {
   return i === -1 ? TOP_SPORT_SLUGS.length : i;
 }
 
+// An operator pin position from /admin/sports (migration 0103). Absent
+// on every row until somebody pins something, which is why every helper
+// here takes it as optional rather than required — a caller whose type
+// predates the column still compiles and still sorts the old way.
+interface Pinnable {
+  displayOrder?: number | null;
+}
+
+// MAX_SAFE_INTEGER for an unpinned row puts it after every pinned one
+// when sorting ASC — the same "NULLS LAST" shape the SQL side uses for
+// this column and the tournament tier sort already uses for risk_tier.
+function pinPosition(row: Pinnable): number {
+  return row.displayOrder ?? Number.MAX_SAFE_INTEGER;
+}
+
+// The one place the storefront decides which sport comes first.
+//
+// Three tiers, in order: the operator's pinned sequence, then the
+// hard-coded flagship slugs, then the name. The pin tier is what
+// /admin/sports writes; the two below it are the rule that governed
+// everything before it existed, so an estate with nothing pinned sorts
+// exactly as it always did.
+//
+// Deliberately NOT the bettor's own saved order — that one wins over
+// all three and is applied by `orderSportsForSidebar`, because an
+// operator setting a default must not overwrite a choice a bettor made.
+export function compareSports<T extends { slug: string; name: string } & Pinnable>(
+  a: T,
+  b: T,
+): number {
+  const pa = pinPosition(a);
+  const pb = pinPosition(b);
+  if (pa !== pb) return pa - pb;
+  const ra = sportRank(a.slug);
+  const rb = sportRank(b.slug);
+  if (ra !== rb) return ra - rb;
+  return a.name.localeCompare(b.name);
+}
+
 // Short display names for the most-truncated chrome spots
 // (top-bar chips, narrow sidebar widths). Anything not listed
 // falls back to the full sport name.
@@ -57,19 +101,13 @@ export function shortName(name: string): string {
   return name;
 }
 
-// Order a list of `{slug, name, ...}` rows by pinned-first then
-// alphabetical. Bot leagues are filtered out.
-export function orderSportsForChips<T extends { slug: string; name: string }>(
-  items: T[],
-): T[] {
+// Order a list of `{slug, name, ...}` rows by operator pin, then
+// flagship slug, then alphabetically. Bot leagues are filtered out.
+export function orderSportsForChips<
+  T extends { slug: string; name: string } & Pinnable,
+>(items: T[]): T[] {
   const visible = items.filter((s) => !HIDDEN_SPORT_SLUGS.has(s.slug));
-  return [...visible].sort((a, b) => {
-    const ra = sportRank(a.slug);
-    const rb = sportRank(b.slug);
-    if (ra !== rb) return ra - rb;
-    if (ra === TOP_SPORT_SLUGS.length) return a.name.localeCompare(b.name);
-    return 0;
-  });
+  return [...visible].sort(compareSports);
 }
 
 // Build a normalised Set of slugs the bettor has hidden (migration
@@ -96,7 +134,7 @@ export function hiddenSportsSet(userHidden: string[] | null | undefined): Set<st
 // bettor can still see + un-hide them; everywhere else the hidden set
 // is filtered out by this helper.
 export function orderSportsForSidebar<
-  T extends { slug: string; name: string },
+  T extends { slug: string; name: string } & Pinnable,
 >(
   items: T[],
   userOrder: string[] | null,
@@ -133,7 +171,7 @@ export function orderSportsForSidebar<
 // alphabetical) so the bettor isn't asked to remember the order they
 // hid things in.
 export function partitionSportsForEdit<
-  T extends { slug: string; name: string },
+  T extends { slug: string; name: string } & Pinnable,
 >(
   items: T[],
   userOrder: string[] | null,
@@ -161,20 +199,14 @@ export function partitionSportsForEdit<
 // Hidden sports (global bot slugs + the bettor's hidden_sports) are
 // dropped — callers don't need to filter separately.
 export function orderMatchesBySport<
-  T extends { sport: { slug: string; name: string } },
+  T extends { sport: { slug: string; name: string } & Pinnable },
 >(items: T[], userHidden: string[] | null = null): T[] {
   const hidden = hiddenSportsSet(userHidden);
   const visible = items.filter(
     (m) => !HIDDEN_SPORT_SLUGS.has(m.sport.slug) && !hidden.has(m.sport.slug),
   );
-  return [...visible].sort((a, b) => {
-    const ra = sportRank(a.sport.slug);
-    const rb = sportRank(b.sport.slug);
-    if (ra !== rb) return ra - rb;
-    if (ra === TOP_SPORT_SLUGS.length) {
-      const byName = a.sport.name.localeCompare(b.sport.name);
-      if (byName !== 0) return byName;
-    }
-    return 0;
-  });
+  // Same three tiers the rail uses, read off each row's own sport —
+  // /catalog/matches carries `sport.displayOrder` per match precisely so
+  // these cross-sport lists don't have to fetch the sports tree.
+  return [...visible].sort((a, b) => compareSports(a.sport, b.sport));
 }

@@ -3,12 +3,19 @@
 import { useState, useTransition, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
+import { PinOrderControls } from "@/components/admin/pin-order-controls";
 
 export interface CategoryRow {
   id: number;
   name: string;
   slug: string;
   hiddenFromLists: boolean;
+  /**
+   * Operator pin position within this category's own SPORT (migration
+   * 0103), or null when unpinned. Pinned categories head the sport's
+   * sidebar tree in this order; the rest stay alphabetical.
+   */
+  displayOrder: number | null;
   /** Live + upcoming matches under the category — the sizing signal. */
   bookableCount: number;
   sport: { id: number; name: string; slug: string };
@@ -165,13 +172,23 @@ function CategoryTable({ list }: { list: ListShape }) {
             <th className="px-4 py-3 text-left">Category</th>
             <th className="px-4 py-3 text-left">Sport</th>
             <th className="px-4 py-3 text-right">Bookable</th>
+            <th className="px-4 py-3 text-left">Order in sport</th>
             <th className="px-4 py-3 text-left">In match lists</th>
             <th className="px-4 py-3" />
           </tr>
         </thead>
         <tbody className="divide-y divide-[var(--color-border)]">
           {list.categories.map((row) => (
-            <CategoryEditableRow key={row.id} row={row} />
+            <CategoryEditableRow
+              key={row.id}
+              row={row}
+              // Ends of the PINNED run inside this row's own sport, which
+              // is the scope the arrows move within. Derived from the
+              // page rather than sent by the API: the list is ordered
+              // pinned-first per sport, so the run is contiguous here.
+              first={isFirstPinnedInSport(row)}
+              last={isLastPinnedInSport(list.categories, row)}
+            />
           ))}
         </tbody>
       </table>
@@ -179,7 +196,41 @@ function CategoryTable({ list }: { list: ListShape }) {
   );
 }
 
-function CategoryEditableRow({ row }: { row: CategoryRow }) {
+// Whether a pinned row sits at an end of its sport's pinned run. A row
+// whose pin position is 1 is first by definition; last needs the page,
+// because "no pinned row in this sport carries a higher position" is
+// what makes the down arrow meaningless.
+//
+// Read from the current page, which means an active filter (or a page
+// boundary) can hide part of a sport's pinned run and grey out a "down"
+// that did have somewhere to go. Only the disabled state is affected:
+// the server computes every move against the true pinned list, so an
+// arrow that IS enabled always does the right thing, and one that is
+// wrongly greyed comes back the moment the filter is cleared.
+function isFirstPinnedInSport(row: CategoryRow): boolean {
+  return row.displayOrder === 1;
+}
+
+function isLastPinnedInSport(rows: CategoryRow[], row: CategoryRow): boolean {
+  const position = row.displayOrder;
+  if (position == null) return true;
+  return !rows.some(
+    (r) =>
+      r.sport.id === row.sport.id &&
+      r.displayOrder != null &&
+      r.displayOrder > position,
+  );
+}
+
+function CategoryEditableRow({
+  row,
+  first,
+  last,
+}: {
+  row: CategoryRow;
+  first: boolean;
+  last: boolean;
+}) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -213,6 +264,18 @@ function CategoryEditableRow({ row }: { row: CategoryRow }) {
           a category at 165 is one an operator wants to think about, one at
           0 is noise. */}
       <td className="px-4 py-3 text-right tabular-nums">{row.bookableCount}</td>
+      {/* Pinned categories head their sport's sidebar tree in this
+          order; everything unpinned stays alphabetical behind them. */}
+      <td className="px-4 py-3">
+        <PinOrderControls
+          basePath="/admin/categories"
+          id={row.id}
+          displayOrder={row.displayOrder}
+          first={first}
+          last={last}
+          label={row.name}
+        />
+      </td>
       <td className="px-4 py-3">
         {row.hiddenFromLists ? (
           <span className="rounded-full bg-[var(--color-bg-elevated)] px-2 py-1 text-xs text-[var(--color-fg-muted)]">

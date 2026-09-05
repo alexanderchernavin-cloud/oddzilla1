@@ -339,6 +339,41 @@ real categories (countries like "England", or "International").
 **`categories`** — child of sport. `is_dummy=true` when auto-created for an
 esport. `provider_urn` may be NULL (dummy) or hold a real Oddin URN later.
 
+#### `display_order` — operator pin ordering (migration 0103)
+
+A nullable `INTEGER` on BOTH `sports` and `categories`. NULL means the row
+is not pinned, which is what every row held before an operator touched it,
+so the storefront's ordering is byte-identical to the pre-migration one on
+an untouched estate. A pinned row sorts by this value ascending ahead of
+every unpinned row; unpinned rows keep the rule that governed them before —
+flagship slugs (`cs2`, `dota2`, `lol`, `valorant`) then alphabetical for
+sports, alphabetical for category buckets.
+
+Scope differs by table, and the difference is the point. Sports are ONE
+global sequence: a sport has no parent, so its position is a statement about
+the whole rail. Categories are one sequence PER SPORT: a category only ever
+renders inside its own sport's sidebar tree, so "second from the top" is a
+statement about Football, and a global sequence would make every sport
+contend for the same integers.
+
+The pinned set is stored dense (1..N) and **renumbered on every action**.
+That is why the write path goes through the pure transform
+`reorderPinned` (`services/api/src/lib/pin-order.ts`) rather than arithmetic
+on a single row: rewriting the whole list makes the sequence self-healing
+against gaps left by a deleted row or duplicates written by hand, and "up" /
+"down" are only definable relative to the other pinned rows in the first
+place. There is deliberately **no unique constraint** — a non-deferred one
+would fail mid-renumber — and **no index**, because both tables are small
+enough (under a hundred sports, a few thousand categories) that an index
+would cost writes to serve a sort that is already free.
+
+Written only by `POST /admin/sports/:id/order` and
+`POST /admin/categories/:id/order` (`{action: top|up|down|clear}`, both
+audit-logged). Each takes every lock in one primary-key-ordered
+`SELECT … FOR UPDATE`: locking the clicked row and then the pinned set is
+two acquisitions in click-dependent order, which is how two admins
+reordering the same scope would deadlock each other.
+
 `hidden_from_lists BOOLEAN NOT NULL DEFAULT FALSE` (migration 0102) keeps a
 category in the sidebar tree but out of every match list a bettor gets
 WITHOUT asking: the lobby, `/live`, `/upcoming`, the sport page's default

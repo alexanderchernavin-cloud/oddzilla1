@@ -6,6 +6,8 @@
 //   GET   /admin/categories/sports   sport-filter dropdown options
 //   PATCH /admin/categories/:id      toggle hidden_from_lists.
 //                                    Audit-logged.
+//   POST  /admin/categories/:id/order pin / move / unpin within the
+//                                    category's own sport. Audit-logged.
 //
 // What the toggle does (migration 0102): a flagged category is dropped
 // from every match list a bettor gets WITHOUT asking — the lobby, /live,
@@ -23,10 +25,19 @@
 // bettable and settle normally. This is a merchandising decision, not a
 // kill switch, and keeping the two apart means an operator can undo one
 // without touching the other.
+//
+// What the ordering does (migration 0103): the sidebar's category
+// buckets have always sorted alphabetically, so Football's tree opens on
+// Albania. A pinned category carries a `display_order` and heads its
+// sport's tree in that sequence; everything unpinned stays alphabetical
+// behind it. The pinned set is stored as a dense 1..N sequence per
+// sport and renumbered on every action — see lib/pin-order.ts for why
+// the operation is a transform of the id list rather than arithmetic on
+// one row.
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { and, asc, eq, ilike, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, ilike, isNotNull, or, sql, type SQL } from "drizzle-orm";
 import {
   categories,
   sports,
@@ -35,6 +46,7 @@ import {
   adminAuditLog,
 } from "@oddzilla/db";
 import { NotFoundError } from "../../lib/errors.js";
+import { reorderPinned, type PinAction } from "../../lib/pin-order.js";
 
 const writeRateLimit = {
   rateLimit: { max: 30, timeWindow: "1 minute" },
@@ -53,6 +65,10 @@ const listQuery = z.object({
 
 const patchBody = z.object({
   hiddenFromLists: z.boolean(),
+});
+
+const orderBody = z.object({
+  action: z.enum(["top", "up", "down", "clear"]),
 });
 
 export default async function adminCategoriesRoutes(app: FastifyInstance) {
@@ -112,6 +128,7 @@ export default async function adminCategoriesRoutes(app: FastifyInstance) {
           name: categories.name,
           slug: categories.slug,
           hiddenFromLists: categories.hiddenFromLists,
+          displayOrder: categories.displayOrder,
           sportId: sports.id,
           sportName: sports.name,
           sportSlug: sports.slug,
@@ -120,7 +137,15 @@ export default async function adminCategoriesRoutes(app: FastifyInstance) {
         .from(categories)
         .innerJoin(sports, eq(sports.id, categories.sportId))
         .where(where)
-        .orderBy(asc(sports.name), asc(categories.name))
+        // Mirrors what the storefront renders: pinned categories head
+        // their sport in operator order, the rest stay alphabetical. An
+        // admin reading a row's arrows has to see them in the sequence
+        // they will take effect in, or "up" points somewhere else.
+        .orderBy(
+          asc(sports.name),
+          sql`${categories.displayOrder} ASC NULLS LAST`,
+          asc(categories.name),
+        )
         .limit(q.limit)
         .offset(q.offset),
       app.db
@@ -146,6 +171,7 @@ export default async function adminCategoriesRoutes(app: FastifyInstance) {
         name: r.name,
         slug: r.slug,
         hiddenFromLists: r.hiddenFromLists,
+        displayOrder: r.displayOrder,
         bookableCount: Number(r.bookableCount),
         sport: { id: r.sportId, name: r.sportName, slug: r.sportSlug },
       })),
@@ -202,6 +228,147 @@ export default async function adminCategoriesRoutes(app: FastifyInstance) {
       });
 
       return { category: after };
+    },
+  );
+
+  // Pin / move / unpin one category within its OWN sport.
+  //
+  // Scope is the sport, not the whole table: a category only ever
+  // renders inside one sport's sidebar tree, so "second from the top"
+  // is a statement about Football, and a global sequence would make
+  // every sport's ordering contend for the same integers.
+  //
+  // Dummy categories are refused rather than silently ignored. Oddin's
+  // auto-mapper files every esports tournament under one synthetic
+  // category which the storefront renders WITHOUT a header — there is no
+  // bucket for a position to be a position of, and the list endpoint
+  // already excludes them, so an id reaching here is a bug or a hand-
+  // rolled request, and both deserve an error.
+  app.post<{ Params: { id: string } }>(
+    "/admin/categories/:id/order",
+    { config: writeRateLimit },
+    async (request) => {
+      const admin = request.requireRole("admin");
+      const id = Number(request.params.id);
+      if (!Number.isInteger(id) || id <= 0) throw new NotFoundError();
+      const { action } = orderBody.parse(request.body) as { action: PinAction };
+
+      let sportId = 0;
+      let before: number | null = null;
+      let after: number | null = null;
+
+      // Which sport we're operating in, read outside the transaction.
+      // Both fields are immutable for the life of the row — a category
+      // never changes sport and `is_dummy` is set at creation — so
+      // reading them unlocked costs nothing and lets the transaction
+      // below take all of its locks in ONE statement.
+      const [scope] = await app.db
+        .select({
+          sportId: categories.sportId,
+          isDummy: categories.isDummy,
+          name: categories.name,
+          slug: categories.slug,
+        })
+        .from(categories)
+        .where(eq(categories.id, id))
+        .limit(1);
+      if (!scope || scope.isDummy) throw new NotFoundError();
+      sportId = scope.sportId;
+
+      await app.db.transaction(async (tx) => {
+        // The target plus the sport's whole pinned set, locked in ONE
+        // statement ordered by primary key.
+        //
+        // Both halves of that matter. One statement, because locking the
+        // target and then the set is two acquisitions in an order that
+        // depends on which row the operator clicked — two admins working
+        // on the same sport would take the same rows in opposite orders
+        // and one would die on a deadlock. By id, because that gives
+        // every session the same acquisition order regardless of what
+        // the pin positions currently are.
+        const locked = await tx
+          .select({ id: categories.id, displayOrder: categories.displayOrder })
+          .from(categories)
+          .where(
+            and(
+              eq(categories.sportId, scope.sportId),
+              eq(categories.isDummy, false),
+              or(eq(categories.id, id), isNotNull(categories.displayOrder)),
+            ),
+          )
+          .orderBy(asc(categories.id))
+          .for("update");
+
+        const target = locked.find((r) => r.id === id);
+        if (!target) throw new NotFoundError();
+        before = target.displayOrder;
+
+        // Re-sort the locked rows into display order for the transform;
+        // the lock order above was about deadlock avoidance, not this.
+        const pinned = locked
+          .filter((r) => r.displayOrder != null)
+          .sort((a, b) => a.displayOrder! - b.displayOrder! || a.id - b.id)
+          .map((r) => r.id);
+
+        const next = reorderPinned(pinned, id, action);
+        const position = next.indexOf(id);
+        after = position === -1 ? null : position + 1;
+
+        // Renumber: clear the sport's pins, then stamp the new sequence.
+        // Clearing first means a row dropped from the list needs no
+        // special case.
+        //
+        // The stamp is a loop rather than one UPDATE ... CASE on purpose.
+        // A pinned set is a handful of rows — the operator's leading
+        // countries, not the catalogue — so the round trips are noise
+        // inside a transaction that already holds the locks, and going
+        // through the query builder keeps the column's type known
+        // instead of leaning on Postgres to infer it for a CASE whose
+        // every branch is a bound parameter.
+        await tx
+          .update(categories)
+          .set({ displayOrder: null })
+          .where(
+            and(
+              eq(categories.sportId, scope.sportId),
+              // Matches the locked set exactly, so the clear never
+              // touches a row this transaction doesn't hold.
+              eq(categories.isDummy, false),
+              isNotNull(categories.displayOrder),
+            ),
+          );
+
+        for (const [i, categoryId] of next.entries()) {
+          await tx
+            .update(categories)
+            .set({ displayOrder: i + 1 })
+            .where(eq(categories.id, categoryId));
+        }
+
+        await tx.insert(adminAuditLog).values({
+          actorUserId: admin.id,
+          action: "category.order_update",
+          targetType: "category",
+          targetId: String(id),
+          beforeJson: { displayOrder: before },
+          afterJson: {
+            slug: scope.slug,
+            name: scope.name,
+            sportId: scope.sportId,
+            operation: action,
+            displayOrder: after,
+            pinnedOrder: next,
+          },
+          ipInet: request.ip ?? null,
+        });
+      });
+
+      // The sidebar tree is cached per sport for 10 s. Busting it makes
+      // an operator's reorder visible on the next page load instead of
+      // leaving them wondering whether the click registered.
+      await app.redis.del(`catalog:tournaments:v1:${sportId}`).catch(() => null);
+
+      return { id, sportId, displayOrder: after };
     },
   );
 }

@@ -31,13 +31,21 @@ export default async function AdminSportsPage({
   return (
     <div>
       <h1 className="text-2xl font-semibold tracking-tight">Sports</h1>
-      <p className="mt-2 text-sm text-[var(--color-fg-muted)]">
+      <p className="mt-2 max-w-4xl text-sm text-[var(--color-fg-muted)]">
         Logo and brand colour for each sport. Either paste an HTTPS URL or
         a self-hosted absolute path (e.g. <code>/sports/cs2.svg</code>),
         or upload a file (SVG, PNG, JPEG, WebP — max 1 MB). Use{" "}
         <strong>Remove logo</strong> to clear an upload or pasted URL.
-        Edits propagate to the storefront on the next page load — there&apos;s
-        no cache layer in front of <code>/catalog/sports</code>.
+        Every edit here busts the 60-second <code>/catalog/sports</code>{" "}
+        cache, so changes show on the storefront&apos;s next page load.
+      </p>
+      <p className="mt-2 max-w-4xl text-sm text-[var(--color-fg-muted)]">
+        <strong>Order</strong> pins a sport to the top of the storefront
+        sidebar rail and of every sport-grouped match list (lobby, Live,
+        Pre-match). Pinned sports lead in the order shown; unpinned ones keep the
+        default behind them (CS2, Dota 2, LoL, Valorant, then
+        alphabetical). A bettor who has reordered their own sidebar still
+        sees their arrangement — this sets the default, not their choice.
       </p>
       {data ? (
         <SportsEditor

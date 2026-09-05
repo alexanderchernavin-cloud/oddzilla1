@@ -767,7 +767,9 @@
   },
   "matchWidgets": {
     "lmt": {
-      "title": "Live match tracker"
+      "title": "Live match tracker",
+      "expand": "Expand",
+      "collapse": "Collapse"
     },
     "onBetSlip": "On bet slip",
     "addToBetSlip": "Add to bet slip",
@@ -822,7 +824,7 @@
     },
     "streams": {
       "liveStream": "Live stream",
-      "oddinLabel": "Oddin HD"
+      "oddinLabel": "HD stream"
     },
     "oddinVideo": {
       "signInTitle": "Sign in to watch this stream",
@@ -840,6 +842,19 @@
       "towers": "Towers",
       "turrets": "Turrets",
       "gold": "Gold"
+    },
+    "h2h": {
+      "title": "Head to head"
+    },
+    "betAssist": {
+      "label": "Bet Assist",
+      "title": "Bet Assist",
+      "openAria": "Open Bet Assist for {market}",
+      "dialogAria": "Bet Assist — {market}",
+      "close": "Close"
+    },
+    "liveTable": {
+      "title": "Live table"
     }
   },
   "analyses": {
@@ -1110,7 +1125,7 @@
     "catNecessaryTitle": "Strictly necessary",
     "catNecessaryBody": "Sign-in, security, and preference cookies. Always on.",
     "catEmbedsTitle": "Third-party media",
-    "catEmbedsBody": "Live streams and statistics widgets from Twitch, YouTube, Kick, Gjirafa, and Oddin. These providers may set their own cookies.",
+    "catEmbedsBody": "Live streams from Twitch, YouTube, Kick and Gjirafa, plus statistics and match-tracker widgets served by third-party data providers. These providers may set their own cookies.",
     "catAnalyticsTitle": "Analytics",
     "catAnalyticsBody": "First-party usage statistics (pages visited, clicks, session length) processed only on our own servers. Never shared with third parties.",
     "embedsBlockedTitle": "Third-party content is off",

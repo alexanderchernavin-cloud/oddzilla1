@@ -8,6 +8,7 @@
 //   GET  /catalog/sports/:slug/tournaments        tournaments under a sport + live counts
 //   GET  /catalog/matches                         cross-sport list (live | upcoming)
 //   GET  /catalog/matches/:id                     match + tournament/sport + markets
+//   GET  /catalog/tournaments/:id/sportradar     SR reference for a tournament (Live Table)
 //   GET  /catalog/search                          global search (sports/tournaments/teams/matches)
 //   GET  /catalog/live-counts                     live match counts per sport
 
@@ -921,6 +922,9 @@ export default async function catalogRoutes(app: FastifyInstance) {
           active: sports.active,
           logoUrl: sports.logoUrl,
           brandColor: sports.brandColor,
+          // Operator pin position (migration 0103). NULL for anything
+          // unpinned, which the client orders by the old rule.
+          displayOrder: sports.displayOrder,
         })
         .from(sports)
         .where(
@@ -946,7 +950,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
             )`,
           ),
         )
-        .orderBy(sports.slug);
+        .orderBy(sql`${sports.displayOrder} ASC NULLS LAST`, sports.slug);
       return { sports: rows };
     });
   });
@@ -2034,6 +2038,11 @@ export default async function catalogRoutes(app: FastifyInstance) {
         sportId: sports.id,
         sportSlug: sports.slug,
         sportName: sports.name,
+        // Operator pin position, so the lobby / live / upcoming lists
+        // group sports in the same order the sidebar rail shows them.
+        // Carried per row because these lists span sports and the pages
+        // rendering them don't fetch /catalog/sports.
+        sportDisplayOrder: sports.displayOrder,
         // Needed for the competitor tier of the ZillaBoost cascade.
         homeCompetitorId: matches.homeCompetitorId,
         awayCompetitorId: matches.awayCompetitorId,
@@ -2161,7 +2170,11 @@ export default async function catalogRoutes(app: FastifyInstance) {
             name: r.tournamentName,
             riskTier: r.tournamentRiskTier,
           },
-          sport: { slug: r.sportSlug, name: r.sportName },
+          sport: {
+            slug: r.sportSlug,
+            name: r.sportName,
+            displayOrder: r.sportDisplayOrder,
+          },
           matchWinner: o
             ? (() => {
                 // A boosted cell REPLACES the adjusted price outright:
@@ -2311,6 +2324,9 @@ export default async function catalogRoutes(app: FastifyInstance) {
         categoryName: categories.name,
         categorySlug: categories.slug,
         categoryIsDummy: categories.isDummy,
+        // Operator pin position within this sport's tree (migration
+        // 0103). NULL leaves the bucket in the alphabetical tail.
+        categoryDisplayOrder: categories.displayOrder,
         // Surfaced so the sidebar can mark the bucket as list-excluded.
         // The tree itself is NOT filtered by it — a category kept out of
         // the lists still has to be reachable, and this is where from.
@@ -2338,6 +2354,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         categories.name,
         categories.slug,
         categories.isDummy,
+        categories.displayOrder,
         categories.hiddenFromLists,
       )
       .having(sql`${matchCountExpr}::int > 0`);
@@ -2357,6 +2374,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
                 name: r.categoryName,
                 slug: r.categorySlug,
                 hiddenFromLists: r.categoryHiddenFromLists,
+                displayOrder: r.categoryDisplayOrder,
               },
         matchCount: Number(r.matchCount),
         liveCount: Number(r.liveCount),
@@ -2379,6 +2397,68 @@ export default async function catalogRoutes(app: FastifyInstance) {
     };
     });
   });
+
+  // ── Sportradar reference for a tournament ──────────────────────────
+  // The Live Table widget resolves a season from ANY id it is given —
+  // matchId, tournamentId, uniqueTournamentId or seasonId (read from the
+  // widget's own async-prop definition, chunk `season.liveTable`,
+  // 2026-09-05). We hold none of Sportradar's tournament ids and there is
+  // no feed that carries them, but migration 0100 already maps individual
+  // MATCHES, so one confirmed fixture under the tournament is enough to
+  // resolve its table — no second id space to map, review and keep true.
+  //
+  // Which fixture matters: a season table is per season, so pointing at
+  // a match from a finished season renders last season's standings. Rows
+  // are therefore ordered live/upcoming first (soonest kickoff), and only
+  // then the most recent past fixture as a fallback.
+  app.get(
+    "/catalog/tournaments/:id/sportradar",
+    // Per-IP scraper friction — same budget as the other catalog reads.
+    { config: { rateLimit: { max: 300, timeWindow: "1 minute" } } },
+    async (request) => {
+      const params = z
+        .object({ id: z.coerce.number().int().positive() })
+        .parse(request.params);
+      // Anonymous, tiny, and polled by every tournament view; the mapping
+      // itself only changes when an operator confirms one.
+      return cached(
+        app.redis,
+        `catalog:tournament-sr:v1:${params.id}`,
+        60,
+        async () => {
+          const rows = await app.db
+            .select({
+              srMatchId: matchSportradarIds.srMatchId,
+              srSportId: matchSportradarIds.srSportId,
+            })
+            .from(matchSportradarIds)
+            .innerJoin(matches, eq(matches.id, matchSportradarIds.matchId))
+            .where(
+              and(
+                eq(matches.tournamentId, params.id),
+                eq(matchSportradarIds.status, "confirmed"),
+              ),
+            )
+            .orderBy(
+              sql`(${matches.status} IN ('live','not_started')) DESC`,
+              sql`CASE WHEN ${matches.status} IN ('live','not_started')
+                    THEN ${matches.scheduledAt} END ASC NULLS LAST`,
+              sql`${matches.scheduledAt} DESC NULLS LAST`,
+            )
+            .limit(1);
+          const row = rows[0];
+          return {
+            sportradar: row
+              ? {
+                  srMatchId: Number(row.srMatchId),
+                  srSportId: row.srSportId,
+                }
+              : null,
+          };
+        },
+      );
+    },
+  );
 
   // ── Global search across sports, tournaments, teams, and matches ───
   // Case-insensitive substring match. Each facet is capped at `limit`
