@@ -33,7 +33,9 @@ import {
   type WikidataClient,
 } from "./wikidata.js";
 import {
+  LiquipediaRateLimited,
   createLiquipediaClient,
+  liquipediaEnabled,
   wikiForSport,
   type LiquipediaClient,
 } from "./liquipedia.js";
@@ -167,6 +169,10 @@ export interface LogoRunResult {
   batches: number;
   dryRun: boolean;
   model: string | null;
+  /** True when Liquipedia rate-limited us and the run stopped early. */
+  rateLimited: boolean;
+  /** False when no LIQUIPEDIA_API_KEY is set, so esports fall back to Wikidata. */
+  liquipedia: boolean;
   errors: string[];
   proposals: LogoProposal[];
 }
@@ -216,9 +222,12 @@ export async function resolveTournamentLogos(
     batches: 0,
     dryRun,
     model: null,
+    rateLimited: false,
+    liquipedia: liquipediaEnabled(),
     errors: [],
     proposals: [],
   };
+  const liquipediaAllowed = result.liquipedia;
 
   const zagi =
     opts.zagi ??
@@ -304,7 +313,7 @@ export async function resolveTournamentLogos(
       // where these competitions are actually documented, and Wikidata
       // has no entity for most of them. Traditional sports go straight
       // to Wikidata, which is the reverse.
-      const wiki = wikiForSport(item.sportSlug);
+      const wiki = liquipediaAllowed ? wikiForSport(item.sportSlug) : null;
       try {
         if (wiki) {
           for (const title of titles) {
@@ -339,6 +348,13 @@ export async function resolveTournamentLogos(
         }
       } catch (err) {
         result.errors.push(`${item.name}: ${(err as Error).message}`);
+        // A 429 is about US, not this row. Continuing would spend the
+        // rest of the budget collecting the same rejection — which is
+        // exactly what the first production sweep did, 75 times.
+        if (err instanceof LiquipediaRateLimited) {
+          result.rateLimited = true;
+          return result;
+        }
         continue;
       }
 
