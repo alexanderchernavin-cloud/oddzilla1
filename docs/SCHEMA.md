@@ -434,6 +434,28 @@ backup feed carries no risk tier, so a tournament first seen while Oddin's
 meta API is down would otherwise sit at NULL and RiskZilla would price it
 off the tier-0 fallback.
 
+Migration 0106 records **who** decided the tier. `risk_tier_source` is
+CHECK-constrained TEXT — `auto` (feed-assigned, or never reviewed),
+`manual` (an operator typed it; implies `risk_tier_locked`), `zagi` (a
+ZillaAGI review) — alongside `risk_tier_note` (the reviewer's one-line
+justification, ≤ 500 chars, model output so it renders as text and never
+as markup), `risk_tier_reviewed_at`, and `risk_tier_attempts` (bounded
+retry, max 3, so a name the model will not judge stops being re-sent).
+TEXT rather than an enum because adding an enum value has to be its own
+migration file — the rule 0087 and 0101 both hit.
+
+The state worth separating is not manual-vs-automatic but
+**reviewed-vs-not**: `auto` used to cover both "Oddin supplied this
+number" and "nobody has ever looked", and on production the second kind
+was 1 231 of 1 870 rows. Note the direction of the risk before changing
+anything here — RiskZilla prices a NULL tier at `UNTIERED_RISK_TIER = 10`,
+the STRICTEST row in `riskzilla_settings` (50 USDC match liability against
+tier 1's 50 000), so an untiered tournament is never over-exposed, and
+every tier assigned to one *raises* what the book can lose on it. There is
+no assignment here that is cautious by omission, which is why the reviewer
+clamps every verdict to a per-sport ceiling in code and writes nothing at
+all when it cannot parse a reply.
+
 **`matches`** — `BIGSERIAL` id because we'll have a lot of them. `provider_urn`
 like `od:match:1234`. `live_score` is a free-form JSONB (different games have
 different scoring). `best_of` captures BO1/BO3/BO5. `oddin_status_code` keeps

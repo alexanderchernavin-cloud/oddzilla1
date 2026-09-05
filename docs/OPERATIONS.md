@@ -193,13 +193,14 @@ what's sensitive:
 | `BACKUP_GPG_RECIPIENT` (optional, PR #130) | GPG key id of an off-host operator. Set → daily pg dump is GPG-encrypted (`.sql.gz.gpg`); unset → plain gzip. | rotate when the operator's key rotates |
 | `SUPPORT_AI_BOT_TOKEN` (optional) | `openssl rand -hex 24`. Auth for `/webhooks/support-ai/*`. The SAME value goes in the PC worker's own `.env`. | any time — rotate both sides together |
 | `BANNER_GEN_TOKEN` (optional, migration 0089) | `openssl rand -hex 24`. Auth for `/webhooks/banner-gen/*` (ZillaBoost image worker). The SAME value goes in `services/zillaboost-banner-gen/.env` on the operator PC. | any time — rotate both sides together |
+| `ZAGI_API_KEY` (optional) | ZillaAGI, the in-house LLM at `https://llm.oddin.gg/v1`. Canonical credential for every model-assisted api feature; falls back to `SPORTRADAR_LLM_API_KEY`, which names the same gateway. | when the gateway rotates |
 
 Each service can boot WITHOUT certain optional vars and degrades
 gracefully:
 
 | Service | Required | Optional → effect when absent |
 | --- | --- | --- |
-| api | DATABASE_URL, REDIS_URL, JWT_SECRET, REFRESH_COOKIE_SECRET, SIGNER_SOCKET_PATH | signer unreachable → `/wallet/deposit-addresses` returns 500 with `SignerUnavailableError`. FIREBASE_SERVICE_ACCOUNT_PATH unset OR target file missing → push-outbox worker still drains the queue but marks every row `sent_at=NOW(), last_error='firebase_disabled'`; no FCM notifications go out until credentials are mounted. EMAIL_PROVIDER_TOKEN unset → email-outbox worker still drains but stamps each row `last_error='email_disabled'`; signup verify + forgot-password emails are queued and discarded until a key is set. SENDGRID_INBOUND_SECRET unset → `/webhooks/sendgrid-inbound/*` 503s `inbound_disabled` (no inbound mail can be ingested). SUPPORT_AI_BOT_TOKEN unset → `/webhooks/support-ai/*` 503s `bot_disabled`, support chat falls back to humans. BANNER_GEN_TOKEN unset → `/webhooks/banner-gen/*` 503s `banner_gen_disabled`; ZillaBoost graphics jobs still enqueue and wait in `zillaboost_banner_image_jobs` until a token exists. |
+| api | DATABASE_URL, REDIS_URL, JWT_SECRET, REFRESH_COOKIE_SECRET, SIGNER_SOCKET_PATH | signer unreachable → `/wallet/deposit-addresses` returns 500 with `SignerUnavailableError`. FIREBASE_SERVICE_ACCOUNT_PATH unset OR target file missing → push-outbox worker still drains the queue but marks every row `sent_at=NOW(), last_error='firebase_disabled'`; no FCM notifications go out until credentials are mounted. EMAIL_PROVIDER_TOKEN unset → email-outbox worker still drains but stamps each row `last_error='email_disabled'`; signup verify + forgot-password emails are queued and discarded until a key is set. SENDGRID_INBOUND_SECRET unset → `/webhooks/sendgrid-inbound/*` 503s `inbound_disabled` (no inbound mail can be ingested). SUPPORT_AI_BOT_TOKEN unset → `/webhooks/support-ai/*` 503s `bot_disabled`, support chat falls back to humans. BANNER_GEN_TOKEN unset → `/webhooks/banner-gen/*` 503s `banner_gen_disabled`; ZillaBoost graphics jobs still enqueue and wait in `zillaboost_banner_image_jobs` until a token exists. ZAGI_API_KEY (and SPORTRADAR_LLM_API_KEY) unset → the tournament risk-tier sweeper logs "idle" and never starts, `/admin/tournaments/zagi-review` 400s `zagi_not_configured`, and untiered tournaments keep being underwritten at tier 10 — safe, just conservative. |
 | mail-receiver | SENDGRID_INBOUND_SECRET, MAIL_WEBHOOK_URL | Container fails to boot if either is unset — fail-fast so the operator notices immediately rather than discovering mail is silently lost. Outbound is unaffected (Resend, separate path). |
 | signer | HD_MASTER_MNEMONIC | n/a — only this service reads the mnemonic |
 | feed-ingester | DATABASE_URL, REDIS_URL | ODDIN_TOKEN+ODDIN_CUSTOMER_ID absent → idle, health-only |
@@ -867,6 +868,64 @@ resolved value wins across combo legs.
 open tickets that's 200 quotes/sec — comfortable for the single
 `api`/`postgres` pair on the current box. Watch `docker stats
 oddzilla-api-1` if it ever feels slow.
+
+### Tournament risk tiers (ZillaAGI review) runbook
+
+`tournaments.risk_tier` is RiskZilla's per-match liability budget: tier 1
+allows 50 000 USDC of exposure on a single match, tier 10 allows 50.
+Oddin supplies a tier for its own esports; the Fonbet traditional line
+carries none, so most tournaments arrive at NULL.
+
+**Read the direction of the risk before touching anything here.** A NULL
+tier is priced at `UNTIERED_RISK_TIER = 10` — the strictest setting — so
+an unreviewed tournament is never over-exposed. It is under-traded and
+invisible. Every tier assigned to one therefore *raises* what the book can
+lose on it, and there is no assignment that is cautious by omission.
+
+ZillaAGI reviews them automatically every 30 minutes (200 rows a pass, one
+api replica at a time under a Redis lock). To drive it by hand, go to
+`/admin/tournaments`:
+
+- **Preview** runs the model and shows the tiers it would assign, writing
+  nothing. Use this first on a new sport.
+- **Review and assign** applies them. Audit-logged as
+  `tournament.zagi_review`.
+- Filter by sport first and tick *Only the filtered sport* to scope a run.
+
+The status strip reads `untiered` (no tier at all), `queued` (what a run
+would take), `reviewed` (assigned by ZAGI), `manual` (assigned by an
+operator) and, when non-zero, `stuck`.
+
+**`stuck` means the model declined a row three times** — usually a name
+carrying no recognisable competition. Assign those by hand from the Risk
+tier column; nothing retries them again on its own. To put a stuck row
+back in the queue, reset its counter:
+
+```sql
+UPDATE tournaments SET risk_tier_attempts = 0
+ WHERE id = <id> AND risk_tier IS NULL;
+```
+
+An operator's tier always wins: setting one locks the row, and neither
+the Oddin REST refresh nor a later ZAGI sweep will overwrite it. Choosing
+*Auto / ZAGI* on a locked row unlocks it and hands it back to whichever of
+the two last decided the value.
+
+If the panel says **not configured**, `ZAGI_API_KEY` is unset — see
+[Environment variables](#environment-variables). Everything degrades
+quietly in that state: no reviews happen and untiered tournaments keep
+being underwritten at tier 10.
+
+**Deploy note.** Migration 0106 takes `ACCESS EXCLUSIVE` on `tournaments`
+with a 5 s `lock_timeout`. A `pg_dump` — the 03:00 cron, or another
+deploy's pre-deploy backup — holds `AccessShareLock` on every table for
+several minutes on this database, and the migration will abort the deploy
+rather than queue the catalog behind itself. That is the intended
+behaviour; check for a running dump and retry:
+
+```bash
+ssh team@178.104.174.24 'ps -eo etime,cmd | grep [p]g_dump'
+```
 
 ### Team logos runbook
 

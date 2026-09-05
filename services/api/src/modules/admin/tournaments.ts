@@ -16,6 +16,19 @@
 //   POST   /admin/tournaments/:id/order       pin / move / unpin within
 //                                             the tournament's own
 //                                             category. Audit-logged.
+//   GET    /admin/tournaments/zagi-status     risk-tier review backlog +
+//                                             whether ZillaAGI is wired up.
+//   POST   /admin/tournaments/zagi-review     run a review pass now
+//                                             (?dryRun for a preview).
+//                                             Audit-logged.
+//
+// Risk tier (migrations 0094 + 0106): `risk_tier` sets RiskZilla's
+// per-match liability budget, and a NULL prices at the STRICTEST tier —
+// so an untiered tournament is never dangerous, just invisible and
+// under-traded. Three provenances now, carried by `risk_tier_source`:
+// `manual` (an operator typed it; locked against the feed), `zagi`
+// (ZillaAGI reviewed it), and `auto` — which means feed-assigned OR
+// never looked at, and is therefore the queue.
 //
 // What the ordering does (migration 0104): tournaments sort by Oddin's
 // risk_tier, then live count, then match count, then name. That is a fine
@@ -33,10 +46,11 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { and, asc, eq, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
 import { tournaments, categories, sports, adminAuditLog } from "@oddzilla/db";
 import { BadRequestError, NotFoundError } from "../../lib/errors.js";
 import { reorderPinned, type PinAction } from "../../lib/pin-order.js";
+import { assignRiskTiers, riskTierBacklog } from "../../lib/zagi/risk-tier.js";
 import multipart from "@fastify/multipart";
 
 const MAX_UPLOAD_BYTES = 1 * 1024 * 1024;
@@ -121,10 +135,21 @@ interface TournamentRow {
   name: string;
   riskTier: number | null;
   riskTierLocked: boolean;
+  riskTierSource: string;
+  riskTierNote: string | null;
   active: boolean;
   logoUrl: string | null;
   brandColor: string | null;
 }
+
+const zagiReviewBody = z.object({
+  // Held open for the duration of the model calls, so the interactive
+  // cap is well below the sweeper's: 200 rows is ~8 requests at roughly
+  // 15 s each. The backlog drains across several clicks or on its own.
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  sportId: z.coerce.number().int().positive().optional(),
+  dryRun: z.boolean().optional(),
+});
 
 export default async function adminTournamentsRoutes(app: FastifyInstance) {
   await app.register(multipart, {
@@ -167,6 +192,8 @@ export default async function adminTournamentsRoutes(app: FastifyInstance) {
           name: tournaments.name,
           riskTier: tournaments.riskTier,
           riskTierLocked: tournaments.riskTierLocked,
+          riskTierSource: tournaments.riskTierSource,
+          riskTierNote: tournaments.riskTierNote,
           displayOrder: tournaments.displayOrder,
           active: tournaments.active,
           logoUrl: tournaments.logoUrl,
@@ -240,6 +267,81 @@ export default async function adminTournamentsRoutes(app: FastifyInstance) {
     };
   });
 
+  // ─── ZillaAGI risk-tier review ──────────────────────────────────────
+  //
+  // Two routes: what is left to review, and review some of it now. The
+  // background sweeper runs the same pipeline every 30 minutes, so these
+  // exist for an operator who wants it immediately or wants to see what
+  // the model would do before it does it.
+
+  app.get("/admin/tournaments/zagi-status", async (request) => {
+    request.requireRole("admin");
+    return riskTierBacklog(app);
+  });
+
+  app.post(
+    "/admin/tournaments/zagi-review",
+    // Each call is minutes of model time; this is not a button to lean on.
+    { config: { rateLimit: { max: 20, timeWindow: "1 hour" } } },
+    async (request) => {
+      const admin = request.requireRole("admin");
+      const body = zagiReviewBody.parse(request.body ?? {});
+
+      const result = await assignRiskTiers(app, {
+        limit: body.limit,
+        dryRun: body.dryRun ?? false,
+        ...(body.sportId ? { sportId: body.sportId } : {}),
+      });
+
+      if (result.errors.includes("zagi_not_configured")) {
+        throw new BadRequestError(
+          "zagi_not_configured",
+          "ZillaAGI is not configured — set ZAGI_API_KEY and ZAGI_BASE_URL.",
+        );
+      }
+
+      // A dry run changes nothing, so it is not an auditable event.
+      if (!result.dryRun && result.assigned > 0) {
+        await app.db.insert(adminAuditLog).values({
+          actorUserId: admin.id,
+          action: "tournament.zagi_review",
+          targetType: "sport",
+          targetId: body.sportId ? String(body.sportId) : "*",
+          beforeJson: { eligible: result.eligible },
+          afterJson: {
+            model: result.model,
+            reviewed: result.reviewed,
+            assigned: result.assigned,
+            clamped: result.clamped,
+            undecided: result.undecided,
+            batches: result.batches,
+            limit: body.limit,
+          },
+          ipInet: request.ip ?? null,
+        });
+      }
+
+      // The tournament sub-tree is cached per sport for 10 s and orders
+      // by risk_tier, so a review that moved tiers must not be invisible
+      // for the TTL.
+      const touched = result.proposals.map((p) => p.tournamentId);
+      if (!result.dryRun && result.assigned > 0 && touched.length > 0) {
+        const owners = await app.db
+          .select({ sportId: categories.sportId })
+          .from(tournaments)
+          .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+          .where(inArray(tournaments.id, touched));
+        await Promise.all(
+          [...new Set(owners.map((r) => r.sportId))].map((id) =>
+            app.redis.del(`catalog:tournaments:v1:${id}`).catch(() => null),
+          ),
+        );
+      }
+
+      return result;
+    },
+  );
+
   // ── Update ────────────────────────────────────────────────────────
   app.patch("/admin/tournaments/:id", async (request) => {
     const admin = request.requireRole("admin");
@@ -258,6 +360,8 @@ export default async function adminTournamentsRoutes(app: FastifyInstance) {
         logoMime: tournaments.logoMime,
         riskTier: tournaments.riskTier,
         riskTierLocked: tournaments.riskTierLocked,
+        riskTierSource: tournaments.riskTierSource,
+        riskTierReviewedAt: tournaments.riskTierReviewedAt,
       })
       .from(tournaments)
       .where(eq(tournaments.id, params.id))
@@ -273,15 +377,24 @@ export default async function adminTournamentsRoutes(app: FastifyInstance) {
       logoMime: string | null;
       riskTier: number | null;
       riskTierLocked: boolean;
+      riskTierSource: string;
+      riskTierNote: string | null;
     }> = {};
     if (body.riskTier !== undefined) {
       if (body.riskTier === null) {
         // Back to automatic: keep whatever tier is there, let the next
-        // REST refresh own it again.
+        // REST refresh own it again. The label follows the value rather
+        // than the lock — if ZillaAGI picked this number, saying "auto"
+        // here would credit the feed with a decision it never made.
         patch.riskTierLocked = false;
+        patch.riskTierSource = before.riskTierReviewedAt ? "zagi" : "auto";
       } else {
         patch.riskTier = body.riskTier;
         patch.riskTierLocked = true;
+        patch.riskTierSource = "manual";
+        // A ZillaAGI justification explains a number the operator has
+        // just replaced; keeping it beside the new one would mislead.
+        patch.riskTierNote = null;
       }
     }
     if (body.logoUrl !== undefined) {
@@ -311,6 +424,7 @@ export default async function adminTournamentsRoutes(app: FastifyInstance) {
           logoMime: before.logoMime,
           riskTier: before.riskTier,
           riskTierLocked: before.riskTierLocked,
+          riskTierSource: before.riskTierSource,
         },
         afterJson: {
           slug: before.slug,
@@ -321,6 +435,9 @@ export default async function adminTournamentsRoutes(app: FastifyInstance) {
           ...(patch.riskTier !== undefined ? { riskTier: patch.riskTier } : {}),
           ...(patch.riskTierLocked !== undefined
             ? { riskTierLocked: patch.riskTierLocked }
+            : {}),
+          ...(patch.riskTierSource !== undefined
+            ? { riskTierSource: patch.riskTierSource }
             : {}),
         },
         ipInet: request.ip ?? null,
