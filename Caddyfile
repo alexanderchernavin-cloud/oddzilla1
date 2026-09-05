@@ -125,10 +125,19 @@
 		# `public, immutable` header this blanket no-store was silently
 		# defeating (both headers reached the browser and no-store wins,
 		# so every logo refetched on every page view; found 2026-08-28 via
-		# the banner-image route). Those URLs are content-addressed with a
-		# `?v=` stamp, so long caching is safe by construction.
+		# the banner-image route). The logo URLs are content-addressed with
+		# a `?v=` stamp, so long caching is safe by construction; a country
+		# flag is keyed by the country's name and is immutable outright.
+		#
+		# ANY NEW PUBLIC IMAGE ROUTE MUST BE ADDED HERE. The failure is
+		# silent — the api's own header is correct, both headers arrive,
+		# and only a header dump shows which one won. `/catalog/flags/*`
+		# (added 2026-09-04) was missed and cost the sidebar a full
+		# re-download of every country flag on every render: 105 requests
+		# and ~500 KB each time a bettor expanded Football, which is most
+		# of why expanding a big sport felt slow on mobile.
 		@api_nocache {
-			not path /sports/*/logo /competitors/*/logo /tournaments/*/logo /catalog/zillaboost-banners/*/image
+			not path /sports/*/logo /competitors/*/logo /tournaments/*/logo /catalog/zillaboost-banners/*/image /catalog/flags/*
 		}
 		header @api_nocache Cache-Control "no-store"
 		# Strip Fastify's X-Powered-By if any handler ever forgets to

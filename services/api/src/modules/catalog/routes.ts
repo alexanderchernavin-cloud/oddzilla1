@@ -35,7 +35,7 @@ import {
   matchSportradarIds,
 } from "@oddzilla/db";
 import { NotFoundError } from "../../lib/errors.js";
-import { cached } from "../../lib/cache.js";
+import { cached, cachedSwr } from "../../lib/cache.js";
 import {
   loadBoostRulesForMatches,
   loadViewerRiskScore,
@@ -2380,11 +2380,26 @@ export default async function catalogRoutes(app: FastifyInstance) {
     // every sport-page render, but the aggregate LEFT JOINs every match
     // under the sport and evaluates the correlated hasActiveMarket EXISTS
     // per (tournament, match) row — hundreds of `markets` index probes per
-    // call on a busy sport. Cache the rendered payload; 10 s keeps the
-    // sidebar's live/match counts visually fresh (live-counts itself runs
-    // at 5 s) at ~1/100th of the query volume. The cheap sport lookup +
-    // 404 stay outside so unknown slugs never enter the cache.
-    return cached(app.redis, `catalog:tournaments:v1:${sport.id}`, 10, async () => {
+    // call on a busy sport. Measured on production 2026-09-06: football
+    // (291 tournaments over ~1 900 matches) takes ~1.3 s cold against
+    // ~85 ms warm. The cheap sport lookup + 404 stay outside the cache so
+    // unknown slugs never enter it.
+    //
+    // Stale-while-revalidate rather than a plain TTL, because the plain
+    // TTL put that 1.3 s in front of a REAL bettor almost every time: at
+    // this traffic level a 10 s window is nearly always expired when
+    // someone expands the tree, so the person clicking was the person
+    // paying for the refresh. Now 15 s of freshness (live counts stay
+    // roughly as current as before — the sport row's own badge comes
+    // from /catalog/live-counts at 5 s, so this list is a navigation aid,
+    // not a scoreboard) and a 10 min stale window: within that window the
+    // expand is instant and the refresh happens behind the response.
+    return cachedSwr(
+      app.redis,
+      `catalog:tournaments:v1:${sport.id}`,
+      15,
+      600,
+      async () => {
 
     const matchCountExpr = sql<string>`COUNT(DISTINCT ${matches.id}) FILTER (
       WHERE ${matches.status} IN ('not_started','live')
@@ -2495,7 +2510,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
       sport: { id: sport.id, slug: sport.slug, name: sport.name },
       tournaments: tournamentsOut,
     };
-    });
+      },
+    );
   });
 
   // ── Sportradar reference for a tournament ──────────────────────────
