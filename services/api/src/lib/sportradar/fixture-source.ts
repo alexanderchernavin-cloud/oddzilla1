@@ -68,30 +68,54 @@ interface GismoMatch {
   removed?: boolean;
 }
 
+/** A match together with the competition the tree filed it under. */
+interface CollectedMatch {
+  raw: GismoMatch;
+  tournament?: string;
+}
+
 /**
  * The gismo payload nests matches inside a sport → realcategory →
  * tournament tree whose exact shape varies by sport, so rather than
  * encode that shape we walk for `_doc === "match"`. That is stable
  * across every sport tested and survives them re-arranging the tree.
+ *
+ * The nearest enclosing `tournament` node's name rides along, because
+ * it is the ONLY place this feed says a fixture is women's or youth —
+ * the team object is "Chelsea" whether it plays in the Premier League
+ * or in "Super League, Women", and the matcher's qualifier veto needs
+ * to know which.
  */
-function collectMatches(node: unknown, out: GismoMatch[], depth = 0): void {
+function collectMatches(
+  node: unknown,
+  out: CollectedMatch[],
+  depth = 0,
+  tournament?: string,
+): void {
   // Cheap recursion guard: the real payloads are ~6 levels deep.
   if (depth > 12) return;
   if (Array.isArray(node)) {
-    for (const child of node) collectMatches(child, out, depth + 1);
+    for (const child of node) collectMatches(child, out, depth + 1, tournament);
     return;
   }
   if (typeof node !== "object" || node === null) return;
   const obj = node as Record<string, unknown>;
   if (obj._doc === "match") {
-    out.push(obj as GismoMatch);
+    out.push({ raw: obj as GismoMatch, ...(tournament ? { tournament } : {}) });
     return;
   }
-  for (const child of Object.values(obj)) collectMatches(child, out, depth + 1);
+  const here =
+    obj._doc === "tournament" && typeof obj.name === "string" && obj.name.trim()
+      ? obj.name.trim()
+      : tournament;
+  for (const child of Object.values(obj)) collectMatches(child, out, depth + 1, here);
 }
 
 /** Turn one gismo match into a fixture, or null when it is unusable. */
-export function toFixture(raw: GismoMatch): SportradarFixture | null {
+export function toFixture(
+  raw: GismoMatch,
+  context: { tournament?: string } = {},
+): SportradarFixture | null {
   const srMatchId = raw._id;
   const srSportId = raw._sid;
   const uts = raw._dt?.uts;
@@ -120,6 +144,7 @@ export function toFixture(raw: GismoMatch): SportradarFixture | null {
     startsAt: new Date(uts * 1000).toISOString(),
     homeTeam,
     awayTeam,
+    ...(context.tournament ? { tournament: context.tournament } : {}),
   };
 }
 
@@ -134,12 +159,12 @@ export function parseSportMatches(body: unknown): SportradarFixture[] {
       `sportradar feed returned an exception: ${(data?.message ?? "unknown").trim()}`,
     );
   }
-  const found: GismoMatch[] = [];
+  const found: CollectedMatch[] = [];
   collectMatches(first.data, found);
   const fixtures: SportradarFixture[] = [];
   const seen = new Set<number>();
-  for (const raw of found) {
-    const fixture = toFixture(raw);
+  for (const { raw, tournament } of found) {
+    const fixture = toFixture(raw, { tournament });
     // The tree can list the same match under more than one node; the
     // matcher assumes each fixture appears once.
     if (fixture && !seen.has(fixture.srMatchId)) {

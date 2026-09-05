@@ -665,7 +665,15 @@ function TeamScoreRow({
           minWidth: 0,
         }}
       >
-        <TeamMark tag={teamTag(name)} size={22} logoUrl={logoUrl} name={name} />
+        {/* Sized to the row's tallest neighbour so the crest grows without
+            the row moving: the odds button in the trailing column is a
+            fixed 30px, the score / map cells without it are ~24px. */}
+        <TeamMark
+          tag={teamTag(name)}
+          size={hasTrailing ? 28 : 24}
+          logoUrl={logoUrl}
+          name={name}
+        />
         <span
           style={{
             fontSize: 13.5,

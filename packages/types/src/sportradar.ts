@@ -62,6 +62,25 @@ export function lmtCoversSport(sportSlug: string): boolean {
   return sportradarSportIdFor(sportSlug) !== null;
 }
 
+/**
+ * Sportradar sports where the two sides of a fixture are PEOPLE (or a
+ * doubles pair), not clubs: tennis, snooker, table tennis, darts,
+ * badminton, squash, padel. The matcher reads names differently here —
+ * a single-letter token is an initial ("Tseng C H", "Harrison C /
+ * Skupski N"), never the reserve-squad or women's-side marker it is in
+ * a club name ("Atletico Madrid C", "Lens W"). Kept beside the sport
+ * table because it is the same taxonomy: an id absent from
+ * SPORTRADAR_SPORT_IDS can never be looked up here.
+ */
+export const SPORTRADAR_INDIVIDUAL_SPORT_IDS: ReadonlySet<number> = new Set([
+  5, 19, 20, 22, 31, 37, 71,
+]);
+
+/** True when Sportradar's sport id names an individual sport (see above). */
+export function sportradarSportIsIndividual(srSportId: number): boolean {
+  return SPORTRADAR_INDIVIDUAL_SPORT_IDS.has(srSportId);
+}
+
 export type SportradarMapStatus = "candidate" | "confirmed" | "rejected";
 export type SportradarMapSource = "admin" | "auto";
 
@@ -87,7 +106,13 @@ export interface SportradarFixture {
   startsAt: string;
   homeTeam: string;
   awayTeam: string;
-  /** Competition name, carried for reviewer context only — never scored. */
+  /**
+   * Competition name. Shown to reviewers, and read by the matcher for the
+   * squad qualifiers Sportradar states at competition level rather than
+   * on the team — its day feed names a women's side "Chelsea" under
+   * "Super League, Women", where Fonbet writes "Chelsea (w)". Never
+   * scored as similarity.
+   */
   tournament?: string;
 }
 

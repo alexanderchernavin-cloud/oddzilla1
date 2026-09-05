@@ -258,8 +258,14 @@ function TeamRow({
           minWidth: 0,
         }}
       >
+        {/* 34px fits inside the row the bordered SCORE box already sets
+            (16px font at 1.45 line-height + 6px padding each side + the
+            border comes to ~37px), so the crest grows without the row
+            moving. Mobile has no such headroom — its score cell is bare
+            14px text — so the mark there is the tallest thing in the
+            row and stays at 22. */}
         <span className="oz-sb-mark-desktop">
-          <TeamMark tag={tag} size={28} logoUrl={logoUrl} name={name} />
+          <TeamMark tag={tag} size={34} logoUrl={logoUrl} name={name} />
         </span>
         <span className="oz-sb-mark-mobile">
           <TeamMark tag={tag} size={22} logoUrl={logoUrl} name={name} />
