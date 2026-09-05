@@ -40,6 +40,34 @@ interface Props {
   language?: string;
 }
 
+// Frame height per Sportradar market key, in CSS px. The hosted page
+// cannot report its size across origins, and the widget draws a
+// DIFFERENT set of blocks per market shape: a 1X2 gets win probability +
+// form split + last five games, a total gets a combined average + two
+// goals bars, a double chance or a half-time result gets one two-bar
+// block. Measured on production 2026-09-05 with a ruler overlaid on the
+// stretched frame at the panel's 460px width (Inter Miami vs Atlanta
+// United, Saint-Etienne vs Montpellier): 3Way ~225, totalOverUnder ~340,
+// doubleChance ~95, 1stHalfWin ~95. The one-size 560 before this left
+// 300px of blank white under a 1X2 and 460px under a double chance.
+// Half-market analogues take their full-match sibling's shape; anything
+// unmeasured takes the tallest measured shape, because a frame too
+// short clips content while one too tall only costs blank space.
+const FRAME_HEIGHT_BY_MARKET: Readonly<Record<string, number>> = {
+  "3Way": 240,
+  totalOverUnder: 350,
+  doubleChance: 110,
+  doubleChance1stHalf: 110,
+  doubleChance2ndHalf: 110,
+  "1stHalfWin": 110,
+  "2ndHalfWin": 110,
+};
+const DEFAULT_FRAME_HEIGHT = 350;
+
+export function frameHeightFor(market: string): number {
+  return FRAME_HEIGHT_BY_MARKET[market] ?? DEFAULT_FRAME_HEIGHT;
+}
+
 export function buildBetAssistStandaloneUrl({
   srMatchId,
   market,
@@ -253,18 +281,14 @@ function BetAssistOverlay({
           </button>
         </div>
         {/* Fixed because the hosted page cannot report its size across
-            origins. Sized to what the widget actually draws for a market
-            — win probability, form split, last five games — which
-            measured ~230px at the panel's 460px width on production
-            (2026-09-05); 560 left over 300px of the hosted page's blank
-            white under it. A market kind with more blocks scrolls inside
-            the frame, as anything over 560 already did. */}
+            origins; per market shape because the widget draws a
+            different set of blocks for each — see FRAME_HEIGHT_BY_MARKET. */}
         <iframe
           src={src}
           title={`${t("betAssist.title")} — ${marketLabel}`}
           style={{
             width: "100%",
-            height: 300,
+            height: frameHeightFor(market),
             maxHeight: "100%",
             border: 0,
             display: "block",
