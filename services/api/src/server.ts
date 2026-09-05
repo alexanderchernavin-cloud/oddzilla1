@@ -97,6 +97,10 @@ import {
   startBehaviourScoringSweeper,
   type BehaviourSweeperHandle,
 } from "./lib/riskzilla/behaviour-sweeper.js";
+import {
+  startAlertSweeper,
+  type AlertSweeperHandle,
+} from "./lib/riskzilla/alert-sweeper.js";
 import inboundEmailRoutes from "./modules/email/inbound/routes.js";
 import { ApiError } from "./lib/errors.js";
 
@@ -416,6 +420,16 @@ if (process.env.BEHAVIOUR_SWEEPER_DISABLED !== "1") {
   behaviourSweeperHandle = startBehaviourScoringSweeper(app);
 }
 
+// Alert center (migration 0105). Every minute, Redis-lock guarded:
+// evaluates the enabled risk_alert_rules (whale stakes, sharp bettors,
+// shared IPs, stale withdrawals, bank utilisation, ...) and lands hits
+// in risk_alerts for /admin/alerts. Advisory only — never touches the
+// placement path. Set ALERT_SWEEPER_DISABLED=1 to skip.
+let alertSweeperHandle: AlertSweeperHandle | null = null;
+if (process.env.ALERT_SWEEPER_DISABLED !== "1") {
+  alertSweeperHandle = startAlertSweeper(app);
+}
+
 // ─── Boot ───────────────────────────────────────────────────────────────────
 
 app
@@ -445,6 +459,7 @@ async function shutdown() {
   stopZillaFlashRotation();
   analyticsSweeperHandle?.close();
   behaviourSweeperHandle?.close();
+  alertSweeperHandle?.close();
   sportradarSweeperHandle?.close();
   if (matchWatcherHandle) {
     try {

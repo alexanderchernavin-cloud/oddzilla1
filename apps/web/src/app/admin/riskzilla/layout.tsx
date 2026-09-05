@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { RiskzillaCurrencySwitch } from "./currency-switch";
 import { RiskzillaTabs } from "./tabs";
+import { AlertsBanner } from "@/components/admin/alerts-banner";
 
 // Visual hierarchy: top header sets the "RiskZilla" brand, then a
 // currency switch (USDC default, OZ for demo monitoring), then a tab
@@ -46,6 +47,7 @@ export default function RiskzillaLayout({ children }: { children: ReactNode }) {
         the storefront. USDC is the real-money operator view; the OZ
         toggle scopes ticket/bettor stats to demo-currency volume.
       </p>
+      <AlertsBanner />
       <RiskzillaTabs />
       <div>{children}</div>
     </div>

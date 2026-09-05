@@ -33,3 +33,4 @@ export * from "./zillapass.js";
 export * from "./analytics.js";
 export * from "./sportradar.js";
 export * from "../enums.js";
+export * from "./risk-alerts.js";

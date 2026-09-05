@@ -14,6 +14,8 @@ import {
   type BehaviourProfileDto,
 } from "@/app/admin/riskzilla/bettors/[id]/behaviour-panel";
 import { BettorAuditLog } from "@/components/admin/bettor-audit-log";
+import { SEVERITY_COLOR } from "@/components/admin/alerts-banner";
+import type { AlertDto, AlertListResponse } from "@/app/admin/alerts/alerts-client";
 import { LabelChip } from "../label-chip";
 import { UserEditForm } from "./user-edit-form";
 import { DeleteUserButton } from "./delete-user-button";
@@ -229,13 +231,16 @@ export default async function UserDetailPage({
   const { user, identity, recentTickets, zillapass } = data;
   const isBettor = user.role === "user";
 
-  const [profile, oddsAdjustment, promoVisibility] = isBettor
+  const [profile, oddsAdjustment, promoVisibility, alertList] = isBettor
     ? await Promise.all([
         serverApi<RiskProfile>(`/admin/riskzilla/bettors/${id}?currency=${currency}`),
         serverApi<OddsAdjustmentSummary>(`/admin/users/${id}/odds-adjustment`),
         serverApi<PromoVisibilitySummary>(`/admin/users/${id}/promo-visibility`),
+        serverApi<AlertListResponse>(`/admin/riskzilla/alerts?userId=${id}&status=all&limit=25`),
       ])
-    : [null, null, null];
+    : [null, null, null, null];
+  const alerts = alertList?.entries ?? [];
+  const activeAlerts = alerts.filter((a) => a.status !== "resolved");
 
   const backHref = isBettor ? "/admin/users" : "/admin/admins";
   const backLabel = isBettor ? "Bettors" : "Admins";
@@ -270,6 +275,19 @@ export default async function UserDetailPage({
             {labels.map((l) => (
               <LabelChip key={l} label={l} />
             ))}
+            {activeAlerts.length > 0 ? (
+              <Link
+                href={`/admin/alerts?userId=${user.id}`}
+                className="rounded-full border px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em]"
+                style={{
+                  borderColor: SEVERITY_COLOR[activeAlerts[0]!.severity],
+                  color: SEVERITY_COLOR[activeAlerts[0]!.severity],
+                }}
+                title="Open alerts about this bettor"
+              >
+                {activeAlerts.length} active alert{activeAlerts.length === 1 ? "" : "s"}
+              </Link>
+            ) : null}
           </div>
           <p className="mt-1 text-sm text-[var(--color-fg-muted)]">
             {user.email}
@@ -342,7 +360,9 @@ export default async function UserDetailPage({
               promoVisibility={promoVisibility}
             />
           ) : null}
-          {tab === "log" ? <LogTab userId={user.id} profile={profile} currency={currency} /> : null}
+          {tab === "log" ? (
+            <LogTab userId={user.id} profile={profile} currency={currency} alerts={alerts} />
+          ) : null}
         </>
       )}
     </div>
@@ -815,13 +835,52 @@ function LogTab({
   userId,
   profile,
   currency,
+  alerts,
 }: {
   userId: string;
   profile: RiskProfile | null;
   currency: RzCurrency;
+  alerts: AlertDto[];
 }) {
   return (
     <div className="mt-6 flex flex-col gap-8">
+      <Card
+        title="Alerts about this bettor"
+        aside={
+          <Link
+            href={`/admin/alerts?userId=${userId}`}
+            className="text-xs uppercase tracking-[0.15em] text-[var(--color-accent)] hover:underline"
+          >
+            Alert center
+          </Link>
+        }
+      >
+        {alerts.length === 0 ? (
+          <p className="text-sm text-[var(--color-fg-muted)]">No alerts raised for this account.</p>
+        ) : (
+          <ul className="divide-y divide-[var(--color-border)] text-sm">
+            {alerts.map((a) => (
+              <li key={a.id} className="flex flex-wrap items-center gap-3 py-2">
+                <span
+                  className="rounded-full border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em]"
+                  style={{ borderColor: SEVERITY_COLOR[a.severity], color: SEVERITY_COLOR[a.severity] }}
+                >
+                  {a.severity}
+                </span>
+                <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-fg-subtle)]">
+                  {a.kindLabel}
+                </span>
+                <span className="min-w-0 flex-1">{a.title}</span>
+                <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-fg-muted)]">
+                  {a.status}
+                </span>
+                <span className="text-xs text-[var(--color-fg-subtle)]">{fmtDateTime(a.lastSeenAt)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+
       <Card
         title="Admin activity"
         aside={<span className="text-xs text-[var(--color-fg-muted)]">tamper-evident audit chain</span>}
