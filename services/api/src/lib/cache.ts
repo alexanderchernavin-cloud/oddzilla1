@@ -27,6 +27,33 @@ import type { Redis } from "ioredis";
 
 const inflight = new Map<string, Promise<unknown>>();
 
+// Envelope written by `cachedSwr`. `f` is the epoch-ms instant the value
+// stops being fresh; the Redis key itself lives until fresh + stale.
+// Shape-checked on read so a value written by plain `cached()` under the
+// same key (an older deploy, a hand-set key) reads as a miss rather than
+// as a fresh envelope with an undefined timestamp.
+interface SwrEnvelope<T> {
+  v: T;
+  f: number;
+}
+
+function parseEnvelope<T>(raw: string): SwrEnvelope<T> | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "v" in parsed &&
+      typeof (parsed as { f?: unknown }).f === "number"
+    ) {
+      return parsed as SwrEnvelope<T>;
+    }
+  } catch {
+    // Corrupt entry — treat as a miss; the loader's set overwrites it.
+  }
+  return null;
+}
+
 export async function cached<T>(
   redis: Redis,
   key: string,
@@ -60,4 +87,66 @@ export async function cached<T>(
   } finally {
     inflight.delete(key);
   }
+}
+
+// Stale-while-revalidate variant, for loaders whose cold run is slow
+// enough that a user WAITS for it.
+//
+// `cached()` above has one failure mode that only shows up on a quiet
+// site: a short TTL plus low traffic means almost every request is the
+// unlucky one that pays the cold load. The sidebar's tournament tree is
+// the case that forced this — its 10 s TTL was picked to keep live
+// counts fresh, and on football (~1 900 matches, 291 tournaments) the
+// loader takes ~1.3 s against ~85 ms warm, so the sidebar expand a
+// bettor actually clicks was usually the cold one.
+//
+// So: inside `freshSeconds` behave exactly like `cached()`. Past it, up
+// to `staleSeconds` later, return the stale value IMMEDIATELY and kick
+// the loader off in the background — the next caller gets fresh data
+// and nobody waits. Only a fully-expired (or DEL'd) key blocks.
+//
+// The value stays under ONE key, so the admin cache-bust paths that
+// `DEL` it still work: a deleted key is a cold miss, not a stale hit.
+//
+// Not the default for every caller because staleness is a product
+// decision, not a performance one — a caller opts in by naming the
+// window it can tolerate.
+export async function cachedSwr<T>(
+  redis: Redis,
+  key: string,
+  freshSeconds: number,
+  staleSeconds: number,
+  loader: () => Promise<T>,
+): Promise<T> {
+  const raw = await redis.get(key).catch(() => null);
+  const envelope = raw === null ? null : parseEnvelope<T>(raw);
+
+  const refresh = () => {
+    const existing = inflight.get(key);
+    if (existing) return existing as Promise<T>;
+    const run = (async () => {
+      const value = await loader();
+      await redis
+        .set(
+          key,
+          JSON.stringify({ v: value, f: Date.now() + freshSeconds * 1000 }),
+          "EX",
+          freshSeconds + staleSeconds,
+        )
+        .catch(() => null);
+      return value;
+    })();
+    inflight.set(key, run);
+    run.catch(() => undefined).finally(() => inflight.delete(key));
+    return run;
+  };
+
+  if (envelope) {
+    // Stale but usable: serve it now, refresh behind the response. The
+    // detached rejection handler is what keeps a failing loader from
+    // taking down a request that already has an answer to give.
+    if (Date.now() >= envelope.f) refresh().catch(() => undefined);
+    return envelope.v;
+  }
+  return refresh();
 }

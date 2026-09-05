@@ -354,6 +354,49 @@ body {
   display: none;
 }
 
+/* ── Sidebar disclosure carets: touch targets ──────────────────────────
+   The sport rail is a tree, and both of its expand controls are small
+   chevrons sitting immediately beside a link. On a mouse that is fine.
+   On a phone it was not: reported 2026-09-06, a finger aiming at the
+   sport caret landed on the sport link often enough to be the normal
+   outcome, and the miss is expensive — the link navigates AND the
+   drawer auto-closes on navigation (mobile-drawer-context.tsx), so a
+   bettor trying to peek at Football's tree loses the sidebar entirely
+   and has to reopen it.
+
+   Keyed on `(pointer: coarse)` rather than a width breakpoint, because
+   the thing that matters is the input device, not the viewport — a
+   touch laptop or a tablet in landscape has the same fingers.
+
+   Sizing: the glyph does not move, only the area around it. 48x40 for
+   the sport caret is comfortably past the 44px guidance in area while
+   staying SHORTER than the ~37px row pitch — a full 44px of height
+   would spill past the 4px row gap into the neighbouring sport's
+   caret, so two adjacent expanders would overlap and the fix would
+   trade one mis-tap for another. The glyph itself goes 10px -> 12px so
+   the larger target reads as a target. */
+.oz-sport-caret { width: 24px; height: 24px; }
+
+@media (pointer: coarse) {
+  .oz-sport-caret {
+    right: 0 !important;
+    width: 48px !important;
+    height: 40px !important;
+  }
+  .oz-sport-caret svg { width: 12px !important; height: 12px !important; }
+  /* Clear the widened hit area so a long sport name or a live badge
+     never sits underneath it. Mirrors the 30px the row reserves for the
+     24px desktop caret. */
+  .oz-sport-row { padding-right: 52px !important; }
+  /* Category header caret. Its sibling is a Link that filters the sport
+     page to the whole category, so a miss here costs a navigation too.
+     Grown horizontally only — the header row is the full drawer width,
+     so the extra 14px comes out of the label, which has an ellipsis. */
+  .oz-cat-caret {
+    padding: 10px 6px 10px 10px !important;
+  }
+}
+
 /* Mobile-only toggle buttons in the top bar; hidden on desktop. */
 .oz-topbar-toggle { display: none !important; }
 

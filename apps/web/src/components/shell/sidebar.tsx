@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -191,28 +192,31 @@ export function Sidebar({
   // in dev would do it every time.
   const requestedSlugs = useRef<Set<string>>(new Set());
 
+  // One place that turns "we want this sport's tree" into at most one
+  // request per slug per session. Called by the open-tree effect below
+  // AND by the prefetch handlers on each row, which is the whole point
+  // of extracting it: a hover or the first touch contact can start the
+  // fetch before the click lands, so the tree is already in hand by the
+  // time the caret toggles.
+  const ensureTournaments = useCallback((slug: string) => {
+    if (requestedSlugs.current.has(slug)) return;
+    requestedSlugs.current.add(slug);
+    clientApi<TournamentsResponse>(`/catalog/sports/${slug}/tournaments`)
+      .then((data) => {
+        setTournamentsBySport((cur) => ({ ...cur, [slug]: data.tournaments }));
+      })
+      .catch(() => {
+        // Sidebar gracefully omits the tournament list on failure —
+        // the top-level sport link still works. Drop the slug so
+        // re-opening the sport retries instead of staying empty.
+        requestedSlugs.current.delete(slug);
+      });
+  }, []);
+
   useEffect(() => {
     if (wantedKey === "") return;
-    let cancelled = false;
-    for (const slug of wantedKey.split(",")) {
-      if (requestedSlugs.current.has(slug)) continue;
-      requestedSlugs.current.add(slug);
-      clientApi<TournamentsResponse>(`/catalog/sports/${slug}/tournaments`)
-        .then((data) => {
-          if (cancelled) return;
-          setTournamentsBySport((cur) => ({ ...cur, [slug]: data.tournaments }));
-        })
-        .catch(() => {
-          // Sidebar gracefully omits the tournament list on failure —
-          // the top-level sport link still works. Drop the slug so
-          // re-opening the sport retries instead of staying empty.
-          requestedSlugs.current.delete(slug);
-        });
-    }
-    return () => {
-      cancelled = true;
-    };
-  }, [wantedKey]);
+    for (const slug of wantedKey.split(",")) ensureTournaments(slug);
+  }, [wantedKey, ensureTournaments]);
 
   return (
     <aside
@@ -302,6 +306,7 @@ export function Sidebar({
         tournamentsBySport={tournamentsBySport}
         isSportExpanded={isSportExpanded}
         onToggleSport={toggleSport}
+        onPrefetchSport={ensureTournaments}
       />
 
       <SectionLabel>{tShell("account")}</SectionLabel>
@@ -405,6 +410,61 @@ export function Sidebar({
   );
 }
 
+// Prefetch-on-intent for a sport's tournament tree.
+//
+// The tree is fetched on demand, and on a broad sport that fetch is the
+// slowest thing in the sidebar — so the win is starting it BEFORE the
+// click rather than after. Two signals, because they have very
+// different amounts of warning to offer:
+//
+//   - Mouse hover, after a dwell. The dwell is the whole point: without
+//     it, sweeping the pointer down the rail to reach the sport you
+//     want would fire a request for every sport you passed over, and
+//     several of those are the expensive ones. 140 ms filters a
+//     pass-through from an approach, and still lands well before the
+//     click.
+//   - Pointer-down, immediately. On touch there is no hover to read, but
+//     finger-down to click is ~100-200 ms of real headroom, and on a
+//     mouse it is another ~80-150 ms on top of the dwell.
+//
+// Deliberately NOT wired to focus: React's onFocus bubbles, so tabbing
+// through the rail would request every sport in it. A keyboard user
+// still gets the on-expand fetch, exactly as before.
+//
+// One module-level timer is enough — only one row can be hovered.
+const HOVER_INTENT_MS = 140;
+let hoverIntentTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearHoverIntent() {
+  if (hoverIntentTimer !== null) {
+    clearTimeout(hoverIntentTimer);
+    hoverIntentTimer = null;
+  }
+}
+
+function prefetchHandlers(slug: string, prefetch: (slug: string) => void) {
+  return {
+    onPointerEnter: (e: React.PointerEvent) => {
+      // Touch and pen deliver enter + down together, so a dwell here
+      // would only delay the fetch it is meant to bring forward.
+      if (e.pointerType !== "mouse") {
+        prefetch(slug);
+        return;
+      }
+      clearHoverIntent();
+      hoverIntentTimer = setTimeout(() => {
+        hoverIntentTimer = null;
+        prefetch(slug);
+      }, HOVER_INTENT_MS);
+    },
+    onPointerLeave: clearHoverIntent,
+    onPointerDown: () => {
+      clearHoverIntent();
+      prefetch(slug);
+    },
+  };
+}
+
 // extractSportSlug returns the slug if the pathname is exactly
 // /sport/:slug or /sport/:slug/… , otherwise null. Used by the sidebar
 // to decide when to auto-expand the tournament sub-tree.
@@ -473,6 +533,7 @@ function SportsSection({
   tournamentsBySport,
   isSportExpanded,
   onToggleSport,
+  onPrefetchSport,
 }: {
   sports: SportItem[];
   liveCounts: Record<string, number>;
@@ -486,6 +547,7 @@ function SportsSection({
   tournamentsBySport: Record<string, Tournament[]>;
   isSportExpanded: (slug: string) => boolean;
   onToggleSport: (slug: string) => void;
+  onPrefetchSport: (slug: string) => void;
 }) {
   const tShell = useTranslations("shell");
   const [editing, setEditing] = useState(false);
@@ -819,7 +881,7 @@ function SportsSection({
     const expanded = isSportExpanded(s.slug);
     const tournaments = tournamentsBySport[s.slug];
     return (
-      <div key={s.slug}>
+      <div key={s.slug} {...prefetchHandlers(s.slug, onPrefetchSport)}>
         <Item
           href={`/sport/${s.slug}`}
           icon={<SportGlyph sport={s.slug} size={16} />}
@@ -1021,7 +1083,12 @@ function CategoryGroup({
   // <img> error state, so a logo that 404s doesn't reflow its neighbours.
   const reserveLogoSlot = group.tournaments.some((t) => t.logoUrl);
 
-  const list = (
+  // Built on demand, not eagerly. Football's tree is 105 buckets over
+  // 291 tournaments and nearly every bucket is collapsed, so building
+  // the element for each one up front meant constructing (and, on every
+  // re-render of the sidebar, re-constructing) a few hundred rows that
+  // are never mounted.
+  const renderList = () => (
     <div
       style={{
         display: "flex",
@@ -1043,7 +1110,7 @@ function CategoryGroup({
     </div>
   );
 
-  if (group.label == null) return list;
+  if (group.label == null) return renderList();
 
   return (
     <div>
@@ -1062,7 +1129,7 @@ function CategoryGroup({
         expanded={expanded}
         onToggle={() => setOpen((v) => !v)}
       />
-      {expanded && list}
+      {expanded && renderList()}
     </div>
   );
 }
@@ -1461,6 +1528,12 @@ function CategoryHeader({
         aria-label={
           expanded ? tShell("hideTournaments") : tShell("showTournaments")
         }
+        // Same touch problem as the sport caret, one level down, and with
+        // a worse consequence: the sibling here is a Link that filters the
+        // whole sport page to this category, so a miss both navigates and
+        // closes the drawer. `.oz-cat-caret` widens the hit area on coarse
+        // pointers; the label keeps the rest of the row.
+        className="oz-cat-caret"
         style={{
           display: "inline-flex",
           alignItems: "center",
@@ -1518,6 +1591,13 @@ function CategoryMark({ label, logoUrl }: { label: string; logoUrl: string | nul
         aria-hidden
         width={15}
         height={15}
+        // A big sport's tree opens ~105 of these at once, and the drawer
+        // shows maybe a dozen of them without scrolling. Lazy keeps the
+        // rest off the wire until they're scrolled to; `async` decoding
+        // keeps whichever do load off the main thread, so the expand
+        // animation doesn't stutter behind image decode work.
+        loading="lazy"
+        decoding="async"
         onError={() => setFlagErrored(true)}
         style={{
           width: 15,
@@ -1537,6 +1617,8 @@ function CategoryMark({ label, logoUrl }: { label: string; logoUrl: string | nul
         aria-hidden
         width={15}
         height={15}
+        loading="lazy"
+        decoding="async"
         onError={() => setLogoErrored(true)}
         style={{
           width: 15,
@@ -1717,6 +1799,8 @@ function TournamentLogoMark({
       width={14}
       height={14}
       title={name}
+      loading="lazy"
+      decoding="async"
       onError={() => setErrored(true)}
       style={{
         width: 14,
@@ -1812,6 +1896,10 @@ function Item({
   const row = (
     <Link
       href={href}
+      // Only carries the class when there IS a caret — the coarse-pointer
+      // rule widens the right padding to clear the enlarged hit area, and
+      // a row without a caret has nothing to clear.
+      className={onToggleExpand ? "oz-sport-row" : undefined}
       style={{
         display: "flex",
         alignItems: "center",
@@ -1907,14 +1995,20 @@ function Item({
         aria-expanded={expanded ?? false}
         aria-label={expandLabel}
         title={expandLabel}
+        className="oz-sport-caret"
         onClick={() => onToggleExpand()}
         style={{
           position: "absolute",
           right: 4,
           top: "50%",
           transform: "translateY(-50%)",
-          // 24px keeps the tap target usable in the mobile drawer; the
-          // row itself is ~33px tall so this doesn't change its height.
+          // Mouse size. 24px was ALSO the touch size until 2026-09-06,
+          // and it was too small to hit reliably: a finger aiming at the
+          // chevron regularly landed on the link instead, which both
+          // navigated away and — because the drawer auto-closes on
+          // navigation — dismissed the sidebar the bettor was browsing.
+          // `.oz-sport-caret` under `(pointer: coarse)` in globals.css
+          // grows this to 48x40 without moving the glyph.
           width: 24,
           height: 24,
           display: "inline-flex",

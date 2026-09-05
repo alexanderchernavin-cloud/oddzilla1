@@ -1167,6 +1167,30 @@ container opens the inspector on 9229).
    affected).
 5. Permanent fix: upgrade Hetzner plan.
 
+### A public image re-downloads on every page view
+
+Caddy puts a blanket `Cache-Control: no-store` on `/api/*` so an
+authenticated JSON response can never be stashed by a proxy. The
+`@api_nocache` matcher in the [`Caddyfile`](../Caddyfile) exempts the
+public image byte-serves, which set their own `public, immutable`. **A
+new image route that isn't in that list is silently uncached** — the
+api's header is correct, both headers reach the browser, and `no-store`
+wins. Nothing errors; the surface just feels slow and the api serves the
+same bytes forever.
+
+Check it with a header dump, not by reading the route:
+
+```bash
+curl -sI https://oddzilla.cc/api/catalog/flags/England | grep -i cache-control
+```
+
+One `public, …, immutable` is correct. A leading `no-store,` means the
+route needs adding to `@api_nocache` (`make deploy` reloads Caddy).
+
+Hit twice so far: `/catalog/zillaboost-banners/*/image` (2026-08-28) and
+`/catalog/flags/*` (2026-09-06 — ~105 flags re-fetched on every sidebar
+render, which is most of why expanding Football felt slow on mobile).
+
 ## Backup feed (Bifrost) failover
 
 `services/bifrost-feed` is the standby source for odds, scores, fixtures
