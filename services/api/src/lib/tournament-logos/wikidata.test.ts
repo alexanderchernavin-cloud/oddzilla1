@@ -15,7 +15,7 @@ import {
   sportQids,
   type WikidataCandidate,
 } from "./wikidata.js";
-import { parseCanonicalNames, renderBatch } from "./resolver.js";
+import { parseCanonicalNames, parsePairVerdicts, renderBatch, renderPair } from "./resolver.js";
 
 function cand(over: Partial<WikidataCandidate> = {}): WikidataCandidate {
   return {
@@ -261,6 +261,49 @@ describe("parseCanonicalNames", () => {
     assert.equal(parseCanonicalNames("", 2).size, 0);
     assert.equal(parseCanonicalNames("sorry, no", 2).size, 0);
     assert.equal(parseCanonicalNames("[{broken", 2).size, 0);
+  });
+});
+
+describe("parsePairVerdicts", () => {
+  it("reads the three verdicts", () => {
+    const out = parsePairVerdicts(
+      '[{"i":0,"verdict":"same"},{"i":1,"verdict":"different"},{"i":2,"verdict":"unsure"}]',
+      3,
+    );
+    assert.equal(out.get(0), "same");
+    assert.equal(out.get(1), "different");
+    assert.equal(out.get(2), "unsure");
+  });
+
+  it("yields nothing on an unreadable reply, which the caller treats as unsure", () => {
+    // The caller defaults a missing entry to "unsure" and writes
+    // nothing, so an unparseable adjudication can never approve a logo.
+    assert.equal(parsePairVerdicts("", 1).size, 0);
+    assert.equal(parsePairVerdicts("I think so?", 1).size, 0);
+    assert.equal(parsePairVerdicts('[{"i":0,"verdict":"yes"}]', 1).size, 0);
+    assert.equal(parsePairVerdicts('[{"i":5,"verdict":"same"}]', 1).size, 0);
+  });
+});
+
+describe("renderPair", () => {
+  it("shows the feed name against the entry, with sport and category", () => {
+    const text = renderPair(
+      { name: "TCL 2026 Spring", sportSlug: "lol", categoryName: "Auto-mapped" },
+      "Tcl",
+      "scripting language",
+    );
+    assert.match(text, /sport=lol category=Auto-mapped/u);
+    assert.match(text, /feed: {2}TCL 2026 Spring/u);
+    assert.match(text, /entry: Tcl — scripting language/u);
+  });
+
+  it("omits the dash when the entry has no description", () => {
+    const text = renderPair(
+      { name: "X", sportSlug: "cs2", categoryName: "c" },
+      "Some Series",
+      "",
+    );
+    assert.match(text, /entry: Some Series$/mu);
   });
 });
 
