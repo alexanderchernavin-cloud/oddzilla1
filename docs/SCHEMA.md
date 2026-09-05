@@ -465,6 +465,17 @@ no assignment here that is cautious by omission, which is why the reviewer
 clamps every verdict to a per-sport ceiling in code and writes nothing at
 all when it cannot parse a reply.
 
+Migration 0107 adds two standing tightenings on top, applied in code to
+every new verdict and retroactively to the rows the first sweep had
+already written: **+1 on every ZAGI verdict** (a machine judgement is not
+reviewed by a person before it takes effect, so ZAGI can never assign T1)
+and **+3 for outright markets** (they resolve over a season or phase, so
+the book carries the position for months and cannot trade out of it match
+by match). Both only ever raise the number. `risk_tier_note` records the
+whole chain — the model's words, its own tier, then each step — and the
+literal `+1 ZAGI safety margin` inside it is the backfill's idempotency
+key, so a row can never be stepped twice.
+
 **`matches`** — `BIGSERIAL` id because we'll have a lot of them. `provider_urn`
 like `od:match:1234`. `live_score` is a free-form JSONB (different games have
 different scoring). `best_of` captures BO1/BO3/BO5. `oddin_status_code` keeps

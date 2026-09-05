@@ -1,10 +1,18 @@
 // /admin/tournaments endpoints. Admin-only.
 //
 // Surface area:
-//   GET    /admin/tournaments                 paginated list with optional
-//                                             ?sportId, ?q (name search),
-//                                             ?missingLogo=1 filter
+//   GET    /admin/tournaments                 paginated list. Filters:
+//                                             ?sportId, ?categoryId, ?q
+//                                             (name search), ?tier (1..10
+//                                             or "unset"), ?source
+//                                             (auto|zagi|manual),
+//                                             ?missingLogo=1, ?active.
+//                                             Sort: ?sort= default | name |
+//                                             sport | category | tier |
+//                                             source, with ?dir=asc|desc.
 //   GET    /admin/tournaments/sports          sport-filter dropdown options
+//   GET    /admin/tournaments/categories      category-filter options for
+//                                             one sport (?sportId)
 //   PATCH  /admin/tournaments/:id             update logo_url / brand_color.
 //                                             Mutations are audit-logged.
 //   POST   /admin/tournaments/:id/logo        multipart upload — accepts
@@ -90,9 +98,22 @@ const logoUrlSchema = z
   )
   .nullable();
 
+// Sort keys are an allowlist mapped to columns below — never a column
+// name off the query string.
+const SORT_KEYS = ["default", "name", "sport", "category", "tier", "source"] as const;
+
 const listQuery = z.object({
   q: z.string().trim().max(128).optional(),
   sportId: z.coerce.number().int().positive().optional(),
+  categoryId: z.coerce.number().int().positive().optional(),
+  // "unset" is a first-class choice, not the absence of a filter: an
+  // untiered tournament is the one an operator most often wants to find.
+  tier: z
+    .union([z.coerce.number().int().min(1).max(10), z.literal("unset")])
+    .optional(),
+  source: z.enum(["auto", "zagi", "manual"]).optional(),
+  sort: z.enum(SORT_KEYS).default("default"),
+  dir: z.enum(["asc", "desc"]).default("asc"),
   missingLogo: z
     .union([z.literal("1"), z.literal("true"), z.literal("0"), z.literal("false")])
     .optional()
@@ -174,10 +195,47 @@ export default async function adminTournamentsRoutes(app: FastifyInstance) {
         sql`(${tournaments.name} ILIKE ${like} OR ${tournaments.slug} ILIKE ${like})`,
       );
     }
+    if (q.categoryId) filters.push(eq(tournaments.categoryId, q.categoryId));
+    if (q.tier === "unset") filters.push(isNull(tournaments.riskTier));
+    else if (typeof q.tier === "number") filters.push(eq(tournaments.riskTier, q.tier));
+    if (q.source) filters.push(eq(tournaments.riskTierSource, q.source));
     if (q.missingLogo) filters.push(isNull(tournaments.logoUrl));
     if (q.active !== undefined) filters.push(eq(tournaments.active, q.active));
 
     const where = filters.length > 0 ? and(...filters) : sql`TRUE`;
+
+    // Explicit allowlist → column. The default keeps the pin-order view:
+    // sport, then country, then pinned rows in operator order, then name,
+    // which is the sequence the reorder arrows act in and therefore the
+    // only one an operator can reason about while pinning.
+    const dir = q.dir === "desc" ? sql`DESC` : sql`ASC`;
+    const orderBy: SQL[] =
+      q.sort === "default"
+        ? [
+            sql`${sports.slug} ASC`,
+            sql`${categories.name} ASC`,
+            sql`${tournaments.displayOrder} ASC NULLS LAST`,
+            sql`${tournaments.name} ASC`,
+          ]
+        : [
+            q.sort === "name"
+              ? sql`${tournaments.name} ${dir}`
+              : q.sort === "sport"
+                ? sql`${sports.slug} ${dir}`
+                : q.sort === "category"
+                  ? sql`${categories.name} ${dir}`
+                  : q.sort === "source"
+                    ? sql`${tournaments.riskTierSource} ${dir}`
+                    : // Untiered rows sort to the end whichever way the
+                      // column is pointed — "no tier" is not a low tier
+                      // or a high one, and burying it under either end
+                      // would hide the rows most worth finding.
+                      sql`${tournaments.riskTier} ${dir} NULLS LAST`,
+            // Stable tiebreak, so paging through a sorted list cannot
+            // show the same row twice or skip one.
+            sql`${tournaments.name} ASC`,
+            sql`${tournaments.id} ASC`,
+          ];
 
     const [rows, totalRows, missingRows] = await Promise.all([
       app.db
@@ -203,16 +261,7 @@ export default async function adminTournamentsRoutes(app: FastifyInstance) {
         .innerJoin(categories, eq(categories.id, tournaments.categoryId))
         .innerJoin(sports, eq(sports.id, categories.sportId))
         .where(where)
-        // Mirrors the storefront: pinned tournaments head their category
-        // in operator order, the rest keep the default behind them. An
-        // admin reading a row's arrows has to see them in the sequence
-        // they take effect in.
-        .orderBy(
-          asc(sports.slug),
-          asc(categories.name),
-          sql`${tournaments.displayOrder} ASC NULLS LAST`,
-          asc(tournaments.name),
-        )
+        .orderBy(...orderBy)
         .limit(q.limit)
         .offset(q.offset),
       app.db
@@ -263,6 +312,40 @@ export default async function adminTournamentsRoutes(app: FastifyInstance) {
         name: r.name,
         tournamentCount: Number(r.tournamentCount),
         missingLogoCount: Number(r.missingLogoCount),
+      })),
+    };
+  });
+
+  // ── Category filter options ───────────────────────────────────────
+  //
+  // Scoped to one sport on purpose. Football alone carries a couple of
+  // hundred country buckets, so an unscoped list would be a dropdown
+  // nobody can use and a payload nobody needs.
+  app.get("/admin/tournaments/categories", async (request) => {
+    request.requireRole("admin");
+    const { sportId } = z
+      .object({ sportId: z.coerce.number().int().positive().optional() })
+      .parse(request.query);
+    if (!sportId) return { categories: [] };
+
+    const rows = await app.db
+      .select({
+        id: categories.id,
+        name: categories.name,
+        tournamentCount: sql<string>`COUNT(${tournaments.id})::text`,
+      })
+      .from(categories)
+      .leftJoin(tournaments, eq(tournaments.categoryId, categories.id))
+      .where(eq(categories.sportId, sportId))
+      .groupBy(categories.id, categories.name)
+      .having(sql`COUNT(${tournaments.id}) > 0`)
+      .orderBy(asc(categories.name));
+
+    return {
+      categories: rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        tournamentCount: Number(r.tournamentCount),
       })),
     };
   });

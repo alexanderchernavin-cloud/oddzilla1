@@ -882,6 +882,24 @@ an unreviewed tournament is never over-exposed. It is under-traded and
 invisible. Every tier assigned to one therefore *raises* what the book can
 lose on it, and there is no assignment that is cautious by omission.
 
+**Two tightenings are applied to every ZAGI verdict in code**, and both
+only ever raise the tier number (lower the exposure):
+
+- **+1 always.** A machine verdict is not reviewed by a person before it
+  takes effect, so it is not taken at face value — the model saying tier 2
+  produces tier 3. This means **ZAGI can never assign T1**: the loosest
+  tier in the book is reachable only by an operator typing it.
+- **+3 for outright markets** — anything resolving over a whole season or
+  phase (`Season 26/27`, `Head-to-head in the tournament`). The book holds
+  those positions for months and cannot trade out of them match by match.
+  Single-event head-to-heads (`Vuelta … Stage 13. Head-to-head`) are
+  deliberately not included.
+
+So a tier in the list is normally 4 or 5 steps stricter than the model's
+own opinion. The row's note records the whole chain, e.g.
+`Serie A outright, top competition [ZAGI T2, +1 ZAGI safety margin, +3
+outright -> T6]`.
+
 ZillaAGI reviews them automatically every 30 minutes, one api replica at a
 time under a Redis lock. A sweep keeps working in 200-row chunks until the
 queue is empty or ten minutes are up, so a fresh backlog clears in one pass
@@ -897,6 +915,12 @@ single query. To drive it by hand, go to `/admin/tournaments`:
 The status strip reads `untiered` (no tier at all), `queued` (what a run
 would take), `reviewed` (assigned by ZAGI), `manual` (assigned by an
 operator) and, when non-zero, `stuck`.
+
+The list itself filters by sport, category (pick a sport first — a
+category belongs to one), risk tier including **Unset**, and who assigned
+it (Auto / ZAGI / Manual). Column headers sort; clicking an
+already-descending header returns to the default pin order, which is the
+only arrangement in which the **Order in category** arrows are meaningful.
 
 **`stuck` means the model declined a row three times** — usually a name
 carrying no recognisable competition. Assign those by hand from the Risk

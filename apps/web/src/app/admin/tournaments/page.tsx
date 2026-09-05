@@ -9,10 +9,17 @@
 import Link from "next/link";
 import { serverApi } from "@/lib/server-fetch";
 import {
+  SORT_KEYS,
   TournamentsEditor,
+  type CategoryOption,
+  type SortKey,
   type TournamentRow,
   type SportOption,
 } from "./tournaments-editor";
+
+interface CategoriesResponse {
+  categories: CategoryOption[];
+}
 
 interface TournamentListResponse {
   total: number;
@@ -31,6 +38,11 @@ export default async function TournamentsPage({
 }: {
   searchParams: Promise<{
     sportId?: string;
+    categoryId?: string;
+    tier?: string;
+    source?: string;
+    sort?: string;
+    dir?: string;
     q?: string;
     missingLogo?: string;
     offset?: string;
@@ -38,6 +50,19 @@ export default async function TournamentsPage({
 }) {
   const sp = await searchParams;
   const sportId = sp.sportId && /^\d+$/.test(sp.sportId) ? sp.sportId : "";
+  // A category belongs to exactly one sport, so it is only meaningful
+  // alongside one — carrying it without a sport would silently filter the
+  // list against a bucket the operator can no longer see selected.
+  const categoryId =
+    sportId && sp.categoryId && /^\d+$/.test(sp.categoryId) ? sp.categoryId : "";
+  const tier =
+    sp.tier === "unset" || (sp.tier && /^([1-9]|10)$/.test(sp.tier)) ? sp.tier : "";
+  const source =
+    sp.source === "auto" || sp.source === "zagi" || sp.source === "manual"
+      ? sp.source
+      : "";
+  const sort = SORT_KEYS.includes(sp.sort as SortKey) ? (sp.sort as SortKey) : "default";
+  const dir = sp.dir === "desc" ? "desc" : "asc";
   const q = sp.q?.trim() ?? "";
   const missingLogo = sp.missingLogo === "1" || sp.missingLogo === "true";
   const offset = sp.offset && /^\d+$/.test(sp.offset) ? Math.max(0, Number(sp.offset)) : 0;
@@ -45,19 +70,30 @@ export default async function TournamentsPage({
 
   const params = new URLSearchParams();
   if (sportId) params.set("sportId", sportId);
+  if (categoryId) params.set("categoryId", categoryId);
+  if (tier) params.set("tier", tier);
+  if (source) params.set("source", source);
+  if (sort !== "default") {
+    params.set("sort", sort);
+    params.set("dir", dir);
+  }
   if (q) params.set("q", q);
   if (missingLogo) params.set("missingLogo", "1");
   params.set("limit", String(limit));
   params.set("offset", String(offset));
 
-  const [listRes, sportsRes] = await Promise.all([
+  const [listRes, sportsRes, categoriesRes] = await Promise.all([
     serverApi<TournamentListResponse>(`/admin/tournaments?${params.toString()}`),
     serverApi<SportsResponse>("/admin/tournaments/sports"),
+    sportId
+      ? serverApi<CategoriesResponse>(`/admin/tournaments/categories?sportId=${sportId}`)
+      : Promise.resolve(null),
   ]);
 
   const list =
     listRes ?? { total: 0, missingLogoCount: 0, limit, offset, tournaments: [] };
   const sports = sportsRes?.sports ?? [];
+  const categories = categoriesRes?.categories ?? [];
 
   return (
     <div>
@@ -90,8 +126,14 @@ export default async function TournamentsPage({
       <TournamentsEditor
         initialList={list}
         sports={sports}
+        categories={categories}
         currentFilters={{
           sportId,
+          categoryId,
+          tier,
+          source,
+          sort,
+          dir,
           q,
           missingLogo,
           offset,
