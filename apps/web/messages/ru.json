@@ -395,9 +395,6 @@
     "live": "Live",
     "upcoming": "Прематч",
     "topTournaments": "Топ турниры",
-    "filterKindCategory": "Категория",
-    "filterKindTournament": "Турнир",
-    "filterKindTeam": "Команда",
     "clearFilter": "Сбросить фильтр",
     "noMatches": "Матчей пока нет.",
     "matchCount": "{count, plural, one {# матч} few {# матча} many {# матчей} other {# матча}}"

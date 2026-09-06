@@ -395,9 +395,6 @@
     "live": "Ao vivo",
     "upcoming": "Pré-jogo",
     "topTournaments": "Principais torneios",
-    "filterKindCategory": "Categoria",
-    "filterKindTournament": "Torneio",
-    "filterKindTeam": "Equipe",
     "clearFilter": "Limpar filtro",
     "noMatches": "Nenhuma partida agora.",
     "matchCount": "{count, plural, one {# partida} other {# partidas}}"

@@ -7,6 +7,7 @@ import {
   type ListMatchEnriched,
 } from "@/components/match/match-list-tabs";
 import { SportGlyph } from "@/components/ui/sport-glyph";
+import { LogoMark } from "@/components/ui/logo-mark";
 import { I } from "@/components/ui/icons";
 import { shortName } from "@/lib/sport-order";
 import { getTranslations } from "@/lib/i18n/server";
@@ -62,9 +63,11 @@ export default async function SportPage({
   ]);
   if (!data) notFound();
 
-  const filteredTournamentName = tournamentId
-    ? data.matches.find((m) => String(m.tournament.id) === tournamentId)?.tournament.name ?? null
+  const filteredTournament = tournamentId
+    ? data.matches.find((m) => String(m.tournament.id) === tournamentId)?.tournament ?? null
     : null;
+  const filteredTournamentName = filteredTournament?.name ?? null;
+  const filteredTournamentLogoUrl = filteredTournament?.logoUrl ?? null;
   const filteredTeamName = data.filteredTeam?.name ?? null;
   const filteredCategoryName = data.filteredCategory?.name ?? null;
 
@@ -168,7 +171,6 @@ export default async function SportPage({
         >
           {categoryId && filteredCategoryName && (
             <FilterChip
-              label={t("filterKindCategory")}
               value={filteredCategoryName}
               clearHref={clearHref("category")}
               clearAriaLabel={t("clearFilter")}
@@ -176,7 +178,7 @@ export default async function SportPage({
           )}
           {tournamentId && (
             <FilterChip
-              label={t("filterKindTournament")}
+              logoUrl={filteredTournamentLogoUrl}
               value={filteredTournamentName ?? ""}
               clearHref={clearHref("tournament")}
               clearAriaLabel={t("clearFilter")}
@@ -184,7 +186,6 @@ export default async function SportPage({
           )}
           {teamId && (
             <FilterChip
-              label={t("filterKindTeam")}
               value={filteredTeamName ?? ""}
               clearHref={clearHref("team")}
               clearAriaLabel={t("clearFilter")}
@@ -247,13 +248,23 @@ export default async function SportPage({
   );
 }
 
+/**
+ * A dismissible filter chip.
+ *
+ * The chip used to lead with the KIND of filter — the literal word
+ * "TOURNAMENT" before "England. Premier League. Season 26/27". That
+ * label told the reader nothing they could not see, and on a chip whose
+ * value is already a full competition name it was pure noise. The mark
+ * goes there instead, and when there is no mark the slot collapses
+ * rather than falling back to the word.
+ */
 function FilterChip({
-  label,
+  logoUrl,
   value,
   clearHref,
   clearAriaLabel,
 }: {
-  label: string;
+  logoUrl?: string | null;
   value: string;
   clearHref: string;
   clearAriaLabel: string;
@@ -272,17 +283,7 @@ function FilterChip({
         color: "var(--fg)",
       }}
     >
-      <span
-        className="mono"
-        style={{
-          fontSize: 10.5,
-          letterSpacing: "0.12em",
-          textTransform: "uppercase",
-          color: "var(--fg-dim)",
-        }}
-      >
-        {label}
-      </span>
+      <LogoMark logoUrl={logoUrl} name={value} />
       <span>{value}</span>
       <Link
         href={clearHref}

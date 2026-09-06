@@ -1179,6 +1179,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         tournamentId: tournaments.id,
         tournamentName: tournaments.name,
         tournamentRiskTier: tournaments.riskTier,
+        tournamentLogoUrl: tournaments.logoUrl,
         // Needed for the competitor tier of the ZillaBoost cascade.
         homeCompetitorId: matches.homeCompetitorId,
         awayCompetitorId: matches.awayCompetitorId,
@@ -1319,6 +1320,9 @@ export default async function catalogRoutes(app: FastifyInstance) {
             id: r.tournamentId,
             name: r.tournamentName,
             riskTier: r.tournamentRiskTier,
+            // The sport page's filter chip shows the tournament's mark
+            // instead of the word "TOURNAMENT".
+            logoUrl: r.tournamentLogoUrl,
           },
           matchWinner: o
             ? (() => {
