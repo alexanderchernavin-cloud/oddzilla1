@@ -191,8 +191,6 @@ export interface ComboZillaPoolRow {
   sportId: number;
   sportSlug: string;
   sportName: string;
-  categoryId: number;
-  categoryName: string;
   tournamentId: number;
   tournamentName: string;
   riskTier: number | null;
@@ -228,32 +226,65 @@ export async function loadComboZillaPoolRows(
   rules: readonly RuleLike[],
   opts: { perSport?: number; limit?: number } = {},
 ): Promise<ComboZillaPoolRow[]> {
+  const rows = await buildPoolQuery(db, cfg, rules, opts);
+  return rows.map((r) => ({
+    ...r,
+    // Going through `sql` bypasses each column's own decoder, so pin the
+    // types the callers depend on: bigint for the match id (the driver
+    // hands a bigint column back as a string) and Date for the timestamptz.
+    matchId: BigInt(r.matchId),
+    scheduledAt: r.scheduledAt == null ? null : new Date(r.scheduledAt),
+    riskTier: r.riskTier == null ? null : Number(r.riskTier),
+  }));
+}
+
+/**
+ * The pool query, unexecuted — split out so a unit test can render it with
+ * `.toSQL()` and check the whole statement rather than one clause. The
+ * ambiguous-`id` bug that took this endpoint down on 2026-09-06 was
+ * invisible to a test that only rendered the eligibility CASE.
+ */
+export function buildPoolQuery(
+  db: Db,
+  cfg: Pick<CombozillaConfig, "eligibleRiskTiers" | "allowUntiered">,
+  rules: readonly RuleLike[],
+  opts: { perSport?: number; limit?: number } = {},
+) {
   const perSport = opts.perSport ?? COMBOZILLA_POOL_PER_SPORT;
   const limit = opts.limit ?? COMBOZILLA_POOL_LIMIT;
   const partition = partitionRules(rules);
 
+  // EVERY column in the CTE carries an explicit alias.
+  //
+  // Passing a bare column into a `$with(...)` select emits the raw
+  // reference — `select "matches"."id", …, "sports"."id", …` — with no AS,
+  // so the CTE exposes four columns literally named `id` (matches, sports,
+  // categories, tournaments) and the outer `SELECT "id"` fails with
+  // `column reference "id" is ambiguous`. That reached production on
+  // 2026-09-06: the endpoint 500'd on every request and the lobby carousel
+  // silently vanished, because the page treats a failed fetch as an empty
+  // pool. The `cz_` prefix keeps the names unique against anything a
+  // future join brings in.
   const ranked = db.$with("combozilla_ranked").as(
     db
       .select({
-        matchId: matches.id,
-        homeTeam: matches.homeTeam,
-        awayTeam: matches.awayTeam,
-        scheduledAt: matches.scheduledAt,
-        status: matches.status,
-        sportId: sports.id,
-        sportSlug: sports.slug,
-        sportName: sports.name,
-        categoryId: categories.id,
-        categoryName: categories.name,
-        tournamentId: tournaments.id,
-        tournamentName: tournaments.name,
-        riskTier: tournaments.riskTier,
+        matchId: sql<string>`${matches.id}`.as("cz_match_id"),
+        homeTeam: sql<string>`${matches.homeTeam}`.as("cz_home_team"),
+        awayTeam: sql<string>`${matches.awayTeam}`.as("cz_away_team"),
+        scheduledAt: sql<Date | null>`${matches.scheduledAt}`.as("cz_scheduled_at"),
+        status: sql<string>`${matches.status}`.as("cz_status"),
+        sportId: sql<number>`${sports.id}`.as("cz_sport_id"),
+        sportSlug: sql<string>`${sports.slug}`.as("cz_sport_slug"),
+        sportName: sql<string>`${sports.name}`.as("cz_sport_name"),
+        tournamentId: sql<number>`${tournaments.id}`.as("cz_tournament_id"),
+        tournamentName: sql<string>`${tournaments.name}`.as("cz_tournament_name"),
+        riskTier: sql<number | null>`${tournaments.riskTier}`.as("cz_risk_tier"),
         rn: sql<number>`ROW_NUMBER() OVER (
           PARTITION BY ${sports.id}
           ORDER BY COALESCE(${tournaments.riskTier}, 99) ASC,
                    ${matches.scheduledAt} ASC NULLS LAST,
                    ${matches.id} ASC
-        )`.as("rn"),
+        )`.as("cz_rn"),
       })
       .from(matches)
       .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
@@ -262,7 +293,7 @@ export async function loadComboZillaPoolRows(
       .where(poolWhere(cfg, partition)),
   );
 
-  const rows = await db
+  return db
     .with(ranked)
     .select({
       matchId: ranked.matchId,
@@ -273,8 +304,6 @@ export async function loadComboZillaPoolRows(
       sportId: ranked.sportId,
       sportSlug: ranked.sportSlug,
       sportName: ranked.sportName,
-      categoryId: ranked.categoryId,
-      categoryName: ranked.categoryName,
       tournamentId: ranked.tournamentId,
       tournamentName: ranked.tournamentName,
       riskTier: ranked.riskTier,
@@ -283,14 +312,6 @@ export async function loadComboZillaPoolRows(
     .where(sql`${ranked.rn} <= ${perSport}`)
     .orderBy(asc(ranked.sportId), asc(ranked.rn))
     .limit(limit);
-
-  return rows.map((r) => ({
-    ...r,
-    // A CTE hands timestamptz back through the column's own decoder, but
-    // pin the type at the boundary so a driver change cannot leak a
-    // string into `toISOString()` downstream.
-    scheduledAt: r.scheduledAt == null ? null : new Date(r.scheduledAt),
-  }));
 }
 
 // ── Backoffice preview ───────────────────────────────────────────────────

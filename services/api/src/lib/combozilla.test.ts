@@ -11,7 +11,8 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { comboZillaEligibility, partitionRules } from "./combozilla.js";
+import { drizzle } from "drizzle-orm/postgres-js";
+import { buildPoolQuery, comboZillaEligibility, partitionRules } from "./combozilla.js";
 
 // Same casing the real connection uses (packages/db/src/index.ts), so the
 // rendered column names are the ones Postgres will see.
@@ -113,5 +114,63 @@ describe("comboZillaEligibility", () => {
     assert.ok(!q.sql.includes('"categories"."id"'));
     assert.ok(!q.sql.includes('"sports"."id"'));
     assert.ok(q.sql.includes('"tournaments"."id" in ($1) THEN FALSE'));
+  });
+});
+
+// The whole statement, not one clause.
+//
+// The eligibility tests above render the CASE alone, and that is exactly
+// why they missed the bug that took this endpoint down on 2026-09-06: the
+// CTE joins four tables that each have an `id`, drizzle emitted them
+// unaliased, and Postgres rejected the outer select with `column reference
+// "id" is ambiguous`. Building a query needs no connection — only
+// executing it does — so a dummy client is enough to render one.
+describe("buildPoolQuery", () => {
+  const db = drizzle({} as never);
+  // Rendered through `dialect` (which carries the real connection's
+  // snake_case casing), NOT the query's own `.toSQL()`: a connectionless
+  // drizzle instance does not inherit that casing and renders every column
+  // as its camelCase TS name — `"matches"."homeTeam"`, not a column that
+  // exists. Asserting on that render would prove nothing about the
+  // statement Postgres actually receives.
+  const renderPool = () =>
+    dialect.sqlToQuery(
+      buildPoolQuery(
+        db as never,
+        { eligibleRiskTiers: [1, 2, 3], allowUntiered: false },
+        [],
+      ).getSQL(),
+    ).sql;
+
+  it("renders DB column names, not camelCase TS property names", () => {
+    const sql = renderPool();
+    assert.ok(sql.includes('"matches"."home_team"'), sql.slice(0, 200));
+    assert.ok(!sql.includes("homeTeam"), "casing was not applied");
+  });
+
+  it("gives every CTE column a unique alias", () => {
+    const sql = renderPool();
+    const cte = sql.slice(sql.indexOf("as ("), sql.indexOf(" from "));
+    const aliases = [...cte.matchAll(/ as "([^"]+)"/g)].map((m) => m[1] ?? "");
+    assert.ok(aliases.length >= 12, `expected the full select list, got ${aliases.length}`);
+    assert.equal(
+      aliases.length,
+      new Set(aliases).size,
+      `duplicate CTE aliases: ${aliases.join(", ")}`,
+    );
+  });
+
+  it("selects no bare ambiguous column from the CTE", () => {
+    const sql = renderPool();
+    const outer = sql.slice(sql.lastIndexOf("select "));
+    // Postgres rejects a bare `"id"` here when several joined tables expose
+    // one, so every projected name must carry the cz_ prefix.
+    for (const name of [...outer.matchAll(/"([a-z_]+)"/g)].map((m) => m[1] ?? "")) {
+      if (name === "combozilla_ranked") continue;
+      assert.ok(
+        name.startsWith("cz_"),
+        `outer select projects un-prefixed column "${name}" — CTE aliases must be unique`,
+      );
+    }
   });
 });
