@@ -56,6 +56,12 @@ const SECTIONS: Section[] = [
       { href: "/admin/tournaments", label: "Tournaments", Icon: I.Star, matchPrefix: "/admin/tournaments" },
       { href: "/admin/sportradar", label: "Sportradar", Icon: I.Activity, matchPrefix: "/admin/sportradar" },
       { href: "/admin/categories", label: "Categories", Icon: I.Filter, matchPrefix: "/admin/categories" },
+      {
+        href: "/admin/custom-events",
+        label: "Custom events",
+        Icon: I.Ticket,
+        matchPrefix: "/admin/custom-events",
+      },
     ],
   },
   {

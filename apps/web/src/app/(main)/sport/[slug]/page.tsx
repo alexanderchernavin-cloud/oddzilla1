@@ -89,8 +89,30 @@ export default async function SportPage({
 
   const sportShort = shortName(data.sport.name);
   const enriched = data.matches.map((m) => enrich(m, slug, sportShort));
-  const live = enriched.filter((m) => m.status === "live");
-  const upcoming = enriched.filter((m) => m.status !== "live");
+
+  // Group on the server's `featured` flag, NOT on status.
+  //
+  // The API sorts one tier-ordered region at the top of every list —
+  // everything live, plus prematch matches inside their tier's hoist
+  // window — and only then falls back to chronological order (see
+  // `matchListOrder` in the catalog routes). Splitting that region by
+  // status here undid the whole thing: on 2026-09-06 the nine Premier
+  // League / La Liga / Ligue 1 fixtures the rule had promoted to
+  // positions 1-9 were re-sorted underneath 91 live youth and women's
+  // games, which is the opposite of what the ordering decided.
+  //
+  // Rows arrive in server order and `filter` is stable, so the tier
+  // ordering survives this partition untouched.
+  const featured = enriched.filter((m) => m.featured);
+  const rest = enriched.filter((m) => !m.featured);
+
+  // The top section used to carry its own kicker, named after what was
+  // in it ("Live" / "Starting soon" / "Live and soon") with a count. The
+  // Live / Pre-match strip took that slot on 2026-09-06 — it is what the
+  // lobby, /live and /upcoming put above a match list, and a bettor on a
+  // sport page needs the way over to those sections as much as anyone.
+  // The counts went with it: they were slices of this page's own 100-row
+  // fetch, not totals (a Football line carries ~1 900 prematch fixtures).
 
   return (
     <div
@@ -206,10 +228,10 @@ export default async function SportPage({
       <MatchListTabs
         matches={enriched}
         groups={[
-          ...(live.length > 0
+          ...(featured.length > 0
             ? [
                 {
-                  key: "live",
+                  key: "featured",
                   label: (
                     <SectionTabs
                       liveLabel={tMatch("live")}
@@ -217,25 +239,25 @@ export default async function SportPage({
                       sport={slug}
                     />
                   ),
-                  matches: live,
+                  matches: featured,
                 },
               ]
             : []),
           {
             key: "upcoming",
             label:
-              live.length > 0 ? null : (
+              featured.length > 0 ? null : (
                 <SectionTabs
                   liveLabel={tMatch("live")}
                   prematchLabel={tMatch("prematch")}
                   sport={slug}
                 />
               ),
-            matches: upcoming,
+            matches: rest,
           },
         ]}
       />
-      {upcoming.length === 0 && live.length === 0 ? (
+      {rest.length === 0 && featured.length === 0 ? (
         <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
           {t("noMatches")}
         </p>

@@ -393,6 +393,8 @@
     "all": "Todos",
     "live": "En vivo",
     "upcoming": "Previa",
+    "startingSoon": "Empiezan pronto",
+    "liveAndSoon": "En vivo y próximos",
     "topTournaments": "Torneos destacados",
     "clearFilter": "Quitar filtro",
     "noMatches": "Ningún partido ahora mismo.",

@@ -50,6 +50,17 @@ export interface ListMatch {
   status: "not_started" | "live" | "closed" | "cancelled" | "suspended";
   bestOf?: number | null;
   liveScore?: LiveScore | null;
+  /**
+   * The server's own answer to "does this row belong in the tier-sorted
+   * top region of the list" — live, or a tiered prematch match inside its
+   * tier's hoist window (see `hoistedPredicate` in the catalog routes).
+   *
+   * Read it, never recompute it: the windows are per tier and they move,
+   * and a second copy of the rule here would drift from the ordering it
+   * is supposed to describe. Optional so a payload that predates the
+   * field still type-checks; callers treat absent as false.
+   */
+  featured?: boolean;
   tournament: { id: number; name: string; riskTier?: number | null };
   matchWinner: {
     marketId: string;

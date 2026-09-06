@@ -384,17 +384,66 @@ function classifyStreamUrl(
 // lists show. Their rationale is documented there.
 
 /**
- * How long before kickoff a top-tier match starts competing with the live
- * offer for the top of the list.
+ * How long before kickoff a match of each risk tier starts competing with
+ * the live offer for the top of the list.
+ *
+ * The window narrows as the tier does, because prominence and imminence
+ * are the two things that earn a prematch match a place above a game
+ * already in play, and they trade off against each other: a Champions
+ * League tie is worth showing half a day out, a tier-4 fixture only once
+ * it is about to kick off. Operator's numbers (2026-09-06).
+ *
+ * A tier absent from this map NEVER hoists — that includes untiered
+ * tournaments, which must not be promoted by the absence of information.
+ * Deliberately wider than `isFeaturedTier` on the storefront in tier
+ * coverage but narrower in effect: a gold star is decoration, displacing
+ * live football is a merchandising claim, so each tier pays for it with
+ * a shorter window.
  */
-const FEATURED_PREMATCH_WINDOW = "12 hours";
+const PREMATCH_HOIST_WINDOWS: ReadonlyArray<readonly [tier: number, window: string]> = [
+  [1, "12 hours"],
+  [2, "6 hours"],
+  [3, "3 hours"],
+  [4, "1 hour"],
+];
 
 /**
- * The tiers prominent enough to outrank a live match before they start.
- * Deliberately narrower than `isFeaturedTier` on the storefront: a gold
- * star is decoration, displacing live football is a merchandising claim.
+ * True for a match that belongs in the top region of a list: anything
+ * live, plus a tiered prematch match inside its tier's window.
+ *
+ * Built once and used TWICE — by `matchListOrder()` to sort, and as the
+ * `featured` column both list endpoints return. The storefront groups on
+ * that flag rather than re-deriving the rule in TypeScript, because a
+ * second copy would drift from this one the first time the windows move
+ * and the only symptom would be a section header quietly disagreeing
+ * with the order underneath it.
+ *
+ * `CASE ... ELSE NULL` is what excludes tier 5+ and untiered rows:
+ * `scheduled_at <= now() + NULL` is NULL, which is not true, so they fall
+ * through to the chronological tail. An `interval '0'` default would
+ * instead hoist every wedged `not_started` match whose kickoff has
+ * already passed.
+ *
+ * That NULL propagates out of the OR, so the whole expression is
+ * three-valued and the COALESCE is load-bearing rather than defensive:
+ * without it this column would serialise as `null` for exactly the rows
+ * it is meant to report `false` for.
  */
-const HOISTABLE_TIERS = [1, 2];
+function hoistedPredicate(): SQL<boolean> {
+  const window = sql`CASE ${tournaments.riskTier} ${sql.join(
+    PREMATCH_HOIST_WINDOWS.map(
+      ([tier, w]) => sql`WHEN ${tier}::int THEN ${w}::interval`,
+    ),
+    sql` `,
+  )} ELSE NULL END`;
+  return sql<boolean>`COALESCE(
+    ${matches.status} = 'live'
+    OR (
+      ${matches.scheduledAt} IS NOT NULL
+      AND ${matches.scheduledAt} <= now() + ${window}
+    )
+  , false)`;
+}
 
 /**
  * Storefront match ordering: prominence first, then time.
@@ -408,12 +457,15 @@ const HOISTABLE_TIERS = [1, 2];
  *
  * Two rules, both the operator's:
  *
- *   1. Among matches competing for the top, LOWER risk tier ranks higher.
- *      The tier is already our best statement of how big a competition is,
- *      so it is the right sort key, and it now exists for the traditional
- *      line as well as esports (ZillaAGI, migration 0106).
- *   2. A tier 1 or 2 match joins that competition 12 HOURS BEFORE KICKOFF,
- *      so an upcoming Champions League tie outranks a live tier-6 game.
+ *   1. Among matches competing for the top, LOWER risk tier ranks higher —
+ *      and that comparison does not care whether a match is live. A tier-2
+ *      fixture kicking off in an hour outranks every live tier-3-and-worse
+ *      game on the page; a live tier-1 game outranks it in turn. The tier
+ *      is already our best statement of how big a competition is, so it is
+ *      the right sort key, and it now exists for the traditional line as
+ *      well as esports (ZillaAGI, migration 0106).
+ *   2. A prematch match joins that competition inside its tier's window —
+ *      see `PREMATCH_HOIST_WINDOWS`.
  *
  * Everything else keeps chronological order — a "what's on soon" list
  * sorted by prestige rather than time would be actively worse — with tier
@@ -421,17 +473,7 @@ const HOISTABLE_TIERS = [1, 2];
  * never promoted by the absence of information.
  */
 function matchListOrder(): SQL[] {
-  const hoisted = sql`(
-    ${matches.status} = 'live'
-    OR (
-      ${tournaments.riskTier} IN (${sql.join(
-        HOISTABLE_TIERS.map((t) => sql`${t}`),
-        sql`, `,
-      )})
-      AND ${matches.scheduledAt} IS NOT NULL
-      AND ${matches.scheduledAt} <= now() + ${FEATURED_PREMATCH_WINDOW}::interval
-    )
-  )`;
+  const hoisted = hoistedPredicate();
   return [
     sql`CASE WHEN ${hoisted} THEN 0 ELSE 1 END ASC`,
     sql`CASE WHEN ${hoisted} THEN COALESCE(${tournaments.riskTier}, 99) ELSE 99 END ASC`,
@@ -580,6 +622,14 @@ async function loadMatchWinnerOdds(
         // winners live in the FONBET_PMID_BASE namespace and are the only
         // Fonbet markets using outcome ids "1" / "2" / "3", so the id
         // filter selects exactly the match-winner rows for both providers.
+        //
+        // Custom markets (provider_market_id 2 000 000) are above the same
+        // base and so are included on purpose: a 2- or 3-outcome custom
+        // market is given exactly these ids, which is how an operator's
+        // headline market gets an inline price on list cards. Wider custom
+        // markets are given `o1..oN` instead precisely so they fall out
+        // here — the pairing below renders home / away / draw and nothing
+        // else, so a five-way market would show as a slice of itself.
         or(
           eq(markets.providerMarketId, 1),
           and(
@@ -1258,6 +1308,10 @@ export default async function catalogRoutes(app: FastifyInstance) {
         tournamentId: tournaments.id,
         tournamentName: tournaments.name,
         tournamentRiskTier: tournaments.riskTier,
+        // Whether this row sits in the tier-sorted top region — see
+        // `hoistedPredicate`. Returned so the storefront can group on the
+        // server's own answer instead of re-deriving the windows.
+        featured: hoistedPredicate().mapWith(Boolean),
         // Needed for the competitor tier of the ZillaBoost cascade.
         homeCompetitorId: matches.homeCompetitorId,
         awayCompetitorId: matches.awayCompetitorId,
@@ -1395,6 +1449,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
           status: r.status,
           bestOf: r.bestOf,
           liveScore: r.liveScore,
+          featured: r.featured,
           tournament: {
             id: r.tournamentId,
             name: r.tournamentName,
@@ -1596,6 +1651,11 @@ export default async function catalogRoutes(app: FastifyInstance) {
           marketId: markets.id,
           providerMarketId: markets.providerMarketId,
           specifiersJson: markets.specifiersJson,
+          // Operator-authored name (custom events). Wins over the
+          // description template when set — custom markets all share one
+          // provider_market_id, so market_descriptions cannot name them
+          // individually.
+          customName: markets.customName,
           status: markets.status,
           lastOddinTs: markets.lastOddinTs,
           outcomeId: marketOutcomes.outcomeId,
@@ -1816,7 +1876,12 @@ export default async function catalogRoutes(app: FastifyInstance) {
       if (!m) {
         const specs = (r.specifiersJson ?? {}) as Record<string, string>;
         const variant = specs.variant ?? "";
+        // An operator-authored name wins outright. It is literal text,
+        // not a template, so it deliberately goes in ahead of the
+        // description lookup rather than into it: there are no
+        // {placeholders} to expand and no per-language row to prefer.
         const template =
+          r.customName ??
           marketDescMap.get(descKey(r.providerMarketId, variant)) ??
           marketDescMap.get(descKey(r.providerMarketId, "")) ??
           `Market #${r.providerMarketId}`;
@@ -2198,6 +2263,11 @@ export default async function catalogRoutes(app: FastifyInstance) {
         // Carried per row because these lists span sports and the pages
         // rendering them don't fetch /catalog/sports.
         sportDisplayOrder: sports.displayOrder,
+        // See the same column on /catalog/sports/:slug. Constant per
+        // request here (this endpoint is filtered to one status), but
+        // returned for shape parity so a client can group either payload
+        // with the same code.
+        featured: hoistedPredicate().mapWith(Boolean),
         // Needed for the competitor tier of the ZillaBoost cascade.
         homeCompetitorId: matches.homeCompetitorId,
         awayCompetitorId: matches.awayCompetitorId,
@@ -2318,6 +2388,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
           status: r.status,
           bestOf: r.bestOf,
           liveScore: r.liveScore,
+          featured: r.featured,
           tournament: {
             id: r.tournamentId,
             name: r.tournamentName,

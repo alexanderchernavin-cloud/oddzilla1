@@ -26,7 +26,8 @@
     "./support": "./src/support.ts",
     "./video": "./src/video.ts",
     "./sportradar": "./src/sportradar.ts",
-    "./bet-assist": "./src/bet-assist.ts"
+    "./bet-assist": "./src/bet-assist.ts",
+    "./custom-events": "./src/custom-events.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

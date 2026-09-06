@@ -35,6 +35,14 @@ export const markets = pgTable(
     specifiersJson: jsonb().notNull().default(sql`'{}'::jsonb`),
     specifiersHash: bytea().notNull(),
     status: smallint().notNull().default(0),
+    /**
+     * Operator-authored market name (custom events). Feed markets take
+     * theirs from `market_descriptions`, keyed by (provider_market_id,
+     * variant, language) — custom markets all share ONE
+     * provider_market_id, so that table cannot name them individually.
+     * NULL means "resolve the normal way", which is every feed row.
+     */
+    customName: text("custom_name"),
     lastOddinTs: bigint({ mode: "bigint" }).notNull().default(0n),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),

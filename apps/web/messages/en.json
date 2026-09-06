@@ -393,6 +393,8 @@
     "all": "All",
     "live": "Live",
     "upcoming": "Pre-match",
+    "startingSoon": "Starting soon",
+    "liveAndSoon": "Live & starting soon",
     "topTournaments": "Top tournaments",
     "clearFilter": "Clear filter",
     "noMatches": "No matches right now.",
