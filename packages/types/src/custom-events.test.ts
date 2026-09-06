@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   bookKey,
   priceCustomMarket,
+  LADDER_FLOOR,
   MIN_CUSTOM_PROBABILITY,
 } from "./custom-events.js";
 
@@ -33,11 +34,65 @@ test("the overround lands on the book key, not on one price", () => {
     liability: off,
   });
   const key = bookKey(cells.map((c) => c.publishedOdds));
-  // Prices round DOWN to the 4dp grid, so the delivered key sits a hair
-  // ABOVE the requested 1.05 — never below, which would be margin we
-  // asked for and did not take.
+  // Every price is floored onto the 0.01 ladder, so the delivered key
+  // sits ABOVE the requested 1.05 — never below, which would be margin
+  // we asked for and did not take. One hundredth per outcome is the
+  // whole budget for the gap.
   assert.ok(key >= 1.05, `key ${key} must not undercut the requested 5%`);
-  assert.ok(key < 1.0502, `key ${key} should be 1.05 up to rounding`);
+  assert.ok(key < 1.06, `key ${key} drifted further than the ladder step`);
+});
+
+test("authored prices are quoted on the 0.01 ladder, not at feed precision", () => {
+  // The exact book that shipped as 4.7619 / 1.1904 on the storefront:
+  // a 20/80 call carrying a 5% overround, so the implied probabilities
+  // are 0.21 and 0.84 and the reciprocals are those two long decimals.
+  const cells = priceCustomMarket({
+    outcomes: [
+      { outcomeId: "1", baseProbability: 20 },
+      { outcomeId: "2", baseProbability: 80 },
+    ],
+    overroundBp: 500,
+    liability: off,
+  });
+  assert.equal(cells[0]!.publishedOdds, 4.76);
+  assert.equal(cells[1]!.publishedOdds, 1.19);
+  for (const c of cells) {
+    assert.equal(
+      Math.round(c.publishedOdds * 100) / 100,
+      c.publishedOdds,
+      `${c.publishedOdds} carries more than two decimals`,
+    );
+  }
+});
+
+test("the ladder floors, so a price never lengthens past the model", () => {
+  const cells = priceCustomMarket({
+    outcomes: [
+      { outcomeId: "1", baseProbability: 0.37 },
+      { outcomeId: "2", baseProbability: 0.63 },
+    ],
+    overroundBp: 0,
+    liability: off,
+  });
+  // 1/0.37 = 2.7027 -> 2.70, not 2.71.
+  assert.equal(cells[0]!.publishedOdds, 2.7);
+  assert.ok(cells[0]!.publishedOdds <= 1 / 0.37);
+});
+
+test("below 1.01 the ladder gives way, because it cannot express the price", () => {
+  // A 99.5% favorite prices at 1.005. Two decimals would either kill the
+  // cell (1.00 is unbettable) or lengthen it to 1.01.
+  const cells = priceCustomMarket({
+    outcomes: [
+      { outcomeId: "1", baseProbability: 0.995 },
+      { outcomeId: "2", baseProbability: 0.005 },
+    ],
+    overroundBp: 0,
+    liability: off,
+  });
+  assert.ok(cells[0]!.publishedOdds > 1, "must stay bettable");
+  assert.ok(cells[0]!.publishedOdds < LADDER_FLOOR);
+  assert.equal(cells[0]!.publishedOdds, 1.005);
 });
 
 test("operator probabilities are normalised, not rejected", () => {
@@ -54,31 +109,6 @@ test("operator probabilities are normalised, not rejected", () => {
   const sum = cells.reduce((a, c) => a + c.baseProbability, 0);
   assert.ok(Math.abs(sum - 1) < 1e-9);
   assert.ok(Math.abs(cells[0]!.baseProbability - 60 / 110) < 1e-9);
-});
-
-test("prices round DOWN so a stored price is never longer than the model", () => {
-  const cells = priceCustomMarket({
-    outcomes: [
-      { outcomeId: "1", baseProbability: 1 / 3 },
-      { outcomeId: "2", baseProbability: 2 / 3 },
-    ],
-    overroundBp: 0,
-    liability: off,
-  });
-  // 1/(1/3) = 3 exactly; 1/(2/3) = 1.5 exactly. Use a ratio that does not
-  // land on the grid to see the direction.
-  const odd = priceCustomMarket({
-    outcomes: [
-      { outcomeId: "1", baseProbability: 0.37 },
-      { outcomeId: "2", baseProbability: 0.63 },
-    ],
-    overroundBp: 0,
-    liability: off,
-  });
-  assert.equal(cells[0]!.publishedOdds, 3);
-  const exact = 1 / 0.37;
-  assert.ok(odd[0]!.publishedOdds <= exact);
-  assert.ok(exact - odd[0]!.publishedOdds < 0.0001);
 });
 
 test("liability trading shortens the side carrying the money", () => {
