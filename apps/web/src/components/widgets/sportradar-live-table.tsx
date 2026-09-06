@@ -7,6 +7,8 @@
 // (the licensing story lives in sportradar-lmt.tsx): props ride in the
 // URL hash, the page re-reads them on `hashchange`, and nothing about
 // the frame's size crosses the origin boundary, so the height is ours.
+// The storefront theme rides the hash as well (`wl-theme`, see
+// sportradar-theme.ts); the loader reads it once, so a toggle remounts.
 //
 // The id is a MATCH id on purpose. `season.liveTable` resolves its
 // season from any one of `matchId | tournamentId | uniqueTournamentId |
@@ -18,6 +20,11 @@
 // no second id space to map, review and keep true.
 
 import { useTranslations } from "@/lib/i18n";
+import { useDocumentTheme, type DocumentTheme } from "@/lib/use-theme";
+import {
+  SPORTRADAR_FRAME_BACKGROUND,
+  sportradarThemeHashParts,
+} from "./sportradar-theme";
 
 const HOST = "https://widgets.sir.sportradar.com";
 
@@ -61,14 +68,20 @@ export function buildLiveTableStandaloneUrl({
   srSportId,
   client = "betradar",
   language = "en",
-}: Omit<Props, "height">): string {
-  const hash = [`matchId=${srMatchId}`, `sportId=${srSportId}`].join("&");
+  theme,
+}: Omit<Props, "height"> & { theme?: DocumentTheme }): string {
+  const hash = [
+    `matchId=${srMatchId}`,
+    `sportId=${srSportId}`,
+    ...sportradarThemeHashParts(theme),
+  ].join("&");
   return `${HOST}/${encodeURIComponent(client)}/${encodeURIComponent(language)}/standalone/season.liveTable#${hash}`;
 }
 
 export function SportradarLiveTable({ height = 620, ...rest }: Props) {
   const t = useTranslations("matchWidgets");
-  const src = buildLiveTableStandaloneUrl(rest);
+  const theme = useDocumentTheme();
+  const src = buildLiveTableStandaloneUrl({ ...rest, theme });
 
   return (
     <section
@@ -104,6 +117,7 @@ export function SportradarLiveTable({ height = 620, ...rest }: Props) {
         borders go with the padding for the same reason.
       */}
       <iframe
+        key={theme}
         src={src}
         title={t("liveTable.title")}
         loading="lazy"
@@ -114,7 +128,7 @@ export function SportradarLiveTable({ height = 620, ...rest }: Props) {
           height,
           borderTop: "1px solid var(--border)",
           borderBottom: "1px solid var(--border)",
-          background: "var(--surface-2)",
+          background: SPORTRADAR_FRAME_BACKGROUND,
           display: "block",
         }}
       />
