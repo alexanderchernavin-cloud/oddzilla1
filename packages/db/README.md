@@ -20,9 +20,25 @@ From the repo root: `make migrate` and `make seed`.
 ## Adding a migration
 
 1. Edit `src/schema/<file>.ts` — add/modify the Drizzle table.
-2. Write equivalent SQL in `migrations/<next>_<desc>.sql`.
-3. Append an entry to `migrations/meta/_journal.json`.
+2. Write equivalent SQL in
+   `migrations/<YYYYMMDDTHHMMSS>_<lower_snake_desc>.sql`. Take the prefix from
+   `date -u +%Y%m%dT%H%M%S`; **never** by reading the directory and adding one
+   to the highest number. That is a shared counter read from a local snapshot,
+   so two branches off the same commit claim the same value and git merges
+   them cleanly because they are different files — it happened 11 times before
+   the numbers were frozen at `0110`. Full reasoning in
+   [`src/check-migrations.ts`](./src/check-migrations.ts) and
+   [docs/SCHEMA.md](../../docs/SCHEMA.md#why-timestamps-not-numbers).
+3. `pnpm db:check-migrations` — enforces the naming form, the freeze and
+   prefix uniqueness. Chained onto this package's `lint`, so `pnpm lint` and
+   CI both run it (on pull requests and on every push to main).
 4. `make migrate` applies it and records the filename in `_migrations`.
+
+Do not hand-append to `migrations/meta/_journal.json` — the runner reads the
+directory, not the journal, and that file has been unmaintained since `0058`.
+
+Never rename or edit an applied migration: `_migrations` keys on the filename
+with no checksum, so a rename re-runs it.
 
 We don't use `drizzle-kit migrate` because our schema needs Postgres
 features (partitioning, extensions) that Drizzle can't emit. Drizzle is for
