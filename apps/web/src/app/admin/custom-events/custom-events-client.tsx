@@ -249,12 +249,16 @@ function CategoryBlock({
 }
 
 /**
- * One tournament: rename it, move it to another category, or delete it.
+ * One tournament: rename it, move it between categories, set its risk
+ * tier, or delete it.
  *
- * The risk tier is shown but not edited here — it belongs to RiskZilla's
- * own screen, which is also where a ZillaAGI verdict or a feed value
- * lands, so duplicating the control would give an operator two places to
- * set one number.
+ * The tier is editable here despite living on /admin/tournaments too. A
+ * custom tournament has no feed to assign one, so it opens untiered —
+ * which RiskZilla prices at the STRICTEST tier, capping stakes to almost
+ * nothing. Sending an operator to a different screen to set the single
+ * number that decides that was a worse answer than one more control.
+ * The write mirrors the other screen's exactly rather than inventing a
+ * second rule for the same column.
  */
 function TournamentItem({
   tournament,
@@ -270,8 +274,14 @@ function TournamentItem({
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState(tournament.name);
   const [catId, setCatId] = useState(String(categoryId));
+  const [tier, setTier] = useState(
+    tournament.riskTier == null ? "" : String(tournament.riskTier),
+  );
 
-  const dirty = name.trim() !== tournament.name || catId !== String(categoryId);
+  const dirty =
+    name.trim() !== tournament.name ||
+    catId !== String(categoryId) ||
+    tier !== (tournament.riskTier == null ? "" : String(tournament.riskTier));
 
   function run(fn: () => Promise<unknown>, fallback: string) {
     setError(null);
@@ -305,7 +315,20 @@ function TournamentItem({
           </option>
         ))}
       </select>
-      <TierChip tier={tournament.riskTier} />
+      <select
+        className="admin-input"
+        value={tier}
+        onChange={(e) => setTier(e.target.value)}
+        title="Risk tier: sets RiskZilla's per-match liability budget. No tier means the strictest one."
+      >
+        <option value="">No tier (strictest)</option>
+        {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((t) => (
+          <option key={t} value={t}>
+            T{t}
+          </option>
+        ))}
+      </select>
+      {tier === "" ? <TierChip tier={null} /> : null}
       <span className="text-xs text-[var(--color-fg-muted)]">
         {tournament.eventCount} event{tournament.eventCount === 1 ? "" : "s"}
       </span>
@@ -320,6 +343,10 @@ function TournamentItem({
                 body: JSON.stringify({
                   name: name.trim(),
                   categoryId: Number(catId),
+                  // Empty means "back to automatic", which is a real
+                  // choice and not the same as leaving the field alone —
+                  // hence null rather than omitting the key.
+                  riskTier: tier === "" ? null : Number(tier),
                 }),
               }),
             "Save failed.",

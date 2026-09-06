@@ -918,6 +918,14 @@ function InlineMarkets({
                   >
                     {o.label}
                   </span>
+                  {/* RowOddBtn is `width: 100%` by design — ScoreTable
+                      sits it in a fixed grid column. Without an
+                      equivalent box here it claimed the whole row and
+                      crushed the answer's label to nothing, which is
+                      exactly what shipped: prices with no text beside
+                      them. Same clamp ScoreTable's trailing column uses,
+                      so both card shapes line their prices up. */}
+                  <div style={{ width: "clamp(58px, 16vw, 92px)", flexShrink: 0 }}>
                   <RowOddBtn
                     label=""
                     price={price}
@@ -947,6 +955,7 @@ function InlineMarkets({
                       }
                     }}
                   />
+                  </div>
                 </div>
               );
             })}
