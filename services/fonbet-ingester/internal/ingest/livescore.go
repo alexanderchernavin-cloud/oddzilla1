@@ -17,10 +17,16 @@ type liveScorePayload struct {
 	Away       *int               `json:"away,omitempty"`
 	Status     int                `json:"status"`
 	Scoreboard *scoreboardPayload `json:"scoreboard,omitempty"`
-	Periods    []periodPayload    `json:"periods,omitempty"`
-	Comment    string             `json:"comment,omitempty"`
-	Provider   string             `json:"provider"`
-	UpdatedAt  string             `json:"updatedAt"`
+	// Side holding serve: 1 = home, 2 = away. Omitted for the sports
+	// that have no such thing, which is most of them. Feeds the serve
+	// marker on the storefront's tennis / table tennis / volleyball
+	// rows; a change here is a live_score diff, so it publishes on the
+	// same channel as a score change.
+	Serve     int             `json:"serve,omitempty"`
+	Periods   []periodPayload `json:"periods,omitempty"`
+	Comment   string          `json:"comment,omitempty"`
+	Provider  string          `json:"provider"`
+	UpdatedAt string          `json:"updatedAt"`
 }
 
 type scoreboardPayload struct {
@@ -47,6 +53,7 @@ func buildLiveScore(m *mapper.Match, nowMs int64) []byte {
 		Away:      m.Score.Away,
 		Status:    1,
 		Comment:   m.Score.Comment,
+		Serve:     m.Score.Serve,
 		Provider:  "fonbet",
 		UpdatedAt: time.UnixMilli(nowMs).UTC().Format(time.RFC3339),
 	}

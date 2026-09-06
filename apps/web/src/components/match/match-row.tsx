@@ -8,7 +8,8 @@ import { Pill, LiveDot, TeamMark } from "@/components/ui/primitives";
 import { TierMark, isFeaturedTier } from "@/components/ui/tier-mark";
 import { I } from "@/components/ui/icons";
 import { useBetSlip } from "@/lib/bet-slip";
-import { mapCellValue, type LiveScore } from "@/lib/live-score";
+import { mapCellValue, servingSide, type LiveScore } from "@/lib/live-score";
+import { ServeMark } from "./serve-mark";
 import { useSidePanels, type PanelSide } from "@/lib/side-panel";
 import { useOddsFlash, useValueFlash } from "@/lib/use-odds-flash";
 import { useTranslations } from "@/lib/i18n";
@@ -509,6 +510,8 @@ function ScoreTable({
   const awaySeries = liveScore?.away ?? 0;
   const currentMap = isLive ? liveScore?.currentMap ?? null : null;
   const scoreboard = liveScore?.scoreboard ?? null;
+  // Tennis / table tennis / volleyball only — null everywhere else.
+  const serving = servingSide(liveScore, isLive);
 
   // Number of map columns. Use bestOf when known so empty future maps
   // render as dashes (gives a stable "shape" for BO3+); fall back to the
@@ -584,6 +587,7 @@ function ScoreTable({
         trailing={homeTrailing}
         hasTrailing={hasTrailing}
         markSlot={markSlot}
+        serving={serving === "home"}
       />
       {drawTrailing ? (
         <DrawScoreRow
@@ -606,6 +610,7 @@ function ScoreTable({
         trailing={awayTrailing}
         hasTrailing={hasTrailing}
         markSlot={markSlot}
+        serving={serving === "away"}
       />
     </div>
   );
@@ -616,6 +621,26 @@ function ScoreTable({
 // but only renders content in the trailing odds slot — the "X" label
 // on the button itself identifies the row as the draw outcome (kept
 // visible on mobile via RowOddBtn's keepLabelOnMobile flag).
+//
+// The whole point of this row is that it costs the card as little
+// height as possible, so two things happen to its trailing cell:
+//
+//   1. `display: flex` kills the line-box strut. RowOddBtn is
+//      inline-flex, so a plain block wrapper is at least one line
+//      tall — measured on production, that made the 16px draw button
+//      sit in a 20.3px grid row (the card's 14px/1.45 line-height),
+//      4.3px of pure air nobody asked for.
+//   2. `DRAW_ROW_PULL` negative margins pull the button into the
+//      grid's own 6px row gaps, leaving 4px of clearance either side
+//      instead of 6. 4 is the floor, not a taste call: the tap-area
+//      pseudo-element reaches exactly 4px past the button (see
+//      .oz-row-odd[data-compact] in globals.css) to make a 24px
+//      target, so anything tighter would put the draw's hit area on
+//      top of the "1" / "2" buttons above and below it — a mis-tap
+//      that adds the wrong leg to the slip.
+//
+// Net: the draw costs 18px of card instead of 26.3px, and the visible
+// button is unchanged at 16px.
 function DrawScoreRow({
   showSeries,
   colCount,
@@ -634,7 +659,9 @@ function DrawScoreRow({
       {Array.from({ length: colCount }, (_, i) => (
         <div key={i} />
       ))}
-      {hasTrailing && <div>{trailing}</div>}
+      {hasTrailing && (
+        <div style={{ display: "flex", margin: `-${DRAW_ROW_PULL}px 0` }}>{trailing}</div>
+      )}
     </>
   );
 }
@@ -695,6 +722,7 @@ function TeamScoreRow({
   trailing,
   hasTrailing,
   markSlot,
+  serving,
 }: {
   name: string;
   logoUrl?: string | null;
@@ -707,6 +735,8 @@ function TeamScoreRow({
   hasTrailing: boolean;
   /** Hold a crest-sized slot even when this row has no picture. */
   markSlot: boolean;
+  /** This side is serving (tennis / table tennis / volleyball). */
+  serving?: boolean;
 }) {
   const markSize = hasTrailing ? 28 : 24;
   return (
@@ -743,11 +773,20 @@ function TeamScoreRow({
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
             minWidth: 0,
-            flex: 1,
+            // Not `flex: 1`: the name would then span the whole track and
+            // push the serve mark against the score column, where it
+            // reads as belonging to the score. Shrink-to-fit keeps the
+            // mark against the name it is about, and `minWidth: 0` plus
+            // the ellipsis above still truncate on a narrow card.
+            flex: "0 1 auto",
           }}
         >
           {truncate(name, 24)}
         </span>
+        {/* Its own flex item, after the name rather than inside it, so a
+            long doubles pairing truncates without taking the marker
+            with it. */}
+        {serving ? <ServeMark /> : null}
       </div>
       {showSeries && <SeriesCell series={series} />}
       {cols.map((n) => (
@@ -825,6 +864,11 @@ const ROW_ODD_HEIGHT = 30;
 // row gap, so a phone still gets a 24px target (WCAG 2.5.8) under a
 // button that only takes 16px of the card.
 const ROW_ODD_HEIGHT_COMPACT = 16;
+// How far the draw row is pulled into the grid's 6px row gaps, per
+// side. 2 leaves 4px of clearance, which is exactly what the tap-area
+// pseudo-element needs to reach a 24px target without overlapping the
+// win buttons. See DrawScoreRow.
+const DRAW_ROW_PULL = 2;
 
 /**
  * The card body for an event that presents as a question rather than a
