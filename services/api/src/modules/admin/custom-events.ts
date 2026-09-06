@@ -467,6 +467,15 @@ export default async function adminCustomEventsRoutes(app: FastifyInstance) {
         .object({
           name: nameSchema.optional(),
           categoryId: z.number().int().positive().optional(),
+          /**
+           * Same shape /admin/tournaments takes: 1..10 assigns and locks
+           * the tier, null hands it back to automatic. Offered here as
+           * well because a custom tournament has no feed to assign one
+           * and the operator is already on this screen — sending them to
+           * another page to set the single number that decides their
+           * stake limits was a worse answer than one more control.
+           */
+          riskTier: z.union([z.number().int().min(1).max(10), z.null()]).optional(),
         })
         .parse(request.body);
       const sport = await customSport();
@@ -476,6 +485,10 @@ export default async function adminCustomEventsRoutes(app: FastifyInstance) {
           id: tournaments.id,
           name: tournaments.name,
           categoryId: tournaments.categoryId,
+          riskTier: tournaments.riskTier,
+          riskTierLocked: tournaments.riskTierLocked,
+          riskTierSource: tournaments.riskTierSource,
+          riskTierReviewedAt: tournaments.riskTierReviewedAt,
           sportId: categories.sportId,
         })
         .from(tournaments)
@@ -493,12 +506,33 @@ export default async function adminCustomEventsRoutes(app: FastifyInstance) {
         if (!cat || cat.sportId !== sport.id) throw new NotFoundError();
       }
 
+      // Mirrors /admin/tournaments exactly rather than inventing a second
+      // rule for the same column: a number assigns AND locks the row so
+      // feed-ingester's refresh cannot overwrite it, and clears any
+      // ZillaAGI note (it explains a tier the operator just replaced).
+      // Null hands the row back to automatic, and the label follows the
+      // VALUE — crediting the feed with a decision ZillaAGI made is how
+      // the "auto" bucket became unreadable in the first place.
+      const tierPatch: Record<string, unknown> = {};
+      if (body.riskTier !== undefined) {
+        if (body.riskTier === null) {
+          tierPatch.riskTierLocked = false;
+          tierPatch.riskTierSource = before.riskTierReviewedAt ? "zagi" : "auto";
+        } else {
+          tierPatch.riskTier = body.riskTier;
+          tierPatch.riskTierLocked = true;
+          tierPatch.riskTierSource = "manual";
+          tierPatch.riskTierNote = null;
+        }
+      }
+
       await app.db.transaction(async (tx) => {
         await tx
           .update(tournaments)
           .set({
             ...(body.name != null ? { name: body.name } : {}),
             ...(body.categoryId != null ? { categoryId: body.categoryId } : {}),
+            ...tierPatch,
           })
           .where(eq(tournaments.id, id));
         await audit(tx, {
@@ -506,8 +540,14 @@ export default async function adminCustomEventsRoutes(app: FastifyInstance) {
           action: "custom_event.tournament_update",
           targetType: "tournament",
           targetId: String(id),
-          before: { name: before.name, categoryId: before.categoryId },
-          after: body,
+          before: {
+            name: before.name,
+            categoryId: before.categoryId,
+            riskTier: before.riskTier,
+            riskTierLocked: before.riskTierLocked,
+            riskTierSource: before.riskTierSource,
+          },
+          after: { ...body, ...tierPatch },
           ip: request.ip,
         });
       });

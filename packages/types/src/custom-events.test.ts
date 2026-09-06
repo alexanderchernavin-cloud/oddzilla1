@@ -6,6 +6,8 @@ import {
   priceCustomMarket,
   LADDER_FLOOR,
   MIN_CUSTOM_PROBABILITY,
+  ladderStep,
+  quoteOnLadder,
 } from "./custom-events.js";
 
 test("a question renders its title alone, never a dangling vs", () => {
@@ -79,6 +81,31 @@ test("authored prices are quoted on the 0.01 ladder, not at feed precision", () 
       c.publishedOdds,
       `${c.publishedOdds} carries more than two decimals`,
     );
+  }
+});
+
+test("the ladder step widens with the price", () => {
+  // A flat hundredth is right near evens and ridiculous in the tail: a
+  // 1% shot priced 90.909 came out as 90.90, which no book prints.
+  assert.equal(quoteOnLadder(1.0695), 1.06);
+  assert.equal(quoteOnLadder(7.5757), 7.57);
+  assert.equal(quoteOnLadder(12.34), 12.3);
+  assert.equal(quoteOnLadder(37.9), 37.5);
+  assert.equal(quoteOnLadder(90.909), 90);
+  assert.equal(quoteOnLadder(637), 635);
+});
+
+test("every quoted price sits exactly on a rung", () => {
+  for (const raw of [1.0695, 3.333, 7.5757, 12.34, 24.7, 37.9, 90.909, 637]) {
+    const q = quoteOnLadder(raw);
+    const step = ladderStep(raw);
+    // Float dust must not leave a value a hair off its own rung — 73 *
+    // 0.1 is 7.300000000000001, and 7.57 / 0.01 is 756.9999999999999.
+    assert.ok(
+      Math.abs(q / step - Math.round(q / step)) < 1e-6,
+      `${q} is not a multiple of ${step}`,
+    );
+    assert.ok(q <= raw, `${q} lengthened past the model's ${raw}`);
   }
 });
 

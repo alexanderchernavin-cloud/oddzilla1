@@ -11,6 +11,7 @@ import {
   priceCustomMarket,
   type CustomPriceCell,
 } from "@oddzilla/types/custom-events";
+import { formatOddsDisplay } from "@oddzilla/types/odds";
 
 export interface OutcomeDetail {
   outcomeId: string;
@@ -509,7 +510,15 @@ function MarketCard({ market }: { market: MarketDetail }) {
                     </span>
                   ) : null}
                 </td>
-                <td className="tnum">{o.publishedOdds ?? "—"}</td>
+                {/* The column stores NUMERIC(10,4), so the raw string is
+                    "90.9000". Rendered through the same formatter the
+                    storefront uses, so an operator reads the price a
+                    bettor sees rather than its storage shape. */}
+                <td className="tnum">
+                  {o.publishedOdds != null
+                    ? formatOddsDisplay(Number(o.publishedOdds))
+                    : "—"}
+                </td>
                 <td className="tnum text-xs">{fmtMicro(o.exposureMicro)}</td>
                 <td className="text-xs">{o.result ?? "—"}</td>
               </tr>
@@ -771,7 +780,7 @@ function MarketForm({
                   />
                 </td>
                 <td className="tnum">
-                  {cell ? cell.publishedOdds.toFixed(4) : "—"}
+                  {cell ? formatOddsDisplay(cell.publishedOdds) : "—"}
                   {cell && cell.shiftBp !== 0 ? (
                     <span className="ml-1 text-[11px] text-[var(--color-fg-muted)]">
                       ({cell.shiftBp > 0 ? "+" : ""}
