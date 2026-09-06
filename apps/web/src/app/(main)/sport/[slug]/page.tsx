@@ -7,7 +7,9 @@ import {
   type ListMatchEnriched,
 } from "@/components/match/match-list-tabs";
 import { SportGlyph } from "@/components/ui/sport-glyph";
+import { LogoMark } from "@/components/ui/logo-mark";
 import { I } from "@/components/ui/icons";
+import { SectionTabs } from "@/components/lobby/section-tabs";
 import { shortName } from "@/lib/sport-order";
 import { getTranslations } from "@/lib/i18n/server";
 import { SportViewTracker } from "@/lib/zillapass-track";
@@ -19,6 +21,10 @@ interface SportResponse {
   // Null for an id that doesn't belong here, which is what keeps a
   // hand-typed URL from rendering an empty chip over an empty list.
   filteredCategory: { id: number; name: string } | null;
+  // Resolved server-side rather than read off a match row, so the chip
+  // still names itself when the tournament currently has nothing on
+  // offer. Carries the mark the chip renders in place of a kind label.
+  filteredTournament: { id: number; name: string; logoUrl: string | null } | null;
   matches: ListMatch[];
 }
 
@@ -54,17 +60,18 @@ export default async function SportPage({
   if (tournamentId) qs.set("tournament", tournamentId);
   if (teamId) qs.set("team", teamId);
   if (categoryId) qs.set("category", categoryId);
-  const [data, t, tShell, tCommon] = await Promise.all([
+  const [data, t, tShell, tMatch] = await Promise.all([
     serverApi<SportResponse>(`/catalog/sports/${slug}?${qs.toString()}`),
     getTranslations("sport"),
     getTranslations("shell"),
-    getTranslations("common"),
+    // The "match" namespace carries both section labels ("Live" /
+    // "Pre-match") — the same two keys the lobby strip reads.
+    getTranslations("match"),
   ]);
   if (!data) notFound();
 
-  const filteredTournamentName = tournamentId
-    ? data.matches.find((m) => String(m.tournament.id) === tournamentId)?.tournament.name ?? null
-    : null;
+  const filteredTournamentName = data.filteredTournament?.name ?? null;
+  const filteredTournamentLogoUrl = data.filteredTournament?.logoUrl ?? null;
   const filteredTeamName = data.filteredTeam?.name ?? null;
   const filteredCategoryName = data.filteredCategory?.name ?? null;
 
@@ -82,8 +89,30 @@ export default async function SportPage({
 
   const sportShort = shortName(data.sport.name);
   const enriched = data.matches.map((m) => enrich(m, slug, sportShort));
-  const live = enriched.filter((m) => m.status === "live");
-  const upcoming = enriched.filter((m) => m.status !== "live");
+
+  // Group on the server's `featured` flag, NOT on status.
+  //
+  // The API sorts one tier-ordered region at the top of every list —
+  // everything live, plus prematch matches inside their tier's hoist
+  // window — and only then falls back to chronological order (see
+  // `matchListOrder` in the catalog routes). Splitting that region by
+  // status here undid the whole thing: on 2026-09-06 the nine Premier
+  // League / La Liga / Ligue 1 fixtures the rule had promoted to
+  // positions 1-9 were re-sorted underneath 91 live youth and women's
+  // games, which is the opposite of what the ordering decided.
+  //
+  // Rows arrive in server order and `filter` is stable, so the tier
+  // ordering survives this partition untouched.
+  const featured = enriched.filter((m) => m.featured);
+  const rest = enriched.filter((m) => !m.featured);
+
+  // The top section used to carry its own kicker, named after what was
+  // in it ("Live" / "Starting soon" / "Live and soon") with a count. The
+  // Live / Pre-match strip took that slot on 2026-09-06 — it is what the
+  // lobby, /live and /upcoming put above a match list, and a bettor on a
+  // sport page needs the way over to those sections as much as anyone.
+  // The counts went with it: they were slices of this page's own 100-row
+  // fetch, not totals (a Football line carries ~1 900 prematch fixtures).
 
   return (
     <div
@@ -143,16 +172,13 @@ export default async function SportPage({
           >
             {data.sport.name}
           </h1>
-          {/* Match count sits under the title (left side) — the right
-              edge of this header is reserved for the sticky ZillaPass
-              chip in `.oz-shell-search`, which uses a negative bottom
-              margin to overlap into this row. */}
-          <div
-            className="mono tnum"
-            style={{ fontSize: 12, color: "var(--fg-muted)", marginTop: 4 }}
-          >
-            {t("matchCount", { count: data.matches.length })}
-          </div>
+          {/* No match count under the title. It used to print
+              `data.matches.length`, which is the page's own fetch limit
+              (100) — "100 matches" over a Football line carrying ~1 900
+              — the same page-size-as-count mistake the Live / Pre-match
+              strip made (both removed 2026-09-06). The right edge of
+              this header stays reserved for the sticky ZillaPass chip
+              in `.oz-shell-search`, which overlaps into this row. */}
         </div>
       </header>
 
@@ -168,24 +194,22 @@ export default async function SportPage({
         >
           {categoryId && filteredCategoryName && (
             <FilterChip
-              label={t("filterKindCategory")}
               value={filteredCategoryName}
               clearHref={clearHref("category")}
               clearAriaLabel={t("clearFilter")}
             />
           )}
-          {tournamentId && (
+          {tournamentId && filteredTournamentName && (
             <FilterChip
-              label={t("filterKindTournament")}
-              value={filteredTournamentName ?? ""}
+              logoUrl={filteredTournamentLogoUrl}
+              value={filteredTournamentName}
               clearHref={clearHref("tournament")}
               clearAriaLabel={t("clearFilter")}
             />
           )}
-          {teamId && (
+          {teamId && filteredTeamName && (
             <FilterChip
-              label={t("filterKindTeam")}
-              value={filteredTeamName ?? ""}
+              value={filteredTeamName}
               clearHref={clearHref("team")}
               clearAriaLabel={t("clearFilter")}
             />
@@ -193,52 +217,47 @@ export default async function SportPage({
         </div>
       )}
 
+      {/* Same Live / Pre-match strip the lobby carries, and the same
+          behaviour: both sections render below it, so neither tab is
+          selected, and each tab links to its section page scoped to THIS
+          sport (`/live?sport=football`, `/upcoming?sport=football`). Until
+          2026-09-06 the sport page printed its own small-caps group
+          headers here ("LIVE · 30"), which neither linked anywhere nor
+          matched the lobby's control. When there is nothing live the
+          strip heads the prematch group instead, as on the lobby. */}
       <MatchListTabs
         matches={enriched}
         groups={[
-          ...(live.length > 0
+          ...(featured.length > 0
             ? [
                 {
-                  key: "live",
+                  key: "featured",
                   label: (
-                    <div
-                      className="mono"
-                      style={{
-                        fontSize: 10.5,
-                        letterSpacing: "0.14em",
-                        textTransform: "uppercase",
-                        color: "var(--fg-dim)",
-                        fontWeight: 600,
-                      }}
-                    >
-                      {tCommon("live")} · {live.length}
-                    </div>
+                    <SectionTabs
+                      liveLabel={tMatch("live")}
+                      prematchLabel={tMatch("prematch")}
+                      sport={slug}
+                    />
                   ),
-                  matches: live,
+                  matches: featured,
                 },
               ]
             : []),
           {
             key: "upcoming",
-            label: (
-              <div
-                className="mono"
-                style={{
-                  fontSize: 10.5,
-                  letterSpacing: "0.14em",
-                  textTransform: "uppercase",
-                  color: "var(--fg-dim)",
-                  fontWeight: 600,
-                }}
-              >
-                {t("upcoming")} · {upcoming.length}
-              </div>
-            ),
-            matches: upcoming,
+            label:
+              featured.length > 0 ? null : (
+                <SectionTabs
+                  liveLabel={tMatch("live")}
+                  prematchLabel={tMatch("prematch")}
+                  sport={slug}
+                />
+              ),
+            matches: rest,
           },
         ]}
       />
-      {upcoming.length === 0 && live.length === 0 ? (
+      {rest.length === 0 && featured.length === 0 ? (
         <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
           {t("noMatches")}
         </p>
@@ -247,13 +266,23 @@ export default async function SportPage({
   );
 }
 
+/**
+ * A dismissible filter chip.
+ *
+ * The chip used to lead with the KIND of filter — the literal word
+ * "TOURNAMENT" before "England. Premier League. Season 26/27". That
+ * label told the reader nothing they could not see, and on a chip whose
+ * value is already a full competition name it was pure noise. The mark
+ * goes there instead, and when there is no mark the slot collapses
+ * rather than falling back to the word.
+ */
 function FilterChip({
-  label,
+  logoUrl,
   value,
   clearHref,
   clearAriaLabel,
 }: {
-  label: string;
+  logoUrl?: string | null;
   value: string;
   clearHref: string;
   clearAriaLabel: string;
@@ -272,17 +301,7 @@ function FilterChip({
         color: "var(--fg)",
       }}
     >
-      <span
-        className="mono"
-        style={{
-          fontSize: 10.5,
-          letterSpacing: "0.12em",
-          textTransform: "uppercase",
-          color: "var(--fg-dim)",
-        }}
-      >
-        {label}
-      </span>
+      <LogoMark logoUrl={logoUrl} name={value} />
       <span>{value}</span>
       <Link
         href={clearHref}

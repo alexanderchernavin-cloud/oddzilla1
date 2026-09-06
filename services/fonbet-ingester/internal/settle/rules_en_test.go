@@ -1,9 +1,7 @@
-// Grader coverage for the English line. FONBET_LANG defaults to "en", so
-// the catalogue table names, the sub-event labels and the results-feed
-// statistic rows all arrive in English and rules.go has to recognise them
-// as well as it recognises the Russian ones. Every string below is a
-// verbatim label from the live fon.bet line or its results feed
-// (2026-09-04), paired against its Russian counterpart by event / row id.
+// Grader coverage for the English line. FONBET_LANG is "en", so the
+// catalogue table names, the sub-event labels and the results-feed
+// statistic rows all arrive in English. Every string below is a verbatim
+// label from the live fon.bet line or its results feed (2026-09-04).
 
 package settle
 
@@ -15,8 +13,8 @@ import (
 
 func TestParseLabelEnglish(t *testing.T) {
 	// sport is only consulted for "half", which English does not
-	// distinguish: Russian "тайм" (one period) and "половина" (two
-	// periods) are both "1st half".
+	// distinguish: one period of a two-half game and two quarters of a
+	// four-quarter one are both "1st half".
 	const football, basketball, hockey, tableTennis = 1, 3, 2, 3088
 	cases := []struct {
 		label string
@@ -51,8 +49,7 @@ func TestParseLabelEnglish(t *testing.T) {
 		{"1st half", 47041, labelTarget{}, false},
 		// Aggregate specials and prop markets parse a period but keep a
 		// statistic name the results feed does not carry, so scoreFor
-		// leaves them open — same as in Russian, where they never matched
-		// the period prefix at all.
+		// leaves them open.
 		{"8 matches 1st half", football, labelTarget{period: 1, stat: "8 matches"}, true},
 		{"Red card in the 1st half", football, labelTarget{period: 1, stat: "red card in the"}, true},
 		{"Penalty in the 2nd half", football, labelTarget{period: 2, stat: "penalty in the"}, true},
@@ -76,10 +73,9 @@ func TestParseLabelEnglish(t *testing.T) {
 }
 
 // TestTableUnsafeEnglish pins the shapes the grader must refuse by name.
-// The English names on the left are the ones the Russian words used to
-// miss; a threshold table called "Total missed penalties" looks exactly
-// like an ordinary over/under to the shape checks, so the name guard is
-// the only thing standing between it and a settlement off the goal score.
+// A threshold table called "Total missed penalties" looks exactly like an
+// ordinary over/under to the shape checks, so the name guard is the only
+// thing standing between it and a settlement off the goal score.
 func TestTableUnsafeEnglish(t *testing.T) {
 	unsafe := []string{
 		"Total missed penalties",
@@ -95,13 +91,6 @@ func TestTableUnsafeEnglish(t *testing.T) {
 		"Series total",
 		"To win the series",
 		"Minute of the first goal",
-		// The Russian names stay covered: the catalogue is read in
-		// whatever language FONBET_LANG asked for.
-		"Тотал незабитых пенальти",
-		"Результат в овертайме",
-		"Точный счёт",
-		"Тотал серии",
-		"Исход основной серии (по 5 ударов)",
 	}
 	for _, name := range unsafe {
 		if !tableUnsafe(&fonbet.TableMeta{Name: name}) {
@@ -113,7 +102,6 @@ func TestTableUnsafeEnglish(t *testing.T) {
 	safe := []string{
 		"1X2", "Handicap", "Total", "Team total", "Double chance",
 		"Total corners", "Yellow cards total", "Result",
-		"Тотал", "Фора", "Двойной шанс", "Тотал угловых",
 	}
 	for _, name := range safe {
 		if tableUnsafe(&fonbet.TableMeta{Name: name}) {
@@ -123,8 +111,7 @@ func TestTableUnsafeEnglish(t *testing.T) {
 }
 
 // TestGradeEnglishHalfAndStat walks a full English label through Grade to
-// prove the period and statistic targets land on the same score the
-// Russian labels do.
+// prove the period and statistic targets land on the intended score.
 func TestGradeEnglishHalfAndStat(t *testing.T) {
 	idx := &fonbet.Index{Tables: map[int]*fonbet.TableMeta{}, Factors: map[int]*fonbet.FactorMeta{}}
 	total := &fonbet.TableMeta{Num: 1, Name: "Total", Param: fonbet.ParamThreshold}
@@ -170,12 +157,12 @@ func TestGradeEnglishHalfAndStat(t *testing.T) {
 	}
 }
 
-// TestGradeEnglishOvertimeRow proves the English "extra time" row breaks a
-// tie the same way the Russian "дополнительное время" one does. Without
-// it a two-way market level after regular time would either grade as a
-// loss for both sides or, on an otIncluded sport, settle on regular time.
+// TestGradeEnglishOvertimeRow proves the "extra time" row breaks a tie.
+// Without it a two-way market level after regular time would either grade
+// as a loss for both sides or, on an otIncluded sport, settle on regular
+// time.
 func TestGradeEnglishOvertimeRow(t *testing.T) {
-	for _, row := range []string{"extra time", "дополнительное время"} {
+	for _, row := range []string{"extra time"} {
 		main, _ := fonbet.ParseScore("2:2 (1-1 1-1)")
 		ot, _ := fonbet.ParseScore("1:0")
 		stats := map[string]fonbet.Score{row: ot}

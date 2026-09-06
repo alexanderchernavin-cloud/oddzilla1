@@ -193,13 +193,14 @@ what's sensitive:
 | `BACKUP_GPG_RECIPIENT` (optional, PR #130) | GPG key id of an off-host operator. Set → daily pg dump is GPG-encrypted (`.sql.gz.gpg`); unset → plain gzip. | rotate when the operator's key rotates |
 | `SUPPORT_AI_BOT_TOKEN` (optional) | `openssl rand -hex 24`. Auth for `/webhooks/support-ai/*`. The SAME value goes in the PC worker's own `.env`. | any time — rotate both sides together |
 | `BANNER_GEN_TOKEN` (optional, migration 0089) | `openssl rand -hex 24`. Auth for `/webhooks/banner-gen/*` (ZillaBoost image worker). The SAME value goes in `services/zillaboost-banner-gen/.env` on the operator PC. | any time — rotate both sides together |
+| `ZAGI_API_KEY` (optional) | ZillaAGI, the in-house LLM at `https://llm.oddin.gg/v1`. Canonical credential for every model-assisted api feature; falls back to `SPORTRADAR_LLM_API_KEY`, which names the same gateway. | when the gateway rotates |
 
 Each service can boot WITHOUT certain optional vars and degrades
 gracefully:
 
 | Service | Required | Optional → effect when absent |
 | --- | --- | --- |
-| api | DATABASE_URL, REDIS_URL, JWT_SECRET, REFRESH_COOKIE_SECRET, SIGNER_SOCKET_PATH | signer unreachable → `/wallet/deposit-addresses` returns 500 with `SignerUnavailableError`. FIREBASE_SERVICE_ACCOUNT_PATH unset OR target file missing → push-outbox worker still drains the queue but marks every row `sent_at=NOW(), last_error='firebase_disabled'`; no FCM notifications go out until credentials are mounted. EMAIL_PROVIDER_TOKEN unset → email-outbox worker still drains but stamps each row `last_error='email_disabled'`; signup verify + forgot-password emails are queued and discarded until a key is set. SENDGRID_INBOUND_SECRET unset → `/webhooks/sendgrid-inbound/*` 503s `inbound_disabled` (no inbound mail can be ingested). SUPPORT_AI_BOT_TOKEN unset → `/webhooks/support-ai/*` 503s `bot_disabled`, support chat falls back to humans. BANNER_GEN_TOKEN unset → `/webhooks/banner-gen/*` 503s `banner_gen_disabled`; ZillaBoost graphics jobs still enqueue and wait in `zillaboost_banner_image_jobs` until a token exists. |
+| api | DATABASE_URL, REDIS_URL, JWT_SECRET, REFRESH_COOKIE_SECRET, SIGNER_SOCKET_PATH | signer unreachable → `/wallet/deposit-addresses` returns 500 with `SignerUnavailableError`. FIREBASE_SERVICE_ACCOUNT_PATH unset OR target file missing → push-outbox worker still drains the queue but marks every row `sent_at=NOW(), last_error='firebase_disabled'`; no FCM notifications go out until credentials are mounted. EMAIL_PROVIDER_TOKEN unset → email-outbox worker still drains but stamps each row `last_error='email_disabled'`; signup verify + forgot-password emails are queued and discarded until a key is set. SENDGRID_INBOUND_SECRET unset → `/webhooks/sendgrid-inbound/*` 503s `inbound_disabled` (no inbound mail can be ingested). SUPPORT_AI_BOT_TOKEN unset → `/webhooks/support-ai/*` 503s `bot_disabled`, support chat falls back to humans. BANNER_GEN_TOKEN unset → `/webhooks/banner-gen/*` 503s `banner_gen_disabled`; ZillaBoost graphics jobs still enqueue and wait in `zillaboost_banner_image_jobs` until a token exists. ZAGI_API_KEY (and SPORTRADAR_LLM_API_KEY) unset → the tournament risk-tier sweeper logs "idle" and never starts, `/admin/tournaments/zagi-review` 400s `zagi_not_configured`, and untiered tournaments keep being underwritten at tier 10 — safe, just conservative. |
 | mail-receiver | SENDGRID_INBOUND_SECRET, MAIL_WEBHOOK_URL | Container fails to boot if either is unset — fail-fast so the operator notices immediately rather than discovering mail is silently lost. Outbound is unaffected (Resend, separate path). |
 | signer | HD_MASTER_MNEMONIC | n/a — only this service reads the mnemonic |
 | feed-ingester | DATABASE_URL, REDIS_URL | ODDIN_TOKEN+ODDIN_CUSTOMER_ID absent → idle, health-only |
@@ -352,37 +353,76 @@ trimming backups only ever delayed an unbounded table.
 (installed as `oddzilla-odds-retention`, cron `30 3 * * *`) now does
 partition maintenance instead of DELETEs: pre-creates partitions
 `today..today+ODDS_CREATE_AHEAD` (default 7), DETACH CONCURRENTLY + DROPs
-dated partitions older than `ODDS_RETENTION_DAYS` (default **35**; admin
-odds charts look back 30 days, ZillaTips reads the permanent
-`prematch_odds` snapshot, settlement never reads history), and sweeps the
+dated partitions older than `ODDS_RETENTION_DAYS`, and sweeps the
 safety DEFAULT with a small batched DELETE (a non-trivial row count there
 is logged as a warning — it means inserts are falling outside every dated
 partition). A partition DROP is instant and returns space to the OS, so
 the table carries **zero bloat and no high-water mark** — the disk cost is
-exactly the live window (~35 GB at current volume) plus the day being
-written.
+exactly the live window plus the day being written.
 
-**Fonbet changes the volume.** The 35-day window was sized for Oddin's few
-hundred ticks/s. The Fonbet line (`services/fonbet-ingester`) adds ~200k
-priced outcomes and odds-publisher was batched to ~5000 ticks/s to keep up
-with its churn — every one of those ticks is an `odds_history` row. Before
-`FONBET_ENABLED=true` on prod, decide which lever you will pull if the
-daily partitions grow past what the window can hold on a 160 GB disk
-(disk-full has taken this box down four times):
+> **Production runs a 5-day window, not the script's 35-day default.**
+> The root crontab carries `ODDS_RETENTION_DAYS=5` explicitly. This is an
+> operator measure against disk pressure and is meant to be temporary, but
+> **35 is not currently reachable on this box** — see the arithmetic below
+> before putting it back. Consequence to know about: `/admin/logs` asks for
+> 30 days (`HISTORY_DAYS` in
+> [`services/api/src/modules/admin/logs.ts`](../services/api/src/modules/admin/logs.ts)),
+> so its per-market odds-history page shows at most 5. Nothing else is
+> affected — ZillaTips reads the permanent `prematch_odds` snapshot
+> (migration 0047), and settlement never reads history at all.
 
-- `ODDS_RETENTION_DAYS` on the cron (root crontab, `oddzilla-odds-retention`)
-  — shorten the window; admin odds charts look back 30 days, nothing else
-  reads history.
-- `ODDS_HISTORY_SKIP_PMID_MIN=1000000` in `.env` + `make recreate odds-publisher`
-  — stop writing history for the Fonbet `provider_market_id` namespace
-  entirely (`published_odds` still updates; Oddin history unaffected).
-  Fonbet markets then have no admin odds-history chart.
+**The Fonbet line changed the volume by ~10x, and that is what makes 35
+unaffordable.** Measured on production 2026-09-06, per-day partition size
+including indexes:
 
-Check `SELECT relname, pg_size_pretty(pg_total_relation_size(oid)) FROM
-pg_class WHERE relname LIKE 'odds_history_p%' ORDER BY relname DESC LIMIT 3`
-after the first 24 h with the feed on; the newest partition's size times
-`ODDS_RETENTION_DAYS` must fit comfortably under the disk headroom shown on
-`/admin/monitoring`.
+| Partition | Size (table + indexes) |
+| --- | --- |
+| `odds_history_p20260831` | ~1.9 GB |
+| `odds_history_p20260901` | ~1.8 GB |
+| `odds_history_p20260902` | ~1.9 GB |
+| `odds_history_p20260903` | ~7.2 GB |
+| `odds_history_p20260904` | ~19.8 GB |
+| `odds_history_p20260905` | ~19.8 GB |
+
+At ~20 GB/day a 35-day window needs **~700 GB** and the 30 days
+`/admin/logs` wants needs ~600 GB, against a **150 GB** disk. The 5-day
+window is already ~51 GB, a third of the volume. So the window is not the
+thing to widen first — the write rate is. `ODDS_HISTORY_SKIP_PMID_MIN` is
+currently **unset** on prod, i.e. the documented brake has NOT been pulled;
+setting it to `1000000` stops history writes for the whole Fonbet
+`provider_market_id` namespace and should bring a day back toward the
+~1.9 GB the Oddin-only line cost. **Pull that lever and re-measure a full
+day before raising `ODDS_RETENTION_DAYS` again** — raising the window first
+just fills the disk faster, which is how this box went down four times.
+
+**Why.** The 35-day window was sized for Oddin's few hundred ticks/s. The
+Fonbet line (`services/fonbet-ingester`) adds ~200k priced outcomes and
+odds-publisher was batched to ~5000 ticks/s to keep up with its churn —
+every one of those ticks is an `odds_history` row. This section used to say
+"before `FONBET_ENABLED=true` on prod, decide which lever you will pull";
+the feed is now live, the daily partitions did grow past what the window
+could hold, and the lever pulled in the moment was the window itself. The
+two levers, in the order they should actually be used:
+
+1. `ODDS_HISTORY_SKIP_PMID_MIN=1000000` in `.env` + `make recreate odds-publisher`
+   — stop writing history for the Fonbet `provider_market_id` namespace
+   entirely (`published_odds` still updates; Oddin history unaffected).
+   Fonbet markets then have no admin odds-history chart. **This is the one
+   to reach for first**: it attacks the ~20 GB/day write rate, so it makes
+   every window length cheaper. Currently unset on prod.
+2. `ODDS_RETENTION_DAYS` on the cron (root crontab, `oddzilla-odds-retention`)
+   — shorten the window. Nothing but `/admin/logs` reads history, and it
+   asks for 30 days. Currently **5** on prod. Treat this as the emergency
+   lever, not the standing setting: it buys disk immediately but it is the
+   one that costs an operator-visible feature.
+
+Re-measure with `SELECT relname, pg_size_pretty(pg_total_relation_size(oid))
+FROM pg_class WHERE relname LIKE 'odds_history_p%' ORDER BY relname DESC
+LIMIT 5` after any change to either lever, reading the newest **complete**
+day (the current day's partition is still filling, and the next few are
+pre-created and empty). That size times `ODDS_RETENTION_DAYS` must fit
+comfortably under the disk headroom shown on `/admin/monitoring` — and it
+is the number that says whether the window can go back up.
 
 The pre-2026-08-26 model was a nightly batched DELETE against a single
 catch-all DEFAULT partition: it plateaued the heap (~60 GB at the 45-day
@@ -731,6 +771,43 @@ Redis-memory budget (256 MB total), not a buffer.
    settle/cancel rows older than 45 days are pruned by the nightly
    settlements retention (rollback rows are kept forever).
 
+### Unsettled markets on finished matches (`/admin/unsettled`)
+
+The standing measurement and plan live in
+[`docs/SETTLEMENT_COVERAGE_PLAN.md`](./SETTLEMENT_COVERAGE_PLAN.md). What
+runs on its own, and what is the operator's:
+
+- **Automatic, every reconcile tick** (`SETTLEMENT_RECONCILE_INTERVAL_SECONDS`,
+  300 s, in `services/settlement`): stranded legs healed and their tickets
+  settled; **ladder lines** the Bifrost backup dropped settled from their
+  settled siblings (`reconcile: ladder lines inferred from siblings` in the
+  log, with `skipped` reasons); matches whose whole book is terminal but
+  whose row never left not_started / live flipped to `closed`.
+- **Automatic, per CLOSED match on the backup feed** (bifrost-feed):
+  markets on maps the series never reached are voided (`unplayed-map cancel
+  synthesised` in the log; `cancelled_markets` on `/admin/feed`).
+- **Automatic, every 2 min** (fonbet-ingester grader): everything its rules
+  cover; the fixtures it cannot find in the results feed appear on the
+  **Unmatched results** tab with what the feed listed instead.
+- **Operator only:** the **Void** buttons in the per-match market
+  drill-down (one market, or every open market of the match). They publish
+  a `cancel` onto `settlement.external` and services/settlement applies it
+  through the normal apply-once path — market `-4`, every selection void,
+  any paid ticket reversed — within a second or two; each click is an
+  `admin_audit_log` row (`settlement.market_void` /
+  `settlement.match_void_open`). **Never void a market that was played and
+  merely has no result we know** — that refunds the side that won. Void
+  what provably did not happen (a postponed fixture Fonbet dropped without a
+  `status 4` results row, a shape nothing will ever grade and nobody holds).
+- **Operator only:** the **Market denylist** sub-page. Adding a table id or
+  a sub-event label prefix stops fonbet-ingester creating that shape within
+  a minute; the markets already created under the rule stay listed there,
+  open and deactivated, until a grader learns the shape or an operator voids
+  them.
+
+A market a bettor holds a ticket on shows red in the drill-down; the
+Stuck tickets tab lists the tickets themselves.
+
 ### Wallet-watcher chain reorg
 
 Rare but possible. `deposits` with `status='confirming'` rolled back off-chain:
@@ -867,6 +944,137 @@ resolved value wins across combo legs.
 open tickets that's 200 quotes/sec — comfortable for the single
 `api`/`postgres` pair on the current box. Watch `docker stats
 oddzilla-api-1` if it ever feels slow.
+
+### Tournament risk tiers (ZillaAGI review) runbook
+
+`tournaments.risk_tier` is RiskZilla's per-match liability budget: tier 1
+allows 50 000 USDC of exposure on a single match, tier 10 allows 50.
+Oddin supplies a tier for its own esports; the Fonbet traditional line
+carries none, so most tournaments arrive at NULL.
+
+**Read the direction of the risk before touching anything here.** A NULL
+tier is priced at `UNTIERED_RISK_TIER = 10` — the strictest setting — so
+an unreviewed tournament is never over-exposed. It is under-traded and
+invisible. Every tier assigned to one therefore *raises* what the book can
+lose on it, and there is no assignment that is cautious by omission.
+
+**Two tightenings are applied to every ZAGI verdict in code**, and both
+only ever raise the tier number (lower the exposure):
+
+- **+1 always.** A machine verdict is not reviewed by a person before it
+  takes effect, so it is not taken at face value — the model saying tier 2
+  produces tier 3. This means **ZAGI can never assign T1**: the loosest
+  tier in the book is reachable only by an operator typing it.
+- **+3 for outright markets** — anything resolving over a whole season or
+  phase (`Season 26/27`, `Head-to-head in the tournament`). The book holds
+  those positions for months and cannot trade out of them match by match.
+  Single-event head-to-heads (`Vuelta … Stage 13. Head-to-head`) are
+  deliberately not included.
+
+So a tier in the list is normally 4 or 5 steps stricter than the model's
+own opinion. The row's note records the whole chain, e.g.
+`Serie A outright, top competition [ZAGI T2, +1 ZAGI safety margin, +3
+outright -> T6]`.
+
+ZillaAGI reviews them automatically every 30 minutes, one api replica at a
+time under a Redis lock. A sweep keeps working in 200-row chunks until the
+queue is empty or ten minutes are up, so a fresh backlog clears in one pass
+rather than over hours, and an ordinary sweep with nothing to do costs a
+single query. To drive it by hand, go to `/admin/tournaments`:
+
+- **Preview** runs the model and shows the tiers it would assign, writing
+  nothing. Use this first on a new sport.
+- **Review and assign** applies them. Audit-logged as
+  `tournament.zagi_review`.
+- Filter by sport first and tick *Only the filtered sport* to scope a run.
+
+The status strip reads `untiered` (no tier at all), `queued` (what a run
+would take), `reviewed` (assigned by ZAGI), `manual` (assigned by an
+operator) and, when non-zero, `stuck`.
+
+The list itself filters by sport, category (pick a sport first — a
+category belongs to one), risk tier including **Unset**, and who assigned
+it (Auto / ZAGI / Manual). Column headers sort; clicking an
+already-descending header returns to the default pin order, which is the
+only arrangement in which the **Order in category** arrows are meaningful.
+
+**`stuck` means the model declined a row three times** — usually a name
+carrying no recognisable competition. Assign those by hand from the Risk
+tier column; nothing retries them again on its own. To put a stuck row
+back in the queue, reset its counter:
+
+```sql
+UPDATE tournaments SET risk_tier_attempts = 0
+ WHERE id = <id> AND risk_tier IS NULL;
+```
+
+An operator's tier always wins: setting one locks the row, and neither
+the Oddin REST refresh nor a later ZAGI sweep will overwrite it. Choosing
+*Auto / ZAGI* on a locked row unlocks it and hands it back to whichever of
+the two last decided the value.
+
+If the panel says **not configured**, `ZAGI_API_KEY` is unset — see
+[Environment variables](#environment-variables). Everything degrades
+quietly in that state: no reviews happen and untiered tournaments keep
+being underwritten at tier 10.
+
+**Deploy note.** Migration 0106 takes `ACCESS EXCLUSIVE` on `tournaments`
+with a 5 s `lock_timeout`. A `pg_dump` — the 03:00 cron, or another
+deploy's pre-deploy backup — holds `AccessShareLock` on every table for
+several minutes on this database, and the migration will abort the deploy
+rather than queue the catalog behind itself. That is the intended
+behaviour; check for a running dump and retry:
+
+```bash
+ssh team@178.104.174.24 'ps -eo etime,cmd | grep [p]g_dump'
+```
+
+### Tournament logos runbook
+
+462 of ~1 880 tournaments carry a logo from Fonbet's own catalogue. That
+catalogue is **fully consumed** — the missing ones are not a mapping bug,
+Fonbet simply has no mark for them. The Oddin esports half has none at
+all and no first-party source: the Oddin REST token returns 403 and the
+stack has run on the Bifrost backup feed since 2026-09-03, which carries
+a sport icon but no tournament icon.
+
+An hourly sweep fills what it can from **Liquipedia** (esports) and
+**Wikidata** (everything else), with ZillaAGI supplying the canonical
+competition name. To drive it by hand:
+
+```bash
+# what is left
+curl -s https://sadmin.oddzilla.cc/api/admin/tournaments/logo-status
+# preview a run without writing anything
+curl -s -X POST https://sadmin.oddzilla.cc/api/admin/tournaments/logo-fetch \
+  -H 'content-type: application/json' -d '{"limit":20,"dryRun":true}'
+```
+
+(Both need an admin session cookie.)
+
+Expect roughly **60% of the tournaments that could plausibly have a
+logo**. The rest — county championships, third divisions, weekly duel
+cups, simulated FC/NBA 2K fixtures — have no logo anywhere, and ZAGI
+declines them rather than guessing. `logo_attempts` stops a row being
+re-checked after three misses; reset it to re-open one:
+
+```sql
+UPDATE tournaments SET logo_attempts = 0 WHERE id = <id> AND logo_url IS NULL;
+```
+
+**Reverting a source.** Every auto-sourced row records `logo_source` and
+`logo_source_url`. Liquipedia's marks are largely non-free, so if that
+call is ever revisited, one statement undoes the set:
+
+```sql
+UPDATE tournaments
+   SET logo_url = NULL, logo_data = NULL, logo_mime = NULL,
+       logo_source = NULL, logo_source_url = NULL
+ WHERE logo_source = 'liquipedia';
+```
+
+An operator's upload always wins — the resolver only ever touches rows
+where `logo_url IS NULL`.
 
 ### Team logos runbook
 
@@ -1034,6 +1242,30 @@ container opens the inspector on 9229).
    service — deposit/withdrawal scanners pause; nothing else is
    affected).
 5. Permanent fix: upgrade Hetzner plan.
+
+### A public image re-downloads on every page view
+
+Caddy puts a blanket `Cache-Control: no-store` on `/api/*` so an
+authenticated JSON response can never be stashed by a proxy. The
+`@api_nocache` matcher in the [`Caddyfile`](../Caddyfile) exempts the
+public image byte-serves, which set their own `public, immutable`. **A
+new image route that isn't in that list is silently uncached** — the
+api's header is correct, both headers reach the browser, and `no-store`
+wins. Nothing errors; the surface just feels slow and the api serves the
+same bytes forever.
+
+Check it with a header dump, not by reading the route:
+
+```bash
+curl -sI https://oddzilla.cc/api/catalog/flags/England | grep -i cache-control
+```
+
+One `public, …, immutable` is correct. A leading `no-store,` means the
+route needs adding to `@api_nocache` (`make deploy` reloads Caddy).
+
+Hit twice so far: `/catalog/zillaboost-banners/*/image` (2026-08-28) and
+`/catalog/flags/*` (2026-09-06 — ~105 flags re-fetched on every sidebar
+render, which is most of why expanding Football felt slow on mobile).
 
 ## Backup feed (Bifrost) failover
 

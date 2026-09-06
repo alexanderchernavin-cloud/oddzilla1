@@ -39,6 +39,7 @@ import adminAuditRoutes from "./modules/admin/audit.js";
 import adminFeedRoutes from "./modules/admin/feed.js";
 import adminWedgedMatchesRoutes from "./modules/admin/wedged-matches.js";
 import adminUnsettledRoutes from "./modules/admin/unsettled.js";
+import adminSettlementToolsRoutes from "./modules/admin/settlement-tools.js";
 import adminLogsRoutes from "./modules/admin/logs.js";
 import adminFeSettingsRoutes from "./modules/admin/fe-settings.js";
 import adminCompetitorsRoutes from "./modules/admin/competitors.js";
@@ -48,7 +49,20 @@ import {
   startSportradarSyncSweeper,
   type SportradarSweeperHandle,
 } from "./lib/sportradar/sweeper.js";
+import {
+  startZagiRiskTierSweeper,
+  type ZagiRiskTierSweeperHandle,
+} from "./lib/zagi/sweeper.js";
+import {
+  startTournamentLogoSweeper,
+  type TournamentLogoSweeperHandle,
+} from "./lib/tournament-logos/sweeper.js";
 import adminCategoriesRoutes from "./modules/admin/categories.js";
+import adminCustomEventsRoutes from "./modules/admin/custom-events.js";
+import {
+  startCustomLiabilitySweeper,
+  type LiabilitySweeperHandle,
+} from "./lib/custom-events/liability-sweeper.js";
 import adminMonitoringRoutes, { startMonitoringSampler } from "./modules/admin/monitoring.js";
 import adminDeployRoutes from "./modules/admin/deploy.js";
 import communityRoutes from "./modules/community/routes.js";
@@ -75,9 +89,8 @@ import zillaboostBannersRoutes from "./modules/boosted-odds/banners.js";
 import bannerGenRoutes from "./modules/boosted-odds/banner-gen.js";
 import adminBoostedOddsRoutes from "./modules/admin/boosted-odds.js";
 import adminZillabuildConfigRoutes from "./modules/admin/zillabuild-config.js";
+import adminCombozillaConfigRoutes from "./modules/admin/combozilla-config.js";
 import devicesRoutes from "./modules/devices/routes.js";
-import liveChatRoutes from "./modules/live-chat/routes.js";
-import { startMatchWatcher } from "./modules/live-chat/match-watcher.js";
 import riskzillaRoutes from "./modules/admin/riskzilla/routes.js";
 import zillapassUserRoutes from "./modules/zillapass/routes.js";
 import adminZillapassRoutes from "./modules/admin/zillapass.js";
@@ -307,12 +320,14 @@ await app.register(adminAuditRoutes);
 await app.register(adminFeedRoutes);
 await app.register(adminWedgedMatchesRoutes);
 await app.register(adminUnsettledRoutes);
+await app.register(adminSettlementToolsRoutes);
 await app.register(adminLogsRoutes);
 await app.register(adminFeSettingsRoutes);
 await app.register(adminCompetitorsRoutes);
 await app.register(adminTournamentsRoutes);
 await app.register(adminSportradarRoutes);
 await app.register(adminCategoriesRoutes);
+await app.register(adminCustomEventsRoutes);
 await app.register(adminMonitoringRoutes);
 await app.register(adminDeployRoutes);
 await app.register(communityRoutes);
@@ -338,8 +353,8 @@ await app.register(zillaboostBannersRoutes);
 await app.register(bannerGenRoutes);
 await app.register(adminBoostedOddsRoutes);
 await app.register(adminZillabuildConfigRoutes);
+await app.register(adminCombozillaConfigRoutes);
 await app.register(devicesRoutes);
-await app.register(liveChatRoutes);
 await app.register(riskzillaRoutes);
 await app.register(zillapassUserRoutes);
 await app.register(adminZillapassRoutes);
@@ -354,16 +369,6 @@ await app.register(adminAnalyticsRoutes);
 app.get("/", async () => ({ service: "oddzilla-api", status: "ok" }));
 
 // ─── Background workers ─────────────────────────────────────────────────────
-
-// Live-chat match-state watcher. Subscribes to odds:match:* and emits
-// goal / full-time / cancelled system messages into rooms with active
-// viewers. Set LIVE_CHAT_WATCHER_DISABLED=1 to skip — useful for
-// per-instance debugging or future multi-process deployments where
-// only one container should own the emission path.
-let matchWatcherHandle: { close: () => Promise<void> } | null = null;
-if (process.env.LIVE_CHAT_WATCHER_DISABLED !== "1") {
-  matchWatcherHandle = await startMatchWatcher(app, { redisUrl: env.REDIS_URL });
-}
 
 // Push-notification outbox drainer. Subscribes via postgres LISTEN to
 // the `push_outbox` channel (fired by services/settlement on winning
@@ -409,6 +414,33 @@ if (process.env.ANALYTICS_SWEEPER_DISABLED !== "1") {
 const sportradarSweeperHandle: SportradarSweeperHandle | null =
   startSportradarSyncSweeper(app);
 
+// ZillaAGI tournament risk-tier review (migration 0106). Every 30 min,
+// Redis-lock guarded: assigns a risk_tier to tournaments that have none,
+// so a new competition does not sit indefinitely at the strictest tier
+// without anyone seeing it. The model proposes and a per-sport ceiling
+// in code disposes; anything an operator has locked is out of reach.
+// Idle without ZAGI_API_KEY. Set ZAGI_RISK_TIER_DISABLED=1 to skip.
+const zagiRiskTierSweeperHandle: ZagiRiskTierSweeperHandle | null =
+  startZagiRiskTierSweeper(app);
+
+// Liability trading for custom (operator-authored) markets. Every 20 s,
+// Redis-lock guarded: reprices each open custom market that has trading
+// switched on, pulling probabilities toward the share of exposure each
+// outcome carries so the book balances itself as bets arrive.
+// Deliberately a sweeper rather than a hook inside bet placement — the
+// book's arithmetic has no business on the critical path of taking a bet.
+// Set CUSTOM_LIABILITY_DISABLED=1 to skip.
+const customLiabilitySweeperHandle: LiabilitySweeperHandle | null =
+  startCustomLiabilitySweeper(app);
+
+// Tournament logo sourcing (migration 0108). Hourly, Redis-lock guarded,
+// time-budgeted because Liquipedia asks for 2 s between calls. Fills the
+// marks neither feed carries: Fonbet's catalogue is fully consumed and
+// the Oddin esports half has no first-party source at all.
+// Idle without ZAGI_API_KEY. TOURNAMENT_LOGO_SWEEPER_DISABLED=1 skips.
+const tournamentLogoSweeperHandle: TournamentLogoSweeperHandle | null =
+  startTournamentLogoSweeper(app);
+
 // RiskZilla behaviour scoring (migration 0098). Every 5 min, Redis-lock
 // guarded: scores settled signed-in analytics sessions for automation
 // signals (pointer geometry, click rhythm) and rolls them up per bettor
@@ -420,7 +452,7 @@ if (process.env.BEHAVIOUR_SWEEPER_DISABLED !== "1") {
   behaviourSweeperHandle = startBehaviourScoringSweeper(app);
 }
 
-// Alert center (migration 0105). Every minute, Redis-lock guarded:
+// Alert center (migration 20260906T230248). Every minute, Redis-lock guarded:
 // evaluates the enabled risk_alert_rules (whale stakes, sharp bettors,
 // shared IPs, stale withdrawals, bank utilisation, ...) and lands hits
 // in risk_alerts for /admin/alerts. Advisory only — never touches the
@@ -461,13 +493,9 @@ async function shutdown() {
   behaviourSweeperHandle?.close();
   alertSweeperHandle?.close();
   sportradarSweeperHandle?.close();
-  if (matchWatcherHandle) {
-    try {
-      await matchWatcherHandle.close();
-    } catch (err) {
-      app.log.warn({ err: (err as Error).message }, "watcher shutdown error");
-    }
-  }
+  zagiRiskTierSweeperHandle?.close();
+  tournamentLogoSweeperHandle?.close();
+  customLiabilitySweeperHandle?.close();
   if (pushWorkerHandle) {
     try {
       await pushWorkerHandle.close();

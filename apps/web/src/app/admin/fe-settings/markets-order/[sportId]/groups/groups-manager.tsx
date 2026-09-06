@@ -5,28 +5,14 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 
-export interface GroupTab {
-  scope: string;
-  label: string | null; // null for built-ins
-  custom: boolean;
-  marketCount: number;
-}
+import { tabLabel, type ScopeTab } from "../../scope-label";
+
+export type GroupTab = ScopeTab & { marketCount: number };
 
 export interface GroupsResponse {
   sport: { id: number; slug: string; name: string };
-  maxMapNumber: number;
   ordered: boolean;
   groups: GroupTab[];
-}
-
-const MAP_SCOPE_RE = /^map_([1-9][0-9]*)$/;
-
-function tabLabel(tab: GroupTab): string {
-  if (tab.label) return tab.label;
-  if (tab.scope === "match") return "Match";
-  if (tab.scope === "top") return "Top";
-  const m = tab.scope.match(MAP_SCOPE_RE);
-  return m ? `Map ${m[1]}` : tab.scope;
 }
 
 export function GroupsManager({
@@ -312,8 +298,8 @@ export function GroupsManager({
         </ol>
         <p className="mt-2 text-xs text-[var(--color-fg-subtle)]">
           Tabs render on the storefront in this order. Top and custom groups
-          only appear once they have curated markets; Map tabs only appear
-          for maps the match actually has.
+          only appear once they have curated markets; Map and sub-event tabs
+          only appear on a match that actually carries them.
         </p>
       </section>
 

@@ -1,5 +1,35 @@
 name: CI
 
+# Shaped around one billing fact: GitHub bills each JOB rounded UP to the
+# whole minute. The seven-service Go matrix finished in ~25 s per job and
+# cost SEVEN minutes per run for three minutes of work — 1 190 of the
+# 2 081 minutes this repo burned in the first six days of September 2026,
+# which is what exhausted the Free plan's 2 000/month allowance on the 6th
+# and stopped CI dead for everyone.
+#
+# Two changes, both measured against that tally:
+#
+#   1. The Go matrix is now ONE job that walks the services in sequence.
+#      Same commands, same per-service isolation, same fail-fast:false
+#      semantics (failures are collected, not short-circuited) — but three
+#      billed minutes instead of seven. Wall clock goes from ~40 s to ~3 m,
+#      which is the trade: minutes are the scarce resource here, not
+#      latency.
+#
+#   2. A `changes` gate skips whole jobs when nothing they cover moved.
+#      Most PRs here touch only apps/web or only docs, and until now every
+#      one of them ran the full Go matrix. The gate costs one billed minute
+#      and routinely saves ten. Its patterns are pinned by
+#      `.github/ci-gate.test.sh` — run that after touching them, because a
+#      pattern that silently stops matching SKIPS a job rather than failing
+#      one, and nothing else would tell you.
+#
+# Deliberately NOT done: dropping the push-to-main run as a duplicate of
+# the PR run. Squash-merging makes main's tree identical to the tested PR
+# head only when nothing else landed in between, and with several agents
+# merging PRs here that is often false. The push run is the only check
+# that sees what main actually holds.
+
 on:
   push:
     branches: [main]
@@ -10,8 +40,83 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: What changed
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+      ts: ${{ steps.filter.outputs.ts }}
+      db: ${{ steps.filter.outputs.db }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the PR merge-base resolves. A shallow clone
+          # that cannot find one would make `git diff` report every file,
+          # which fails SAFE (everything runs) but saves nothing.
+          fetch-depth: 0
+
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+
+          if [ "$EVENT" = "pull_request" ]; then
+            git fetch origin "$BASE_REF" --quiet
+            files=$(git diff --name-only "origin/$BASE_REF...HEAD")
+          elif [ -n "${BEFORE:-}" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
+               && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            files=$(git diff --name-only "$BEFORE" "$SHA")
+          else
+            # First push to a branch, a force-push that orphaned the old
+            # tip, anything unexpected: run everything rather than guess.
+            files=$(git ls-files)
+          fi
+
+          echo "changed files:"
+          echo "$files" | sed 's/^/  /'
+
+          # A change to this file re-runs everything — the gate must not be
+          # able to skip the job whose definition just moved.
+          if echo "$files" | grep -qE '^\.github/workflows/ci\.yml$'; then
+            echo "go=true"  >> "$GITHUB_OUTPUT"
+            echo "ts=true"  >> "$GITHUB_OUTPUT"
+            echo "db=true"  >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          match() { echo "$files" | grep -qE "$1"; }
+
+          # Go: the seven service modules only. packages/ and apps/ are
+          # TypeScript and cannot affect a Go build.
+          if match '^services/(feed-ingester|fonbet-ingester|odds-publisher|settlement|bet-delay|wallet-watcher|signer)/'; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # TypeScript: every TS workspace plus the root toolchain files.
+          if match '^(apps/|packages/|services/(api|ws-gateway|support-ai-bot|zillaboost-banner-gen)/|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|tsconfig)'; then
+            echo "ts=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ts=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Migrations: the SQL files, the Drizzle schema they must agree
+          # with, and the runner itself.
+          if match '^packages/db/(migrations/|src/schema/|src/migrate)'; then
+            echo "db=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "db=false" >> "$GITHUB_OUTPUT"
+          fi
+
   ts:
     name: TypeScript + Next.js
+    needs: changes
+    if: needs.changes.outputs.ts == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,6 +130,18 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      # `pnpm build` is the bulk of this job's ~3.5 minutes and most of it
+      # is the Next.js compile. Its own cache makes an incremental build
+      # dramatically cheaper; the key falls back to any build for the same
+      # lockfile so a source-only change still reuses it.
+      - uses: actions/cache@v4
+        with:
+          path: apps/web/.next/cache
+          key: nextjs-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('apps/web/src/**') }}
+          restore-keys: |
+            nextjs-${{ hashFiles('pnpm-lock.yaml') }}-
+            nextjs-
+
       - run: pnpm install --frozen-lockfile=false
 
       - run: pnpm typecheck
@@ -35,44 +152,47 @@ jobs:
 
   go:
     name: Go services
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        service:
-          - feed-ingester
-          - fonbet-ingester
-          - odds-publisher
-          - settlement
-          - bet-delay
-          - wallet-watcher
-          - signer
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version: "1.23"
-          cache-dependency-path: services/${{ matrix.service }}/go.sum
+          cache-dependency-path: |
+            services/*/go.sum
 
-      - name: go mod tidy
-        working-directory: services/${{ matrix.service }}
-        run: go mod tidy
-
-      - name: go vet
-        working-directory: services/${{ matrix.service }}
-        run: go vet ./...
-
-      - name: go build
-        working-directory: services/${{ matrix.service }}
-        run: go build ./...
-
-      - name: go test
-        working-directory: services/${{ matrix.service }}
-        run: go test ./...
+      - name: vet, build and test every Go service
+        run: |
+          set -uo pipefail
+          failed=""
+          for svc in feed-ingester fonbet-ingester odds-publisher settlement \
+                     bet-delay wallet-watcher signer; do
+            echo "::group::$svc"
+            # Collected rather than short-circuited, so one broken service
+            # does not hide the state of the other six — the behaviour the
+            # matrix got from `fail-fast: false`.
+            if ! ( cd "services/$svc" \
+                   && go mod tidy \
+                   && go vet ./... \
+                   && go build ./... \
+                   && go test ./... ); then
+              echo "::error title=Go service failed::$svc"
+              failed="$failed $svc"
+            fi
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "failed services:$failed"
+            exit 1
+          fi
 
   migrations:
     name: Verify migrations apply cleanly
+    needs: changes
+    if: needs.changes.outputs.db == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:

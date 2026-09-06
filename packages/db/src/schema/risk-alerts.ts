@@ -1,4 +1,4 @@
-// Alert center (migration 0105). One queue every risk signal lands in,
+// Alert center (migration 20260906T230248). One queue every risk signal lands in,
 // with a support-ticket lifecycle: open -> acknowledged -> resolved,
 // an assignee and an append-only event trail. Rules and their
 // thresholds live in risk_alert_rules; the sweeper in

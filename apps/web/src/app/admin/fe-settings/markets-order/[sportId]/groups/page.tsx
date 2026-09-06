@@ -29,14 +29,13 @@ export default async function GroupsPage({
       <p className="mt-1 font-mono text-xs text-[var(--color-fg-muted)]">
         {data.sport.slug}
       </p>
-
       <p className="mt-4 max-w-2xl text-sm text-[var(--color-fg-muted)]">
-        The tabs shown on the match-detail page, in render order. Built-in
-        tabs (Match, Map N, Top) can be reordered; custom groups can also be
-        renamed and deleted. A custom group is a curated tab like Top — it
-        only appears on the storefront once you add markets to it via its
-        tab editor. The storefront&apos;s All tab always renders first and is
-        not configurable.
+        The tabs shown on the match-detail page, in render order. Feed tabs
+        (Match, Map N, and whichever sub-events this sport carries — 1st half,
+        Corners, Players …) can be reordered; custom groups can also be renamed
+        and deleted. A custom group is a curated tab like Top — it only appears
+        on the storefront once you add markets to it via its tab editor. The
+        storefront&apos;s All tab always renders first and is not configurable.
       </p>
 
       <GroupsManager sportId={data.sport.id} initial={data} />

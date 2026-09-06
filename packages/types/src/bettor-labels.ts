@@ -1,4 +1,4 @@
-// Operator labels a bettor can carry (migration 0104, users.labels).
+// Operator labels a bettor can carry (migration 20260906T230247, users.labels).
 //
 // Closed vocabulary: the DB CHECK `users_labels_allowed` lists the same
 // eight values, so adding one means editing both places. Descriptive

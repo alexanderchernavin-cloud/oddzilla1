@@ -79,7 +79,7 @@ export const users = pgTable(
     // problem gambling, watch closely", etc. NULL = no notes. Capped
     // at 4000 chars (DB CHECK) so a runaway paste can't bloat the row.
     notes: text(),
-    // Operator labels (migration 0104): closed vocabulary shared with
+    // Operator labels (migration 20260906T230247): closed vocabulary shared with
     // packages/types/src/bettor-labels.ts and enforced by the CHECK
     // below. Descriptive only — the placement path never reads them.
     labels: text().array().notNull().default(sql`'{}'::text[]`),

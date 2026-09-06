@@ -7,7 +7,7 @@ import {
   type ListMatchEnriched,
 } from "@/components/match/match-list-tabs";
 import { SportGlyph } from "@/components/ui/sport-glyph";
-import { LiveDot } from "@/components/ui/primitives";
+import { SectionTabs } from "@/components/lobby/section-tabs";
 import { TodayLabel } from "@/components/lobby/today-label";
 import { ZillaFlashRow } from "@/components/lobby/zillaflash-row";
 import { orderMatchesBySport, shortName } from "@/lib/sport-order";
@@ -42,7 +42,7 @@ export default async function LivePage({ searchParams }: PageProps) {
   const selectedSport =
     typeof rawSport === "string" && rawSport.length > 0 ? rawSport : null;
 
-  const [data, user, tCommon, tSport] = await Promise.all([
+  const [data, user, tMatch, tSport] = await Promise.all([
     serverApi<Response>("/catalog/matches?status=live&limit=120"),
     // /auth/me is small + already in the SSR fan-out for the layout;
     // we call it again here so the page picks up the bettor's
@@ -52,7 +52,9 @@ export default async function LivePage({ searchParams }: PageProps) {
     // second call. Cost is one cookie-forwarded fetch to api:3001
     // resolved in parallel with /catalog/matches.
     getSessionUser(),
-    getTranslations("common"),
+    // The "match" namespace carries both tab labels ("Live" /
+    // "Pre-match") — the lobby strip reads the same two keys.
+    getTranslations("match"),
     getTranslations("sport"),
   ]);
   const ordered = orderMatchesBySport(
@@ -125,11 +127,21 @@ export default async function LivePage({ searchParams }: PageProps) {
       )}
 
       {visible.length === 0 ? (
-        <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
-          {tSport("noMatches")}
-        </p>
+        // The strip renders here too — an empty live list must still
+        // offer the way over to Pre-match instead of being a dead end.
+        <>
+          <SectionTabs
+            liveLabel={tMatch("live")}
+            prematchLabel={tMatch("prematch")}
+            selected="live"
+            sport={selectedSport}
+          />
+          <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
+            {tSport("noMatches")}
+          </p>
+        </>
       ) : (
-        // Page heading lives ON the match-list section-head row so it
+        // The tab strip lives ON the match-list section-head row so it
         // shares a line with the cols toggle. MatchListTabs renders the
         // first labeled group's label on the left and the toggle on the
         // right via `.oz-match-list-section-head` (justify: space-between).
@@ -138,62 +150,20 @@ export default async function LivePage({ searchParams }: PageProps) {
           groups={[
             {
               key: "live",
-              label: <LivePageHeading label={tCommon("live")} count={visible.length} />,
+              label: (
+                <SectionTabs
+                  liveLabel={tMatch("live")}
+                  prematchLabel={tMatch("prematch")}
+                  selected="live"
+                  sport={selectedSport}
+                />
+              ),
               matches: visible.map(enrich),
             },
           ]}
         />
       )}
     </div>
-  );
-}
-
-// Page heading rendered inline with the MatchListTabs cols toggle on the
-// section-head row. Visual mirror of the home lobby's LobbyTabLink — same
-// 22-px label, same live-red count pill — but as plain text since we're
-// already on /live (no navigation target).
-function LivePageHeading({ label, count }: { label: string; count: number }) {
-  return (
-    <h1
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 10,
-        margin: 0,
-        fontSize: 22,
-        fontWeight: 500,
-        letterSpacing: "-0.015em",
-        lineHeight: 1.1,
-      }}
-    >
-      <span
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          color: "var(--fg-muted)",
-        }}
-        aria-hidden
-      >
-        <LiveDot size={9} />
-      </span>
-      {label}
-      <span
-        className="mono tnum"
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          fontSize: 11,
-          fontWeight: 600,
-          color: "var(--live)",
-          border: "1px solid var(--live)",
-          borderRadius: 999,
-          padding: "2px 8px",
-          lineHeight: 1.2,
-        }}
-      >
-        {count}
-      </span>
-    </h1>
   );
 }
 

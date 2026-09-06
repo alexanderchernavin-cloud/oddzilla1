@@ -16,7 +16,6 @@ import { ZillaFactsCards } from "@/components/match/zillafacts-cards";
 import { ZillaBuildCards } from "@/components/match/zillabuild-cards";
 import { MatchPageRegistrar } from "@/lib/match-page-context";
 import { type LiveScore } from "@/lib/live-score";
-import { getSessionUser } from "@/lib/auth";
 import { MatchViewTracker } from "@/lib/zillapass-track";
 
 interface MatchResponse {
@@ -50,10 +49,7 @@ export default async function MatchPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const [data, viewer] = await Promise.all([
-    serverApi<MatchResponse>(`/catalog/matches/${id}`),
-    getSessionUser(),
-  ]);
+  const data = await serverApi<MatchResponse>(`/catalog/matches/${id}`);
   if (!data) notFound();
 
   const { match, markets, marketGroups } = data;
@@ -68,6 +64,10 @@ export default async function MatchPage({
   // exists the tracker is the richer of the two, so ours steps aside and
   // the header card keeps only the status pill + tournament line.
   const hasLmt = Boolean(match.sportradar);
+  // An operator-authored question carries its whole title in `homeTeam`
+  // and leaves the second side empty — see `formatEventTitle`. Nothing
+  // that draws two sides applies to it.
+  const singleSided = !(match.awayTeam ?? "").trim();
 
   // For the analyses section CTA, "logged in" presence-checks the access
   // cookie rather than round-tripping /auth/me. Server stays authoritative
@@ -153,7 +153,25 @@ export default async function MatchPage({
           </span>
         </div>
 
-        {hasLmt ? null : (
+        {/* A single-sided event — an operator's question, which carries
+            its whole title in `homeTeam` and leaves the second side empty
+            — gets its title instead of a scoreboard. The scoreboard draws
+            two rows with a score between them and would render the second
+            one blank. */}
+        {singleSided ? (
+          <h1
+            className="display"
+            style={{
+              margin: "10px 0 0",
+              fontSize: "clamp(20px, 4.5vw, 28px)",
+              fontWeight: 500,
+              letterSpacing: "-0.02em",
+              overflowWrap: "anywhere",
+            }}
+          >
+            {match.homeTeam}
+          </h1>
+        ) : hasLmt ? null : (
           <LiveScoreboard
             matchId={match.id}
             homeTeam={match.homeTeam}
@@ -233,7 +251,6 @@ export default async function MatchPage({
         homeTeam={match.homeTeam}
         awayTeam={match.awayTeam}
         matchStatus={match.status}
-        viewerId={viewer ? viewer.id : null}
         loggedIn={loggedIn}
         sportradar={match.sportradar ?? null}
       />
@@ -247,11 +264,11 @@ export default async function MatchPage({
           lives inside LiveMarkets and disappears the moment any market
           appears in the merged tree.
 
-          Chat + Analyses no longer render below markets — they live
-          in the right rail's Match panel (RailMatchPanel), tabbed
-          alongside the Disir Match Insights widget. The registrar
-          above passes matchStatus + viewer auth state through context
-          so the rail can render the correct default tab and CTAs. */}
+          Analyses no longer renders below markets — it lives in the
+          right rail's Match panel (RailMatchPanel), tabbed alongside
+          the Disir Match Insights widget. The registrar above passes
+          matchStatus + the logged-in signal through context so the
+          rail can render the correct default tab and CTAs. */}
       <LiveMarkets
         matchId={match.id}
         match={{

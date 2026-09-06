@@ -48,7 +48,7 @@
   "shell": {
     "homeLink": "Oddzilla home",
     "accountMenu": "Account menu for {name}",
-    "lobby": "Lobby",
+    "home": "Home",
     "live": "Live",
     "upcoming": "Pre-match",
     "sportsNav": "Sports",
@@ -341,7 +341,6 @@
     "logout": "Log out"
   },
   "home": {
-    "lobby": "Lobby",
     "upcoming": "Pre-match",
     "empty": "Nothing scheduled. Check individual sport pages for the full slate.",
     "topSports": "Top sports"
@@ -394,10 +393,9 @@
     "all": "All",
     "live": "Live",
     "upcoming": "Pre-match",
+    "startingSoon": "Starting soon",
+    "liveAndSoon": "Live & starting soon",
     "topTournaments": "Top tournaments",
-    "filterKindCategory": "Category",
-    "filterKindTournament": "Tournament",
-    "filterKindTeam": "Team",
     "clearFilter": "Clear filter",
     "noMatches": "No matches right now.",
     "matchCount": "{count, plural, one {# match} other {# matches}}"
@@ -427,8 +425,12 @@
     "copyLink": "Copy link",
     "copied": "Copied",
     "matchWinner": "Match winner",
-    "watching": "{count} watching",
-    "topTournamentTitle": "Top tournament"
+    "serving": "Serving",
+    "topTournamentTitle": "Top tournament",
+    "collapseMarket": "Collapse market",
+    "expandMarket": "Expand market",
+    "collapseAll": "Collapse all",
+    "expandAll": "Expand all"
   },
   "bets": {
     "title": "My bets",
@@ -731,41 +733,6 @@
     "fileTooLarge": "{name} is over the {limit} limit.",
     "fileEmpty": "{name} is empty."
   },
-  "matchRoom": {
-    "loading": "Loading match room…",
-    "loadError": "Couldn't load match room: {message}",
-    "status": {
-      "live": "LIVE",
-      "fulltime": "FT",
-      "halftime": "HT",
-      "suspended": "SUSP"
-    },
-    "watching": "{count} watching",
-    "yourPick": "Your pick",
-    "badge": {
-      "won": "Won",
-      "lost": "Lost",
-      "void": "Void",
-      "cashedOut": "Cashed out",
-      "winning": "Winning",
-      "atRisk": "At risk",
-      "level": "Level"
-    },
-    "pick": {
-      "home": "Home",
-      "draw": "Draw",
-      "away": "Away"
-    },
-    "pickPrompt": "Pick the winner to see the room",
-    "signInPrompt": "Sign in to see who the room is backing",
-    "crowdPicks": "Crowd picks · {count, plural, one {# vote} other {# votes}}",
-    "youPicked": "You picked {pick}",
-    "noMessages": "No messages yet. Be the first to say something.",
-    "newMessages": "{count, plural, one {# new message} other {# new messages}} ↓",
-    "reconnecting": "Reconnecting…",
-    "sayPlaceholder": "Say something",
-    "send": "Send"
-  },
   "matchWidgets": {
     "lmt": {
       "title": "Live match tracker",
@@ -803,7 +770,6 @@
       "aria": "Match panel",
       "tabsAria": "Match panel tabs",
       "insights": "Insights",
-      "chat": "Chat",
       "analyses": "Analyses",
       "prematchTitle": "Prematch insights — {home} vs {away}"
     },

@@ -9,7 +9,7 @@
 // fetched on expand so the page's first paint stays small.
 
 import { useCallback, useEffect, useState } from "react";
-import { clientApi } from "@/lib/api-client";
+import { clientApi, ApiFetchError } from "@/lib/api-client";
 import type { UnsettledMatch, UnsettledTicket } from "./page";
 
 interface MarketRow {
@@ -64,7 +64,7 @@ export function UnsettledTabs({
     markets: number;
   }>;
 }) {
-  const [tab, setTab] = useState<"markets" | "tickets" | "sports">("markets");
+  const [tab, setTab] = useState<"markets" | "tickets" | "sports" | "misses">("markets");
 
   return (
     <div className="mt-8">
@@ -78,11 +78,133 @@ export function UnsettledTabs({
         <TabButton active={tab === "sports"} onClick={() => setTab("sports")}>
           By sport
         </TabButton>
+        <TabButton active={tab === "misses"} onClick={() => setTab("misses")}>
+          Unmatched results
+        </TabButton>
       </div>
 
       {tab === "markets" ? <MarketsTab matches={matches} /> : null}
       {tab === "tickets" ? <TicketsTab tickets={tickets} /> : null}
       {tab === "sports" ? <SportsTab rows={bySport} /> : null}
+      {tab === "misses" ? <MissesTab /> : null}
+    </div>
+  );
+}
+
+// ─── Unmatched results ─────────────────────────────────────────────────────
+//
+// Pending Fonbet fixtures the results grader could not find under the name
+// we hold, with what the results document listed for the same competition.
+// Written by fonbet-ingester every pass (fonbet_settlement_misses,
+// migration 0111); a fixture disappears from here the pass it is found.
+
+interface MissRow {
+  matchId: string;
+  providerUrn: string;
+  homeTeam: string;
+  awayTeam: string;
+  scheduledAt: string | null;
+  segmentId: number;
+  candidates: Array<{ name: string; startTime: number; score: string; status: number }>;
+  openMarkets: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  attempts: number;
+  matchStatus: string;
+  sportSlug: string;
+  tournamentName: string;
+}
+
+function MissesTab() {
+  const [rows, setRows] = useState<MissRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    clientApi<{ misses: MissRow[] }>("/admin/unsettled/misses")
+      .then((res) => {
+        if (!cancelled) setRows(res.misses);
+      })
+      .catch(() => {
+        if (!cancelled) setError("Could not load the unmatched fixtures.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (error) {
+    return <p className="mt-8 text-sm text-[var(--color-danger,#b4443c)]">{error}</p>;
+  }
+  if (rows === null) {
+    return <p className="mt-8 text-sm text-[var(--color-fg-muted)]">Loading…</p>;
+  }
+  if (rows.length === 0) {
+    return (
+      <p className="mt-8 text-sm text-[var(--color-fg-muted)]">
+        Every pending Fonbet fixture was found in the results feed on the last pass.
+      </p>
+    );
+  }
+  return (
+    <div className="mt-6 overflow-x-auto rounded-[14px] border border-[var(--color-border)] bg-[var(--color-bg-card)]">
+      <table className="w-full text-left text-sm">
+        <thead className="border-b border-[var(--color-border)] text-xs uppercase tracking-[0.12em] text-[var(--color-fg-subtle)]">
+          <tr>
+            <Th>Our fixture</Th>
+            <Th>Sport · Tournament</Th>
+            <Th>Start</Th>
+            <Th className="text-right">Open markets</Th>
+            <Th className="text-right">Passes</Th>
+            <Th>What the results feed listed for this competition</Th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-[var(--color-border)]">
+          {rows.map((r) => (
+            <tr key={r.matchId} className="align-top">
+              <Td>
+                <div className="font-medium">
+                  {r.homeTeam} <span className="text-[var(--color-fg-subtle)]">vs</span> {r.awayTeam}
+                </div>
+                <div className="mt-1 font-mono text-[11px] text-[var(--color-fg-subtle)]">
+                  id {r.matchId} · {r.matchStatus} · segment {r.segmentId}
+                </div>
+              </Td>
+              <Td>
+                <div>{r.sportSlug}</div>
+                <div className="text-[12px] text-[var(--color-fg-muted)]">{r.tournamentName}</div>
+              </Td>
+              <Td className="whitespace-nowrap">
+                {r.scheduledAt ? new Date(r.scheduledAt).toLocaleString() : "—"}
+              </Td>
+              <Td className="text-right font-mono">{r.openMarkets}</Td>
+              <Td className="text-right font-mono">
+                {r.attempts}
+                <div className="text-[10px] text-[var(--color-fg-subtle)]">since {ago(r.firstSeenAt)}</div>
+              </Td>
+              <Td>
+                {r.candidates.length === 0 ? (
+                  <span className="text-xs text-[var(--color-fg-muted)]">
+                    nothing for this competition on those line days
+                  </span>
+                ) : (
+                  <ul className="space-y-0.5 text-xs">
+                    {r.candidates.map((c, i) => (
+                      <li key={i} className="font-mono">
+                        {c.name}{" "}
+                        <span className="text-[var(--color-fg-subtle)]">
+                          {new Date(c.startTime * 1000).toLocaleString()} · {c.score || "—"} ·{" "}
+                          {c.status === 3 ? "finished" : c.status === 4 ? "cancelled" : `status ${c.status}`}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </Td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -165,6 +287,60 @@ function MatchRow({ match }: { match: UnsettledMatch }) {
 
   const hasMoney = match.openTickets > 0;
 
+  // Operator void. Publishes a cancel onto settlement.external for one
+  // market, or for every open market of the match; services/settlement
+  // applies it (market -4, selections void, tickets refunded) within a
+  // second or two, so the rows are re-fetched after a short pause.
+  const [voiding, setVoiding] = useState<string | null>(null);
+  const [voidError, setVoidError] = useState<string | null>(null);
+  const voidMarket = useCallback(
+    async (marketId: string, label: string) => {
+      if (
+        !window.confirm(
+          `Void ${label}?\n\nEvery selection on it is refunded and any paid ticket is reversed. This is an operator decision recorded in the audit log.`,
+        )
+      )
+        return;
+      setVoidError(null);
+      setVoiding(marketId);
+      try {
+        await clientApi(`/admin/unsettled/markets/${marketId}/void`, {
+          method: "POST",
+          body: JSON.stringify({ reason: "operator void from /admin/unsettled" }),
+        });
+        await new Promise((r) => setTimeout(r, 1500));
+        await load();
+      } catch (e) {
+        setVoidError(e instanceof ApiFetchError ? e.body.message : "Void failed.");
+      } finally {
+        setVoiding(null);
+      }
+    },
+    [load],
+  );
+  const voidAll = useCallback(async () => {
+    if (
+      !window.confirm(
+        `Void ALL ${match.unsettledMarkets} open markets on ${match.homeTeam} vs ${match.awayTeam}?\n\nEvery selection is refunded and any paid ticket is reversed. Recorded in the audit log.`,
+      )
+    )
+      return;
+    setVoidError(null);
+    setVoiding("all");
+    try {
+      await clientApi(`/admin/unsettled/matches/${match.matchId}/void-open`, {
+        method: "POST",
+        body: JSON.stringify({ reason: "operator void-all from /admin/unsettled" }),
+      });
+      await new Promise((r) => setTimeout(r, 2000));
+      await load();
+    } catch (e) {
+      setVoidError(e instanceof ApiFetchError ? e.body.message : "Void failed.");
+    } finally {
+      setVoiding(null);
+    }
+  }, [load, match]);
+
   return (
     <>
       <tr className="align-top">
@@ -235,6 +411,23 @@ function MatchRow({ match }: { match: UnsettledMatch }) {
               </p>
             ) : (
               <div className="overflow-x-auto">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <span className="text-[11px] text-[var(--color-fg-subtle)]">
+                    {rows.length} open market{rows.length === 1 ? "" : "s"} on a finished match.
+                    Voiding refunds every selection; only for a market nothing can grade.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void voidAll()}
+                    disabled={voiding !== null}
+                    className="rounded-full border border-[var(--color-danger,#b4443c)] px-3 py-1 text-[11px] text-[var(--color-danger,#b4443c)] disabled:opacity-50"
+                  >
+                    {voiding === "all" ? "Voiding…" : "Void all open"}
+                  </button>
+                </div>
+                {voidError ? (
+                  <p className="mb-2 text-xs text-[var(--color-danger,#b4443c)]">{voidError}</p>
+                ) : null}
                 <table className="w-full text-left text-xs">
                   <thead className="text-[10px] uppercase tracking-[0.1em] text-[var(--color-fg-subtle)]">
                     <tr>
@@ -243,14 +436,15 @@ function MatchRow({ match }: { match: UnsettledMatch }) {
                       <th className="py-1 pr-4 font-medium">Status</th>
                       <th className="py-1 pr-4 text-right font-medium">Outcomes</th>
                       <th className="py-1 pr-4 text-right font-medium">Graded</th>
-                      <th className="py-1 text-right font-medium">Tickets</th>
+                      <th className="py-1 pr-4 text-right font-medium">Tickets</th>
+                      <th className="py-1 text-right font-medium" />
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[var(--color-border)]">
                     {rows.map((r) => (
                       <tr key={r.marketId}>
                         <td className="py-1.5 pr-4">
-                          {r.marketName ?? `Market #${r.providerMarketId}`}
+                          {r.marketName?.trim() ? r.marketName : `Market #${r.providerMarketId}`}
                           <span className="ml-2 font-mono text-[10px] text-[var(--color-fg-subtle)]">
                             pmid {r.providerMarketId} · id {r.marketId}
                           </span>
@@ -270,13 +464,30 @@ function MatchRow({ match }: { match: UnsettledMatch }) {
                           {r.outcomesWithResult}
                         </td>
                         <td
-                          className={`py-1.5 text-right font-mono ${
+                          className={`py-1.5 pr-4 text-right font-mono ${
                             r.openTickets > 0
                               ? "text-[var(--color-danger,#b4443c)]"
                               : ""
                           }`}
                         >
                           {r.openTickets}
+                        </td>
+                        <td className="py-1.5 text-right">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void voidMarket(
+                                r.marketId,
+                                `${r.marketName?.trim() ? r.marketName : `market #${r.providerMarketId}`}${
+                                  r.specifiers && r.specifiers !== "{}" ? ` ${r.specifiers}` : ""
+                                }`,
+                              )
+                            }
+                            disabled={voiding !== null}
+                            className="rounded-full border border-[var(--color-border)] px-2.5 py-0.5 text-[11px] text-[var(--color-danger,#b4443c)] disabled:opacity-50"
+                          >
+                            {voiding === r.marketId ? "Voiding…" : "Void"}
+                          </button>
                         </td>
                       </tr>
                     ))}

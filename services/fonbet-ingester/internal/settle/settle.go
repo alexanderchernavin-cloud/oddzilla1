@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/rs/zerolog"
 
@@ -35,17 +36,15 @@ import (
 var lineDay = time.FixedZone("UTC+3", 3*3600)
 
 // overtimeRows / shootoutRows are the statistic rows that carry the
-// tie-breaking scores, in every language the results feed is fetched in
-// (`locale` follows FONBET_LANG). Names verified against the live feed
-// 2026-09-04 by pairing the ru and en documents row for row: "дополнительное
-// время" == "extra time", and both "серия пенальти" (football) and "серия
-// буллитов" (hockey) == "penalty shootouts". Missing them is not
-// a benign gap: without the overtime row a basketball two-way market
-// grades on regular time, which is a wrong settlement rather than a
-// deferred one.
+// tie-breaking scores in the English results feed (`locale` follows
+// FONBET_LANG, which is English only). Names verified against the live
+// feed 2026-09-04: football and hockey both file their shootout under
+// "penalty shootouts". Missing them is not a benign gap: without the
+// overtime row a basketball two-way market grades on regular time, which
+// is a wrong settlement rather than a deferred one.
 var (
-	overtimeRows = []string{"дополнительное время", "extra time"}
-	shootoutRows = []string{"серия пенальти", "серия буллитов", "penalty shootouts", "penalty shootout"}
+	overtimeRows = []string{"extra time"}
+	shootoutRows = []string{"penalty shootouts", "penalty shootout"}
 )
 
 type Worker struct {
@@ -116,6 +115,10 @@ func (w *Worker) pass(ctx context.Context) {
 type resultIndex struct {
 	sports  map[int]int                  // competition id → sport id
 	matches map[resultKey][]*resultMatch // main rows
+	// byCompetition lists every match row of a competition regardless of
+	// start time — what the operator sees for a fixture the grader could
+	// not find (store.RecordSettlementMisses).
+	byCompetition map[int][]*resultMatch
 }
 
 type resultKey struct {
@@ -124,14 +127,17 @@ type resultKey struct {
 }
 
 type resultMatch struct {
-	name   string // normalized "a – b"
-	status int
-	score  string
-	stats  map[string]fonbet.Score
+	name      string // normalized "a – b"
+	rawName   string // as the results feed spelled it
+	startTime int64
+	status    int
+	score     string
+	stats     map[string]fonbet.Score
+	section   string // the section (competition) name the row was filed under
 }
 
 func buildResultIndex(docs []*fonbet.ResultsResponse) *resultIndex {
-	ri := &resultIndex{sports: map[int]int{}, matches: map[resultKey][]*resultMatch{}}
+	ri := &resultIndex{sports: map[int]int{}, matches: map[resultKey][]*resultMatch{}, byCompetition: map[int][]*resultMatch{}}
 	for _, doc := range docs {
 		events := map[int64]*fonbet.ResultEvent{}
 		for i := range doc.Events {
@@ -147,9 +153,10 @@ func buildResultIndex(docs []*fonbet.ResultsResponse) *resultIndex {
 					continue
 				}
 				if fonbet.IsMatchName(e.Name) {
-					cur = &resultMatch{name: fonbet.NormalizeMatchName(e.Name), status: e.Status, score: e.Score, stats: map[string]fonbet.Score{}}
+					cur = &resultMatch{name: fonbet.NormalizeMatchName(e.Name), rawName: e.Name, startTime: e.StartTime, status: e.Status, score: e.Score, stats: map[string]fonbet.Score{}, section: sec.Name}
 					k := resultKey{sec.FonbetCompetitionID, e.StartTime}
 					ri.matches[k] = append(ri.matches[k], cur)
+					ri.byCompetition[sec.FonbetCompetitionID] = append(ri.byCompetition[sec.FonbetCompetitionID], cur)
 					continue
 				}
 				if cur == nil {
@@ -193,7 +200,35 @@ func (ri *resultIndex) find(m store.PendingMatch) *resultMatch {
 			return rm
 		}
 	}
+	// Legacy fixtures created while the line was read from fonbet.kz in
+	// Russian hold Cyrillic team names, and the English results feed can
+	// never spell them the same way — 855 of them sat unmatched on
+	// 2026-09-06 with hundreds of open markets each. Same competition +
+	// same start time is Fonbet's own identity for a fixture, and it is safe
+	// to lean on exactly when it is unambiguous on BOTH sides: one results
+	// row at that key, and one fixture of ours in that tournament at that
+	// kick-off (a postponed game keeps its slot in our DB, so a same-time
+	// neighbour makes SameSlot 2 and refuses). Cyrillic-only on purpose: a
+	// general loosening would reopen the mirrored-row problem above for
+	// fixtures the two feeds merely order differently. Orientation is safe
+	// — both the stored names and the results row come from Fonbet, and
+	// Fonbet lists the home side first in each.
+	if hasCyrillic(m.HomeTeam+m.AwayTeam) && m.SameSlot == 1 {
+		if rows := ri.matches[resultKey{m.SegmentID, m.StartTime}]; len(rows) == 1 {
+			return rows[0]
+		}
+	}
 	return nil
+}
+
+// hasCyrillic reports whether the string carries any Cyrillic letter.
+func hasCyrillic(s string) bool {
+	for _, r := range s {
+		if unicode.Is(unicode.Cyrillic, r) {
+			return true
+		}
+	}
+	return false
 }
 
 // RunOnce performs one settlement pass.
@@ -244,13 +279,21 @@ func (w *Worker) RunOnce(ctx context.Context) (Stats, error) {
 	// settles, so the emitted stamp can be written per published chunk.
 	var msgs []bus.SettlementMessage
 	var marketIDs []int64
+	// Misses are recorded per pass so the operator can see WHICH fixtures
+	// the results feed does not carry under the name we hold, and what it
+	// lists instead (store.RecordSettlementMisses); matched ids clear any
+	// earlier miss row for the same match.
+	var misses []store.SettlementMiss
+	matched := make([]int64, 0, len(pending))
 	for _, m := range pending {
 		rm := ri.find(m)
 		if rm == nil {
 			stats.NoResult++
+			misses = append(misses, missFor(m, ri))
 			continue
 		}
 		stats.Matched++
+		matched = append(matched, m.MatchID)
 		if rm.status == fonbet.ResultCancelled {
 			for _, mk := range m.Markets {
 				if w.recentlyEmitted(mk.ID, now) {
@@ -272,7 +315,7 @@ func (w *Worker) RunOnce(ctx context.Context) (Stats, error) {
 			stats.Skipped["unparsable score"]++
 			continue
 		}
-		ss := ScoreSet{Main: main, Stats: rm.stats}
+		ss := ScoreSet{Main: main, Stats: rm.stats, Section: rm.section}
 		for _, k := range overtimeRows {
 			if ot, ok := rm.stats[k]; ok {
 				ss.OT = &ot
@@ -339,6 +382,10 @@ func (w *Worker) RunOnce(ctx context.Context) (Stats, error) {
 		if now.Sub(at) > time.Hour {
 			delete(w.emitted, id)
 		}
+	}
+	// Visibility, not settlement: a failure here must not fail the pass.
+	if err := store.RecordSettlementMisses(ctx, w.st.Pool(), misses, matched); err != nil {
+		w.log.Warn().Err(err).Msg("record settlement misses failed")
 	}
 	return stats, nil
 }

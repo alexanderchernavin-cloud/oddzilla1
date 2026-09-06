@@ -48,7 +48,7 @@
   "shell": {
     "homeLink": "Oddzilla — početna",
     "accountMenu": "Izbornik računa za {name}",
-    "lobby": "Lobby",
+    "home": "Početna",
     "live": "Uživo",
     "upcoming": "Prije meča",
     "sportsNav": "Sportovi",
@@ -341,7 +341,6 @@
     "logout": "Odjavi se"
   },
   "home": {
-    "lobby": "Lobby",
     "upcoming": "Prije meča",
     "empty": "Ništa nije na rasporedu. Cjelokupnu ponudu potražite na stranicama pojedinih sportova.",
     "topSports": "Najbolji sportovi"
@@ -394,10 +393,9 @@
     "all": "Sve",
     "live": "Uživo",
     "upcoming": "Prije meča",
+    "startingSoon": "Uskoro počinju",
+    "liveAndSoon": "Uživo i uskoro",
     "topTournaments": "Top turniri",
-    "filterKindCategory": "Kategorija",
-    "filterKindTournament": "Turnir",
-    "filterKindTeam": "Momčad",
     "clearFilter": "Ukloni filtar",
     "noMatches": "Trenutačno nema mečeva.",
     "matchCount": "{count, plural, one {# meč} few {# meča} other {# mečeva}}"
@@ -427,8 +425,12 @@
     "copyLink": "Kopiraj poveznicu",
     "copied": "Kopirano",
     "matchWinner": "Pobjednik meča",
-    "watching": "{count, plural, one {# gledatelj} few {# gledatelja} other {# gledatelja}}",
-    "topTournamentTitle": "Top turnir"
+    "serving": "Servira",
+    "topTournamentTitle": "Top turnir",
+    "collapseMarket": "Sažmi tržište",
+    "expandMarket": "Proširi tržište",
+    "collapseAll": "Sažmi sve",
+    "expandAll": "Proširi sve"
   },
   "bets": {
     "title": "Moje oklade",
@@ -731,41 +733,6 @@
     "fileTooLarge": "{name} premašuje ograničenje od {limit}.",
     "fileEmpty": "{name} je prazna."
   },
-  "matchRoom": {
-    "loading": "Učitavanje sobe meča…",
-    "loadError": "Sobu meča nije moguće učitati: {message}",
-    "status": {
-      "live": "UŽIVO",
-      "fulltime": "KRAJ",
-      "halftime": "POLUVRIJEME",
-      "suspended": "PREKID"
-    },
-    "watching": "{count, plural, one {# gleda} few {# gledaju} other {# gleda}}",
-    "yourPick": "Vaš tip",
-    "badge": {
-      "won": "Dobitak",
-      "lost": "Gubitak",
-      "void": "Poništeno",
-      "cashedOut": "Cash out",
-      "winning": "Vodi",
-      "atRisk": "U opasnosti",
-      "level": "Izjednačeno"
-    },
-    "pick": {
-      "home": "Domaći",
-      "draw": "Neriješeno",
-      "away": "Gosti"
-    },
-    "pickPrompt": "Odaberite pobjednika da biste vidjeli sobu",
-    "signInPrompt": "Prijavite se da biste vidjeli za koga soba navija",
-    "crowdPicks": "Tipovi sobe · {count, plural, one {# glas} few {# glasa} other {# glasova}}",
-    "youPicked": "Vaš tip: {pick}",
-    "noMessages": "Još nema poruka. Budite prvi koji će nešto napisati.",
-    "newMessages": "{count, plural, one {# nova poruka} few {# nove poruke} other {# novih poruka}} ↓",
-    "reconnecting": "Ponovno povezivanje…",
-    "sayPlaceholder": "Napišite nešto",
-    "send": "Pošalji"
-  },
   "matchWidgets": {
     "lmt": {
       "title": "Praćenje utakmice uživo",
@@ -803,7 +770,6 @@
       "aria": "Panel meča",
       "tabsAria": "Kartice panela meča",
       "insights": "Statistika",
-      "chat": "Chat",
       "analyses": "Analize",
       "prematchTitle": "Statistika prije meča — {home} vs {away}"
     },

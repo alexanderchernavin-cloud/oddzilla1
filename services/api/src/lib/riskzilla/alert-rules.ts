@@ -1,4 +1,4 @@
-// Alert center rule catalogue (migration 0105).
+// Alert center rule catalogue (migration 20260906T230248).
 //
 // Each rule is one INSERT ... SELECT the sweeper runs against Postgres:
 // the SELECT lists candidate conditions (whale stake, bettor beating

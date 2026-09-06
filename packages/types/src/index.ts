@@ -14,7 +14,6 @@ export * from "./combi-boost.js";
 export * from "./avatars.js";
 export * from "./zillatips.js";
 export * from "./zillafacts.js";
-export * from "./live-chat.js";
 export * from "./support.js";
 export * from "./netwinstable.js";
 export * from "./odds.js";

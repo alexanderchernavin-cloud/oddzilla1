@@ -1,4 +1,4 @@
-// /admin/riskzilla/alerts — the alert center (migration 0105).
+// /admin/riskzilla/alerts — the alert center (migration 20260906T230248).
 //
 // Queue of risk signals with a ticket lifecycle: open -> acknowledged
 // -> resolved, an assignee, and an event trail (comments, hand-offs).

@@ -12,8 +12,10 @@
     "./currencies": "./src/currencies.ts",
     "./products": "./src/products.ts",
     "./specifiers": "./src/specifiers.ts",
+    "./market-scope": "./src/market-scope.ts",
     "./community": "./src/community.ts",
     "./combi-boost": "./src/combi-boost.ts",
+    "./combozilla": "./src/combozilla.ts",
     "./competitions-catalog": "./src/competitions-catalog.ts",
     "./networks": "./src/networks.ts",
     "./zillatips": "./src/zillatips.ts",
@@ -22,11 +24,11 @@
     "./netwinstable": "./src/netwinstable.ts",
     "./boosted-odds": "./src/boosted-odds.ts",
     "./odds": "./src/odds.ts",
-    "./live-chat": "./src/live-chat.ts",
     "./support": "./src/support.ts",
     "./video": "./src/video.ts",
     "./sportradar": "./src/sportradar.ts",
-    "./bet-assist": "./src/bet-assist.ts"
+    "./bet-assist": "./src/bet-assist.ts",
+    "./custom-events": "./src/custom-events.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

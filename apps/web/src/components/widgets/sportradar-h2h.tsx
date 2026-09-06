@@ -8,18 +8,34 @@
 // public `betradar` client's list yet, so we frame Sportradar's own hosted
 // standalone page, which runs on a licensed origin and ships without
 // `frame-ancestors`. Props ride in the URL hash and the page re-reads them
-// on `hashchange`.
+// on `hashchange`. The storefront theme rides the hash too (`wl-theme`,
+// see sportradar-theme.ts) — that one the loader reads once, at boot, so
+// a theme toggle remounts the frame rather than changing the hash.
 //
 // `layout=inline` renders the panel in the page flow. The widget's other
 // layout, `overlay`, expects a host button to pop it open — that is the
 // shape Bet Assist uses, not this one: here the rail IS the surface.
 //
 // Height is fixed because the hosted page cannot report its size across
-// origins. The panel is long (game pulse, averages, previous meetings,
-// both teams' form tables), so the frame scrolls internally rather than
-// pretending to fit — a rail this narrow could not show it all anyway.
+// origins, and it is sized to the tab the widget OPENS on, not to its
+// tallest one. That first tab (competition line, score, both crests,
+// card chips) measured ~245px on two live fixtures with a ruler overlaid
+// on the stretched frame at the rail's 348px width on production
+// (2026-09-05), and the stats-comparison tab ~200px; the frame had been
+// 560, which left ~315px of
+// the hosted page's blank white under it — reported as "too much empty
+// space". The other tabs (game pulse, lineups, season table, previous
+// meetings) are taller and scroll inside the frame, which they did at
+// 560 as well; a rail this narrow was never going to show a lineup
+// whole. Erring tall costs a blank band on every visit; erring short
+// costs a scrollbar on the tabs a bettor opens on purpose.
 
 import { useTranslations } from "@/lib/i18n";
+import { useDocumentTheme, type DocumentTheme } from "@/lib/use-theme";
+import {
+  SPORTRADAR_FRAME_BACKGROUND,
+  sportradarThemeHashParts,
+} from "./sportradar-theme";
 
 const HOST = "https://widgets.sir.sportradar.com";
 
@@ -38,18 +54,21 @@ export function buildHeadToHeadStandaloneUrl({
   srSportId,
   client = "betradar",
   language = "en",
-}: Omit<Props, "height">): string {
+  theme,
+}: Omit<Props, "height"> & { theme?: DocumentTheme }): string {
   const hash = [
     `matchId=${srMatchId}`,
     `sportId=${srSportId}`,
     "layout=inline",
+    ...sportradarThemeHashParts(theme),
   ].join("&");
   return `${HOST}/${encodeURIComponent(client)}/${encodeURIComponent(language)}/standalone/headToHead.standalone#${hash}`;
 }
 
-export function SportradarHeadToHead({ height = 560, ...rest }: Props) {
+export function SportradarHeadToHead({ height = 280, ...rest }: Props) {
   const t = useTranslations("matchWidgets");
-  const src = buildHeadToHeadStandaloneUrl(rest);
+  const theme = useDocumentTheme();
+  const src = buildHeadToHeadStandaloneUrl({ ...rest, theme });
 
   return (
     <section
@@ -77,6 +96,7 @@ export function SportradarHeadToHead({ height = 560, ...rest }: Props) {
         </span>
       </div>
       <iframe
+        key={theme}
         src={src}
         title={t("h2h.title")}
         loading="lazy"
@@ -85,7 +105,7 @@ export function SportradarHeadToHead({ height = 560, ...rest }: Props) {
           height,
           border: "1px solid var(--border)",
           borderRadius: 10,
-          background: "var(--surface-2)",
+          background: SPORTRADAR_FRAME_BACKGROUND,
           display: "block",
         }}
       />

@@ -257,6 +257,32 @@ func runReconcileSweeper(ctx context.Context, stt *settler.Settler, interval tim
 					Int("settled_tickets", settled).
 					Msg("reconcile: settled stranded tickets")
 			}
+			// Ladder lines the backup feed dropped, decided from their
+			// settled siblings (settler.ReconcileLadderLines). Same cadence,
+			// same DB-only footing: a line only ever settles when a sibling
+			// strictly implies it, so the pass is a no-op on a healthy day.
+			ladder, err := stt.ReconcileLadderLines(ctx)
+			if err != nil {
+				log.Warn().Err(err).Msg("ladder inference sweep failed")
+				continue
+			}
+			if ladder.Candidates > 0 {
+				log.Info().
+					Int("candidates", ladder.Candidates).
+					Int("settled", ladder.Settled).
+					Interface("skipped", ladder.Skipped).
+					Msg("reconcile: ladder lines inferred from siblings")
+			}
+			// Matches whose whole book is terminal but whose row never
+			// left not_started / live (settler.ReconcileMatchLifecycle).
+			closed, err := stt.ReconcileMatchLifecycle(ctx)
+			if err != nil {
+				log.Warn().Err(err).Msg("match lifecycle sweep failed")
+				continue
+			}
+			if closed > 0 {
+				log.Info().Int("closed", closed).Msg("reconcile: closed matches with fully terminal books")
+			}
 		}
 	}
 }

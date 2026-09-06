@@ -105,6 +105,12 @@ export const tournaments = pgTable(
     name: text().notNull(),
     startAt: timestamp({ withTimezone: true }),
     endAt: timestamp({ withTimezone: true }),
+    // Operator pin position within this tournament's own CATEGORY
+    // (migration 0104). NULL = unpinned; pinned tournaments head their
+    // country's bucket in this order and the rest keep the tier / live
+    // count / name default behind them. Maintained as a dense 1..N
+    // sequence by POST /admin/tournaments/:id/order.
+    displayOrder: integer("display_order"),
     // Oddin risk_tier: sidebar lists tournaments higher-tier first.
     // Nullable until the backfill runs or auto-mapping populates it.
     riskTier: smallint(),
@@ -112,6 +118,15 @@ export const tournaments = pgTable(
     // the backoffice. feed-ingester's REST refresh skips locked rows, so
     // a manual tier survives the next fixture refresh and the backfill.
     riskTierLocked: boolean("risk_tier_locked").notNull().default(false),
+    // Migration 0106: who decided the tier. 'auto' = feed-assigned or
+    // never reviewed, 'manual' = operator (implies riskTierLocked),
+    // 'zagi' = ZillaAGI review. The distinction that matters is auto vs
+    // zagi: a NULL tier prices at the STRICTEST tier, so "unreviewed"
+    // and "reviewed and left alone" are very different positions.
+    riskTierSource: text("risk_tier_source").notNull().default("auto"),
+    riskTierNote: text("risk_tier_note"),
+    riskTierReviewedAt: timestamp("risk_tier_reviewed_at", { withTimezone: true }),
+    riskTierAttempts: smallint("risk_tier_attempts").notNull().default(0),
     // Optional per-tournament branding. Mirrors sports + competitors:
     // logo_url either external paste or auto-stamped /api/tournaments/
     // <id>/logo, brand_color "#RRGGBB" hex. Both nullable — when absent
@@ -120,6 +135,14 @@ export const tournaments = pgTable(
     brandColor: text("brand_color"),
     logoData: bytea("logo_data"),
     logoMime: text("logo_mime"),
+    // Migration 0108: where the logo came from. 'fonbet' (feed
+    // catalogue), 'wikidata' (auto-sourced and adjudicated), 'manual'
+    // (operator). Provenance matters here because a wrong crest — the
+    // women's competition on a men's league — is worse than a blank one.
+    logoSource: text("logo_source"),
+    logoSourceUrl: text("logo_source_url"),
+    logoAttempts: smallint("logo_attempts").notNull().default(0),
+    logoCheckedAt: timestamp("logo_checked_at", { withTimezone: true }),
     active: boolean().notNull().default(true),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },

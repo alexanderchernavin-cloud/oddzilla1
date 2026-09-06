@@ -28,9 +28,11 @@ import {
 // Subpath, never the barrel — see packages/types/src/odds.ts.
 import { isTeamShapedMarket } from "@oddzilla/types/boosted-odds";
 import { resolveBetAssistMarket } from "@oddzilla/types/bet-assist";
+import { isSubEventScope } from "@oddzilla/types/market-scope";
 import type { SportradarMatchRef } from "@oddzilla/types/sportradar";
 import type { ZillaFlashOffer } from "@oddzilla/types";
 import { useTranslations } from "@/lib/i18n";
+import { marketKindKey, useCollapsedMarkets } from "@/lib/use-collapsed-markets";
 import type { ZillaTip } from "@oddzilla/types/zillatips";
 import { OddButton } from "@/components/ui/primitives";
 import { I } from "@/components/ui/icons";
@@ -120,7 +122,27 @@ interface SingleMarket {
 
 type RenderEntry = SingleMarket | LineFamily;
 
-function partitionIntoFamilies(markets: MarketSnapshot[]): RenderEntry[] {
+// A ladder card's title is the market's base name — "Total", not
+// "Corners: Total" — because the tab above it already says which
+// sub-event we are in. That stops being true the moment a market is
+// rendered somewhere else: Top and custom tabs mix sub-events by design,
+// and since migration 20260906T014417 a feed tab can hold markets
+// imported from another one. There, a bare "Total" is a card the bettor
+// cannot identify, so the sub-event goes back on the title.
+//
+// Only sub-event scopes get the prefix. A map market already carries its
+// map in the name ("Total kills 12.5 - map 2"), so prefixing it would
+// just say Map 2 twice.
+function familyTitle(m: MarketSnapshot, groupId: string): string {
+  if (m.scope.id === groupId) return m.baseName;
+  if (!isSubEventScope(m.scope.id)) return m.baseName;
+  return `${m.scope.label}: ${m.baseName}`;
+}
+
+function partitionIntoFamilies(
+  markets: MarketSnapshot[],
+  groupId: string,
+): RenderEntry[] {
   const familiesByKey = new Map<string, LineFamily>();
   const singles: SingleMarket[] = [];
 
@@ -131,7 +153,7 @@ function partitionIntoFamilies(markets: MarketSnapshot[]): RenderEntry[] {
         fam = {
           kind: "lines",
           key: m.lineKey,
-          baseName: m.baseName,
+          baseName: familyTitle(m, groupId),
           lineSpec: m.lineSpec,
           providerMarketId: m.providerMarketId,
           order: m.providerMarketId,
@@ -187,6 +209,15 @@ function entryShouldRender(entry: RenderEntry): boolean {
     return !isMarketDeactivated(entry.market);
   }
   return entry.markets.some((m) => !isMarketDeactivated(m));
+}
+
+// The kind a card folds under (see use-collapsed-markets.ts). Every row
+// of a line family shares the table id and the sub-event, so the first
+// row speaks for the family.
+function entryKindKey(entry: RenderEntry): string {
+  return entry.kind === "single"
+    ? marketKindKey(entry.market.providerMarketId, entry.market.variant)
+    : marketKindKey(entry.providerMarketId, entry.markets[0]?.variant);
 }
 
 // Stable empty array so card props that take a tips list don't churn
@@ -479,6 +510,8 @@ export function LiveMarkets({
   // gate (the eligibility list also feeds slip.betbuilderEligibleMarketIds
   // when the user toggles ON).
   const builder = useBetBuilderProbe(matchId, match.sportSlug);
+  // Which market kinds the bettor has folded down to their title.
+  const collapsedMarkets = useCollapsedMarkets();
 
   // When BetBuilder is active for this match, hide markets that have
   // zero pickable outcomes (every outcome locked by the builderLocked
@@ -508,7 +541,9 @@ export function LiveMarkets({
             m.outcomes.some((o) => !builderLocked(m.id, o.outcomeId)),
           );
         }
-        const entries = partitionIntoFamilies(markets).filter(entryShouldRender);
+        const entries = partitionIntoFamilies(markets, g.id).filter(
+          entryShouldRender,
+        );
         return { id: g.id, label: g.label, order: g.order, entries };
       })
       .filter((g) => g.entries.length > 0);
@@ -527,7 +562,14 @@ export function LiveMarkets({
     scope === "all"
       ? renderableGroups
       : renderableGroups.filter((g) => g.id === scope);
-  const showScopeRow = renderableGroups.length > 1 || builder.available;
+  // Every market kind on screen, for the fold-all control. The button
+  // reads "Expand all" only once every one of them is folded.
+  const visibleKindKeys = Array.from(
+    new Set(visible.flatMap((g) => g.entries.map(entryKindKey))),
+  );
+  const allCollapsed =
+    visibleKindKeys.length > 0 &&
+    visibleKindKeys.every((k) => collapsedMarkets.isCollapsed(k));
 
   if (!hasAnyMarket) {
     // Subscription is still mounted via useLiveOdds above — when ticks
@@ -543,10 +585,9 @@ export function LiveMarkets({
     );
   }
 
-  // Scope tabs and the BetBuilder pill share one row above the markets.
-  // Render the row only when EITHER has something to show — otherwise
-  // the parent's column-gap would steal 18px of vertical space for an
-  // empty flex container.
+  // Scope tabs, the fold-all control and the BetBuilder pill share one
+  // row above the markets. The row always renders: the fold-all control
+  // is there whenever there is a market at all.
   //
   // ZillaTipsProvider wraps the entire markets tree so every ZillaTips
   // badge across all groups (single markets + line families) shares
@@ -556,41 +597,70 @@ export function LiveMarkets({
   return (
     <ZillaTipsProvider>
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      {showScopeRow && (
+      <div
+        style={{
+          display: "flex",
+          gap: 6,
+          flexWrap: "wrap",
+          alignItems: "center",
+        }}
+      >
+        {renderableGroups.length > 1 && (
+          <>
+            <ScopeTab active={scope === "all"} onClick={() => chooseScope("all")}>
+              {tSport("all")}
+            </ScopeTab>
+            {renderableGroups.map((g) => (
+              <ScopeTab
+                key={g.id}
+                active={scope === g.id}
+                onClick={() => chooseScope(g.id)}
+              >
+                {scopeLabel(g)}
+              </ScopeTab>
+            ))}
+          </>
+        )}
         <div
           style={{
+            marginLeft: "auto",
             display: "flex",
-            gap: 6,
-            flexWrap: "wrap",
             alignItems: "center",
+            gap: 6,
           }}
         >
-          {renderableGroups.length > 1 && (
-            <>
-              <ScopeTab active={scope === "all"} onClick={() => chooseScope("all")}>
-                {tSport("all")}
-              </ScopeTab>
-              {renderableGroups.map((g) => (
-                <ScopeTab
-                  key={g.id}
-                  active={scope === g.id}
-                  onClick={() => chooseScope(g.id)}
-                >
-                  {scopeLabel(g)}
-                </ScopeTab>
-              ))}
-            </>
-          )}
+          <button
+            type="button"
+            onClick={() =>
+              allCollapsed
+                ? collapsedMarkets.expand(visibleKindKeys)
+                : collapsedMarkets.collapse(visibleKindKeys)
+            }
+            style={{
+              height: 28,
+              padding: "0 8px",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              border: "none",
+              background: "transparent",
+              color: "var(--fg-muted)",
+              fontSize: 12,
+              fontWeight: 500,
+              cursor: "pointer",
+            }}
+          >
+            {allCollapsed ? <I.ChevD size={12} /> : <I.ChevU size={12} />}
+            {allCollapsed ? tMatch("expandAll") : tMatch("collapseAll")}
+          </button>
           {builder.available && builder.eligibleMarketIds && (
-            <div style={{ marginLeft: "auto" }}>
-              <BetBuilderTogglePill
-                matchId={matchId}
-                eligibleMarketIds={builder.eligibleMarketIds}
-              />
-            </div>
+            <BetBuilderTogglePill
+              matchId={matchId}
+              eligibleMarketIds={builder.eligibleMarketIds}
+            />
           )}
         </div>
-      )}
+      </div>
 
       {visible.map((g) => {
         const isTop = g.id === "top";
@@ -630,6 +700,8 @@ export function LiveMarkets({
                   customNowMs={customNowMs}
                   flashKickerShort={tFlash("boostedTagShort")}
                   sportradar={sportradar ?? null}
+                  collapsed={collapsedMarkets.isCollapsed(entryKindKey(entry))}
+                  onToggle={() => collapsedMarkets.toggle(entryKindKey(entry))}
                 />
               ) : (
                 <LineFamilyCard
@@ -644,6 +716,8 @@ export function LiveMarkets({
                   customNowMs={customNowMs}
                   flashKickerShort={tFlash("boostedTagShort")}
                   sportradar={sportradar ?? null}
+                  collapsed={collapsedMarkets.isCollapsed(entryKindKey(entry))}
+                  onToggle={() => collapsedMarkets.toggle(entryKindKey(entry))}
                 />
               ),
             )}
@@ -714,8 +788,12 @@ function SingleMarketCard({
   customNowMs,
   flashKickerShort,
   sportradar,
+  collapsed,
+  onToggle,
 }: {
   market: MarketSnapshot;
+  collapsed: boolean;
+  onToggle: () => void;
   match: MatchMeta;
   slip: ReturnType<typeof useBetSlip>;
   builderLocked: BuilderLockFn;
@@ -766,10 +844,18 @@ function SingleMarketCard({
           display: "flex",
           alignItems: "center",
           gap: 10,
-          marginBottom: 12,
+          marginBottom: collapsed ? 0 : 12,
         }}
       >
-        <div style={{ fontSize: 14, fontWeight: 500, letterSpacing: "-0.005em" }}>
+        <div
+          onClick={onToggle}
+          style={{
+            fontSize: 14,
+            fontWeight: 500,
+            letterSpacing: "-0.005em",
+            cursor: "pointer",
+          }}
+        >
           {m.name}
         </div>
         <BoostChip
@@ -788,7 +874,9 @@ function SingleMarketCard({
           />
         ) : null}
         {suspended && <SuspendedPill />}
+        <CollapseToggle collapsed={collapsed} onToggle={onToggle} />
       </div>
+      {!collapsed && (
       <div
         style={{
           display: "grid",
@@ -934,6 +1022,7 @@ function SingleMarketCard({
           );
         })}
       </div>
+      )}
     </div>
   );
 }
@@ -952,8 +1041,12 @@ function LineFamilyCard({
   customNowMs,
   flashKickerShort,
   sportradar,
+  collapsed,
+  onToggle,
 }: {
   family: LineFamily;
+  collapsed: boolean;
+  onToggle: () => void;
   match: MatchMeta;
   slip: ReturnType<typeof useBetSlip>;
   builderLocked: BuilderLockFn;
@@ -1071,10 +1164,18 @@ function LineFamilyCard({
           display: "flex",
           alignItems: "center",
           gap: 10,
-          marginBottom: 12,
+          marginBottom: collapsed ? 0 : 12,
         }}
       >
-        <div style={{ fontSize: 14, fontWeight: 500, letterSpacing: "-0.005em" }}>
+        <div
+          onClick={onToggle}
+          style={{
+            fontSize: 14,
+            fontWeight: 500,
+            letterSpacing: "-0.005em",
+            cursor: "pointer",
+          }}
+        >
           {family.baseName}
         </div>
         <span
@@ -1103,7 +1204,9 @@ function LineFamilyCard({
             marketLabel={family.baseName}
           />
         ) : null}
+        <CollapseToggle collapsed={collapsed} onToggle={onToggle} />
       </div>
+      {!collapsed && (
       <div
         style={{
           display: "grid",
@@ -1160,6 +1263,7 @@ function LineFamilyCard({
           />
         ))}
       </div>
+      )}
     </div>
   );
 }
@@ -1330,6 +1434,47 @@ function LineRow({
         );
       })}
     </>
+  );
+}
+
+// The one control that folds a market card down to its title. It sits at
+// the far right of the card header, where the eye expects a disclosure
+// chevron; the title text toggles too, as a pointer convenience, but
+// this button is the accessible control (the header also holds Bet
+// Assist, so the header itself cannot be one).
+function CollapseToggle({
+  collapsed,
+  onToggle,
+}: {
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  const tMatch = useTranslations("match");
+  const label = collapsed ? tMatch("expandMarket") : tMatch("collapseMarket");
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={!collapsed}
+      aria-label={label}
+      title={label}
+      style={{
+        width: 28,
+        height: 28,
+        flexShrink: 0,
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 0,
+        borderRadius: 999,
+        border: "1px solid var(--border)",
+        background: "var(--surface-1)",
+        color: "var(--fg-muted)",
+        cursor: "pointer",
+      }}
+    >
+      {collapsed ? <I.ChevD size={14} /> : <I.ChevU size={14} />}
+    </button>
   );
 }
 

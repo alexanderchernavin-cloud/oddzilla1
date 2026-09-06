@@ -7,8 +7,7 @@ import {
   type ListMatchEnriched,
 } from "@/components/match/match-list-tabs";
 import { SportGlyph } from "@/components/ui/sport-glyph";
-import { LiveDot } from "@/components/ui/primitives";
-import { I } from "@/components/ui/icons";
+import { SectionTabs } from "@/components/lobby/section-tabs";
 import { ThreeFoldCards } from "@/components/lobby/three-fold-cards";
 import { ZillaFlashRow } from "@/components/lobby/zillaflash-row";
 import { ZillaBoostBanners } from "@/components/lobby/zillaboost-banners";
@@ -20,6 +19,7 @@ import {
   shortName,
 } from "@/lib/sport-order";
 import { getTranslations } from "@/lib/i18n/server";
+import type { ComboZillaPoolResponse } from "@oddzilla/types/combozilla";
 
 interface SportsResponse {
   sports: Array<{ id: number; slug: string; name: string; kind: string; active: boolean }>;
@@ -57,6 +57,7 @@ export default async function HomePage() {
     liveRes,
     upcomingRes,
     combiBoostRes,
+    comboPoolRes,
     user,
     t,
     tMatch,
@@ -66,6 +67,10 @@ export default async function HomePage() {
     serverApi<CrossSportResponse>("/catalog/matches?status=live&limit=120"),
     serverApi<CrossSportResponse>("/catalog/matches?status=upcoming&limit=60"),
     serverApi<CombiBoostConfigResponse>("/catalog/combi-boost-config"),
+    // ComboZilla's candidate pool. The api applies the operator's policy
+    // (eligible risk tiers + allow / block rules, /admin/combozilla) and
+    // caps the pool per sport; the builder below only assembles combos.
+    serverApi<ComboZillaPoolResponse>("/catalog/combozilla-pool"),
     // See live/page.tsx — we re-fetch the session user so the lobby
     // picks up the bettor's hidden_sports (migration 0072) for the
     // live + upcoming lists, the sport-chip strip, and the
@@ -91,17 +96,23 @@ export default async function HomePage() {
   // leg doesn't carry literal English through to the client (where the
   // bet-slip rail would re-render it on click).
   //
-  // ComboZilla feeds on PREMATCH-only matches (the brief calls for two
-  // prematch combos in the carousel). Tier 1-3 filtering, same-sport
-  // grouping, prematch enforcement, the per-sport card cap (only CS2 /
-  // Dota 2 / LoL may hold more than one slot), and the per-leg Combi
-  // Boost minimum-odds gate all happen inside the builder; passing the
-  // live minOdds keeps the gate in sync with whatever the admin tuned
-  // the boost to.
+  // ComboZilla feeds on the PREMATCH pool the api resolved from the
+  // operator's policy (which risk tiers qualify, plus allow / block rules
+  // on sports, categories and tournaments — edited at /admin/combozilla).
+  // Same-sport grouping, prematch enforcement, the per-sport card cap
+  // (the operator's `multiCardSportSlugs`), and the per-leg Combi Boost
+  // minimum-odds gate happen inside the builder; passing the live minOdds
+  // keeps the gate in sync with whatever the admin tuned the boost to.
+  // The bettor's own hidden sports are dropped here, like every other
+  // lobby surface — a hidden sport must not come back as a card.
+  const comboPool = orderMatchesBySport(comboPoolRes?.matches ?? [], userHidden);
   const threeFoldSuggestions = buildThreeFoldSuggestions(
-    upcoming,
+    comboPool,
     tMatch("matchWinner"),
-    combiBoostRes?.minOdds ?? undefined,
+    {
+      boostMinOdds: combiBoostRes?.minOdds ?? undefined,
+      multiCardSportSlugs: comboPoolRes?.multiCardSportSlugs,
+    },
   );
 
   return (
@@ -193,27 +204,10 @@ export default async function HomePage() {
                     {
                       key: "live",
                       label: (
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 28,
-                            flexWrap: "wrap",
-                          }}
-                        >
-                          <LobbyTabLink
-                            href="/live"
-                            label={tMatch("live")}
-                            count={live.length}
-                            kind="live"
-                          />
-                          <LobbyTabLink
-                            href="/upcoming"
-                            label={tMatch("prematch")}
-                            count={upcoming.length}
-                            kind="prematch"
-                          />
-                        </div>
+                        <SectionTabs
+                          liveLabel={tMatch("live")}
+                          prematchLabel={tMatch("prematch")}
+                        />
                       ),
                       matches: liveEnriched,
                     },
@@ -224,14 +218,12 @@ export default async function HomePage() {
                 // When live matches exist the top tabs already label
                 // both sections — render the prematch cards directly
                 // below the live cards with no second header. When the
-                // page is prematch-only, promote the Pre-match tab to
-                // the top so the user still gets a clickable label.
+                // page is prematch-only, promote the strip to the top
+                // so the user still gets both clickable labels.
                 label: hasLive ? null : (
-                  <LobbyTabLink
-                    href="/upcoming"
-                    label={tMatch("prematch")}
-                    count={upcoming.length}
-                    kind="prematch"
+                  <SectionTabs
+                    liveLabel={tMatch("live")}
+                    prematchLabel={tMatch("prematch")}
                   />
                 ),
                 matches: upcomingShown,
@@ -249,30 +241,4 @@ export default async function HomePage() {
   );
 }
 
-// One-word clickable section label used at the top of the lobby —
-// renders an icon + section title + count pill and navigates to the
-// dedicated live/upcoming page. The kind drives icon choice (red
-// pulsing dot for live, neutral clock outline for prematch) and the
-// count pill's accent. Hover + focus styling lives in globals.css.
-function LobbyTabLink({
-  href,
-  label,
-  count,
-  kind,
-}: {
-  href: string;
-  label: string;
-  count: number;
-  kind: "live" | "prematch";
-}) {
-  return (
-    <Link href={href} className="oz-lobby-tab-link" data-kind={kind}>
-      <span className="oz-lobby-tab-link-icon" aria-hidden>
-        {kind === "live" ? <LiveDot size={9} /> : <I.Clock size={18} />}
-      </span>
-      <h2 className="oz-lobby-tab-link-label">{label}</h2>
-      <span className="oz-lobby-tab-link-count mono tnum">{count}</span>
-    </Link>
-  );
-}
 

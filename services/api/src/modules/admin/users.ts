@@ -43,7 +43,7 @@ const listQuery = z.object({
     .transform((s) => s.split(",").map((t) => t.trim()).filter(Boolean))
     .pipe(z.array(z.enum(["user", "admin", "support"])).min(1).max(3))
     .optional(),
-  // Operator label filter (migration 0104) — containment query on
+  // Operator label filter (migration 20260906T230247) — containment query on
   // users.labels, served by the partial GIN index.
   label: z.enum(BETTOR_LABELS).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),

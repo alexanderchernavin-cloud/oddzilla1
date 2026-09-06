@@ -26,6 +26,11 @@ import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { I } from "@/components/ui/icons";
 import { useTranslations } from "@/lib/i18n";
+import { useDocumentTheme, type DocumentTheme } from "@/lib/use-theme";
+import {
+  SPORTRADAR_FRAME_BACKGROUND,
+  sportradarThemeHashParts,
+} from "@/components/widgets/sportradar-theme";
 
 const HOST = "https://widgets.sir.sportradar.com";
 
@@ -40,13 +45,48 @@ interface Props {
   language?: string;
 }
 
+// Frame height per Sportradar market key, in CSS px. The hosted page
+// cannot report its size across origins, and the widget draws a
+// DIFFERENT set of blocks per market shape: a 1X2 gets win probability +
+// form split + last five games, a total gets a combined average + two
+// goals bars, a double chance or a half-time result gets one two-bar
+// block. Measured on production 2026-09-05 with a ruler overlaid on the
+// stretched frame at the panel's 460px width (Inter Miami vs Atlanta
+// United, Saint-Etienne vs Montpellier): 3Way ~225, totalOverUnder ~340,
+// doubleChance ~95, 1stHalfWin ~95. The one-size 560 before this left
+// 300px of blank white under a 1X2 and 460px under a double chance.
+// Half-market analogues take their full-match sibling's shape; anything
+// unmeasured takes the tallest measured shape, because a frame too
+// short clips content while one too tall only costs blank space.
+const FRAME_HEIGHT_BY_MARKET: Readonly<Record<string, number>> = {
+  "3Way": 240,
+  totalOverUnder: 350,
+  doubleChance: 110,
+  doubleChance1stHalf: 110,
+  doubleChance2ndHalf: 110,
+  "1stHalfWin": 110,
+  "2ndHalfWin": 110,
+};
+const DEFAULT_FRAME_HEIGHT = 350;
+
+export function frameHeightFor(market: string): number {
+  return FRAME_HEIGHT_BY_MARKET[market] ?? DEFAULT_FRAME_HEIGHT;
+}
+
 export function buildBetAssistStandaloneUrl({
   srMatchId,
   market,
   client = "betradar",
   language = "en",
-}: Pick<Props, "srMatchId" | "market" | "client" | "language">): string {
-  const hash = [`matchId=${srMatchId}`, `market=${market}`].join("&");
+  theme,
+}: Pick<Props, "srMatchId" | "market" | "client" | "language"> & {
+  theme?: DocumentTheme;
+}): string {
+  const hash = [
+    `matchId=${srMatchId}`,
+    `market=${market}`,
+    ...sportradarThemeHashParts(theme),
+  ].join("&");
   return `${HOST}/${encodeURIComponent(client)}/${encodeURIComponent(language)}/standalone/betAssist.standalone#${hash}`;
 }
 
@@ -142,6 +182,9 @@ function BetAssistOverlay({
   const t = useTranslations("matchWidgets");
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
+  // Dark mode rides the hash (sportradar-theme.ts); the `key` on the
+  // iframe remounts it if the theme flips while the panel is open.
+  const theme = useDocumentTheme();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -165,6 +208,7 @@ function BetAssistOverlay({
     market,
     client,
     language,
+    theme,
   });
 
   return createPortal(
@@ -252,16 +296,20 @@ function BetAssistOverlay({
             <I.Close size={14} />
           </button>
         </div>
+        {/* Fixed because the hosted page cannot report its size across
+            origins; per market shape because the widget draws a
+            different set of blocks for each — see FRAME_HEIGHT_BY_MARKET. */}
         <iframe
+          key={theme}
           src={src}
           title={`${t("betAssist.title")} — ${marketLabel}`}
           style={{
             width: "100%",
-            height: 560,
+            height: frameHeightFor(market),
             maxHeight: "100%",
             border: 0,
             display: "block",
-            background: "var(--surface-2)",
+            background: SPORTRADAR_FRAME_BACKGROUND,
           }}
         />
       </div>

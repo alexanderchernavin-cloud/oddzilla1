@@ -1,4 +1,4 @@
-// Alert center sweeper (migration 0105). Every minute, Redis-lock
+// Alert center sweeper (migration 20260906T230248). Every minute, Redis-lock
 // guarded so a multi-instance api runs one sweep per tick: loads the
 // enabled rules from risk_alert_rules, runs each rule's candidate
 // SELECT as an INSERT into risk_alerts, and writes a `created` event

@@ -53,7 +53,49 @@ Canonical SQL lives in [`../packages/db/migrations/`](../packages/db/migrations/
   a NOT NULL `label`, built-in scopes get label-NULL anchor rows that
   carry `display_order` when the admin reorders tabs; tabs with a row
   sort first by `display_order`, the rest keep the default Top, Match,
-  Map 1..N order).
+  Map 1..N order). `0106_fe_market_scope_sub_events` added the fourth
+  family, `fb_<kinds>` — one scope per Fonbet sub-event, id derived from
+  the `variant` specifier (`fb:400100/10100201` → `fb_400100_10100201`,
+  every per-player variant collapsing into `fb_players`). Those tabs had
+  been rendered by the match page since the Fonbet line landed but were
+  not addressable, so the backoffice offered every sport the esports
+  shape (Match + Map 1..5) and the tabs bettors actually saw could not be
+  ordered. The scope grammar for all four families lives in
+  `packages/types/src/market-scope.ts`; the CHECK constraints on both
+  tables mirror it.
+  `0109_fe_market_order_variant` then added `variant` to
+  `fe_market_display_order` and re-keyed its unique to
+  `(sport_id, scope, provider_market_id, variant)`. A curated tab picks a
+  market, not a market TYPE: `provider_market_id` is the catalogue table,
+  which Fonbet reuses across every sub-event, so football's ~470 markets
+  collapse to 14 ids and "Corners: Total" could not be featured without
+  also meaning "Total". The empty string keeps its original meaning — any
+  copy, resolved by the storefront's representative pick — so no row was
+  backfilled and every pre-existing configuration resolves as before.
+  Meaningful only for the curated scopes; a feed tab is already one
+  sub-event and leaves it empty.
+  `20260906T014417_fe_market_group_membership` finished the job by making every tab
+  editable the same way, adding `fe_market_groups.membership TEXT NOT NULL
+  DEFAULT 'auto'` (CHECK `IN ('auto','manual')`). Until then a feed tab
+  was order-only — membership was the feed's call — so a market could
+  neither be pulled onto a tab from another sub-event nor left off a tab
+  that carries it. A row's `variant` is now honoured on every scope, and
+  the new column says what the list MEANS on a feed tab: `'auto'` renders
+  the listed markets first and lets the feed keep filling the rest
+  (byte-identical to the old behaviour, and what every existing row
+  means), `'manual'` makes the list the whole tab, as `top` and custom
+  groups always were. **The default is load-bearing**: the backoffice pool
+  is derived from the CURRENT offer (open matches only), so a market kind
+  that is not live when the operator saves is simply not on screen —
+  flipping configured tabs to explicit membership would have silently
+  dropped those from the storefront. Resolution lives in
+  `services/api/src/lib/market-groups.ts` (pure, unit-tested): a row
+  naming a sub-event admits that market's whole ladder, a wildcard row on
+  a feed tab resolves within that tab, and a wildcard row on a curated tab
+  keeps its pre-0109 "any copy, one representative" meaning. Reverting a
+  tab to default clears the rows AND resets `membership` — a `'manual'`
+  tab with no rows would render empty — and the tab-reorder endpoint no
+  longer drops anchor rows carrying `'manual'`.
 - `0021_competitor_logos.sql` — adds `competitors.logo_url TEXT` and
   `competitors.brand_color TEXT` for storefront team branding. Both
   are nullable; a CHECK constraint requires
@@ -133,6 +175,13 @@ Canonical SQL lives in [`../packages/db/migrations/`](../packages/db/migrations/
     `evaluateAchievements` (TS). Both run the same SQL — `INSERT ...
     ON CONFLICT DO NOTHING` against the composite PK. Rollback paths
     don't revoke; achievements are facts about user history.
+- `20260906T015446_combozilla_config.sql` — the lobby's ComboZilla carousel
+  becomes configurable. `combozilla_config` singleton (master switch,
+  `eligible_risk_tiers smallint[]`, `allow_untiered`,
+  `multi_card_sport_slugs text[]`; defaults reproduce the constants the web
+  builder had hard-coded) + `combozilla_scope_rules` (allow / block on a
+  sport, category or tournament; most specific wins). See "ComboZilla" under
+  Table groups.
 
 Drizzle mirror is [`../packages/db/src/schema/`](../packages/db/src/schema/).
 
@@ -198,7 +247,7 @@ liability: `1.000` = 100% of the standard allowance, `0.100` = 10%,
 `10.000` = 1000%. The admin bettor card edits it in 0.1 steps between
 0.1 and 10; the CHECK still admits 0.01 for legacy rows.
 
-`labels TEXT[] NOT NULL DEFAULT '{}'` (migration 0104) carries operator
+`labels TEXT[] NOT NULL DEFAULT '{}'` (migration 20260906T230247) carries operator
 labels from a closed vocabulary — `vip`, `sharp`, `regular`, `fraud`,
 `shady`, `suspicious`, `prematch`, `live` — enforced by the
 `users_labels_allowed` CHECK and mirrored in
@@ -382,7 +431,14 @@ would fail mid-renumber — and **no index**, because both tables are small
 enough (under a hundred sports, a few thousand categories) that an index
 would cost writes to serve a sort that is already free.
 
-Written only by `POST /admin/sports/:id/order` and
+Migration 0104 extends the same column to `tournaments`, scoped to the
+CATEGORY — the bucket a tournament actually renders in, so a position is
+a statement about England rather than about football. Esports tournaments
+all sit under one synthetic dummy category per sport, which is also how
+the storefront draws them, so the scope matches there too.
+
+Written only by `POST /admin/sports/:id/order`,
+`POST /admin/tournaments/:id/order` and
 `POST /admin/categories/:id/order` (`{action: top|up|down|clear}`, both
 audit-logged). Each takes every lock in one primary-key-ordered
 `SELECT … FOR UPDATE`: locking the clicked row and then the pinned set is
@@ -441,6 +497,52 @@ boots the feed in place on TRUE.
 backup feed carries no risk tier, so a tournament first seen while Oddin's
 meta API is down would otherwise sit at NULL and RiskZilla would price it
 off the tier-0 fallback.
+
+Migration 0106 records **who** decided the tier. `risk_tier_source` is
+CHECK-constrained TEXT — `auto` (feed-assigned, or never reviewed),
+`manual` (an operator typed it; implies `risk_tier_locked`), `zagi` (a
+ZillaAGI review) — alongside `risk_tier_note` (the reviewer's one-line
+justification, ≤ 500 chars, model output so it renders as text and never
+as markup), `risk_tier_reviewed_at`, and `risk_tier_attempts` (bounded
+retry, max 3, so a name the model will not judge stops being re-sent).
+TEXT rather than an enum because adding an enum value has to be its own
+migration file — the rule 0087 and 0101 both hit.
+
+The state worth separating is not manual-vs-automatic but
+**reviewed-vs-not**: `auto` used to cover both "Oddin supplied this
+number" and "nobody has ever looked", and on production the second kind
+was 1 231 of 1 870 rows. Note the direction of the risk before changing
+anything here — RiskZilla prices a NULL tier at `UNTIERED_RISK_TIER = 10`,
+the STRICTEST row in `riskzilla_settings` (50 USDC match liability against
+tier 1's 50 000), so an untiered tournament is never over-exposed, and
+every tier assigned to one *raises* what the book can lose on it. There is
+no assignment here that is cautious by omission, which is why the reviewer
+clamps every verdict to a per-sport ceiling in code and writes nothing at
+all when it cannot parse a reply.
+
+Migration 0108 adds logo provenance: `logo_source` (`fonbet` /
+`wikidata` / `liquipedia` / `manual`), `logo_source_url`, `logo_attempts`
+(bounded retry) and `logo_checked_at`. It exists because the marks the
+feeds do not carry have to be sourced from third parties, and two
+properties follow from that. Liquipedia's logos are largely non-free, so
+`WHERE logo_source = 'liquipedia'` must be enough to revert the whole
+set. And automatic matching is wrong often enough to need auditing —
+measured on real names, Wikidata resolves "EuroLeague" to the WOMEN'S
+competition and Liquipedia's search for "PGL Wallachia" to a team page —
+so every automatic row records what decided it. The resolver only ever
+writes where `logo_url IS NULL`, so an operator's upload is never
+overwritten.
+
+Migration 0107 adds two standing tightenings on top, applied in code to
+every new verdict and retroactively to the rows the first sweep had
+already written: **+1 on every ZAGI verdict** (a machine judgement is not
+reviewed by a person before it takes effect, so ZAGI can never assign T1)
+and **+3 for outright markets** (they resolve over a season or phase, so
+the book carries the position for months and cannot trade out of it match
+by match). Both only ever raise the number. `risk_tier_note` records the
+whole chain — the model's words, its own tier, then each step — and the
+literal `+1 ZAGI safety margin` inside it is the backfill's idempotency
+key, so a row can never be stepped twice.
 
 **`matches`** — `BIGSERIAL` id because we'll have a lot of them. `provider_urn`
 like `od:match:1234`. `live_score` is a free-form JSONB (different games have
@@ -796,6 +898,43 @@ never deleted by anything). Deleting old dedup rows is safe because identical-pa
 only arrive via AMQP redelivery or the 24 h-clamped recovery window — see
 docs/OPERATIONS.md → "settlements retention" for the full argument.
 
+Two `settlements` rows carry provenance beyond Oddin's own messages
+(2026-09-06): the ladder inference in `services/settlement`
+(`settler.ReconcileLadderLines`) writes `payload_json.extended_specifiers =
+"inferred_from=threshold=25.5"` naming the settled sibling that decided the
+line, and an operator void from `/admin/unsettled` arrives over
+`settlement.external` as a `cancel` with `provider=admin` and is
+audit-logged (`settlement.market_void`, `settlement.match_void_open`).
+
+**`fonbet_market_denylist`**
+(migration `20260906T103343_settlement_operator_tools`) — the Fonbet
+catalogue tables and sub-event label prefixes the ingester must NOT turn
+into markets because no grader can settle them from the results feed.
+`kind` is `table` (with `provider_market_id`, the full 1 000 000 + table
+number) or `label_prefix` (case-insensitive prefix of the sub-event
+label, e.g. `Player specials`); a CHECK pins each kind to its own column
+and two partial unique indexes stop duplicates. Seeded with 1007800
+(winner of point N in a set), 1004500 / 1004551 (winner of game N in a
+set), `Player specials` and `Special bets` — 36% of the Fonbet markets
+still open after their match had closed on 2026-09-05 were these shapes.
+fonbet-ingester re-reads the table every minute and applies it in the
+mapper; markets already created under a rule are deactivated by the
+ingest diff (status 0) and stay open — never voided — listed on
+`/admin/unsettled/denylist`. Admin-managed, audit-logged.
+
+**`fonbet_settlement_misses`**
+(migration `20260906T103343_settlement_operator_tools`) — one row per
+pending Fonbet match the results grader could not find in the results
+feed, keyed by `match_id`, carrying the fixture as we hold it,
+`segment_id`, how many markets are still open, and `candidates` — up to
+20 `{name, startTime, score, status}` rows the results document listed
+for the same competition on those line days, so the spelling or ordering
+the two feeds disagree on is visible. Upserted on every grader pass the
+match stays missing (`attempts`, `last_seen_at`), deleted the pass it is
+found. Read by `GET /admin/unsettled/misses` (the Unmatched results tab).
+Before this the grader logged only `no_result: 797` and nothing said
+which fixture.
+
 ### Cashout
 
 **`cashout_config`** — per-scope cashout knobs. Same cascade as
@@ -842,7 +981,7 @@ today). `ticket_odds_snapshot`, `probability_snapshot`, and
 ### Admin + ops
 
 **`risk_alert_rules`** / **`risk_alerts`** / **`risk_alert_events`** (migration
-0105) — the alert center. `risk_alert_rules` holds one row per rule kind
+20260906T230248) — the alert center. `risk_alert_rules` holds one row per rule kind
 (`enabled`, `severity`, jsonb `params`), seeded with 14 B2C sportsbook
 rules whose SQL lives in `services/api/src/lib/riskzilla/alert-rules.ts`.
 The sweeper (`alert-sweeper.ts`, every 60 s, Redis-lock guarded) runs
@@ -975,6 +1114,43 @@ per flush segment with viewport dims for replay scaling. Shares the
 per-session `seq` counter space with events. By far the heaviest table,
 hence the shorter 14-day retention and its own `created_at` sweep index.
 
+### ComboZilla (lobby prebuilt 3-fold carousel)
+
+Migration `20260906T015446_combozilla_config` (2026-09-06). ComboZilla picks
+four 3-fold parlays (Safe / Challenging / Risky / Ultimate) out of the
+prematch offer for the home page. Until this migration the whole selection
+policy lived as constants in `apps/web/src/lib/three-fold-builder.ts` —
+risk tiers 1..3 only, and only cs2 / dota2 / lol allowed more than one card
+— which, after ZillaAGI's standing +1 margin put most of the traditional
+line at T4-T6, meant the Fonbet offer never reached the carousel at all.
+
+**`combozilla_config`** — singleton (`id = 'default'`, CHECK-enforced).
+`enabled`; `eligible_risk_tiers smallint[]` (CHECK `<@ 1..10`; empty =
+nothing qualifies by tier alone); `allow_untiered` (a NULL tier is priced by
+RiskZilla at the STRICTEST tier, so it is out by default); `multi_card_
+sport_slugs text[]` (slugs, like `users.hidden_sports` — every other sport is
+capped at one card per render). Column defaults reproduce the old constants
+exactly, so an estate that never opens the page renders what it always did.
+Written only by `PUT /admin/combozilla-config`, audit-logged.
+
+**`combozilla_scope_rules`** — operator overrides. `scope` in `sport` /
+`category` / `tournament` and `mode` in `allow` / `block` are CHECK'd TEXT
+rather than enums (a fourth scope is one ALTER, not the two-file add-value
+dance). One typed FK per scope tier with `ON DELETE CASCADE`, a
+scope-consistency CHECK pinning exactly one populated ref, and a partial
+unique index per scope so the lookup is "at most one row per (scope, ref)" —
+the `riskzilla_live_delay_config` shape. Resolution is most specific wins:
+tournament > category > sport > tier default. **`allow` is unconditional**:
+it admits the scope regardless of tier, because anything already eligible
+needs no rule and that is the only meaning "manually add" can have.
+
+The policy is resolved in ONE place, `services/api/src/lib/combozilla.ts`,
+as a SQL CASE over the `matches → tournaments → categories → sports` join,
+and consumed by both `GET /catalog/combozilla-pool` (the storefront's
+candidate set, capped per sport) and the backoffice preview. No index on
+either table — a handful of rows, read through the CASE as bound `IN`
+lists.
+
 ### RiskZilla bot controls + behaviour scoring
 
 Migrations 0096–0098 (2026-09-03). Bet placement cannot be restricted to
@@ -1064,11 +1240,68 @@ SELECT date_trunc('day', c.executed_at) AS day,
 ## Migration workflow
 
 1. Edit `packages/db/src/schema/<file>.ts`.
-2. Write the equivalent SQL in `packages/db/migrations/<next>_<desc>.sql`.
-3. Update `packages/db/migrations/meta/_journal.json` with a new entry.
+2. Write the equivalent SQL in
+   `packages/db/migrations/<YYYYMMDDTHHMMSS>_<lower_snake_desc>.sql`. Get the
+   prefix from `date -u +%Y%m%dT%H%M%S` — see "Why timestamps, not numbers"
+   below.
+3. `pnpm db:check-migrations` — also chained onto `packages/db`'s `lint`, so
+   `pnpm lint` and CI both run it.
 4. `make migrate` applies the new file(s) in a transaction per file and
    records success in the `_migrations` table.
 5. Commit.
+
+Do not hand-append to `packages/db/migrations/meta/_journal.json`. That step
+used to be listed here, but the runner reads the directory rather than the
+journal, and the file has been unmaintained since `0058` — 65 migrations have
+landed without it. It stays in the tree only because drizzle-kit owns it.
+
+### Why timestamps, not numbers
+
+Migrations `0000`–`0110` use a four-digit sequence number. That number was a
+shared counter allocated from a local snapshot: you read the directory, took
+the highest, added one — except you read *your branch's* copy, which is main
+as it stood when you branched. Two branches off the same commit both see the
+same max and both claim it.
+
+Nothing catches it. Git can't: the branches add *different files*, so there is
+no textual overlap and the merge is clean. The migrate job can't either: it
+applies everything to an empty database and passes, because colliding
+migrations are usually unrelated — and with both PRs open at once, neither run
+sees the other's file. The collision exists only in the merged tree, the one
+state nobody built. It happened **11 times**, `0045` three ways.
+
+It is not cosmetic. `migrate.ts` sorts by filename, so a tie is broken by the
+description text — `0110_drop_live_chat` runs before `0110_logo_source_wikipedia`
+because `d` < `l`, which is luck rather than intent. And production applies each
+migration when its PR deploys (merge order) while a fresh dev or CI database
+applies them all in one pass (alphabetical order); when those disagree, the same
+repo produces two different schemas and nothing errors.
+
+A UTC timestamp comes from a clock instead of from reading a directory, so two
+authors cannot collide. The numeric era is frozen at `0110`; every `0NNN_` name
+sorts before every `2026…` name, so the two eras concatenate and nothing needed
+renaming. [`packages/db/src/check-migrations.ts`](../packages/db/src/check-migrations.ts)
+enforces the form, the freeze, and prefix uniqueness.
+
+**If one still slips through**, it will be because two PRs were open at once —
+neither one's CI sees the other's file, and the one that merges second is not
+re-checked against the new base. The usual cure, "require branches to be up to
+date before merging" or a merge queue, is not available on this repo: classic
+branch protection and rulesets both need GitHub Pro on a private repo, and this
+is a free personal plan (the API answers 403, verified 2026-09-06).
+
+What covers it instead is that the check is chained onto `packages/db`'s `lint`
+script, so it runs inside the `pnpm lint` that CI performs on pull requests **and
+on every push to `main`** — the check goes red on main within about a minute of
+the merge. That is early enough to matter:
+renaming a migration is only dangerous once it has been **applied**, and applying
+happens on a manual `make deploy`, never automatically. Red main means rename it
+before the next deploy, and it costs nothing.
+
+**Never rename or edit an applied migration.** `_migrations` keys on the
+filename with no checksum, so a rename makes the runner treat it as new and run
+it again; an edit is applied to fresh databases but not to production. Fix a bad
+name while the PR is still open — that is the only window in which it is free.
 
 We don't use `drizzle-kit migrate` — our migrations include Postgres features
 (partitioning, extensions) Drizzle can't emit. Drizzle owns the TS schema for

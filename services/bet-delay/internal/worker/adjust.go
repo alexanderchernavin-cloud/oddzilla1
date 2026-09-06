@@ -55,6 +55,39 @@ func applyBettorAdjustment(rawOdds float64, probability *string, bp int) float64
 	return adjusted
 }
 
+// ladderUnits snaps a price DOWN onto the quote ladder, in units of 1e-4
+// so the arithmetic is exact integer division.
+//
+// Port of ladderUnits in services/odds-publisher (and of quoteOnLadder in
+// packages/types/src/odds.ts). It has to be here because this worker
+// re-derives the adjusted price during drift evaluation: the slip
+// captured a laddered number from the catalog endpoint, so a worker that
+// skipped the ladder would compare against an off-rung value and reject
+// the bet for drift that never happened.
+//
+// Prices under 1.01 pass through with full precision — the ladder has no
+// rung between an unbettable 1.00 and a 1.01 longer than the feed said.
+func ladderUnits(units int64) int64 {
+	const floorUnits = 10100 // 1.01
+	if units < floorUnits {
+		return units
+	}
+	var step int64
+	switch {
+	case units < 100000: // < 10
+		step = 100 // 0.01
+	case units < 200000: // < 20
+		step = 1000 // 0.1
+	case units < 500000: // < 50
+		step = 5000 // 0.5
+	case units < 1000000: // < 100
+		step = 10000 // 1
+	default:
+		step = 50000 // 5
+	}
+	return (units / step) * step
+}
+
 // formatOddsTrim renders a decimal-odds float at up to 4dp with trailing
 // zeros trimmed to a 2dp minimum. Matches the publisher's
 // formatPublishedOdds + the TS formatters byte-for-byte — every layer
@@ -70,6 +103,7 @@ func formatOddsTrim(v float64) string {
 		// Shouldn't happen for valid odds; defensive fallback.
 		return fmt.Sprintf("%.2f", v)
 	}
+	units = ladderUnits(units)
 	intP := units / 10000
 	frac := units % 10000
 	s := fmt.Sprintf("%d.%04d", intP, frac)

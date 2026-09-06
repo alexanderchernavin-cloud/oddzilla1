@@ -7,10 +7,17 @@
 // returns exactly the stake" and is indistinguishable from a real
 // 1.0000. (Observed on a live eBasketball match winner, 2026-08-27.)
 //
-// The rule: floor to 4 decimals, then trim trailing zeros down to a 2dp
+// That reasoning holds at one end of the range only, and until 2026-09-07
+// it was applied across all of it — which is how a CS2 map winner reached
+// the storefront as 5.1410 / 3.6860 / 1.1834. Nobody chose those digits
+// and no book prints them. So the rule is now two steps: snap DOWN onto
+// the quote ladder (see LADDER_BANDS — 0.01 up to 10, coarsening in the
+// tail, and full precision kept below 1.01 where the ladder has nothing
+// to say), then floor to 4 decimals and trim trailing zeros to a 2dp
 // floor.
 //     1.9100 -> "1.91"      1.0030 -> "1.003"
-//     2.0000 -> "2.00"      1.9999 -> "1.9999"
+//     2.0000 -> "2.00"      1.9999 -> "1.99"
+//     5.1410 -> "5.14"     23.7000 -> "23.50"
 //
 // Floor (not round), with an epsilon in the scaled domain, matching the
 // odds-publisher's big.Float scaled-to-Int convention: 1.003 is
@@ -19,15 +26,19 @@
 // odds, far below the NUMERIC(10,4) resolution the column stores, so it
 // can never nudge a genuine value up to the next unit.
 //
-// Two server-side twins predate this module and run the same algorithm:
-// `formatOdds` in services/api/src/modules/catalog/routes.ts (formats
-// the API payload) and `formatOddsTrim` in
-// services/api/src/lib/bettor-odds-adjustment.ts (formats the drift
-// reference price the bet-delay worker compares against, and is mirrored
-// again in Go). This module is what the storefront RENDERS through. If
-// you change the algorithm here, change it in all of them — a divergence
-// between the displayed price and the drift reference shows up as bets
-// mysteriously rejected for odds drift.
+// Five other places run the same algorithm, and a divergence between any
+// of them shows up as bets mysteriously rejected for odds drift:
+//   - services/odds-publisher formatPublishedOdds (Go) — the ONE that
+//     matters most, because its string IS `market_outcomes.published_odds`
+//     and therefore what every other layer reads;
+//   - services/api catalog/routes.ts formatOdds (the API payload);
+//   - services/api bettor-odds-adjustment.ts formatOddsTrimNum (the drift
+//     reference the bet-delay worker compares against);
+//   - services/ws-gateway bettor-adjustment.ts (live per-subscriber ticks);
+//   - services/bet-delay adjust.go formatOddsTrim (the Go drift twin).
+// The three TypeScript ones import `quoteOnLadder` from here; the two Go
+// ones port it in the integer domain (see the note on ladderUnits there).
+// This module is what the storefront RENDERS through.
 //
 // This file deliberately has NO imports: apps/web pulls it in as a VALUE
 // via the `@oddzilla/types/odds` subpath, and the package is authored for
@@ -66,13 +77,100 @@ export function isBettableOdds(n: number | null | undefined): boolean {
 }
 
 /**
- * Format a decimal odds value for display: up to 4dp, trailing zeros
- * trimmed to a 2dp minimum. Non-finite or negative input returns
- * ODDS_PLACEHOLDER rather than a fabricated number.
+ * Lowest price the quote ladder can express.
+ *
+ * Below it the only rungs are 1.00, which is unbettable, and 1.01, which
+ * is longer than the feed actually said — so prices under this floor keep
+ * all four decimals. That is precisely the case the header note above is
+ * about: Oddin genuinely quotes a near-certain live favorite at 1.003,
+ * and both collapsing it to 1.00 and lengthening it to 1.01 print a price
+ * that does not exist.
+ */
+export const LADDER_FLOOR = 1.01;
+
+/**
+ * The quote ladder: how coarse a price gets as it lengthens.
+ *
+ * The 4dp rule above was reasoned about at one end of the range and then
+ * applied across all of it. Near 1.00 the extra digits are a real price.
+ * At 5.1410 they are leaked arithmetic — no book prints that, and a
+ * storefront that does reads as a machine showing its working. Same
+ * complaint that put operator-authored prices on this ladder on
+ * 2026-09-06; feed prices were left off it, so one book showed two
+ * different kinds of number.
+ *
+ * Read as "up to `below`, step by `step`", first match wins. Two decimals
+ * all the way to 10 covers the ordinary book; only the tail coarsens.
+ *
+ * Byte-identical to LADDER_BANDS in custom-events.ts, and DUPLICATED
+ * rather than imported because both modules are pulled into apps/web as
+ * values and must stay free of relative imports (see the header note).
+ * `odds.test.ts` pins the two implementations against each other.
+ */
+const LADDER_BANDS: ReadonlyArray<{ below: number; step: number }> = [
+  { below: 10, step: 0.01 },
+  { below: 20, step: 0.1 },
+  { below: 50, step: 0.5 },
+  { below: 100, step: 1 },
+  { below: Infinity, step: 5 },
+];
+
+/** The ladder step that applies at a given price. */
+export function ladderStep(odds: number): number {
+  for (const band of LADDER_BANDS) {
+    if (odds < band.below) return band.step;
+  }
+  return 5;
+}
+
+/**
+ * Snap a price DOWN onto the quote ladder.
+ *
+ * Floored, never rounded — the convention every other odds path here
+ * follows, so a price only ever moves toward the house. The move is tiny
+ * (5.141 -> 5.14 is four hundredths of a percent) and it is taken, not
+ * lost.
+ *
+ * Returns 0 for non-finite or non-positive input; callers that need to
+ * distinguish "no price" already guard for it before calling.
+ */
+export function quoteOnLadder(n: number): number {
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  if (n < LADDER_FLOOR) return floorToOddsDp(n);
+  const step = ladderStep(n);
+  // Work in integer multiples of the step so binary floating point can't
+  // land a value a hair under its own rung — 7.57 / 0.01 is
+  // 756.9999999999999, which would floor to 7.56.
+  const rungs = Math.floor(n / step + 1e-9);
+  // Back onto the 4dp storage grid: the 0.1 and 0.5 steps reintroduce the
+  // usual float dust (73 * 0.1 = 7.300000000000001).
+  return floorToOddsDp(rungs * step);
+}
+
+// Floor onto the 4dp grid, with the same scaled epsilon the formatter
+// below uses. It is load-bearing on the sub-floor path: the publisher
+// renders through big.Float, so a genuine 1.003 arrives as
+// 1.0029999999999999 and a bare truncation would emit 1.0029 — the exact
+// bug this module was written to prevent. custom-events.ts floors without
+// it because its sub-floor values come from its own arithmetic and never
+// carry that artefact.
+function floorToOddsDp(value: number): number {
+  return Math.floor(value * ODDS_SCALE + 1e-6) / ODDS_SCALE;
+}
+
+/**
+ * Format a decimal odds value for display: snapped down onto the quote
+ * ladder, then rendered at up to 4dp with trailing zeros trimmed to a 2dp
+ * minimum. Non-finite or negative input returns ODDS_PLACEHOLDER rather
+ * than a fabricated number.
+ *
+ * The ladder is idempotent, so this is a no-op on a price the publisher
+ * already quoted onto it — it is applied here as well so no rendering
+ * path can bypass it.
  */
 export function formatOddsDisplay(n: number): string {
-  if (!Number.isFinite(n)) return ODDS_PLACEHOLDER;
-  const units = Math.floor(n * ODDS_SCALE + 1e-6);
+  if (!Number.isFinite(n) || n < 0) return ODDS_PLACEHOLDER;
+  const units = Math.floor(quoteOnLadder(n) * ODDS_SCALE + 1e-6);
   if (units < 0) return ODDS_PLACEHOLDER;
   const intPart = Math.floor(units / ODDS_SCALE);
   const frac = units % ODDS_SCALE;

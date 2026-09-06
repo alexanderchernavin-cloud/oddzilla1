@@ -7,6 +7,7 @@
 //   GET  /catalog/sports/:slug                    sport + matches (?tournament=N | ?team=N filter)
 //   GET  /catalog/sports/:slug/tournaments        tournaments under a sport + live counts
 //   GET  /catalog/matches                         cross-sport list (live | upcoming)
+//   GET  /catalog/combozilla-pool                 prematch candidates for the lobby's ComboZilla carousel
 //   GET  /catalog/matches/:id                     match + tournament/sport + markets
 //   GET  /catalog/tournaments/:id/sportradar     SR reference for a tournament (Live Table)
 //   GET  /catalog/search                          global search (sports/tournaments/teams/matches)
@@ -14,7 +15,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { and, asc, desc, eq, gte, ilike, inArray, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import {
   sports,
@@ -35,7 +36,22 @@ import {
   matchSportradarIds,
 } from "@oddzilla/db";
 import { NotFoundError } from "../../lib/errors.js";
-import { cached } from "../../lib/cache.js";
+import { cached, cachedSwr } from "../../lib/cache.js";
+import {
+  hasActiveMarket,
+  notHiddenTournament,
+  notHiddenCategory,
+} from "../../lib/catalog-predicates.js";
+import {
+  COMBOZILLA_POOL_CACHE_KEY,
+  loadComboZillaConfig,
+  loadComboZillaRules,
+  loadComboZillaPoolRows,
+} from "../../lib/combozilla.js";
+import {
+  applyFeedTabMembership,
+  resolveGroupRows,
+} from "../../lib/market-groups.js";
 import {
   loadBoostRulesForMatches,
   loadViewerRiskScore,
@@ -48,14 +64,16 @@ import {
   type BoostQuoteCell,
   type BoostQuoteRule,
 } from "@oddzilla/types";
+import { quoteOnLadder } from "@oddzilla/types/odds";
 import {
   loadPromoVisibilityCascades,
   resolveVisible,
 } from "../../lib/bettor-promo-visibility.js";
+import { loadInlineMarkets } from "../../lib/custom-events/pricing.js";
 import {
   substituteTemplate,
   renderOutcomeLabel,
-  deriveScope,
+  deriveMarketScope,
   outcomeSortWeight,
   type OutcomeProfiles,
 } from "../../lib/market-naming.js";
@@ -209,8 +227,12 @@ const matchListQuery = z.object({
 function formatOdds(s: string | null | undefined): string | null {
   if (s == null) return null;
   const n = Number.parseFloat(s);
-  if (!Number.isFinite(n)) return null;
-  const units = Math.floor(n * 10000 + 1e-6);
+  if (!Number.isFinite(n) || n < 0) return null;
+  // Ladder first, then render — see packages/types/src/odds.ts. The
+  // publisher already quotes onto the ladder, so this is a no-op for
+  // anything that came through it; it is here so no payload path can
+  // ship an off-ladder price.
+  const units = Math.floor(quoteOnLadder(n) * 10000 + 1e-6);
   if (units < 0) return null;
   const intP = Math.floor(units / 10000);
   const frac = units % 10000;
@@ -362,65 +384,111 @@ function classifyStreamUrl(
   return { platform: "other", embedId: null };
 }
 
-// Has-active-market guard. Every list/count endpoint runs this so we
-// skip matches with zero active markets — there's nothing to bet on,
-// the card would render empty. Intentionally lenient: a real live
-// match can have its match-winner briefly suspended (mid-round, post-
-// goal in football) while secondary markets stay open, and we still
-// want the row visible.
-//
-// Defense in depth on the storefront side. Two clauses:
-//
-//   1. matches.status IN ('not_started','live') — closed/cancelled
-//      matches drop out even if a stray market row stayed at status=1
-//      (settlement only flips markets it touches; an untouched market
-//      on a closed event would otherwise keep the card visible).
-//
-//   2. A 6 h time gate on `not_started`: if Oddin never delivered the
-//      lifecycle transition (e.g. our service was down for hours and
-//      the message fell outside the recovery window), the row stays
-//      stuck at `not_started` past its scheduled start. A match
-//      scheduled > 6 h ago that hasn't moved to `live` is broken data —
-//      live esports rounds don't run that long. Hides it from listings
-//      until the suspend-before-recover flush or the admin
-//      "Refresh from REST" tool repairs the row. Live matches don't
-//      need the gate (by definition the lifecycle DID advance).
-const hasActiveMarket = sql`EXISTS (
-  SELECT 1 FROM markets mk
-   WHERE mk.match_id = ${matches.id}
-     AND mk.status = 1
-) AND (
-  ${matches.status} = 'live'
-  OR (${matches.status} = 'not_started'
-      AND ${matches.scheduledAt} > NOW() - INTERVAL '6 hours')
-)`;
+// The list predicates — has-active-market guard, hidden test tournaments,
+// list-excluded categories — live in lib/catalog-predicates.ts so the
+// ComboZilla pool (lib/combozilla.ts) draws from exactly the offer these
+// lists show. Their rationale is documented there.
 
-// Tournaments whose name matches one of these strings are hidden from
-// every list/count endpoint. Oddin's integration broker exposes test
-// tournaments (e.g. "Integration testing" with bot teams "Integration
-// testing 1/2") that are useful for protocol verification but never
-// belong on the storefront. Match by exact name — these strings are
-// stable Oddin constants. The `/catalog/matches/:id` detail route
-// intentionally does not filter by this list: hidden tournaments are
-// unreachable through the UI anyway, and a deep link should still
-// resolve so admin/debug tooling keeps working.
-const HIDDEN_TOURNAMENT_NAMES = ["Integration testing"];
-const notHiddenTournament = notInArray(tournaments.name, HIDDEN_TOURNAMENT_NAMES);
+/**
+ * How long before kickoff a match of each risk tier starts competing with
+ * the live offer for the top of the list.
+ *
+ * The window narrows as the tier does, because prominence and imminence
+ * are the two things that earn a prematch match a place above a game
+ * already in play, and they trade off against each other: a Champions
+ * League tie is worth showing half a day out, a tier-4 fixture only once
+ * it is about to kick off. Operator's numbers (2026-09-06).
+ *
+ * A tier absent from this map NEVER hoists — that includes untiered
+ * tournaments, which must not be promoted by the absence of information.
+ * Deliberately wider than `isFeaturedTier` on the storefront in tier
+ * coverage but narrower in effect: a gold star is decoration, displacing
+ * live football is a merchandising claim, so each tier pays for it with
+ * a shorter window.
+ */
+const PREMATCH_HOIST_WINDOWS: ReadonlyArray<readonly [tier: number, window: string]> = [
+  [1, "12 hours"],
+  [2, "6 hours"],
+  [3, "3 hours"],
+  [4, "1 hour"],
+];
 
-// Categories an operator has flagged as list-excluded (migration 0102).
-// Fonbet files EA FC simulations under the real Football sport, so 10 of
-// Football's 23 live matches — and 184 of its upcoming ones — were
-// computer-played 2x4-minute games crowding out the actual football offer
-// (measured on production 2026-09-04). The flag removes them from every
-// list a bettor gets WITHOUT asking — the lobby, /live, /upcoming, the
-// sport page default view, and the per-sport live badge that labels them.
-//
-// It is NOT a hidden-tournament-style blackout: the sidebar tree still
-// carries the category, and any EXPLICIT narrowing (?category=, ?tournament=
-// or ?team=) drops this predicate so the offer is one click away. That is
-// the whole distinction — HIDDEN_TOURNAMENT_NAMES hides rows that should
-// never be reachable, this one hides rows that shouldn't be the default.
-const notHiddenCategory = eq(categories.hiddenFromLists, false);
+/**
+ * True for a match that belongs in the top region of a list: anything
+ * live, plus a tiered prematch match inside its tier's window.
+ *
+ * Built once and used TWICE — by `matchListOrder()` to sort, and as the
+ * `featured` column both list endpoints return. The storefront groups on
+ * that flag rather than re-deriving the rule in TypeScript, because a
+ * second copy would drift from this one the first time the windows move
+ * and the only symptom would be a section header quietly disagreeing
+ * with the order underneath it.
+ *
+ * `CASE ... ELSE NULL` is what excludes tier 5+ and untiered rows:
+ * `scheduled_at <= now() + NULL` is NULL, which is not true, so they fall
+ * through to the chronological tail. An `interval '0'` default would
+ * instead hoist every wedged `not_started` match whose kickoff has
+ * already passed.
+ *
+ * That NULL propagates out of the OR, so the whole expression is
+ * three-valued and the COALESCE is load-bearing rather than defensive:
+ * without it this column would serialise as `null` for exactly the rows
+ * it is meant to report `false` for.
+ */
+function hoistedPredicate(): SQL<boolean> {
+  const window = sql`CASE ${tournaments.riskTier} ${sql.join(
+    PREMATCH_HOIST_WINDOWS.map(
+      ([tier, w]) => sql`WHEN ${tier}::int THEN ${w}::interval`,
+    ),
+    sql` `,
+  )} ELSE NULL END`;
+  return sql<boolean>`COALESCE(
+    ${matches.status} = 'live'
+    OR (
+      ${matches.scheduledAt} IS NOT NULL
+      AND ${matches.scheduledAt} <= now() + ${window}
+    )
+  , false)`;
+}
+
+/**
+ * Storefront match ordering: prominence first, then time.
+ *
+ * The lists used to sort live-before-upcoming and then purely by kickoff,
+ * which on a broad line means whatever happens to have started. On
+ * production that put `Venezuela. Division 2` and `Brazil. Women. Series
+ * A1` at the top of Football's live list while the tier-3 leagues sat
+ * below the fold — the ordering carried no notion of which match anyone
+ * wants to see.
+ *
+ * Two rules, both the operator's:
+ *
+ *   1. Among matches competing for the top, LOWER risk tier ranks higher —
+ *      and that comparison does not care whether a match is live. A tier-2
+ *      fixture kicking off in an hour outranks every live tier-3-and-worse
+ *      game on the page; a live tier-1 game outranks it in turn. The tier
+ *      is already our best statement of how big a competition is, so it is
+ *      the right sort key, and it now exists for the traditional line as
+ *      well as esports (ZillaAGI, migration 0106).
+ *   2. A prematch match joins that competition inside its tier's window —
+ *      see `PREMATCH_HOIST_WINDOWS`.
+ *
+ * Everything else keeps chronological order — a "what's on soon" list
+ * sorted by prestige rather than time would be actively worse — with tier
+ * only breaking ties. Untiered rows sort as 99: last within their group,
+ * never promoted by the absence of information.
+ */
+function matchListOrder(): SQL[] {
+  const hoisted = hoistedPredicate();
+  return [
+    sql`CASE WHEN ${hoisted} THEN 0 ELSE 1 END ASC`,
+    sql`CASE WHEN ${hoisted} THEN COALESCE(${tournaments.riskTier}, 99) ELSE 99 END ASC`,
+    sql`${matches.scheduledAt} ASC NULLS LAST`,
+    // Deterministic tail so paging and repeated polls cannot reshuffle
+    // rows that tie on every key above.
+    sql`${matches.id} ASC`,
+  ];
+}
 
 // loadMatchWinnerOdds fetches the match-winner outcomes for a batch of
 // matches and pairs them by Oddin's canonical outcome_id ("1" = home,
@@ -560,6 +628,14 @@ async function loadMatchWinnerOdds(
         // winners live in the FONBET_PMID_BASE namespace and are the only
         // Fonbet markets using outcome ids "1" / "2" / "3", so the id
         // filter selects exactly the match-winner rows for both providers.
+        //
+        // Custom markets (provider_market_id 2 000 000) are above the same
+        // base and so are included on purpose: a 2- or 3-outcome custom
+        // market is given exactly these ids, which is how an operator's
+        // headline market gets an inline price on list cards. Wider custom
+        // markets are given `o1..oN` instead precisely so they fall out
+        // here — the pairing below renders home / away / draw and nothing
+        // else, so a five-way market would show as a slice of itself.
         or(
           eq(markets.providerMarketId, 1),
           and(
@@ -654,8 +730,15 @@ async function loadTopMarketIdsBySport(
     .orderBy(asc(feMarketDisplayOrder.sportId), asc(feMarketDisplayOrder.displayOrder));
   for (const r of rows) {
     const arr = out.get(r.sportId) ?? [];
-    arr.push(r.providerMarketId);
-    out.set(r.sportId, arr);
+    // Since migration 0109 a Top list can hold the same market type more
+    // than once, once per sub-event ("Total" on Match and on Corners). A
+    // list card renders ONE market inline and has no tab to say which
+    // sub-event it is, so it takes the first configured copy and ignores
+    // the rest — the match page is where the distinction is legible.
+    if (!arr.includes(r.providerMarketId)) {
+      arr.push(r.providerMarketId);
+      out.set(r.sportId, arr);
+    }
   }
   return out;
 }
@@ -1009,6 +1092,98 @@ export default async function catalogRoutes(app: FastifyInstance) {
     });
   });
 
+  // ── ComboZilla pool (prematch candidates for the lobby carousel) ─────
+  // The storefront builder (apps/web/src/lib/three-fold-builder.ts) used
+  // to draw from the first 60 rows of /catalog/matches?status=upcoming and
+  // apply a hard-coded tier-1..3 filter of its own. Both halves moved
+  // here (migration 20260906T015446_combozilla_config): eligibility is the
+  // operator's policy, resolved once in lib/combozilla.ts, and the pool is
+  // capped PER SPORT so a dense sport cannot crowd every other one out of
+  // a 60-row window. The response is the candidate set only — tier bands,
+  // same-sport grouping and the per-sport card cap stay in the builder,
+  // which is pure and runs at render time.
+  //
+  // Prices are the match-winner pair with the per-bettor adjustment, the
+  // same number the list cards show. ZillaBoost is deliberately NOT
+  // applied: a carousel leg carries no rule id into the slip, so placement
+  // would price it from the raw book anyway, and quoting a boost the
+  // ticket cannot claim is the one thing this surface must not do.
+  app.get(
+    "/catalog/combozilla-pool",
+    // Per-IP scraper friction — see the /catalog/sports/:slug note.
+    { config: { rateLimit: { max: 300, timeWindow: "1 minute" } } },
+    async (request) => {
+      const build = async () => {
+        const cfg = await loadComboZillaConfig(app.db);
+        if (!cfg.enabled) {
+          return {
+            enabled: false,
+            multiCardSportSlugs: cfg.multiCardSportSlugs,
+            matches: [],
+          };
+        }
+        const rules = await loadComboZillaRules(app.db);
+        const rows = await loadComboZillaPoolRows(app.db, cfg, rules);
+        const [oddsByMatch, cascade] = await Promise.all([
+          loadMatchWinnerOdds(
+            app.db,
+            rows.map((r) => r.matchId),
+          ),
+          request.user
+            ? loadBettorAdjustmentCascade(app.db, request.user.id)
+            : Promise.resolve(EMPTY_CASCADE),
+        ]);
+        return {
+          enabled: true,
+          multiCardSportSlugs: cfg.multiCardSportSlugs,
+          matches: rows.map((r) => {
+            const o = oddsByMatch.get(r.matchId.toString());
+            const bp = cascade.empty
+              ? 0
+              : resolveBettorAdjustmentBp(cascade, {
+                  matchId: r.matchId,
+                  tournamentId: r.tournamentId,
+                  sportId: r.sportId,
+                });
+            return {
+              id: r.matchId.toString(),
+              homeTeam: r.homeTeam,
+              awayTeam: r.awayTeam,
+              scheduledAt: r.scheduledAt?.toISOString() ?? null,
+              status: r.status,
+              sport: { id: r.sportId, slug: r.sportSlug, name: r.sportName },
+              tournament: {
+                id: r.tournamentId,
+                name: r.tournamentName,
+                riskTier: r.riskTier,
+              },
+              matchWinner: o
+                ? {
+                    marketId: o.homeMarketId,
+                    home: {
+                      outcomeId: o.homeOutcomeId,
+                      price: applyBettorAdjustment(o.homePrice, o.homeProbability, bp),
+                      probability: o.homeProbability,
+                    },
+                    away: {
+                      outcomeId: o.awayOutcomeId,
+                      price: applyBettorAdjustment(o.awayPrice, o.awayProbability, bp),
+                      probability: o.awayProbability,
+                    },
+                  }
+                : null,
+            };
+          }),
+        };
+      };
+      // Anonymous-only short cache — same rationale as /catalog/matches.
+      if (!request.user) {
+        return cached(app.redis, COMBOZILLA_POOL_CACHE_KEY, ANON_LIST_CACHE_TTL_SECONDS, build);
+      }
+      return build();
+    },
+  );
+
   // ── One sport + its upcoming/live matches ───────────────────────────
   // Per-IP cap on the odds-bearing catalog reads (2026-09-03). Friction
   // for the naive scraper, not a wall: ~5 req/s sustained, so enumerating
@@ -1057,6 +1232,32 @@ export default async function catalogRoutes(app: FastifyInstance) {
         )
         .limit(1);
       if (c) filteredCategory = c;
+    }
+
+    // Same for the tournament filter. Resolved here rather than read off a
+    // match row so the chip survives a filter that currently has nothing
+    // on offer — a tournament between rounds would otherwise leave a chip
+    // with no name and no way to tell what it filters. Carries the logo
+    // because the chip renders the mark in place of a kind label.
+    let filteredTournament: {
+      id: number;
+      name: string;
+      logoUrl: string | null;
+    } | null = null;
+    if (q.tournament) {
+      const [tr] = await app.db
+        .select({
+          id: tournaments.id,
+          name: tournaments.name,
+          logoUrl: tournaments.logoUrl,
+        })
+        .from(tournaments)
+        .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+        .where(
+          and(eq(tournaments.id, q.tournament), eq(categories.sportId, sport.id)),
+        )
+        .limit(1);
+      if (tr) filteredTournament = tr;
     }
 
     // Resolve the team filter (if any) before the matches query so we can
@@ -1113,6 +1314,10 @@ export default async function catalogRoutes(app: FastifyInstance) {
         tournamentId: tournaments.id,
         tournamentName: tournaments.name,
         tournamentRiskTier: tournaments.riskTier,
+        // Whether this row sits in the tier-sorted top region — see
+        // `hoistedPredicate`. Returned so the storefront can group on the
+        // server's own answer instead of re-deriving the windows.
+        featured: hoistedPredicate().mapWith(Boolean),
         // Needed for the competitor tier of the ZillaBoost cascade.
         homeCompetitorId: matches.homeCompetitorId,
         awayCompetitorId: matches.awayCompetitorId,
@@ -1146,7 +1351,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
             : undefined,
         ),
       )
-      .orderBy(desc(matches.status), matches.scheduledAt)
+      .orderBy(...matchListOrder())
       .limit(q.limit);
 
     // These three reads are mutually independent (all keyed off `rows` +
@@ -1201,8 +1406,17 @@ export default async function catalogRoutes(app: FastifyInstance) {
       homeCompetitorId: r.homeCompetitorId,
       awayCompetitorId: r.awayCompetitorId,
     }));
-    const [viewerRiskScore, topMarkets] = await Promise.all([
+    const [viewerRiskScore, inlineMarketsByMatch, topMarkets] = await Promise.all([
       loadViewerRiskScore(app.db, request.user?.id),
+      // Markets rendered ON the card, for operator-authored events that
+      // present as a question rather than a fixture. Returns an empty map
+      // for a page made of feed matches, which is every page but the
+      // Custom sport's.
+      loadInlineMarkets(
+        app.db,
+        rows.map((r) => r.matchId),
+        formatForMatch,
+      ),
       // Inline Top market per card (when admin configured the Top scope
       // for this sport). Returned alongside matchWinner so the storefront
       // can show either depending on which list-page tab is active.
@@ -1232,6 +1446,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
       topConfigured: (topIdsBySport.get(sport.id) ?? []).length > 0,
       filteredTeam,
       filteredCategory,
+      filteredTournament,
       matches: rows.map((r) => {
         const o = oddsByMatch.get(r.matchId.toString());
         const top = topMarkets.get(r.matchId.toString()) ?? null;
@@ -1249,6 +1464,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
           status: r.status,
           bestOf: r.bestOf,
           liveScore: r.liveScore,
+          featured: r.featured,
+          inlineMarkets: inlineMarketsByMatch.get(r.matchId.toString()) ?? null,
           tournament: {
             id: r.tournamentId,
             name: r.tournamentName,
@@ -1450,6 +1667,11 @@ export default async function catalogRoutes(app: FastifyInstance) {
           marketId: markets.id,
           providerMarketId: markets.providerMarketId,
           specifiersJson: markets.specifiersJson,
+          // Operator-authored name (custom events). Wins over the
+          // description template when set — custom markets all share one
+          // provider_market_id, so market_descriptions cannot name them
+          // individually.
+          customName: markets.customName,
           status: markets.status,
           lastOddinTs: markets.lastOddinTs,
           outcomeId: marketOutcomes.outcomeId,
@@ -1477,6 +1699,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         .select({
           scope: feMarketDisplayOrder.scope,
           providerMarketId: feMarketDisplayOrder.providerMarketId,
+          variant: feMarketDisplayOrder.variant,
           displayOrder: feMarketDisplayOrder.displayOrder,
         })
         .from(feMarketDisplayOrder)
@@ -1486,6 +1709,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
           scope: feMarketGroups.scope,
           label: feMarketGroups.label,
           displayOrder: feMarketGroups.displayOrder,
+          membership: feMarketGroups.membership,
         })
         .from(feMarketGroups)
         .where(eq(feMarketGroups.sportId, match.sportId)),
@@ -1668,7 +1892,12 @@ export default async function catalogRoutes(app: FastifyInstance) {
       if (!m) {
         const specs = (r.specifiersJson ?? {}) as Record<string, string>;
         const variant = specs.variant ?? "";
+        // An operator-authored name wins outright. It is literal text,
+        // not a template, so it deliberately goes in ahead of the
+        // description lookup rather than into it: there are no
+        // {placeholders} to expand and no per-language row to prefer.
         const template =
+          r.customName ??
           marketDescMap.get(descKey(r.providerMarketId, variant)) ??
           marketDescMap.get(descKey(r.providerMarketId, "")) ??
           `Market #${r.providerMarketId}`;
@@ -1685,49 +1914,33 @@ export default async function catalogRoutes(app: FastifyInstance) {
           homeTeam: match.homeTeam,
           awayTeam: match.awayTeam,
         };
-        // Fonbet sub-events (halves, periods, corners, player props) ride
-        // the `variant` specifier and their templates carry the sub-event
-        // label as a prefix ("1-й тайм: Исходы"). Split the prefix off
-        // into its own tab so the match page groups like Fonbet's event
-        // view does — Match / 1-й тайм / угловые / Players — instead of
-        // one long "Match" list with prefixed names. Player props share a
-        // single tab and keep the player's name in the market title.
-        let scope = deriveScope(specs);
-        let baseNameTemplate = baseTemplate;
-        const fbVariant = /^fb:([\d/]+)(?::(\d+))?$/.exec(variant);
-        if (fbVariant) {
-          const sep = template.indexOf(": ");
-          if (fbVariant[2]) {
-            scope = { id: "fb_players", label: locale === "ru" ? "Игроки" : "Players", order: 90 };
-          } else if (sep > 0) {
-            const label = template.slice(0, sep);
-            // Nested sub-events ("fb:100201/400100" = corners of the 1st
-            // half) sort after their parent kind and tab id stays a
-            // plain identifier.
-            const kinds = (fbVariant[1] ?? "").split("/");
-            scope = {
-              id: `fb_${kinds.join("_")}`,
-              label,
-              order: 10 + Number(kinds[0] ?? 0) / 1e8 + kinds.length / 1e3,
-            };
-            // The sub-event label is deliberately LEFT ON the market
-            // name. It used to be sliced off here, on the reasoning that
-            // the tab already says "3rd set aces" so repeating it on the
-            // card is noise. That reasoning only holds where the tab is
-            // on screen. `market.name` is also what the bet slip stores
-            // as its leg label, what bet history renders, and what a
-            // copied community ticket shows — none of which carry the
-            // tab. The result was a slip leg reading "MATCH RESULT / 1"
-            // for a bet on the 3rd set ACES count, at odds nothing like
-            // the real match-winner price: the bettor could not tell
-            // what they had backed, and neither could support reading it
-            // back. Repetition inside one tab is a cosmetic cost; an
-            // unidentifiable leg on a money surface is not.
-            if (baseTemplate.startsWith(label + ": ")) {
-              baseNameTemplate = baseTemplate.slice(sep + 2);
-            }
-          }
-        }
+        // Tab this market lands in — Match, Map N, or a Fonbet sub-event
+        // (halves, corners, cards, player props). The sub-event label is
+        // the prefix on the description template, so the derivation needs
+        // the template as well as the specifiers; see
+        // packages/types/src/market-scope.ts, which the backoffice reads
+        // too so the tabs it offers are the tabs bettors get.
+        //
+        // The label is deliberately LEFT ON the market name and stripped
+        // only from `baseName`. It used to come off both, on the reasoning
+        // that the tab already says "3rd set aces" so repeating it on the
+        // card is noise. That reasoning only holds where the tab is on
+        // screen. `market.name` is also what the bet slip stores as its
+        // leg label, what bet history renders, and what a copied community
+        // ticket shows — none of which carry the tab. The result was a slip
+        // leg reading "MATCH RESULT / 1" for a bet on the 3rd set ACES
+        // count, at odds nothing like the real match-winner price: the
+        // bettor could not tell what they had backed, and neither could
+        // support reading it back. Repetition inside one tab is a cosmetic
+        // cost; an unidentifiable leg on a money surface is not.
+        const derived = deriveMarketScope({
+          specifiers: specs,
+          template,
+          baseTemplate,
+          playersLabel: locale === "ru" ? "Игроки" : "Players",
+        });
+        const scope = derived.scope;
+        const baseNameTemplate = derived.baseTemplate;
         m = {
           id: key,
           providerMarketId: r.providerMarketId,
@@ -1838,79 +2051,83 @@ export default async function catalogRoutes(app: FastifyInstance) {
     // appended below and the whole set is sorted once at the end.
     const groups = Array.from(scopeMap.values());
 
-    // Per-scope admin ordering (loaded in the parallel batch above). Scope
-    // values live directly in fe_market_display_order and are addressed the
-    // same way the storefront tabs are: `match`, `top`, or `map_<N>`. Each
-    // Map N tab gets its own independently configurable list (migration 0057).
-    const orderByScope = new Map<string, Map<number, number>>();
+    // Per-scope admin configuration (loaded in the parallel batch above).
+    // Scope values live directly in fe_market_display_order and are
+    // addressed the same way the storefront tabs are: `match`, `top`,
+    // `map_<N>` (migration 0057), `fb_<kinds>` (0106), `custom_<key>`.
+    // Rows keep their sub-event (0109) on every kind of tab — see
+    // lib/market-groups.ts for what an empty one means where.
+    const curatedByScope = new Map<
+      string,
+      Array<{ providerMarketId: number; variant: string; displayOrder: number }>
+    >();
     for (const r of orderRows) {
-      let bucket = orderByScope.get(r.scope);
-      if (!bucket) {
-        bucket = new Map<number, number>();
-        orderByScope.set(r.scope, bucket);
-      }
-      bucket.set(r.providerMarketId, r.displayOrder);
-    }
-    const EMPTY_ORDER = new Map<number, number>();
-
-    function sortKey(orderMap: Map<number, number>, m: MarketRow): [number, number, number] {
-      const admin = orderMap.get(m.providerMarketId);
-      // Configured rows render first (group 0), unranked after (group 1).
-      // Within a group: configured by displayOrder asc; unranked by
-      // providerMarketId asc. The third tuple element is providerMarketId
-      // as a deterministic tiebreaker for repeated configured ids.
-      return admin == null
-        ? [1, m.providerMarketId, m.providerMarketId]
-        : [0, admin, m.providerMarketId];
-    }
-    function applySort(orderMap: Map<number, number>, list: MarketRow[]) {
-      list.sort((a, b) => {
-        const ka = sortKey(orderMap, a);
-        const kb = sortKey(orderMap, b);
-        if (ka[0] !== kb[0]) return ka[0] - kb[0];
-        if (ka[1] !== kb[1]) return ka[1] - kb[1];
-        return ka[2] - kb[2];
+      const list = curatedByScope.get(r.scope) ?? [];
+      list.push({
+        providerMarketId: r.providerMarketId,
+        variant: r.variant ?? "",
+        displayOrder: r.displayOrder,
       });
+      curatedByScope.set(r.scope, list);
     }
+
+    /** Feed default: market id ascending, the pre-config storefront order. */
+    function sortByMarketId(list: MarketRow[]) {
+      list.sort((a, b) => a.providerMarketId - b.providerMarketId);
+    }
+    // Feed tabs: the operator's rows can now do three things — order the
+    // tab's own markets (what they always did), IMPORT a market from
+    // another sub-event, and, when the tab is set to membership='manual'
+    // (migration 20260906T014417), define the tab's contents outright.
+    //
+    // 'auto' is the default and stays lossless: the listed markets render
+    // first in the operator's order, then everything else the feed puts on
+    // the tab. That matters because the backoffice pool is built from the
+    // CURRENT offer — a market kind that was not live when the operator
+    // saved is simply not in the list, and under 'auto' it still reaches
+    // bettors.
+    const membershipByScope = new Map(
+      groupConfigRows.map((r) => [r.scope as string, r.membership]),
+    );
     for (const g of groups) {
       // Group id is the same string we store in fe_market_display_order
-      // (match / map_<N>), so a single Map.get covers both Match and
-      // every Map N tab. Missing rows = default order.
-      const orderMap = orderByScope.get(g.id) ?? EMPTY_ORDER;
-      applySort(orderMap, g.markets);
+      // (match / map_<N> / fb_<kinds>), so one Map.get covers every feed
+      // tab. Missing rows = default order.
+      const rows = curatedByScope.get(g.id);
+      if (rows && rows.length > 0) {
+        g.markets = applyFeedTabMembership(
+          g.markets,
+          resolveGroupRows(marketList, g.id, rows, false),
+          membershipByScope.get(g.id) === "manual" ? "manual" : "auto",
+        );
+        continue;
+      }
+      sortByMarketId(g.markets);
     }
 
     // Synthetic curated groups — markets the admin explicitly listed for
-    // this sport, regardless of their actual scope. Two kinds share the
-    // shape: the built-in "Top" tab and admin-created custom groups
-    // (migration 0084). We pick at most one representative market row per
-    // provider_market_id (preferring the match-scope copy if it exists,
-    // falling back to the lowest-order map copy) so a curated tab doesn't
-    // double up on totals/handicaps that exist for both Match and Map 1.
-    // Insertion order matches the admin configuration.
+    // this sport, regardless of which tab they normally sit on. Two kinds
+    // share the shape: the built-in "Top" tab and admin-created custom
+    // groups (migration 0084).
+    //
+    // A row names a market TYPE and, since migration 0109, the SUB-EVENT it
+    // means: provider_market_id alone is the catalogue table, which Fonbet
+    // reuses across every sub-event, so "Total" without a variant cannot
+    // distinguish the match total from the corners total. An empty variant
+    // keeps its original meaning — any copy — and every pre-0109 row is
+    // empty, so those resolve exactly as they did. Within the candidates a
+    // row admits we still pick one representative (preferring the
+    // match-scope copy, else the lowest-order map) so a curated tab doesn't
+    // double up on totals that exist for both Match and Map 1.
     function buildCuratedGroup(
       id: string,
       label: string,
       order: number,
     ): { id: string; label: string; order: number; markets: MarketRow[] } | null {
-      const curated = orderByScope.get(id);
-      if (!curated || curated.size === 0) return null;
-      const group = { id, label, order, markets: [] as MarketRow[] };
-      const curatedIds = Array.from(curated.entries()).sort(
-        (a, b) => a[1] - b[1],
-      );
-      for (const [providerMarketId] of curatedIds) {
-        const candidates = marketList.filter(
-          (m) => m.providerMarketId === providerMarketId,
-        );
-        if (candidates.length === 0) continue;
-        const matchCopy = candidates.find((m) => m.scope.id === "match");
-        const pick =
-          matchCopy ??
-          candidates.sort((a, b) => a.scope.order - b.scope.order)[0];
-        if (pick) group.markets.push(pick);
-      }
-      return group.markets.length > 0 ? group : null;
+      const curated = curatedByScope.get(id);
+      if (!curated || curated.length === 0) return null;
+      const markets = resolveGroupRows(marketList, id, curated, true);
+      return markets.length > 0 ? { id, label, order, markets } : null;
     }
 
     // order=-1 renders Top before Match when no admin tab order is set.
@@ -1928,6 +2145,14 @@ export default async function catalogRoutes(app: FastifyInstance) {
         cfg.displayOrder,
       );
       if (custom) groups.push(custom);
+    }
+
+    // A tab set to membership='manual' can resolve to nothing on a given
+    // fixture — its list may name markets this match does not carry — and
+    // an empty tab is worse than no tab. Curated groups already return
+    // null in that case; this covers the feed tabs.
+    for (let i = groups.length - 1; i >= 0; i--) {
+      if ((groups[i]?.markets.length ?? 0) === 0) groups.splice(i, 1);
     }
 
     // Tab order: groups with a fe_market_groups row sort first by the
@@ -2054,6 +2279,11 @@ export default async function catalogRoutes(app: FastifyInstance) {
         // Carried per row because these lists span sports and the pages
         // rendering them don't fetch /catalog/sports.
         sportDisplayOrder: sports.displayOrder,
+        // See the same column on /catalog/sports/:slug. Constant per
+        // request here (this endpoint is filtered to one status), but
+        // returned for shape parity so a client can group either payload
+        // with the same code.
+        featured: hoistedPredicate().mapWith(Boolean),
         // Needed for the competitor tier of the ZillaBoost cascade.
         homeCompetitorId: matches.homeCompetitorId,
         awayCompetitorId: matches.awayCompetitorId,
@@ -2077,9 +2307,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
           notHiddenCategory,
         ),
       )
-      .orderBy(
-        q.status === "live" ? desc(matches.id) : matches.scheduledAt,
-      )
+      .orderBy(...matchListOrder())
       .limit(q.limit);
 
     // Independent reads (match-winner odds, per-bettor cascade, Top-market
@@ -2132,8 +2360,16 @@ export default async function catalogRoutes(app: FastifyInstance) {
     // Inline Top markets per card. We fetch the curated id list per
     // sport once (typically a handful of distinct sports in any list
     // response), then resolve the first available Top market per match.
-    const [viewerRiskScore, topMarkets] = await Promise.all([
+    const [viewerRiskScore, inlineMarketsByMatch, topMarkets] = await Promise.all([
       loadViewerRiskScore(app.db, request.user?.id),
+      // See the same call on /catalog/sports/:slug. Empty for a page made
+      // of feed matches, which is every lobby / live / upcoming page that
+      // has no operator-authored event on it.
+      loadInlineMarkets(
+        app.db,
+        rows.map((r) => r.matchId),
+        formatForMatch,
+      ),
       loadTopMarketsForMatches(
         app.db,
         rows.map((r) => ({ matchId: r.matchId, sportId: r.sportId })),
@@ -2176,6 +2412,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
           status: r.status,
           bestOf: r.bestOf,
           liveScore: r.liveScore,
+          featured: r.featured,
+          inlineMarkets: inlineMarketsByMatch.get(r.matchId.toString()) ?? null,
           tournament: {
             id: r.tournamentId,
             name: r.tournamentName,
@@ -2303,11 +2541,26 @@ export default async function catalogRoutes(app: FastifyInstance) {
     // every sport-page render, but the aggregate LEFT JOINs every match
     // under the sport and evaluates the correlated hasActiveMarket EXISTS
     // per (tournament, match) row — hundreds of `markets` index probes per
-    // call on a busy sport. Cache the rendered payload; 10 s keeps the
-    // sidebar's live/match counts visually fresh (live-counts itself runs
-    // at 5 s) at ~1/100th of the query volume. The cheap sport lookup +
-    // 404 stay outside so unknown slugs never enter the cache.
-    return cached(app.redis, `catalog:tournaments:v1:${sport.id}`, 10, async () => {
+    // call on a busy sport. Measured on production 2026-09-06: football
+    // (291 tournaments over ~1 900 matches) takes ~1.3 s cold against
+    // ~85 ms warm. The cheap sport lookup + 404 stay outside the cache so
+    // unknown slugs never enter it.
+    //
+    // Stale-while-revalidate rather than a plain TTL, because the plain
+    // TTL put that 1.3 s in front of a REAL bettor almost every time: at
+    // this traffic level a 10 s window is nearly always expired when
+    // someone expands the tree, so the person clicking was the person
+    // paying for the refresh. Now 15 s of freshness (live counts stay
+    // roughly as current as before — the sport row's own badge comes
+    // from /catalog/live-counts at 5 s, so this list is a navigation aid,
+    // not a scoreboard) and a 10 min stale window: within that window the
+    // expand is instant and the refresh happens behind the response.
+    return cachedSwr(
+      app.redis,
+      `catalog:tournaments:v1:${sport.id}`,
+      15,
+      600,
+      async () => {
 
     const matchCountExpr = sql<string>`COUNT(DISTINCT ${matches.id}) FILTER (
       WHERE ${matches.status} IN ('not_started','live')
@@ -2322,6 +2575,9 @@ export default async function catalogRoutes(app: FastifyInstance) {
         id: tournaments.id,
         name: tournaments.name,
         riskTier: tournaments.riskTier,
+        // Operator pin position within this tournament's category
+        // (migration 0104). NULL leaves it in the tier/name tail.
+        displayOrder: tournaments.displayOrder,
         logoUrl: tournaments.logoUrl,
         brandColor: tournaments.brandColor,
         // The category is what the storefront groups the sidebar list by
@@ -2359,6 +2615,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         tournaments.id,
         tournaments.name,
         tournaments.riskTier,
+        tournaments.displayOrder,
         tournaments.logoUrl,
         tournaments.brandColor,
         categories.id,
@@ -2375,6 +2632,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         id: r.id,
         name: r.name,
         riskTier: r.riskTier,
+        displayOrder: r.displayOrder,
         logoUrl: r.logoUrl,
         brandColor: r.brandColor,
         category:
@@ -2391,6 +2649,13 @@ export default async function catalogRoutes(app: FastifyInstance) {
         liveCount: Number(r.liveCount),
       }))
       .sort((a, b) => {
+        // Operator pin first (migration 0104). Buckets are formed client
+        // side and preserve this order within each one, so a pinned
+        // tournament heads its own category even though the sort here is
+        // across the whole sport.
+        const ap = a.displayOrder ?? Number.MAX_SAFE_INTEGER;
+        const bp = b.displayOrder ?? Number.MAX_SAFE_INTEGER;
+        if (ap !== bp) return ap - bp;
         // Number.MAX_SAFE_INTEGER puts NULL-tier rows after every
         // tiered row when sorting ASC, matching the SQL "NULLS LAST"
         // convention without an extra branch.
@@ -2406,7 +2671,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
       sport: { id: sport.id, slug: sport.slug, name: sport.name },
       tournaments: tournamentsOut,
     };
-    });
+      },
+    );
   });
 
   // ── Sportradar reference for a tournament ──────────────────────────

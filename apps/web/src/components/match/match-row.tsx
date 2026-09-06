@@ -8,7 +8,8 @@ import { Pill, LiveDot, TeamMark } from "@/components/ui/primitives";
 import { TierMark, isFeaturedTier } from "@/components/ui/tier-mark";
 import { I } from "@/components/ui/icons";
 import { useBetSlip } from "@/lib/bet-slip";
-import { mapCellValue, type LiveScore } from "@/lib/live-score";
+import { mapCellValue, servingSide, type LiveScore } from "@/lib/live-score";
+import { ServeMark } from "./serve-mark";
 import { useSidePanels, type PanelSide } from "@/lib/side-panel";
 import { useOddsFlash, useValueFlash } from "@/lib/use-odds-flash";
 import { useTranslations } from "@/lib/i18n";
@@ -17,6 +18,7 @@ import type { SlipSelection } from "@oddzilla/types";
 // Value import via the subpath, never the barrel — see the note in
 // packages/types/src/odds.ts.
 import { formatOddsDisplay, isBettableOdds } from "@oddzilla/types/odds";
+import { formatEventTitle } from "@oddzilla/types/custom-events";
 
 /**
  * One inline match-winner price on a list card.
@@ -50,6 +52,34 @@ export interface ListMatch {
   status: "not_started" | "live" | "closed" | "cancelled" | "suspended";
   bestOf?: number | null;
   liveScore?: LiveScore | null;
+  /**
+   * The server's own answer to "does this row belong in the tier-sorted
+   * top region of the list" — live, or a tiered prematch match inside its
+   * tier's hoist window (see `hoistedPredicate` in the catalog routes).
+   *
+   * Read it, never recompute it: the windows are per tier and they move,
+   * and a second copy of the rule here would drift from the ordering it
+   * is supposed to describe. Optional so a payload that predates the
+   * field still type-checks; callers treat absent as false.
+   */
+  featured?: boolean;
+  /**
+   * Markets to render ON the card, for operator-authored events that
+   * present as a question rather than a fixture ("Dima and Nastya to
+   * unite again" has no home and away side to stack). Present only for
+   * custom events the operator flagged; every feed match leaves it null
+   * and renders the usual match-up.
+   */
+  inlineMarkets?: Array<{
+    id: string;
+    name: string;
+    outcomes: Array<{
+      outcomeId: string;
+      label: string;
+      price: string | null;
+      probability?: string | null;
+    }>;
+  }> | null;
   tournament: { id: number; name: string; riskTier?: number | null };
   matchWinner: {
     marketId: string;
@@ -76,9 +106,6 @@ interface Props {
   match: ListMatch;
   sportSlug: string;
   sportShort: string;
-  // Live chat viewer count for this match (Notion Epic 1). Renders a
-  // "N watching" pill next to LIVE. Omit / pass 0 to hide.
-  viewerCount?: number;
 }
 
 // Memoized: MatchListTabs holds five aggregated live-state objects, so any
@@ -96,7 +123,6 @@ export const MatchRow = memo(function MatchRow({
   match,
   sportSlug,
   sportShort,
-  viewerCount = 0,
 }: Props) {
   const slip = useBetSlip();
   const sidePanels = useSidePanels();
@@ -225,8 +251,21 @@ export const MatchRow = memo(function MatchRow({
       // Keep the "X" visible on mobile — without a team name on its
       // row, the label is the only cue this is the draw outcome.
       keepLabelOnMobile
+      // Half height. The draw is the least-picked cell on a 1X2 card and
+      // its row carries nothing else, so at full size it added a whole
+      // team-row's worth of height to every football card for a button
+      // few bettors touch (operator call, 2026-09-06).
+      compact
     />
   ) : null;
+
+  // A markets-layout event replaces the match-up entirely. Guarded on a
+  // non-empty list so an event flagged before its first market was added
+  // still renders something rather than an empty card.
+  const inlineMarkets =
+    match.inlineMarkets && match.inlineMarkets.length > 0
+      ? match.inlineMarkets
+      : null;
 
   const tier = match.tournament.riskTier ?? null;
   const featured = isFeaturedTier(tier);
@@ -311,14 +350,9 @@ export const MatchRow = memo(function MatchRow({
           <div style={{ flex: 1, minWidth: 4 }} />
 
           {isLive ? (
-            <>
-              <Pill tone="live">
-                <LiveDot size={6} /> {tCommon("live")}
-              </Pill>
-              {viewerCount > 0 ? (
-                <ViewerCountPill count={viewerCount} />
-              ) : null}
-            </>
+            <Pill tone="live">
+              <LiveDot size={6} /> {tCommon("live")}
+            </Pill>
           ) : (
             showWhen && (
               <span
@@ -331,19 +365,29 @@ export const MatchRow = memo(function MatchRow({
           )}
         </div>
 
-        <ScoreTable
-          homeTeam={match.homeTeam}
-          awayTeam={match.awayTeam}
-          homeLogoUrl={match.homeLogoUrl ?? null}
-          awayLogoUrl={match.awayLogoUrl ?? null}
-          liveScore={match.liveScore ?? null}
-          bestOf={match.bestOf ?? null}
-          isLive={isLive}
-          sportSlug={sportSlug}
-          homeTrailing={homeOdds}
-          awayTrailing={awayOdds}
-          drawTrailing={drawOdds}
-        />
+        {inlineMarkets ? (
+          <InlineMarkets
+            markets={inlineMarkets}
+            matchId={match.id}
+            homeTeam={match.homeTeam}
+            awayTeam={match.awayTeam}
+            sportSlug={sportSlug}
+          />
+        ) : (
+          <ScoreTable
+            homeTeam={match.homeTeam}
+            awayTeam={match.awayTeam}
+            homeLogoUrl={match.homeLogoUrl ?? null}
+            awayLogoUrl={match.awayLogoUrl ?? null}
+            liveScore={match.liveScore ?? null}
+            bestOf={match.bestOf ?? null}
+            isLive={isLive}
+            sportSlug={sportSlug}
+            homeTrailing={homeOdds}
+            awayTrailing={awayOdds}
+            drawTrailing={drawOdds}
+          />
+        )}
         </article>
       </Link>
       <SidePanelButton
@@ -466,6 +510,8 @@ function ScoreTable({
   const awaySeries = liveScore?.away ?? 0;
   const currentMap = isLive ? liveScore?.currentMap ?? null : null;
   const scoreboard = liveScore?.scoreboard ?? null;
+  // Tennis / table tennis / volleyball only — null everywhere else.
+  const serving = servingSide(liveScore, isLive);
 
   // Number of map columns. Use bestOf when known so empty future maps
   // render as dashes (gives a stable "shape" for BO3+); fall back to the
@@ -541,6 +587,7 @@ function ScoreTable({
         trailing={homeTrailing}
         hasTrailing={hasTrailing}
         markSlot={markSlot}
+        serving={serving === "home"}
       />
       {drawTrailing ? (
         <DrawScoreRow
@@ -563,6 +610,7 @@ function ScoreTable({
         trailing={awayTrailing}
         hasTrailing={hasTrailing}
         markSlot={markSlot}
+        serving={serving === "away"}
       />
     </div>
   );
@@ -573,6 +621,26 @@ function ScoreTable({
 // but only renders content in the trailing odds slot — the "X" label
 // on the button itself identifies the row as the draw outcome (kept
 // visible on mobile via RowOddBtn's keepLabelOnMobile flag).
+//
+// The whole point of this row is that it costs the card as little
+// height as possible, so two things happen to its trailing cell:
+//
+//   1. `display: flex` kills the line-box strut. RowOddBtn is
+//      inline-flex, so a plain block wrapper is at least one line
+//      tall — measured on production, that made the 16px draw button
+//      sit in a 20.3px grid row (the card's 14px/1.45 line-height),
+//      4.3px of pure air nobody asked for.
+//   2. `DRAW_ROW_PULL` negative margins pull the button into the
+//      grid's own 6px row gaps, leaving 4px of clearance either side
+//      instead of 6. 4 is the floor, not a taste call: the tap-area
+//      pseudo-element reaches exactly 4px past the button (see
+//      .oz-row-odd[data-compact] in globals.css) to make a 24px
+//      target, so anything tighter would put the draw's hit area on
+//      top of the "1" / "2" buttons above and below it — a mis-tap
+//      that adds the wrong leg to the slip.
+//
+// Net: the draw costs 18px of card instead of 26.3px, and the visible
+// button is unchanged at 16px.
 function DrawScoreRow({
   showSeries,
   colCount,
@@ -591,7 +659,9 @@ function DrawScoreRow({
       {Array.from({ length: colCount }, (_, i) => (
         <div key={i} />
       ))}
-      {hasTrailing && <div>{trailing}</div>}
+      {hasTrailing && (
+        <div style={{ display: "flex", margin: `-${DRAW_ROW_PULL}px 0` }}>{trailing}</div>
+      )}
     </>
   );
 }
@@ -652,6 +722,7 @@ function TeamScoreRow({
   trailing,
   hasTrailing,
   markSlot,
+  serving,
 }: {
   name: string;
   logoUrl?: string | null;
@@ -664,6 +735,8 @@ function TeamScoreRow({
   hasTrailing: boolean;
   /** Hold a crest-sized slot even when this row has no picture. */
   markSlot: boolean;
+  /** This side is serving (tennis / table tennis / volleyball). */
+  serving?: boolean;
 }) {
   const markSize = hasTrailing ? 28 : 24;
   return (
@@ -700,11 +773,20 @@ function TeamScoreRow({
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
             minWidth: 0,
-            flex: 1,
+            // Not `flex: 1`: the name would then span the whole track and
+            // push the serve mark against the score column, where it
+            // reads as belonging to the score. Shrink-to-fit keeps the
+            // mark against the name it is about, and `minWidth: 0` plus
+            // the ellipsis above still truncate on a narrow card.
+            flex: "0 1 auto",
           }}
         >
           {truncate(name, 24)}
         </span>
+        {/* Its own flex item, after the name rather than inside it, so a
+            long doubles pairing truncates without taking the marker
+            with it. */}
+        {serving ? <ServeMark /> : null}
       </div>
       {showSeries && <SeriesCell series={series} />}
       {cols.map((n) => (
@@ -772,8 +854,162 @@ function MapCell({ value, live }: { value: number | null; live: boolean }) {
 
 // Inline odds button used in the list card. One per team row, so the
 // whole odds block becomes a single ~70px wide track instead of two
-// ~80px buttons sitting next to both rows. Compact: 30px tall, label
-// + price side-by-side.
+// ~80px buttons sitting next to both rows. 30px tall, label + price
+// side-by-side; `compact` halves that for the draw row.
+const ROW_ODD_HEIGHT = 30;
+// Half of ROW_ODD_HEIGHT, rounded up one so the 1px borders and the
+// 9.5px label centre on whole pixels. The visible box is this tall; the
+// TAP target is not — `.oz-row-odd[data-compact]` in globals.css grows
+// the hit area 4px above and below through a pseudo-element, into the
+// row gap, so a phone still gets a 24px target (WCAG 2.5.8) under a
+// button that only takes 16px of the card.
+const ROW_ODD_HEIGHT_COMPACT = 16;
+// How far the draw row is pulled into the grid's 6px row gaps, per
+// side. 2 leaves 4px of clearance, which is exactly what the tap-area
+// pseudo-element needs to reach a 24px target without overlapping the
+// win buttons. See DrawScoreRow.
+const DRAW_ROW_PULL = 2;
+
+/**
+ * The card body for an event that presents as a question rather than a
+ * fixture: each market's name, then a row per answer with its price.
+ *
+ * Deliberately NOT the two-column ScoreTable shape. The whole reason this
+ * exists is that an operator's question has no home and away side, and
+ * forcing one made "Will unite again" and "Will not unite again" read as
+ * two teams playing each other.
+ *
+ * Answers stack one per row rather than sitting side by side because they
+ * are prose, not team names: a market can carry two of them or seven, and
+ * their labels are sentences.
+ */
+function InlineMarkets({
+  markets,
+  matchId,
+  homeTeam,
+  awayTeam,
+  sportSlug,
+}: {
+  markets: NonNullable<ListMatch["inlineMarkets"]>;
+  matchId: string;
+  homeTeam: string;
+  awayTeam: string;
+  sportSlug: string;
+}) {
+  const slip = useBetSlip();
+
+  const title = formatEventTitle(homeTeam, awayTeam);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column" }}>
+      {/* The question itself. The card header above carries the sport,
+          the tournament and the time — none of which say what is being
+          asked, and without a match-up there is nowhere else for it. */}
+      <div
+        style={{
+          padding: "8px 12px 0",
+          fontSize: 14.5,
+          fontWeight: 500,
+          letterSpacing: "-0.01em",
+          overflowWrap: "anywhere",
+        }}
+      >
+        {title}
+      </div>
+      {markets.map((market, idx) => (
+        <div
+          key={market.id}
+          style={{
+            padding: "8px 12px 10px",
+            borderTop: idx === 0 ? undefined : "1px solid var(--hairline)",
+          }}
+        >
+          <div
+            className="mono"
+            style={{
+              fontSize: 10.5,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: "var(--fg-dim)",
+              marginBottom: 6,
+            }}
+          >
+            {market.name}
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {market.outcomes.map((o) => {
+              const price = o.price ? Number(o.price) : null;
+              const picked = slip.has(market.id, o.outcomeId);
+              return (
+                <div
+                  key={o.outcomeId}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    minWidth: 0,
+                  }}
+                >
+                  <span
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      fontSize: 13.5,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {o.label}
+                  </span>
+                  {/* RowOddBtn is `width: 100%` by design — ScoreTable
+                      sits it in a fixed grid column. Without an
+                      equivalent box here it claimed the whole row and
+                      crushed the answer's label to nothing, which is
+                      exactly what shipped: prices with no text beside
+                      them. Same clamp ScoreTable's trailing column uses,
+                      so both card shapes line their prices up. */}
+                  <div style={{ width: "clamp(58px, 16vw, 92px)", flexShrink: 0 }}>
+                  <RowOddBtn
+                    label=""
+                    price={price}
+                    selected={picked}
+                    locked={!price}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (!price || !o.price) return;
+                      const selection: SlipSelection = {
+                        matchId,
+                        marketId: market.id,
+                        outcomeId: o.outcomeId,
+                        odds: o.price,
+                        probability: o.probability ?? undefined,
+                        homeTeam,
+                        awayTeam,
+                        marketLabel: market.name,
+                        outcomeLabel: o.label,
+                        sportSlug,
+                        active: true,
+                      };
+                      if (picked) {
+                        slip.remove(market.id, o.outcomeId);
+                      } else {
+                        slip.add(selection);
+                      }
+                    }}
+                  />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function RowOddBtn({
   label,
   price,
@@ -783,6 +1019,7 @@ function RowOddBtn({
   keepLabelOnMobile = false,
   boosted = false,
   originalPrice = null,
+  compact = false,
 }: {
   label: string;
   price: number | null;
@@ -799,6 +1036,8 @@ function RowOddBtn({
   boosted?: boolean;
   /** Pre-boost price, shown struck through beside the boosted one. */
   originalPrice?: number | null;
+  /** Half-height variant (the draw row). See ROW_ODD_HEIGHT_COMPACT. */
+  compact?: boolean;
 }) {
   // A price at or below 1.00 can't return a profit, so the cell is
   // shown but not offered — greyed with an em dash, same as a suspended
@@ -827,8 +1066,10 @@ function RowOddBtn({
     justifyContent: "space-between",
     gap: 6,
     width: "100%",
-    height: 30,
-    padding: "0 9px",
+    height: compact ? ROW_ODD_HEIGHT_COMPACT : ROW_ODD_HEIGHT,
+    padding: compact ? "0 7px" : "0 9px",
+    // Anchors the compact variant's tap-area pseudo-element.
+    position: "relative",
     background: selected
       ? "var(--accent)"
       : showBoost
@@ -841,7 +1082,7 @@ function RowOddBtn({
       : showBoost
         ? "var(--positive, #16a34a)"
         : "var(--border)",
-    borderRadius: 8,
+    borderRadius: compact ? 6 : 8,
     cursor: locked ? "not-allowed" : "pointer",
     fontFamily: "inherit",
     transition: "all 140ms var(--ease)",
@@ -861,12 +1102,14 @@ function RowOddBtn({
       disabled={locked}
       onClick={onClick}
       className="oz-row-odd"
+      data-compact={compact ? "true" : undefined}
       style={baseStyle}
     >
       <span
         className={keepLabelOnMobile ? "mono" : "mono oz-odd-label"}
         style={{
-          fontSize: 10.5,
+          fontSize: compact ? 9.5 : 10.5,
+          lineHeight: 1,
           color: selected
             ? "color-mix(in oklab, var(--accent-fg) 70%, transparent)"
             : "var(--fg-muted)",
@@ -879,13 +1122,15 @@ function RowOddBtn({
         <span
           className="mono tnum"
           style={{
-            fontSize: 10,
+            fontSize: compact ? 9 : 10,
+            lineHeight: 1,
             color: "var(--fg-muted)",
             textDecoration: "line-through",
             letterSpacing: "-0.01em",
-            // The row cell is only 30px tall and already carries a
-            // label; let the struck original be the first thing to go
-            // when the track is tight rather than squeezing the price.
+            // The row cell is only 30px tall (16 compact) and already
+            // carries a label; let the struck original be the first
+            // thing to go when the track is tight rather than squeezing
+            // the price.
             flexShrink: 1,
             minWidth: 0,
             overflow: "hidden",
@@ -897,7 +1142,8 @@ function RowOddBtn({
       <span
         className="mono tnum"
         style={{
-          fontSize: 12.5,
+          fontSize: compact ? 11 : 12.5,
+          lineHeight: 1,
           // 700 so the digit punches through every state — selection
           // accent flip, odds-change flash, and locked dim all leave
           // the price strongly readable.
@@ -920,41 +1166,3 @@ function RowOddBtn({
   );
 }
 
-// Compact "N watching" pill next to the LIVE indicator. Hidden when
-// count is 0 — the parent only renders it for live matches with an
-// active room. The number is formatted with thousands separators so
-// a 12 000-viewer Major final reads cleanly.
-function ViewerCountPill({ count }: { count: number }) {
-  const tMatch = useTranslations("match");
-  const label = tMatch("watching", { count: count.toLocaleString() });
-  return (
-    <span
-      className="mono"
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 4,
-        padding: "2px 7px",
-        borderRadius: 999,
-        border: "1px solid var(--border)",
-        background: "var(--surface)",
-        color: "var(--fg-dim)",
-        fontSize: 10.5,
-        letterSpacing: "0.02em",
-        flexShrink: 0,
-      }}
-      title={label}
-    >
-      <span
-        style={{
-          width: 4,
-          height: 4,
-          borderRadius: 999,
-          background: "var(--fg-dim)",
-          opacity: 0.8,
-        }}
-      />
-      {label}
-    </span>
-  );
-}

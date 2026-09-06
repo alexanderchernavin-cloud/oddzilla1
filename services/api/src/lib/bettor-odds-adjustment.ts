@@ -27,6 +27,7 @@
 import { eq } from "drizzle-orm";
 import type { DbClient } from "@oddzilla/db";
 import { bettorOddsAdjustmentConfig } from "@oddzilla/db";
+import { quoteOnLadder } from "@oddzilla/types/odds";
 
 // Lowest decimal price an adjusted outcome may show to a bettor. A
 // negative bp on near-1.0 raw odds can mathematically dip below 1.0
@@ -206,7 +207,15 @@ function formatOddsTrim(s: string): string {
 // below NUMERIC(10,4) resolution.
 function formatOddsTrimNum(n: number): string {
   if (!Number.isFinite(n)) return String(n);
-  const units = Math.floor(n * 10000 + 1e-6);
+  // Negative odds make no sense; bail before the ladder, which reports a
+  // non-positive price as 0 and would otherwise render it as "0.00".
+  if (n < 0) return n.toFixed(2);
+  // Ladder first. The adjustment multiplies a laddered published price by
+  // (1 + bp/10000), which lands off the rungs again, so this is the step
+  // that keeps an adjusted price the same SHAPE of number as an
+  // unadjusted one — and, because this is the drift reference the
+  // bet-delay worker compares against, keeps display and drift in step.
+  const units = Math.floor(quoteOnLadder(n) * 10000 + 1e-6);
   if (units < 0) {
     // Negative odds make no sense; fall back to a tolerable representation.
     return n.toFixed(2);

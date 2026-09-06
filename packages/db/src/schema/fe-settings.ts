@@ -1,12 +1,23 @@
 // Per-sport per-scope storefront ordering for market types. See
-// migrations 0019, 0020, 0057, and 0084.
+// migrations 0019, 0020, 0057, 0084, and 0106.
 //
-// Scopes (after migration 0084):
-//   match        — markets without a `map` specifier (Match tab + match cards).
+// A "scope" is one tab on the match-detail page. The grammar and the
+// per-market derivation live in `@oddzilla/types/market-scope` — the api
+// and the web admin read the same module, and the DB CHECK constraints
+// mirror its regexes. Re-exported here so schema consumers keep importing
+// the predicates from `@oddzilla/db` as they always have.
+//
+//   match        — the base event: no `map`, no Fonbet sub-event.
 //   top          — curated highlights, empty by default. Rendered as the "Top"
 //                  tab on the match-detail page AND inline on match list cards.
 //   map_<N>      — markets carrying `map=<N>`; one independently configurable
 //                  list per map tab (Map 1 / Map 2 / Map 3 / …).
+//   fb_<kinds>   — a Fonbet sub-event (migration 0106): halves, periods,
+//                  corners, cards, and their nestings. The tab id comes from
+//                  the `variant` specifier (`fb:400100/10100201` →
+//                  `fb_400100_10100201`); the tab LABEL comes from the market
+//                  description's prefix ("1st half corners: Match result").
+//                  `fb_players` collects every per-player variant.
 //   custom_<key> — admin-created curated tab (fe_market_groups row carries
 //                  the label + tab position). Content semantics are identical
 //                  to `top`: opt-in list of provider_market_ids, one
@@ -19,8 +30,13 @@
 // over without manual re-entry.
 //
 // Markets with no row fall back to provider_market_id ascending — the
-// legacy default — for `match` and `map_<N>`. The `top` and `custom_<key>`
-// scopes are opt-in: no rows = no tab content.
+// legacy default — for `match`, `map_<N>` and `fb_<kinds>` while their
+// group row says membership='auto'. The `top` and `custom_<key>` scopes
+// are opt-in: no rows = no tab content. Since migration 20260906T014417 a
+// feed tab can opt into the same explicit membership (membership='manual'),
+// which is what makes every tab editable the way a custom group is: a row may
+// name a market from ANOTHER sub-event, so "corners: Total" can sit on
+// the Match tab, and a market the feed puts on the tab can be left off.
 
 import {
   pgTable,
@@ -32,50 +48,50 @@ import {
   unique,
   index,
 } from "drizzle-orm/pg-core";
+import {
+  FE_BASE_SCOPES,
+  type FeBaseScope,
+  type FeCustomScope,
+  type FeMapScope,
+  type FeMarketScope,
+  type FeSubEventScope,
+  isCuratedScope,
+  isCustomScope,
+  isMapScope,
+  isMarketScope,
+  isSubEventScope,
+  mapScope,
+  mapScopeNumber,
+} from "@oddzilla/types/market-scope";
 import { sports } from "./catalog.js";
 import { users } from "./users.js";
 
-export const FE_BASE_SCOPES = ["match", "top"] as const;
-export type FeBaseScope = (typeof FE_BASE_SCOPES)[number];
-export type FeMapScope = `map_${number}`;
-export type FeCustomScope = `custom_${string}`;
-export type FeMarketScope = FeBaseScope | FeMapScope | FeCustomScope;
+export {
+  FE_BASE_SCOPES,
+  isCuratedScope,
+  isCustomScope,
+  isMapScope,
+  isMarketScope,
+  isSubEventScope,
+  mapScope,
+  mapScopeNumber,
+};
+export type {
+  FeBaseScope,
+  FeCustomScope,
+  FeMapScope,
+  FeMarketScope,
+  FeSubEventScope,
+};
 
 export const FE_MARKET_SCOPES: readonly FeBaseScope[] = FE_BASE_SCOPES;
 
-const MAP_SCOPE_RE = /^map_([1-9][0-9]*)$/;
-// Mirrors the DB CHECK on fe_market_groups.scope / fe_market_display_order
-// .scope (migration 0084). Keys are API-generated random hex, but the CHECK
-// (and this regex) accept any [a-z0-9]{4,32} suffix for forward flexibility.
-const CUSTOM_SCOPE_RE = /^custom_([a-z0-9]{4,32})$/;
-
-export function isMapScope(s: string): s is FeMapScope {
-  return MAP_SCOPE_RE.test(s);
-}
-
-export function mapScopeNumber(s: string): number | null {
-  const m = MAP_SCOPE_RE.exec(s);
-  return m ? Number(m[1]) : null;
-}
-
-export function mapScope(n: number): FeMapScope {
-  return `map_${n}`;
-}
-
-export function isCustomScope(s: string): s is FeCustomScope {
-  return CUSTOM_SCOPE_RE.test(s);
-}
-
-// Curated scopes have no implicit market pool — content is exactly the
-// admin-ordered list, and the storefront renders one representative
-// market per provider_market_id.
-export function isCuratedScope(s: string): boolean {
-  return s === "top" || isCustomScope(s);
-}
-
-export function isMarketScope(s: string): s is FeMarketScope {
-  return s === "match" || s === "top" || isMapScope(s) || isCustomScope(s);
-}
+/** fe_market_groups.membership — see the column comment below. */
+export type FeGroupMembership = "auto" | "manual";
+export const FE_GROUP_MEMBERSHIPS: readonly FeGroupMembership[] = [
+  "auto",
+  "manual",
+];
 
 export const feMarketDisplayOrder = pgTable(
   "fe_market_display_order",
@@ -86,6 +102,12 @@ export const feMarketDisplayOrder = pgTable(
       .references(() => sports.id, { onDelete: "cascade" }),
     scope: text().notNull().default("match").$type<FeMarketScope>(),
     providerMarketId: integer().notNull(),
+    // Fonbet sub-event this row targets (`specifiers.variant`). Empty =
+    // any copy of the market type, which is what every row meant before
+    // migration 0109. On a feed tab an empty variant resolves within the
+    // tab itself (that tab IS one sub-event), so its own rows stay empty
+    // and only markets IMPORTED from another sub-event carry one.
+    variant: text().notNull().default(""),
     displayOrder: integer().notNull(),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
@@ -96,6 +118,7 @@ export const feMarketDisplayOrder = pgTable(
       t.sportId,
       t.scope,
       t.providerMarketId,
+      t.variant,
     ),
     index("fe_market_display_order_sport_scope_idx").on(
       t.sportId,
@@ -110,10 +133,10 @@ export type FeMarketDisplayOrder = typeof feMarketDisplayOrder.$inferSelect;
 // Tab (group) configuration for the match-detail page (migration 0084).
 // A row exists only for tabs the admin has touched:
 //   custom groups — scope 'custom_<key>', label NOT NULL (the tab title).
-//   built-in anchors — scope 'match' | 'top' | 'map_<N>', label NULL;
-//     the row only carries display_order after a tab reorder.
+//   built-in anchors — scope 'match' | 'top' | 'map_<N>' | 'fb_<kinds>',
+//     label NULL; the row only carries display_order after a tab reorder.
 // Tabs WITH a row sort by display_order and render before tabs without
-// one (which keep the default order: top, match, map_1..N).
+// one (which keep the default order: top, match, map_1..N, sub-events).
 export const feMarketGroups = pgTable(
   "fe_market_groups",
   {
@@ -124,6 +147,15 @@ export const feMarketGroups = pgTable(
     scope: text().notNull().$type<FeMarketScope>(),
     label: text(),
     displayOrder: integer().notNull().default(0),
+    // What the tab's fe_market_display_order rows MEAN — migration
+    // 20260906T014417.
+    // 'auto'   — listed markets first, the tab's own unlisted feed markets
+    //            after. What every row meant before that migration.
+    // 'manual' — the tab renders exactly the listed markets, the way `top`
+    //            and a custom group always have.
+    // Only feed tabs (match / map_<N> / fb_<kinds>) can be 'auto'; curated
+    // scopes have no feed side and behave as 'manual' whatever this says.
+    membership: text().notNull().default("auto").$type<FeGroupMembership>(),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     updatedBy: uuid().references(() => users.id),

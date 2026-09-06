@@ -31,16 +31,12 @@ export interface ActiveMatch {
   sportName: string;
   homeTeam: string;
   awayTeam: string;
-  // Match lifecycle status — rail panel tabs use this to pick a sane
-  // default (pre-match → Insights, live → Chat) and to gate the
-  // Analyses tab's visibility.
+  // Match lifecycle status — the rail panel gates the Analyses tab's
+  // visibility off this.
   matchStatus: "not_started" | "live" | "closed" | "cancelled" | "suspended";
-  // Server-side auth signals routed through context so the rail can
-  // render the right CTAs (write-analysis button, send-message input)
-  // without a second auth round-trip. viewerId is null for anonymous
-  // viewers; loggedIn is the cookie-presence signal — see page.tsx for
-  // the rationale.
-  viewerId: string | null;
+  // Server-side auth signal routed through context so the rail can
+  // render the right CTA (write-analysis button) without a second auth
+  // round-trip. Cookie-presence only — see page.tsx for the rationale.
   loggedIn: boolean;
   // Operator-confirmed Sportradar mapping (migration 0100), or null.
   // The rail uses it to mount Head to Head under the bet slip; like the
@@ -84,9 +80,8 @@ export function MatchPageRegistrar(props: ActiveMatch) {
   const set = ctx?.set;
   // Overlay live lifecycle ticks on the SSR-baked status. When a
   // match closes mid-session the rail's match panel (RailMatchPanel)
-  // gates Analyses/Chat visibility off this value — without the
-  // overlay the rail keeps Chat live and Analyses hidden until the
-  // bettor reloads.
+  // gates Analyses visibility off this value — without the overlay
+  // the tab stays hidden until the bettor reloads.
   const liveStatus = useLiveMatchStatus(props.matchId);
   const effectiveStatus = liveStatus?.status ?? props.matchStatus;
   // Depend on the two ids rather than the object: the mapping arrives as
@@ -104,7 +99,6 @@ export function MatchPageRegistrar(props: ActiveMatch) {
       homeTeam: props.homeTeam,
       awayTeam: props.awayTeam,
       matchStatus: effectiveStatus,
-      viewerId: props.viewerId,
       loggedIn: props.loggedIn,
       sportradar:
         srMatchId != null && srSportId != null
@@ -122,7 +116,6 @@ export function MatchPageRegistrar(props: ActiveMatch) {
     props.homeTeam,
     props.awayTeam,
     effectiveStatus,
-    props.viewerId,
     props.loggedIn,
     srMatchId,
     srSportId,

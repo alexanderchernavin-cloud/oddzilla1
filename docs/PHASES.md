@@ -1001,7 +1001,7 @@ native Windows stack, not deployed.
   max stake, open exposure), Identity (devices / IPs / sessions from
   `sessions`), Global constraints with inline editors (risk factor =
   `users.risk_score` shown as % in 0.1 steps 0.1–10, stake limit, bet
-  delay, status), Labels (`users.labels`, migration 0104: vip, sharp,
+  delay, status), Labels (`users.labels`, migration 20260906T230247: vip, sharp,
   regular, fraud, shady, suspicious, prematch, live), notes, PnL by sport,
   live vs prematch; Bets / Settings / Log tabs. Admin / support accounts
   keep the plain controls view.
@@ -1016,14 +1016,53 @@ native Windows stack, not deployed.
   "open in view" count; Bets gets state / type / phase pills, ticket-id
   and bettor search, deep links from the bettor card (`?userId=`) and
   the alert center (`?ticketIds=`).
-- Alert center (migration 0105): `/admin/alerts` under Risk & limits with
+- Alert center (migration 20260906T230248): `/admin/alerts` under Risk & limits with
   queue + rules tabs, per-alert acknowledge / assign / comment / resolve /
   reopen, sidebar badge, `AlertsBanner` on RiskZilla tabs, alerts section
   on the bettor card. 14 rules, thresholds editable, sweeper every 60 s.
 
 **Open:**
-- Prod deploy + migrations 0104/0105; tune rule thresholds on real
+- Prod deploy + migrations 20260906T230247 / 20260906T230248; tune rule thresholds on real
   volume before enabling notifications.
 - Alert notifications (email / push to the desk) — none yet; the queue is
   pull-only.
 - PnL-by-sport drill-down to tournaments / matches on the card.
+## Settlement coverage (2026-09-06)
+
+Goal: every market on a match that finished more than an hour ago is
+terminal — no manual settlement as the default path. Measured on the
+fixtures that started on 2026-09-05: 4.28% of markets (19 566 of 456 806)
+on two-thirds of the matches were still open, zero tickets behind them.
+Full measurement, cause taxonomy and plan:
+[`docs/SETTLEMENT_COVERAGE_PLAN.md`](./SETTLEMENT_COVERAGE_PLAN.md).
+
+**Operator decisions:** a played market whose result we do not know is
+never voided automatically; unplayed maps are; voiding by hand is an
+audit-logged button; shapes no grader can settle are not offered; the
+Fonbet grader is English-only.
+
+**Delivered (2026-09-06):**
+- bifrost-feed voids the markets of maps a CLOSED series never reached
+  (`translate.UnplayedMapCancels`) — 39% of the open Oddin markets.
+- services/settlement infers dropped ladder lines from their settled
+  siblings (`ReconcileLadderLines`; strict implication only, no void) —
+  97% of the remaining open Oddin lines have such a sibling — and closes
+  matches whose whole book is terminal but whose row never moved
+  (`ReconcileMatchLifecycle`).
+- Fonbet grader: both teams to score, the two-way "To win the match"
+  table, rules for australian football / bandy / beach soccer / padel /
+  MMA / boxing / darts, Russian vocabulary removed (`FONBET_LANG=en`
+  enforced), fixtures it cannot find in the results feed recorded in
+  `fonbet_settlement_misses`.
+- Admin (`/admin/unsettled`): Void per market / per match over
+  `settlement.external`, Unmatched results tab, Market denylist sub-page
+  (`fonbet_market_denylist`, migration
+  `20260906T103343_settlement_operator_tools`, applied by the ingester
+  every minute; seeded with the point / game winner tables, player
+  specials and "Special bets").
+
+**Open:** Oddin AMQP credentials (403 since 2026-09-04 — the single root
+cause of every Oddin gap); statistic sub-event rows (tries, shots, woodwork,
+5 innings, corners, cards); the percentage / date / "closed > N h" filters
+and a persisted per-market grader verdict on the admin page; hygiene
+suspend of `status = 1` markets on CLOSED.

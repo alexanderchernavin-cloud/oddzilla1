@@ -12,7 +12,7 @@ import { ALERT_RULES, ALERT_RULE_BY_KIND, readParams } from "./alert-rules.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const migration = readFileSync(
-  join(here, "..", "..", "..", "..", "..", "packages", "db", "migrations", "0105_risk_alerts.sql"),
+  join(here, "..", "..", "..", "..", "..", "packages", "db", "migrations", "20260906T230248_risk_alerts.sql"),
   "utf8",
 );
 

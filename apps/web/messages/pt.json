@@ -48,7 +48,7 @@
   "shell": {
     "homeLink": "Oddzilla início",
     "accountMenu": "Menu da conta de {name}",
-    "lobby": "Lobby",
+    "home": "Início",
     "live": "Ao vivo",
     "upcoming": "Pré-jogo",
     "sportsNav": "Esportes",
@@ -341,7 +341,6 @@
     "logout": "Sair"
   },
   "home": {
-    "lobby": "Lobby",
     "upcoming": "Pré-jogo",
     "empty": "Nada agendado. Confira as páginas de cada esporte para a programação completa.",
     "topSports": "Desportos em destaque"
@@ -394,10 +393,9 @@
     "all": "Todas",
     "live": "Ao vivo",
     "upcoming": "Pré-jogo",
+    "startingSoon": "Começam em breve",
+    "liveAndSoon": "Ao vivo e em breve",
     "topTournaments": "Principais torneios",
-    "filterKindCategory": "Categoria",
-    "filterKindTournament": "Torneio",
-    "filterKindTeam": "Equipe",
     "clearFilter": "Limpar filtro",
     "noMatches": "Nenhuma partida agora.",
     "matchCount": "{count, plural, one {# partida} other {# partidas}}"
@@ -427,8 +425,12 @@
     "copyLink": "Copiar link",
     "copied": "Copiado",
     "matchWinner": "Vencedor da partida",
-    "watching": "{count} assistindo",
-    "topTournamentTitle": "Torneio top"
+    "serving": "Ao serviço",
+    "topTournamentTitle": "Torneio top",
+    "collapseMarket": "Recolher mercado",
+    "expandMarket": "Expandir mercado",
+    "collapseAll": "Recolher tudo",
+    "expandAll": "Expandir tudo"
   },
   "bets": {
     "title": "Minhas apostas",
@@ -731,41 +733,6 @@
     "fileTooLarge": "{name} excede o limite de {limit}.",
     "fileEmpty": "{name} está vazio."
   },
-  "matchRoom": {
-    "loading": "Carregando a sala da partida…",
-    "loadError": "Não foi possível carregar a sala da partida: {message}",
-    "status": {
-      "live": "AO VIVO",
-      "fulltime": "FINAL",
-      "halftime": "INTERVALO",
-      "suspended": "SUSP."
-    },
-    "watching": "{count} assistindo",
-    "yourPick": "Seu palpite",
-    "badge": {
-      "won": "Ganha",
-      "lost": "Perdida",
-      "void": "Anulada",
-      "cashedOut": "Cash out",
-      "winning": "Ganhando",
-      "atRisk": "Em risco",
-      "level": "Empatado"
-    },
-    "pick": {
-      "home": "Casa",
-      "draw": "Empate",
-      "away": "Fora"
-    },
-    "pickPrompt": "Escolha o vencedor para ver a sala",
-    "signInPrompt": "Entre para ver em quem a sala está apostando",
-    "crowdPicks": "Palpites da sala · {count, plural, one {# voto} other {# votos}}",
-    "youPicked": "Você escolheu {pick}",
-    "noMessages": "Nenhuma mensagem ainda. Seja o primeiro a dizer algo.",
-    "newMessages": "{count, plural, one {# nova mensagem} other {# novas mensagens}} ↓",
-    "reconnecting": "Reconectando…",
-    "sayPlaceholder": "Diga algo",
-    "send": "Enviar"
-  },
   "matchWidgets": {
     "lmt": {
       "title": "Acompanhamento do jogo ao vivo",
@@ -803,7 +770,6 @@
       "aria": "Painel da partida",
       "tabsAria": "Abas do painel da partida",
       "insights": "Estatísticas",
-      "chat": "Chat",
       "analyses": "Análises",
       "prematchTitle": "Estatísticas pré-jogo — {home} vs {away}"
     },

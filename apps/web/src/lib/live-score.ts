@@ -49,9 +49,32 @@ export interface LiveScore {
   status?: number;
   matchStatusCode?: number;
   currentMap?: number;
+  /**
+   * Which side holds serve: 1 = home, 2 = away. Written by
+   * fonbet-ingester for the sports whose feed carries it (tennis,
+   * table tennis, volleyball) and absent everywhere else — Oddin's
+   * esports payload has no equivalent. Read through `servingSide()`
+   * rather than compared inline, so an unexpected value degrades to
+   * "nobody is marked" instead of marking the home player.
+   */
+  serve?: number;
   scoreboard?: LiveScoreScoreboard;
   periods?: LiveScorePeriod[];
   updatedAt?: string;
+}
+
+// servingSide answers "is this side serving right now" for one row.
+// Only meaningful while the match is live: the feed keeps the last
+// value on the payload after a match ends, and a serve marker on a
+// finished scoreboard reads as a live match that isn't.
+export function servingSide(
+  liveScore: LiveScore | null | undefined,
+  isLive: boolean,
+): "home" | "away" | null {
+  if (!isLive) return null;
+  if (liveScore?.serve === 1) return "home";
+  if (liveScore?.serve === 2) return "away";
+  return null;
 }
 
 // mapCellValue picks the right metric for one (team, map) cell.

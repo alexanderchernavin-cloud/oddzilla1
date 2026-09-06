@@ -13,9 +13,9 @@ import {
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-test("label vocabulary matches the users_labels_allowed CHECK in migration 0104", () => {
+test("label vocabulary matches the users_labels_allowed CHECK in migration 20260906T230247", () => {
   const sql = readFileSync(
-    join(here, "..", "..", "db", "migrations", "0104_bettor_labels.sql"),
+    join(here, "..", "..", "db", "migrations", "20260906T230247_bettor_labels.sql"),
     "utf8",
   );
   const m = sql.match(/labels <@ ARRAY\[([\s\S]*?)\]::text\[\]/);

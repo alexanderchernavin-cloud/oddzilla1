@@ -13,10 +13,12 @@ import { useLiveScore, useLiveMatchStatus } from "@/lib/use-live-odds";
 import { useValueFlash } from "@/lib/use-odds-flash";
 import {
   mapCellValue,
+  servingSide,
   type LiveScore,
   type LiveScorePeriod,
   type LiveScoreScoreboard,
 } from "@/lib/live-score";
+import { ServeMark } from "@/components/match/serve-mark";
 import { useTranslations } from "@/lib/i18n";
 
 type MatchStatus = "not_started" | "live" | "closed" | "cancelled" | "suspended";
@@ -120,6 +122,8 @@ function Scoreboard({
 
   const currentMap = isLive ? liveScore?.currentMap ?? null : null;
   const scoreboard = liveScore?.scoreboard ?? null;
+  // Tennis / table tennis / volleyball only — null everywhere else.
+  const serving = servingSide(liveScore, isLive);
 
   const cols = mapCount > 0 ? Array.from({ length: mapCount }, (_, i) => i + 1) : [];
 
@@ -179,6 +183,7 @@ function Scoreboard({
           cols={cols}
           getValue={(n) => mapCellValue("home", n, periodByNumber.get(n), scoreboard, currentMap, sportSlug)}
           isLiveCol={(n) => currentMap === n}
+          serving={serving === "home"}
         />
 
         {/* Away row */}
@@ -190,6 +195,7 @@ function Scoreboard({
           cols={cols}
           getValue={(n) => mapCellValue("away", n, periodByNumber.get(n), scoreboard, currentMap, sportSlug)}
           isLiveCol={(n) => currentMap === n}
+          serving={serving === "away"}
         />
 
         {/* Secondary stats (Towers, Gold for Dota/LoL). Same grid columns
@@ -242,6 +248,7 @@ function TeamRow({
   cols,
   getValue,
   isLiveCol,
+  serving,
 }: {
   name: string;
   logoUrl?: string | null;
@@ -256,6 +263,8 @@ function TeamRow({
   cols: number[];
   getValue: (n: number) => number | null;
   isLiveCol: (n: number) => boolean;
+  /** This side is serving (tennis / table tennis / volleyball). */
+  serving?: boolean;
 }) {
   const tag = teamTag(name);
   return (
@@ -302,12 +311,19 @@ function TeamRow({
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
             minWidth: 0,
-            flex: 1,
+            // See the same note in match-row.tsx: shrink-to-fit keeps the
+            // serve mark next to the name instead of against the score
+            // column.
+            flex: "0 1 auto",
           }}
         >
           <span className="oz-sb-name-desktop">{truncateName(name, 24)}</span>
           <span className="oz-sb-name-mobile">{name}</span>
         </span>
+        {/* Its own flex item, after the name rather than inside it, so a
+            long doubles pairing truncates without taking the marker
+            with it. */}
+        {serving ? <ServeMark size={8} /> : null}
       </div>
 
       <SeriesCell series={series} />

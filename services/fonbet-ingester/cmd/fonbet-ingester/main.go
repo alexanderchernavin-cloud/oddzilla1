@@ -267,6 +267,17 @@ func runFeed(ctx context.Context, cfg config.Config, st *store.Store, b *bus.Bus
 		IncludeSubEvents: cfg.Fonbet.IncludeSubEvents,
 		MaxMatches:       cfg.Fonbet.MaxMatches,
 	}
+	// Operator denylist of unsettleable market shapes
+	// (migration 20260906T103343_settlement_operator_tools).
+	// A read failure keeps the previous list (nil on boot = deny nothing)
+	// rather than stopping the feed: the worst case is a minute of
+	// offering a shape the next reload removes.
+	if deny, err := store.LoadMarketDenylist(ctx, st.Pool()); err != nil {
+		log.Warn().Err(err).Msg("market denylist unavailable; denying nothing until the next reload")
+	} else {
+		opt.Deny = deny
+		log.Info().Int("tables", len(deny.Tables)).Int("label_prefixes", len(deny.LabelPrefixes)).Msg("market denylist loaded")
+	}
 	ing := ingest.New(st, b, log)
 
 	// Catalogue in the feed language — the labels the sub-event rows and
@@ -340,12 +351,20 @@ func runFeed(ctx context.Context, cfg config.Config, st *store.Store, b *bus.Bus
 	// next restart. See ingest.ReconcileExternalSuspend.
 	reconcileTicker := time.NewTicker(time.Minute)
 	defer reconcileTicker.Stop()
+	// The denylist is admin-edited; a minute is the longest a new rule
+	// keeps being offered.
+	denyTicker := time.NewTicker(time.Minute)
+	defer denyTicker.Stop()
 	for {
-		cycle(ctx, client, idx, opt, ing, log)
+		// cycle hands back the tournament marks carried on the snapshot it
+		// just fetched (nil if that fetch failed). They are the second of
+		// the two upstream sources ApplyLogos merges; riding the snapshot
+		// keeps them free of an extra request.
+		tournamentIcons := cycle(ctx, client, idx, opt, ing, log)
 		if logos != nil {
 			// Right after a cycle every new sport / team / tournament row
 			// exists, so the first pass and each periodic pass fill gaps.
-			if err := ing.ApplyLogos(ctx, logos); err != nil {
+			if err := ing.ApplyLogos(ctx, logos, tournamentIcons); err != nil {
 				log.Warn().Err(err).Msg("apply logos")
 			}
 			logos = nil
@@ -382,12 +401,21 @@ func runFeed(ctx context.Context, cfg config.Config, st *store.Store, b *bus.Bus
 			} else {
 				logos = l // applied right after the next cycle
 			}
+		case <-denyTicker.C:
+			if deny, err := store.LoadMarketDenylist(ctx, st.Pool()); err != nil {
+				log.Warn().Err(err).Msg("market denylist reload failed; keeping the previous list")
+			} else {
+				opt.Deny = deny
+			}
 		case <-ticker.C:
 		}
 	}
 }
 
-func cycle(ctx context.Context, client *fonbet.Client, idx *fonbet.Index, opt mapper.Options, ing *ingest.Ingester, log zerolog.Logger) {
+// cycle polls one snapshot and applies it. It returns the tournament marks
+// that snapshot carried (segment id → CDN URL), which the caller feeds to
+// ApplyLogos; nil whenever the cycle bailed out early.
+func cycle(ctx context.Context, client *fonbet.Client, idx *fonbet.Index, opt mapper.Options, ing *ingest.Ingester, log zerolog.Logger) map[int]string {
 	cycleInFlight.Store(true)
 	defer cycleInFlight.Store(false)
 	t0 := time.Now()
@@ -397,8 +425,9 @@ func cycle(ctx context.Context, client *fonbet.Client, idx *fonbet.Index, opt ma
 			recordError(err)
 			log.Error().Err(err).Msg("fetch events/list failed")
 		}
-		return
+		return nil
 	}
+	tournamentIcons := client.TournamentIcons(resp)
 	snap := mapper.Build(resp, idx, opt)
 	stats, err := ing.Apply(ctx, snap, time.Now().UnixMilli())
 	if err != nil {
@@ -406,7 +435,7 @@ func cycle(ctx context.Context, client *fonbet.Client, idx *fonbet.Index, opt ma
 			recordError(err)
 			log.Error().Err(err).Msg("apply snapshot failed")
 		}
-		return
+		return tournamentIcons
 	}
 	lastSnapshotUnix.Store(time.Now().Unix())
 	lastMatches.Store(int64(stats.Matches))
@@ -434,6 +463,7 @@ func cycle(ctx context.Context, client *fonbet.Client, idx *fonbet.Index, opt ma
 		ev = ev.Interface("skipped", stats.Skipped)
 	}
 	ev.Msg("cycle")
+	return tournamentIcons
 }
 
 // descriptionLangs are the languages market_descriptions rows are written

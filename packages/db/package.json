@@ -20,8 +20,9 @@
     "db:resolve-logos": "tsx src/resolve-logos.ts",
     "db:studio": "drizzle-kit studio",
     "db:check": "drizzle-kit check",
+    "db:check-migrations": "tsx src/check-migrations.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint ."
+    "lint": "eslint . && tsx src/check-migrations.ts"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
