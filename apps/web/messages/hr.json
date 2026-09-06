@@ -423,7 +423,11 @@
     "copyLink": "Kopiraj poveznicu",
     "copied": "Kopirano",
     "matchWinner": "Pobjednik meča",
-    "topTournamentTitle": "Top turnir"
+    "topTournamentTitle": "Top turnir",
+    "collapseMarket": "Sažmi tržište",
+    "expandMarket": "Proširi tržište",
+    "collapseAll": "Sažmi sve",
+    "expandAll": "Proširi sve"
   },
   "bets": {
     "title": "Moje oklade",

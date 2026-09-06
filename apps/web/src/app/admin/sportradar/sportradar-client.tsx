@@ -46,12 +46,16 @@ export interface MappingRow {
   evidence: {
     srHomeTeam?: string;
     srAwayTeam?: string;
+    srHomeTeamAlt?: string;
+    srAwayTeamAlt?: string;
     srStartsAt?: string;
     srTournament?: string;
     kickoffDeltaMinutes?: number;
     homeScore?: number;
     awayScore?: number;
     sidesSwapped?: boolean;
+    /** Only one side matched by name; proposed on kickoff + that side. */
+    weak?: boolean;
     alternatives?: Array<{
       srMatchId: number;
       score: number;
@@ -354,11 +358,18 @@ function Row({ row }: { row: MappingRow }) {
             </div>
             {ev?.srHomeTeam ? (
               <div style={{ color: "var(--color-fg-muted, #888)", fontSize: 12 }}>
-                {ev.srHomeTeam} v {ev.srAwayTeam}
+                {ev.srHomeTeam}
+                {ev.srHomeTeamAlt ? ` (${ev.srHomeTeamAlt})` : ""} v {ev.srAwayTeam}
+                {ev.srAwayTeamAlt ? ` (${ev.srAwayTeamAlt})` : ""}
               </div>
             ) : null}
             {ev?.sidesSwapped ? (
               <div style={{ fontSize: 11, color: "#c93" }}>home/away swapped</div>
+            ) : null}
+            {ev?.weak ? (
+              <div style={{ fontSize: 11, color: "#c93" }}>
+                one side matched by name only
+              </div>
             ) : null}
             {ev?.alternatives?.length ? (
               <details style={{ fontSize: 11, marginTop: 4 }}>

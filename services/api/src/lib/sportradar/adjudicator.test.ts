@@ -54,6 +54,31 @@ describe("renderBatch", () => {
   it("renders a null kickoff delta as zero rather than 'null'", () => {
     assert.match(renderBatch([item({ kickoffDeltaMinutes: null })]), /kickoff_diff=0min/u);
   });
+
+  it("shows Sportradar's longer name form beside the short one", () => {
+    // The short form can be a city. Shown "Enschede (FC Twente Enschede)"
+    // the model sees the club; shown "Enschede" alone it has to know
+    // Dutch football geography.
+    const text = renderBatch([
+      item({
+        homeTeam: "Groningen",
+        awayTeam: "Twente",
+        srHomeTeam: "Groningen",
+        srHomeTeamAlt: "FC Groningen",
+        srAwayTeam: "Enschede",
+        srAwayTeamAlt: "FC Twente Enschede",
+      }),
+    ]);
+    assert.match(
+      text,
+      /sportradar:\s+Groningen \(FC Groningen\)\s+vs\s+Enschede \(FC Twente Enschede\)/u,
+    );
+    // An identical longer form is not repeated.
+    assert.match(
+      renderBatch([item({ srHomeTeamAlt: "Ipswich" })]),
+      /sportradar:\s+Ipswich\s+vs\s+Liverpool$/mu,
+    );
+  });
 });
 
 describe("parseVerdicts", () => {
