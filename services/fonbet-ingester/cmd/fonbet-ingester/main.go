@@ -267,6 +267,16 @@ func runFeed(ctx context.Context, cfg config.Config, st *store.Store, b *bus.Bus
 		IncludeSubEvents: cfg.Fonbet.IncludeSubEvents,
 		MaxMatches:       cfg.Fonbet.MaxMatches,
 	}
+	// Operator denylist of unsettleable market shapes (migration 0111).
+	// A read failure keeps the previous list (nil on boot = deny nothing)
+	// rather than stopping the feed: the worst case is a minute of
+	// offering a shape the next reload removes.
+	if deny, err := store.LoadMarketDenylist(ctx, st.Pool()); err != nil {
+		log.Warn().Err(err).Msg("market denylist unavailable; denying nothing until the next reload")
+	} else {
+		opt.Deny = deny
+		log.Info().Int("tables", len(deny.Tables)).Int("label_prefixes", len(deny.LabelPrefixes)).Msg("market denylist loaded")
+	}
 	ing := ingest.New(st, b, log)
 
 	// Catalogue in the feed language — the labels the sub-event rows and
@@ -340,6 +350,10 @@ func runFeed(ctx context.Context, cfg config.Config, st *store.Store, b *bus.Bus
 	// next restart. See ingest.ReconcileExternalSuspend.
 	reconcileTicker := time.NewTicker(time.Minute)
 	defer reconcileTicker.Stop()
+	// The denylist is admin-edited; a minute is the longest a new rule
+	// keeps being offered.
+	denyTicker := time.NewTicker(time.Minute)
+	defer denyTicker.Stop()
 	for {
 		// cycle hands back the tournament marks carried on the snapshot it
 		// just fetched (nil if that fetch failed). They are the second of
@@ -385,6 +399,12 @@ func runFeed(ctx context.Context, cfg config.Config, st *store.Store, b *bus.Bus
 				log.Warn().Err(err).Msg("logo refresh failed")
 			} else {
 				logos = l // applied right after the next cycle
+			}
+		case <-denyTicker.C:
+			if deny, err := store.LoadMarketDenylist(ctx, st.Pool()); err != nil {
+				log.Warn().Err(err).Msg("market denylist reload failed; keeping the previous list")
+			} else {
+				opt.Deny = deny
 			}
 		case <-ticker.C:
 		}

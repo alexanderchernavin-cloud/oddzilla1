@@ -107,6 +107,16 @@ export interface SportradarFixture {
   homeTeam: string;
   awayTeam: string;
   /**
+   * A second form of the team's name when Sportradar publishes one.
+   * Their day feed carries a short `name` and a longer `mediumname`, and
+   * the short one can be a CITY rather than the club: "Enschede" for
+   * "FC Twente Enschede", which Fonbet calls "Twente". Scored against
+   * "Enschede" alone that pair is 0 and never even reaches the review
+   * queue; the matcher takes the better of the two forms.
+   */
+  homeTeamAlt?: string;
+  awayTeamAlt?: string;
+  /**
    * Competition name. Shown to reviewers, and read by the matcher for the
    * squad qualifiers Sportradar states at competition level rather than
    * on the team — its day feed names a women's side "Chelsea" under
@@ -120,8 +130,18 @@ export interface SportradarFixture {
 export interface SportradarMatchEvidence {
   srHomeTeam: string;
   srAwayTeam: string;
+  /** Sportradar's longer name forms, when it published them. */
+  srHomeTeamAlt?: string;
+  srAwayTeamAlt?: string;
   srStartsAt: string;
   srTournament?: string;
+  /**
+   * Only ONE team's name agreed; the other scored under the floor. Such
+   * a pair is proposed solely because the kickoff matches to the minute
+   * and one side is certain, and it can never auto-confirm — it exists
+   * to be judged by the adjudicator or a person.
+   */
+  weak?: boolean;
   /** Minutes between the two kickoff times (absolute). */
   kickoffDeltaMinutes: number;
   homeScore: number;

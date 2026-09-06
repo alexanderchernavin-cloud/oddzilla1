@@ -425,7 +425,11 @@
     "copyLink": "Copy link",
     "copied": "Copied",
     "matchWinner": "Match winner",
-    "topTournamentTitle": "Top tournament"
+    "topTournamentTitle": "Top tournament",
+    "collapseMarket": "Collapse market",
+    "expandMarket": "Expand market",
+    "collapseAll": "Collapse all",
+    "expandAll": "Expand all"
   },
   "bets": {
     "title": "My bets",

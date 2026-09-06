@@ -425,7 +425,11 @@
     "copyLink": "Copiar enlace",
     "copied": "Copiado",
     "matchWinner": "Ganador del partido",
-    "topTournamentTitle": "Torneo top"
+    "topTournamentTitle": "Torneo top",
+    "collapseMarket": "Contraer mercado",
+    "expandMarket": "Expandir mercado",
+    "collapseAll": "Contraer todo",
+    "expandAll": "Expandir todo"
   },
   "bets": {
     "title": "Mis apuestas",

@@ -121,9 +121,16 @@ export function toFixture(
   const uts = raw._dt?.uts;
   // `name` is the short form Sportradar uses everywhere else ("Everton");
   // `mediumname` is the longer one ("Everton FC"). Prefer `name`, which
-  // is what the operator-facing surfaces show.
+  // is what the operator-facing surfaces show — but CARRY the longer
+  // form too, because the short one is sometimes a city and not the
+  // club at all: "Enschede" / "FC Twente Enschede", "Groningen" / "FC
+  // Groningen". Fonbet says "Twente", so a matcher that only ever saw
+  // "Enschede" scored that pair at zero (measured 2026-09-06, an
+  // Eredivisie fixture live with no tracker).
   const homeTeam = raw.teams?.home?.name ?? raw.teams?.home?.mediumname;
   const awayTeam = raw.teams?.away?.name ?? raw.teams?.away?.mediumname;
+  const homeAlt = raw.teams?.home?.mediumname;
+  const awayAlt = raw.teams?.away?.mediumname;
 
   if (
     typeof srMatchId !== "number" ||
@@ -144,6 +151,8 @@ export function toFixture(
     startsAt: new Date(uts * 1000).toISOString(),
     homeTeam,
     awayTeam,
+    ...(homeAlt && homeAlt !== homeTeam ? { homeTeamAlt: homeAlt } : {}),
+    ...(awayAlt && awayAlt !== awayTeam ? { awayTeamAlt: awayAlt } : {}),
     ...(context.tournament ? { tournament: context.tournament } : {}),
   };
 }

@@ -31,5 +31,6 @@ export * from "./zillabuild.js";
 export * from "./zillapass.js";
 export * from "./analytics.js";
 export * from "./sportradar.js";
+export * from "./settlement-tools.js";
 export * from "./custom-events.js";
 export * from "../enums.js";

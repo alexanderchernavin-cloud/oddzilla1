@@ -38,12 +38,13 @@ and existing tickets keep resolving. Only display text moves.
 **Language is not display-only.** `FONBET_LANG` picks the language of the
 snapshot (team, tournament and sub-event names), of the factor catalogue
 (market and outcome labels) and of the results feed (`locale`), and the
-settlement grader reads all three — see "Settlement → language". English
-and Russian are both supported end to end; a third language would leave
-the grader unable to recognise periods, statistic rows, or the market
-shapes it must refuse. `market_descriptions` rows are written for the feed
-language plus every other locale in `descriptionLangs` (en, ru), so the
-storefront's `/ru` still shows Russian market names off an English feed.
+settlement grader reads all three — see "Settlement → language". The
+grader carries an **English vocabulary only** (the Russian one that served
+the `fonbet.kz` era was removed on 2026-09-06), so `config.Load` refuses
+any `FONBET_LANG` but `en`. `market_descriptions` rows are still written
+for every other locale in `descriptionLangs` (ru), so the storefront's
+`/ru` shows Russian market names off the English feed — display data the
+grader never reads.
 
 Verified against the live site on 2026-09-04 (2026-09-03 for the parts not
 touched by the fon.bet switch). Fonbet has no public API
@@ -259,61 +260,51 @@ frames, all-terminal match close).
 
 | Step                               | Where                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Results source                     | `GET <common>/results/results.json.php?locale=<FONBET_LANG>&lineDate=YYYY-MM-DD` on the `common` (clientsapi) hosts. `events[]` carry `name` ("A – B"), `score` ("2:2 (1-0 1-1 0-1 1-0)" — headline is the **main-time** score, periods in brackets), `startTime`, `status` (3 finished, 4 cancelled); `sections[]` map `fonbetCompetitionId` (= our segment / tournament id) to result rows. Statistic rows ("Corners", "Yellow cards", "aces", "extra time", "penalty shootouts" — "угловые", "желтые карты", "эйсы", "дополнительное время", "серия пенальти" under `locale=ru`) follow their match with the same `startTime`. One document covers one **UTC+3 (Moscow) calendar day** — measured on both estates 2026-09-04, `lineDate=2026-09-03` spans startTimes 2026-09-02 21:00 UTC to 2026-09-03 20:59 UTC — and the worker fetches each pending match's day plus the previous one, so the boundary is a margin rather than a cliff. Result ids are document-local, so matching is by (competition, startTime, normalised "home – away"). Exact name first; the fallback accepts a row that contains both names **home before away** (sponsor / city decoration) and rejects the mirrored row — an order-blind substring match bound "Рубин – Оренбург" to home=Оренбург and inverted every grade on the match. A fixture the two feeds order differently therefore stays pending for manual settlement.                                                                                                                                                  |
+| Results source                     | `GET <common>/results/results.json.php?locale=<FONBET_LANG>&lineDate=YYYY-MM-DD` on the `common` (clientsapi) hosts. `events[]` carry `name` ("A – B"), `score` ("2:2 (1-0 1-1 0-1 1-0)" — headline is the **main-time** score, periods in brackets), `startTime`, `status` (3 finished, 4 cancelled); `sections[]` map `fonbetCompetitionId` (= our segment / tournament id) to result rows. Statistic rows ("Corners", "Yellow cards", "aces", "extra time", "penalty shootouts" — "угловые", "желтые карты", "эйсы", "дополнительное время", "серия пенальти" under `locale=ru`) follow their match with the same `startTime`. One document covers one **UTC+3 (Moscow) calendar day** — measured on both estates 2026-09-04, `lineDate=2026-09-03` spans startTimes 2026-09-02 21:00 UTC to 2026-09-03 20:59 UTC — and the worker fetches each pending match's day plus the previous one, so the boundary is a margin rather than a cliff. Result ids are document-local, so matching is by (competition, startTime, normalised "home – away"). Exact name first; the fallback accepts a row that contains both names **home before away** (sponsor / city decoration) and rejects the mirrored row — an order-blind substring match bound "Рубин – Оренбург" to home=Оренбург and inverted every grade on the match. A fixture the two feeds order differently therefore stays pending for manual settlement. One more fallback, narrow on purpose (2026-09-06): fixtures created while the line was read from `fonbet.kz` hold **Cyrillic** team names the English results feed can never spell, so 606 of them sat unmatched with 33 630 open markets; for those only, the (competition, start time) key stands in when it is unambiguous on BOTH sides — exactly one results row at the key and exactly one fixture of ours in that tournament at that kick-off (`PendingMatch.SameSlot`). Measured against the misses table before shipping: 290 fixtures / 19 398 markets resolve, every sampled pair correct (Япония – Оман ↔ Japan – Oman); the rest have no row at the key (postponed / absent) or a same-time neighbour and stay pending. Latin-named mismatches never take this path.                                                                                                                                                  |
 | Worker                             | `internal/settle` in fonbet-ingester — every `FONBET_SETTLE_INTERVAL_MS`: `store.LoadPendingSettlement` (closed `fb:` matches with non-terminal markets, last 7 days) → results for the involved line days → `Grade` per market → `XADD settlement.external`. Cancelled results (`status 4`) void every market of the match. **Gated by `FONBET_SETTLE_ENABLED`, default `false` — separate from `FONBET_ENABLED`** (see "Before enabling settlement"). A market is remembered as emitted only after its message is confirmed on the stream (per 500-message chunk); a failed XADD returns the error and the next pass retries everything unsent, instead of hiding the whole pass for an hour.                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Rules (`internal/settle/rules.go`) | match winner 1/2/3 · double chance · handicap `h1/h2` · total `over/under` (whole, half and quarter lines, team totals via `side`) · the same on halves / periods / sets and on statistic rows. Sports: football, futsal, handball, hockey, floorball, water polo, rugby (headline = main time), basketball / 3x3 / american football / baseball (two-way markets add the "extra time" / "дополнительное время" row), tennis / table tennis / volleyball / badminton / beach volleyball (winner by sets; handicaps and totals on games / points unless the table says "set" / "сет"). Tables whose name mentions overtime / shootout / penalt… / odd / even / exact / correct / series (ОТ / овертайм / буллит / пенальти / чет / точный / сери…) and every other sport or market shape are **left open** for manual settlement and counted in the `settlement pass` log line (`skipped`). |
+| Rules (`internal/settle/rules.go`) | match winner 1/2/3 · double chance · the plain two-way "To win the match" table (491, not flagged main by Fonbet — recognised by shape) · both teams to score (2800, the nameless table) · handicap `h1/h2` · total `over/under` (whole, half and quarter lines, team totals via `side`) · the same on halves / periods / sets and on statistic rows. Sports: football, futsal, handball, bandy, hockey, floorball, water polo, rugby, beach soccer (headline = main time), basketball / 3x3 / american football / baseball (two-way markets add the "extra time" row), australian football (four quarters, "1st half" = quarters 1+2, regular time), tennis / table tennis / volleyball / badminton / beach volleyball / padel (winner by sets; handicaps and totals on games / points unless the table says "set"), darts (headline is legs; a section not saying "legs" — set play — is refused), MMA / boxing (fight sports: the results feed scores a bout "<round>:0" / "0:<round>", so the winner is the non-zero side and total rounds settle off the finishing round when that round decides the line; a finish IN the deciding round, a "0:0" and any handicap are refused). Tables whose name mentions overtime / shootout / penalt… / odd / even / exact / correct / series and every other sport or market shape are **left open** for the operator and counted in the `settlement pass` log line (`skipped`). The rules for australian football, bandy, beach soccer, padel, MMA, boxing and darts were added 2026-09-06 as the operator's temporary rules — the industry-standard conventions for the few shapes Fonbet quotes on them, read off the 09-04 / 09-05 results documents. |
 | Consumer                           | `services/settlement/internal/extstream` — XREADGROUP on `settlement.external` (group `settlement`), builds an `oddinxml.Market` and calls `Settler.ApplyExternalSettlement` / `ApplyExternalCancel`. Failures stay pending and are re-claimed after 60 s (cursor-paginated, so a backlog larger than one batch drains in one tick). The group is created from `0`, not `$`, and is **recreated inline on `NOGROUP`** (CLAUDE.md invariant 7): production Redis is allkeys-lru and can evict the stream key, which destroys the group — without the branch no Fonbet market would settle again until a manual restart, and a restart creating the group at `$` would skip every message published in the gap. Stream capped at 20k entries (~6 MB). `SETTLEMENT_EXTERNAL_STREAM` (default `settlement.external`, empty disables).                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | Message                            | `type` settle\|cancel, `event_urn`, `provider_market_id`, `specifiers` (canonical, sorted), `ts` ms, `outcomes` JSON `[{id,result,void_factor}]` — result `1`/`0`, void_factor `1` void, `0.5` half. Specifiers and outcome order feed the apply-once payload hash, so a resend of the same grading is a no-op.                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 ### Language
 
 The grader reads the catalogue, the sub-event labels and the results feed
-in `FONBET_LANG`, so `rules.go` carries **both** vocabularies. This is not
-cosmetic — measured against the live catalogue on 2026-09-04, running the
-Russian word lists against an English catalogue left three
-gradable-by-shape tables unguarded ("Total missed penalties", two "Team
-total missed penalties"), which would have been settled off the goal
-score, and dropped the "extra time" / "penalty shootouts" rows so a
-basketball two-way market would have graded on regular time. What the two
-vocabularies now cover:
+in `FONBET_LANG`, and `rules.go` carries an **English vocabulary only**.
+While the line came from `fonbet.kz` it carried Russian as well; that
+vocabulary was removed on 2026-09-06 (operator decision — the estate moved
+to `fon.bet` in English on 2026-09-04 and is not going back), and
+`config.Load` now refuses any other language rather than let the grader
+run blind. What the vocabulary covers:
 
-- **Refused table names** — the two lists flag identical sets: every
-  table the Russian words catch that Grade could otherwise accept by
-  shape, the English words catch too, and vice versa. Pinned by
-  `TestTableUnsafeEnglish`. Fixing this also closed a pre-existing
-  Russian gap: `серия` was a whole word, so the inflected "Фора серии",
-  "Тотал серии" and "Победа в серии" playoff-series markets were
-  gradable off a single match's score; it is now the prefix `сери`.
+- **Refused table names** — overtime / shootout / penalt… / odd / even /
+  exact / correct / series / minute. A threshold table called "Total
+  missed penalties" looks exactly like an ordinary over/under to the shape
+  checks, so the name guard is the only thing between it and a settlement
+  off the goal score. Pinned by `TestTableUnsafeEnglish`.
 - **Period labels** — English puts the marker at either end ("1st half
   corners" but "Yellow cards — 1st half"), so both positions are parsed.
   Units are only what the line emits: half, period, set, quarter, inning,
   map. Plural "innings" is excluded on purpose — Fonbet uses it for a
   cumulative "first N innings" row, not the Nth one.
-- **"Nth half" is ambiguous in English.** Russian separates "тайм" (one
-  period of a two-part game) from "половина" (two periods of a
-  quarter-based one); English says "1st half" for both. `resolveHalf`
+- **"Nth half" is ambiguous.** One period of a two-half game and two
+  quarters of a four-quarter one are both "1st half". `resolveHalf`
   decides per sport (`sportRule.half`): football / futsal / handball /
-  rugby → period N, basketball / american football → periods 2N-1 + 2N.
-  Any other sport **refuses** the label (`ambiguous half label`) instead
-  of guessing.
-- **Aggregate specials stay out of scope in both languages.** "8 matches
-  1st half", "Red card in the 1st half" and "Match to be finished in
-  tie-break of 5th set" do parse a period in English, but the leftover
-  text becomes a statistic name that the results feed does not carry, so
-  `scoreFor` reports no score and the market stays open — the same
-  outcome Russian reaches by not matching the prefix at all.
+  rugby / bandy → period N, basketball / american football / australian
+  football → periods 2N-1 + 2N. Any other sport **refuses** the label
+  (`ambiguous half label`) instead of guessing.
+- **Aggregate specials stay out of scope.** "8 matches 1st half", "Red
+  card in the 1st half" and "Match to be finished in tie-break of 5th set"
+  do parse a period, but the leftover text becomes a statistic name that
+  the results feed does not carry, so `scoreFor` reports no score and the
+  market stays open.
+- **Tie-break rows** are "extra time" and "penalty shootouts" (football
+  and hockey both file the shootout under that name).
 
-Coverage was measured by pairing every sub-event label on the live line by
-event id across the two languages (2026-09-04): of 493 distinct
-(ru, en, sport) labels, 82 kinds / 5 574 events grade in **both**, none
-grade only in English, **none grade to a different score**, and exactly
-one kind / 23 events grades only in Russian.
-That one is football's "hit the woodwork": Fonbet's English line
-calls the sub-event "1st half hit the woodwork" while its English results
-feed spells the row "To hit the woodwork", so 23 events stay open for
-manual settlement. Deliberately not papered over with fuzzy matching —
-on a payout path a missed row costs a manual settlement, a wrong match
-costs money.
+One known naming gap: football's "hit the woodwork" — Fonbet's line calls
+the sub-event "1st half hit the woodwork" while its results feed spells
+the row "To hit the woodwork", so those events stay open for the operator.
+Deliberately not papered over with fuzzy matching — on a payout path a
+missed row costs an operator decision, a wrong match costs money.
 
 Two-way markets tied after main time (hockey without an OT row, basketball
 without the OT row) stay open rather than guess. For sports whose two-way

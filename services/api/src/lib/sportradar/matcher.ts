@@ -58,6 +58,28 @@
 // kicking off together in one league produces several near-identical
 // candidates; when that happens the right answer is a human, not the
 // higher of two coin flips.
+//
+// Two more things widen what REACHES review without widening what is
+// confirmed automatically (added 2026-09-06, after an Eredivisie fixture
+// went live with no tracker):
+//
+//  4. Every name form Sportradar publishes is tried. Its short `name` is
+//     sometimes a city — "Enschede" for "FC Twente Enschede" — and Fonbet
+//     says "Twente", which against "Enschede" scores exactly 0. Against
+//     the longer form it scores 0.67, which is a review-queue pair, and
+//     the adjudicator knows FC Twente plays in Enschede.
+//
+//  5. A pair with ONE certain side and a kickoff agreeing to the minute
+//     is proposed as a WEAK candidate. In a club sport a team plays one
+//     match at a time, so when "Groningen" is Groningen and both clocks
+//     say 10:15, the other side is the same fixture in every case except
+//     a squad qualifier — and that is a hard veto before any of this
+//     runs. A weak pair can NEVER auto-confirm; it exists so the model
+//     (or a person) gets to look at what the matcher alone could not
+//     settle, instead of the fixture silently never being proposed at
+//     all. Measured against the same day's soccer feed: the strict rules
+//     found 1 new pair among 792 unmapped open matches, the alt names
+//     and weak pairs together put dozens more in front of the adjudicator.
 
 import { sportradarSportIsIndividual } from "@oddzilla/types/sportradar";
 import type {
@@ -73,6 +95,13 @@ export interface OddzillaFixture {
   scheduledAt: string | Date | null;
   homeTeam: string;
   awayTeam: string;
+  /**
+   * A Sportradar fixture the adjudicator already ruled OUT for this match.
+   * That one is never proposed again; every other fixture still may be,
+   * so a machine "different" is a verdict on a pair, not a lockout of the
+   * match. A human rejection is final and never reaches the matcher.
+   */
+  rejectedSrMatchId?: number | null;
 }
 
 /** Kickoff times further apart than this are never the same fixture. */
@@ -96,6 +125,15 @@ export const AUTO_MIN_TEAM_SCORE = 0.8;
 export const AUTO_CONFIRM_SCORE = 0.9;
 /** A winner this close to the runner-up is ambiguous, whatever it scored. */
 export const AMBIGUITY_MARGIN = 0.05;
+/**
+ * A WEAK pair — one side under MIN_TEAM_SCORE — is still proposed for
+ * review when the other side is at least this certain and the two clocks
+ * agree within WEAK_KICKOFF_MINUTES. 0.8 is the auto-confirm bar for a
+ * name: "Groningen" / "Groningen" qualifies, "Independiente" against
+ * "Independiente Medellin" (0.67) does not anchor anything on its own.
+ */
+export const WEAK_ANCHOR_SCORE = 0.8;
+export const WEAK_KICKOFF_MINUTES = KICKOFF_AUTO_MINUTES;
 /** Penalty for a pair that only agrees once home/away are swapped. */
 const SWAP_PENALTY = 0.97;
 
@@ -234,18 +272,18 @@ function tokensAgree(a: string, b: string): boolean {
   return short.length >= 3 && long.startsWith(short);
 }
 
-/**
- * Similarity of two team names in [0, 1].
- *
- * Returns 0 — not a low score, a refusal — when the two sides disagree
- * about whether this is a women's or a youth/reserve team. See the file
- * header.
- */
-export function teamSimilarity(
-  a: string,
-  b: string,
-  opts: NameOptions = {},
-): number {
+interface Similarity {
+  score: number;
+  /**
+   * The two sides disagree about whether this is a women's or a
+   * youth/reserve team. Kept apart from a plain 0 because a weak pair
+   * may carry a side that merely scored nothing, and must never carry a
+   * side that was vetoed.
+   */
+  vetoed: boolean;
+}
+
+function similarity(a: string, b: string, opts: NameOptions): Similarity {
   const left = normaliseTeamName(a, opts);
   const right = normaliseTeamName(b, opts);
 
@@ -253,8 +291,8 @@ export function teamSimilarity(
   // qualifiers (say "youth" and "u19") are only a mild signal, because
   // the two providers draw from different vocabularies for the same
   // squad, so that case falls through to ordinary scoring.
-  if ((left.age === null) !== (right.age === null)) return 0;
-  if ((left.gender === null) !== (right.gender === null)) return 0;
+  if ((left.age === null) !== (right.age === null)) return { score: 0, vetoed: true };
+  if ((left.gender === null) !== (right.gender === null)) return { score: 0, vetoed: true };
 
   const used = new Array<boolean>(right.tokens.length).fill(false);
   let matched = 0;
@@ -269,11 +307,46 @@ export function teamSimilarity(
     }
   }
   const total = left.tokens.length + right.tokens.length;
-  if (total === 0) return 0;
+  if (total === 0) return { score: 0, vetoed: false };
   // Dice over tokens: rewards matching a high share of BOTH names, so
   // "Bayern" against "Bayern Munich" scores 0.67 rather than 1.0 — a real
   // partial match, not a claimed certainty.
-  return (2 * matched) / total;
+  return { score: (2 * matched) / total, vetoed: false };
+}
+
+/**
+ * Similarity of two team names in [0, 1].
+ *
+ * Returns 0 — not a low score, a refusal — when the two sides disagree
+ * about whether this is a women's or a youth/reserve team. See the file
+ * header.
+ */
+export function teamSimilarity(
+  a: string,
+  b: string,
+  opts: NameOptions = {},
+): number {
+  return similarity(a, b, opts).score;
+}
+
+/**
+ * Our name against every form Sportradar publishes for theirs, best
+ * form wins. A veto on ANY form is a veto on the side: the forms name
+ * the same squad, so a marker on either is real, and a rule that can
+ * only refuse a pair is the safe direction to err in.
+ */
+function bestSimilarity(
+  ours: string,
+  theirs: readonly string[],
+  opts: NameOptions,
+): Similarity {
+  let best: Similarity = { score: 0, vetoed: false };
+  for (const name of theirs) {
+    const s = similarity(ours, name, opts);
+    if (s.vetoed) return s;
+    if (s.score > best.score) best = s;
+  }
+  return best;
 }
 
 // Words a competition name uses to say every side in it is a women's
@@ -331,12 +404,31 @@ function withCompetitionQualifiers(team: string, fixture: SportradarFixture): st
   return extra.length === 0 ? team : `${team} ${extra.join(" ")}`;
 }
 
+/**
+ * Every form Sportradar publishes for one side of a fixture, ready to
+ * score: the short name plus the longer one when it differs, each with
+ * the competition's qualifiers restated for clubs (see the file header;
+ * people carry no such qualifiers and a bare "w" would read as an
+ * initial).
+ */
+function sideNames(
+  primary: string,
+  alt: string | undefined,
+  fixture: SportradarFixture,
+  individual: boolean,
+): string[] {
+  const forms = alt && alt !== primary ? [primary, alt] : [primary];
+  return individual ? forms : forms.map((n) => withCompetitionQualifiers(n, fixture));
+}
+
 export interface ScoredPair {
   score: number;
   homeScore: number;
   awayScore: number;
   kickoffDeltaMinutes: number;
   sidesSwapped: boolean;
+  /** One side under MIN_TEAM_SCORE; review-only, never auto-confirmed. */
+  weak: boolean;
 }
 
 /**
@@ -349,6 +441,10 @@ export function scorePair(
 ): ScoredPair | null {
   if (ours.srSportId !== theirs.srSportId) return null;
   if (ours.scheduledAt == null) return null;
+  // A pair the adjudicator has already turned down is not re-litigated.
+  if (ours.rejectedSrMatchId != null && ours.rejectedSrMatchId === theirs.srMatchId) {
+    return null;
+  }
 
   const ourKickoff = new Date(ours.scheduledAt).getTime();
   const theirKickoff = new Date(theirs.startsAt).getTime();
@@ -359,35 +455,42 @@ export function scorePair(
 
   // Same sport on both sides (checked above), so the sport id decides
   // once whether these names are clubs or people.
-  const names: NameOptions = {
-    individual: sportradarSportIsIndividual(theirs.srSportId),
-  };
-  // Clubs get the qualifiers their competition implies (see the file
-  // header). People do not: a player in a women's draw is not marked on
-  // either feed, and a bare "w" in individual mode would read as an
-  // initial and dilute the score.
-  const theirHome = names.individual
-    ? theirs.homeTeam
-    : withCompetitionQualifiers(theirs.homeTeam, theirs);
-  const theirAway = names.individual
-    ? theirs.awayTeam
-    : withCompetitionQualifiers(theirs.awayTeam, theirs);
+  const individual = sportradarSportIsIndividual(theirs.srSportId);
+  const names: NameOptions = { individual };
+  const theirHome = sideNames(theirs.homeTeam, theirs.homeTeamAlt, theirs, individual);
+  const theirAway = sideNames(theirs.awayTeam, theirs.awayTeamAlt, theirs, individual);
   const direct = {
-    home: teamSimilarity(ours.homeTeam, theirHome, names),
-    away: teamSimilarity(ours.awayTeam, theirAway, names),
+    home: bestSimilarity(ours.homeTeam, theirHome, names),
+    away: bestSimilarity(ours.awayTeam, theirAway, names),
   };
   const swapped = {
-    home: teamSimilarity(ours.homeTeam, theirAway, names),
-    away: teamSimilarity(ours.awayTeam, theirHome, names),
+    home: bestSimilarity(ours.homeTeam, theirAway, names),
+    away: bestSimilarity(ours.awayTeam, theirHome, names),
   };
-  const directMean = (direct.home + direct.away) / 2;
-  const swappedMean = (swapped.home + swapped.away) / 2;
+  const directMean = (direct.home.score + direct.away.score) / 2;
+  const swappedMean = (swapped.home.score + swapped.away.score) / 2;
   const useSwapped = swappedMean > directMean;
   const chosen = useSwapped ? swapped : direct;
 
-  if (chosen.home < MIN_TEAM_SCORE || chosen.away < MIN_TEAM_SCORE) return null;
+  // The squad veto is absolute: it applies to strong and weak pairs alike.
+  if (chosen.home.vetoed || chosen.away.vetoed) return null;
 
-  const nameScore = (chosen.home + chosen.away) / 2;
+  const strong =
+    chosen.home.score >= MIN_TEAM_SCORE && chosen.away.score >= MIN_TEAM_SCORE;
+  // One certain side plus clocks that agree: see the file header (5).
+  // Never across a home/away swap — with only one name agreeing, the
+  // side it agrees on is the one thing left that says "same fixture",
+  // and a pair that needs the sides reversed has lost that too. Measured
+  // 2026-09-06: every swapped weak pair on the day's soccer feed was a
+  // Fonbet season head-to-head pseudo-match borrowing a real kickoff.
+  const weak =
+    !strong &&
+    !useSwapped &&
+    deltaMinutes <= WEAK_KICKOFF_MINUTES &&
+    Math.max(chosen.home.score, chosen.away.score) >= WEAK_ANCHOR_SCORE;
+  if (!strong && !weak) return null;
+
+  const nameScore = (chosen.home.score + chosen.away.score) / 2;
   // Kickoff contributes only as a tiebreaker inside the gate: 1.0 at
   // exact agreement, falling linearly to 0 at the gate.
   const kickoffScore = 1 - deltaMinutes / KICKOFF_GATE_MINUTES;
@@ -396,10 +499,11 @@ export function scorePair(
 
   return {
     score,
-    homeScore: chosen.home,
-    awayScore: chosen.away,
+    homeScore: chosen.home.score,
+    awayScore: chosen.away.score,
     kickoffDeltaMinutes: deltaMinutes,
     sidesSwapped: useSwapped,
+    weak,
   };
 }
 
@@ -453,6 +557,11 @@ export function proposeMappings(
   }
 
   candidates.sort((a, b) => {
+    // A strong pair always claims before a weak one, whatever the two
+    // scored: a weak pair with a perfect anchor and an exact kickoff
+    // (0.575) would otherwise out-rank a strong pair whose clocks are
+    // 15 minutes apart (0.51) and take its fixture.
+    if (a.scored.weak !== b.scored.weak) return a.scored.weak ? 1 : -1;
     if (b.scored.score !== a.scored.score) return b.scored.score - a.scored.score;
     // Stable, id-ordered tiebreak so two runs over the same input agree.
     if (a.ours.matchId !== b.ours.matchId) {
@@ -478,6 +587,7 @@ export function proposeMappings(
       scored.score - runnerUp.scored.score >= AMBIGUITY_MARGIN;
 
     const autoConfirm =
+      !scored.weak &&
       unambiguous &&
       scored.score >= AUTO_CONFIRM_SCORE &&
       scored.homeScore >= AUTO_MIN_TEAM_SCORE &&
@@ -493,12 +603,15 @@ export function proposeMappings(
       evidence: {
         srHomeTeam: theirs.homeTeam,
         srAwayTeam: theirs.awayTeam,
+        ...(theirs.homeTeamAlt ? { srHomeTeamAlt: theirs.homeTeamAlt } : {}),
+        ...(theirs.awayTeamAlt ? { srAwayTeamAlt: theirs.awayTeamAlt } : {}),
         srStartsAt: theirs.startsAt,
         ...(theirs.tournament ? { srTournament: theirs.tournament } : {}),
         kickoffDeltaMinutes: Math.round(scored.kickoffDeltaMinutes * 10) / 10,
         homeScore: Math.round(scored.homeScore * 1000) / 1000,
         awayScore: Math.round(scored.awayScore * 1000) / 1000,
         sidesSwapped: scored.sidesSwapped,
+        ...(scored.weak ? { weak: true } : {}),
         ...(field.length > 1
           ? {
               alternatives: field

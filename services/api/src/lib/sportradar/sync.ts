@@ -29,6 +29,7 @@ import {
 } from "@oddzilla/types/sportradar";
 import type { SportradarFixture } from "@oddzilla/types/sportradar";
 import { BadRequestError } from "../errors.js";
+import { looksOutright, looksSimulated } from "../zagi/risk-tier.js";
 import { proposeMappings, type OddzillaFixture } from "./matcher.js";
 import {
   createStatsFixtureSource,
@@ -70,9 +71,23 @@ export async function openMatchDays(
         inArray(matches.status, ["not_started", "live"]),
         gte(matches.scheduledAt, from),
         lte(matches.scheduledAt, to),
+        eq(categories.hiddenFromLists, false),
       ),
     );
   return rows.map((r) => r.day).sort();
+}
+
+/**
+ * Rows that look like matches but are not fixtures, and so can have no
+ * Sportradar counterpart: Fonbet's season head-to-heads ("Barcelona vs
+ * Real Madrid — Head-to-head in the tournament", which borrows a real
+ * kickoff time) and computer-played simulations under a real sport
+ * (FC 26 ESportsBattle, NBA 2K). Left in, they are exactly the rows a
+ * kickoff-plus-one-name rule pairs with somebody else's real match —
+ * measured 2026-09-06 as the only junk the weak-pair rule produced.
+ */
+export function isPseudoFixture(tournamentName: string | null | undefined): boolean {
+  return looksOutright(tournamentName) || looksSimulated(tournamentName);
 }
 
 export interface PersistResult {
@@ -121,14 +136,21 @@ export async function matchAndPersist(
 
   const { from, to } = importWindow();
   // Candidates: our matches in this sport, inside the window, that no
-  // human has already ruled on. An `admin`-sourced row or a rejection
-  // is a decision — the matcher does not get to overwrite either.
-  const ourRows = await app.db
+  // human has already ruled on. An `admin`-sourced row is a decision —
+  // the matcher does not get to overwrite it. A rejection by the
+  // ADJUDICATOR is narrower: it says "not THAT fixture", so the match
+  // stays eligible for any other fixture and only the rejected id is
+  // held back (`rejectedSrMatchId`). Without that, one wrong weak
+  // candidate turned down by the model would lock a match out of the
+  // mapping for good.
+  const candidateRows = await app.db
     .select({
       matchId: matches.id,
       homeTeam: matches.homeTeam,
       awayTeam: matches.awayTeam,
       scheduledAt: matches.scheduledAt,
+      tournamentName: tournaments.name,
+      rejectedSrMatchId: sql<string | null>`CASE WHEN ${matchSportradarIds.source} = 'llm' AND ${matchSportradarIds.status} = 'rejected' THEN ${matchSportradarIds.srMatchId}::text ELSE NULL END`,
     })
     .from(matches)
     .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
@@ -141,9 +163,13 @@ export async function matchAndPersist(
         inArray(matches.status, ["not_started", "live"]),
         gte(matches.scheduledAt, from),
         lte(matches.scheduledAt, to),
-        sql`(${matchSportradarIds.matchId} IS NULL OR (${matchSportradarIds.source} = 'auto' AND ${matchSportradarIds.status} = 'candidate'))`,
+        // Operator-flagged simulation categories (migration 0102) are
+        // computer games; the tracker draws a real pitch.
+        eq(categories.hiddenFromLists, false),
+        sql`(${matchSportradarIds.matchId} IS NULL OR (${matchSportradarIds.source} = 'auto' AND ${matchSportradarIds.status} = 'candidate') OR (${matchSportradarIds.source} = 'llm' AND ${matchSportradarIds.status} = 'rejected'))`,
       ),
     );
+  const ourRows = candidateRows.filter((r) => !isPseudoFixture(r.tournamentName));
 
   const ourFixtures: OddzillaFixture[] = ourRows.map((r) => ({
     matchId: r.matchId.toString(),
@@ -151,6 +177,7 @@ export async function matchAndPersist(
     scheduledAt: r.scheduledAt,
     homeTeam: r.homeTeam,
     awayTeam: r.awayTeam,
+    ...(r.rejectedSrMatchId ? { rejectedSrMatchId: Number(r.rejectedSrMatchId) } : {}),
   }));
 
   const proposals = proposeMappings(ourFixtures, opts.fixtures);
@@ -232,8 +259,9 @@ export async function matchAndPersist(
             updatedAt: new Date(),
           },
           // Belt and braces alongside the query above: never let an
-          // automatic pass overwrite a human decision.
-          setWhere: sql`${matchSportradarIds.source} = 'auto' AND ${matchSportradarIds.status} = 'candidate'`,
+          // automatic pass overwrite a human decision, and never re-file
+          // the exact pair the adjudicator turned down.
+          setWhere: sql`(${matchSportradarIds.source} = 'auto' AND ${matchSportradarIds.status} = 'candidate') OR (${matchSportradarIds.source} = 'llm' AND ${matchSportradarIds.status} = 'rejected' AND ${matchSportradarIds.srMatchId} <> excluded.sr_match_id)`,
         });
       written += 1;
     }
