@@ -25,6 +25,7 @@ function cand(over: Partial<WikidataCandidate> = {}): WikidataCandidate {
     logoFile: "Pl-logo-light.svg",
     sportQids: ["Q2736"],
     instanceOf: ["Q623109"], // sports league
+    aliases: [],
     ...over,
   };
 }
@@ -162,6 +163,43 @@ describe("pickCandidate", () => {
       sportSlug: "football",
     });
     assert.ok(m);
+  });
+
+  it("matches the entity's ALIASES, not only its label", () => {
+    // Where most of the traditional-sport coverage was going: Wikidata
+    // files the Belgian top flight as "Belgian First Division A" and
+    // lists "Belgian Pro League" among its aliases. Measured on 30 real
+    // leagues, ZillaAGI named them all correctly and 20 were dropped for
+    // having the right name in the wrong field.
+    const belgian = cand({
+      qid: "Q652572",
+      label: "Belgian First Division A",
+      aliases: ["Belgian Pro League", "Jupiler Pro League"],
+      logoFile: "Belgian Pro League.svg",
+      sportQids: ["Q2736"],
+    });
+    assert.ok(
+      pickCandidate([belgian], { canonicalName: "Belgian Pro League", sportSlug: "football" }),
+    );
+    assert.ok(
+      pickCandidate([belgian], { canonicalName: "Jupiler Pro League", sportSlug: "football" }),
+    );
+  });
+
+  it("does not let aliases smuggle the women's competition through", () => {
+    // The relaxation must not cost the guard that matters: "EuroLeague"
+    // is neither the label nor an alias of the women's competition.
+    const women = cand({
+      qid: "Q521068",
+      label: "EuroLeague Women",
+      aliases: ["FIBA EuroLeague Women"],
+      logoFile: "EuroLeagueWomen.png",
+      sportQids: ["Q5372"],
+    });
+    assert.equal(
+      pickCandidate([women], { canonicalName: "EuroLeague", sportSlug: "basketball" }),
+      null,
+    );
   });
 
   it("skips candidates with no logo", () => {

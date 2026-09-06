@@ -137,6 +137,15 @@ export interface WikidataCandidate {
   sportQids: string[];
   /** P31 "instance of" — what the entity actually IS. */
   instanceOf: string[];
+  /**
+   * The entity's other names. Wikidata files a league under one label
+   * and lists the rest here — "Belgian First Division A" with "Belgian
+   * Pro League" among its aliases — and matching only the label threw
+   * away most of the traditional-sport coverage: measured on 30 real
+   * leagues, ZillaAGI named them all correctly and 20 were then dropped
+   * for having the right name in the wrong field.
+   */
+  aliases: string[];
 }
 
 /**
@@ -195,9 +204,12 @@ export function pickCandidate(
 
   for (const c of candidates) {
     if (!c.logoFile) continue;
-    // Cheapest first, and the one that catches the women's / youth /
-    // reserve variants of the same competition.
-    if (normaliseLabel(c.label) !== target) continue;
+    // Name check first — cheapest, and it still catches the women's /
+    // youth / reserve variants, since "EuroLeague Women" is neither the
+    // label nor an alias of "EuroLeague". Aliases count because a league
+    // is routinely filed under one of its several names.
+    const names = [c.label, ...c.aliases].map(normaliseLabel);
+    if (!names.includes(target)) continue;
     // Then: is it the right kind of thing, in the right domain? An exact
     // label match is not evidence on its own — "TCL" matched a scripting
     // language and "EMEA Masters" matched a snooker event.
@@ -271,13 +283,14 @@ export function createWikidataClient(opts: { fetchImpl?: typeof fetch; timeoutMs
       const entities = (await call({
         action: "wbgetentities",
         ids: hits.map((h) => h.id).join("|"),
-        props: "claims|labels",
+        props: "claims|labels|aliases",
         languages: "en",
       })) as {
         entities?: Record<
           string,
           {
             labels?: { en?: { value?: string } };
+            aliases?: { en?: Array<{ value?: string }> };
             claims?: Record<string, Array<{ mainsnak?: { datavalue?: { value?: unknown } } }>>;
           }
         >;
@@ -301,6 +314,9 @@ export function createWikidataClient(opts: { fetchImpl?: typeof fetch; timeoutMs
           logoFile: typeof logo === "string" ? logo : null,
           sportQids: idsOf("P641"),
           instanceOf: idsOf("P31"),
+          aliases: (ent?.aliases?.en ?? [])
+            .map((a) => a.value)
+            .filter((v): v is string => typeof v === "string"),
         };
       });
     },
