@@ -830,6 +830,27 @@ export default async function adminCustomEventsRoutes(app: FastifyInstance) {
         .limit(1);
       if (!before || before.sportId !== sport.id) throw new NotFoundError();
 
+      // A move has to land inside the Custom sport. Without this an admin
+      // could file an operator-authored event under a FEED tournament —
+      // the Premier League, say — where it would render beside real
+      // fixtures and inherit that competition's risk tier while still
+      // being settled by hand. The create path already checks this; the
+      // edit path needs it too now that the UI offers a tournament picker.
+      if (body.tournamentId != null) {
+        const [dest] = await app.db
+          .select({ sportId: categories.sportId })
+          .from(tournaments)
+          .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+          .where(eq(tournaments.id, body.tournamentId))
+          .limit(1);
+        if (!dest || dest.sportId !== sport.id) {
+          throw new BadRequestError(
+            "tournament_not_custom",
+            "That tournament is not under the Custom sport.",
+          );
+        }
+      }
+
       await app.db.transaction(async (tx) => {
         await tx
           .update(matches)
