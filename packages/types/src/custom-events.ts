@@ -119,13 +119,17 @@ export function ladderStep(odds: number): number {
 /**
  * Quote an authored price onto the ladder.
  *
- * Feed prices keep four decimals because Oddin genuinely quotes a
- * near-certain favorite at 1.003, and rounding that to 1.00 prints a
- * price that does not exist. **We are not a feed here.** These prices are
- * derived from a probability an operator typed, so four decimals is
- * precision nobody entered and no book quotes: a market came out at
- * 4.7619 / 1.1904 on the storefront, which reads as a machine leaking its
- * arithmetic.
+ * Four decimals is precision nobody entered and no book quotes: a market
+ * came out at 4.7619 / 1.1904 on the storefront, which reads as a machine
+ * leaking its arithmetic.
+ *
+ * Feed prices had the same problem for one more day — a live CS2 map
+ * shipped as 5.1410 / 3.6860 on 2026-09-06 — and joined this ladder on
+ * 2026-09-07. `packages/types/src/odds.ts` carries a byte-identical copy
+ * (neither module may import the other: both are pulled into apps/web as
+ * values and must stay free of relative imports), and a sweep in
+ * `odds.test.ts` pins the two together. Change the bands here and that
+ * test fails, which is the point.
  *
  * The step widens with the price — see `LADDER_BANDS`. A flat hundredth
  * is right near evens and ridiculous in the tail, where it produced

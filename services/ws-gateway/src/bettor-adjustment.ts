@@ -17,6 +17,7 @@
 //     admin mutation invalidates it via Redis pub/sub.
 
 import type postgres from "postgres";
+import { quoteOnLadder } from "@oddzilla/types/odds";
 
 // Lowest decimal price an adjusted outcome may show. Must match the
 // constant in services/api/src/lib/bettor-odds-adjustment.ts and the
@@ -135,8 +136,12 @@ export function applyAdjustment(
 
   if (adjusted < ADJUSTED_ODDS_FLOOR) adjusted = ADJUSTED_ODDS_FLOOR;
 
-  // Floor-truncate to 4dp (epsilon absorbs float64 round-down).
-  const units = Math.floor(adjusted * 10000 + 1e-6);
+  // Snap onto the quote ladder, then floor-truncate to 4dp (epsilon
+  // absorbs float64 round-down). The bp === 0 fast path above returns the
+  // stored string untouched, which the publisher already laddered — so
+  // both branches emit the same shape of number, and a live tick can't
+  // re-render a price the SSR payload showed on a rung.
+  const units = Math.floor(quoteOnLadder(adjusted) * 10000 + 1e-6);
   if (units < 0) return rawOdds;
   const intP = Math.floor(units / 10000);
   const frac = units % 10000;

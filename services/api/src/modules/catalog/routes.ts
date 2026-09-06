@@ -64,6 +64,7 @@ import {
   type BoostQuoteCell,
   type BoostQuoteRule,
 } from "@oddzilla/types";
+import { quoteOnLadder } from "@oddzilla/types/odds";
 import {
   loadPromoVisibilityCascades,
   resolveVisible,
@@ -226,8 +227,12 @@ const matchListQuery = z.object({
 function formatOdds(s: string | null | undefined): string | null {
   if (s == null) return null;
   const n = Number.parseFloat(s);
-  if (!Number.isFinite(n)) return null;
-  const units = Math.floor(n * 10000 + 1e-6);
+  if (!Number.isFinite(n) || n < 0) return null;
+  // Ladder first, then render — see packages/types/src/odds.ts. The
+  // publisher already quotes onto the ladder, so this is a no-op for
+  // anything that came through it; it is here so no payload path can
+  // ship an off-ladder price.
+  const units = Math.floor(quoteOnLadder(n) * 10000 + 1e-6);
   if (units < 0) return null;
   const intP = Math.floor(units / 10000);
   const frac = units % 10000;
