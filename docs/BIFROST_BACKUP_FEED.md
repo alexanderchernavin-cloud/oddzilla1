@@ -249,9 +249,10 @@ Oddin hosts and are untouched.
 
 **Activation.** Every cached snapshot is re-emitted, so the suspended
 catalogue re-activates in one pass instead of waiting for each match's
-next natural update, and a 24 h results sweep settles whatever our DB
-still holds open. While active, every resync (5 min) re-emits again and
-sweeps 3 h of results, with the 24 h pass every sixth resync — this bounds
+next natural update, and a 72 h results sweep settles whatever our DB
+still holds open (24 h until 2026-09-06 — see "Recovery interplay" for
+why it widened). While active, every resync (5 min) re-emits again and
+sweeps 3 h of results, with the 72 h pass every sixth resync — this bounds
 how long anything that suspends the catalogue underneath the backup (the
 alive watchdog firing during a forced window, an operator recovery) stays
 dark.
@@ -296,10 +297,14 @@ only avoids re-querying a busy live match. Consequences:
   harmless.
 - Every `BIFROST_RESYNC_INTERVAL_SECONDS` the runner sweeps the last three
   hours of Bifrost results and settles anything our DB still holds open,
-  and every sixth resync (plus every activation) widens that to 24 h: the
+  and every sixth resync (plus every activation) widens that to 72 h: the
   path that heals a market which closed while both feeds, or the whole
   stack, were down. Only matches our DB holds open are fetched in full, so
-  the wide pass costs list pages, not detail fetches.
+  the wide pass costs list pages, not detail fetches. The wide window was
+  24 h until 2026-09-06: the unplayed-map cancels ride this pass too, and a
+  day was too short to reach the fixtures that had closed before the cancel
+  path existed — 940 markets on the 09-05 matches were still waiting for a
+  snapshot the 24 h window would never fetch again.
 
 `certainty` is 1 while the match is STARTED, 2 once CLOSED.
 
@@ -449,8 +454,9 @@ consuming without touching the producer.
 
 **Long outage of the whole stack (hours):** nothing manual. Oddin's 24 h
 replay rebuilds both consumers on reconnect; if the backup is active, its
-24 h results sweep settles what the DB still holds open. Only cancels and
-rollbacks depend on the AMQP replay window.
+72 h results sweep settles what the DB still holds open and voids the maps
+a finished series never reached. Whole-event cancels and rollbacks still
+depend on the AMQP replay window.
 
 **Verify a takeover happened:** feed-ingester logs `feed silent past
 threshold` (watchdog), then bifrost-feed logs `backup ACTIVE` and
