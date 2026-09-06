@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import type { SportradarFixture } from "@oddzilla/types/sportradar";
 import {
+  MIN_TEAM_SCORE,
   normaliseTeamName,
   proposeMappings,
   qualifiersFromCompetition,
@@ -264,11 +265,25 @@ describe("scorePair", () => {
     assert.equal(tennis.homeScore, 1);
   });
 
-  it("rejects a pair where only one team agrees", () => {
+  it("never confirms a pair where only one team agrees", () => {
     // "Manchester United" against "Newcastle United" shares a word and
     // scores exactly 0.5 — the near-miss MIN_TEAM_SCORE exists to reject.
     assert.equal(teamSimilarity("Manchester United", "Newcastle United"), 0.5);
-    assert.equal(scorePair(ours(), theirs({ awayTeam: "Newcastle United" })), null);
+    // With the clocks agreeing it is a WEAK pair: proposed for review
+    // (the other side, Everton, is certain), never as a confirmation.
+    const scored = scorePair(ours(), theirs({ awayTeam: "Newcastle United" }));
+    assert.ok(scored);
+    assert.equal(scored.weak, true);
+    const [p] = proposeMappings([ours()], [theirs({ awayTeam: "Newcastle United" })]);
+    assert.equal(p?.autoConfirm, false);
+    // Twelve minutes apart there is no anchor left and it is nothing.
+    assert.equal(
+      scorePair(
+        ours(),
+        theirs({ awayTeam: "Newcastle United", startsAt: "2026-09-06T13:12:00.000Z" }),
+      ),
+      null,
+    );
   });
 });
 
@@ -321,5 +336,152 @@ describe("proposeMappings", () => {
       ps.map((p) => `${p.matchId}:${p.srMatchId}`).sort().join(",");
     assert.equal(key(forward), key(reversed));
     assert.equal(key(forward), "1:10,2:11");
+  });
+});
+
+describe("alternate name forms", () => {
+  // Real pair from sport_matches/1/2026-09-06: an Eredivisie fixture that
+  // was live with no tracker because Sportradar's short name for FC
+  // Twente is its city and the matcher only ever saw that one.
+  const kickoff = "2026-09-06T10:15:00.000Z";
+  const groningenTwente = ours({
+    homeTeam: "Groningen",
+    awayTeam: "Twente",
+    scheduledAt: kickoff,
+  });
+  const srFixture: SportradarFixture = {
+    srMatchId: 72041114,
+    srSportId: 1,
+    startsAt: kickoff,
+    homeTeam: "Groningen",
+    homeTeamAlt: "FC Groningen",
+    awayTeam: "Enschede",
+    awayTeamAlt: "FC Twente Enschede",
+    tournament: "Eredivisie",
+  };
+
+  it("scores against the longer form when the short one is a city", () => {
+    const scored = scorePair(groningenTwente, srFixture);
+    assert.ok(scored, "must at least reach the review queue");
+    assert.equal(scored.homeScore, 1);
+    assert.ok(scored.awayScore >= MIN_TEAM_SCORE, `away scored ${scored.awayScore}`);
+    assert.equal(scored.weak, false, "both sides agree, so this is an ordinary pair");
+    // And the reviewer (or the model) is shown both forms.
+    const [p] = proposeMappings([groningenTwente], [srFixture]);
+    assert.equal(p?.evidence.srAwayTeam, "Enschede");
+    assert.equal(p?.evidence.srAwayTeamAlt, "FC Twente Enschede");
+  });
+
+  it("falls back to a weak pair without the longer form", () => {
+    // "Twente" against "Enschede" alone is 0 — the shape that used to be
+    // invisible. It now rides the weak path instead.
+    const { awayTeamAlt: _dropped, ...shortOnly } = srFixture;
+    const scored = scorePair(groningenTwente, shortOnly);
+    assert.ok(scored);
+    assert.equal(scored.weak, true);
+    assert.equal(scored.awayScore, 0);
+  });
+
+  it("vetoes the side when EITHER form carries a squad qualifier", () => {
+    // The forms name the same squad, so a marker on one is real.
+    const womens = theirs({ homeTeam: "Everton", homeTeamAlt: "Everton FC Women" });
+    assert.equal(scorePair(ours(), womens), null);
+  });
+});
+
+describe("weak pairs", () => {
+  // Measured pair: Fonbet's "Henan Songshan Longmen" against Sportradar's
+  // "Henan" is 2 tokens of 4 (0.5), under the floor, while the away side
+  // and the kickoff agree exactly.
+  const henan = ours({ homeTeam: "Henan Songshan Longmen", awayTeam: "Chengdu Rongcheng" });
+  const srHenan = theirs({ homeTeam: "Henan", awayTeam: "Chengdu Rongcheng" });
+
+  it("proposes a one-sided pair for review, never for auto-confirmation", () => {
+    const scored = scorePair(henan, srHenan);
+    assert.ok(scored);
+    assert.equal(scored.weak, true);
+    assert.ok(scored.homeScore < MIN_TEAM_SCORE);
+    assert.equal(scored.awayScore, 1);
+    const [p] = proposeMappings([henan], [srHenan]);
+    assert.ok(p);
+    assert.equal(p.autoConfirm, false);
+    assert.equal(p.evidence.weak, true);
+  });
+
+  it("needs one side to be certain, not merely plausible", () => {
+    // "Independiente" against "Independiente Medellin" is 0.67 — a real
+    // partial, but not an anchor for a pair whose other side is nothing.
+    const scored = scorePair(
+      ours({ homeTeam: "Independiente", awayTeam: "Racing Club" }),
+      theirs({ homeTeam: "Independiente Medellin", awayTeam: "Junior" }),
+    );
+    assert.equal(scored, null);
+  });
+
+  it("needs the clocks to agree within the auto window", () => {
+    const late = theirs({
+      homeTeam: "Henan",
+      awayTeam: "Chengdu Rongcheng",
+      startsAt: "2026-09-06T13:12:00.000Z",
+    });
+    assert.equal(scorePair(henan, late), null);
+    // Whereas a two-sided pair still clears the wider gate at 12 minutes.
+    assert.ok(scorePair(ours(), theirs({ startsAt: "2026-09-06T13:12:00.000Z" })));
+  });
+
+  it("never crosses a home/away swap", () => {
+    // Measured junk: Fonbet's season head-to-head "Barcelona vs Real
+    // Madrid" borrowing the kickoff of Valencia vs Barcelona.
+    const scored = scorePair(
+      ours({ homeTeam: "Barcelona", awayTeam: "Real Madrid" }),
+      theirs({ homeTeam: "Valencia", awayTeam: "Barcelona" }),
+    );
+    assert.equal(scored, null);
+  });
+
+  it("still honours the squad veto", () => {
+    // Chelsea's men against Chelsea's women is a vetoed side, not a side
+    // that scored nothing; the exact kickoff does not rescue it.
+    const scored = scorePair(
+      ours({ homeTeam: "Chelsea", awayTeam: "Arsenal" }),
+      theirs({ homeTeam: "Chelsea", awayTeam: "Aston Villa", tournament: "Super League, Women" }),
+    );
+    assert.equal(scored, null);
+  });
+
+  it("yields a fixture to a strong pair whatever the two scored", () => {
+    // The strong pair's clocks are 19 minutes apart and its names are
+    // partials, so it scores UNDER the weak pair, which has a perfect
+    // anchor and an exact kickoff. The fixture must still go to the
+    // strong pair.
+    const fixture = theirs({
+      srMatchId: 77,
+      homeTeam: "Bayern Munich",
+      awayTeam: "Borussia Dortmund",
+    });
+    const strong = ours({
+      matchId: "strong",
+      homeTeam: "Bayern",
+      awayTeam: "Dortmund",
+      scheduledAt: "2026-09-06T13:19:00.000Z",
+    });
+    const weak = ours({ matchId: "weak", homeTeam: "Bayern Munich", awayTeam: "Hoffenheim" });
+    const strongScore = scorePair(strong, fixture);
+    const weakScore = scorePair(weak, fixture);
+    assert.ok(strongScore && !strongScore.weak);
+    assert.ok(weakScore && weakScore.weak);
+    assert.ok(weakScore.score > strongScore.score, "the test needs the weak pair to out-score");
+    const proposals = proposeMappings([weak, strong], [fixture]);
+    assert.deepEqual(
+      proposals.map((p) => p.matchId),
+      ["strong"],
+    );
+  });
+
+  it("does not re-propose the fixture the adjudicator turned down", () => {
+    const rejected = ours({ rejectedSrMatchId: theirs().srMatchId });
+    assert.equal(scorePair(rejected, theirs()), null);
+    // Any OTHER fixture is still fair game for the same match.
+    assert.ok(scorePair(rejected, theirs({ srMatchId: theirs().srMatchId + 1 })));
   });
 });

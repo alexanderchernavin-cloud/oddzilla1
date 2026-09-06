@@ -64,7 +64,25 @@ describe("toFixture", () => {
       startsAt: "2026-09-06T13:00:00.000Z",
       homeTeam: "Everton",
       awayTeam: "Manchester United",
+      // The longer form rides along only where it differs: Manchester
+      // United's does not, so no `awayTeamAlt`.
+      homeTeamAlt: "Everton FC",
     });
+  });
+
+  it("carries the longer name form because the short one can be a city", () => {
+    // Shape copied from sport_matches/1/2026-09-06: Sportradar's short
+    // name for FC Twente is its city, and Fonbet's is "Twente".
+    const m = gismoMatch({
+      teams: {
+        home: { _doc: "team", name: "Groningen", mediumname: "FC Groningen" },
+        away: { _doc: "team", name: "Enschede", mediumname: "FC Twente Enschede" },
+      },
+    });
+    const f = toFixture(m);
+    assert.equal(f?.awayTeam, "Enschede");
+    assert.equal(f?.awayTeamAlt, "FC Twente Enschede");
+    assert.equal(f?.homeTeamAlt, "FC Groningen");
   });
 
   it("falls back to mediumname when name is absent", () => {
@@ -74,7 +92,10 @@ describe("toFixture", () => {
         away: { name: "Manchester United" },
       },
     });
-    assert.equal(toFixture(m)?.homeTeam, "Everton FC");
+    const f = toFixture(m);
+    assert.equal(f?.homeTeam, "Everton FC");
+    // Same string twice is not an alternative.
+    assert.equal(f?.homeTeamAlt, undefined);
   });
 
   it("drops a to-be-announced kickoff", () => {

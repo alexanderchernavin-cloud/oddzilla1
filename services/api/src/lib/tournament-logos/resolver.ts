@@ -26,7 +26,12 @@
 import type { FastifyInstance } from "fastify";
 import { and, asc, eq, isNull, lt, sql } from "drizzle-orm";
 import { categories, sports, tournaments } from "@oddzilla/db";
-import { createZagiClient, zagiConfigFromEnv, type ZagiClient } from "../zagi/client.js";
+import {
+  ZagiEmptyReplyError,
+  createZagiClient,
+  zagiConfigFromEnv,
+  type ZagiClient,
+} from "../zagi/client.js";
 import {
   createWikidataClient,
   pickCandidate,
@@ -52,6 +57,8 @@ interface SourcedLogo {
 
 export const MAX_LOGO_ATTEMPTS = 3;
 const BATCH_SIZE = 25;
+/** Smallest batch worth halving — see `nameBatch`. Keeps every call ≥ 4. */
+const MIN_SPLIT = 8;
 const MAX_LOGO_BYTES = 1024 * 1024;
 
 const ALLOWED_MIME = new Map<string, string>([
@@ -298,8 +305,7 @@ export async function resolveTournamentLogos(
 
     let names: Map<number, CanonicalName>;
     try {
-      const reply = await zagi.complete({ system: SYSTEM_PROMPT, user: renderBatch(batch) });
-      names = parseCanonicalNames(reply.text, batch.length);
+      names = await nameBatch(zagi, batch);
     } catch (err) {
       // Our problem, not the row's — burn no attempt and try next sweep.
       result.errors.push((err as Error).message);
@@ -535,6 +541,50 @@ export function renderPair(
     `   feed:  ${item.name}\n` +
     `   entry: ${candidateLabel}${candidateDescription ? ` — ${candidateDescription}` : ""}`
   );
+}
+
+/**
+ * Ask ZAGI for one batch of canonical names, halving the batch when the
+ * model runs out of budget before it emits anything.
+ *
+ * The reasoning pass scales with the number of items, so a batch of 25
+ * obscure competitions can exhaust the ceiling on reasoning alone and
+ * return an empty string. That is not a per-row failure — it loses the
+ * WHOLE batch, and since a batch failure deliberately burns no attempt,
+ * the same 25 rows come back next sweep and fail the same way. Three
+ * batches went that way in one production sweep, which is up to 75 rows
+ * that could never make progress.
+ *
+ * Splitting is the fix rather than a bigger ceiling because it works
+ * whatever the gateway's own cap turns out to be: fewer items means less
+ * to reason about. Only batches of `MIN_SPLIT` or more are halved, which
+ * is what actually holds the floor at 4 items per call — guarding on the
+ * PARENT being over 4 does not, since a 7 then splits into 4 and 3. A
+ * genuinely dead endpoint therefore costs a bounded handful of calls
+ * rather than a cascade down to singles.
+ */
+export async function nameBatch(
+  zagi: Pick<ZagiClient, "complete">,
+  batch: readonly LogoItem[],
+  offset = 0,
+): Promise<Map<number, CanonicalName>> {
+  try {
+    const reply = await zagi.complete({ system: SYSTEM_PROMPT, user: renderBatch(batch) });
+    const parsed = parseCanonicalNames(reply.text, batch.length);
+    if (offset === 0) return parsed;
+    // Indices are batch-relative; re-base them onto the parent batch.
+    const shifted = new Map<number, CanonicalName>();
+    for (const [i, v] of parsed) shifted.set(i + offset, v);
+    return shifted;
+  } catch (err) {
+    if (!(err instanceof ZagiEmptyReplyError) || batch.length < MIN_SPLIT) throw err;
+    const mid = Math.ceil(batch.length / 2);
+    const [a, b] = await Promise.all([
+      nameBatch(zagi, batch.slice(0, mid), offset),
+      nameBatch(zagi, batch.slice(mid), offset + mid),
+    ]);
+    return new Map([...a, ...b]);
+  }
 }
 
 async function verifyPair(

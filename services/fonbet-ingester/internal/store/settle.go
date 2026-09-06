@@ -17,7 +17,12 @@ type PendingMatch struct {
 	AwayTeam  string
 	StartTime int64 // unix seconds
 	SegmentID int   // Fonbet competition id (from the tournament URN)
-	Markets   []PendingMarket
+	// SameSlot is how many fixtures of ours sit in the same tournament at
+	// the same kick-off, this one included. 1 means the (competition,
+	// start time) key identifies the fixture unambiguously on our side —
+	// see resultIndex.find for the one fallback that relies on it.
+	SameSlot int
+	Markets  []PendingMarket
 }
 
 type PendingMarket struct {
@@ -36,7 +41,8 @@ type PendingMarket struct {
 func LoadPendingSettlement(ctx context.Context, db pgxRunner, days int) ([]PendingMatch, error) {
 	rows, err := db.Query(ctx, `
 SELECT ma.id, ma.provider_urn, ma.home_team, ma.away_team,
-       COALESCE(EXTRACT(EPOCH FROM ma.scheduled_at)::bigint, 0), t.provider_urn
+       COALESCE(EXTRACT(EPOCH FROM ma.scheduled_at)::bigint, 0), t.provider_urn,
+       (SELECT COUNT(*) FROM matches x WHERE x.tournament_id = ma.tournament_id AND x.scheduled_at = ma.scheduled_at)::int
   FROM matches ma
   JOIN tournaments t ON t.id = ma.tournament_id
  WHERE ma.provider_urn LIKE 'fb:match:%'
@@ -53,7 +59,7 @@ SELECT ma.id, ma.provider_urn, ma.home_team, ma.away_team,
 	for rows.Next() {
 		var m PendingMatch
 		var tURN string
-		if err := rows.Scan(&m.MatchID, &m.URN, &m.HomeTeam, &m.AwayTeam, &m.StartTime, &tURN); err != nil {
+		if err := rows.Scan(&m.MatchID, &m.URN, &m.HomeTeam, &m.AwayTeam, &m.StartTime, &tURN, &m.SameSlot); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan pending match: %w", err)
 		}

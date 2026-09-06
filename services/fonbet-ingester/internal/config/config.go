@@ -46,14 +46,12 @@ type FonbetConfig struct {
 	LogoCDN string
 	// Lang is the catalogue / event language requested from Fonbet.
 	// Sub-event labels (halves, maps, players) and every team / tournament
-	// name come back in this language. Default "en" — the storefront's
-	// default locale. Descriptions are written for `Lang` plus "en", so a
-	// non-English feed language still leaves the storefront readable.
-	//
-	// The settlement grader reads the same language (rules.go carries
-	// Russian AND English vocabularies); a third language would leave it
-	// unable to recognise periods, statistic rows or the market shapes it
-	// must refuse — see docs/FONBET.md "Settlement".
+	// name come back in this language. It is pinned to "en": the settlement
+	// grader reads the same text and carries an English vocabulary only —
+	// Load refuses anything else — see docs/FONBET.md "Settlement". Market
+	// descriptions are additionally written in the other storefront locales
+	// (descriptionLangs in main.go); that is display data and never reaches
+	// the grader.
 	Lang string
 	// ScopeMarket is the Fonbet market scope, and it is paired with the
 	// site: fon.bet answers 1600, fonbet.kz answers 1800 and 404s on 1600.
@@ -143,6 +141,16 @@ func Load() (Config, error) {
 		OddsPublisherGroup: getEnvDefault("ODDS_PUBLISHER_GROUP", "odds-publisher"),
 		CommonHosts:        splitList(getEnvDefault("FONBET_COMMON_HOSTS", "https://clientsapi-lb51.bk6bba-resources.com,https://clientsapi-lb52.bk6bba-resources.ru,https://clientsapi-vk-w.bk6bba-resources.ru")),
 	}
+	// The settlement grader reads Fonbet's own text — table names, sub-event
+	// labels, results-feed statistic rows — and carries an English vocabulary
+	// only (the Russian one that served the fonbet.kz era was removed on
+	// 2026-09-06). Any other feed language would leave it unable to
+	// recognise the shapes it must grade or refuse, so it is a startup error
+	// rather than a silent degradation.
+	if !strings.EqualFold(cfg.Fonbet.Lang, "en") {
+		return cfg, fmt.Errorf("FONBET_LANG must be \"en\" (got %q): the settlement grader understands English only", cfg.Fonbet.Lang)
+	}
+	cfg.Fonbet.Lang = "en"
 	if cfg.Fonbet.SettleInterval < 10*time.Second {
 		cfg.Fonbet.SettleInterval = 10 * time.Second
 	}

@@ -48,9 +48,15 @@ const (
 	// wideSweepEvery resyncs: after a multi-hour outage of the whole stack
 	// the three-hour pass would miss matches that closed early in the gap.
 	// Bifrost keeps settled markets on the historic match for at least two
-	// weeks (2026-09-03 probe), so 24 h is well inside what it can answer,
-	// and the pass fetches only matches our own DB still holds open.
-	wideSweepWindow   = 24 * time.Hour
+	// weeks (2026-09-03 probe), so 72 h is well inside what it can answer,
+	// and the pass fetches only matches our own DB still holds open — the
+	// cost of a wider window is list pages, not detail fetches. It was 24 h
+	// until 2026-09-06: the unplayed-map cancels (emitUnplayedMapCancels)
+	// ride this pass too, and a day was too short to reach the fixtures
+	// that had closed before the cancel path existed — 940 markets on the
+	// 09-05 matches were still waiting for a snapshot the 24 h window
+	// would never fetch again.
+	wideSweepWindow   = 72 * time.Hour
 	wideSweepEvery    = 6
 	gatePollEvery     = time.Second
 	reconnectMax      = 30 * time.Second
@@ -70,10 +76,14 @@ type Stats struct {
 	Settlements    int64     `json:"settlementsPublished"`
 	FixtureChanges int64     `json:"fixtureChangesPublished"`
 	SettledMarkets int64     `json:"settledMarketsPublished"`
-	LastPublishAt  time.Time `json:"lastPublishAt,omitempty"`
-	LastError      string    `json:"lastError,omitempty"`
-	LastErrorAt    time.Time `json:"lastErrorAt,omitempty"`
-	LastResyncAt   time.Time `json:"lastResyncAt,omitempty"`
+	// Cancellations / CancelledMarkets count the bet_cancel messages voiced
+	// for maps a CLOSED series never reached (translate.UnplayedMapCancels).
+	Cancellations    int64     `json:"cancellationsPublished"`
+	CancelledMarkets int64     `json:"cancelledMarketsPublished"`
+	LastPublishAt    time.Time `json:"lastPublishAt,omitempty"`
+	LastError        string    `json:"lastError,omitempty"`
+	LastErrorAt      time.Time `json:"lastErrorAt,omitempty"`
+	LastResyncAt     time.Time `json:"lastResyncAt,omitempty"`
 }
 
 type tracked struct {
@@ -382,13 +392,20 @@ func (r *Runner) process(ctx context.Context, m *bifrost.Match) {
 	r.emitSettlements(ctx, m, urn, settledCache, now)
 }
 
+// cancelSentinel marks, in a match's settled cache, that the unplayed-map
+// cancel pass has run for the CLOSED snapshot. It is not a real market key
+// (provider market ids are positive), so it can never collide with one.
+var cancelSentinel = bifrost.MarketKey{ProviderMarketID: -1, Specifiers: "unplayed-map-cancels"}
+
 // emitSettlements voices every CLOSED market that Bifrost has fully
-// resolved and that our own catalogue still holds open.
+// resolved and that our own catalogue still holds open, and — once the
+// match itself is CLOSED — voids the markets of any map the series never
+// reached (translate.UnplayedMapCancels). The second half exists because
+// Bifrost drops unplayed maps from its view rather than settling them, so
+// without it a BO5 that ended 3-0 kept every map-4 and map-5 market open
+// forever.
 func (r *Runner) emitSettlements(ctx context.Context, m *bifrost.Match, urn string, cache map[bifrost.MarketKey]struct{}, now int64) {
 	cands := translate.SettleCandidates(m)
-	if len(cands) == 0 {
-		return
-	}
 	pending := make([]translate.SettleCandidate, 0, len(cands))
 	r.mu.Lock()
 	for _, c := range cands {
@@ -396,8 +413,10 @@ func (r *Runner) emitSettlements(ctx context.Context, m *bifrost.Match, urn stri
 			pending = append(pending, c)
 		}
 	}
+	_, cancelsDone := cache[cancelSentinel]
 	r.mu.Unlock()
-	if len(pending) == 0 {
+	wantCancels := m.State == bifrost.MatchClosed && !cancelsDone
+	if len(pending) == 0 && !wantCancels {
 		return
 	}
 	filter, err := r.db.OpenMarkets(ctx, urn)
@@ -411,6 +430,9 @@ func (r *Runner) emitSettlements(ctx context.Context, m *bifrost.Match, urn stri
 		r.mu.Lock()
 		for _, c := range pending {
 			cache[c.Key] = struct{}{}
+		}
+		if wantCancels {
+			cache[cancelSentinel] = struct{}{}
 		}
 		r.mu.Unlock()
 		return
@@ -428,20 +450,51 @@ func (r *Runner) emitSettlements(ctx context.Context, m *bifrost.Match, urn stri
 		cache[c.Key] = struct{}{}
 	}
 	r.mu.Unlock()
-	if len(emit) == 0 {
+	if len(emit) > 0 {
+		body, err := translate.BetSettlement(m, emit, now)
+		if err != nil {
+			r.recordError(fmt.Errorf("translate settlement %s: %w", urn, err))
+		} else if r.publish(ctx, "bet_settlement", urn, body) {
+			r.bump(func(s *Stats) {
+				s.Settlements++
+				s.SettledMarkets += int64(len(emit))
+			})
+			r.log.Info().Str("urn", urn).Int("markets", len(emit)).Str("state", m.State).Msg("settlement synthesised")
+		}
+	}
+	if wantCancels {
+		r.emitUnplayedMapCancels(ctx, m, urn, filter, cache, now)
+	}
+}
+
+// emitUnplayedMapCancels voids our open markets on maps the CLOSED snapshot
+// proves were never played. A snapshot that proves nothing (MapsPlayed 0,
+// which is what the empty CLOSED live-view frame looks like) emits nothing
+// and leaves the sentinel unset, so the results sweep's historic fetch
+// gets another go; dbstate keeps the whole thing idempotent — a cancelled
+// market leaves the Open set and is never voiced twice.
+func (r *Runner) emitUnplayedMapCancels(ctx context.Context, m *bifrost.Match, urn string, filter dbstate.Filter, cache map[bifrost.MarketKey]struct{}, now int64) {
+	if translate.MapsPlayed(m) == 0 {
 		return
 	}
-	body, err := translate.BetSettlement(m, emit, now)
+	keys := translate.UnplayedMapCancels(m, filter.Open)
+	r.mu.Lock()
+	cache[cancelSentinel] = struct{}{}
+	r.mu.Unlock()
+	if len(keys) == 0 {
+		return
+	}
+	body, err := translate.BetCancel(m, keys, now)
 	if err != nil {
-		r.recordError(fmt.Errorf("translate settlement %s: %w", urn, err))
+		r.recordError(fmt.Errorf("translate cancel %s: %w", urn, err))
 		return
 	}
-	if r.publish(ctx, "bet_settlement", urn, body) {
+	if r.publish(ctx, "bet_cancel", urn, body) {
 		r.bump(func(s *Stats) {
-			s.Settlements++
-			s.SettledMarkets += int64(len(emit))
+			s.Cancellations++
+			s.CancelledMarkets += int64(len(keys))
 		})
-		r.log.Info().Str("urn", urn).Int("markets", len(emit)).Str("state", m.State).Msg("settlement synthesised")
+		r.log.Info().Str("urn", urn).Int("markets", len(keys)).Int("maps_played", translate.MapsPlayed(m)).Msg("unplayed-map cancel synthesised")
 	}
 }
 
@@ -614,8 +667,14 @@ func (r *Runner) sweepRecentResults(ctx context.Context, window time.Duration) {
 		checked++
 		m, err := r.client.FetchMatch(ctx, ref.ID)
 		if err != nil {
+			// One transient upstream error must not end the whole pass: the
+			// 72 h sweep on activation is hundreds of fetches, and the first
+			// production run of the widened window died at match 36 of ~600
+			// on a single HTTP 502, leaving everything behind it for the next
+			// wide pass half an hour later. Skip this match; it stays open in
+			// our DB and is fetched again next time.
 			r.recordError(fmt.Errorf("sweep fetch %s: %w", urn, err))
-			return
+			continue
 		}
 		if m == nil {
 			continue

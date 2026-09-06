@@ -31,9 +31,9 @@ the trust anchor for `urls.json` discovery, so the site vars move as a set.
 
 `FONBET_LANG` is **not** display-only: the settlement grader
 (`internal/settle`) reads the catalogue table names, the sub-event labels
-and the results feed in that language. `rules.go` carries English and
-Russian vocabularies; anything else leaves it unable to recognise periods,
-statistic rows, or the market shapes it must refuse.
+and the results feed in that language, and `rules.go` carries an English
+vocabulary only (the Russian one that served the `fonbet.kz` era was
+removed on 2026-09-06), so `config.Load` refuses any value but `en`.
 
 To check the configured site end to end with no database — host
 discovery, snapshot, both catalogues, logos, one day of results:
@@ -85,7 +85,15 @@ internal/
 
 1. `GET <line>/events/list?lang=en&version=0&scopeMarket=1600` (~1 MB gz).
 2. `mapper.Build` → matches with markets keyed by
-   `(provider_market_id, canonical specifiers)`.
+   `(provider_market_id, canonical specifiers)`. Markets on the operator's
+   denylist (`fonbet_market_denylist`, migration 0111 — whole tables by
+   provider_market_id, sub-event families by label prefix; reloaded every
+   minute) are dropped here, so a shape nothing can settle is never
+   created and an existing one is treated as gone by the diff in step 3.
+   The grader (`internal/settle`) also records every pending match it
+   cannot find in the results feed in `fonbet_settlement_misses`, with what
+   the document listed for the same competition, for the Unmatched results
+   tab on `/admin/unsettled`.
 3. `ingest.Apply` diffs against the in-memory previous snapshot (seeded
    from Postgres at boot): new / re-statused markets → `UpsertMarketsBulk`,
    changed outcomes → `UpsertOutcomesBulk` + `XADD odds.raw` + odds_history,

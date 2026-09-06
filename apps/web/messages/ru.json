@@ -423,7 +423,11 @@
     "copyLink": "Скопировать ссылку",
     "copied": "Скопировано",
     "matchWinner": "Победитель матча",
-    "topTournamentTitle": "Топ-турнир"
+    "topTournamentTitle": "Топ-турнир",
+    "collapseMarket": "Свернуть маркет",
+    "expandMarket": "Развернуть маркет",
+    "collapseAll": "Свернуть все",
+    "expandAll": "Развернуть все"
   },
   "bets": {
     "title": "Мои ставки",

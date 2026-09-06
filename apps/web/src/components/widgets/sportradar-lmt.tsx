@@ -17,14 +17,17 @@
 // frame ancestors). Sportradar confirmed this interim path in writing
 // (2026-09-04). When the Client ID arrives: swap `betradar` for it, get
 // oddzilla.cc whitelisted, and optionally move to the direct loader for
-// theming, odds adapters and `onSizeChange` auto-height.
+// odds adapters, a client-specific theme palette and `onSizeChange`
+// auto-height. (Following the storefront's light/dark theme does NOT
+// need it — see sportradar-theme.ts.)
 //
 // Two things about the standalone page's contract (read from its source):
 //   - widget props ride in the URL HASH, `key=value&key=value` — the query
 //     string is ignored. Values are JSON.parse'd where they parse, so
 //     `expanded=true` arrives as a boolean. `wl-` prefixed keys are
-//     widgetloader options (wl-theme, wl-language), `adapter-` prefixed keys
-//     register an odds adapter.
+//     widgetloader options (wl-theme, wl-language — the theme is how the
+//     embed follows dark mode, see sportradar-theme.ts), `adapter-`
+//     prefixed keys register an odds adapter.
 //   - it re-reads the hash on `hashchange`, so changing a prop only changes
 //     the src hash; the iframe does not reload.
 // There is no cross-origin resize message — the standalone page's only
@@ -41,6 +44,11 @@
 import { useEffect, useRef, useState } from "react";
 import { I } from "@/components/ui/icons";
 import { useTranslations } from "@/lib/i18n";
+import { useDocumentTheme, type DocumentTheme } from "@/lib/use-theme";
+import {
+  SPORTRADAR_FRAME_BACKGROUND,
+  sportradarThemeHashParts,
+} from "./sportradar-theme";
 
 interface Props {
   /** Sportradar (Betradar) match id, e.g. 72221238. */
@@ -127,7 +135,12 @@ export function buildLmtStandaloneUrl({
   client = "betradar",
   language = "en",
   expanded = true,
-}: Omit<Props, "height"> & { expanded?: boolean }): string {
+  theme,
+}: Omit<Props, "height"> & {
+  expanded?: boolean;
+  /** Storefront theme; dark selects Sportradar's transparent dark theme. */
+  theme?: DocumentTheme;
+}): string {
   const parts = [
     `matchId=${srMatchId}`,
     `sportId=${sportId}`,
@@ -157,6 +170,7 @@ export function buildLmtStandaloneUrl({
       "vlmtLightPitchView=top",
     );
   }
+  parts.push(...sportradarThemeHashParts(theme));
   return `${HOST}/${encodeURIComponent(client)}/${encodeURIComponent(language)}/standalone/match.lmtPlus#${parts.join("&")}`;
 }
 
@@ -197,7 +211,11 @@ export function SportradarLmt({ height = 620, ...rest }: Props) {
     return () => ro.disconnect();
   }, []);
 
-  const src = buildLmtStandaloneUrl({ ...rest, expanded });
+  // Follows the storefront theme. A toggle remounts the frame (the `key`
+  // on the iframe) because the loader resolves its theme once, at boot —
+  // a hash change alone would leave the old stylesheet in place.
+  const theme = useDocumentTheme();
+  const src = buildLmtStandaloneUrl({ ...rest, expanded, theme });
   // The widget carries its own collapse chevron, but it lives inside the
   // iframe and cannot tell us it was used — so WE drive the state from
   // outside, where we can also give the frame the height the new state
@@ -250,6 +268,7 @@ export function SportradarLmt({ height = 620, ...rest }: Props) {
         </span>
       </div>
       <iframe
+        key={theme}
         src={src}
         title={t("lmt.title")}
         loading="lazy"
@@ -259,13 +278,15 @@ export function SportradarLmt({ height = 620, ...rest }: Props) {
           border: "1px solid var(--border)",
           borderBottom: "none",
           borderRadius: "10px 10px 0 0",
-          // Matches the hosted page's own body, which sets no background
-          // and so paints white in both our themes (it does not follow
-          // the storefront's dark mode). With --surface-2 here, any frame
-          // height we over-estimate showed up as a tinted bar between the
-          // widget's content and the toggle below it; white makes that
-          // remainder indistinguishable from the widget itself.
-          background: "#fff",
+          // The hosted page's body is transparent, so this shows through
+          // wherever the widget paints nothing — including any frame
+          // height we over-estimate, which with --surface-2 here used to
+          // show as a tinted bar between the widget's content and the
+          // toggle below it. The token is white in light (the widget's
+          // own body colour, so the remainder is indistinguishable from
+          // it) and --surface-2 in dark, where the transparent theme
+          // paints no base of its own and this IS the widget's surface.
+          background: SPORTRADAR_FRAME_BACKGROUND,
           display: "block",
         }}
       />
