@@ -1314,16 +1314,23 @@ func marketAuditPayload(eventURN string, ts int64, market oddinxml.Market) map[s
 			"void_factor": o.VoidFactor,
 		})
 	}
-	return map[string]any{
-		"event_urn":         eventURN,
-		"timestamp":         ts,
-		"provider_market":  market.ID,
-		"specifiers":       market.Specifiers,
-		"status":           market.Status,
-		"void_reason":      market.VoidReasonID,
+	payload := map[string]any{
+		"event_urn":          eventURN,
+		"timestamp":          ts,
+		"provider_market":    market.ID,
+		"specifiers":         market.Specifiers,
+		"status":             market.Status,
+		"void_reason":        market.VoidReasonID,
 		"void_reason_params": market.VoidReasonParams,
-		"outcomes":         outs,
+		"outcomes":           outs,
 	}
+	// Oddin never sends extended_specifiers on a settlement; the ladder
+	// inference (ladder.go) uses the slot to record which sibling decided
+	// the line, so the audit row says where a result came from.
+	if market.ExtendedSpecifiers != "" {
+		payload["extended_specifiers"] = market.ExtendedSpecifiers
+	}
+	return payload
 }
 
 // mapOutcomeResult converts Oddin (result, void_factor) → our

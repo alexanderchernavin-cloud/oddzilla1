@@ -771,6 +771,43 @@ Redis-memory budget (256 MB total), not a buffer.
    settle/cancel rows older than 45 days are pruned by the nightly
    settlements retention (rollback rows are kept forever).
 
+### Unsettled markets on finished matches (`/admin/unsettled`)
+
+The standing measurement and plan live in
+[`docs/SETTLEMENT_COVERAGE_PLAN.md`](./SETTLEMENT_COVERAGE_PLAN.md). What
+runs on its own, and what is the operator's:
+
+- **Automatic, every reconcile tick** (`SETTLEMENT_RECONCILE_INTERVAL_SECONDS`,
+  300 s, in `services/settlement`): stranded legs healed and their tickets
+  settled; **ladder lines** the Bifrost backup dropped settled from their
+  settled siblings (`reconcile: ladder lines inferred from siblings` in the
+  log, with `skipped` reasons); matches whose whole book is terminal but
+  whose row never left not_started / live flipped to `closed`.
+- **Automatic, per CLOSED match on the backup feed** (bifrost-feed):
+  markets on maps the series never reached are voided (`unplayed-map cancel
+  synthesised` in the log; `cancelled_markets` on `/admin/feed`).
+- **Automatic, every 2 min** (fonbet-ingester grader): everything its rules
+  cover; the fixtures it cannot find in the results feed appear on the
+  **Unmatched results** tab with what the feed listed instead.
+- **Operator only:** the **Void** buttons in the per-match market
+  drill-down (one market, or every open market of the match). They publish
+  a `cancel` onto `settlement.external` and services/settlement applies it
+  through the normal apply-once path — market `-4`, every selection void,
+  any paid ticket reversed — within a second or two; each click is an
+  `admin_audit_log` row (`settlement.market_void` /
+  `settlement.match_void_open`). **Never void a market that was played and
+  merely has no result we know** — that refunds the side that won. Void
+  what provably did not happen (a postponed fixture Fonbet dropped without a
+  `status 4` results row, a shape nothing will ever grade and nobody holds).
+- **Operator only:** the **Market denylist** sub-page. Adding a table id or
+  a sub-event label prefix stops fonbet-ingester creating that shape within
+  a minute; the markets already created under the rule stay listed there,
+  open and deactivated, until a grader learns the shape or an operator voids
+  them.
+
+A market a bettor holds a ticket on shows red in the drill-down; the
+Stuck tickets tab lists the tickets themselves.
+
 ### Wallet-watcher chain reorg
 
 Rare but possible. `deposits` with `status='confirming'` rolled back off-chain:

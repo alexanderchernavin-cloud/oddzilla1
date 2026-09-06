@@ -38,6 +38,42 @@ type Options struct {
 	AllowedSports    map[int]struct{}
 	IncludeSubEvents bool
 	MaxMatches       int
+	// Deny drops markets no grader can ever settle from the data we have
+	// (fonbet_market_denylist, migration 0111). nil = deny nothing.
+	Deny *Denylist
+}
+
+// Denylist is the operator's list of market shapes to keep out of the
+// offer: whole catalogue tables by provider_market_id ("winner of point N
+// in a set", 1007800) and sub-event families by the prefix of their label
+// ("Player specials", "Special bets"). A denied market is never created;
+// one that already exists is treated as gone by the ingest diff and
+// deactivated (status 0), so it leaves the offer without being voided —
+// settling it, if that ever becomes possible, stays the operator's call.
+type Denylist struct {
+	Tables        map[int]struct{}
+	LabelPrefixes []string
+}
+
+// Denies reports whether a market of this table with this sub-event label
+// is on the list. Label matching is a case-insensitive prefix test.
+func (d *Denylist) Denies(pmid int, label string) bool {
+	if d == nil {
+		return false
+	}
+	if _, ok := d.Tables[pmid]; ok {
+		return true
+	}
+	if label == "" || len(d.LabelPrefixes) == 0 {
+		return false
+	}
+	l := strings.ToLower(strings.TrimSpace(label))
+	for _, p := range d.LabelPrefixes {
+		if p != "" && strings.HasPrefix(l, strings.ToLower(strings.TrimSpace(p))) {
+			return true
+		}
+	}
+	return false
 }
 
 // Snapshot is one decoded line.
@@ -272,6 +308,17 @@ func Build(resp *fonbet.ListResponse, idx *fonbet.Index, opt Options) *Snapshot 
 					queue = append(queue, node{ev: gc, parentVariant: base["variant"], parentLabel: label})
 				}
 				addFactors(m, idx, factors[n.ev.ID], blockedFactors[n.ev.ID], suspendAll || blockedAll[n.ev.ID], base, label)
+			}
+		}
+		// Operator denylist: shapes no grader can settle are not offered.
+		// Applied after the whole tree is built so a denied sub-event
+		// family is dropped wherever it was nested.
+		if opt.Deny != nil {
+			for key, mk := range m.Markets {
+				if opt.Deny.Denies(mk.PMID, mk.VariantLabel) {
+					delete(m.Markets, key)
+					snap.Skipped["denylisted_markets"]++
+				}
 			}
 		}
 		// A live match can legitimately carry zero priced factors for a

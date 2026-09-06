@@ -1,5 +1,6 @@
 // Grading rules: final scores → outcome results for the market shapes the
-// mapper produces. Pure functions, unit-tested in rules_test.go.
+// mapper produces. Pure functions, unit-tested in rules_test.go and
+// rules_en_test.go.
 //
 // Result encoding is the Oddin wire form services/settlement understands:
 // Result "1" won / "0" lost, VoidFactor "" (none) / "1" (void, stake back)
@@ -7,13 +8,22 @@
 //
 // Scope (deliberately conservative — a wrong settlement is real-money
 // loss, an unsettled market only delays payout):
-//   - match winner 1/2/3, double chance 1X/12/X2
+//   - match winner 1/2/3, double chance 1X/12/X2, and the plain two-way
+//     "To win the match" table (not flagged main by Fonbet, so it is
+//     recognised by shape here rather than by the catalogue flag)
+//   - both teams to score, yes / no
 //   - handicap h1/h2 and total over/under (whole, half and quarter lines,
 //     including team totals via the `side` specifier)
 //   - the same on halves / periods / sets (variant markets) and on
 //     statistic rows the results feed carries (corners, cards, aces, ...)
+//   - fight sports (MMA, boxing): winner from the finishing side, total
+//     rounds from the finishing round when that round decides the line
 //   - sports with an unambiguous main-time convention (see sportRule)
-// Everything else is left open for manual settlement.
+//
+// Everything else is left open for the operator. The grader reads Fonbet's
+// text in ENGLISH only — the feed is read from fon.bet with FONBET_LANG=en;
+// the Russian vocabulary that existed while the line came from fonbet.kz
+// was removed on 2026-09-06.
 
 package settle
 
@@ -39,17 +49,22 @@ type Outcome struct {
 // ScoreSet is everything we know about one finished match.
 type ScoreSet struct {
 	Main  fonbet.Score            // headline score (main time) + period breakdown
-	OT    *fonbet.Score           // "дополнительное время" row, when present
-	Shoot *fonbet.Score           // "серия пенальти" / "серия буллитов" row, when present
-	Stats map[string]fonbet.Score // statistic rows keyed by lower-cased name ("угловые")
+	OT    *fonbet.Score           // "extra time" row, when present
+	Shoot *fonbet.Score           // "penalty shootouts" row, when present
+	Stats map[string]fonbet.Score // statistic rows keyed by lower-cased name ("corners")
+	// Section is the results-feed section (competition) name the match was
+	// filed under, e.g. "Darts. PDC. European Tour. Czech Republic. 2nd
+	// round. 11 legs". It carries the one piece of format information the
+	// score itself does not: a darts headline is legs in a legs-format
+	// event and sets in a set-play one, and only the section says which.
+	Section string
 }
 
-// halfKind says what an English "Nth half" label means for a sport.
-// Russian spells the two apart — "тайм" is one period of a two-part game,
-// "половина" is two periods of a quarter-based one — and English uses one
-// word for both, so the sport has to decide. halfUnknown refuses to grade
-// the label rather than guess; verified against the live line
-// (2026-09-04), only the sports marked below emit it at all.
+// halfKind says what an English "Nth half" label means for a sport: one
+// period of a two-part game (football) or two periods of a quarter-based
+// one (basketball). halfUnknown refuses to grade the label rather than
+// guess; verified against the live line (2026-09-04), only the sports
+// marked below emit it at all.
 type halfKind int
 
 const (
@@ -60,7 +75,7 @@ const (
 
 // sportRule says how a sport's main-time score relates to its markets.
 type sportRule struct {
-	// setBased: headline counts sets; handicaps / totals without "сет" in
+	// setBased: headline counts sets; handicaps / totals without "set" in
 	// the table name are on games / points = sum of the period scores.
 	setBased bool
 	// otIncluded: two-way markets (no draw) include overtime — add the OT
@@ -69,8 +84,13 @@ type sportRule struct {
 	// half is what an English "Nth half" resolves to. Left at halfUnknown
 	// for sports that play neither shape (hockey periods, 3x3 basketball).
 	half halfKind
+	// fight: the results feed scores a bout as "<round>:0" / "0:<round>" —
+	// the winner's side carries the round the fight ended in (the scheduled
+	// distance when it went to the cards). See gradeFight.
+	fight bool
 }
 
+// Keys are Fonbet root sport ids (sports.provider_urn = fb:sport:<id>).
 var sportRules = map[int]sportRule{
 	1:     {half: halfIsPeriod},                       // football — headline is regular time
 	1434:  {half: halfIsPeriod},                       // futsal
@@ -88,34 +108,35 @@ var sportRules = map[int]sportRule{
 	9:     {setBased: true},                           // volleyball
 	11630: {setBased: true},                           // badminton
 	11624: {setBased: true},                           // beach volleyball
+
+	// Added 2026-09-06 as the operator's temporary rules for the sports the
+	// grader refused wholesale (3 177 open markets on the 09-05 fixtures).
+	// Each is the industry-standard convention for the shapes Fonbet
+	// actually quotes on them — match result, double chance, handicap,
+	// total, team totals, and the same per quarter / half / period / set.
+	// The results feed shapes were read off the 09-04 and 09-05 documents.
+	11638: {half: halfIsTwoPeriods}, // australian football — "141:88 (42-16 26-22 41-25 32-25)": four quarters, regular time; "1st half" is quarters 1+2 (bet365 / Pinnacle: extra time excluded unless stated)
+	10:    {half: halfIsPeriod},     // bandy — "4:4 (0-2 4-2)": two halves, regular time, football convention
+	11625: {},                       // beach soccer — "3:4 (2-1 0-1 1-2)": three periods, headline is regular time; the shootout is its own row and only breaks two-way ties
+	17591: {setBased: true},         // padel — "0:2 (3-6 4-6)": sets with games, tennis convention (totals / handicaps are games)
+	37145: {fight: true},            // martial arts (MMA) — "2:0" = home won in round 2, "0:3" = away in round 3
+	1436:  {fight: true},            // boxing — same encoding; "0:12" is a 12-round decision for the away corner
+	11632: {},                       // darts — "2:6" is legs in a legs-format event; Grade refuses set-play sections
 }
 
 // unsafeTableWords: table names that settle on something the headline
-// score does not carry unambiguously.
-// Matched as whole words (Cyrillic-aware tokenisation) so "тотал" does
-// not trip on "от"; prefixes cover inflections ("дополнительное",
-// "точный", "буллитов", and "сери" for "серия" / "серии" — it was a
-// whole word until 2026-09-04, which left the inflected playoff-series
-// markets "Фора серии" / "Тотал серии" / "Победа в серии"
-// gradable off a single match's score).
-//
-// BOTH languages are listed because the guard reads whatever catalogue
-// FONBET_LANG asked for. With only the Russian words an English catalogue
-// left "Total missed penalties" and "Team total missed penalties" looking
-// like ordinary over/under markets, and they would have been graded off
-// the goal score. Checked against the live catalogue (2026-09-04): the
-// English words flag every gradable-by-shape table the Russian ones do.
+// score does not carry unambiguously (overtime results, odd / even,
+// correct score, penalty counts, playoff-series markets, minute markets).
+// Matched as whole words; prefixes cover inflections ("overtime" /
+// "overtimes", "penalty" / "penalties", "minute" / "minutes"). Checked
+// against the live English catalogue (2026-09-04): these flag every
+// gradable-by-shape table that must not be graded off the goal score.
 var unsafeTableWords = []string{
-	"от", "пенальти", "доп", "чет", "нечет",
 	"ot", "odd", "even", "exact", "correct", "shootout", "shootouts", "series",
 }
 var unsafePrefixWords = []string{
-	"дополнит", "точн", "минут", "буллит", "овертайм", "сери",
 	"overtim", "penalt", "minute",
 }
-
-// periodRe matches a Russian period prefix ("1-й тайм", "2-я половина").
-var periodRe = regexp.MustCompile(`^(\d+)-(?:ый|ой|ая|й|я|е)\s+(тайм|период|сет|четверть|половина|иннинг|партия|карта)(?:\s+|$)`)
 
 // English puts the period marker at either end of the label — "1st half
 // corners" but "Yellow cards — 1st half" — so both ends are tried. The
@@ -132,7 +153,7 @@ var (
 // labelTarget describes which score a sub-event label points at.
 type labelTarget struct {
 	period int // 1-based period, 0 = whole match
-	half   int // 1 or 2 when the label says "половина" (two periods each)
+	half   int // 1 or 2 for a quarter-style half (two periods each)
 	// ambiguousHalf carries an English "Nth half" until resolveHalf knows
 	// the sport — see halfKind.
 	ambiguousHalf int
@@ -142,27 +163,9 @@ type labelTarget struct {
 func parseLabel(label string) labelTarget {
 	l := strings.ToLower(strings.TrimSpace(label))
 	var t labelTarget
-	if !matchRussianPeriod(&t, &l) {
-		matchEnglishPeriod(&t, &l)
-	}
+	matchEnglishPeriod(&t, &l)
 	t.stat = strings.TrimSpace(strings.Trim(l, "—–- "))
 	return t
-}
-
-func matchRussianPeriod(t *labelTarget, l *string) bool {
-	m := periodRe.FindStringSubmatch(*l)
-	if m == nil {
-		return false
-	}
-	n, _ := strconv.Atoi(m[1])
-	switch m[2] {
-	case "половина":
-		t.half = n
-	default:
-		t.period = n
-	}
-	*l = strings.TrimSpace((*l)[len(m[0]):])
-	return true
 }
 
 // matchEnglishPeriod strips an English period marker from either end of
@@ -170,8 +173,7 @@ func matchRussianPeriod(t *labelTarget, l *string) bool {
 // in the results feed before it grades anything — that is what keeps
 // aggregate specials out of scope: "8 matches 1st half" and "Red card in
 // the 1st half" both parse here, then fail the statistic lookup in
-// scoreFor and stay open for manual settlement, exactly as they do in
-// Russian.
+// scoreFor and stay open for the operator.
 func matchEnglishPeriod(t *labelTarget, l *string) bool {
 	var rest string
 	m := periodEnPrefixRe.FindStringSubmatch(*l)
@@ -248,7 +250,7 @@ func scoreFor(ss ScoreSet, t labelTarget, sport int, table *fonbet.TableMeta, tw
 		return base.Home, base.Away, false, true
 	}
 	name := strings.ToLower(table.Name)
-	if rule.setBased && !table.IsMatchWinner && !strings.Contains(name, "сет") && !strings.Contains(name, "set") {
+	if rule.setBased && !table.IsMatchWinner && !strings.Contains(name, "set") {
 		// games / points line: sum of the set scores
 		if len(base.Periods) == 0 {
 			return 0, 0, false, false
@@ -288,6 +290,18 @@ func tableUnsafe(table *fonbet.TableMeta) bool {
 	return false
 }
 
+// dartsSport is Fonbet's darts root id; its headline needs the format guard.
+const dartsSport = 11632
+
+// dartsLegsFormat reports whether a darts section name says the event is
+// played to legs ("... 2nd round. 11 legs"). Fonbet's line quotes one
+// generic Handicap / Total per event and the results headline is in the
+// unit of the format — legs on the tour, sets at the World Championship —
+// so a headline is only safe to grade when the section says legs.
+func dartsLegsFormat(section string) bool {
+	return strings.Contains(strings.ToLower(section), "legs")
+}
+
 // Market is the slice of a stored market the grader needs.
 type Market struct {
 	PMID       int
@@ -313,6 +327,9 @@ func Grade(mk Market, idx *fonbet.Index, label string, sport int, ss ScoreSet) (
 	if tableUnsafe(table) {
 		return nil, false, "table needs manual settlement"
 	}
+	if sport == dartsSport && !dartsLegsFormat(ss.Section) {
+		return nil, false, "darts set-play format"
+	}
 	target := labelTarget{}
 	if label != "" {
 		var ok bool
@@ -329,11 +346,28 @@ func Grade(mk Market, idx *fonbet.Index, label string, sport int, ss ScoreSet) (
 		// sub-event winner markets carry factor ids; look for an X label
 		for _, id := range mk.OutcomeIDs {
 			if f, err := strconv.Atoi(id); err == nil {
-				if fm := idx.Factors[f]; fm != nil && (fm.Label == "X" || fm.Label == "Х") {
+				if fm := idx.Factors[f]; fm != nil && fm.Label == "X" {
 					hasDraw = true
 				}
 			}
 		}
+	}
+	isWinner := table.IsMatchWinner || twoWayWinner(mk, idx, table)
+
+	// Fight sports score the bout, not a game: the whole-match shapes read
+	// the finishing side and round. Statistic rows (knockdowns) and any
+	// sub-event fall through to the ordinary arithmetic below.
+	if rule := sportRules[sport]; rule.fight && target.stat == "" && target.period == 0 && target.half == 0 {
+		return gradeFight(mk, idx, table, isDC, isWinner, hasDraw, ss)
+	}
+
+	if yes, no, ok := bothTeamsToScore(mk, idx); ok {
+		h, a, _, ok := scoreFor(ss, target, sport, table, false)
+		if !ok {
+			return nil, false, "no score"
+		}
+		both := h > 0 && a > 0
+		return sortOutcomes([]Outcome{{ID: yes, Result: boolResult(both)}, {ID: no, Result: boolResult(!both)}}), true, ""
 	}
 
 	switch {
@@ -354,11 +388,11 @@ func Grade(mk Market, idx *fonbet.Index, label string, sport int, ss ScoreSet) (
 			}
 			var won bool
 			switch fm.Label {
-			case "1X", "1Х":
+			case "1X":
 				won = h >= a
 			case "12":
 				won = h != a
-			case "X2", "Х2":
+			case "X2":
 				won = a >= h
 			default:
 				return nil, false, "unknown dc label " + fm.Label
@@ -367,7 +401,7 @@ func Grade(mk Market, idx *fonbet.Index, label string, sport int, ss ScoreSet) (
 		}
 		return sortOutcomes(outs), true, ""
 
-	case table.IsMatchWinner:
+	case isWinner:
 		h, a, otApplied, ok := scoreFor(ss, target, sport, table, !hasDraw)
 		if !ok {
 			return nil, false, "no score"
@@ -437,6 +471,147 @@ func Grade(mk Market, idx *fonbet.Index, label string, sport int, ss ScoreSet) (
 	return nil, false, "unsupported market shape"
 }
 
+// bothTeamsToScore recognises Fonbet's "Both teams to score" table (2800,
+// main and per half). The table has no name of its own — its caption is
+// only the sub-event prefix — so the shape is read off the two factors,
+// whose labels the catalogue renders as "Both teams to score Yes" / "...
+// No". Returns the yes and no outcome ids.
+func bothTeamsToScore(mk Market, idx *fonbet.Index) (yes, no string, ok bool) {
+	if len(mk.OutcomeIDs) != 2 {
+		return "", "", false
+	}
+	for _, id := range mk.OutcomeIDs {
+		f, err := strconv.Atoi(id)
+		if err != nil {
+			return "", "", false
+		}
+		fm := idx.Factors[f]
+		if fm == nil {
+			return "", "", false
+		}
+		l := strings.ToLower(strings.TrimSpace(fm.Label))
+		if !strings.Contains(l, "both teams to score") {
+			return "", "", false
+		}
+		switch {
+		case strings.HasSuffix(l, " yes"):
+			yes = id
+		case strings.HasSuffix(l, " no"):
+			no = id
+		default:
+			return "", "", false
+		}
+	}
+	return yes, no, yes != "" && no != ""
+}
+
+// twoWayWinner recognises a plain 1 / 2 winner table that Fonbet does not
+// flag as main — "To win the match" (491) and its overtime variants. The
+// catalogue's IsMatchWinner requires isMain because that flag also drives
+// the storefront's 1/2/3 outcome ids, so it cannot be widened without
+// changing market identity; the grader reads the shape instead: one row,
+// no line, exactly two outcomes whose factor labels are "1" and "2".
+func twoWayWinner(mk Market, idx *fonbet.Index, table *fonbet.TableMeta) bool {
+	if table.IsMatchWinner || table.Param != fonbet.ParamNone || len(table.Rows) != 1 || len(mk.OutcomeIDs) != 2 {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, id := range mk.OutcomeIDs {
+		side := winnerSide(id, idx)
+		if side != "1" && side != "2" {
+			return false
+		}
+		seen[side] = true
+	}
+	return seen["1"] && seen["2"]
+}
+
+// gradeFight settles the whole-bout shapes of MMA and boxing off Fonbet's
+// "<round>:0" / "0:<round>" headline: the winner is the non-zero side and
+// the number is the round the fight ended in (the scheduled distance for a
+// decision). Standard rules (bet365 / Pinnacle fight markets):
+//
+//   - winner / double chance: the finishing side; a bout with no winner
+//     recorded (draw, no contest, "0:0") is refused — the feed does not
+//     say which, and only one of them is a void
+//   - total rounds: "over N.5" means the fight passed the half-way mark of
+//     round N+1, so a finish in round N+2 or later is over and a finish in
+//     round N or earlier is under; a finish IN round N+1 needs the clock,
+//     which the feed does not carry, and is refused. A whole-number line
+//     is read the same way (a finish in round N is under, a finish in
+//     round N+1 or later is over, the distance being exactly N is a push
+//     the feed cannot distinguish from a finish in round N — refused)
+//   - handicaps (rounds or points) are refused: the feed has no scorecards
+func gradeFight(mk Market, idx *fonbet.Index, table *fonbet.TableMeta, isDC, isWinner, hasDraw bool, ss ScoreSet) ([]Outcome, bool, string) {
+	h, a := ss.Main.Home, ss.Main.Away
+	switch {
+	case isDC || isWinner:
+		if h == a {
+			return nil, false, "fight result undecided"
+		}
+		homeWon := h > a
+		var outs []Outcome
+		for _, id := range mk.OutcomeIDs {
+			side := winnerSide(id, idx)
+			if side == "" {
+				return nil, false, "unknown winner outcome " + id
+			}
+			var won bool
+			switch side {
+			case "1", "1X":
+				won = homeWon
+			case "2", "X2":
+				won = !homeWon
+			case "12":
+				won = true
+			case "X":
+				won = false
+			}
+			outs = append(outs, Outcome{ID: id, Result: boolResult(won)})
+		}
+		return sortOutcomes(outs), true, ""
+
+	case table.Param == fonbet.ParamThreshold && len(mk.OutcomeIDs) == 2 && mk.Specs["side"] == "":
+		line, err := strconv.ParseFloat(mk.Specs["threshold"], 64)
+		if err != nil {
+			return nil, false, "bad total line"
+		}
+		if h == a {
+			return nil, false, "fight result undecided"
+		}
+		round := h
+		if a > h {
+			round = a
+		}
+		deciding := int(math.Ceil(line))
+		var over, under graded
+		switch {
+		case round > deciding:
+			over, under = gWon, gLost
+		case round < deciding:
+			over, under = gLost, gWon
+		default:
+			return nil, false, "fight ended in the deciding round"
+		}
+		var outs []Outcome
+		for _, id := range mk.OutcomeIDs {
+			switch id {
+			case "over":
+				outs = append(outs, Outcome{ID: id, Result: over.res, VoidFactor: over.vf})
+			case "under":
+				outs = append(outs, Outcome{ID: id, Result: under.res, VoidFactor: under.vf})
+			default:
+				return nil, false, "unsupported market shape"
+			}
+		}
+		return sortOutcomes(outs), true, ""
+
+	case table.Param == fonbet.ParamHandicap:
+		return nil, false, "fight handicap"
+	}
+	return nil, false, "unsupported market shape"
+}
+
 // breakTie resolves a two-way market tied after main time using the OT
 // and shootout rows when the feed has them. otApplied says scoreFor
 // already folded the OT row in (otIncluded sports): adding it again would
@@ -468,14 +643,8 @@ func winnerSide(id string, idx *fonbet.Index) string {
 	if f, err := strconv.Atoi(id); err == nil {
 		if fm := idx.Factors[f]; fm != nil {
 			switch fm.Label {
-			case "1", "2", "12":
+			case "1", "2", "12", "X", "1X", "X2":
 				return fm.Label
-			case "X", "Х":
-				return "X"
-			case "1X", "1Х":
-				return "1X"
-			case "X2", "Х2":
-				return "X2"
 			}
 		}
 	}

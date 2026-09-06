@@ -127,8 +127,17 @@ export default async function UnsettledPage({
         Matches that have finished while their markets never went terminal, and
         the tickets stuck behind them. A market only settles when Oddin sends a{" "}
         <code className="font-mono">bet_settlement</code> or the Fonbet results
-        grader covers it — anything neither reached stays here indefinitely.
-        Read-only: nothing on this page moves money.
+        grader covers it — anything neither reached stays here until a grader
+        learns the shape or an operator voids it. The <strong>Void</strong>{" "}
+        buttons in the market drill-down are the only thing on this page that
+        moves money, and each one is audit-logged.
+      </p>
+      <p className="mt-2 text-xs text-[var(--color-fg-muted)]">
+        <a href="/admin/unsettled/denylist" className="underline">
+          Market denylist
+        </a>{" "}
+        — the Fonbet shapes that are no longer offered because nothing can
+        settle them, with the open markets still under each rule.
       </p>
 
       <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
