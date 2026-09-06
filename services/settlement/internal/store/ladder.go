@@ -41,7 +41,11 @@ type OpenLadderLine struct {
 	SpecifiersJSON   string // the market's specifiers_json, verbatim
 	LineKey          string // "threshold" or "handicap"
 	OutcomeIDs       string // comma-joined outcome ids of the open market
-	Siblings         []LadderSibling
+	// OutcomeResults is non-empty when the OPEN market's outcomes already
+	// carry results — a settle / cancel / rollback_cancel sequence that
+	// left the row non-terminal. Not a ladder problem; skipped.
+	OutcomeResults string
+	Siblings       []LadderSibling
 }
 
 // OpenLadderLinesWithSettledSiblings lists the open ladder lines on Oddin
@@ -68,6 +72,8 @@ WITH open_lines AS (
 SELECT o.id, o.provider_urn, o.provider_market_id, o.specifiers_json::text, o.line_key,
        COALESCE((SELECT string_agg(mo.outcome_id, ',' ORDER BY mo.outcome_id)
                    FROM market_outcomes mo WHERE mo.market_id = o.id), ''),
+       COALESCE((SELECT string_agg(mo.outcome_id || ':' || mo.result::text, ',' ORDER BY mo.outcome_id)
+                   FROM market_outcomes mo WHERE mo.market_id = o.id AND mo.result IS NOT NULL), ''),
        s.specifiers_json ->> o.line_key,
        COALESCE((SELECT string_agg(mo.outcome_id || ':' || mo.result::text || ':' || COALESCE(mo.void_factor::text, ''), ',' ORDER BY mo.outcome_id)
                    FROM market_outcomes mo WHERE mo.market_id = s.id AND mo.result IS NOT NULL), '')
@@ -93,14 +99,15 @@ SELECT o.id, o.provider_urn, o.provider_market_id, o.specifiers_json::text, o.li
 			specJSON string
 			lineKey  string
 			outIDs   string
+			outRes   string
 			sibLine  *string
 			sibRes   string
 		)
-		if err := rows.Scan(&id, &urn, &pmid, &specJSON, &lineKey, &outIDs, &sibLine, &sibRes); err != nil {
+		if err := rows.Scan(&id, &urn, &pmid, &specJSON, &lineKey, &outIDs, &outRes, &sibLine, &sibRes); err != nil {
 			return nil, fmt.Errorf("scan ladder line: %w", err)
 		}
 		if cur == nil || cur.MarketID != id {
-			out = append(out, OpenLadderLine{MarketID: id, EventURN: urn, ProviderMarketID: pmid, SpecifiersJSON: specJSON, LineKey: lineKey, OutcomeIDs: outIDs})
+			out = append(out, OpenLadderLine{MarketID: id, EventURN: urn, ProviderMarketID: pmid, SpecifiersJSON: specJSON, LineKey: lineKey, OutcomeIDs: outIDs, OutcomeResults: outRes})
 			cur = &out[len(out)-1]
 		}
 		if sibLine != nil && sibRes != "" {

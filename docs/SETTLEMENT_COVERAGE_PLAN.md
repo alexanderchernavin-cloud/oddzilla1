@@ -135,7 +135,7 @@ rows of the total):
 | F4 | **Winner of game N in set K** (tables 1004500 / 1004551, tennis) — needs per-game data | 924 | 7% | **denylisted** (3a) |
 | F5 | **Statistic sub-events** — rugby `tries` 250, ice hockey `2nd period shots on goal` 107, football `hit the woodwork` 103 (spelling gap between line and results), baseball `5 innings` 90, hockey `overtime` 30, substitutions, corners, player specials, "Special bets" | 1 423 | 10% | player specials + "Special bets" denylisted; the rest is phase 2d |
 | F6 | **Two-way "To win the match"** (table 1000491 + `overtime:` / `extra time:` variants), mostly ice hockey — `IsMatchWinner` requires `IsMain` and Fonbet flags only the 1X2 table | 295 | 2% | shipped (2b) |
-| F7 | **`no_result`** — the match is not in the results feed under a name the matcher accepts | ~210 | 1.5% | visible now (2e); matcher stays conservative |
+| F7 | **`no_result`** — the match is not in the results feed under a name the matcher accepts. Across the 7-day window the misses table showed the real class: **606 fixtures created while the line was Russian, whose Cyrillic team names the English results feed can never spell** (33 630 open markets), plus 251 Latin-named fixtures, 199 of them with no results row at their kick-off at all (postponed / absent) | ~210 on 09-05 | 1.5% | visible (2e); Cyrillic-only fallback on the (competition, start time) key when unambiguous on both sides — resolves 290 fixtures / 19 398 markets, every sampled pair correct; the matcher stays conservative for everything else |
 | F8 | **Unsafe tables** (odd/even, correct score, OT, penalties, series) — refused by `tableUnsafe` on purpose | 33 | 0.2% | operator button |
 | F9 | **Lifecycle.** A prematch event that vanishes from the line has its markets set to `0` and is dropped from memory ([`ingest.go`](../services/fonbet-ingester/internal/ingest/ingest.go)); the match row is never touched. The grader tries `not_started` matches older than 3 h, but for 289 of the 383 the results feed has no finished row (postponed / withdrawn) | 383 fixtures / 1 495 | — | lifecycle sweep closes the fully-terminal ones (4b); the rest surface in Unmatched results and are the operator's call — **never voided automatically, because odds were offered** |
 
@@ -176,15 +176,25 @@ work.
   results sweep; an empty CLOSED frame proves nothing and emits nothing.
   Stats `cancellations` / `cancelled_markets` on `/admin/feed`.
 - **1c. Dropped ladder lines → inference from settled siblings. Shipped
-  2026-09-06.** [`settler.ReconcileLadderLines`](../services/settlement/internal/settler/ladder.go),
-  every reconcile tick (`SETTLEMENT_RECONCILE_INTERVAL_SECONDS`, 300 s):
-  a total or handicap line on a closed Oddin match settles only when a
-  settled sibling **strictly implies** it — over 25.5 won ⇒ over 24.5 won;
-  home −1.5 won ⇒ home −0.5 won; a push pins the number exactly. Quarter
-  lines, half-won siblings, disagreeing siblings and non-4/5 or non-1/2
-  outcome sets are refused and left untouched. Provenance lands in the
-  settlements audit row (`extended_specifiers: inferred_from=…`). No void
-  path.
+  2026-09-06, reworked the same day.** [`settler.ReconcileLadderLines`](../services/settlement/internal/settler/ladder.go),
+  every reconcile tick (`SETTLEMENT_RECONCILE_INTERVAL_SECONDS`, 300 s).
+  Every settled sibling of the family is a statement about the one integer
+  the family settles on (the total, or the home margin): over 25.5 won ⇒
+  26 or more, under 27.5 won ⇒ 27 or less, a push ⇒ exactly 27, a half-won
+  quarter line ⇒ one exact value. The intersection is an interval; the
+  open line settles when both ends grade it the same way, so whole, half
+  and quarter lines all decide, with the real result — pushes and half
+  results included — whenever the number is pinned. Disagreeing siblings,
+  an interval spanning the line, non-4/5 / non-1/2 outcome sets, and
+  markets whose outcomes already carry results (a settle / cancel /
+  rollback_cancel desync — 42 markets on 4 matches in the 7-day window,
+  the rollback path's problem) are refused and left untouched. **Why the
+  rework:** the first production pass with a strict-inequality rule over
+  full won / lost siblings decided 2 of 7 313 candidates; 6 643 were
+  "undecided" because Oddin ladders almost always carry a quarter line or
+  a push that pins the number, which that rule could not read. Provenance
+  lands in the settlements audit row (`extended_specifiers:
+  inferred_from=threshold=25.5,threshold=26 (value 26)`). No void path.
 - **1d. Hygiene.** On CLOSED, any market still at `1` goes to `-1`. Open.
 
 ### Phase 2 — Fonbet grader coverage
@@ -211,8 +221,12 @@ work.
   first five inning rows), corners, cards. ~1 400. Labels the feed does not
   carry go to the denylist. **Open.** English only.
 - **2e. `no_result` visibility. Shipped** — `fonbet_settlement_misses` +
-  the Unmatched results tab. The matcher itself stays conservative
-  (order-blind matching inverted every grade once).
+  the Unmatched results tab. The first hour of data named the dominant
+  class — Cyrillic-named legacy fixtures — and the matcher gained one
+  narrow fallback for exactly them (F7 above): the (competition, start
+  time) key, only when it is unambiguous on both sides. Everything else in
+  the matcher stays conservative (order-blind matching inverted every grade
+  once).
 
 ### Phase 3 — do not offer what cannot be settled
 

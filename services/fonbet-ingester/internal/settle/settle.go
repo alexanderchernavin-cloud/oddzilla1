@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/rs/zerolog"
 
@@ -199,7 +200,35 @@ func (ri *resultIndex) find(m store.PendingMatch) *resultMatch {
 			return rm
 		}
 	}
+	// Legacy fixtures created while the line was read from fonbet.kz in
+	// Russian hold Cyrillic team names, and the English results feed can
+	// never spell them the same way — 855 of them sat unmatched on
+	// 2026-09-06 with hundreds of open markets each. Same competition +
+	// same start time is Fonbet's own identity for a fixture, and it is safe
+	// to lean on exactly when it is unambiguous on BOTH sides: one results
+	// row at that key, and one fixture of ours in that tournament at that
+	// kick-off (a postponed game keeps its slot in our DB, so a same-time
+	// neighbour makes SameSlot 2 and refuses). Cyrillic-only on purpose: a
+	// general loosening would reopen the mirrored-row problem above for
+	// fixtures the two feeds merely order differently. Orientation is safe
+	// — both the stored names and the results row come from Fonbet, and
+	// Fonbet lists the home side first in each.
+	if hasCyrillic(m.HomeTeam+m.AwayTeam) && m.SameSlot == 1 {
+		if rows := ri.matches[resultKey{m.SegmentID, m.StartTime}]; len(rows) == 1 {
+			return rows[0]
+		}
+	}
 	return nil
+}
+
+// hasCyrillic reports whether the string carries any Cyrillic letter.
+func hasCyrillic(s string) bool {
+	for _, r := range s {
+		if unicode.Is(unicode.Cyrillic, r) {
+			return true
+		}
+	}
+	return false
 }
 
 // RunOnce performs one settlement pass.

@@ -22,12 +22,22 @@ import (
 // matches that started on 09-05: 3 340 open total / handicap lines on
 // closed Oddin matches, 3 247 of them with at least one settled sibling.
 //
-// What it does: a total and a handicap are monotonic in the line, so one
-// settled sibling of the same family fixes the result of every line on one
-// side of it. "Over 25.5 won" means the total was 26 or more, which settles
-// "over 24.5" (won) but says nothing about "over 26.5". The inference is
-// only ever a strict implication — a line the siblings do not decide is left
-// exactly as it was, for the operator. Nothing here voids anything.
+// What it does: every settled sibling of the same family (same market type,
+// same other specifiers, a different line) is a statement about the one
+// integer the family settles on — the total, or the home margin. "Over 25.5
+// won" says the total was 26 or more; "under 27.5 won" says 27 or less; a
+// push says exactly 27; a half-won quarter line pins it to one value too.
+// The intersection of those statements is an interval, and an open line is
+// settled when every value in the interval grades it the same way — which
+// covers whole, half AND quarter lines, and produces pushes and half
+// results where the arithmetic says so. A line the interval does not decide
+// is left exactly as it was, for the operator. Nothing here voids anything.
+//
+// Measured on the first production pass (2026-09-06): with the earlier
+// strict-inequality rule 6 643 of 7 313 candidates were "undecided", almost
+// all because the ladder carried a quarter line or a push that PINNED the
+// number while the rule only read full won / lost siblings. The interval
+// form decides those.
 //
 // Two conventions it depends on, both read off production on 2026-09-06:
 // Oddin totals carry outcomes 4 = under and 5 = over; Oddin handicaps carry
@@ -40,6 +50,11 @@ import (
 // past both feeds' replay windows and is the operator's to review.
 const ladderLookbackDays = 7
 
+// valueRange bounds the brute-force search for the settled number. Kill
+// totals in an esports map run to the low hundreds; nothing Oddin quotes a
+// line on exceeds this in either direction.
+const valueRange = 500
+
 // LadderStats summarises one inference pass.
 type LadderStats struct {
 	Candidates int
@@ -48,7 +63,7 @@ type LadderStats struct {
 }
 
 // ReconcileLadderLines settles every open total / handicap line on a closed
-// Oddin match whose settled siblings strictly imply its result, through the
+// Oddin match whose settled siblings decide its result, through the
 // ordinary apply-once settle path. Safe on a timer: a line settled on one
 // pass is terminal and never a candidate again, and a line the siblings do
 // not decide is skipped with a reason and stays untouched.
@@ -65,6 +80,16 @@ func (s *Settler) ReconcileLadderLines(ctx context.Context) (LadderStats, error)
 		if ctx.Err() != nil {
 			return stats, ctx.Err()
 		}
+		if ln.OutcomeResults != "" {
+			// The market is open but its outcomes already carry results: a
+			// settle followed by a cancel and a rollback of that cancel left
+			// the row at status 1 (seen on production 2026-09-06). The
+			// apply-once insert would treat our settle as a replay and
+			// change nothing, so this is not ours to fix — it needs the
+			// rollback path, not inference.
+			stats.Skipped["outcomes already carry results"]++
+			continue
+		}
 		var specs oddinxml.Specifiers
 		if err := json.Unmarshal([]byte(ln.SpecifiersJSON), &specs); err != nil || specs == nil {
 			stats.Skipped["unreadable specifiers"]++
@@ -79,8 +104,8 @@ func (s *Settler) ReconcileLadderLines(ctx context.Context) (LadderStats, error)
 			ID:         ln.ProviderMarketID,
 			Specifiers: oddinxml.Canonical(specs),
 			Status:     -3,
-			// Provenance for the settlements audit row: which sibling
-			// decided this line. Read by nothing, kept for the operator.
+			// Provenance for the settlements audit row: what decided this
+			// line. Read by nothing, kept for the operator.
 			ExtendedSpecifiers: "inferred_from=" + why,
 			Outcomes:           outs,
 		}
@@ -91,7 +116,7 @@ func (s *Settler) ReconcileLadderLines(ctx context.Context) (LadderStats, error)
 		}
 		stats.Settled++
 		closedMatches[ln.EventURN] = struct{}{}
-		s.log.Info().Str("event", ln.EventURN).Int("market", ln.ProviderMarketID).Str("specifiers", market.Specifiers).Str("from", why).Msg("ladder inference: settled from sibling")
+		s.log.Info().Str("event", ln.EventURN).Int("market", ln.ProviderMarketID).Str("specifiers", market.Specifiers).Str("from", why).Msg("ladder inference: settled from siblings")
 	}
 	for urn := range closedMatches {
 		if closedMatchID, closed, err := store.MarkMatchClosedIfAllMarketsTerminal(ctx, s.store.Pool(), urn); err != nil {
@@ -103,32 +128,126 @@ func (s *Settler) ReconcileLadderLines(ctx context.Context) (LadderStats, error)
 	return stats, nil
 }
 
+// graded is one side's result in Oddin's wire form.
+type graded struct{ res, vf string }
+
+var (
+	gWon      = graded{"1", ""}
+	gLost     = graded{"0", ""}
+	gVoid     = graded{"1", "1"}
+	gHalfWon  = graded{"1", "0.5"}
+	gHalfLost = graded{"0", "0.5"}
+)
+
+// rank orders results the way they move as the settled number grows, so
+// "same result at both ends of the interval" implies the same result all
+// the way across (gradeHigh is monotone in the number).
+func (g graded) rank() int {
+	switch g {
+	case gLost:
+		return 0
+	case gHalfLost:
+		return 1
+	case gVoid:
+		return 2
+	case gHalfWon:
+		return 3
+	case gWon:
+		return 4
+	}
+	return -1
+}
+
+// gradeHigh grades the HIGH side of a line — over for a total, home for a
+// handicap — given the settled number: the total, or the home margin.
+// Handicap lines are the home side's, so the diff is margin + line; a total
+// is over when the number exceeds the line. Quarter lines split into two
+// half-stakes exactly as the Fonbet grader does (fonbet-ingester
+// internal/settle/rules.go gradeTotal / gradeHandicap).
+func gradeHigh(kind string, value int, line float64) graded {
+	frac := math.Abs(line - math.Trunc(line))
+	if math.Abs(frac-0.25) < 1e-9 || math.Abs(frac-0.75) < 1e-9 {
+		return combine(gradeHigh(kind, value, line-0.25), gradeHigh(kind, value, line+0.25))
+	}
+	var diff float64
+	if kind == "handicap" {
+		diff = float64(value) + line
+	} else {
+		diff = float64(value) - line
+	}
+	switch {
+	case diff > 1e-9:
+		return gWon
+	case diff < -1e-9:
+		return gLost
+	}
+	return gVoid
+}
+
+// combine merges the two half-stakes of a quarter line.
+func combine(x, y graded) graded {
+	switch {
+	case x == gWon && y == gWon:
+		return gWon
+	case x == gLost && y == gLost:
+		return gLost
+	case (x == gWon && y == gVoid) || (x == gVoid && y == gWon):
+		return gHalfWon
+	case (x == gLost && y == gVoid) || (x == gVoid && y == gLost):
+		return gHalfLost
+	}
+	return gVoid
+}
+
+// mirror is the opposite side's result.
+func mirror(g graded) graded {
+	switch g {
+	case gWon:
+		return gLost
+	case gLost:
+		return gWon
+	case gHalfWon:
+		return gHalfLost
+	case gHalfLost:
+		return gHalfWon
+	}
+	return gVoid
+}
+
+// fromStored maps a market_outcomes.result enum value onto the wire form.
+func fromStored(result string) (graded, bool) {
+	switch result {
+	case "won":
+		return gWon, true
+	case "lost":
+		return gLost, true
+	case "void":
+		return gVoid, true
+	case "half_won":
+		return gHalfWon, true
+	case "half_lost":
+		return gHalfLost, true
+	}
+	return graded{}, false
+}
+
 // inferLine decides one open line from its settled siblings. It returns the
-// settled outcomes in Oddin's wire form (result "1" won / "0" lost, no void
-// factor) and the sibling that decided it, or a refusal reason.
+// settled outcomes in Oddin's wire form and a description of what decided
+// the line, or a refusal reason.
 //
-// Only strict implications are accepted:
-//
-//	total, sibling X over-won  (T > X):  every Y < X is over-won
-//	total, sibling X under-won (T < X):  every Y > X is under-won
-//	total, sibling X pushed    (T = X):  Y < X over-won, Y > X under-won
-//	handicap, sibling X home-won (M+X > 0): every Y > X is home-won
-//	handicap, sibling X away-won (M+X < 0): every Y < X is away-won
-//	handicap, sibling X pushed   (M = -X):  Y > X home-won, Y < X away-won
-//
-// where T is the total, M the home margin, both integers. The open line
-// must be a whole or half line: a quarter line (2.25, -1.75) splits into
-// two stakes and a strict inequality on the total does not make both halves
-// win, so it is refused. Siblings settled half-won / half-lost (quarter
-// lines themselves) carry no usable bound and are ignored. If two siblings
-// disagree the data is inconsistent and the line is refused.
+// Every sibling narrows the interval of integers the family's number can
+// be: the values v for which gradeHigh(v, X) reproduces the sibling's
+// stored result (a contiguous range, since the grade is monotone in v; a
+// push or a half result pins a single value). An empty intersection means
+// the siblings contradict each other and the line is refused. The open line
+// Y is decided when both ends of the interval grade it identically, which
+// by monotonicity means every value between does too — so an exact pin
+// settles Y with the real result including a push or a half result, and a
+// one-sided bound settles Y only when the whole range agrees.
 func inferLine(lineKey, openLine, outcomeIDs string, siblings []store.LadderSibling) ([]oddinxml.Outcome, string, bool) {
 	y, err := strconv.ParseFloat(strings.TrimSpace(openLine), 64)
 	if err != nil {
 		return nil, "unreadable line", false
-	}
-	if twice := y * 2; math.Abs(twice-math.Round(twice)) > 1e-9 {
-		return nil, "quarter line", false
 	}
 	var hiID, loID string // the outcome that wins when the number is HIGH / LOW
 	switch lineKey {
@@ -146,78 +265,75 @@ func inferLine(lineKey, openLine, outcomeIDs string, siblings []store.LadderSibl
 		return nil, "unknown line key", false
 	}
 
-	// verdict: +1 the high side wins at Y, -1 the low side wins at Y.
-	verdict := 0
-	decidedBy := ""
+	lo, hi := -valueRange, valueRange
+	var used []string
 	for _, sib := range siblings {
 		x, err := strconv.ParseFloat(strings.TrimSpace(sib.Line), 64)
 		if err != nil {
 			continue
 		}
-		bound, ok := siblingBound(sib.Results, hiID, loID)
+		observed, ok := siblingResult(sib.Results, hiID, loID)
 		if !ok {
 			continue
 		}
-		var v int
-		switch {
-		// Total: hi won at X means T > X. A total is a count, so the
-		// statement "T > X" is "T >= next integer above X". Y < X is then
-		// strictly below T: hi wins at Y. Handicap: hi won at X means
-		// M + X > 0; Y > X gives M + Y > 0: hi wins at Y.
-		case bound > 0 && lineKey == "threshold" && y < x,
-			bound > 0 && lineKey == "handicap" && y > x:
-			v = +1
-		case bound < 0 && lineKey == "threshold" && y > x,
-			bound < 0 && lineKey == "handicap" && y < x:
-			v = -1
-		// Push: the number IS X (total) or -X (handicap margin).
-		case bound == 0 && lineKey == "threshold":
-			if y < x {
-				v = +1
-			} else if y > x {
-				v = -1
-			}
-		case bound == 0 && lineKey == "handicap":
-			if y > x {
-				v = +1
-			} else if y < x {
-				v = -1
+		// The values consistent with this sibling form one contiguous range.
+		sLo, sHi := valueRange+1, -valueRange-1
+		for v := -valueRange; v <= valueRange; v++ {
+			if gradeHigh(lineKey, v, x) == observed {
+				if v < sLo {
+					sLo = v
+				}
+				if v > sHi {
+					sHi = v
+				}
 			}
 		}
-		if v == 0 {
-			continue
+		if sLo > sHi {
+			continue // no integer reproduces the stored result; ignore the sibling
 		}
-		if verdict != 0 && verdict != v {
-			return nil, "siblings disagree", false
+		if sLo > lo {
+			lo = sLo
 		}
-		if verdict == 0 {
-			verdict = v
-			decidedBy = lineKey + "=" + strings.TrimSpace(sib.Line)
+		if sHi < hi {
+			hi = sHi
 		}
+		used = append(used, lineKey+"="+strings.TrimSpace(sib.Line))
 	}
-	if verdict == 0 {
+	if len(used) == 0 {
+		return nil, "no usable sibling", false
+	}
+	if lo > hi {
+		return nil, "siblings disagree", false
+	}
+	if lo == -valueRange && hi == valueRange {
+		return nil, "no usable sibling", false
+	}
+	gLo, gHi := gradeHigh(lineKey, lo, y), gradeHigh(lineKey, hi, y)
+	if gLo.rank() < 0 || gLo != gHi {
 		return nil, "no sibling decides it", false
 	}
-	won, lost := hiID, loID
-	if verdict < 0 {
-		won, lost = loID, hiID
+	high, low := gLo, mirror(gLo)
+	outs := []oddinxml.Outcome{
+		{ID: hiID, Result: high.res, VoidFactor: high.vf},
+		{ID: loID, Result: low.res, VoidFactor: low.vf},
 	}
-	outs := []oddinxml.Outcome{{ID: hiID}, {ID: loID}}
-	for i := range outs {
-		if outs[i].ID == won {
-			outs[i].Result = "1"
-		} else if outs[i].ID == lost {
-			outs[i].Result = "0"
-		}
+	// Stable order (by id) so the apply-once payload hash is deterministic.
+	if outs[0].ID > outs[1].ID {
+		outs[0], outs[1] = outs[1], outs[0]
 	}
-	return outs, decidedBy, true
+	why := strings.Join(used, ",")
+	if lo == hi {
+		why = fmt.Sprintf("%s (value %d)", why, lo)
+	} else {
+		why = fmt.Sprintf("%s (value %d..%d)", why, lo, hi)
+	}
+	return outs, why, true
 }
 
-// siblingBound reads a settled sibling's outcomes ("id:result:void_factor,
-// ...") and reports which side of its line the number fell: +1 the high
-// side won, -1 the low side won, 0 a push (both void). Anything else — a
-// half result, a missing outcome, a void on one side only — is not a bound.
-func siblingBound(results, hiID, loID string) (int, bool) {
+// siblingResult reads a settled sibling's outcomes ("id:result:void_factor,
+// ...") and returns the HIGH side's result. Both sides must be present and
+// mirror each other, or the sibling is not usable.
+func siblingResult(results, hiID, loID string) (graded, bool) {
 	res := map[string]string{}
 	for _, part := range strings.Split(results, ",") {
 		fields := strings.SplitN(part, ":", 3)
@@ -226,16 +342,12 @@ func siblingBound(results, hiID, loID string) (int, bool) {
 		}
 		res[fields[0]] = fields[1]
 	}
-	hi, lo := res[hiID], res[loID]
-	switch {
-	case hi == "won" && lo == "lost":
-		return +1, true
-	case hi == "lost" && lo == "won":
-		return -1, true
-	case hi == "void" && lo == "void":
-		return 0, true
+	hi, okHi := fromStored(res[hiID])
+	lo, okLo := fromStored(res[loID])
+	if !okHi || !okLo || mirror(hi) != lo {
+		return graded{}, false
 	}
-	return 0, false
+	return hi, true
 }
 
 // String renders the pass for the sweeper's log line.

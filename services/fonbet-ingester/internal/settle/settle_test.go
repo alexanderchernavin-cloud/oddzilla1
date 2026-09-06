@@ -27,6 +27,37 @@ func pending(home, away string) store.PendingMatch {
 	return store.PendingMatch{HomeTeam: home, AwayTeam: away, StartTime: 1000, SegmentID: 58540}
 }
 
+// Legacy fixtures hold Cyrillic team names the English results feed can
+// never spell; the (competition, start time) key stands in exactly when it
+// is unambiguous on both sides.
+func TestResultIndexFindCyrillicFallback(t *testing.T) {
+	ri := buildResultIndex([]*fonbet.ResultsResponse{resultsDoc("Rubin – Orenburg")})
+
+	m := pending("Рубин", "Оренбург")
+	m.SameSlot = 1
+	if rm := ri.find(m); rm == nil || rm.name != "rubin – orenburg" {
+		t.Fatalf("one Cyrillic fixture, one results row at the key: must match, got %+v", rm)
+	}
+	// Two fixtures of ours in that slot: ambiguous, refuse.
+	m.SameSlot = 2
+	if rm := ri.find(m); rm != nil {
+		t.Fatalf("two fixtures in the slot must refuse, got %+v", rm)
+	}
+	// Two results rows at the key: ambiguous, refuse.
+	m.SameSlot = 1
+	ri2 := buildResultIndex([]*fonbet.ResultsResponse{resultsDoc("Rubin – Orenburg", "Zenit – Spartak")})
+	if rm := ri2.find(m); rm != nil {
+		t.Fatalf("two results rows at the key must refuse, got %+v", rm)
+	}
+	// Latin names that simply do not match stay unmatched — the fallback
+	// is for the language gap only.
+	l := pending("Lokomotiv", "Dynamo")
+	l.SameSlot = 1
+	if rm := ri.find(l); rm != nil {
+		t.Fatalf("a Latin mismatch must not borrow the slot, got %+v", rm)
+	}
+}
+
 func TestResultIndexFindExact(t *testing.T) {
 	ri := buildResultIndex([]*fonbet.ResultsResponse{resultsDoc("Оренбург – Рубин", "Зенит – Спартак")})
 	if rm := ri.find(pending("Оренбург", "Рубин")); rm == nil || rm.name != "оренбург – рубин" {
