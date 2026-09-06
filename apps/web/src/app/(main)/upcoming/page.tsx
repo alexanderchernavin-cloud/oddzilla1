@@ -6,8 +6,8 @@ import {
   MatchListTabs,
   type ListMatchEnriched,
 } from "@/components/match/match-list-tabs";
-import { I } from "@/components/ui/icons";
 import { SportGlyph } from "@/components/ui/sport-glyph";
+import { SectionTabs } from "@/components/lobby/section-tabs";
 import { TodayLabel } from "@/components/lobby/today-label";
 import { ZillaFlashRow } from "@/components/lobby/zillaflash-row";
 import { orderMatchesBySport, shortName } from "@/lib/sport-order";
@@ -42,20 +42,31 @@ export default async function UpcomingPage({ searchParams }: PageProps) {
   const selectedSport =
     typeof rawSport === "string" && rawSport.length > 0 ? rawSport : null;
 
-  const [data, user, tMatch, tSport] = await Promise.all([
+  const [data, siblingData, user, tMatch, tSport] = await Promise.all([
     serverApi<Response>("/catalog/matches?status=upcoming&limit=120"),
+    // The Live tab renders here too (see SectionTabs) and carries a
+    // count, so we fetch the sibling list. Same limit /live uses for
+    // itself, so the number on the tab is the number you get on landing.
+    serverApi<Response>("/catalog/matches?status=live&limit=120"),
     // See live/page.tsx for why we re-fetch the session user — we
     // need the bettor's hidden_sports (migration 0072) to filter the
     // match list and Next.js doesn't share layout results with pages.
     getSessionUser(),
-    // Use the "match" namespace so the heading reads "Pre-match" —
-    // same label the lobby's LobbyTabLink uses for the prematch tab.
-    // The page route stays /upcoming for link/bookmark stability.
+    // Use the "match" namespace — it carries both tab labels ("Live" /
+    // "Pre-match"), the same two keys the lobby strip reads. The page
+    // route stays /upcoming for link/bookmark stability.
     getTranslations("match"),
     getTranslations("sport"),
   ]);
   const ordered = orderMatchesBySport(
     data?.matches ?? [],
+    user?.hiddenSports ?? null,
+  );
+  // Sibling count for the Live tab, filtered exactly the way the visible
+  // list is (hidden sports + the chip's sport), so the two numbers on
+  // the strip are comparable and clicking through keeps the filter.
+  const siblingOrdered = orderMatchesBySport(
+    siblingData?.matches ?? [],
     user?.hiddenSports ?? null,
   );
 
@@ -78,6 +89,9 @@ export default async function UpcomingPage({ searchParams }: PageProps) {
   const visible = selectedSport
     ? ordered.filter((m) => m.sport.slug === selectedSport)
     : ordered;
+  const siblingCount = selectedSport
+    ? siblingOrdered.filter((m) => m.sport.slug === selectedSport).length
+    : siblingOrdered.length;
 
   return (
     <div
@@ -125,73 +139,45 @@ export default async function UpcomingPage({ searchParams }: PageProps) {
       )}
 
       {visible.length === 0 ? (
-        <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
-          {tSport("noMatches")}
-        </p>
+        // The strip renders here too — an empty prematch list must still
+        // offer the way over to Live instead of being a dead end.
+        <>
+          <SectionTabs
+            liveLabel={tMatch("live")}
+            prematchLabel={tMatch("prematch")}
+            liveCount={siblingCount}
+            prematchCount={0}
+            selected="prematch"
+            sport={selectedSport}
+          />
+          <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
+            {tSport("noMatches")}
+          </p>
+        </>
       ) : (
-        // Page heading sits ON the MatchListTabs section-head row so it
+        // The tab strip sits ON the MatchListTabs section-head row so it
         // shares a line with the cols toggle (same pattern /live uses).
         <MatchListTabs
           matches={visible.map(enrich)}
           groups={[
             {
               key: "upcoming",
-              label: <UpcomingPageHeading label={tMatch("prematch")} count={visible.length} />,
+              label: (
+                <SectionTabs
+                  liveLabel={tMatch("live")}
+                  prematchLabel={tMatch("prematch")}
+                  liveCount={siblingCount}
+                  prematchCount={visible.length}
+                  selected="prematch"
+                  sport={selectedSport}
+                />
+              ),
               matches: visible.map(enrich),
             },
           ]}
         />
       )}
     </div>
-  );
-}
-
-// Page heading rendered inline with the MatchListTabs cols toggle on the
-// section-head row. Visual mirror of the home lobby's LobbyTabLink for
-// prematch (Clock icon, neutral count pill) — but as plain text since
-// we're already on /upcoming (no navigation target).
-function UpcomingPageHeading({ label, count }: { label: string; count: number }) {
-  return (
-    <h1
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 10,
-        margin: 0,
-        fontSize: 22,
-        fontWeight: 500,
-        letterSpacing: "-0.015em",
-        lineHeight: 1.1,
-      }}
-    >
-      <span
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          color: "var(--fg-muted)",
-        }}
-        aria-hidden
-      >
-        <I.Clock size={18} />
-      </span>
-      {label}
-      <span
-        className="mono tnum"
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          fontSize: 11,
-          fontWeight: 600,
-          color: "var(--fg-muted)",
-          border: "1px solid var(--border)",
-          borderRadius: 999,
-          padding: "2px 8px",
-          lineHeight: 1.2,
-        }}
-      >
-        {count}
-      </span>
-    </h1>
   );
 }
 

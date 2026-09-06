@@ -48,7 +48,7 @@
   "shell": {
     "homeLink": "Oddzilla início",
     "accountMenu": "Menu da conta de {name}",
-    "lobby": "Lobby",
+    "home": "Início",
     "live": "Ao vivo",
     "upcoming": "Pré-jogo",
     "sportsNav": "Esportes",
@@ -341,7 +341,6 @@
     "logout": "Sair"
   },
   "home": {
-    "lobby": "Lobby",
     "upcoming": "Pré-jogo",
     "empty": "Nada agendado. Confira as páginas de cada esporte para a programação completa.",
     "topSports": "Desportos em destaque"

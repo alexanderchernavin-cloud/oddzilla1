@@ -48,7 +48,7 @@
   "shell": {
     "homeLink": "Oddzilla — главная",
     "accountMenu": "Меню пользователя {name}",
-    "lobby": "Лобби",
+    "home": "Главная",
     "live": "Live",
     "upcoming": "Прематч",
     "sportsNav": "Спорт",
@@ -341,7 +341,6 @@
     "logout": "Выйти"
   },
   "home": {
-    "lobby": "Лобби",
     "upcoming": "Прематч",
     "empty": "Расписания нет. Загляните на страницы видов спорта.",
     "topSports": "Топ виды спорта"

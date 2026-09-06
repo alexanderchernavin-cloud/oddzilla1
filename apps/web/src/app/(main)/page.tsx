@@ -7,8 +7,7 @@ import {
   type ListMatchEnriched,
 } from "@/components/match/match-list-tabs";
 import { SportGlyph } from "@/components/ui/sport-glyph";
-import { LiveDot } from "@/components/ui/primitives";
-import { I } from "@/components/ui/icons";
+import { SectionTabs } from "@/components/lobby/section-tabs";
 import { ThreeFoldCards } from "@/components/lobby/three-fold-cards";
 import { ZillaFlashRow } from "@/components/lobby/zillaflash-row";
 import { ZillaBoostBanners } from "@/components/lobby/zillaboost-banners";
@@ -193,27 +192,12 @@ export default async function HomePage() {
                     {
                       key: "live",
                       label: (
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 28,
-                            flexWrap: "wrap",
-                          }}
-                        >
-                          <LobbyTabLink
-                            href="/live"
-                            label={tMatch("live")}
-                            count={live.length}
-                            kind="live"
-                          />
-                          <LobbyTabLink
-                            href="/upcoming"
-                            label={tMatch("prematch")}
-                            count={upcoming.length}
-                            kind="prematch"
-                          />
-                        </div>
+                        <SectionTabs
+                          liveLabel={tMatch("live")}
+                          prematchLabel={tMatch("prematch")}
+                          liveCount={live.length}
+                          prematchCount={upcoming.length}
+                        />
                       ),
                       matches: liveEnriched,
                     },
@@ -224,14 +208,14 @@ export default async function HomePage() {
                 // When live matches exist the top tabs already label
                 // both sections — render the prematch cards directly
                 // below the live cards with no second header. When the
-                // page is prematch-only, promote the Pre-match tab to
-                // the top so the user still gets a clickable label.
+                // page is prematch-only, promote the strip to the top
+                // so the user still gets both clickable labels.
                 label: hasLive ? null : (
-                  <LobbyTabLink
-                    href="/upcoming"
-                    label={tMatch("prematch")}
-                    count={upcoming.length}
-                    kind="prematch"
+                  <SectionTabs
+                    liveLabel={tMatch("live")}
+                    prematchLabel={tMatch("prematch")}
+                    liveCount={live.length}
+                    prematchCount={upcoming.length}
                   />
                 ),
                 matches: upcomingShown,
@@ -249,30 +233,4 @@ export default async function HomePage() {
   );
 }
 
-// One-word clickable section label used at the top of the lobby —
-// renders an icon + section title + count pill and navigates to the
-// dedicated live/upcoming page. The kind drives icon choice (red
-// pulsing dot for live, neutral clock outline for prematch) and the
-// count pill's accent. Hover + focus styling lives in globals.css.
-function LobbyTabLink({
-  href,
-  label,
-  count,
-  kind,
-}: {
-  href: string;
-  label: string;
-  count: number;
-  kind: "live" | "prematch";
-}) {
-  return (
-    <Link href={href} className="oz-lobby-tab-link" data-kind={kind}>
-      <span className="oz-lobby-tab-link-icon" aria-hidden>
-        {kind === "live" ? <LiveDot size={9} /> : <I.Clock size={18} />}
-      </span>
-      <h2 className="oz-lobby-tab-link-label">{label}</h2>
-      <span className="oz-lobby-tab-link-count mono tnum">{count}</span>
-    </Link>
-  );
-}
 
