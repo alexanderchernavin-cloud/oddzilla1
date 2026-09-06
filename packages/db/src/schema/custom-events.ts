@@ -16,6 +16,40 @@ import {
   primaryKey,
 } from "drizzle-orm/pg-core";
 import { markets } from "./markets.js";
+import { matches } from "./catalog.js";
+
+/**
+ * Per-event presentation and closing date — migration
+ * 20260906T200754_custom_event_layout.
+ *
+ * Custom events cover two shapes: a fixture, which is defined by its
+ * kickoff, and an outright, which is defined by the date it stops taking
+ * bets. This carries both halves.
+ */
+export const customEventConfig = pgTable("custom_event_config", {
+  matchId: bigint("match_id", { mode: "bigint" })
+    .primaryKey()
+    .references(() => matches.id, { onDelete: "cascade" }),
+  /**
+   * `matchup` renders the usual two-sided card. `markets` drops it and
+   * puts the event's markets on the card itself — the shape a question
+   * with answers needs, where there is no home and away side to stack.
+   */
+  layout: text("layout").notNull().default("matchup"),
+  /**
+   * When betting closes. NULL = no automatic close.
+   *
+   * Read in two places, and the first is easy to miss: the catalog's
+   * staleness gate drops a `not_started` match whose kickoff is over six
+   * hours old, so without this an outright would leave the storefront the
+   * afternoon it opened. The sweeper reads it to suspend the markets once
+   * the window shuts — suspend, not settle, because the book closes while
+   * the result is still unknown.
+   */
+  endsAt: timestamp("ends_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 export const customMarketConfig = pgTable("custom_market_config", {
   marketId: bigint("market_id", { mode: "bigint" })
@@ -59,3 +93,4 @@ export const customOutcomeConfig = pgTable(
 
 export type CustomMarketConfig = typeof customMarketConfig.$inferSelect;
 export type CustomOutcomeConfig = typeof customOutcomeConfig.$inferSelect;
+export type CustomEventConfig = typeof customEventConfig.$inferSelect;

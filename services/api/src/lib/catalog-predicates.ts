@@ -31,6 +31,19 @@ import { categories, matches, tournaments } from "@oddzilla/db";
 //      until the suspend-before-recover flush or the admin
 //      "Refresh from REST" tool repairs the row. Live matches don't
 //      need the gate (by definition the lifecycle DID advance).
+//
+//   3. The carve-out that gate needs: an operator-authored event running
+//      to a CLOSING DATE rather than a kickoff. "Broken data" is the
+//      right reading of a stale `not_started` for a feed match, and the
+//      wrong one for an outright, whose whole shape is to open now and
+//      resolve months later — the six-hour rule would drop it from the
+//      storefront the same afternoon it went up. So an event whose own
+//      window is still open stays listed regardless of how long ago it
+//      started. Evaluated last and only when the cheaper clauses have
+//      already failed, and it is a primary-key probe into a table holding
+//      a handful of rows, so a page with no custom events pays nothing.
+//      Once `ends_at` passes, this clause stops firing AND the sweeper
+//      suspends the markets, so clause 1 drops the row too.
 export const hasActiveMarket = sql`EXISTS (
   SELECT 1 FROM markets mk
    WHERE mk.match_id = ${matches.id}
@@ -39,6 +52,10 @@ export const hasActiveMarket = sql`EXISTS (
   ${matches.status} = 'live'
   OR (${matches.status} = 'not_started'
       AND ${matches.scheduledAt} > NOW() - INTERVAL '6 hours')
+  OR (${matches.status} = 'not_started' AND EXISTS (
+        SELECT 1 FROM custom_event_config ce
+         WHERE ce.match_id = ${matches.id}
+           AND ce.ends_at > NOW()))
 )`;
 
 // Tournaments whose name matches one of these strings are hidden from

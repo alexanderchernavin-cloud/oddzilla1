@@ -9,8 +9,9 @@
 // the admin UI so its live preview and this save cannot drift.
 
 import type { FastifyInstance } from "fastify";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
+  customEventConfig,
   customMarketConfig,
   customOutcomeConfig,
   marketOutcomes,
@@ -301,4 +302,107 @@ export async function publishMarketStatus(
 /** The specifier map that identifies one custom market on its event. */
 export function customSpecifiers(key: string): Record<string, string> {
   return { [CUSTOM_SPECIFIER_KEY]: key };
+}
+
+/** One market as a list card renders it, with no match-up around it. */
+export interface InlineMarket {
+  id: string;
+  name: string;
+  outcomes: Array<{
+    outcomeId: string;
+    label: string;
+    price: string | null;
+    probability: string | null;
+  }>;
+}
+
+/**
+ * Markets to render ON the list card, for events that present as a
+ * question rather than a fixture (`custom_event_config.layout='markets'`).
+ *
+ * Two queries and both are cheap: the first is a primary-key probe into a
+ * table holding one row per custom event, and it returns nothing for a
+ * page made entirely of feed matches — which is every page except the
+ * Custom sport's — so the second never runs. That is the reason the
+ * layout lives in its own table rather than being inferred from the URN
+ * prefix: "is this a markets-layout event" is one indexed lookup instead
+ * of a LIKE over the page's matches.
+ *
+ * `formatPrice` is the caller's per-bettor odds adjustment, threaded in
+ * the same way `loadTopMarketsForMatches` takes it, so a card here is
+ * priced exactly like every other card that bettor sees.
+ */
+export async function loadInlineMarkets(
+  db: FastifyInstance["db"],
+  matchIds: bigint[],
+  formatPrice: (
+    raw: string | null,
+    probability: string | null,
+    matchId: bigint,
+  ) => string | null,
+): Promise<Map<string, InlineMarket[]>> {
+  const out = new Map<string, InlineMarket[]>();
+  if (matchIds.length === 0) return out;
+
+  const flagged = await db
+    .select({ matchId: customEventConfig.matchId })
+    .from(customEventConfig)
+    .where(
+      and(
+        inArray(customEventConfig.matchId, matchIds),
+        eq(customEventConfig.layout, "markets"),
+      ),
+    );
+  if (flagged.length === 0) return out;
+  const ids = flagged.map((f) => f.matchId);
+
+  const rows = await db
+    .select({
+      matchId: markets.matchId,
+      marketId: markets.id,
+      name: markets.customName,
+      outcomeId: marketOutcomes.outcomeId,
+      label: marketOutcomes.name,
+      publishedOdds: marketOutcomes.publishedOdds,
+      probability: marketOutcomes.probability,
+      active: marketOutcomes.active,
+    })
+    .from(markets)
+    .innerJoin(marketOutcomes, eq(marketOutcomes.marketId, markets.id))
+    .where(
+      and(
+        inArray(markets.matchId, ids),
+        eq(markets.providerMarketId, CUSTOM_PROVIDER_MARKET_ID),
+        // Only what is on offer. A suspended or settled market has no
+        // business taking a slot on a card that exists to show prices.
+        eq(markets.status, 1),
+      ),
+    )
+    .orderBy(markets.id, marketOutcomes.outcomeId);
+
+  for (const r of rows) {
+    const matchKey = r.matchId.toString();
+    const list = out.get(matchKey) ?? [];
+    let market = list.find((m) => m.id === r.marketId.toString());
+    if (!market) {
+      market = {
+        id: r.marketId.toString(),
+        name: r.name ?? "Market",
+        outcomes: [],
+      };
+      list.push(market);
+    }
+    market.outcomes.push({
+      outcomeId: r.outcomeId,
+      label: r.label,
+      // A suspended outcome keeps its slot and loses its price, which is
+      // what locks the cell — same treatment the match page gives it.
+      price: r.active
+        ? formatPrice(r.publishedOdds, r.probability, r.matchId)
+        : null,
+      probability: r.probability ?? null,
+    });
+    out.set(matchKey, list);
+  }
+  return out;
 }
