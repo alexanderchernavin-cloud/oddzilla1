@@ -27,13 +27,23 @@
 #   sudo cp infra/hetzner/backup/odds_retention.sh /usr/local/bin/oddzilla-odds-retention
 #   sudo chmod 750 /usr/local/bin/oddzilla-odds-retention
 #   sudo crontab -e
-#   # 30 3 * * * /usr/local/bin/oddzilla-odds-retention >> /var/log/oddzilla-odds-retention.log 2>&1
+#   # 30 3 * * * ODDS_RETENTION_DAYS=5 /usr/local/bin/oddzilla-odds-retention >> /var/log/oddzilla-odds-retention.log 2>&1
 #
 # Tunables (env overrides):
 #   ODDS_RETENTION_DAYS   days of history to keep      (default 35; admin
 #                         odds charts look back 30, ZillaTips reads the
 #                         permanent prematch_odds snapshot, settlement
 #                         never reads history)
+#
+#                         PRODUCTION OVERRIDES THIS TO 5 — the cron line
+#                         above is the one actually installed. Since the
+#                         Fonbet line went live a day's partition costs
+#                         ~20 GB with indexes (~1.9 GB before it), so 35
+#                         days is ~700 GB on a 150 GB disk. Temporary in
+#                         intent, but do not raise it back without first
+#                         cutting the write rate — see docs/OPERATIONS.md
+#                         "odds_history retention" for the two levers and
+#                         the order to use them in.
 #   ODDS_CREATE_AHEAD     days of partitions pre-created (default 7 — a
 #                         week of missed cron runs before inserts start
 #                         landing in the DEFAULT, which is safe anyway)

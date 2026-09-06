@@ -353,37 +353,76 @@ trimming backups only ever delayed an unbounded table.
 (installed as `oddzilla-odds-retention`, cron `30 3 * * *`) now does
 partition maintenance instead of DELETEs: pre-creates partitions
 `today..today+ODDS_CREATE_AHEAD` (default 7), DETACH CONCURRENTLY + DROPs
-dated partitions older than `ODDS_RETENTION_DAYS` (default **35**; admin
-odds charts look back 30 days, ZillaTips reads the permanent
-`prematch_odds` snapshot, settlement never reads history), and sweeps the
+dated partitions older than `ODDS_RETENTION_DAYS`, and sweeps the
 safety DEFAULT with a small batched DELETE (a non-trivial row count there
 is logged as a warning — it means inserts are falling outside every dated
 partition). A partition DROP is instant and returns space to the OS, so
 the table carries **zero bloat and no high-water mark** — the disk cost is
-exactly the live window (~35 GB at current volume) plus the day being
-written.
+exactly the live window plus the day being written.
 
-**Fonbet changes the volume.** The 35-day window was sized for Oddin's few
-hundred ticks/s. The Fonbet line (`services/fonbet-ingester`) adds ~200k
-priced outcomes and odds-publisher was batched to ~5000 ticks/s to keep up
-with its churn — every one of those ticks is an `odds_history` row. Before
-`FONBET_ENABLED=true` on prod, decide which lever you will pull if the
-daily partitions grow past what the window can hold on a 160 GB disk
-(disk-full has taken this box down four times):
+> **Production runs a 5-day window, not the script's 35-day default.**
+> The root crontab carries `ODDS_RETENTION_DAYS=5` explicitly. This is an
+> operator measure against disk pressure and is meant to be temporary, but
+> **35 is not currently reachable on this box** — see the arithmetic below
+> before putting it back. Consequence to know about: `/admin/logs` asks for
+> 30 days (`HISTORY_DAYS` in
+> [`services/api/src/modules/admin/logs.ts`](../services/api/src/modules/admin/logs.ts)),
+> so its per-market odds-history page shows at most 5. Nothing else is
+> affected — ZillaTips reads the permanent `prematch_odds` snapshot
+> (migration 0047), and settlement never reads history at all.
 
-- `ODDS_RETENTION_DAYS` on the cron (root crontab, `oddzilla-odds-retention`)
-  — shorten the window; admin odds charts look back 30 days, nothing else
-  reads history.
-- `ODDS_HISTORY_SKIP_PMID_MIN=1000000` in `.env` + `make recreate odds-publisher`
-  — stop writing history for the Fonbet `provider_market_id` namespace
-  entirely (`published_odds` still updates; Oddin history unaffected).
-  Fonbet markets then have no admin odds-history chart.
+**The Fonbet line changed the volume by ~10x, and that is what makes 35
+unaffordable.** Measured on production 2026-09-06, per-day partition size
+including indexes:
 
-Check `SELECT relname, pg_size_pretty(pg_total_relation_size(oid)) FROM
-pg_class WHERE relname LIKE 'odds_history_p%' ORDER BY relname DESC LIMIT 3`
-after the first 24 h with the feed on; the newest partition's size times
-`ODDS_RETENTION_DAYS` must fit comfortably under the disk headroom shown on
-`/admin/monitoring`.
+| Partition | Size (table + indexes) |
+| --- | --- |
+| `odds_history_p20260831` | ~1.9 GB |
+| `odds_history_p20260901` | ~1.8 GB |
+| `odds_history_p20260902` | ~1.9 GB |
+| `odds_history_p20260903` | ~7.2 GB |
+| `odds_history_p20260904` | ~19.8 GB |
+| `odds_history_p20260905` | ~19.8 GB |
+
+At ~20 GB/day a 35-day window needs **~700 GB** and the 30 days
+`/admin/logs` wants needs ~600 GB, against a **150 GB** disk. The 5-day
+window is already ~51 GB, a third of the volume. So the window is not the
+thing to widen first — the write rate is. `ODDS_HISTORY_SKIP_PMID_MIN` is
+currently **unset** on prod, i.e. the documented brake has NOT been pulled;
+setting it to `1000000` stops history writes for the whole Fonbet
+`provider_market_id` namespace and should bring a day back toward the
+~1.9 GB the Oddin-only line cost. **Pull that lever and re-measure a full
+day before raising `ODDS_RETENTION_DAYS` again** — raising the window first
+just fills the disk faster, which is how this box went down four times.
+
+**Why.** The 35-day window was sized for Oddin's few hundred ticks/s. The
+Fonbet line (`services/fonbet-ingester`) adds ~200k priced outcomes and
+odds-publisher was batched to ~5000 ticks/s to keep up with its churn —
+every one of those ticks is an `odds_history` row. This section used to say
+"before `FONBET_ENABLED=true` on prod, decide which lever you will pull";
+the feed is now live, the daily partitions did grow past what the window
+could hold, and the lever pulled in the moment was the window itself. The
+two levers, in the order they should actually be used:
+
+1. `ODDS_HISTORY_SKIP_PMID_MIN=1000000` in `.env` + `make recreate odds-publisher`
+   — stop writing history for the Fonbet `provider_market_id` namespace
+   entirely (`published_odds` still updates; Oddin history unaffected).
+   Fonbet markets then have no admin odds-history chart. **This is the one
+   to reach for first**: it attacks the ~20 GB/day write rate, so it makes
+   every window length cheaper. Currently unset on prod.
+2. `ODDS_RETENTION_DAYS` on the cron (root crontab, `oddzilla-odds-retention`)
+   — shorten the window. Nothing but `/admin/logs` reads history, and it
+   asks for 30 days. Currently **5** on prod. Treat this as the emergency
+   lever, not the standing setting: it buys disk immediately but it is the
+   one that costs an operator-visible feature.
+
+Re-measure with `SELECT relname, pg_size_pretty(pg_total_relation_size(oid))
+FROM pg_class WHERE relname LIKE 'odds_history_p%' ORDER BY relname DESC
+LIMIT 5` after any change to either lever, reading the newest **complete**
+day (the current day's partition is still filling, and the next few are
+pre-created and empty). That size times `ODDS_RETENTION_DAYS` must fit
+comfortably under the disk headroom shown on `/admin/monitoring` — and it
+is the number that says whether the window can go back up.
 
 The pre-2026-08-26 model was a nightly batched DELETE against a single
 catch-all DEFAULT partition: it plateaued the heap (~60 GB at the 45-day
