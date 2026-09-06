@@ -63,8 +63,20 @@ const messageCountSql = sql<string>`(
 )`;
 
 // Operator requirement (2026-07-02): 30 days of odds-tick history must be
-// browsable from the admin logs panel. The odds_history table holds 45
-// days (ODDS_RETENTION_DAYS cron), so the window has data behind it.
+// browsable from the admin logs panel.
+//
+// This window is currently NOT backed by the data. When it was written the
+// odds_history cron held 45 days; the script default is now 35 and
+// production runs ODDS_RETENTION_DAYS=5, because the Fonbet line took a
+// day's partition from ~1.9 GB to ~20 GB and 30 days of that is ~600 GB on
+// a 150 GB disk. So this page renders whatever the retention window still
+// holds — at most 5 days today — and the ask is aspirational until the
+// write rate comes down (ODDS_HISTORY_SKIP_PMID_MIN, still unset on prod).
+// Deliberately left at 30 rather than lowered to match: the query is a
+// bounded `ts >` filter that costs nothing when the partitions aren't
+// there, and hard-coding the emergency value here would bake a temporary
+// disk measure into the product. See docs/OPERATIONS.md "odds_history
+// retention".
 const HISTORY_DAYS = 30;
 const HISTORY_MS = HISTORY_DAYS * 24 * 60 * 60 * 1000;
 
