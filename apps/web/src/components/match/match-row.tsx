@@ -50,13 +50,7 @@ export interface ListMatch {
   status: "not_started" | "live" | "closed" | "cancelled" | "suspended";
   bestOf?: number | null;
   liveScore?: LiveScore | null;
-  tournament: {
-    id: number;
-    name: string;
-    riskTier?: number | null;
-    /** Used by the sport page's filter chip in place of a "TOURNAMENT" label. */
-    logoUrl?: string | null;
-  };
+  tournament: { id: number; name: string; riskTier?: number | null };
   matchWinner: {
     marketId: string;
     home: ListMatchOutcome;

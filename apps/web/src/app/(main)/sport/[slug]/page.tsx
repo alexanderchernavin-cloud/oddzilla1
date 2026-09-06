@@ -20,6 +20,10 @@ interface SportResponse {
   // Null for an id that doesn't belong here, which is what keeps a
   // hand-typed URL from rendering an empty chip over an empty list.
   filteredCategory: { id: number; name: string } | null;
+  // Resolved server-side rather than read off a match row, so the chip
+  // still names itself when the tournament currently has nothing on
+  // offer. Carries the mark the chip renders in place of a kind label.
+  filteredTournament: { id: number; name: string; logoUrl: string | null } | null;
   matches: ListMatch[];
 }
 
@@ -63,11 +67,8 @@ export default async function SportPage({
   ]);
   if (!data) notFound();
 
-  const filteredTournament = tournamentId
-    ? data.matches.find((m) => String(m.tournament.id) === tournamentId)?.tournament ?? null
-    : null;
-  const filteredTournamentName = filteredTournament?.name ?? null;
-  const filteredTournamentLogoUrl = filteredTournament?.logoUrl ?? null;
+  const filteredTournamentName = data.filteredTournament?.name ?? null;
+  const filteredTournamentLogoUrl = data.filteredTournament?.logoUrl ?? null;
   const filteredTeamName = data.filteredTeam?.name ?? null;
   const filteredCategoryName = data.filteredCategory?.name ?? null;
 
@@ -176,17 +177,17 @@ export default async function SportPage({
               clearAriaLabel={t("clearFilter")}
             />
           )}
-          {tournamentId && (
+          {tournamentId && filteredTournamentName && (
             <FilterChip
               logoUrl={filteredTournamentLogoUrl}
-              value={filteredTournamentName ?? ""}
+              value={filteredTournamentName}
               clearHref={clearHref("tournament")}
               clearAriaLabel={t("clearFilter")}
             />
           )}
-          {teamId && (
+          {teamId && filteredTeamName && (
             <FilterChip
-              value={filteredTeamName ?? ""}
+              value={filteredTeamName}
               clearHref={clearHref("team")}
               clearAriaLabel={t("clearFilter")}
             />
