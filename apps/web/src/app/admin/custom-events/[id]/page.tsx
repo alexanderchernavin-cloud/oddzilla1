@@ -4,7 +4,14 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { serverApi } from "@/lib/server-fetch";
-import { EventEditor, type EventDetail } from "./event-editor";
+import { EventEditor, type EventDetail, type TournamentOption } from "./event-editor";
+
+interface StructureResponse {
+  categories: Array<{
+    name: string;
+    tournaments: Array<{ id: number; name: string; riskTier: number | null }>;
+  }>;
+}
 
 export default async function CustomEventPage({
   params,
@@ -13,8 +20,24 @@ export default async function CustomEventPage({
 }) {
   const { id } = await params;
   if (!/^\d+$/.test(id)) notFound();
-  const data = await serverApi<EventDetail>(`/admin/custom-events/events/${id}`);
+  // The structure comes along so the header can offer a tournament
+  // picker. An event that cannot be moved is an event filed in the wrong
+  // place forever.
+  const [data, structure] = await Promise.all([
+    serverApi<EventDetail>(`/admin/custom-events/events/${id}`),
+    serverApi<StructureResponse>("/admin/custom-events/structure"),
+  ]);
   if (!data) notFound();
+
+  const tournamentOptions: TournamentOption[] = (structure?.categories ?? []).flatMap(
+    (c) =>
+      c.tournaments.map((t) => ({
+        id: t.id,
+        name: t.name,
+        categoryName: c.name,
+        riskTier: t.riskTier,
+      })),
+  );
 
   return (
     <div className="space-y-6">
@@ -27,7 +50,7 @@ export default async function CustomEventPage({
           {data.event.homeTeam} vs {data.event.awayTeam}
         </span>
       </div>
-      <EventEditor detail={data} />
+      <EventEditor detail={data} tournaments={tournamentOptions} />
     </div>
   );
 }

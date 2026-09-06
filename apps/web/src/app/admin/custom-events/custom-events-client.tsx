@@ -115,14 +115,24 @@ function StructurePanel({ structure }: { structure: StructureResponse }) {
           </p>
         ) : null}
         {structure.categories.map((c) => (
-          <CategoryBlock key={c.id} category={c} />
+          <CategoryBlock
+            key={c.id}
+            category={c}
+            allCategories={structure.categories}
+          />
         ))}
       </div>
     </section>
   );
 }
 
-function CategoryBlock({ category }: { category: CategoryRow }) {
+function CategoryBlock({
+  category,
+  allCategories,
+}: {
+  category: CategoryRow;
+  allCategories: CategoryRow[];
+}) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -192,29 +202,12 @@ function CategoryBlock({ category }: { category: CategoryRow }) {
 
       <ul className="space-y-1 pl-3 text-sm">
         {category.tournaments.map((t) => (
-          <li key={t.id} className="flex flex-wrap items-center gap-2">
-            <span>{t.name}</span>
-            <TierChip tier={t.riskTier} />
-            <span className="text-xs text-[var(--color-fg-muted)]">
-              {t.eventCount} event{t.eventCount === 1 ? "" : "s"}
-            </span>
-            <button
-              className="btn text-xs"
-              disabled={pending || t.eventCount > 0}
-              title={t.eventCount > 0 ? "Delete its events first" : "Delete this tournament"}
-              onClick={() =>
-                run(
-                  () =>
-                    clientApi(`/admin/custom-events/tournaments/${t.id}`, {
-                      method: "DELETE",
-                    }),
-                  "Delete failed.",
-                )
-              }
-            >
-              Delete
-            </button>
-          </li>
+          <TournamentItem
+            key={t.id}
+            tournament={t}
+            categoryId={category.id}
+            allCategories={allCategories}
+          />
         ))}
         {category.tournaments.length === 0 ? (
           <li className="text-xs text-[var(--color-fg-muted)]">No tournaments yet.</li>
@@ -250,6 +243,111 @@ function CategoryBlock({ category }: { category: CategoryRow }) {
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * One tournament: rename it, move it to another category, or delete it.
+ *
+ * The risk tier is shown but not edited here — it belongs to RiskZilla's
+ * own screen, which is also where a ZillaAGI verdict or a feed value
+ * lands, so duplicating the control would give an operator two places to
+ * set one number.
+ */
+function TournamentItem({
+  tournament,
+  categoryId,
+  allCategories,
+}: {
+  tournament: TournamentRow;
+  categoryId: number;
+  allCategories: CategoryRow[];
+}) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const [name, setName] = useState(tournament.name);
+  const [catId, setCatId] = useState(String(categoryId));
+
+  const dirty = name.trim() !== tournament.name || catId !== String(categoryId);
+
+  function run(fn: () => Promise<unknown>, fallback: string) {
+    setError(null);
+    startTransition(async () => {
+      try {
+        await fn();
+        router.refresh();
+      } catch (e) {
+        setError(errMessage(e, fallback));
+      }
+    });
+  }
+
+  return (
+    <li className="flex flex-wrap items-center gap-2">
+      <input
+        className="admin-input min-w-[12rem]"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        maxLength={120}
+      />
+      <select
+        className="admin-input"
+        value={catId}
+        onChange={(e) => setCatId(e.target.value)}
+        title="Move to another category"
+      >
+        {allCategories.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.name}
+          </option>
+        ))}
+      </select>
+      <TierChip tier={tournament.riskTier} />
+      <span className="text-xs text-[var(--color-fg-muted)]">
+        {tournament.eventCount} event{tournament.eventCount === 1 ? "" : "s"}
+      </span>
+      <button
+        className="btn text-xs"
+        disabled={pending || !dirty || !name.trim()}
+        onClick={() =>
+          run(
+            () =>
+              clientApi(`/admin/custom-events/tournaments/${tournament.id}`, {
+                method: "PATCH",
+                body: JSON.stringify({
+                  name: name.trim(),
+                  categoryId: Number(catId),
+                }),
+              }),
+            "Save failed.",
+          )
+        }
+      >
+        Save
+      </button>
+      <button
+        className="btn text-xs"
+        disabled={pending || tournament.eventCount > 0}
+        title={
+          tournament.eventCount > 0
+            ? "Delete its events first"
+            : "Delete this tournament"
+        }
+        onClick={() =>
+          run(
+            () =>
+              clientApi(`/admin/custom-events/tournaments/${tournament.id}`, {
+                method: "DELETE",
+              }),
+            "Delete failed.",
+          )
+        }
+      >
+        Delete
+      </button>
+      {error ? <span className="text-xs text-red-500">{error}</span> : null}
+    </li>
   );
 }
 

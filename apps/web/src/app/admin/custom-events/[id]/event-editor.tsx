@@ -81,11 +81,24 @@ function fmtMicro(v: string): string {
   return (n / MICRO).toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
-export function EventEditor({ detail }: { detail: EventDetail }) {
+export interface TournamentOption {
+  id: number;
+  name: string;
+  categoryName: string;
+  riskTier: number | null;
+}
+
+export function EventEditor({
+  detail,
+  tournaments,
+}: {
+  detail: EventDetail;
+  tournaments: TournamentOption[];
+}) {
   const [adding, setAdding] = useState(false);
   return (
     <div className="space-y-6">
-      <EventHeader detail={detail} />
+      <EventHeader detail={detail} tournaments={tournaments} />
 
       <section className="space-y-4">
         <div className="flex items-center justify-between gap-4">
@@ -126,20 +139,73 @@ export function EventEditor({ detail }: { detail: EventDetail }) {
   );
 }
 
-function EventHeader({ detail }: { detail: EventDetail }) {
+/**
+ * ISO instant -> the value a `datetime-local` input wants, in the
+ * viewer's own timezone.
+ *
+ * The input has no zone of its own, so it must be handed local wall-clock
+ * digits. `toISOString()` would hand it UTC, which silently shifts the
+ * displayed kickoff by the offset and then saves that shifted time back.
+ */
+function toLocalInput(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function EventHeader({
+  detail,
+  tournaments,
+}: {
+  detail: EventDetail;
+  tournaments: TournamentOption[];
+}) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const ev = detail.event;
-  const [status, setStatus] = useState(ev.status);
 
-  function save(patch: Record<string, unknown>) {
+  const initial = {
+    homeTeam: ev.homeTeam,
+    awayTeam: ev.awayTeam,
+    tournamentId: String(ev.tournament.id),
+    scheduledAt: toLocalInput(ev.scheduledAt),
+    bestOf: ev.bestOf != null ? String(ev.bestOf) : "",
+    status: ev.status,
+  };
+  const [form, setForm] = useState(initial);
+
+  const dirty = (Object.keys(initial) as Array<keyof typeof initial>).some(
+    (k) => form[k] !== initial[k],
+  );
+  const valid = form.homeTeam.trim() && form.awayTeam.trim() && form.tournamentId;
+
+  // The tier warning follows the PICKER, not the saved row — an operator
+  // moving the event to an untiered tournament should see the consequence
+  // before they save, not after.
+  const picked = tournaments.find((t) => String(t.id) === form.tournamentId);
+  const riskTier = picked ? picked.riskTier : ev.tournament.riskTier;
+
+  function save() {
     setError(null);
     startTransition(async () => {
       try {
         await clientApi(`/admin/custom-events/events/${ev.id}`, {
           method: "PATCH",
-          body: JSON.stringify(patch),
+          body: JSON.stringify({
+            homeTeam: form.homeTeam.trim(),
+            awayTeam: form.awayTeam.trim(),
+            tournamentId: Number(form.tournamentId),
+            // datetime-local carries no zone; the operator typed local
+            // wall-clock time, so read it as local and send an instant.
+            scheduledAt: form.scheduledAt
+              ? new Date(form.scheduledAt).toISOString()
+              : null,
+            bestOf: form.bestOf ? Number(form.bestOf) : null,
+            status: form.status,
+          }),
         });
         router.refresh();
       } catch (e) {
@@ -149,19 +215,15 @@ function EventHeader({ detail }: { detail: EventDetail }) {
   }
 
   return (
-    <header className="space-y-2 rounded border border-[var(--color-border)] p-3">
-      <h1 className="text-lg font-semibold">
-        {ev.homeTeam} vs {ev.awayTeam}
-      </h1>
-      <div className="flex flex-wrap items-center gap-3 text-xs text-[var(--color-fg-muted)]">
-        <span>
-          {ev.categoryName} — {ev.tournament.name}
-        </span>
-        <span>{ev.scheduledAt ? new Date(ev.scheduledAt).toLocaleString() : "no start time"}</span>
-        <code>{ev.providerUrn}</code>
+    <header className="space-y-3 rounded border border-[var(--color-border)] p-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h1 className="text-lg font-semibold">
+          {ev.homeTeam} vs {ev.awayTeam}
+        </h1>
+        <code className="text-xs text-[var(--color-fg-muted)]">{ev.providerUrn}</code>
       </div>
 
-      {ev.tournament.riskTier == null ? (
+      {riskTier == null ? (
         <p className="rounded bg-amber-500/10 p-2 text-xs text-amber-700">
           This tournament has no risk tier, so RiskZilla underwrites it at
           the strictest one and bets will be capped very low. Set a tier on
@@ -169,13 +231,67 @@ function EventHeader({ detail }: { detail: EventDetail }) {
         </p>
       ) : null}
 
-      <div className="flex flex-wrap items-center gap-2">
-        <label className="flex items-center gap-2 text-xs">
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="flex flex-col gap-1 text-xs">
+          Home / first side
+          <input
+            className="admin-input"
+            value={form.homeTeam}
+            onChange={(e) => setForm({ ...form, homeTeam: e.target.value })}
+            maxLength={120}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs">
+          Away / second side
+          <input
+            className="admin-input"
+            value={form.awayTeam}
+            onChange={(e) => setForm({ ...form, awayTeam: e.target.value })}
+            maxLength={120}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs">
+          Tournament
+          <select
+            className="admin-input min-w-[15rem]"
+            value={form.tournamentId}
+            onChange={(e) => setForm({ ...form, tournamentId: e.target.value })}
+          >
+            {tournaments.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.categoryName} — {t.name}
+                {t.riskTier == null ? " (no tier)" : ` (T${t.riskTier})`}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-xs">
+          Starts (local time)
+          <input
+            className="admin-input"
+            type="datetime-local"
+            value={form.scheduledAt}
+            onChange={(e) => setForm({ ...form, scheduledAt: e.target.value })}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs">
+          Best of
+          <input
+            className="admin-input w-20"
+            type="number"
+            min={1}
+            max={9}
+            value={form.bestOf}
+            onChange={(e) => setForm({ ...form, bestOf: e.target.value })}
+            placeholder="—"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs">
           Status
           <select
             className="admin-input"
-            value={status}
-            onChange={(e) => setStatus(e.target.value)}
+            value={form.status}
+            onChange={(e) => setForm({ ...form, status: e.target.value })}
           >
             <option value="not_started">not_started</option>
             <option value="live">live</option>
@@ -184,14 +300,22 @@ function EventHeader({ detail }: { detail: EventDetail }) {
             <option value="cancelled">cancelled</option>
           </select>
         </label>
-        <button
-          className="btn"
-          disabled={pending || status === ev.status}
-          onClick={() => save({ status })}
-        >
-          Save status
+        <button className="btn" disabled={pending || !dirty || !valid} onClick={save}>
+          Save event
         </button>
-        {error ? <span className="text-xs text-red-500">{error}</span> : null}
+        {dirty ? (
+          <button
+            className="btn"
+            disabled={pending}
+            onClick={() => {
+              setForm(initial);
+              setError(null);
+            }}
+          >
+            Revert
+          </button>
+        ) : null}
+        {error ? <span className="pb-2 text-xs text-red-500">{error}</span> : null}
       </div>
     </header>
   );
