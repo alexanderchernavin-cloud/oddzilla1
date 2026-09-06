@@ -47,6 +47,29 @@ export const MIN_CUSTOM_PROBABILITY = 0.0001;
 const ODDS_DP = 4;
 
 /**
+ * What to call a custom event.
+ *
+ * `matches` stores two sides because every fixture has two, and both
+ * columns are NOT NULL. A question has one subject — "Dima and Nastya to
+ * unite again" — so a markets-layout event puts its whole title in
+ * `home_team` and leaves `away_team` EMPTY. That empty string is the
+ * convention this reads, and it is deliberately a property of the ROW
+ * rather than a lookup into `custom_event_config`: the bet slip, bet
+ * history and community tickets all carry the two team strings and
+ * nothing else, so a rule they can apply without a second fetch is the
+ * only one that reaches every surface.
+ *
+ * Never renders a dangling "vs".
+ */
+export function formatEventTitle(
+  homeTeam: string,
+  awayTeam: string | null | undefined,
+): string {
+  const away = (awayTeam ?? "").trim();
+  return away.length === 0 ? homeTeam : `${homeTeam} vs ${away}`;
+}
+
+/**
  * Lowest price that the 0.01 quote ladder can express.
  *
  * Below it the only two-decimal values are 1.00, which is unbettable, and

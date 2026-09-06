@@ -2,10 +2,27 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import {
   bookKey,
+  formatEventTitle,
   priceCustomMarket,
   LADDER_FLOOR,
   MIN_CUSTOM_PROBABILITY,
 } from "./custom-events.js";
+
+test("a question renders its title alone, never a dangling vs", () => {
+  // The empty second side IS the marker: `matches` has two NOT NULL team
+  // columns, and a question has one subject.
+  assert.equal(
+    formatEventTitle("Dima and Nastya to unite again", ""),
+    "Dima and Nastya to unite again",
+  );
+  assert.equal(formatEventTitle("Who wins the election", "   "), "Who wins the election");
+  assert.equal(formatEventTitle("Who wins", null), "Who wins");
+  assert.equal(formatEventTitle("Who wins", undefined), "Who wins");
+});
+
+test("a match-up still reads as one", () => {
+  assert.equal(formatEventTitle("Astralis", "NAVI"), "Astralis vs NAVI");
+});
 
 const off = { enabled: false, strengthBp: 0, maxShiftBp: 0 };
 

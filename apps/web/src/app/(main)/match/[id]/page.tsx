@@ -64,6 +64,10 @@ export default async function MatchPage({
   // exists the tracker is the richer of the two, so ours steps aside and
   // the header card keeps only the status pill + tournament line.
   const hasLmt = Boolean(match.sportradar);
+  // An operator-authored question carries its whole title in `homeTeam`
+  // and leaves the second side empty — see `formatEventTitle`. Nothing
+  // that draws two sides applies to it.
+  const singleSided = !(match.awayTeam ?? "").trim();
 
   // For the analyses section CTA, "logged in" presence-checks the access
   // cookie rather than round-tripping /auth/me. Server stays authoritative
@@ -149,7 +153,25 @@ export default async function MatchPage({
           </span>
         </div>
 
-        {hasLmt ? null : (
+        {/* A single-sided event — an operator's question, which carries
+            its whole title in `homeTeam` and leaves the second side empty
+            — gets its title instead of a scoreboard. The scoreboard draws
+            two rows with a score between them and would render the second
+            one blank. */}
+        {singleSided ? (
+          <h1
+            className="display"
+            style={{
+              margin: "10px 0 0",
+              fontSize: "clamp(20px, 4.5vw, 28px)",
+              fontWeight: 500,
+              letterSpacing: "-0.02em",
+              overflowWrap: "anywhere",
+            }}
+          >
+            {match.homeTeam}
+          </h1>
+        ) : hasLmt ? null : (
           <LiveScoreboard
             matchId={match.id}
             homeTeam={match.homeTeam}

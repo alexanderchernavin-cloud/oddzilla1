@@ -7,6 +7,7 @@ import { clientApi, ApiFetchError } from "@/lib/api-client";
 // and then fails `next build`. See packages/types/src/odds.ts.
 import {
   bookKey,
+  formatEventTitle,
   priceCustomMarket,
   type CustomPriceCell,
 } from "@oddzilla/types/custom-events";
@@ -186,7 +187,10 @@ function EventHeader({
   const dirty = (Object.keys(initial) as Array<keyof typeof initial>).some(
     (k) => form[k] !== initial[k],
   );
-  const valid = form.homeTeam.trim() && form.awayTeam.trim() && form.tournamentId;
+  const valid =
+    !!form.homeTeam.trim() &&
+    (form.layout === "markets" || !!form.awayTeam.trim()) &&
+    !!form.tournamentId;
 
   // The tier warning follows the PICKER, not the saved row — an operator
   // moving the event to an untiered tournament should see the consequence
@@ -202,7 +206,9 @@ function EventHeader({
           method: "PATCH",
           body: JSON.stringify({
             homeTeam: form.homeTeam.trim(),
-            awayTeam: form.awayTeam.trim(),
+            // Cleared for a question: the empty second side IS how every
+            // surface tells the two shapes apart (see formatEventTitle).
+            awayTeam: form.layout === "markets" ? "" : form.awayTeam.trim(),
             tournamentId: Number(form.tournamentId),
             // datetime-local carries no zone; the operator typed local
             // wall-clock time, so read it as local and send an instant.
@@ -226,7 +232,7 @@ function EventHeader({
     <header className="space-y-3 rounded border border-[var(--color-border)] p-3">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h1 className="text-lg font-semibold">
-          {ev.homeTeam} vs {ev.awayTeam}
+          {formatEventTitle(ev.homeTeam, ev.awayTeam)}
         </h1>
         <code className="text-xs text-[var(--color-fg-muted)]">{ev.providerUrn}</code>
       </div>
@@ -250,23 +256,28 @@ function EventHeader({
 
       <div className="flex flex-wrap items-end gap-2">
         <label className="flex flex-col gap-1 text-xs">
-          Home / first side
+          {form.layout === "markets" ? "Event title" : "Home / first side"}
           <input
-            className="admin-input"
+            className="admin-input min-w-[16rem]"
             value={form.homeTeam}
             onChange={(e) => setForm({ ...form, homeTeam: e.target.value })}
             maxLength={120}
           />
         </label>
-        <label className="flex flex-col gap-1 text-xs">
-          Away / second side
-          <input
-            className="admin-input"
-            value={form.awayTeam}
-            onChange={(e) => setForm({ ...form, awayTeam: e.target.value })}
-            maxLength={120}
-          />
-        </label>
+        {/* A question has one subject. Hidden rather than disabled: a
+            greyed field still reads as something left unfilled. Switching
+            back to a match-up brings it and its saved value back. */}
+        {form.layout === "markets" ? null : (
+          <label className="flex flex-col gap-1 text-xs">
+            Away / second side
+            <input
+              className="admin-input"
+              value={form.awayTeam}
+              onChange={(e) => setForm({ ...form, awayTeam: e.target.value })}
+              maxLength={120}
+            />
+          </label>
+        )}
         <label className="flex flex-col gap-1 text-xs">
           Tournament
           <select
