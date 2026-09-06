@@ -4,6 +4,8 @@ import { useState, useTransition, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { clientApi, ApiFetchError } from "@/lib/api-client";
+// Subpath, never the barrel — see packages/types/src/odds.ts.
+import { formatEventTitle } from "@oddzilla/types/custom-events";
 
 export interface TournamentRow {
   id: number;
@@ -398,7 +400,10 @@ function EventsPanel({
     homeTeam: "",
     awayTeam: "",
     scheduledAt: "",
+    endsAt: "",
+    layout: "matchup",
   });
+  const questionShaped = form.layout === "markets";
 
   function create(e: FormEvent) {
     e.preventDefault();
@@ -412,12 +417,18 @@ function EventsPanel({
             body: JSON.stringify({
               tournamentId: Number(form.tournamentId),
               homeTeam: form.homeTeam.trim(),
-              awayTeam: form.awayTeam.trim(),
+              // Left empty for a question-shaped event: its whole title
+              // is the first field, and there is no opponent to invent.
+              awayTeam: questionShaped ? "" : form.awayTeam.trim(),
               // datetime-local has no zone; the operator is typing local
               // wall-clock time, so read it as local and send an instant.
               scheduledAt: form.scheduledAt
                 ? new Date(form.scheduledAt).toISOString()
                 : null,
+              endsAt: form.endsAt
+                ? new Date(form.endsAt).toISOString()
+                : null,
+              layout: form.layout,
             }),
           },
         );
@@ -429,7 +440,10 @@ function EventsPanel({
   }
 
   const canCreate =
-    form.tournamentId && form.homeTeam.trim() && form.awayTeam.trim() && !pending;
+    !!form.tournamentId &&
+    !!form.homeTeam.trim() &&
+    (questionShaped || !!form.awayTeam.trim()) &&
+    !pending;
 
   return (
     <section className="space-y-3">
@@ -455,23 +469,43 @@ function EventsPanel({
           </select>
         </label>
         <label className="flex flex-col gap-1 text-xs">
-          Home / first side
-          <input
+          Kind
+          <select
             className="admin-input"
-            value={form.homeTeam}
-            onChange={(e) => setForm({ ...form, homeTeam: e.target.value })}
-            maxLength={120}
-          />
+            value={form.layout}
+            onChange={(e) => setForm({ ...form, layout: e.target.value })}
+          >
+            <option value="matchup">Match-up (two sides)</option>
+            <option value="markets">Question (markets on the card)</option>
+          </select>
         </label>
         <label className="flex flex-col gap-1 text-xs">
-          Away / second side
+          {questionShaped ? "Event title" : "Home / first side"}
           <input
-            className="admin-input"
-            value={form.awayTeam}
-            onChange={(e) => setForm({ ...form, awayTeam: e.target.value })}
+            className="admin-input min-w-[18rem]"
+            value={form.homeTeam}
+            onChange={(e) => setForm({ ...form, homeTeam: e.target.value })}
+            placeholder={
+              questionShaped ? "Dima and Nastya to unite again" : undefined
+            }
             maxLength={120}
           />
         </label>
+        {/* A question has one subject, so the second side is not merely
+            optional here — it is absent. Hiding it beats disabling it:
+            a greyed field still reads as something the operator failed
+            to fill in. */}
+        {questionShaped ? null : (
+          <label className="flex flex-col gap-1 text-xs">
+            Away / second side
+            <input
+              className="admin-input"
+              value={form.awayTeam}
+              onChange={(e) => setForm({ ...form, awayTeam: e.target.value })}
+              maxLength={120}
+            />
+          </label>
+        )}
         <label className="flex flex-col gap-1 text-xs">
           Starts (local time)
           <input
@@ -481,11 +515,26 @@ function EventsPanel({
             onChange={(e) => setForm({ ...form, scheduledAt: e.target.value })}
           />
         </label>
+        <label className="flex flex-col gap-1 text-xs">
+          Betting closes (optional)
+          <input
+            className="admin-input"
+            type="datetime-local"
+            value={form.endsAt}
+            onChange={(e) => setForm({ ...form, endsAt: e.target.value })}
+            title="Leave empty to keep it open until you suspend or settle it"
+          />
+        </label>
         <button className="btn" type="submit" disabled={!canCreate}>
           Create event
         </button>
         {error ? <span className="text-xs text-red-500">{error}</span> : null}
       </form>
+      <p className="text-xs text-[var(--color-fg-muted)]">
+        {questionShaped
+          ? "A question has no two sides: give it a title, then add markets. The storefront shows those markets on the card itself, so a bettor sees prices without opening the event."
+          : "A match-up renders the usual two-sided card with the match-winner prices on it."}
+      </p>
 
       {tournaments.length === 0 ? (
         <p className="text-sm text-[var(--color-fg-muted)]">
@@ -510,7 +559,7 @@ function EventsPanel({
             {events.map((ev) => (
               <tr key={ev.id} className="border-t border-[var(--color-border)]">
                 <td className="py-2">
-                  {ev.homeTeam} vs {ev.awayTeam}
+                  {formatEventTitle(ev.homeTeam, ev.awayTeam)}
                 </td>
                 <td>
                   <span className="mr-2">{ev.tournament.name}</span>

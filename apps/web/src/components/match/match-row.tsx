@@ -17,6 +17,7 @@ import type { SlipSelection } from "@oddzilla/types";
 // Value import via the subpath, never the barrel — see the note in
 // packages/types/src/odds.ts.
 import { formatOddsDisplay, isBettableOdds } from "@oddzilla/types/odds";
+import { formatEventTitle } from "@oddzilla/types/custom-events";
 
 /**
  * One inline match-winner price on a list card.
@@ -853,8 +854,24 @@ function InlineMarkets({
 }) {
   const slip = useBetSlip();
 
+  const title = formatEventTitle(homeTeam, awayTeam);
+
   return (
     <div style={{ display: "flex", flexDirection: "column" }}>
+      {/* The question itself. The card header above carries the sport,
+          the tournament and the time — none of which say what is being
+          asked, and without a match-up there is nowhere else for it. */}
+      <div
+        style={{
+          padding: "8px 12px 0",
+          fontSize: 14.5,
+          fontWeight: 500,
+          letterSpacing: "-0.01em",
+          overflowWrap: "anywhere",
+        }}
+      >
+        {title}
+      </div>
       {markets.map((market, idx) => (
         <div
           key={market.id}

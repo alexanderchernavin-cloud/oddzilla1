@@ -100,8 +100,20 @@ const marketBody = z.object({
 
 const eventBody = z.object({
   tournamentId: z.number().int().positive(),
+  /**
+   * The first side of a match-up, or the WHOLE TITLE of a question-shaped
+   * event. `matches` has two NOT NULL team columns because every fixture
+   * has two sides; a question has one subject, so it goes here and
+   * `awayTeam` is left empty. `formatEventTitle` reads that convention.
+   */
   homeTeam: nameSchema,
-  awayTeam: nameSchema,
+  /**
+   * Empty for a markets-layout event. Not `nameSchema`, which requires at
+   * least one character — forcing an operator to invent an opponent for
+   * "Dima and Nastya to unite again" is the thing this whole layout
+   * exists to avoid.
+   */
+  awayTeam: z.string().trim().max(120).default(""),
   scheduledAt: z.string().datetime().nullable().optional(),
   bestOf: z.number().int().min(1).max(9).nullable().optional(),
   /**

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { fromMicro, toMicro } from "@oddzilla/types/money";
 import { formatOddsDisplay } from "@oddzilla/types/odds";
+import { formatEventTitle } from "@oddzilla/types/custom-events";
 import { SUPPORTED_CURRENCIES, type Currency } from "@oddzilla/types/currencies";
 // Runtime imports MUST come from the /products subpath (mirrors the
 // currencies workaround) — Next.js webpack can't resolve ".js" imports
@@ -1814,7 +1815,7 @@ function SelectionCard({
           whiteSpace: "nowrap",
         }}
       >
-        {selection.homeTeam} vs {selection.awayTeam}
+        {formatEventTitle(selection.homeTeam, selection.awayTeam)}
       </div>
     </div>
   );
