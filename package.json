@@ -16,6 +16,7 @@
     "format": "prettier --write \"**/*.{ts,tsx,js,json,md}\"",
     "db:generate": "pnpm --filter @oddzilla/db db:generate",
     "db:migrate": "pnpm --filter @oddzilla/db db:migrate",
+    "db:check-migrations": "pnpm --filter @oddzilla/db db:check-migrations",
     "db:seed": "pnpm --filter @oddzilla/db db:seed",
     "db:studio": "pnpm --filter @oddzilla/db db:studio"
   },

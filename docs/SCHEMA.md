@@ -1098,11 +1098,68 @@ SELECT date_trunc('day', c.executed_at) AS day,
 ## Migration workflow
 
 1. Edit `packages/db/src/schema/<file>.ts`.
-2. Write the equivalent SQL in `packages/db/migrations/<next>_<desc>.sql`.
-3. Update `packages/db/migrations/meta/_journal.json` with a new entry.
+2. Write the equivalent SQL in
+   `packages/db/migrations/<YYYYMMDDTHHMMSS>_<lower_snake_desc>.sql`. Get the
+   prefix from `date -u +%Y%m%dT%H%M%S` — see "Why timestamps, not numbers"
+   below.
+3. `pnpm db:check-migrations` — also chained onto `packages/db`'s `lint`, so
+   `pnpm lint` and CI both run it.
 4. `make migrate` applies the new file(s) in a transaction per file and
    records success in the `_migrations` table.
 5. Commit.
+
+Do not hand-append to `packages/db/migrations/meta/_journal.json`. That step
+used to be listed here, but the runner reads the directory rather than the
+journal, and the file has been unmaintained since `0058` — 65 migrations have
+landed without it. It stays in the tree only because drizzle-kit owns it.
+
+### Why timestamps, not numbers
+
+Migrations `0000`–`0110` use a four-digit sequence number. That number was a
+shared counter allocated from a local snapshot: you read the directory, took
+the highest, added one — except you read *your branch's* copy, which is main
+as it stood when you branched. Two branches off the same commit both see the
+same max and both claim it.
+
+Nothing catches it. Git can't: the branches add *different files*, so there is
+no textual overlap and the merge is clean. The migrate job can't either: it
+applies everything to an empty database and passes, because colliding
+migrations are usually unrelated — and with both PRs open at once, neither run
+sees the other's file. The collision exists only in the merged tree, the one
+state nobody built. It happened **11 times**, `0045` three ways.
+
+It is not cosmetic. `migrate.ts` sorts by filename, so a tie is broken by the
+description text — `0110_drop_live_chat` runs before `0110_logo_source_wikipedia`
+because `d` < `l`, which is luck rather than intent. And production applies each
+migration when its PR deploys (merge order) while a fresh dev or CI database
+applies them all in one pass (alphabetical order); when those disagree, the same
+repo produces two different schemas and nothing errors.
+
+A UTC timestamp comes from a clock instead of from reading a directory, so two
+authors cannot collide. The numeric era is frozen at `0110`; every `0NNN_` name
+sorts before every `2026…` name, so the two eras concatenate and nothing needed
+renaming. [`packages/db/src/check-migrations.ts`](../packages/db/src/check-migrations.ts)
+enforces the form, the freeze, and prefix uniqueness.
+
+**If one still slips through**, it will be because two PRs were open at once —
+neither one's CI sees the other's file, and the one that merges second is not
+re-checked against the new base. The usual cure, "require branches to be up to
+date before merging" or a merge queue, is not available on this repo: classic
+branch protection and rulesets both need GitHub Pro on a private repo, and this
+is a free personal plan (the API answers 403, verified 2026-09-06).
+
+What covers it instead is that the check is chained onto `packages/db`'s `lint`
+script, so it runs inside the `pnpm lint` that CI performs on pull requests **and
+on every push to `main`** — the check goes red on main within about a minute of
+the merge. That is early enough to matter:
+renaming a migration is only dangerous once it has been **applied**, and applying
+happens on a manual `make deploy`, never automatically. Red main means rename it
+before the next deploy, and it costs nothing.
+
+**Never rename or edit an applied migration.** `_migrations` keys on the
+filename with no checksum, so a rename makes the runner treat it as new and run
+it again; an edit is applied to fresh databases but not to production. Fix a bad
+name while the PR is still open — that is the only window in which it is free.
 
 We don't use `drizzle-kit migrate` — our migrations include Postgres features
 (partitioning, extensions) Drizzle can't emit. Drizzle owns the TS schema for

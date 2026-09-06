@@ -203,9 +203,33 @@ These rules are load-bearing. Breaking them causes money or data loss.
 
 5. **Drizzle is the schema source of truth.** Schema changes start in
    `packages/db/src/schema/*.ts` AND a hand-written SQL file in
-   `packages/db/migrations/`, with an entry appended to
-   `migrations/meta/_journal.json`. Go services use raw pgx queries that
+   `packages/db/migrations/`. Go services use raw pgx queries that
    read those tables directly — no codegen.
+
+   **Name it `YYYYMMDDTHHMMSS_lower_snake_case.sql`** — get the prefix from
+   `date -u +%Y%m%dT%H%M%S`, never by looking at the directory and adding
+   one. A sequence number read from your branch is not unique across
+   branches: two branches off the same commit both see the same max and both
+   claim it, git merges them cleanly because they are different files, and
+   the collision only exists in the merged tree. That happened 11 times
+   (0045 three ways) before the numbers were frozen at `0110`. It is not
+   cosmetic — `migrate.ts` sorts by filename, so a tie is broken by the
+   description text, and production applies migrations in merge order while
+   a fresh database applies them alphabetically. When those disagree the
+   same repo yields two different schemas with no error anywhere.
+   `pnpm db:check-migrations` enforces it; it is chained onto `packages/db`'s
+   `lint`, so `pnpm lint` and CI both run it — on pull requests and on every
+   push to main, which is the backstop for two PRs that never saw each other.
+
+   Do NOT hand-append to `migrations/meta/_journal.json`. The runner reads
+   the directory, not the journal; the file has been unmaintained since
+   `0058` and 65 migrations have landed without it. It stays only because
+   drizzle-kit owns it.
+
+   Never rename or edit a migration that has been applied anywhere.
+   `_migrations` keys on the filename with no checksum, so a rename re-runs
+   the file. Fix a bad name while the PR is still open — that is the only
+   window in which it is free.
 
 6. **No localhost in code.** Every inter-service URL/host comes from env.
    `packages/config/src/env.ts` parses with zod and fails fast on missing
