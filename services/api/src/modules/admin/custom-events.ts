@@ -42,6 +42,7 @@ import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   adminAuditLog,
   categories,
+  customEventConfig,
   customMarketConfig,
   customOutcomeConfig,
   marketOutcomes,
@@ -103,6 +104,14 @@ const eventBody = z.object({
   awayTeam: nameSchema,
   scheduledAt: z.string().datetime().nullable().optional(),
   bestOf: z.number().int().min(1).max(9).nullable().optional(),
+  /**
+   * `matchup` = the usual two-sided card. `markets` = drop it and render
+   * the event's markets on the card, which is what a question with
+   * answers needs — there is no home and away side to stack.
+   */
+  layout: z.enum(["matchup", "markets"]).optional(),
+  /** When betting closes. Null = no automatic close. */
+  endsAt: z.string().datetime().nullable().optional(),
 });
 
 const eventPatchBody = eventBody.partial().extend({
@@ -634,6 +643,14 @@ export default async function adminCustomEventsRoutes(app: FastifyInstance) {
         .returning({ id: matches.id });
       const urn = `cu:match:${row!.id}`;
       await tx.update(matches).set({ providerUrn: urn }).where(eq(matches.id, row!.id));
+      // Presentation + closing date live in their own row. Written
+      // unconditionally so every custom event has one and the edit path
+      // never has to branch on "does a config exist yet".
+      await tx.insert(customEventConfig).values({
+        matchId: row!.id,
+        layout: body.layout ?? "matchup",
+        endsAt: body.endsAt ? new Date(body.endsAt) : null,
+      });
       created = { id: row!.id.toString(), providerUrn: urn };
       await audit(tx, {
         adminId: admin.id,
@@ -668,10 +685,16 @@ export default async function adminCustomEventsRoutes(app: FastifyInstance) {
           riskTier: tournaments.riskTier,
           categoryName: categories.name,
           sportId: categories.sportId,
+          // LEFT-joined: events created before the layout table existed
+          // carry no row, and they mean "matchup, no closing date" — the
+          // behaviour they already had.
+          layout: customEventConfig.layout,
+          endsAt: customEventConfig.endsAt,
         })
         .from(matches)
         .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
         .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+        .leftJoin(customEventConfig, eq(customEventConfig.matchId, matches.id))
         .where(eq(matches.id, matchId))
         .limit(1);
       if (!event || event.sportId !== sport.id) throw new NotFoundError();
@@ -756,6 +779,8 @@ export default async function adminCustomEventsRoutes(app: FastifyInstance) {
           scheduledAt: event.scheduledAt?.toISOString() ?? null,
           status: event.status,
           bestOf: event.bestOf,
+          layout: event.layout ?? "matchup",
+          endsAt: event.endsAt?.toISOString() ?? null,
           tournament: {
             id: event.tournamentId,
             name: event.tournamentName,
@@ -866,6 +891,29 @@ export default async function adminCustomEventsRoutes(app: FastifyInstance) {
             updatedAt: new Date(),
           })
           .where(eq(matches.id, matchId));
+
+        // Upsert rather than update: an event created before this table
+        // existed has no row yet, and the operator editing it is exactly
+        // when one should appear.
+        if (body.layout !== undefined || body.endsAt !== undefined) {
+          const endsAt = body.endsAt ? new Date(body.endsAt) : null;
+          await tx
+            .insert(customEventConfig)
+            .values({
+              matchId,
+              layout: body.layout ?? "matchup",
+              endsAt,
+            })
+            .onConflictDoUpdate({
+              target: customEventConfig.matchId,
+              set: {
+                ...(body.layout !== undefined ? { layout: body.layout } : {}),
+                ...(body.endsAt !== undefined ? { endsAt } : {}),
+                updatedAt: new Date(),
+              },
+            });
+        }
+
         await audit(tx, {
           adminId: admin.id,
           action: "custom_event.event_update",

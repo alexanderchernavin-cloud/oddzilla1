@@ -22,9 +22,14 @@
 // every failure logged rather than thrown.
 
 import type { FastifyInstance } from "fastify";
-import { and, eq, inArray } from "drizzle-orm";
-import { customMarketConfig, markets, matches } from "@oddzilla/db";
-import { repriceMarket } from "./pricing.js";
+import { and, eq, inArray, isNotNull, lte } from "drizzle-orm";
+import {
+  customEventConfig,
+  customMarketConfig,
+  markets,
+  matches,
+} from "@oddzilla/db";
+import { publishMarketStatus, repriceMarket } from "./pricing.js";
 
 const LOCK_KEY = "custom-events:liability:lock";
 
@@ -75,6 +80,53 @@ export function startCustomLiabilitySweeper(
       );
       if (!acquired) return;
       locked = true;
+
+      // Close out anything past its own closing date FIRST, so a market
+      // that has just expired is suspended rather than repriced — and so
+      // it is already gone from the repricing set selected below.
+      //
+      // Suspend, not settle: the window shutting says betting is over,
+      // not that the result is known. An outright closes months before
+      // anyone can grade it, and the operator settles when they can. The
+      // storefront locks the cell on the status frame, and `POST /bets`
+      // already refuses a market that is not active, so this is the whole
+      // enforcement — no separate placement guard.
+      const expired = await app.db
+        .select({ marketId: markets.id, matchId: markets.matchId })
+        .from(customEventConfig)
+        .innerJoin(markets, eq(markets.matchId, customEventConfig.matchId))
+        .where(
+          and(
+            eq(markets.status, 1),
+            isNotNull(customEventConfig.endsAt),
+            lte(customEventConfig.endsAt, new Date()),
+          ),
+        )
+        .limit(MAX_PER_PASS);
+      for (const e of expired) {
+        try {
+          await app.db
+            .update(markets)
+            .set({ status: -1, updatedAt: new Date() })
+            .where(eq(markets.id, e.marketId));
+          await publishMarketStatus(app, {
+            matchId: e.matchId,
+            marketId: e.marketId,
+            status: -1,
+          });
+        } catch (err) {
+          app.log.warn(
+            { err, component: "custom-liability", marketId: e.marketId.toString() },
+            "closing an expired custom market failed",
+          );
+        }
+      }
+      if (expired.length > 0) {
+        app.log.info(
+          { component: "custom-liability", closed: expired.length },
+          "suspended custom markets past their closing date",
+        );
+      }
 
       // EVERY open custom market, not only the liability-traded ones.
       //

@@ -46,6 +46,10 @@ export interface EventDetail {
     scheduledAt: string | null;
     status: string;
     bestOf: number | null;
+    /** `matchup` = two-sided card, `markets` = markets shown on the card. */
+    layout: string;
+    /** When betting closes. Null = no automatic close. */
+    endsAt: string | null;
     tournament: { id: number; name: string; riskTier: number | null };
     categoryName: string;
   };
@@ -172,8 +176,10 @@ function EventHeader({
     awayTeam: ev.awayTeam,
     tournamentId: String(ev.tournament.id),
     scheduledAt: toLocalInput(ev.scheduledAt),
+    endsAt: toLocalInput(ev.endsAt),
     bestOf: ev.bestOf != null ? String(ev.bestOf) : "",
     status: ev.status,
+    layout: ev.layout ?? "matchup",
   };
   const [form, setForm] = useState(initial);
 
@@ -203,8 +209,10 @@ function EventHeader({
             scheduledAt: form.scheduledAt
               ? new Date(form.scheduledAt).toISOString()
               : null,
+            endsAt: form.endsAt ? new Date(form.endsAt).toISOString() : null,
             bestOf: form.bestOf ? Number(form.bestOf) : null,
             status: form.status,
+            layout: form.layout,
           }),
         });
         router.refresh();
@@ -230,6 +238,15 @@ function EventHeader({
           Tournaments before you expect real stakes.
         </p>
       ) : null}
+
+      <p className="text-xs text-[var(--color-fg-muted)]">
+        {form.layout === "markets"
+          ? "The storefront shows this event's markets on the card itself, with no match-up. Both sides' names are still used to label a bet in the slip and in bet history."
+          : "The storefront shows the usual two-sided card, with the match-winner prices on it."}
+        {form.endsAt
+          ? " Betting stops at the closing time, and the markets suspend on their own — settle them once you know the result."
+          : " With no closing time the event stays open until you suspend or settle it."}
+      </p>
 
       <div className="flex flex-wrap items-end gap-2">
         <label className="flex flex-col gap-1 text-xs">
@@ -275,6 +292,27 @@ function EventHeader({
           />
         </label>
         <label className="flex flex-col gap-1 text-xs">
+          Betting closes (local time)
+          <input
+            className="admin-input"
+            type="datetime-local"
+            value={form.endsAt}
+            onChange={(e) => setForm({ ...form, endsAt: e.target.value })}
+            title="Leave empty to keep the event open until you suspend or settle it"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs">
+          Presentation
+          <select
+            className="admin-input"
+            value={form.layout}
+            onChange={(e) => setForm({ ...form, layout: e.target.value })}
+          >
+            <option value="matchup">Match-up card</option>
+            <option value="markets">Markets on the card</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-xs">
           Best of
           <input
             className="admin-input w-20"
@@ -284,6 +322,12 @@ function EventHeader({
             value={form.bestOf}
             onChange={(e) => setForm({ ...form, bestOf: e.target.value })}
             placeholder="—"
+            disabled={form.layout === "markets"}
+            title={
+              form.layout === "markets"
+                ? "Only meaningful on a match-up card"
+                : undefined
+            }
           />
         </label>
         <label className="flex flex-col gap-1 text-xs">

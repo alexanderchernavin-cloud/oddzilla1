@@ -61,6 +61,23 @@ export interface ListMatch {
    * field still type-checks; callers treat absent as false.
    */
   featured?: boolean;
+  /**
+   * Markets to render ON the card, for operator-authored events that
+   * present as a question rather than a fixture ("Dima and Nastya to
+   * unite again" has no home and away side to stack). Present only for
+   * custom events the operator flagged; every feed match leaves it null
+   * and renders the usual match-up.
+   */
+  inlineMarkets?: Array<{
+    id: string;
+    name: string;
+    outcomes: Array<{
+      outcomeId: string;
+      label: string;
+      price: string | null;
+      probability?: string | null;
+    }>;
+  }> | null;
   tournament: { id: number; name: string; riskTier?: number | null };
   matchWinner: {
     marketId: string;
@@ -240,6 +257,14 @@ export const MatchRow = memo(function MatchRow({
     />
   ) : null;
 
+  // A markets-layout event replaces the match-up entirely. Guarded on a
+  // non-empty list so an event flagged before its first market was added
+  // still renders something rather than an empty card.
+  const inlineMarkets =
+    match.inlineMarkets && match.inlineMarkets.length > 0
+      ? match.inlineMarkets
+      : null;
+
   const tier = match.tournament.riskTier ?? null;
   const featured = isFeaturedTier(tier);
   // Top-tier cards (Oddin risk_tier 1 or 2) earn a subtle gold left-edge
@@ -338,19 +363,29 @@ export const MatchRow = memo(function MatchRow({
           )}
         </div>
 
-        <ScoreTable
-          homeTeam={match.homeTeam}
-          awayTeam={match.awayTeam}
-          homeLogoUrl={match.homeLogoUrl ?? null}
-          awayLogoUrl={match.awayLogoUrl ?? null}
-          liveScore={match.liveScore ?? null}
-          bestOf={match.bestOf ?? null}
-          isLive={isLive}
-          sportSlug={sportSlug}
-          homeTrailing={homeOdds}
-          awayTrailing={awayOdds}
-          drawTrailing={drawOdds}
-        />
+        {inlineMarkets ? (
+          <InlineMarkets
+            markets={inlineMarkets}
+            matchId={match.id}
+            homeTeam={match.homeTeam}
+            awayTeam={match.awayTeam}
+            sportSlug={sportSlug}
+          />
+        ) : (
+          <ScoreTable
+            homeTeam={match.homeTeam}
+            awayTeam={match.awayTeam}
+            homeLogoUrl={match.homeLogoUrl ?? null}
+            awayLogoUrl={match.awayLogoUrl ?? null}
+            liveScore={match.liveScore ?? null}
+            bestOf={match.bestOf ?? null}
+            isLive={isLive}
+            sportSlug={sportSlug}
+            homeTrailing={homeOdds}
+            awayTrailing={awayOdds}
+            drawTrailing={drawOdds}
+          />
+        )}
         </article>
       </Link>
       <SidePanelButton
@@ -789,6 +824,121 @@ const ROW_ODD_HEIGHT = 30;
 // row gap, so a phone still gets a 24px target (WCAG 2.5.8) under a
 // button that only takes 16px of the card.
 const ROW_ODD_HEIGHT_COMPACT = 16;
+
+/**
+ * The card body for an event that presents as a question rather than a
+ * fixture: each market's name, then a row per answer with its price.
+ *
+ * Deliberately NOT the two-column ScoreTable shape. The whole reason this
+ * exists is that an operator's question has no home and away side, and
+ * forcing one made "Will unite again" and "Will not unite again" read as
+ * two teams playing each other.
+ *
+ * Answers stack one per row rather than sitting side by side because they
+ * are prose, not team names: a market can carry two of them or seven, and
+ * their labels are sentences.
+ */
+function InlineMarkets({
+  markets,
+  matchId,
+  homeTeam,
+  awayTeam,
+  sportSlug,
+}: {
+  markets: NonNullable<ListMatch["inlineMarkets"]>;
+  matchId: string;
+  homeTeam: string;
+  awayTeam: string;
+  sportSlug: string;
+}) {
+  const slip = useBetSlip();
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column" }}>
+      {markets.map((market, idx) => (
+        <div
+          key={market.id}
+          style={{
+            padding: "8px 12px 10px",
+            borderTop: idx === 0 ? undefined : "1px solid var(--hairline)",
+          }}
+        >
+          <div
+            className="mono"
+            style={{
+              fontSize: 10.5,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: "var(--fg-dim)",
+              marginBottom: 6,
+            }}
+          >
+            {market.name}
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {market.outcomes.map((o) => {
+              const price = o.price ? Number(o.price) : null;
+              const picked = slip.has(market.id, o.outcomeId);
+              return (
+                <div
+                  key={o.outcomeId}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    minWidth: 0,
+                  }}
+                >
+                  <span
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      fontSize: 13.5,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {o.label}
+                  </span>
+                  <RowOddBtn
+                    label=""
+                    price={price}
+                    selected={picked}
+                    locked={!price}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (!price || !o.price) return;
+                      const selection: SlipSelection = {
+                        matchId,
+                        marketId: market.id,
+                        outcomeId: o.outcomeId,
+                        odds: o.price,
+                        probability: o.probability ?? undefined,
+                        homeTeam,
+                        awayTeam,
+                        marketLabel: market.name,
+                        outcomeLabel: o.label,
+                        sportSlug,
+                        active: true,
+                      };
+                      if (picked) {
+                        slip.remove(market.id, o.outcomeId);
+                      } else {
+                        slip.add(selection);
+                      }
+                    }}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function RowOddBtn({
   label,

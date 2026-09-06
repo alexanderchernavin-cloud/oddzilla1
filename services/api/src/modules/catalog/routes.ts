@@ -68,6 +68,7 @@ import {
   loadPromoVisibilityCascades,
   resolveVisible,
 } from "../../lib/bettor-promo-visibility.js";
+import { loadInlineMarkets } from "../../lib/custom-events/pricing.js";
 import {
   substituteTemplate,
   renderOutcomeLabel,
@@ -1400,8 +1401,17 @@ export default async function catalogRoutes(app: FastifyInstance) {
       homeCompetitorId: r.homeCompetitorId,
       awayCompetitorId: r.awayCompetitorId,
     }));
-    const [viewerRiskScore, topMarkets] = await Promise.all([
+    const [viewerRiskScore, inlineMarketsByMatch, topMarkets] = await Promise.all([
       loadViewerRiskScore(app.db, request.user?.id),
+      // Markets rendered ON the card, for operator-authored events that
+      // present as a question rather than a fixture. Returns an empty map
+      // for a page made of feed matches, which is every page but the
+      // Custom sport's.
+      loadInlineMarkets(
+        app.db,
+        rows.map((r) => r.matchId),
+        formatForMatch,
+      ),
       // Inline Top market per card (when admin configured the Top scope
       // for this sport). Returned alongside matchWinner so the storefront
       // can show either depending on which list-page tab is active.
@@ -1450,6 +1460,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
           bestOf: r.bestOf,
           liveScore: r.liveScore,
           featured: r.featured,
+          inlineMarkets: inlineMarketsByMatch.get(r.matchId.toString()) ?? null,
           tournament: {
             id: r.tournamentId,
             name: r.tournamentName,
@@ -2344,8 +2355,16 @@ export default async function catalogRoutes(app: FastifyInstance) {
     // Inline Top markets per card. We fetch the curated id list per
     // sport once (typically a handful of distinct sports in any list
     // response), then resolve the first available Top market per match.
-    const [viewerRiskScore, topMarkets] = await Promise.all([
+    const [viewerRiskScore, inlineMarketsByMatch, topMarkets] = await Promise.all([
       loadViewerRiskScore(app.db, request.user?.id),
+      // See the same call on /catalog/sports/:slug. Empty for a page made
+      // of feed matches, which is every lobby / live / upcoming page that
+      // has no operator-authored event on it.
+      loadInlineMarkets(
+        app.db,
+        rows.map((r) => r.matchId),
+        formatForMatch,
+      ),
       loadTopMarketsForMatches(
         app.db,
         rows.map((r) => ({ matchId: r.matchId, sportId: r.sportId })),
@@ -2389,6 +2408,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
           bestOf: r.bestOf,
           liveScore: r.liveScore,
           featured: r.featured,
+          inlineMarkets: inlineMarketsByMatch.get(r.matchId.toString()) ?? null,
           tournament: {
             id: r.tournamentId,
             name: r.tournamentName,
