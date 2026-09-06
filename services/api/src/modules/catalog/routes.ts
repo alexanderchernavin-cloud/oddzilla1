@@ -37,6 +37,10 @@ import {
 import { NotFoundError } from "../../lib/errors.js";
 import { cached, cachedSwr } from "../../lib/cache.js";
 import {
+  applyFeedTabMembership,
+  resolveGroupRows,
+} from "../../lib/market-groups.js";
+import {
   loadBoostRulesForMatches,
   loadViewerRiskScore,
   toQuoteRule,
@@ -1580,6 +1584,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
           scope: feMarketGroups.scope,
           label: feMarketGroups.label,
           displayOrder: feMarketGroups.displayOrder,
+          membership: feMarketGroups.membership,
         })
         .from(feMarketGroups)
         .where(eq(feMarketGroups.sportId, match.sportId)),
@@ -1916,28 +1921,17 @@ export default async function catalogRoutes(app: FastifyInstance) {
     // appended below and the whole set is sorted once at the end.
     const groups = Array.from(scopeMap.values());
 
-    // Per-scope admin ordering (loaded in the parallel batch above). Scope
-    // values live directly in fe_market_display_order and are addressed the
-    // same way the storefront tabs are: `match`, `top`, or `map_<N>`. Each
-    // Map N tab gets its own independently configurable list (migration 0057).
-    const orderByScope = new Map<string, Map<number, number>>();
-    // Curated tabs keep the rows whole: their membership is per
-    // (market type, sub-event), not per market type. Feed tabs stay keyed
-    // by type alone — inside one tab the sub-event is fixed.
+    // Per-scope admin configuration (loaded in the parallel batch above).
+    // Scope values live directly in fe_market_display_order and are
+    // addressed the same way the storefront tabs are: `match`, `top`,
+    // `map_<N>` (migration 0057), `fb_<kinds>` (0106), `custom_<key>`.
+    // Rows keep their sub-event (0109) on every kind of tab — see
+    // lib/market-groups.ts for what an empty one means where.
     const curatedByScope = new Map<
       string,
       Array<{ providerMarketId: number; variant: string; displayOrder: number }>
     >();
     for (const r of orderRows) {
-      let bucket = orderByScope.get(r.scope);
-      if (!bucket) {
-        bucket = new Map<number, number>();
-        orderByScope.set(r.scope, bucket);
-      }
-      // A wildcard row must not displace an explicit one for the same type.
-      if (r.variant === "" || !bucket.has(r.providerMarketId)) {
-        bucket.set(r.providerMarketId, r.displayOrder);
-      }
       const list = curatedByScope.get(r.scope) ?? [];
       list.push({
         providerMarketId: r.providerMarketId,
@@ -1946,33 +1940,39 @@ export default async function catalogRoutes(app: FastifyInstance) {
       });
       curatedByScope.set(r.scope, list);
     }
-    const EMPTY_ORDER = new Map<number, number>();
 
-    function sortKey(orderMap: Map<number, number>, m: MarketRow): [number, number, number] {
-      const admin = orderMap.get(m.providerMarketId);
-      // Configured rows render first (group 0), unranked after (group 1).
-      // Within a group: configured by displayOrder asc; unranked by
-      // providerMarketId asc. The third tuple element is providerMarketId
-      // as a deterministic tiebreaker for repeated configured ids.
-      return admin == null
-        ? [1, m.providerMarketId, m.providerMarketId]
-        : [0, admin, m.providerMarketId];
+    /** Feed default: market id ascending, the pre-config storefront order. */
+    function sortByMarketId(list: MarketRow[]) {
+      list.sort((a, b) => a.providerMarketId - b.providerMarketId);
     }
-    function applySort(orderMap: Map<number, number>, list: MarketRow[]) {
-      list.sort((a, b) => {
-        const ka = sortKey(orderMap, a);
-        const kb = sortKey(orderMap, b);
-        if (ka[0] !== kb[0]) return ka[0] - kb[0];
-        if (ka[1] !== kb[1]) return ka[1] - kb[1];
-        return ka[2] - kb[2];
-      });
-    }
+    // Feed tabs: the operator's rows can now do three things — order the
+    // tab's own markets (what they always did), IMPORT a market from
+    // another sub-event, and, when the tab is set to membership='manual'
+    // (migration 20260906T014417), define the tab's contents outright.
+    //
+    // 'auto' is the default and stays lossless: the listed markets render
+    // first in the operator's order, then everything else the feed puts on
+    // the tab. That matters because the backoffice pool is built from the
+    // CURRENT offer — a market kind that was not live when the operator
+    // saved is simply not in the list, and under 'auto' it still reaches
+    // bettors.
+    const membershipByScope = new Map(
+      groupConfigRows.map((r) => [r.scope as string, r.membership]),
+    );
     for (const g of groups) {
       // Group id is the same string we store in fe_market_display_order
-      // (match / map_<N>), so a single Map.get covers both Match and
-      // every Map N tab. Missing rows = default order.
-      const orderMap = orderByScope.get(g.id) ?? EMPTY_ORDER;
-      applySort(orderMap, g.markets);
+      // (match / map_<N> / fb_<kinds>), so one Map.get covers every feed
+      // tab. Missing rows = default order.
+      const rows = curatedByScope.get(g.id);
+      if (rows && rows.length > 0) {
+        g.markets = applyFeedTabMembership(
+          g.markets,
+          resolveGroupRows(marketList, g.id, rows, false),
+          membershipByScope.get(g.id) === "manual" ? "manual" : "auto",
+        );
+        continue;
+      }
+      sortByMarketId(g.markets);
     }
 
     // Synthetic curated groups — markets the admin explicitly listed for
@@ -1996,27 +1996,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
     ): { id: string; label: string; order: number; markets: MarketRow[] } | null {
       const curated = curatedByScope.get(id);
       if (!curated || curated.length === 0) return null;
-      const group = { id, label, order, markets: [] as MarketRow[] };
-      const seen = new Set<string>();
-      for (const row of [...curated].sort((a, b) => a.displayOrder - b.displayOrder)) {
-        const candidates = marketList.filter(
-          (m) =>
-            m.providerMarketId === row.providerMarketId &&
-            (row.variant === "" || m.variant === row.variant),
-        );
-        if (candidates.length === 0) continue;
-        const matchCopy = candidates.find((m) => m.scope.id === "match");
-        const pick =
-          matchCopy ??
-          candidates.sort((a, b) => a.scope.order - b.scope.order)[0];
-        // Two rows can resolve to the same market row (a wildcard and the
-        // explicit sub-event that wins it); render it once.
-        if (pick && !seen.has(pick.id)) {
-          seen.add(pick.id);
-          group.markets.push(pick);
-        }
-      }
-      return group.markets.length > 0 ? group : null;
+      const markets = resolveGroupRows(marketList, id, curated, true);
+      return markets.length > 0 ? { id, label, order, markets } : null;
     }
 
     // order=-1 renders Top before Match when no admin tab order is set.
@@ -2034,6 +2015,14 @@ export default async function catalogRoutes(app: FastifyInstance) {
         cfg.displayOrder,
       );
       if (custom) groups.push(custom);
+    }
+
+    // A tab set to membership='manual' can resolve to nothing on a given
+    // fixture — its list may name markets this match does not carry — and
+    // an empty tab is worse than no tab. Curated groups already return
+    // null in that case; this covers the feed tabs.
+    for (let i = groups.length - 1; i >= 0; i--) {
+      if ((groups[i]?.markets.length ?? 0) === 0) groups.splice(i, 1);
     }
 
     // Tab order: groups with a fe_market_groups row sort first by the

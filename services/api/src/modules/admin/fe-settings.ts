@@ -51,6 +51,7 @@ import {
   isCustomScope,
   isCuratedScope,
   type FeMarketScope,
+  type FeGroupMembership,
 } from "@oddzilla/db";
 import { defaultScopeOrder } from "@oddzilla/types/market-scope";
 import {
@@ -83,6 +84,10 @@ const reorderBody = z.object({
   // Ordered list — index 0 renders first. Each (market, sub-event) appears
   // at most once (validated in the handler).
   order: z.array(orderEntrySchema).max(2000),
+  // Feed tabs only: whether the feed keeps filling the tab behind this
+  // list ('auto', the default) or the list IS the tab ('manual').
+  // Omitted leaves the tab's current setting alone.
+  membership: z.enum(["auto", "manual"]).optional(),
 });
 
 function normaliseEntry(
@@ -120,7 +125,20 @@ const groupLabelSchema = z.string().trim().min(1).max(40);
 
 const MAX_CUSTOM_GROUPS_PER_SPORT = 20;
 
-type GroupRow = { scope: string; label: string | null; displayOrder: number };
+type GroupRow = {
+  scope: string;
+  label: string | null;
+  displayOrder: number;
+  membership: FeGroupMembership;
+};
+
+/**
+ * What a feed tab's rows mean — migration 20260906T014417. No group row,
+ * or one from before it, means 'auto': the list orders, the feed still fills.
+ */
+function membershipOf(rows: GroupRow[], scope: string): FeGroupMembership {
+  return rows.find((r) => r.scope === scope)?.membership ?? "auto";
+}
 
 interface Tab {
   scope: string;
@@ -185,6 +203,7 @@ async function loadGroupRows(
       scope: feMarketGroups.scope,
       label: feMarketGroups.label,
       displayOrder: feMarketGroups.displayOrder,
+      membership: feMarketGroups.membership,
     })
     .from(feMarketGroups)
     .where(eq(feMarketGroups.sportId, sportId))
@@ -235,6 +254,7 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
           scope: feMarketGroups.scope,
           label: feMarketGroups.label,
           displayOrder: feMarketGroups.displayOrder,
+          membership: feMarketGroups.membership,
         })
         .from(feMarketGroups)
         .orderBy(asc(feMarketGroups.sportId), asc(feMarketGroups.displayOrder)),
@@ -249,7 +269,12 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
     const groupsBySport = new Map<number, GroupRow[]>();
     for (const g of groupRowsAll) {
       const cur = groupsBySport.get(g.sportId) ?? [];
-      cur.push({ scope: g.scope, label: g.label, displayOrder: g.displayOrder });
+      cur.push({
+        scope: g.scope,
+        label: g.label,
+        displayOrder: g.displayOrder,
+        membership: g.membership,
+      });
       groupsBySport.set(g.sportId, cur);
     }
 
@@ -274,13 +299,24 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
     };
   });
 
-  // ── Detail: ordered + unranked markets for one (sport, scope) ───────
-  // The "available" pool is whatever the sport's current offer puts on
-  // that tab — the same derivation the match page runs, so what an
-  // operator orders here is what a bettor sees. Curated tabs (`top` and
-  // custom groups) have no implicit pool and draw from every market on the
-  // sport instead. Markets an operator already ordered are always listed,
-  // even if nothing is live under them right now.
+  // ── Detail: one tab's contents, plus every market it could hold ────
+  //
+  // Every tab is edited the same way now: the list on the left is what
+  // the tab renders, the pool on the right is every market this sport
+  // offers, and a market moves between them. Feed tabs used to be
+  // order-only — the pool was just that tab's own markets and there was
+  // no way to put the corners total on the Match tab or to leave a
+  // market off a tab that carries it.
+  //
+  // What still differs between the two kinds is the DEFAULT, and it is
+  // the safe one. A feed tab starts at membership='auto': the list sets
+  // the order and the feed keeps filling the rest, which is exactly what
+  // it did before. An operator who wants the tab to hold only what they
+  // picked flips it to 'manual' explicitly (see the PUT). That choice
+  // matters because this pool is derived from the CURRENT offer — a
+  // market kind that only appears on big fixtures is simply not on
+  // screen on a quiet afternoon, and 'auto' means saving an order can
+  // never silently drop it from the storefront.
   app.get("/admin/fe-settings/markets-order/:sportId/:scope", async (request) => {
     request.requireRole("admin");
     const params = z
@@ -317,32 +353,40 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
         : new NotFoundError("scope_not_found", "scope_not_found");
     }
 
-    // Two different jobs behind one screen, and they need different pools.
+    // The universe of markets this tab could hold: every market on the
+    // sport, one entry per (type, sub-event).
     //
-    // A FEED tab (Match / Map N / a sub-event) already contains its markets
-    // — membership is the feed's call, not the operator's — so the pool is
-    // that tab's own market types and the only thing being configured is
-    // their order. A CURATED tab (Top, custom groups) is opt-in membership,
-    // so its pool is every market on the sport, one entry per (type,
-    // sub-event): "Total" exists on Match, on Corners and on 1st half, and
-    // picking which of those to feature is the whole point.
+    // A feed tab's OWN markets are the exception — they go in keyed by
+    // type alone (variant ""), because inside one tab the sub-event is
+    // fixed and splitting by variant there would only fragment the list
+    // into Oddin's shape variants ("Match result way:two" beside
+    // "Match result way:three"), which are one market to an operator.
+    // Everything else keeps its variant: that is the whole of an
+    // imported market's identity, and what tells "Corners: Total" from
+    // "1st half: Total" once both can sit on the same tab.
     const curated = isCuratedScope(params.scope);
-    const pool: PoolEntry[] = curated
-      ? discovered.allMarkets.map((m) => ({
+    const ownMarkets = curated
+      ? []
+      : (discovered.scopes.find((s) => s.scope === params.scope)?.markets ?? []);
+    const pool: PoolEntry[] = [
+      ...ownMarkets.map((m) => ({
+        providerMarketId: m.providerMarketId,
+        variant: "",
+        label: m.label,
+        tab: params.scope as string,
+      })),
+      ...discovered.allMarkets
+        // Skip this tab's own markets — the wildcard entries above already
+        // represent them, and offering both would be two rows for one
+        // market that write different things.
+        .filter((m) => curated || m.scope !== params.scope)
+        .map((m) => ({
           providerMarketId: m.providerMarketId,
           variant: m.variant,
           label: m.label,
           tab: m.scope,
-        }))
-      : (
-          discovered.scopes.find((s) => s.scope === params.scope)?.markets ?? []
-        ).map((m) => ({
-          providerMarketId: m.providerMarketId,
-          // Feed-tab rows carry no variant: the tab IS the sub-event.
-          variant: "",
-          label: m.label,
-          tab: params.scope as string,
-        }));
+        })),
+    ];
 
     const orderRows = orderRowsAll.filter((r) => r.scope === params.scope);
     const byKey = new Map<string, PoolEntry>(pool.map((m) => [poolKey(m), m]));
@@ -391,10 +435,7 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
       }
     }
 
-    const configured = new Set(
-      orderRows.map((r) => `${r.providerMarketId}:${r.variant}`),
-    );
-    const ordered = orderRows.map((r) => {
+    const stored = orderRows.map((r) => {
       const key = `${r.providerMarketId}:${r.variant}`;
       const hit = byKey.get(key);
       return {
@@ -405,20 +446,54 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
         displayOrder: r.displayOrder,
       };
     });
-    const unranked = pool.filter((m) => !configured.has(poolKey(m)));
+
+    // The left column is what the tab RENDERS, not what happens to be
+    // stored. On a feed tab at membership='auto' those differ: markets
+    // nobody listed still come out on the tab, after the listed ones (see
+    // applyFeedTabMembership). Showing only the stored rows would put
+    // markets bettors can see on this tab in the "not in this tab" pool —
+    // and on an unconfigured tab it would render an empty box beside a
+    // pool, which reads as "this tab is empty" when in fact the feed
+    // fills it. The appended rows are a PREVIEW; `seeded` tells the
+    // editor to say so and to leave Save enabled, since saving them is
+    // itself a change — it pins that list.
+    const membership = curated
+      ? ("manual" as FeGroupMembership)
+      : membershipOf(groupRows, params.scope);
+    const listedKeys = new Set(stored.map(poolKey));
+    const unlistedOwn =
+      membership === "manual"
+        ? []
+        : ownMarkets
+            .filter((m) => !listedKeys.has(`${m.providerMarketId}:`))
+            .map((m) => ({
+              providerMarketId: m.providerMarketId,
+              variant: "",
+              label: m.label,
+              tab: params.scope as string,
+              displayOrder: stored.length,
+            }));
+    const seeded = unlistedOwn.length > 0;
+    const ordered = [...stored, ...unlistedOwn];
+
+    const configured = new Set(ordered.map(poolKey));
+    const available = pool.filter((m) => !configured.has(poolKey(m)));
 
     return {
       sport,
       scope: params.scope,
       label: tab.label,
-      // Curated tabs are opt-in membership; feed tabs are order-only. The
-      // editor renders one column or two off this flag.
-      curated,
+      // A curated tab (Top, custom) has no feed side to fall back on, so
+      // its membership is always the list. Feed tabs carry the operator's
+      // choice; absent a group row that is 'auto' — today's behaviour.
+      feedTab: !curated,
+      membership,
+      seeded,
       // Every tab in effective storefront order — the editor's nav strip
       // mirrors what bettors see, custom groups included.
       groups: tabs,
       ordered,
-      unranked,
+      available,
     };
   });
 
@@ -435,14 +510,11 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
       .parse(request.params);
     const body = reorderBody.parse(request.body);
 
-    // A feed tab is one sub-event already, so its rows carry no variant —
-    // writing one there would fragment the list into "Match result way:two"
-    // beside "Match result way:three".
-    const entries = body.order
-      .map(normaliseEntry)
-      .map((e) =>
-        isCuratedScope(params.scope) ? e : { ...e, variant: "" },
-      );
+    // Variants are kept as sent, on every kind of tab. A feed tab's own
+    // markets arrive with an empty variant (that tab IS their sub-event —
+    // see the GET), and a market imported from another sub-event arrives
+    // with its own, which is what makes the import addressable at all.
+    const entries = body.order.map(normaliseEntry);
 
     const seen = new Set<string>();
     for (const e of entries) {
@@ -495,6 +567,13 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
       )
       .orderBy(asc(feMarketDisplayOrder.displayOrder));
 
+    // Curated tabs have no feed side to auto-fill from, so the setting is
+    // meaningless there and is refused rather than stored misleadingly.
+    const membership =
+      body.membership && !isCuratedScope(params.scope) ? body.membership : null;
+    const groupRowsBefore = await loadGroupRows(app, params.sportId);
+    const beforeMembership = membershipOf(groupRowsBefore, params.scope);
+
     await app.db.transaction(async (tx) => {
       await tx
         .delete(feMarketDisplayOrder)
@@ -518,16 +597,59 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
         );
       }
 
+      // The tab's own anchor row carries the membership mode. Built-in
+      // scopes keep label NULL (the fe_market_groups label CHECK), and a
+      // custom scope never reaches here — `membership` is null for those.
+      //
+      // Anchor rows are all-or-nothing per sport, the same rule creating a
+      // custom group follows: a tab WITH a row sorts ahead of every tab
+      // without one, so writing a single row would jump this tab to the
+      // front of the strip as a side effect of a membership change nobody
+      // asked to reposition anything. Seeding the rest at their default
+      // positions first keeps the strip exactly as it was.
+      if (membership && groupRowsBefore.length === 0) {
+        const discovered = await discoverSportScopes(app, params.sportId);
+        const seeds = effectiveTabs(discovered.scopes, [], [])
+          .filter((t) => !t.custom)
+          .map((t, idx) => ({
+            sportId: params.sportId,
+            scope: t.scope as FeMarketScope,
+            label: null,
+            displayOrder: idx,
+            updatedBy: admin.id,
+          }));
+        if (seeds.length > 0) {
+          await tx.insert(feMarketGroups).values(seeds).onConflictDoNothing();
+        }
+      }
+      if (membership) {
+        await tx
+          .insert(feMarketGroups)
+          .values({
+            sportId: params.sportId,
+            scope: params.scope,
+            label: null,
+            displayOrder: defaultScopeOrder(params.scope),
+            membership,
+            updatedBy: admin.id,
+          })
+          .onConflictDoUpdate({
+            target: [feMarketGroups.sportId, feMarketGroups.scope],
+            set: { membership, updatedAt: new Date(), updatedBy: admin.id },
+          });
+      }
+
       await tx.insert(adminAuditLog).values({
         actorUserId: admin.id,
         action: "fe_settings.markets_order.set",
         targetType: "fe_market_display_order",
         targetId: `${params.sportId}:${params.scope}`,
-        beforeJson: { order: before },
+        beforeJson: { order: before, membership: beforeMembership },
         afterJson: {
           sportSlug: sport.slug,
           scope: params.scope,
           order: entries,
+          membership: membership ?? beforeMembership,
         },
         ipInet: request.ip ?? null,
       });
@@ -568,7 +690,15 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
       )
       .orderBy(asc(feMarketDisplayOrder.displayOrder));
 
-    if (before.length === 0) {
+    // Reverting must clear the membership mode too, and that is not a
+    // tidy-up: a tab left on 'manual' with no rows renders EMPTY on the
+    // storefront. "Revert to default" has to put the feed back in charge.
+    const beforeMembership = membershipOf(
+      await loadGroupRows(app, params.sportId),
+      params.scope,
+    );
+
+    if (before.length === 0 && beforeMembership === "auto") {
       return { ok: true, deleted: 0 };
     }
 
@@ -581,12 +711,30 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
             eq(feMarketDisplayOrder.scope, params.scope),
           ),
         );
+      if (beforeMembership !== "auto") {
+        // Only the mode is reset — the row may also carry the tab's
+        // position in the strip, which this endpoint has no business
+        // touching.
+        await tx
+          .update(feMarketGroups)
+          .set({ membership: "auto", updatedAt: new Date(), updatedBy: admin.id })
+          .where(
+            and(
+              eq(feMarketGroups.sportId, params.sportId),
+              eq(feMarketGroups.scope, params.scope),
+            ),
+          );
+      }
       await tx.insert(adminAuditLog).values({
         actorUserId: admin.id,
         action: "fe_settings.markets_order.clear",
         targetType: "fe_market_display_order",
         targetId: `${params.sportId}:${params.scope}`,
-        beforeJson: { order: before, scope: params.scope },
+        beforeJson: {
+          order: before,
+          scope: params.scope,
+          membership: beforeMembership,
+        },
         afterJson: null,
         ipInet: request.ip ?? null,
       });
@@ -912,6 +1060,14 @@ export default async function feSettingsRoutes(app: FastifyInstance) {
         const builtInDropConds = [
           eq(feMarketGroups.sportId, params.sportId),
           sql`${feMarketGroups.scope} NOT LIKE 'custom\\_%'`,
+          // A row that carries membership='manual' is not just a position —
+          // it is what makes that tab render the operator's list instead of
+          // the feed's. Dropping it here would quietly hand the tab back to
+          // the feed as a side effect of reordering the strip. Such a row
+          // survives with the position it already had; that keeps it among
+          // the positioned tabs, which is the right place for a tab an
+          // operator has configured.
+          eq(feMarketGroups.membership, "auto"),
         ];
         if (body.order.length > 0) {
           builtInDropConds.push(

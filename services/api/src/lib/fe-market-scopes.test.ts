@@ -72,7 +72,7 @@ describe("buildScopes", () => {
     );
   });
 
-  it("lists the real markets per tab, with the sub-event prefix stripped", () => {
+  it("lists the real markets per tab, each named in full", () => {
     const out = buildScopes(
       [
         row(FOOTBALL, 1000120),
@@ -85,9 +85,13 @@ describe("buildScopes", () => {
     );
     const scopes = out.get(FOOTBALL)!.scopes;
     const half = scopes.find((s) => s.scope === "fb_100201")!;
+    // The prefix stays on. "Total {threshold}" on the 1st-half tab reads
+    // the same as "Total {threshold}" on the corners tab and on twelve
+    // others, and a tab can now hold markets imported from another
+    // sub-event, so the row has to say which one it is.
     assert.deepEqual(half.markets, [
-      { providerMarketId: 1000120, label: "Match result" },
-      { providerMarketId: 1000305, label: "Total {threshold}" },
+      { providerMarketId: 1000120, label: "1st half: Match result" },
+      { providerMarketId: 1000305, label: "1st half: Total {threshold}" },
     ]);
     const corners = scopes.find((s) => s.scope === "fb_400100")!;
     assert.deepEqual(corners.markets.map((m) => m.providerMarketId), [1000120]);
@@ -197,8 +201,8 @@ describe("curated pool", () => {
     const half = out.get(FOOTBALL)!.scopes.find((s) => s.scope === "fb_100201")!;
     assert.deepEqual(half.markets.map((m) => m.providerMarketId), [1000120, 1000305]);
     assert.deepEqual(half.markets.map((m) => m.label), [
-      "Match result",
-      "Total {threshold}",
+      "1st half: Match result",
+      "1st half: Total {threshold}",
     ]);
   });
 
@@ -225,6 +229,6 @@ describe("curated pool", () => {
     const all = out.get(FOOTBALL)!.allMarkets;
     assert.equal(all[0]?.label, "1st half: Market #1002800");
     const tab = out.get(FOOTBALL)!.scopes.find((s) => s.scope === "fb_100201")!;
-    assert.equal(tab.markets[0]?.label, "Market #1002800");
+    assert.equal(tab.markets[0]?.label, "1st half: Market #1002800");
   });
 });

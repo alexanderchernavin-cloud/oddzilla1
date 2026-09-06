@@ -74,6 +74,28 @@ Canonical SQL lives in [`../packages/db/migrations/`](../packages/db/migrations/
   backfilled and every pre-existing configuration resolves as before.
   Meaningful only for the curated scopes; a feed tab is already one
   sub-event and leaves it empty.
+  `20260906T014417_fe_market_group_membership` finished the job by making every tab
+  editable the same way, adding `fe_market_groups.membership TEXT NOT NULL
+  DEFAULT 'auto'` (CHECK `IN ('auto','manual')`). Until then a feed tab
+  was order-only — membership was the feed's call — so a market could
+  neither be pulled onto a tab from another sub-event nor left off a tab
+  that carries it. A row's `variant` is now honoured on every scope, and
+  the new column says what the list MEANS on a feed tab: `'auto'` renders
+  the listed markets first and lets the feed keep filling the rest
+  (byte-identical to the old behaviour, and what every existing row
+  means), `'manual'` makes the list the whole tab, as `top` and custom
+  groups always were. **The default is load-bearing**: the backoffice pool
+  is derived from the CURRENT offer (open matches only), so a market kind
+  that is not live when the operator saves is simply not on screen —
+  flipping configured tabs to explicit membership would have silently
+  dropped those from the storefront. Resolution lives in
+  `services/api/src/lib/market-groups.ts` (pure, unit-tested): a row
+  naming a sub-event admits that market's whole ladder, a wildcard row on
+  a feed tab resolves within that tab, and a wildcard row on a curated tab
+  keeps its pre-0109 "any copy, one representative" meaning. Reverting a
+  tab to default clears the rows AND resets `membership` — a `'manual'`
+  tab with no rows would render empty — and the tab-reorder endpoint no
+  longer drops anchor rows carrying `'manual'`.
 - `0021_competitor_logos.sql` — adds `competitors.logo_url TEXT` and
   `competitors.brand_color TEXT` for storefront team branding. Both
   are nullable; a CHECK constraint requires

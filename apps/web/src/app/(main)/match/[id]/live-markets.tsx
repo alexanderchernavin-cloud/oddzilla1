@@ -28,6 +28,7 @@ import {
 // Subpath, never the barrel — see packages/types/src/odds.ts.
 import { isTeamShapedMarket } from "@oddzilla/types/boosted-odds";
 import { resolveBetAssistMarket } from "@oddzilla/types/bet-assist";
+import { isSubEventScope } from "@oddzilla/types/market-scope";
 import type { SportradarMatchRef } from "@oddzilla/types/sportradar";
 import type { ZillaFlashOffer } from "@oddzilla/types";
 import { useTranslations } from "@/lib/i18n";
@@ -120,7 +121,27 @@ interface SingleMarket {
 
 type RenderEntry = SingleMarket | LineFamily;
 
-function partitionIntoFamilies(markets: MarketSnapshot[]): RenderEntry[] {
+// A ladder card's title is the market's base name — "Total", not
+// "Corners: Total" — because the tab above it already says which
+// sub-event we are in. That stops being true the moment a market is
+// rendered somewhere else: Top and custom tabs mix sub-events by design,
+// and since migration 20260906T014417 a feed tab can hold markets
+// imported from another one. There, a bare "Total" is a card the bettor
+// cannot identify, so the sub-event goes back on the title.
+//
+// Only sub-event scopes get the prefix. A map market already carries its
+// map in the name ("Total kills 12.5 - map 2"), so prefixing it would
+// just say Map 2 twice.
+function familyTitle(m: MarketSnapshot, groupId: string): string {
+  if (m.scope.id === groupId) return m.baseName;
+  if (!isSubEventScope(m.scope.id)) return m.baseName;
+  return `${m.scope.label}: ${m.baseName}`;
+}
+
+function partitionIntoFamilies(
+  markets: MarketSnapshot[],
+  groupId: string,
+): RenderEntry[] {
   const familiesByKey = new Map<string, LineFamily>();
   const singles: SingleMarket[] = [];
 
@@ -131,7 +152,7 @@ function partitionIntoFamilies(markets: MarketSnapshot[]): RenderEntry[] {
         fam = {
           kind: "lines",
           key: m.lineKey,
-          baseName: m.baseName,
+          baseName: familyTitle(m, groupId),
           lineSpec: m.lineSpec,
           providerMarketId: m.providerMarketId,
           order: m.providerMarketId,
@@ -508,7 +529,9 @@ export function LiveMarkets({
             m.outcomes.some((o) => !builderLocked(m.id, o.outcomeId)),
           );
         }
-        const entries = partitionIntoFamilies(markets).filter(entryShouldRender);
+        const entries = partitionIntoFamilies(markets, g.id).filter(
+          entryShouldRender,
+        );
         return { id: g.id, label: g.label, order: g.order, entries };
       })
       .filter((g) => g.entries.length > 0);
