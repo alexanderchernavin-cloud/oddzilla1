@@ -423,7 +423,11 @@
     "copyLink": "Kopírovat odkaz",
     "copied": "Zkopírováno",
     "matchWinner": "Vítěz zápasu",
-    "topTournamentTitle": "Top turnaj"
+    "topTournamentTitle": "Top turnaj",
+    "collapseMarket": "Sbalit trh",
+    "expandMarket": "Rozbalit trh",
+    "collapseAll": "Sbalit vše",
+    "expandAll": "Rozbalit vše"
   },
   "bets": {
     "title": "Moje sázky",
