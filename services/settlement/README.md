@@ -121,15 +121,27 @@ healthy day (docs/SETTLEMENT_COVERAGE_PLAN.md):
   market are healed from `market_outcomes`, and tickets now fully resolved
   are settled.
 - `ReconcileLadderLines` (`internal/settler/ladder.go`) — a total or
-  handicap line left open on a closed Oddin match is settled when a
-  settled sibling of the same family **strictly implies** its result
-  ("over 25.5 won" ⇒ "over 24.5 won"; home −1.5 won ⇒ home −0.5 won; a push
-  pins the number exactly). Quarter lines, half-won siblings, disagreeing
-  siblings and any outcome set other than 4/5 (totals) or 1/2 (handicaps)
-  are refused and left untouched. Exists because the Bifrost backup only
-  settles the lines still in its CLOSED view and drops every line it
-  replaced during the match. The settlements audit row records the sibling
-  (`extended_specifiers: inferred_from=…`). Nothing here voids anything.
+  handicap line left open on a closed Oddin match is settled from the
+  settled siblings of its family. Every sibling is a statement about the
+  one integer the family settles on (the total, or the home margin):
+  "over 25.5 won" ⇒ 26 or more, "under 27.5 won" ⇒ 27 or less, a push ⇒
+  exactly 27, a half-won quarter line ⇒ one exact value too. Their
+  intersection is an interval, and the open line settles when both ends of
+  the interval grade it the same way — which decides whole, half and
+  quarter lines alike and produces the real result (pushes and half
+  results included) whenever the number is pinned. Disagreeing siblings
+  (empty interval), an interval that spans the line, and any outcome set
+  other than 4/5 (totals) or 1/2 (handicaps) are refused and left
+  untouched; so is a market whose outcomes already carry results (a
+  settle / cancel / rollback_cancel sequence left it non-terminal — that is
+  the rollback path's problem, not inference). Exists because the Bifrost
+  backup only settles the lines still in its CLOSED view and drops every
+  line it replaced during the match. The first production pass with the
+  earlier strict-inequality rule decided 2 of 7 313 candidates — Oddin
+  ladders almost always carry a quarter line or a push that pins the
+  number, which that rule ignored. The settlements audit row records the
+  deciding siblings and the value (`extended_specifiers: inferred_from=…`).
+  Nothing here voids anything.
 - `ReconcileMatchLifecycle` (`internal/settler/lifecycle.go`) — a match
   past its start by 3 h whose row still says not_started / live /
   suspended and whose every market is terminal is flipped to `closed` and
