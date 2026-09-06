@@ -90,8 +90,14 @@ land in Redis hash `bifrost:feed:status` for the backoffice card on
 
 ## Known gaps (tracked in docs/BIFROST_BACKUP_FEED.md)
 
-- No `bet_cancel` / `rollback_*` synthesis. Bifrost shows no cancel
-  state; a cancelled event appears as CLOSED with its markets removed.
+- `bet_cancel` is synthesised for one case only: on a CLOSED match, our
+  open markets on maps the series never reached (map specifier beyond the
+  last map the snapshot proves was played) are voided —
+  `translate.UnplayedMapCancels`, since 2026-09-06. Whole-event
+  cancellation and `rollback_*` are not synthesised: Bifrost shows no
+  cancel state (a cancelled event appears as CLOSED with its markets
+  removed) and no rollback event. Dropped ladder lines are never voided
+  here; `services/settlement` infers them from settled siblings.
 - Probabilities are derived from odds (margin-normalised implied
   probability), not Oddin's own model output.
 - Tournament risk tier is not on Bifrost; assign it in `/admin/tournaments`.

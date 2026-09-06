@@ -163,6 +163,7 @@ func runDryRun(ctx context.Context, cfg config.Config, d time.Duration, logger z
 		Int64("odds_changes", s.OddsChanges).
 		Int64("settlements", s.Settlements).
 		Int64("settled_markets", s.SettledMarkets).
+		Int64("cancelled_markets", s.CancelledMarkets).
 		Str("last_error", s.LastError).
 		Msg("dry run finished")
 }
@@ -195,6 +196,8 @@ func publishStatus(ctx context.Context, pub *publisher.Redis, g *gate.Gate, runn
 				"odds_changes":      rs.OddsChanges,
 				"settlements":       rs.Settlements,
 				"settled_markets":   rs.SettledMarkets,
+				"cancellations":     rs.Cancellations,
+				"cancelled_markets": rs.CancelledMarkets,
 				"fixture_changes":   rs.FixtureChanges,
 				"last_frame_unix":   unixOrZero(rs.LastFrameAt),
 				"last_publish_unix": unixOrZero(rs.LastPublishAt),

@@ -854,6 +854,40 @@ never deleted by anything). Deleting old dedup rows is safe because identical-pa
 only arrive via AMQP redelivery or the 24 h-clamped recovery window — see
 docs/OPERATIONS.md → "settlements retention" for the full argument.
 
+Two `settlements` rows carry provenance beyond Oddin's own messages
+(2026-09-06): the ladder inference in `services/settlement`
+(`settler.ReconcileLadderLines`) writes `payload_json.extended_specifiers =
+"inferred_from=threshold=25.5"` naming the settled sibling that decided the
+line, and an operator void from `/admin/unsettled` arrives over
+`settlement.external` as a `cancel` with `provider=admin` and is
+audit-logged (`settlement.market_void`, `settlement.match_void_open`).
+
+**`fonbet_market_denylist`** (migration 0111) — the Fonbet catalogue
+tables and sub-event label prefixes the ingester must NOT turn into
+markets because no grader can settle them from the results feed.
+`kind` is `table` (with `provider_market_id`, the full 1 000 000 + table
+number) or `label_prefix` (case-insensitive prefix of the sub-event
+label, e.g. `Player specials`); a CHECK pins each kind to its own column
+and two partial unique indexes stop duplicates. Seeded with 1007800
+(winner of point N in a set), 1004500 / 1004551 (winner of game N in a
+set), `Player specials` and `Special bets` — 36% of the Fonbet markets
+still open after their match had closed on 2026-09-05 were these shapes.
+fonbet-ingester re-reads the table every minute and applies it in the
+mapper; markets already created under a rule are deactivated by the
+ingest diff (status 0) and stay open — never voided — listed on
+`/admin/unsettled/denylist`. Admin-managed, audit-logged.
+
+**`fonbet_settlement_misses`** (migration 0111) — one row per pending
+Fonbet match the results grader could not find in the results feed, keyed
+by `match_id`, carrying the fixture as we hold it, `segment_id`, how many
+markets are still open, and `candidates` — up to 20 `{name, startTime,
+score, status}` rows the results document listed for the same competition
+on those line days, so the spelling or ordering the two feeds disagree on
+is visible. Upserted on every grader pass the match stays missing
+(`attempts`, `last_seen_at`), deleted the pass it is found. Read by
+`GET /admin/unsettled/misses` (the Unmatched results tab). Before this the
+grader logged only `no_result: 797` and nothing said which fixture.
+
 ### Cashout
 
 **`cashout_config`** — per-scope cashout knobs. Same cascade as
