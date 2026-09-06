@@ -283,6 +283,48 @@ func applyMargin(rawOdds string, marginBp int) (string, error) {
 	return formatPublishedOdds(pub), nil
 }
 
+// ladderUnits snaps a price DOWN onto the quote ladder, working in units
+// of 1e-4 (the NUMERIC(10,4) grid) so the arithmetic is exact integer
+// division with no float dust to guard against.
+//
+// This is where the ladder is applied for the whole system: the string
+// this file produces IS `market_outcomes.published_odds`, so every
+// downstream reader — the catalog payload, the storefront, the WS tick,
+// the drift reference, and `ticket_selections.odds_at_placement` — sees a
+// price already on a rung. The TS and Go format twins ladder again for
+// their own inputs (a per-bettor adjustment multiplies off the rungs),
+// which is idempotent here.
+//
+// Bands mirror LADDER_BANDS in packages/types/src/odds.ts:
+// 0.01 below 10, then 0.1 / 0.5 / 1 / 5 as the price lengthens. Prices
+// under 1.01 keep full precision — the ladder has no rung between an
+// unbettable 1.00 and a 1.01 that is longer than the feed said, and a
+// genuine 1.003 favorite must survive intact.
+//
+// Non-positive values (reachable when a non-zero payback_margin_bp
+// divides a near-1.0 price below 1.0 — publisher_test.go pins 1.003 at
+// 5% margin to 0.9552) fall under the floor and pass through untouched.
+func ladderUnits(units int64) int64 {
+	const floorUnits = 10100 // 1.01
+	if units < floorUnits {
+		return units
+	}
+	var step int64
+	switch {
+	case units < 100000: // < 10
+		step = 100 // 0.01
+	case units < 200000: // < 20
+		step = 1000 // 0.1
+	case units < 500000: // < 50
+		step = 5000 // 0.5
+	case units < 1000000: // < 100
+		step = 10000 // 1
+	default:
+		step = 50000 // 5
+	}
+	return (units / step) * step
+}
+
 // formatPublishedOdds renders a big.Float at NUMERIC(10,4) precision
 // (4 fractional digits, floor-truncated — same toward-zero convention
 // big.Float.Int uses for non-negative values) then trims trailing zeros
@@ -300,7 +342,7 @@ func formatPublishedOdds(v *big.Float) string {
 	scaled := new(big.Float).SetPrec(128).Mul(v, new(big.Float).SetInt64(10000))
 	scaled = new(big.Float).SetPrec(128).Add(scaled, big.NewFloat(1e-6))
 	unitsBig, _ := scaled.Int(nil)
-	units := unitsBig.Int64()
+	units := ladderUnits(unitsBig.Int64())
 	intP := units / 10000
 	frac := units % 10000
 	s := fmt.Sprintf("%d.%04d", intP, frac)
