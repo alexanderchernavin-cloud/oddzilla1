@@ -395,9 +395,6 @@
     "live": "Uživo",
     "upcoming": "Prije meča",
     "topTournaments": "Top turniri",
-    "filterKindCategory": "Kategorija",
-    "filterKindTournament": "Turnir",
-    "filterKindTeam": "Momčad",
     "clearFilter": "Ukloni filtar",
     "noMatches": "Trenutačno nema mečeva.",
     "matchCount": "{count, plural, one {# meč} few {# meča} other {# mečeva}}"

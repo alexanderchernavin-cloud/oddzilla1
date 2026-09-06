@@ -395,9 +395,6 @@
     "live": "Živě",
     "upcoming": "Předzápas",
     "topTournaments": "Top turnaje",
-    "filterKindCategory": "Kategorie",
-    "filterKindTournament": "Turnaj",
-    "filterKindTeam": "Tým",
     "clearFilter": "Zrušit filtr",
     "noMatches": "Aktuálně žádné zápasy.",
     "matchCount": "{count, plural, one {# zápas} few {# zápasy} other {# zápasů}}"

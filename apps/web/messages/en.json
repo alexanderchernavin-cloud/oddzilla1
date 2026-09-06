@@ -395,9 +395,6 @@
     "live": "Live",
     "upcoming": "Pre-match",
     "topTournaments": "Top tournaments",
-    "filterKindCategory": "Category",
-    "filterKindTournament": "Tournament",
-    "filterKindTeam": "Team",
     "clearFilter": "Clear filter",
     "noMatches": "No matches right now.",
     "matchCount": "{count, plural, one {# match} other {# matches}}"
