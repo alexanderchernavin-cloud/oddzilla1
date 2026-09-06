@@ -1017,9 +1017,10 @@ Fonbet grader is English-only.
   `fonbet_settlement_misses`.
 - Admin (`/admin/unsettled`): Void per market / per match over
   `settlement.external`, Unmatched results tab, Market denylist sub-page
-  (`fonbet_market_denylist`, migration 0111, applied by the ingester every
-  minute; seeded with the point / game winner tables, player specials and
-  "Special bets").
+  (`fonbet_market_denylist`, migration
+  `20260906T103343_settlement_operator_tools`, applied by the ingester
+  every minute; seeded with the point / game winner tables, player
+  specials and "Special bets").
 
 **Open:** Oddin AMQP credentials (403 since 2026-09-04 — the single root
 cause of every Oddin gap); statistic sub-event rows (tries, shots, woodwork,

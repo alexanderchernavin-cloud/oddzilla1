@@ -7,9 +7,10 @@ import (
 	"github.com/oddzilla/fonbet-ingester/internal/mapper"
 )
 
-// LoadMarketDenylist reads fonbet_market_denylist (migration 0111): the
-// catalogue tables and sub-event label prefixes the mapper must not turn
-// into markets because no grader can settle them from the data we have.
+// LoadMarketDenylist reads fonbet_market_denylist (migration
+// 20260906T103343_settlement_operator_tools): the catalogue tables and
+// sub-event label prefixes the mapper must not turn into markets because
+// no grader can settle them from the data we have.
 // Admin-managed at /admin/unsettled/denylist; the ingester re-reads it
 // every minute so a new rule takes effect without a restart.
 func LoadMarketDenylist(ctx context.Context, db pgxRunner) (*mapper.Denylist, error) {

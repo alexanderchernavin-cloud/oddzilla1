@@ -1,4 +1,4 @@
--- 0111_settlement_operator_tools
+-- 20260906T103343_settlement_operator_tools
 --
 -- Two small tables behind the settlement-coverage work of 2026-09-06
 -- (docs/SETTLEMENT_COVERAGE_PLAN.md).

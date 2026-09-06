@@ -151,9 +151,10 @@ work.
 
 - **Shipped 2026-09-06:** `/admin/unsettled` gained an **Unmatched
   results** tab (the Fonbet fixtures the grader cannot find, with what the
-  results document listed for the same competition — `fonbet_settlement_misses`,
-  migration 0111), the **Market denylist** sub-page, and the operator
-  **Void** buttons (per market, per match).
+  results document listed for the same competition —
+  `fonbet_settlement_misses`, migration
+  `20260906T103343_settlement_operator_tools`), the **Market denylist**
+  sub-page, and the operator **Void** buttons (per market, per match).
 - **Open:** denominator + percentage, a start-date filter, a "closed more
   than N hours ago" filter (default 1), a per-day trend, and a persisted
   per-market grader verdict so the page shows *why* each market is open
@@ -250,8 +251,9 @@ stuck at not_started 383 → 221.
 ### Phase 3 — do not offer what cannot be settled
 
 - **3a. Fonbet market denylist. Shipped** — `fonbet_market_denylist`
-  (migration 0111), seeded with 1007800 (point winners), 1004500 / 1004551
-  (game winners), "Player specials" and "Special bets"; managed at
+  (migration `20260906T103343_settlement_operator_tools`), seeded with
+  1007800 (point winners), 1004500 / 1004551 (game winners), "Player
+  specials" and "Special bets"; managed at
   `/admin/unsettled/denylist`, read by fonbet-ingester every minute, applied
   in the mapper so a denied shape is never created and an existing one is
   deactivated by the ingest diff. The open markets under each rule are

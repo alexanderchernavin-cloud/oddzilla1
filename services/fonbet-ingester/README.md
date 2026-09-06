@@ -86,7 +86,8 @@ internal/
 1. `GET <line>/events/list?lang=en&version=0&scopeMarket=1600` (~1 MB gz).
 2. `mapper.Build` → matches with markets keyed by
    `(provider_market_id, canonical specifiers)`. Markets on the operator's
-   denylist (`fonbet_market_denylist`, migration 0111 — whole tables by
+   denylist (`fonbet_market_denylist`, migration
+   `20260906T103343_settlement_operator_tools` — whole tables by
    provider_market_id, sub-event families by label prefix; reloaded every
    minute) are dropped here, so a shape nothing can settle is never
    created and an existing one is treated as gone by the diff in step 3.

@@ -9,11 +9,12 @@
 //   POST   /admin/unsettled/markets/:marketId/void   void one market (operator decision)
 //   POST   /admin/unsettled/matches/:matchId/void-open  void every open market of a finished match
 //
-// The denylist (migration 0111) is the answer to "we offer markets no
-// grader can ever settle": fonbet-ingester re-reads it every minute and
-// stops creating those shapes; the markets already created under a rule
-// stay listed here so the operator can see what would be gained by
-// writing the grading for one of them.
+// The denylist (migration 20260906T103343_settlement_operator_tools) is
+// the answer to "we offer markets no grader can ever settle":
+// fonbet-ingester re-reads it every minute and stops creating those
+// shapes; the markets already created under a rule stay listed here so
+// the operator can see what would be gained by writing the grading for
+// one of them.
 //
 // Voiding is deliberately a BUTTON, not a sweeper (operator decision
 // 2026-09-06): a played market whose result we do not know must never be

@@ -891,9 +891,10 @@ line, and an operator void from `/admin/unsettled` arrives over
 `settlement.external` as a `cancel` with `provider=admin` and is
 audit-logged (`settlement.market_void`, `settlement.match_void_open`).
 
-**`fonbet_market_denylist`** (migration 0111) — the Fonbet catalogue
-tables and sub-event label prefixes the ingester must NOT turn into
-markets because no grader can settle them from the results feed.
+**`fonbet_market_denylist`**
+(migration `20260906T103343_settlement_operator_tools`) — the Fonbet
+catalogue tables and sub-event label prefixes the ingester must NOT turn
+into markets because no grader can settle them from the results feed.
 `kind` is `table` (with `provider_market_id`, the full 1 000 000 + table
 number) or `label_prefix` (case-insensitive prefix of the sub-event
 label, e.g. `Player specials`); a CHECK pins each kind to its own column
@@ -906,16 +907,18 @@ mapper; markets already created under a rule are deactivated by the
 ingest diff (status 0) and stay open — never voided — listed on
 `/admin/unsettled/denylist`. Admin-managed, audit-logged.
 
-**`fonbet_settlement_misses`** (migration 0111) — one row per pending
-Fonbet match the results grader could not find in the results feed, keyed
-by `match_id`, carrying the fixture as we hold it, `segment_id`, how many
-markets are still open, and `candidates` — up to 20 `{name, startTime,
-score, status}` rows the results document listed for the same competition
-on those line days, so the spelling or ordering the two feeds disagree on
-is visible. Upserted on every grader pass the match stays missing
-(`attempts`, `last_seen_at`), deleted the pass it is found. Read by
-`GET /admin/unsettled/misses` (the Unmatched results tab). Before this the
-grader logged only `no_result: 797` and nothing said which fixture.
+**`fonbet_settlement_misses`**
+(migration `20260906T103343_settlement_operator_tools`) — one row per
+pending Fonbet match the results grader could not find in the results
+feed, keyed by `match_id`, carrying the fixture as we hold it,
+`segment_id`, how many markets are still open, and `candidates` — up to
+20 `{name, startTime, score, status}` rows the results document listed
+for the same competition on those line days, so the spelling or ordering
+the two feeds disagree on is visible. Upserted on every grader pass the
+match stays missing (`attempts`, `last_seen_at`), deleted the pass it is
+found. Read by `GET /admin/unsettled/misses` (the Unmatched results tab).
+Before this the grader logged only `no_result: 797` and nothing said
+which fixture.
 
 ### Cashout
 
