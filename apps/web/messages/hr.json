@@ -393,6 +393,8 @@
     "all": "Sve",
     "live": "Uživo",
     "upcoming": "Prije meča",
+    "startingSoon": "Uskoro počinju",
+    "liveAndSoon": "Uživo i uskoro",
     "topTournaments": "Top turniri",
     "clearFilter": "Ukloni filtar",
     "noMatches": "Trenutačno nema mečeva.",
