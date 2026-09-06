@@ -117,6 +117,12 @@ type LiveScore struct {
 	Away    *int
 	Timer   string
 	Comment string
+	// Serve is which side is serving right now: 1 = team1 (home),
+	// 2 = team2 (away), 0 = not applicable or not sent. Fonbet marks
+	// it on the innermost score cell — the current game in tennis, the
+	// current set in table tennis and volleyball — and repeats it as an
+	// asterisk in the score comment ("15*-30" is team1 serving).
+	Serve   int
 	Periods []Period
 }
 
@@ -598,8 +604,16 @@ func buildScore(mi *fonbet.EventMisc, li *fonbet.LiveEventInfo) *LiveScore {
 			s.Comment = strings.TrimSpace(li.ScoreComment)
 		}
 		// scores[0] = overall, scores[1..] = periods (sets, halves, maps).
+		// Serve rides the innermost cell, whichever group that turns out
+		// to be (group 2 "game" in tennis, group 1 "set" in table tennis
+		// and volleyball), so take the last one that carries it rather
+		// than hard-coding a group index per sport. Values other than
+		// 1 / 2 are dropped — the storefront reads it as a side.
 		for gi := 1; gi < len(li.Scores); gi++ {
 			for _, c := range li.Scores[gi] {
+				if c.Serve != nil && (*c.Serve == 1 || *c.Serve == 2) {
+					s.Serve = *c.Serve
+				}
 				s.Periods = append(s.Periods, Period{Number: len(s.Periods) + 1, Title: c.Title, Home: c.C1, Away: c.C2})
 			}
 		}

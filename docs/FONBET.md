@@ -103,7 +103,17 @@ customFactors[]      {e: eventId, factors: [{f, v, p?, pt?}]}
                      ("-2.5", "+2.5", "2.5"); factors are the FULL current offer
 eventBlocks[]        {eventId, state: "blocked" | "partial", factors?[]}
 eventMiscs[]         {id, score1, score2, comment, timerSeconds, timerDirection}
-liveEventInfos[]     {eventId, finished, timer, scores[[{c1,c2,title}]], scoreComment}
+liveEventInfos[]     {eventId, finished, timer, scores[[{c1,c2,title,serve?}]],
+                      scoreComment}
+                     scores[0] = overall, scores[1..] = periods (sets, halves,
+                     maps), innermost group = what is in play right now.
+                     serve (1 = team1, 2 = team2) rides that innermost cell and
+                     ONLY there: the current game in tennis (title "game"), the
+                     current set in table tennis and volleyball (title "set").
+                     Which group that is differs per sport, so read the last
+                     cell that carries it rather than a fixed index. Fonbet
+                     repeats it as an asterisk in scoreComment ("7*-10" =
+                     team1 serving), which is how the mapping was verified.
 ```
 
 ## `factorsCatalog/tables` shape

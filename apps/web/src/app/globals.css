@@ -1139,10 +1139,16 @@ body {
 /* Half-height draw button on 1X2 list cards (match-row.tsx `compact`).
    The visible box is 16px so the draw row stops costing a whole team
    row of card height; the TAP target is grown back to 24px through a
-   pseudo-element reaching 4px into the 6px row gap above and below,
-   which is empty space, so a thumb still lands on it without the card
-   paying for the room. Applied at every width — a desktop trackpad
-   misses a 16px strip too. */
+   pseudo-element reaching 4px above and below, into the clearance the
+   row leaves either side, so a thumb still lands on it without the
+   card paying for the room. Applied at every width — a desktop
+   trackpad misses a 16px strip too.
+
+   The 4px here and DRAW_ROW_PULL in match-row.tsx are one number:
+   the row is pulled into the grid gap until exactly 4px of clearance
+   is left, so this pseudo-element meets the "1" / "2" buttons and
+   never covers them. Tightening the row further without shrinking
+   this would hand taps aimed at a win price to the draw. */
 .oz-row-odd[data-compact="true"]::before {
   content: "";
   position: absolute;

@@ -6,7 +6,13 @@
 // disagreed with what the save wrote would be worse than no preview.
 //
 // Import by subpath (`@oddzilla/types/custom-events`), never through the
-// barrel — see the note on packages/types/src/odds.ts.
+// barrel — see the note on packages/types/src/odds.ts. The netwinstable
+// import below is a SELF-REFERENCE by package name for the same reason:
+// a relative `./netwinstable.js` resolves under tsc and then fails at
+// `next build`, because webpack will not map the `.js` suffix onto the
+// `.ts` file. The package's own export map resolves it in both.
+
+import { applyNetwinstableKey } from "@oddzilla/types/netwinstable";
 
 /**
  * `provider_market_id` every custom market carries.
@@ -113,13 +119,17 @@ export function ladderStep(odds: number): number {
 /**
  * Quote an authored price onto the ladder.
  *
- * Feed prices keep four decimals because Oddin genuinely quotes a
- * near-certain favorite at 1.003, and rounding that to 1.00 prints a
- * price that does not exist. **We are not a feed here.** These prices are
- * derived from a probability an operator typed, so four decimals is
- * precision nobody entered and no book quotes: a market came out at
- * 4.7619 / 1.1904 on the storefront, which reads as a machine leaking its
- * arithmetic.
+ * Four decimals is precision nobody entered and no book quotes: a market
+ * came out at 4.7619 / 1.1904 on the storefront, which reads as a machine
+ * leaking its arithmetic.
+ *
+ * Feed prices had the same problem for one more day — a live CS2 map
+ * shipped as 5.1410 / 3.6860 on 2026-09-06 — and joined this ladder on
+ * 2026-09-07. `packages/types/src/odds.ts` carries a byte-identical copy
+ * (neither module may import the other: both are pulled into apps/web as
+ * values and must stay free of relative imports), and a sweep in
+ * `odds.test.ts` pins the two together. Change the bands here and that
+ * test fails, which is the point.
  *
  * The step widens with the price — see `LADDER_BANDS`. A flat hundredth
  * is right near evens and ridiculous in the tail, where it produced
@@ -227,13 +237,30 @@ function roundDown(value: number, dp: number): number {
  *     such rather than iterated to a fixed point: an operator setting
  *     "at most 15%" wants a leash, not a guarantee to seven decimals.
  *
- *  3. **Apply the overround**, then quote onto the ladder.
- *     `published = 1 / (p · (1 + overround))` puts the book key
- *     `Σ(1/published)` at exactly `1 + overround`, and `quoteOnLadder`
- *     then floors each price to two decimals — see its own note for why
- *     an authored price is not quoted like a feed price. Flooring takes
- *     a little more margin than asked for, so the delivered key sits
- *     slightly above `1 + overround`; the backoffice shows the real one.
+ *  3. **Apply the overround by Netwinstable Key Adjustment**, then quote
+ *     onto the ladder.
+ *
+ *     Dividing every fair price by `1 + overround` is the obvious method
+ *     and the wrong one. Betradar's own documentation names the two
+ *     failures it has: it cannot put a key on a short price without
+ *     driving it under 1.0 (a 1.05 favourite at a 110 key goes to 0.95,
+ *     a bet that loses money when it WINS), and it mangles the shape of
+ *     a lopsided book — the doc's example turns a fair 1.11 / 10.0 into
+ *     1.01 / 9.1. This codebase already hit the first one and papered
+ *     over it with an explicit floor.
+ *
+ *     Netwinstable instead scales every NET WIN by one factor: there is
+ *     an α such that `odds_i = 1 + α·(fair_i − 1)`, chosen so the book
+ *     key lands on the target. Because α is positive, no price can ever
+ *     reach 1.0, so the floor stops being load-bearing. Longer prices
+ *     give up more than proportionally and shorter ones less, which is
+ *     what a book actually wants: on a 85/12/1/1/1 market at a 10% key,
+ *     proportional quotes the 1% shots at 90.90 and the favourite at
+ *     1.06, while Netwinstable quotes 69 and 1.12.
+ *
+ *     `quoteOnLadder` then puts each price on a rung. That is the only
+ *     step that still shifts the delivered key, and only downward-of-fair
+ *     (margin taken, never lost); the backoffice shows the real key.
  *
  * Returns cells in input order. Throws on fewer than two outcomes or a
  * non-finite / non-positive base probability — both are operator input
@@ -276,7 +303,14 @@ export function priceCustomMarket(params: {
     }
   }
 
-  const overround = 1 + Math.max(0, overroundBp) / 10_000;
+  const keyTarget = 1 + Math.max(0, overroundBp) / 10_000;
+  const fair = outcomes.map((_, i) =>
+    1 / Math.max(priced[i]!, MIN_CUSTOM_PROBABILITY),
+  );
+  // Fair odds sum to a key of exactly 1, so this is the pure "put a
+  // margin on a fair book" case the algorithm is written for.
+  const adjusted = applyNetwinstableKey(fair, keyTarget);
+
   return outcomes.map((o, i) => {
     const p = Math.max(priced[i]!, MIN_CUSTOM_PROBABILITY);
     const b = base[i]!;
@@ -287,8 +321,8 @@ export function priceCustomMarket(params: {
       // Fair odds keep full precision — they are the model's own value,
       // never quoted to a bettor. Only the published price goes on the
       // ladder.
-      rawOdds: roundDown(1 / p, ODDS_DP),
-      publishedOdds: quoteOnLadder(1 / (p * overround)),
+      rawOdds: roundDown(fair[i]!, ODDS_DP),
+      publishedOdds: quoteOnLadder(adjusted[i]!),
       shiftBp: Math.round((p - b) * 10_000),
     };
   });

@@ -61,10 +61,8 @@ test("the overround lands on the book key, not on one price", () => {
   assert.ok(key < 1.06, `key ${key} drifted further than the ladder step`);
 });
 
-test("authored prices are quoted on the 0.01 ladder, not at feed precision", () => {
-  // The exact book that shipped as 4.7619 / 1.1904 on the storefront:
-  // a 20/80 call carrying a 5% overround, so the implied probabilities
-  // are 0.21 and 0.84 and the reciprocals are those two long decimals.
+test("authored prices are quoted on a rung, not at feed precision", () => {
+  // The book that shipped as 4.7619 / 1.1904 on the storefront.
   const cells = priceCustomMarket({
     outcomes: [
       { outcomeId: "1", baseProbability: 20 },
@@ -73,14 +71,85 @@ test("authored prices are quoted on the 0.01 ladder, not at feed precision", () 
     overroundBp: 500,
     liability: off,
   });
-  assert.equal(cells[0]!.publishedOdds, 4.76);
-  assert.equal(cells[1]!.publishedOdds, 1.19);
   for (const c of cells) {
     assert.equal(
       Math.round(c.publishedOdds * 100) / 100,
       c.publishedOdds,
       `${c.publishedOdds} carries more than two decimals`,
     );
+  }
+});
+
+test("the margin goes on by netwin scaling, not by dividing every price", () => {
+  // Betradar's Netwinstable Key Adjustment: every NET WIN scales by one
+  // factor, so the longer price gives up more than proportionally and
+  // the shorter one less. Proportional division would have quoted
+  // 4.76 / 1.19 here.
+  const cells = priceCustomMarket({
+    outcomes: [
+      { outcomeId: "1", baseProbability: 20 },
+      { outcomeId: "2", baseProbability: 80 },
+    ],
+    overroundBp: 500,
+    liability: off,
+  });
+  assert.equal(cells[0]!.publishedOdds, 4.42);
+  assert.equal(cells[1]!.publishedOdds, 1.21);
+
+  // Against the proportional baseline (fair / 1.05 = 4.76 / 1.19): the
+  // longer price gives up MORE than proportionally and the shorter one
+  // LESS. That direction is the whole algorithm.
+  assert.ok(cells[0]!.publishedOdds < 4.76, "the long side should give up more");
+  assert.ok(cells[1]!.publishedOdds > 1.19, "the short side should give up less");
+
+  // The ratio of net wins survives — approximately, because the ladder
+  // then moves each price onto a rung, and at 1.21 a hundredth is ~5% of
+  // that outcome's whole net win. The exact invariant belongs to
+  // applyNetwinstableKey; what this pins is that it reaches here.
+  const fairRatio = (5.0 - 1) / (1.25 - 1);
+  const quotedRatio =
+    (cells[0]!.publishedOdds - 1) / (cells[1]!.publishedOdds - 1);
+  assert.ok(
+    Math.abs(quotedRatio / fairRatio - 1) < 0.03,
+    `netwin ratio moved too far: ${quotedRatio} vs ${fairRatio}`,
+  );
+});
+
+test("a long shot is not quoted at an absurd price to fund a 10% key", () => {
+  // The five-way book an operator built on production. Proportional put
+  // the 1% shots at 90.90 and the favourite at 1.06; Netwinstable takes
+  // the margin off the tail instead, where the money is not.
+  const cells = priceCustomMarket({
+    outcomes: [
+      { outcomeId: "1", baseProbability: 85 },
+      { outcomeId: "2", baseProbability: 12 },
+      { outcomeId: "3", baseProbability: 1 },
+      { outcomeId: "4", baseProbability: 1 },
+      { outcomeId: "5", baseProbability: 1 },
+    ],
+    overroundBp: 1000,
+    liability: off,
+  });
+  assert.ok(cells[0]!.publishedOdds > 1.1, `favourite at ${cells[0]!.publishedOdds}`);
+  assert.ok(cells[2]!.publishedOdds < 75, `long shot at ${cells[2]!.publishedOdds}`);
+  const key = bookKey(cells.map((c) => c.publishedOdds));
+  assert.ok(key >= 1.1 && key < 1.12, `key ${key}`);
+});
+
+test("no price can be driven under 1.0, the failure the doc opens with", () => {
+  // "How would you apply a key of 110 to a fair odds of 1.05 without
+  // resulting in odds lower than 1.0?" Proportional cannot; scaling net
+  // wins by a positive factor can never reach 1.0 at all.
+  const cells = priceCustomMarket({
+    outcomes: [
+      { outcomeId: "1", baseProbability: 95.238 },
+      { outcomeId: "2", baseProbability: 4.762 },
+    ],
+    overroundBp: 1000,
+    liability: off,
+  });
+  for (const c of cells) {
+    assert.ok(c.publishedOdds > 1, `${c.publishedOdds} is not a bettable price`);
   }
 });
 

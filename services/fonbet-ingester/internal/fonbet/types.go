@@ -101,6 +101,12 @@ type ScoreCell struct {
 	C1    string `json:"c1"`
 	C2    string `json:"c2"`
 	Title string `json:"title"`
+	// Serve marks the side holding serve on this cell: 1 = c1, 2 = c2,
+	// absent everywhere else. Sent on the innermost cell only — the
+	// current game for tennis (title "game"), the current set for table
+	// tennis and volleyball (title "set") — and mirrored as an asterisk
+	// in scoreComment / the subscore comment ("7*-10" = c1 serving).
+	Serve *int `json:"serve"`
 }
 
 // Catalog is GET <line>/line/factorsCatalog/tables?version=0&lang=..&sysId=..
