@@ -76,7 +76,19 @@ export function startCustomLiabilitySweeper(
       if (!acquired) return;
       locked = true;
 
-      // Only markets that are open AND whose event has not finished. A
+      // EVERY open custom market, not only the liability-traded ones.
+      //
+      // Repricing is the single writer of custom prices and it is
+      // deterministic: with trading off it is a pure function of the
+      // operator's probabilities and overround, so a market nobody has
+      // touched reprices to exactly what it already holds, writes
+      // nothing, and publishes nothing. What that buys is self-healing —
+      // when the pricing rule itself changes (the 0.01 quote ladder did,
+      // and left every existing market showing 4.7619), the whole book
+      // converges within one pass instead of waiting for an operator to
+      // re-save each market by hand.
+      //
+      // Still only markets that are OPEN and on an unfinished event: a
       // settled or suspended market's prices are frozen by definition,
       // and repricing one would republish a price for a cell the
       // storefront has already locked.
@@ -87,7 +99,6 @@ export function startCustomLiabilitySweeper(
         .innerJoin(matches, eq(matches.id, markets.matchId))
         .where(
           and(
-            eq(customMarketConfig.liabilityTrading, true),
             eq(markets.status, 1),
             inArray(matches.status, ["not_started", "live"]),
           ),

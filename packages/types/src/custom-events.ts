@@ -43,8 +43,46 @@ export const CUSTOM_SPECIFIER_KEY = "custom";
  */
 export const MIN_CUSTOM_PROBABILITY = 0.0001;
 
-/** Odds are stored NUMERIC(10,4); everything here rounds to that grid. */
+/** Odds are stored NUMERIC(10,4); the fair-odds column keeps that grid. */
 const ODDS_DP = 4;
+
+/**
+ * Lowest price that the 0.01 quote ladder can express.
+ *
+ * Below it the only two-decimal values are 1.00, which is unbettable, and
+ * 1.01, which is longer than the model said — so prices under this floor
+ * keep their full precision instead.
+ */
+export const LADDER_FLOOR = 1.01;
+
+/**
+ * Quote an authored price onto the 0.01 ladder.
+ *
+ * Feed prices keep four decimals because Oddin genuinely quotes a
+ * near-certain favorite at 1.003, and rounding that to 1.00 prints a
+ * price that does not exist. **We are not a feed here.** These prices are
+ * derived from a probability an operator typed, so four decimals is
+ * precision nobody entered and no book quotes: a market came out at
+ * 4.7619 / 1.1904 on the storefront, which reads as a machine leaking its
+ * arithmetic. Two decimals is the same shape `formatBoostedOdds` already
+ * quotes ZillaFlash and ZillaBoost in.
+ *
+ * Floor, not round, so a price only ever moves toward the house — the
+ * convention every other odds path here follows. The cost is that the
+ * delivered book key sits a little above the requested overround, since
+ * each price is shortened by up to a hundredth; that is margin taken, not
+ * margin lost, and the backoffice shows the real key.
+ *
+ * Under `LADDER_FLOOR` the ladder cannot represent the value at all, so
+ * those keep four decimals. That is the same case `packages/types/src/odds.ts`
+ * exists for, and it is reachable here: a 99.5% probability prices at
+ * 1.005, which the ladder would either kill (1.00) or lengthen (1.01).
+ */
+export function quoteOnLadder(n: number): number {
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  if (n < LADDER_FLOOR) return roundDown(n, ODDS_DP);
+  return roundDown(n, 2);
+}
 
 export interface CustomOutcomeInput {
   outcomeId: string;
@@ -120,11 +158,13 @@ function roundDown(value: number, dp: number): number {
  *     such rather than iterated to a fixed point: an operator setting
  *     "at most 15%" wants a leash, not a guarantee to seven decimals.
  *
- *  3. **Apply the overround.** `published = 1 / (p · (1 + overround))`,
- *     so the book key `Σ(1/published)` comes out at exactly `1 + overround`.
- *     Prices are rounded DOWN to the 4dp storage grid: down shortens the
- *     price, which is the house-safe direction, and it matches the floor
- *     `formatOddsDisplay` already applies on the way to the screen.
+ *  3. **Apply the overround**, then quote onto the ladder.
+ *     `published = 1 / (p · (1 + overround))` puts the book key
+ *     `Σ(1/published)` at exactly `1 + overround`, and `quoteOnLadder`
+ *     then floors each price to two decimals — see its own note for why
+ *     an authored price is not quoted like a feed price. Flooring takes
+ *     a little more margin than asked for, so the delivered key sits
+ *     slightly above `1 + overround`; the backoffice shows the real one.
  *
  * Returns cells in input order. Throws on fewer than two outcomes or a
  * non-finite / non-positive base probability — both are operator input
@@ -175,8 +215,11 @@ export function priceCustomMarket(params: {
       outcomeId: o.outcomeId,
       baseProbability: b,
       probability: p,
+      // Fair odds keep full precision — they are the model's own value,
+      // never quoted to a bettor. Only the published price goes on the
+      // ladder.
       rawOdds: roundDown(1 / p, ODDS_DP),
-      publishedOdds: roundDown(1 / (p * overround), ODDS_DP),
+      publishedOdds: quoteOnLadder(1 / (p * overround)),
       shiftBp: Math.round((p - b) * 10_000),
     };
   });

@@ -177,32 +177,40 @@ export async function repriceMarket(
     .where(eq(marketOutcomes.marketId, marketId));
   const currentByOutcome = new Map(current.map((c) => [c.outcomeId, c]));
 
-  const changed: CustomPriceCell[] = [];
-  await app.db.transaction(async (tx) => {
-    for (const cell of cells) {
-      const before = currentByOutcome.get(cell.outcomeId);
-      const published = cell.publishedOdds.toFixed(4);
-      if (!before || before.publishedOdds !== published) changed.push(cell);
-      await tx
-        .update(marketOutcomes)
-        .set({
-          rawOdds: cell.rawOdds.toFixed(4),
-          publishedOdds: published,
-          probability: cell.probability.toFixed(7),
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(marketOutcomes.marketId, marketId),
-            eq(marketOutcomes.outcomeId, cell.outcomeId),
-          ),
-        );
-    }
-    await tx
-      .update(customMarketConfig)
-      .set({ liabilityPricedAt: new Date(), updatedAt: new Date() })
-      .where(eq(customMarketConfig.marketId, marketId));
+  // Write only what moved. This runs on a timer over every open custom
+  // market, so an unconditional UPDATE per outcome per pass would be
+  // pure write amplification — WAL and row versions for values that did
+  // not change. It also makes the pass safe to widen: repricing a market
+  // whose settings nobody touched is genuinely free.
+  const changed = cells.filter((cell) => {
+    const before = currentByOutcome.get(cell.outcomeId);
+    return !before || before.publishedOdds !== cell.publishedOdds.toFixed(4);
   });
+
+  if (changed.length > 0) {
+    await app.db.transaction(async (tx) => {
+      for (const cell of changed) {
+        await tx
+          .update(marketOutcomes)
+          .set({
+            rawOdds: cell.rawOdds.toFixed(4),
+            publishedOdds: cell.publishedOdds.toFixed(4),
+            probability: cell.probability.toFixed(7),
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(marketOutcomes.marketId, marketId),
+              eq(marketOutcomes.outcomeId, cell.outcomeId),
+            ),
+          );
+      }
+      await tx
+        .update(customMarketConfig)
+        .set({ liabilityPricedAt: new Date(), updatedAt: new Date() })
+        .where(eq(customMarketConfig.marketId, marketId));
+    });
+  }
 
   // Only a market the storefront is currently offering gets ticks. A
   // suspended or settled market's cell is already locked client-side, and
