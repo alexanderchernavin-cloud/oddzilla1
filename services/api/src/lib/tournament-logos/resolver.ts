@@ -39,10 +39,11 @@ import {
   wikiForSport,
   type LiquipediaClient,
 } from "./liquipedia.js";
+import { createWikipediaClient, type WikipediaClient } from "./wikipedia.js";
 
 /** One resolved mark, whichever source produced it. */
 interface SourcedLogo {
-  source: "wikidata" | "liquipedia";
+  source: "wikidata" | "liquipedia" | "wikipedia";
   label: string;
   description: string;
   fileUrl: string;
@@ -147,7 +148,7 @@ export interface LogoProposal {
   name: string;
   sportSlug: string;
   canonicalName: string;
-  source: "wikidata" | "liquipedia";
+  source: "wikidata" | "liquipedia" | "wikipedia";
   label: string;
   description: string;
   fileUrl: string;
@@ -186,6 +187,7 @@ export interface ResolveLogosOptions {
   zagi?: ZagiClient;
   wikidata?: WikidataClient;
   liquipedia?: LiquipediaClient;
+  wikipedia?: WikipediaClient;
   fetchImpl?: typeof fetch;
 }
 
@@ -245,6 +247,7 @@ export async function resolveTournamentLogos(
   result.model = zagi.model;
   const wd = opts.wikidata ?? createWikidataClient();
   const lp = opts.liquipedia ?? createLiquipediaClient();
+  const wp = opts.wikipedia ?? createWikipediaClient();
   const doFetch = opts.fetchImpl ?? fetch;
 
   const rows = await app.db
@@ -357,6 +360,24 @@ export async function resolveTournamentLogos(
               description: picked.description,
               fileUrl: picked.fileUrl,
               sourceUrl: picked.entityUrl,
+            };
+          }
+        }
+        // Wikipedia last, because it is the least free: these are
+        // trademarked marks used there under fair use. It is also the
+        // only source that has them — Wikidata carries a logo claim for
+        // about a fifth of the traditional leagues we carry. Every hit
+        // still goes through the ZAGI adjudicator below.
+        for (const title of titles) {
+          if (match) break;
+          const hit = await wp.lookup(title);
+          if (hit) {
+            match = {
+              source: "wikipedia",
+              label: hit.title,
+              description: hit.description,
+              fileUrl: hit.fileUrl,
+              sourceUrl: hit.pageUrl,
             };
           }
         }
