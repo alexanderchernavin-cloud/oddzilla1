@@ -60,6 +60,13 @@ export function startTournamentLogoSweeper(
   // silently. Cadence is the interval timer's job, not the lock's.
   const lockTtlS = Math.floor(SWEEP_BUDGET_MS / 1000) + 120;
 
+  // Closure-scoped so shutdown can hand the lock back. A deploy kills a
+  // sweep mid-run, and without this the lock sits there for its whole
+  // TTL — which is exactly what skipped the next boot sweep and made
+  // this look like a sweeper that never started.
+  let holdsLock = false;
+  let retryTimer: NodeJS.Timeout | null = null;
+
   const sweep = async () => {
     let locked = false;
     try {
@@ -78,9 +85,21 @@ export function startTournamentLogoSweeper(
           { component: "tournament-logos" },
           "logo sweep skipped: another pass holds the lock",
         );
+        // Come back shortly rather than sitting out a whole interval.
+        // The common cause is a deploy that killed the previous sweep
+        // seconds before this one started, and waiting an hour for that
+        // is how a lock collision turns into "the feature does nothing".
+        if (retryTimer === null) {
+          retryTimer = setTimeout(() => {
+            retryTimer = null;
+            void sweep();
+          }, 180_000);
+          retryTimer.unref?.();
+        }
         return;
       }
       locked = true;
+      holdsLock = true;
 
       const started = Date.now();
       const total = { eligible: 0, named: 0, declined: 0, unmatched: 0, applied: 0, chunks: 0 };
@@ -131,6 +150,7 @@ export function startTournamentLogoSweeper(
       app.log.error({ err, component: "tournament-logos" }, "tournament logo sweep failed");
     } finally {
       if (locked) {
+        holdsLock = false;
         try {
           await app.redis.del(LOCK_KEY);
         } catch {
@@ -149,6 +169,16 @@ export function startTournamentLogoSweeper(
     close() {
       clearTimeout(bootTimer);
       clearInterval(timer);
+      if (retryTimer !== null) clearTimeout(retryTimer);
+      // Hand the lock back on the way out. A sweep interrupted by a
+      // deploy would otherwise leave it held for the full TTL and skip
+      // the next instance's boot pass. Best-effort by necessity — the
+      // process is going away — but the shutdown sequence awaits enough
+      // afterwards for it to land.
+      if (holdsLock) {
+        holdsLock = false;
+        void app.redis.del(LOCK_KEY).catch(() => null);
+      }
     },
   };
 }
