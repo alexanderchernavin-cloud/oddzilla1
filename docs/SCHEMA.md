@@ -175,6 +175,13 @@ Canonical SQL lives in [`../packages/db/migrations/`](../packages/db/migrations/
     `evaluateAchievements` (TS). Both run the same SQL — `INSERT ...
     ON CONFLICT DO NOTHING` against the composite PK. Rollback paths
     don't revoke; achievements are facts about user history.
+- `20260906T015446_combozilla_config.sql` — the lobby's ComboZilla carousel
+  becomes configurable. `combozilla_config` singleton (master switch,
+  `eligible_risk_tiers smallint[]`, `allow_untiered`,
+  `multi_card_sport_slugs text[]`; defaults reproduce the constants the web
+  builder had hard-coded) + `combozilla_scope_rules` (allow / block on a
+  sport, category or tournament; most specific wins). See "ComboZilla" under
+  Table groups.
 
 Drizzle mirror is [`../packages/db/src/schema/`](../packages/db/src/schema/).
 
@@ -1030,6 +1037,43 @@ payload->>'label'`).
 per flush segment with viewport dims for replay scaling. Shares the
 per-session `seq` counter space with events. By far the heaviest table,
 hence the shorter 14-day retention and its own `created_at` sweep index.
+
+### ComboZilla (lobby prebuilt 3-fold carousel)
+
+Migration `20260906T015446_combozilla_config` (2026-09-06). ComboZilla picks
+four 3-fold parlays (Safe / Challenging / Risky / Ultimate) out of the
+prematch offer for the home page. Until this migration the whole selection
+policy lived as constants in `apps/web/src/lib/three-fold-builder.ts` —
+risk tiers 1..3 only, and only cs2 / dota2 / lol allowed more than one card
+— which, after ZillaAGI's standing +1 margin put most of the traditional
+line at T4-T6, meant the Fonbet offer never reached the carousel at all.
+
+**`combozilla_config`** — singleton (`id = 'default'`, CHECK-enforced).
+`enabled`; `eligible_risk_tiers smallint[]` (CHECK `<@ 1..10`; empty =
+nothing qualifies by tier alone); `allow_untiered` (a NULL tier is priced by
+RiskZilla at the STRICTEST tier, so it is out by default); `multi_card_
+sport_slugs text[]` (slugs, like `users.hidden_sports` — every other sport is
+capped at one card per render). Column defaults reproduce the old constants
+exactly, so an estate that never opens the page renders what it always did.
+Written only by `PUT /admin/combozilla-config`, audit-logged.
+
+**`combozilla_scope_rules`** — operator overrides. `scope` in `sport` /
+`category` / `tournament` and `mode` in `allow` / `block` are CHECK'd TEXT
+rather than enums (a fourth scope is one ALTER, not the two-file add-value
+dance). One typed FK per scope tier with `ON DELETE CASCADE`, a
+scope-consistency CHECK pinning exactly one populated ref, and a partial
+unique index per scope so the lookup is "at most one row per (scope, ref)" —
+the `riskzilla_live_delay_config` shape. Resolution is most specific wins:
+tournament > category > sport > tier default. **`allow` is unconditional**:
+it admits the scope regardless of tier, because anything already eligible
+needs no rule and that is the only meaning "manually add" can have.
+
+The policy is resolved in ONE place, `services/api/src/lib/combozilla.ts`,
+as a SQL CASE over the `matches → tournaments → categories → sports` join,
+and consumed by both `GET /catalog/combozilla-pool` (the storefront's
+candidate set, capped per sport) and the backoffice preview. No index on
+either table — a handful of rows, read through the CASE as bound `IN`
+lists.
 
 ### RiskZilla bot controls + behaviour scoring
 

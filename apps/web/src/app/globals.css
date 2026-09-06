@@ -532,22 +532,6 @@ body {
   letter-spacing: -0.015em;
   line-height: 1.1;
 }
-.oz-lobby-tab-link-count {
-  display: inline-flex;
-  align-items: center;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--fg-muted);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 2px 8px;
-  line-height: 1.2;
-  background: transparent;
-}
-.oz-lobby-tab-link[data-kind="live"] .oz-lobby-tab-link-count {
-  color: var(--live);
-  border-color: var(--live);
-}
 .oz-lobby-tab-link:hover .oz-lobby-tab-link-label {
   text-decoration: underline;
   text-underline-offset: 4px;
@@ -587,15 +571,9 @@ body {
 .oz-lobby-tab-link[data-selected="false"] .oz-lobby-tab-link-label {
   font-weight: 400;
 }
-.oz-lobby-tab-link[data-selected="false"] .oz-lobby-tab-link-count,
-.oz-lobby-tab-link[data-selected="false"][data-kind="live"]
-  .oz-lobby-tab-link-count {
-  color: var(--fg-dim);
-  border-color: var(--border);
-}
-/* Two 22-px labels plus their count pills come to ~275px, which clears
-   a 375px viewport by a hair. Tighten the gap rather than let the pair
-   wrap onto two lines. */
+/* Two 22-px labels with their icons sit comfortably in a 375px viewport
+   now that the count pills are gone (2026-09-06); the tighter gap stays
+   so the pair never wraps onto two lines in a long-word locale. */
 @media (max-width: 560px) {
   .oz-lobby-tabs {
     gap: 18px;
@@ -1126,7 +1104,21 @@ body {
      left so the buttons match the rest of the design system. */
   .oz-odd-label { display: none; }
   .oz-row-odd { justify-content: center !important; }
+}
 
+/* Half-height draw button on 1X2 list cards (match-row.tsx `compact`).
+   The visible box is 16px so the draw row stops costing a whole team
+   row of card height; the TAP target is grown back to 24px through a
+   pseudo-element reaching 4px into the 6px row gap above and below,
+   which is empty space, so a thumb still lands on it without the card
+   paying for the room. Applied at every width — a desktop trackpad
+   misses a 16px strip too. */
+.oz-row-odd[data-compact="true"]::before {
+  content: "";
+  position: absolute;
+  inset: -4px 0;
+}
+@media (max-width: 719px) {
   /* Lobby 3-fold cards stack vertically on mobile — two 168px-wide
      cards leave too little room for leg names. */
   .oz-3fold-grid {

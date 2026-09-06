@@ -1,5 +1,5 @@
 // ComboZilla builder. Picks four ready-to-bet 3-fold parlays from the
-// upcoming pool, one per "tier" tag. Per-leg / per-combo gates:
+// candidate pool, one per "tier" tag. Per-leg / per-combo gates:
 //
 //   safe        legs in [boostMin, 2.0)  →  combined [boostMin³, 5.00)
 //   challenging legs >= boostMin         →  combined [5.00, 10.00)
@@ -12,35 +12,42 @@
 // would be selling a discount the engine won't honour, since the
 // Combi Boost only applies to legs above the configured minOdds.
 //
+// WHICH matches may feed the carousel is NOT decided here. The pool is
+// `GET /catalog/combozilla-pool`, and the api resolves the operator's
+// policy (eligible risk tiers, allow / block rules on sports, categories
+// and tournaments — migration 20260906T015446_combozilla_config, edited at
+// /admin/combozilla) before the list reaches this file. Until 2026-09-06
+// the tier band was a constant in this module and the only way to put
+// Football in or keep a league out was a deploy.
+//
 // Other hard constraints:
 //   - Prematch only: any match whose `status` is set and !== "not_started"
-//     is dropped before tier selection. The home page already passes
-//     `/catalog/matches?status=upcoming`, but enforcing it here means a
-//     future caller can't accidentally feed in live matches.
-//   - Every leg must come from a Tier 1-3 match (tournament.risk_tier
-//     in {1,2,3}); unranked / higher-tier matches are dropped first.
+//     is dropped before tier selection. The pool endpoint already selects
+//     `not_started`, but enforcing it here means a future caller can't
+//     accidentally feed in live matches.
 //   - All three legs of any one combo must share the same sport.
-//   - Per-sport card cap: only CS2 / Dota 2 / LoL may hold more than
-//     one tier slot in the carousel. Every other sport (efootball,
-//     Valorant, ebasketball, …) is capped at one card — keeps the
-//     carousel from being dominated by whichever sport happens to have
-//     the largest active pool that day.
+//   - Per-sport card cap: only the sports in `multiCardSportSlugs` (the
+//     operator's list; cs2 / dota2 / lol by default) may hold more than
+//     one tier slot in the carousel. Every other sport is capped at one
+//     card — keeps the carousel from being dominated by whichever sport
+//     happens to have the largest active pool that day.
 //
 // Surviving legs join the tier's candidate pool; we enumerate up to
 // C(POOL_CAP, 3) triples per sport and keep the combo whose combined
 // product is closest to the band target. Pure & deterministic: same
-// (matches, marketLabel, boostMinOdds) → same output. Runs server-
-// side from the home page render.
+// (matches, marketLabel, boostMinOdds, multiCardSportSlugs) → same
+// output. Runs server-side from the home page render.
 
 import type { SlipSelection } from "@oddzilla/types";
 import { COMBI_BOOST_MIN_ODDS } from "@oddzilla/types/combi-boost";
+import { COMBOZILLA_DEFAULT_MULTI_CARD_SPORT_SLUGS } from "@oddzilla/types/combozilla";
 
 interface MatchInput {
   id: string;
   /**
-   * Lifecycle status from `/catalog/matches`. When set, only
-   * "not_started" is eligible — anything live / closed / cancelled /
-   * suspended is filtered out at the top of the builder.
+   * Lifecycle status from the pool. When set, only "not_started" is
+   * eligible — anything live / closed / cancelled / suspended is filtered
+   * out at the top of the builder.
    */
   status?: string;
   homeTeam: string;
@@ -51,7 +58,6 @@ interface MatchInput {
     away: { outcomeId: string; price: string | null; probability?: string | null };
   } | null;
   sport: { slug: string; name: string };
-  tournament?: { riskTier?: number | null };
 }
 
 export interface ThreeFoldLeg extends SlipSelection {
@@ -121,21 +127,6 @@ function buildTierBands(boostMin: number): Record<TierKey, TierBand> {
 // Cap the per-tier candidate pool. C(30,3) × 2-side picks = 32 480 ops
 // per tier × per sport — still trivial across 4 tiers × ~6 active sports.
 const POOL_CAP = 30;
-
-// ComboZilla only surfaces flagship tournaments. Anything outside the
-// 1-3 risk-tier band (4-10 or NULL) is dropped before tier selection.
-const ELIGIBLE_RISK_TIERS = new Set<number>([1, 2, 3]);
-
-// Sports that may hold more than one ComboZilla card at a time. Every
-// other sport (efootball, Valorant, ebasketball, …) is capped at one
-// card per carousel render. Slugs match the storefront's canonical
-// `sport.slug` (see apps/web/src/lib/sport-order.ts).
-const MULTI_CARD_SPORT_SLUGS = new Set<string>(["cs2", "dota2", "lol"]);
-
-function isTier1to3(m: MatchInput): boolean {
-  const t = m.tournament?.riskTier ?? null;
-  return t !== null && ELIGIBLE_RISK_TIERS.has(t);
-}
 
 function buildLeg(
   match: MatchInput,
@@ -302,39 +293,55 @@ function groupBySport(matches: MatchInput[]): SportBucket[] {
   return [...map.values()].sort((a, b) => b.matches.length - a.matches.length);
 }
 
+export interface ThreeFoldBuildOptions {
+  /**
+   * Live Combi Boost minimum-odds gate. Pass the value from
+   * /catalog/combi-boost-config when the admin has tuned it; falls back to
+   * the static default (1.5) so unit tests + early bootstrap still produce
+   * output.
+   */
+  boostMinOdds?: number;
+  /**
+   * Sports allowed to hold more than one card at once, from the pool
+   * endpoint (`multiCardSportSlugs`, edited at /admin/combozilla). Falls
+   * back to the pre-config constant so a caller that predates the field
+   * still builds the same carousel it always did.
+   */
+  multiCardSportSlugs?: readonly string[];
+}
+
 export function buildThreeFoldSuggestions(
   matches: MatchInput[],
   marketLabel: string,
-  // Live Combi Boost minimum-odds gate. Pass the value from
-  // /catalog/combi-boost-config when the admin has tuned it; falls
-  // back to the static default (1.5) so unit tests + early bootstrap
-  // still produce output.
-  boostMinOdds: number = COMBI_BOOST_MIN_ODDS,
+  options: ThreeFoldBuildOptions = {},
 ): ThreeFoldSuggestions {
+  const boostMinOdds = options.boostMinOdds ?? COMBI_BOOST_MIN_ODDS;
+  const multiCardSports = new Set(
+    options.multiCardSportSlugs ?? COMBOZILLA_DEFAULT_MULTI_CARD_SPORT_SLUGS,
+  );
   // Prematch-only: anything that already went live (or closed / cancelled
-  // / suspended) is dropped here even though the home page already
-  // passes `status=upcoming`. Belt-and-braces — the builder owns the
+  // / suspended) is dropped here even though the pool endpoint already
+  // selects `not_started`. Belt-and-braces — the builder owns the
   // invariant so a future caller can't accidentally feed it live odds.
   const prematch = matches.filter(
     (m) => m.status === undefined || m.status === "not_started",
   );
-  const eligible = dedupeMatches(prematch).filter(isTier1to3);
+  const eligible = dedupeMatches(prematch);
   if (eligible.length < 3) return {};
 
   const bands = buildTierBands(boostMinOdds);
   const sports = groupBySport(eligible);
   const out: ThreeFoldSuggestions = {};
   const usedMatchIds = new Set<string>();
-  // Per-sport card count. Sports outside MULTI_CARD_SPORT_SLUGS are
-  // skipped once they've already claimed one tier slot, so a single
-  // dense pool (efootball is the common offender) can't sweep the
-  // whole carousel.
+  // Per-sport card count. Sports outside `multiCardSports` are skipped
+  // once they've already claimed one tier slot, so a single dense pool
+  // (efootball is the common offender) can't sweep the whole carousel.
   const cardsBySport = new Map<string, number>();
 
   // Per-tier loop with layered fallback. Each tier tries to land a
   // combo through progressively-looser passes; if a tier comes up
   // empty after all four it just stays absent (rare — usually the
-  // upcoming pool is dense enough that the floor pass succeeds).
+  // pool is dense enough that the floor pass succeeds).
   //
   // Passes, in order of strictness:
   //   1. strict band + tier leg filter, disjoint pool
@@ -348,7 +355,7 @@ export function buildThreeFoldSuggestions(
   // because the pool just didn't contain 3 same-sport matches with
   // legs in the strict band. The relaxed passes ensure the carousel
   // shows all 4 cards (and the user can see Risky / Ultimate switchers)
-  // whenever the pool has at least 3 same-sport tier-1-3 matches with
+  // whenever the pool has at least 3 same-sport eligible matches with
   // boost-eligible legs.
   const floorLegFilter = (o: number) => o >= boostMinOdds;
   for (const tier of TIER_ORDER) {
@@ -371,7 +378,7 @@ export function buildThreeFoldSuggestions(
     for (const pass of passes) {
       for (const sport of sports) {
         const cardsForSport = cardsBySport.get(sport.slug) ?? 0;
-        if (cardsForSport >= 1 && !MULTI_CARD_SPORT_SLUGS.has(sport.slug)) {
+        if (cardsForSport >= 1 && !multiCardSports.has(sport.slug)) {
           continue;
         }
         picked = pickForTierInSport(

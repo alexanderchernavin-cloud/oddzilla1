@@ -42,12 +42,8 @@ export default async function LivePage({ searchParams }: PageProps) {
   const selectedSport =
     typeof rawSport === "string" && rawSport.length > 0 ? rawSport : null;
 
-  const [data, siblingData, user, tMatch, tSport] = await Promise.all([
+  const [data, user, tMatch, tSport] = await Promise.all([
     serverApi<Response>("/catalog/matches?status=live&limit=120"),
-    // The Pre-match tab renders here too (see SectionTabs) and carries a
-    // count, so we fetch the sibling list. Same limit /upcoming uses for
-    // itself, so the number on the tab is the number you get on landing.
-    serverApi<Response>("/catalog/matches?status=upcoming&limit=120"),
     // /auth/me is small + already in the SSR fan-out for the layout;
     // we call it again here so the page picks up the bettor's
     // hidden_sports (migration 0072) and can filter the match list
@@ -63,14 +59,6 @@ export default async function LivePage({ searchParams }: PageProps) {
   ]);
   const ordered = orderMatchesBySport(
     data?.matches ?? [],
-    user?.hiddenSports ?? null,
-  );
-  // Sibling count for the Pre-match tab, filtered exactly the way the
-  // visible list is (hidden sports + the chip's sport), so the two
-  // numbers on the strip are comparable and clicking through keeps the
-  // filter the bettor set.
-  const siblingOrdered = orderMatchesBySport(
-    siblingData?.matches ?? [],
     user?.hiddenSports ?? null,
   );
 
@@ -91,9 +79,6 @@ export default async function LivePage({ searchParams }: PageProps) {
   const visible = selectedSport
     ? ordered.filter((m) => m.sport.slug === selectedSport)
     : ordered;
-  const siblingCount = selectedSport
-    ? siblingOrdered.filter((m) => m.sport.slug === selectedSport).length
-    : siblingOrdered.length;
 
   return (
     <div
@@ -148,8 +133,6 @@ export default async function LivePage({ searchParams }: PageProps) {
           <SectionTabs
             liveLabel={tMatch("live")}
             prematchLabel={tMatch("prematch")}
-            liveCount={0}
-            prematchCount={siblingCount}
             selected="live"
             sport={selectedSport}
           />
@@ -171,8 +154,6 @@ export default async function LivePage({ searchParams }: PageProps) {
                 <SectionTabs
                   liveLabel={tMatch("live")}
                   prematchLabel={tMatch("prematch")}
-                  liveCount={visible.length}
-                  prematchCount={siblingCount}
                   selected="live"
                   sport={selectedSport}
                 />

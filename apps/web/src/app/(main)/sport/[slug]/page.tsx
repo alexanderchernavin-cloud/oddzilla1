@@ -9,6 +9,7 @@ import {
 import { SportGlyph } from "@/components/ui/sport-glyph";
 import { LogoMark } from "@/components/ui/logo-mark";
 import { I } from "@/components/ui/icons";
+import { SectionTabs } from "@/components/lobby/section-tabs";
 import { shortName } from "@/lib/sport-order";
 import { getTranslations } from "@/lib/i18n/server";
 import { SportViewTracker } from "@/lib/zillapass-track";
@@ -59,11 +60,13 @@ export default async function SportPage({
   if (tournamentId) qs.set("tournament", tournamentId);
   if (teamId) qs.set("team", teamId);
   if (categoryId) qs.set("category", categoryId);
-  const [data, t, tShell, tCommon] = await Promise.all([
+  const [data, t, tShell, tMatch] = await Promise.all([
     serverApi<SportResponse>(`/catalog/sports/${slug}?${qs.toString()}`),
     getTranslations("sport"),
     getTranslations("shell"),
-    getTranslations("common"),
+    // The "match" namespace carries both section labels ("Live" /
+    // "Pre-match") — the same two keys the lobby strip reads.
+    getTranslations("match"),
   ]);
   if (!data) notFound();
 
@@ -147,16 +150,13 @@ export default async function SportPage({
           >
             {data.sport.name}
           </h1>
-          {/* Match count sits under the title (left side) — the right
-              edge of this header is reserved for the sticky ZillaPass
-              chip in `.oz-shell-search`, which uses a negative bottom
-              margin to overlap into this row. */}
-          <div
-            className="mono tnum"
-            style={{ fontSize: 12, color: "var(--fg-muted)", marginTop: 4 }}
-          >
-            {t("matchCount", { count: data.matches.length })}
-          </div>
+          {/* No match count under the title. It used to print
+              `data.matches.length`, which is the page's own fetch limit
+              (100) — "100 matches" over a Football line carrying ~1 900
+              — the same page-size-as-count mistake the Live / Pre-match
+              strip made (both removed 2026-09-06). The right edge of
+              this header stays reserved for the sticky ZillaPass chip
+              in `.oz-shell-search`, which overlaps into this row. */}
         </div>
       </header>
 
@@ -195,6 +195,14 @@ export default async function SportPage({
         </div>
       )}
 
+      {/* Same Live / Pre-match strip the lobby carries, and the same
+          behaviour: both sections render below it, so neither tab is
+          selected, and each tab links to its section page scoped to THIS
+          sport (`/live?sport=football`, `/upcoming?sport=football`). Until
+          2026-09-06 the sport page printed its own small-caps group
+          headers here ("LIVE · 30"), which neither linked anywhere nor
+          matched the lobby's control. When there is nothing live the
+          strip heads the prematch group instead, as on the lobby. */}
       <MatchListTabs
         matches={enriched}
         groups={[
@@ -203,18 +211,11 @@ export default async function SportPage({
                 {
                   key: "live",
                   label: (
-                    <div
-                      className="mono"
-                      style={{
-                        fontSize: 10.5,
-                        letterSpacing: "0.14em",
-                        textTransform: "uppercase",
-                        color: "var(--fg-dim)",
-                        fontWeight: 600,
-                      }}
-                    >
-                      {tCommon("live")} · {live.length}
-                    </div>
+                    <SectionTabs
+                      liveLabel={tMatch("live")}
+                      prematchLabel={tMatch("prematch")}
+                      sport={slug}
+                    />
                   ),
                   matches: live,
                 },
@@ -222,20 +223,14 @@ export default async function SportPage({
             : []),
           {
             key: "upcoming",
-            label: (
-              <div
-                className="mono"
-                style={{
-                  fontSize: 10.5,
-                  letterSpacing: "0.14em",
-                  textTransform: "uppercase",
-                  color: "var(--fg-dim)",
-                  fontWeight: 600,
-                }}
-              >
-                {t("upcoming")} · {upcoming.length}
-              </div>
-            ),
+            label:
+              live.length > 0 ? null : (
+                <SectionTabs
+                  liveLabel={tMatch("live")}
+                  prematchLabel={tMatch("prematch")}
+                  sport={slug}
+                />
+              ),
             matches: upcoming,
           },
         ]}

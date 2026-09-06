@@ -7,8 +7,6 @@ export type SectionTabKind = "live" | "prematch";
 interface SectionTabsProps {
   liveLabel: string;
   prematchLabel: string;
-  liveCount: number;
-  prematchCount: number;
   // Which section the surrounding page is showing. `null` is the lobby,
   // which renders BOTH sections at once — so neither tab is selected
   // there and the strip keeps its original flat look.
@@ -27,11 +25,16 @@ interface SectionTabsProps {
 // dead ends — the only way back was the browser's back button. The
 // selected tab is marked (full-strength label + underline +
 // aria-current) instead of being the only one on screen.
+//
+// No counts. The strip used to print one per tab, and the number was the
+// LENGTH OF THE PAGE'S FETCH — `/catalog/matches?…&limit=60` rendered as
+// "Pre-match 60" over a line carrying thousands of prematch fixtures, and
+// "Live 120" beside a sidebar badge that said 126. A count that is really
+// a page size is worse than none (removed 2026-09-06). The sidebar's Live
+// badge remains the one true live total.
 export function SectionTabs({
   liveLabel,
   prematchLabel,
-  liveCount,
-  prematchCount,
   selected = null,
   sport = null,
 }: SectionTabsProps) {
@@ -42,7 +45,6 @@ export function SectionTabs({
         kind="live"
         href={`/live${suffix}`}
         label={liveLabel}
-        count={liveCount}
         selected={selected === "live"}
         headingLevel={selected ? (selected === "live" ? 1 : 0) : 2}
       />
@@ -50,7 +52,6 @@ export function SectionTabs({
         kind="prematch"
         href={`/upcoming${suffix}`}
         label={prematchLabel}
-        count={prematchCount}
         selected={selected === "prematch"}
         headingLevel={selected ? (selected === "prematch" ? 1 : 0) : 2}
       />
@@ -58,10 +59,9 @@ export function SectionTabs({
   );
 }
 
-// One tab: icon + section title + count pill. `kind` drives the icon
-// (red pulsing dot for live, neutral clock outline for prematch) and the
-// count pill's accent; hover, focus and selected styling live in
-// globals.css under `.oz-lobby-tab-link`.
+// One tab: icon + section title. `kind` drives the icon (red pulsing dot
+// for live, neutral clock outline for prematch); hover, focus and
+// selected styling live in globals.css under `.oz-lobby-tab-link`.
 //
 // `headingLevel` 0 renders a plain span — the unselected tab on a page
 // that already has an h1, where a second heading would be noise for a
@@ -70,14 +70,12 @@ function SectionTab({
   kind,
   href,
   label,
-  count,
   selected,
   headingLevel,
 }: {
   kind: SectionTabKind;
   href: string;
   label: string;
-  count: number;
   selected: boolean;
   headingLevel: 0 | 1 | 2;
 }) {
@@ -95,7 +93,6 @@ function SectionTab({
         {kind === "live" ? <LiveDot size={9} /> : <I.Clock size={18} />}
       </span>
       <Label className="oz-lobby-tab-link-label">{label}</Label>
-      <span className="oz-lobby-tab-link-count mono tnum">{count}</span>
     </Link>
   );
 }
