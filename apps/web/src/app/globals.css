@@ -197,6 +197,28 @@
     border-color: var(--border);
   }
   .btn-ghost:hover { background: var(--surface-2); }
+
+  /*
+   * Admin form field. The same border / background / focus treatment the
+   * older admin editors spell out inline on every input; named here so a
+   * screen with a dozen fields does not repeat a 140-character class
+   * string a dozen times.
+   */
+  .admin-input {
+    border-radius: 10px;
+    border: 1px solid var(--color-border-strong, var(--border));
+    background: var(--color-bg-elevated, var(--surface-2));
+    color: inherit;
+    padding: 6px 10px;
+    font-size: 13.5px;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 160ms var(--ease);
+  }
+  .admin-input:focus {
+    border-color: var(--color-accent, var(--accent));
+  }
+  .admin-input:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 
 /* Keyframes */

@@ -393,6 +393,8 @@
     "all": "Все",
     "live": "Live",
     "upcoming": "Прематч",
+    "startingSoon": "Скоро начало",
+    "liveAndSoon": "Live и скоро начало",
     "topTournaments": "Топ турниры",
     "clearFilter": "Сбросить фильтр",
     "noMatches": "Матчей пока нет.",

@@ -86,8 +86,35 @@ export default async function SportPage({
 
   const sportShort = shortName(data.sport.name);
   const enriched = data.matches.map((m) => enrich(m, slug, sportShort));
-  const live = enriched.filter((m) => m.status === "live");
-  const upcoming = enriched.filter((m) => m.status !== "live");
+
+  // Group on the server's `featured` flag, NOT on status.
+  //
+  // The API sorts one tier-ordered region at the top of every list —
+  // everything live, plus prematch matches inside their tier's hoist
+  // window — and only then falls back to chronological order (see
+  // `matchListOrder` in the catalog routes). Splitting that region by
+  // status here undid the whole thing: on 2026-09-06 the nine Premier
+  // League / La Liga / Ligue 1 fixtures the rule had promoted to
+  // positions 1-9 were re-sorted underneath 91 live youth and women's
+  // games, which is the opposite of what the ordering decided.
+  //
+  // Rows arrive in server order and `filter` is stable, so the tier
+  // ordering survives this partition untouched.
+  const featured = enriched.filter((m) => m.featured);
+  const rest = enriched.filter((m) => !m.featured);
+  const featuredLive = featured.filter((m) => m.status === "live").length;
+  const featuredSoon = featured.length - featuredLive;
+
+  // Name the top section after what is actually in it. It usually holds
+  // both kinds, but a sport between fixtures can be all-prematch and a
+  // sport with nothing imminent all-live, and a header that claims
+  // "Live" over a list led by kickoff times is worse than no header.
+  const featuredLabel =
+    featuredSoon === 0
+      ? tCommon("live")
+      : featuredLive === 0
+        ? t("startingSoon")
+        : t("liveAndSoon");
 
   return (
     <div
@@ -198,53 +225,47 @@ export default async function SportPage({
       <MatchListTabs
         matches={enriched}
         groups={[
-          ...(live.length > 0
+          ...(featured.length > 0
             ? [
                 {
-                  key: "live",
+                  key: "featured",
                   label: (
-                    <div
-                      className="mono"
-                      style={{
-                        fontSize: 10.5,
-                        letterSpacing: "0.14em",
-                        textTransform: "uppercase",
-                        color: "var(--fg-dim)",
-                        fontWeight: 600,
-                      }}
-                    >
-                      {tCommon("live")} · {live.length}
-                    </div>
+                    <SectionLabel text={featuredLabel} count={featured.length} />
                   ),
-                  matches: live,
+                  matches: featured,
                 },
               ]
             : []),
           {
             key: "upcoming",
-            label: (
-              <div
-                className="mono"
-                style={{
-                  fontSize: 10.5,
-                  letterSpacing: "0.14em",
-                  textTransform: "uppercase",
-                  color: "var(--fg-dim)",
-                  fontWeight: 600,
-                }}
-              >
-                {t("upcoming")} · {upcoming.length}
-              </div>
-            ),
-            matches: upcoming,
+            label: <SectionLabel text={t("upcoming")} count={rest.length} />,
+            matches: rest,
           },
         ]}
       />
-      {upcoming.length === 0 && live.length === 0 ? (
+      {rest.length === 0 && featured.length === 0 ? (
         <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
           {t("noMatches")}
         </p>
       ) : null}
+    </div>
+  );
+}
+
+/** The small uppercase kicker above each match-list section. */
+function SectionLabel({ text, count }: { text: string; count: number }) {
+  return (
+    <div
+      className="mono"
+      style={{
+        fontSize: 10.5,
+        letterSpacing: "0.14em",
+        textTransform: "uppercase",
+        color: "var(--fg-dim)",
+        fontWeight: 600,
+      }}
+    >
+      {text} · {count}
     </div>
   );
 }
