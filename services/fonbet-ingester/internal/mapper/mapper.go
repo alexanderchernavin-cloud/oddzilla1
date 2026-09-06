@@ -39,7 +39,8 @@ type Options struct {
 	IncludeSubEvents bool
 	MaxMatches       int
 	// Deny drops markets no grader can ever settle from the data we have
-	// (fonbet_market_denylist, migration 0111). nil = deny nothing.
+	// (fonbet_market_denylist, migration
+	// 20260906T103343_settlement_operator_tools). nil = deny nothing.
 	Deny *Denylist
 }
 

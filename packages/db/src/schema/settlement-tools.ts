@@ -1,4 +1,5 @@
-// Settlement operator tools (migration 0111).
+// Settlement operator tools
+// (migration 20260906T103343_settlement_operator_tools).
 //
 // fonbet_market_denylist: catalogue tables and sub-event label prefixes the
 // Fonbet ingester must not turn into markets, because no grader can settle

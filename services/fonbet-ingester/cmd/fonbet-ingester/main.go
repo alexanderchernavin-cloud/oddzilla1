@@ -267,7 +267,8 @@ func runFeed(ctx context.Context, cfg config.Config, st *store.Store, b *bus.Bus
 		IncludeSubEvents: cfg.Fonbet.IncludeSubEvents,
 		MaxMatches:       cfg.Fonbet.MaxMatches,
 	}
-	// Operator denylist of unsettleable market shapes (migration 0111).
+	// Operator denylist of unsettleable market shapes
+	// (migration 20260906T103343_settlement_operator_tools).
 	// A read failure keeps the previous list (nil on boot = deny nothing)
 	// rather than stopping the feed: the worst case is a minute of
 	// offering a shape the next reload removes.
