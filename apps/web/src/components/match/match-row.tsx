@@ -232,6 +232,11 @@ export const MatchRow = memo(function MatchRow({
       // Keep the "X" visible on mobile — without a team name on its
       // row, the label is the only cue this is the draw outcome.
       keepLabelOnMobile
+      // Half height. The draw is the least-picked cell on a 1X2 card and
+      // its row carries nothing else, so at full size it added a whole
+      // team-row's worth of height to every football card for a button
+      // few bettors touch (operator call, 2026-09-06).
+      compact
     />
   ) : null;
 
@@ -774,8 +779,17 @@ function MapCell({ value, live }: { value: number | null; live: boolean }) {
 
 // Inline odds button used in the list card. One per team row, so the
 // whole odds block becomes a single ~70px wide track instead of two
-// ~80px buttons sitting next to both rows. Compact: 30px tall, label
-// + price side-by-side.
+// ~80px buttons sitting next to both rows. 30px tall, label + price
+// side-by-side; `compact` halves that for the draw row.
+const ROW_ODD_HEIGHT = 30;
+// Half of ROW_ODD_HEIGHT, rounded up one so the 1px borders and the
+// 9.5px label centre on whole pixels. The visible box is this tall; the
+// TAP target is not — `.oz-row-odd[data-compact]` in globals.css grows
+// the hit area 4px above and below through a pseudo-element, into the
+// row gap, so a phone still gets a 24px target (WCAG 2.5.8) under a
+// button that only takes 16px of the card.
+const ROW_ODD_HEIGHT_COMPACT = 16;
+
 function RowOddBtn({
   label,
   price,
@@ -785,6 +799,7 @@ function RowOddBtn({
   keepLabelOnMobile = false,
   boosted = false,
   originalPrice = null,
+  compact = false,
 }: {
   label: string;
   price: number | null;
@@ -801,6 +816,8 @@ function RowOddBtn({
   boosted?: boolean;
   /** Pre-boost price, shown struck through beside the boosted one. */
   originalPrice?: number | null;
+  /** Half-height variant (the draw row). See ROW_ODD_HEIGHT_COMPACT. */
+  compact?: boolean;
 }) {
   // A price at or below 1.00 can't return a profit, so the cell is
   // shown but not offered — greyed with an em dash, same as a suspended
@@ -829,8 +846,10 @@ function RowOddBtn({
     justifyContent: "space-between",
     gap: 6,
     width: "100%",
-    height: 30,
-    padding: "0 9px",
+    height: compact ? ROW_ODD_HEIGHT_COMPACT : ROW_ODD_HEIGHT,
+    padding: compact ? "0 7px" : "0 9px",
+    // Anchors the compact variant's tap-area pseudo-element.
+    position: "relative",
     background: selected
       ? "var(--accent)"
       : showBoost
@@ -843,7 +862,7 @@ function RowOddBtn({
       : showBoost
         ? "var(--positive, #16a34a)"
         : "var(--border)",
-    borderRadius: 8,
+    borderRadius: compact ? 6 : 8,
     cursor: locked ? "not-allowed" : "pointer",
     fontFamily: "inherit",
     transition: "all 140ms var(--ease)",
@@ -863,12 +882,14 @@ function RowOddBtn({
       disabled={locked}
       onClick={onClick}
       className="oz-row-odd"
+      data-compact={compact ? "true" : undefined}
       style={baseStyle}
     >
       <span
         className={keepLabelOnMobile ? "mono" : "mono oz-odd-label"}
         style={{
-          fontSize: 10.5,
+          fontSize: compact ? 9.5 : 10.5,
+          lineHeight: 1,
           color: selected
             ? "color-mix(in oklab, var(--accent-fg) 70%, transparent)"
             : "var(--fg-muted)",
@@ -881,13 +902,15 @@ function RowOddBtn({
         <span
           className="mono tnum"
           style={{
-            fontSize: 10,
+            fontSize: compact ? 9 : 10,
+            lineHeight: 1,
             color: "var(--fg-muted)",
             textDecoration: "line-through",
             letterSpacing: "-0.01em",
-            // The row cell is only 30px tall and already carries a
-            // label; let the struck original be the first thing to go
-            // when the track is tight rather than squeezing the price.
+            // The row cell is only 30px tall (16 compact) and already
+            // carries a label; let the struck original be the first
+            // thing to go when the track is tight rather than squeezing
+            // the price.
             flexShrink: 1,
             minWidth: 0,
             overflow: "hidden",
@@ -899,7 +922,8 @@ function RowOddBtn({
       <span
         className="mono tnum"
         style={{
-          fontSize: 12.5,
+          fontSize: compact ? 11 : 12.5,
+          lineHeight: 1,
           // 700 so the digit punches through every state — selection
           // accent flip, odds-change flash, and locked dim all leave
           // the price strongly readable.

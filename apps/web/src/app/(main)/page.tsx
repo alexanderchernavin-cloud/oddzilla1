@@ -19,6 +19,7 @@ import {
   shortName,
 } from "@/lib/sport-order";
 import { getTranslations } from "@/lib/i18n/server";
+import type { ComboZillaPoolResponse } from "@oddzilla/types/combozilla";
 
 interface SportsResponse {
   sports: Array<{ id: number; slug: string; name: string; kind: string; active: boolean }>;
@@ -56,6 +57,7 @@ export default async function HomePage() {
     liveRes,
     upcomingRes,
     combiBoostRes,
+    comboPoolRes,
     user,
     t,
     tMatch,
@@ -65,6 +67,10 @@ export default async function HomePage() {
     serverApi<CrossSportResponse>("/catalog/matches?status=live&limit=120"),
     serverApi<CrossSportResponse>("/catalog/matches?status=upcoming&limit=60"),
     serverApi<CombiBoostConfigResponse>("/catalog/combi-boost-config"),
+    // ComboZilla's candidate pool. The api applies the operator's policy
+    // (eligible risk tiers + allow / block rules, /admin/combozilla) and
+    // caps the pool per sport; the builder below only assembles combos.
+    serverApi<ComboZillaPoolResponse>("/catalog/combozilla-pool"),
     // See live/page.tsx — we re-fetch the session user so the lobby
     // picks up the bettor's hidden_sports (migration 0072) for the
     // live + upcoming lists, the sport-chip strip, and the
@@ -90,17 +96,23 @@ export default async function HomePage() {
   // leg doesn't carry literal English through to the client (where the
   // bet-slip rail would re-render it on click).
   //
-  // ComboZilla feeds on PREMATCH-only matches (the brief calls for two
-  // prematch combos in the carousel). Tier 1-3 filtering, same-sport
-  // grouping, prematch enforcement, the per-sport card cap (only CS2 /
-  // Dota 2 / LoL may hold more than one slot), and the per-leg Combi
-  // Boost minimum-odds gate all happen inside the builder; passing the
-  // live minOdds keeps the gate in sync with whatever the admin tuned
-  // the boost to.
+  // ComboZilla feeds on the PREMATCH pool the api resolved from the
+  // operator's policy (which risk tiers qualify, plus allow / block rules
+  // on sports, categories and tournaments — edited at /admin/combozilla).
+  // Same-sport grouping, prematch enforcement, the per-sport card cap
+  // (the operator's `multiCardSportSlugs`), and the per-leg Combi Boost
+  // minimum-odds gate happen inside the builder; passing the live minOdds
+  // keeps the gate in sync with whatever the admin tuned the boost to.
+  // The bettor's own hidden sports are dropped here, like every other
+  // lobby surface — a hidden sport must not come back as a card.
+  const comboPool = orderMatchesBySport(comboPoolRes?.matches ?? [], userHidden);
   const threeFoldSuggestions = buildThreeFoldSuggestions(
-    upcoming,
+    comboPool,
     tMatch("matchWinner"),
-    combiBoostRes?.minOdds ?? undefined,
+    {
+      boostMinOdds: combiBoostRes?.minOdds ?? undefined,
+      multiCardSportSlugs: comboPoolRes?.multiCardSportSlugs,
+    },
   );
 
   return (
@@ -195,8 +207,6 @@ export default async function HomePage() {
                         <SectionTabs
                           liveLabel={tMatch("live")}
                           prematchLabel={tMatch("prematch")}
-                          liveCount={live.length}
-                          prematchCount={upcoming.length}
                         />
                       ),
                       matches: liveEnriched,
@@ -214,8 +224,6 @@ export default async function HomePage() {
                   <SectionTabs
                     liveLabel={tMatch("live")}
                     prematchLabel={tMatch("prematch")}
-                    liveCount={live.length}
-                    prematchCount={upcoming.length}
                   />
                 ),
                 matches: upcomingShown,
