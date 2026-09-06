@@ -6,7 +6,13 @@
 // disagreed with what the save wrote would be worse than no preview.
 //
 // Import by subpath (`@oddzilla/types/custom-events`), never through the
-// barrel — see the note on packages/types/src/odds.ts.
+// barrel — see the note on packages/types/src/odds.ts. The netwinstable
+// import below is a SELF-REFERENCE by package name for the same reason:
+// a relative `./netwinstable.js` resolves under tsc and then fails at
+// `next build`, because webpack will not map the `.js` suffix onto the
+// `.ts` file. The package's own export map resolves it in both.
+
+import { applyNetwinstableKey } from "@oddzilla/types/netwinstable";
 
 /**
  * `provider_market_id` every custom market carries.
@@ -227,13 +233,30 @@ function roundDown(value: number, dp: number): number {
  *     such rather than iterated to a fixed point: an operator setting
  *     "at most 15%" wants a leash, not a guarantee to seven decimals.
  *
- *  3. **Apply the overround**, then quote onto the ladder.
- *     `published = 1 / (p · (1 + overround))` puts the book key
- *     `Σ(1/published)` at exactly `1 + overround`, and `quoteOnLadder`
- *     then floors each price to two decimals — see its own note for why
- *     an authored price is not quoted like a feed price. Flooring takes
- *     a little more margin than asked for, so the delivered key sits
- *     slightly above `1 + overround`; the backoffice shows the real one.
+ *  3. **Apply the overround by Netwinstable Key Adjustment**, then quote
+ *     onto the ladder.
+ *
+ *     Dividing every fair price by `1 + overround` is the obvious method
+ *     and the wrong one. Betradar's own documentation names the two
+ *     failures it has: it cannot put a key on a short price without
+ *     driving it under 1.0 (a 1.05 favourite at a 110 key goes to 0.95,
+ *     a bet that loses money when it WINS), and it mangles the shape of
+ *     a lopsided book — the doc's example turns a fair 1.11 / 10.0 into
+ *     1.01 / 9.1. This codebase already hit the first one and papered
+ *     over it with an explicit floor.
+ *
+ *     Netwinstable instead scales every NET WIN by one factor: there is
+ *     an α such that `odds_i = 1 + α·(fair_i − 1)`, chosen so the book
+ *     key lands on the target. Because α is positive, no price can ever
+ *     reach 1.0, so the floor stops being load-bearing. Longer prices
+ *     give up more than proportionally and shorter ones less, which is
+ *     what a book actually wants: on a 85/12/1/1/1 market at a 10% key,
+ *     proportional quotes the 1% shots at 90.90 and the favourite at
+ *     1.06, while Netwinstable quotes 69 and 1.12.
+ *
+ *     `quoteOnLadder` then puts each price on a rung. That is the only
+ *     step that still shifts the delivered key, and only downward-of-fair
+ *     (margin taken, never lost); the backoffice shows the real key.
  *
  * Returns cells in input order. Throws on fewer than two outcomes or a
  * non-finite / non-positive base probability — both are operator input
@@ -276,7 +299,14 @@ export function priceCustomMarket(params: {
     }
   }
 
-  const overround = 1 + Math.max(0, overroundBp) / 10_000;
+  const keyTarget = 1 + Math.max(0, overroundBp) / 10_000;
+  const fair = outcomes.map((_, i) =>
+    1 / Math.max(priced[i]!, MIN_CUSTOM_PROBABILITY),
+  );
+  // Fair odds sum to a key of exactly 1, so this is the pure "put a
+  // margin on a fair book" case the algorithm is written for.
+  const adjusted = applyNetwinstableKey(fair, keyTarget);
+
   return outcomes.map((o, i) => {
     const p = Math.max(priced[i]!, MIN_CUSTOM_PROBABILITY);
     const b = base[i]!;
@@ -287,8 +317,8 @@ export function priceCustomMarket(params: {
       // Fair odds keep full precision — they are the model's own value,
       // never quoted to a bettor. Only the published price goes on the
       // ladder.
-      rawOdds: roundDown(1 / p, ODDS_DP),
-      publishedOdds: quoteOnLadder(1 / (p * overround)),
+      rawOdds: roundDown(fair[i]!, ODDS_DP),
+      publishedOdds: quoteOnLadder(adjusted[i]!),
       shiftBp: Math.round((p - b) * 10_000),
     };
   });
