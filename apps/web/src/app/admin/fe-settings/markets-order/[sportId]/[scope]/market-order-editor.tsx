@@ -18,48 +18,58 @@ export function entryKey(m: MarketEntry): string {
   return `${m.providerMarketId}:${m.variant}`;
 }
 
-// Two jobs, one screen.
+// One screen, one shape: the list on the left is the tab, the pool on the
+// right is every market this sport offers, and a market moves between
+// them. Feed tabs (Match / Map N / a sub-event) were order-only until
+// migration 0111 — their pool was just their own markets, so there was no
+// way to put the corners total on the Match tab or leave a market off a
+// tab that carries it.
 //
-// A FEED tab (Match / Map N / a sub-event) already holds its markets — the
-// feed decides membership, not the operator — so there is ONE list, in the
-// order bettors see, and dragging changes that order. It used to render as
-// "Ordered (0)" beside "Unranked (6)", which read as "this tab is empty"
-// when in fact all six markets were on it and merely unpinned.
-//
-// A CURATED tab (Top, custom groups) is opt-in membership, so it keeps two
-// columns: what's in the tab, and every market on the sport to pick from.
+// The one thing that still differs is what happens to markets NOT on the
+// list. A feed tab defaults to 'auto': the feed keeps filling it behind
+// the operator's order, which is what it always did and what keeps a
+// market kind that is not live right now — and so is not in this pool —
+// from silently vanishing from the storefront. 'manual' makes the list
+// the whole tab, exactly like Top and custom groups, which have no feed
+// side to fall back on.
 export function MarketOrderEditor({
   sportId,
   scope,
-  curated,
+  feedTab,
+  initialMembership,
+  seeded,
   tabs,
   initialOrdered,
-  initialUnranked,
+  initialAvailable,
 }: {
   sportId: number;
   scope: string;
-  curated: boolean;
+  feedTab: boolean;
+  initialMembership: "auto" | "manual";
+  /** `ordered` is the tab's live contents, not saved rows — see the API. */
+  seeded: boolean;
   tabs: ScopeTab[];
   initialOrdered: MarketEntry[];
-  initialUnranked: MarketEntry[];
+  initialAvailable: MarketEntry[];
 }) {
   const router = useRouter();
-  // Feed mode has a single list; curated mode splits it in two.
-  const [ordered, setOrdered] = useState<MarketEntry[]>(
-    curated ? initialOrdered : [...initialOrdered, ...initialUnranked],
-  );
-  const [available, setAvailable] = useState<MarketEntry[]>(
-    curated ? initialUnranked : [],
-  );
+  const [ordered, setOrdered] = useState<MarketEntry[]>(initialOrdered);
+  const [available, setAvailable] = useState<MarketEntry[]>(initialAvailable);
+  const [membership, setMembership] = useState(initialMembership);
   const [query, setQuery] = useState("");
   const [busy, startTransition] = useTransition();
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
   const savedKeys = useMemo(
-    () => initialOrdered.map(entryKey).join("|"),
-    [initialOrdered],
+    () => (seeded ? null : initialOrdered.map(entryKey).join("|")),
+    [initialOrdered, seeded],
   );
-  const dirty = ordered.map(entryKey).join("|") !== savedKeys;
+  // A seeded list is a preview of what the feed puts on the tab; saving it
+  // is a real change (it pins that list), so Save stays enabled.
+  const dirty =
+    savedKeys === null ||
+    membership !== initialMembership ||
+    ordered.map(entryKey).join("|") !== savedKeys;
 
   const tabTitle = useMemo(() => {
     const byScope = new Map(tabs.map((t) => [t.scope, t]));
@@ -69,6 +79,18 @@ export function MarketOrderEditor({
       return hit ? tabLabel(hit) : s;
     };
   }, [tabs]);
+
+  // Removing one of the tab's OWN markets does nothing while the feed is
+  // still allowed to fill the tab — it comes back at the end of the list
+  // on the next load, which looks like the remove button is broken. Say
+  // so instead, and point at the control that makes it stick.
+  const removedButStillShown = useMemo(
+    () =>
+      membership === "auto"
+        ? available.filter((m) => m.tab === scope).length
+        : 0,
+    [available, membership, scope],
+  );
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -186,6 +208,7 @@ export function MarketOrderEditor({
               providerMarketId: m.providerMarketId,
               variant: m.variant,
             })),
+            ...(feedTab ? { membership } : null),
           }),
         });
         setMsg({ kind: "ok", text: "Saved." });
@@ -236,7 +259,11 @@ export function MarketOrderEditor({
     onDrop?: (ev: DragEvent<HTMLLIElement>) => void;
     highlighted?: boolean;
   }) {
+    // The tab chip says where this market lives in the feed, which is the
+    // only thing the name cannot: two tabs can carry the same market type,
+    // and a market on this list may have been imported from another tab.
     const title = tabTitle(m.tab);
+    const imported = m.tab != null && m.tab !== scope;
     return (
       <li
         draggable={draggable}
@@ -257,8 +284,15 @@ export function MarketOrderEditor({
           <div className="truncate text-sm">{m.label}</div>
           <div className="flex items-center gap-2 font-mono text-[11px] text-[var(--color-fg-subtle)]">
             <span>id {m.providerMarketId}</span>
-            {curated && title ? (
-              <span className="rounded border border-[var(--color-border)] px-1.5 py-px uppercase tracking-[0.08em]">
+            {title ? (
+              <span
+                className={
+                  "rounded border px-1.5 py-px uppercase tracking-[0.08em] " +
+                  (imported
+                    ? "border-[var(--color-fg-muted)] text-[var(--color-fg-muted)]"
+                    : "border-[var(--color-border)]")
+                }
+              >
                 {title}
               </span>
             ) : null}
@@ -286,7 +320,11 @@ export function MarketOrderEditor({
         <button
           type="button"
           onClick={revert}
-          disabled={busy || initialOrdered.length === 0}
+          disabled={
+            busy ||
+            (seeded && initialMembership === "auto") ||
+            (initialOrdered.length === 0 && initialMembership === "auto")
+          }
           className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)] disabled:opacity-30"
         >
           Revert to default
@@ -306,20 +344,76 @@ export function MarketOrderEditor({
       </div>
 
       <p className="mt-2 text-xs text-[var(--color-fg-subtle)]">
-        {curated
-          ? "Drag a market from the right into this tab, or use the arrow. Order top to bottom is the render order."
-          : "Every market on this tab, in the order bettors see. Drag to reorder; markets the feed adds later sort after these."}
+        Drag a market from the right into this tab, or use the arrow. Top to
+        bottom is the order bettors see.
+        {seeded
+          ? " Markets the feed puts on this tab are listed here too, even where nothing is saved for them yet — save to pin the list as it stands."
+          : ""}
       </p>
 
-      <div
-        className={
-          "mt-4 grid gap-6 " + (curated ? "lg:grid-cols-2" : "lg:grid-cols-1")
-        }
-      >
+      {feedTab ? (
+        <fieldset className="mt-4 rounded border border-[var(--color-border)] p-3">
+          <legend className="px-1 text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
+            Markets not on this list
+          </legend>
+          <div className="flex flex-col gap-2">
+            <label className="flex items-start gap-2 text-sm">
+              <input
+                type="radio"
+                name="membership"
+                checked={membership === "auto"}
+                onChange={() => {
+                  setMsg(null);
+                  setMembership("auto");
+                }}
+                className="mt-1"
+              />
+              <span>
+                Keep showing them, after this list
+                <span className="block text-xs text-[var(--color-fg-subtle)]">
+                  The feed keeps filling the tab. A market kind that is not
+                  live right now — and so is not in the pool on the right —
+                  still reaches bettors when it comes back.
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 text-sm">
+              <input
+                type="radio"
+                name="membership"
+                checked={membership === "manual"}
+                onChange={() => {
+                  setMsg(null);
+                  setMembership("manual");
+                }}
+                className="mt-1"
+              />
+              <span>
+                Hide them — this list is the whole tab
+                <span className="block text-xs text-[var(--color-fg-subtle)]">
+                  Like Top and custom tabs. Anything the feed adds later is
+                  off the tab until you add it here.
+                </span>
+              </span>
+            </label>
+          </div>
+        </fieldset>
+      ) : null}
+
+      <div className="mt-4 grid gap-6 lg:grid-cols-2">
         <section>
           <h3 className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
-            {curated ? `In this tab (${ordered.length})` : `Markets (${ordered.length})`}
+            In this tab ({ordered.length})
           </h3>
+          {removedButStillShown > 0 ? (
+            <p className="mt-1 text-xs text-[var(--color-fg-muted)]">
+              {removedButStillShown} market
+              {removedButStillShown === 1 ? "" : "s"} you took off this tab will
+              still show, because the feed puts {removedButStillShown === 1 ? "it" : "them"}{" "}
+              here. Pick &ldquo;Hide them&rdquo; above to leave{" "}
+              {removedButStillShown === 1 ? "it" : "them"} off.
+            </p>
+          ) : null}
           <ol
             className="mt-2 overflow-hidden rounded border border-[var(--color-border)]"
             onDragOver={(ev) => {
@@ -329,9 +423,7 @@ export function MarketOrderEditor({
           >
             {ordered.length === 0 ? (
               <li className="px-3 py-6 text-center text-sm text-[var(--color-fg-muted)]">
-                {curated
-                  ? "Nothing featured yet — add markets from the right."
-                  : "No markets on this tab in the current offer."}
+                Nothing here yet — add markets from the right.
               </li>
             ) : (
               ordered.map((m, idx) => (
@@ -363,17 +455,15 @@ export function MarketOrderEditor({
                     >
                       ↓
                     </button>
-                    {curated ? (
-                      <button
-                        type="button"
-                        onClick={() => remove(idx)}
-                        disabled={busy}
-                        className={btn}
-                        aria-label="Remove from this tab"
-                      >
-                        →
-                      </button>
-                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => remove(idx)}
+                      disabled={busy}
+                      className={btn}
+                      aria-label="Remove from this tab"
+                    >
+                      →
+                    </button>
                   </div>
                 </Row>
               ))
@@ -381,8 +471,7 @@ export function MarketOrderEditor({
           </ol>
         </section>
 
-        {curated ? (
-          <section>
+        <section>
             <div className="flex items-baseline justify-between gap-3">
               <h3 className="text-xs uppercase tracking-[0.15em] text-[var(--color-fg-subtle)]">
                 All markets ({filtered.length}
@@ -426,8 +515,7 @@ export function MarketOrderEditor({
                 ))
               )}
             </ol>
-          </section>
-        ) : null}
+        </section>
       </div>
     </div>
   );

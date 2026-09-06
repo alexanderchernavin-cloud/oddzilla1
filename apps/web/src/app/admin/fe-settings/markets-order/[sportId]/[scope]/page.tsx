@@ -14,26 +14,30 @@ interface DetailResponse {
   sport: { id: number; slug: string; name: string };
   scope: string;
   label: string | null;
-  /** Curated tabs are opt-in membership; feed tabs are order-only. */
-  curated: boolean;
+  /** Feed tabs (Match / Map N / sub-events) can fall back on the feed. */
+  feedTab: boolean;
+  /** 'auto' = feed keeps filling behind the list; 'manual' = list only. */
+  membership: "auto" | "manual";
+  /** `ordered` is the tab's live contents, not saved rows. */
+  seeded: boolean;
   groups: ScopeTab[];
   ordered: Array<MarketEntry & { displayOrder: number }>;
-  unranked: MarketEntry[];
+  available: MarketEntry[];
 }
 
 function scopeHint(data: DetailResponse): string {
   const s = data.scope;
   if (s === "match")
-    return "Order the markets on the Match tab — the base event, with no map and no sub-event.";
+    return "The Match tab — the base event, with no map and no sub-event. The feed fills it with the markets below; you set their order, and you can pull in a market from any other tab.";
   if (s === "top")
     return "Curated highlights tab. Empty by default; markets you add render on the storefront's Top tab and inline on match cards. The list on the right is every market this sport offers — the same market type appears once per sub-event, so you can feature the corners total without featuring the match total.";
   const n = mapScopeNumber(s);
   if (n != null) {
-    return `Order the markets on the Map ${n} tab — markets carrying \`map=${n}\`. Independent from every other Map N list.`;
+    return `The Map ${n} tab — markets carrying \`map=${n}\`. Independent from every other Map N list.`;
   }
   if (isSubEventScope(s)) {
     const label = data.label ?? "this sub-event";
-    return `Order the markets on the "${label}" tab. This is a sub-event the feed carries for this sport; its markets and its title are the feed's, only the order is yours.`;
+    return `The "${label}" tab. The sub-event and its title are the feed's; the markets on the tab and their order are yours.`;
   }
   if (isCustomScope(s)) {
     const label = data.groups.find((g) => g.scope === s)?.label ?? "this group";
@@ -106,7 +110,9 @@ export default async function ScopeEditorPage({
       <MarketOrderEditor
         sportId={data.sport.id}
         scope={data.scope}
-        curated={data.curated}
+        feedTab={data.feedTab}
+        initialMembership={data.membership}
+        seeded={data.seeded}
         tabs={data.groups}
         initialOrdered={data.ordered.map(
           ({ providerMarketId, variant, label, tab }) => ({
@@ -116,7 +122,7 @@ export default async function ScopeEditorPage({
             tab,
           }),
         )}
-        initialUnranked={data.unranked}
+        initialAvailable={data.available}
       />
     </div>
   );

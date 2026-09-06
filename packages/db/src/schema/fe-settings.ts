@@ -30,8 +30,13 @@
 // over without manual re-entry.
 //
 // Markets with no row fall back to provider_market_id ascending — the
-// legacy default — for `match`, `map_<N>` and `fb_<kinds>`. The `top` and
-// `custom_<key>` scopes are opt-in: no rows = no tab content.
+// legacy default — for `match`, `map_<N>` and `fb_<kinds>` while their
+// group row says membership='auto'. The `top` and `custom_<key>` scopes
+// are opt-in: no rows = no tab content. Since migration 0111 a feed tab
+// can opt into the same explicit membership (membership='manual'), which
+// is what makes every tab editable the way a custom group is: a row may
+// name a market from ANOTHER sub-event, so "corners: Total" can sit on
+// the Match tab, and a market the feed puts on the tab can be left off.
 
 import {
   pgTable,
@@ -81,6 +86,13 @@ export type {
 
 export const FE_MARKET_SCOPES: readonly FeBaseScope[] = FE_BASE_SCOPES;
 
+/** fe_market_groups.membership — see the column comment below. */
+export type FeGroupMembership = "auto" | "manual";
+export const FE_GROUP_MEMBERSHIPS: readonly FeGroupMembership[] = [
+  "auto",
+  "manual",
+];
+
 export const feMarketDisplayOrder = pgTable(
   "fe_market_display_order",
   {
@@ -92,8 +104,9 @@ export const feMarketDisplayOrder = pgTable(
     providerMarketId: integer().notNull(),
     // Fonbet sub-event this row targets (`specifiers.variant`). Empty =
     // any copy of the market type, which is what every row meant before
-    // migration 0109. Only curated tabs set it; a feed tab IS one
-    // sub-event already.
+    // migration 0109. On a feed tab an empty variant resolves within the
+    // tab itself (that tab IS one sub-event), so its own rows stay empty
+    // and only markets IMPORTED from another sub-event carry one.
     variant: text().notNull().default(""),
     displayOrder: integer().notNull(),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
@@ -134,6 +147,14 @@ export const feMarketGroups = pgTable(
     scope: text().notNull().$type<FeMarketScope>(),
     label: text(),
     displayOrder: integer().notNull().default(0),
+    // What the tab's fe_market_display_order rows MEAN (migration 0111).
+    // 'auto'   — listed markets first, the tab's own unlisted feed markets
+    //            after. What every row meant before 0111.
+    // 'manual' — the tab renders exactly the listed markets, the way `top`
+    //            and a custom group always have.
+    // Only feed tabs (match / map_<N> / fb_<kinds>) can be 'auto'; curated
+    // scopes have no feed side and behave as 'manual' whatever this says.
+    membership: text().notNull().default("auto").$type<FeGroupMembership>(),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     updatedBy: uuid().references(() => users.id),

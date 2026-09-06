@@ -38,7 +38,19 @@ import {
 
 export interface ScopeMarket {
   providerMarketId: number;
-  /** Market-kind name with the sub-event prefix removed ("Total {threshold}"). */
+  /**
+   * Full market name, sub-event prefix included ("Corners: Total
+   * {threshold}").
+   *
+   * It used to be the prefix-stripped base name, on the reasoning that
+   * the tab already says "Corners" so repeating it on every row is noise.
+   * That was wrong twice over. A backoffice list is not a bettor's tab
+   * strip: the operator reading "Total {threshold}" on the medical-
+   * treatment tab has no way to tell which total it is, and the same
+   * bare "Total" appears on fourteen of football's tabs. And since a tab
+   * can now hold markets imported from another sub-event, a row without
+   * its prefix is genuinely ambiguous rather than merely terse.
+   */
   label: string;
 }
 
@@ -75,10 +87,15 @@ export interface SportScopes {
   scopes: DiscoveredScope[];
   /**
    * Every market on the sport, one entry per (type, sub-event) — the pool
-   * curated tabs (Top, customs) draw from. Feed tabs use `scopes[].markets`
-   * instead: inside one tab the sub-event is fixed, so the operator is
-   * ordering market types and a per-variant split would just fragment the
-   * list ("Match result way:two" beside "Match result way:three").
+   * EVERY tab draws from since a feed tab can import a market from another
+   * sub-event too.
+   *
+   * A feed tab's OWN markets still come from `scopes[].markets` and are
+   * addressed by type alone: inside one tab the sub-event is fixed, so a
+   * per-variant split there would only fragment the list ("Match result
+   * way:two" beside "Match result way:three" — Oddin's shape variants,
+   * which are the same market to an operator). Imports carry the variant
+   * because that is the whole of their identity.
    */
   allMarkets: CuratedMarket[];
 }
@@ -104,7 +121,7 @@ interface DescRow extends Record<string, unknown> {
 const CACHE_TTL_SECONDS = 120;
 // Bump on any payload-shape change — a cached entry from the previous
 // shape would otherwise be handed to the admin UI as-is.
-const CACHE_PREFIX = "fe:market-scopes:v2";
+const CACHE_PREFIX = "fe:market-scopes:v3";
 
 // Deepest map tab the backoffice offers a sport that plays maps at all.
 // BO5 is the deepest format the supported esports play, and later maps
@@ -226,13 +243,11 @@ export function buildScopes(
 
     const template = templateFor(row.providerMarketId, variant);
     const derived = deriveMarketScope({ specifiers, template });
-    // The tab says "1st half"; the row inside it says "Total". Same split
-    // the storefront makes between market.name (which keeps the prefix,
-    // because a bet-slip leg carries no tab with it) and the market-kind
-    // tag it renders in the card header. A few Fonbet tables have no name
-    // of their own — their whole caption IS the sub-event prefix — which
-    // left blank rows in the picker; those fall back to the id.
-    const label = nonEmpty(derived.baseTemplate, row.providerMarketId);
+    // Full name, prefix and all — see ScopeMarket.label. A few Fonbet
+    // tables have no name of their own (their whole caption IS the
+    // sub-event prefix), which left blank rows in the picker; those fall
+    // back to the id while keeping the prefix that says where they live.
+    const label = curatedLabel(template, derived.baseTemplate, row.providerMarketId);
 
     let sportAcc = bySport.get(row.sportId);
     if (!sportAcc) {
@@ -313,11 +328,6 @@ export function buildScopes(
 // unpickable rows in the backoffice. Fall back to the id, which the
 // operator can at least match against the feed log, and keep the prefix so
 // the row still says which sub-event it belongs to.
-function nonEmpty(label: string, providerMarketId: number): string {
-  const trimmed = label.trim();
-  return trimmed === "" ? `Market #${providerMarketId}` : trimmed;
-}
-
 function curatedLabel(
   template: string,
   base: string,
