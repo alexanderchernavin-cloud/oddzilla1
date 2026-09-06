@@ -558,6 +558,50 @@ body {
   outline-offset: 4px;
 }
 
+/* Live / Pre-match strip. Both tabs render on all three surfaces —
+   the lobby (which shows both sections, so nothing is selected) and
+   /live + /upcoming (one section each, own tab selected). A selected
+   tab that hid its sibling made those pages dead ends. */
+.oz-lobby-tabs {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  flex-wrap: wrap;
+}
+/* Underline machinery only on the pages that HAVE a selection, so the
+   lobby's strip keeps its original spacing. */
+.oz-lobby-tabs[data-selectable="true"] .oz-lobby-tab-link {
+  padding-bottom: 6px;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+}
+.oz-lobby-tabs[data-selectable="true"] .oz-lobby-tab-link[data-selected="true"] {
+  border-bottom-color: var(--fg);
+}
+.oz-lobby-tab-link[data-selected="false"] {
+  color: var(--fg-dim);
+}
+.oz-lobby-tab-link[data-selected="false"] .oz-lobby-tab-link-icon {
+  opacity: 0.5;
+}
+.oz-lobby-tab-link[data-selected="false"] .oz-lobby-tab-link-label {
+  font-weight: 400;
+}
+.oz-lobby-tab-link[data-selected="false"] .oz-lobby-tab-link-count,
+.oz-lobby-tab-link[data-selected="false"][data-kind="live"]
+  .oz-lobby-tab-link-count {
+  color: var(--fg-dim);
+  border-color: var(--border);
+}
+/* Two 22-px labels plus their count pills come to ~275px, which clears
+   a 375px viewport by a hair. Tighten the gap rather than let the pair
+   wrap onto two lines. */
+@media (max-width: 560px) {
+  .oz-lobby-tabs {
+    gap: 18px;
+  }
+}
+
 /* First-section header row inside MatchListTabs — hosts the group
    label on the left and the wide-viewport cols toggle on the right
    so the toggle doesn't claim a separate line above the labels. The

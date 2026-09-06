@@ -48,7 +48,7 @@
   "shell": {
     "homeLink": "Oddzilla — početna",
     "accountMenu": "Izbornik računa za {name}",
-    "lobby": "Lobby",
+    "home": "Početna",
     "live": "Uživo",
     "upcoming": "Prije meča",
     "sportsNav": "Sportovi",
@@ -341,7 +341,6 @@
     "logout": "Odjavi se"
   },
   "home": {
-    "lobby": "Lobby",
     "upcoming": "Prije meča",
     "empty": "Ništa nije na rasporedu. Cjelokupnu ponudu potražite na stranicama pojedinih sportova.",
     "topSports": "Najbolji sportovi"

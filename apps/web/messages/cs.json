@@ -48,7 +48,7 @@
   "shell": {
     "homeLink": "Oddzilla domů",
     "accountMenu": "Menu účtu pro {name}",
-    "lobby": "Lobby",
+    "home": "Domů",
     "live": "Živě",
     "upcoming": "Předzápas",
     "sportsNav": "Sporty",
@@ -341,7 +341,6 @@
     "logout": "Odhlásit se"
   },
   "home": {
-    "lobby": "Lobby",
     "upcoming": "Předzápas",
     "empty": "Žádné naplánované zápasy. Podívejte se na jednotlivé sporty pro celý program.",
     "topSports": "Nejlepší sporty"

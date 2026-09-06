@@ -48,7 +48,7 @@
   "shell": {
     "homeLink": "Oddzilla home",
     "accountMenu": "Account menu for {name}",
-    "lobby": "Lobby",
+    "home": "Home",
     "live": "Live",
     "upcoming": "Pre-match",
     "sportsNav": "Sports",
@@ -341,7 +341,6 @@
     "logout": "Log out"
   },
   "home": {
-    "lobby": "Lobby",
     "upcoming": "Pre-match",
     "empty": "Nothing scheduled. Check individual sport pages for the full slate.",
     "topSports": "Top sports"
