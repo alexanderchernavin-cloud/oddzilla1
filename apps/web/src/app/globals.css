@@ -401,11 +401,25 @@ body {
   .oz-sport-row { padding-right: 52px !important; }
   /* Category header caret. Its sibling is a Link that filters the sport
      page to the whole category, so a miss here costs a navigation too.
-     Grown horizontally only — the header row is the full drawer width,
-     so the extra 14px comes out of the label, which has an ellipsis. */
+
+     Grown less than the sport caret, and sized by different physics:
+     this one is a real flex item, not an absolutely-positioned overlay.
+     So width comes straight out of the category label beside it — the
+     column the rail was just tightened to protect — which is why 40px
+     stops short of the sport caret's 48. The mobile drawer is 252px of
+     content against the desktop rail's 212px, so touch can afford the
+     16px this takes over the 24px base.
+
+     Height has no neighbour to collide with, for the same reason: the
+     measured 29px row simply grows to fit, taking the pitch 32 -> 35.
+     That is a touch improvement rather than the overlap the sport
+     caret had to avoid, so the number is chosen for the finger and
+     capped only by how much scrolling 105 category rows can absorb. */
   .oz-cat-caret {
-    padding: 10px 6px 10px 10px !important;
+    width: 40px !important;
+    height: 32px !important;
   }
+  .oz-cat-caret svg { width: 12px !important; height: 12px !important; }
 }
 
 /* Mobile-only toggle buttons in the top bar; hidden on desktop. */

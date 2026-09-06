@@ -905,8 +905,17 @@ function SportsSection({
               // step in for the tree, one more for tournaments inside a
               // category — enough to read the hierarchy, not enough to
               // squeeze the labels.
-              marginLeft: 14,
-              paddingLeft: 8,
+              //
+              // Tightened 14+8 -> 6+7 on 2026-09-06. Measured on the
+              // deployed 240px rail, a tournament name had 129px to live
+              // in and 5 of England's 13 truncated; the hierarchy was
+              // being paid for out of the only column that carries
+              // information. The rule that keeps this honest: the border
+              // lands at x=20, just left of the sport row's own icon at
+              // x=24, so the tree still reads as descending from the
+              // sport — which is all the indent was ever for.
+              marginLeft: 6,
+              paddingLeft: 7,
               borderLeft: "1px solid var(--hairline)",
               display: "flex",
               flexDirection: "column",
@@ -1094,7 +1103,11 @@ function CategoryGroup({
         display: "flex",
         flexDirection: "column",
         gap: 1,
-        marginLeft: group.label ? 10 : 0,
+        // One small step under the category header. It doesn't need to
+        // clear anything — the header's own flag sits in the same
+        // column — so this is purely the "these belong to that" cue,
+        // and 8px says it as well as 10 did.
+        marginLeft: group.label ? 8 : 0,
       }}
     >
       {group.tournaments.map((t) => (
@@ -1495,7 +1508,7 @@ function CategoryHeader({
     gap: 6,
     flex: 1,
     minWidth: 0,
-    padding: "6px 6px 6px 2px",
+    padding: "6px 2px 6px 2px",
     borderRadius: 6,
     color: active ? "var(--accent)" : "var(--fg)",
     font: "inherit",
@@ -1516,37 +1529,14 @@ function CategoryHeader({
         display: "flex",
         alignItems: "center",
         marginTop: 2,
+        // Matches the 4px the sport row leaves to the right of its own
+        // caret, so the two chevrons sit in one column down the rail.
+        paddingRight: 4,
         borderRadius: 6,
         background: active || hover ? "var(--surface-2)" : "transparent",
         transition: "background 140ms var(--ease)",
       }}
     >
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={expanded}
-        aria-label={
-          expanded ? tShell("hideTournaments") : tShell("showTournaments")
-        }
-        // Same touch problem as the sport caret, one level down, and with
-        // a worse consequence: the sibling here is a Link that filters the
-        // whole sport page to this category, so a miss both navigates and
-        // closes the drawer. `.oz-cat-caret` widens the hit area on coarse
-        // pointers; the label keeps the rest of the row.
-        className="oz-cat-caret"
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          padding: "6px 2px 6px 6px",
-          border: 0,
-          background: "transparent",
-          color: "inherit",
-          cursor: "pointer",
-          flexShrink: 0,
-        }}
-      >
-        <Caret open={expanded} size={9} />
-      </button>
       {href ? (
         <Link
           href={href}
@@ -1565,6 +1555,50 @@ function CategoryHeader({
           {inner}
         </button>
       )}
+      {/*
+        Caret LAST, so it sits at the right edge of the row — the same
+        side as the sport row's caret directly above it. It used to lead
+        the row, which made the tree's two expanders mirror images of
+        each other: one on the left, one on the right, for the same
+        gesture. It also cost the category label ~26px of the left
+        margin on a 240px rail, which is why the labels indented further
+        than their own tournaments did.
+      */}
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        aria-label={
+          expanded ? tShell("hideTournaments") : tShell("showTournaments")
+        }
+        // Same touch problem as the sport caret, one level down, and with
+        // a worse consequence: the sibling here is a Link that filters the
+        // whole sport page to this category, so a miss both navigates and
+        // closes the drawer. `.oz-cat-caret` widens the hit area on coarse
+        // pointers; the label keeps the rest of the row.
+        className="oz-cat-caret"
+        style={{
+          // Same 24px box and same 10px glyph as the sport caret, so the
+          // two read as one control repeated down the tree rather than
+          // two different widgets. Padding-free and centred, because a
+          // padded box would have to be re-tuned every time the glyph
+          // size changed to keep the two columns aligned.
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 24,
+          height: 24,
+          padding: 0,
+          border: 0,
+          borderRadius: 5,
+          background: "transparent",
+          color: "var(--fg-dim)",
+          cursor: "pointer",
+          flexShrink: 0,
+        }}
+      >
+        <Caret open={expanded} size={10} />
+      </button>
     </div>
   );
 }
@@ -1691,7 +1725,10 @@ function TournamentItem({
         display: "flex",
         alignItems: "center",
         gap: 6,
-        padding: "5px 6px",
+        // Asymmetric: the right side still needs room for the live
+        // badge, the left is pure indent and the name is what it comes
+        // out of.
+        padding: "5px 6px 5px 3px",
         borderRadius: 6,
         fontSize: 12,
         textDecoration: "none",
