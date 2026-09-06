@@ -57,6 +57,11 @@ import {
   type TournamentLogoSweeperHandle,
 } from "./lib/tournament-logos/sweeper.js";
 import adminCategoriesRoutes from "./modules/admin/categories.js";
+import adminCustomEventsRoutes from "./modules/admin/custom-events.js";
+import {
+  startCustomLiabilitySweeper,
+  type LiabilitySweeperHandle,
+} from "./lib/custom-events/liability-sweeper.js";
 import adminMonitoringRoutes, { startMonitoringSampler } from "./modules/admin/monitoring.js";
 import adminDeployRoutes from "./modules/admin/deploy.js";
 import communityRoutes from "./modules/community/routes.js";
@@ -315,6 +320,7 @@ await app.register(adminCompetitorsRoutes);
 await app.register(adminTournamentsRoutes);
 await app.register(adminSportradarRoutes);
 await app.register(adminCategoriesRoutes);
+await app.register(adminCustomEventsRoutes);
 await app.register(adminMonitoringRoutes);
 await app.register(adminDeployRoutes);
 await app.register(communityRoutes);
@@ -409,6 +415,16 @@ const sportradarSweeperHandle: SportradarSweeperHandle | null =
 const zagiRiskTierSweeperHandle: ZagiRiskTierSweeperHandle | null =
   startZagiRiskTierSweeper(app);
 
+// Liability trading for custom (operator-authored) markets. Every 20 s,
+// Redis-lock guarded: reprices each open custom market that has trading
+// switched on, pulling probabilities toward the share of exposure each
+// outcome carries so the book balances itself as bets arrive.
+// Deliberately a sweeper rather than a hook inside bet placement — the
+// book's arithmetic has no business on the critical path of taking a bet.
+// Set CUSTOM_LIABILITY_DISABLED=1 to skip.
+const customLiabilitySweeperHandle: LiabilitySweeperHandle | null =
+  startCustomLiabilitySweeper(app);
+
 // Tournament logo sourcing (migration 0108). Hourly, Redis-lock guarded,
 // time-budgeted because Liquipedia asks for 2 s between calls. Fills the
 // marks neither feed carries: Fonbet's catalogue is fully consumed and
@@ -460,6 +476,7 @@ async function shutdown() {
   sportradarSweeperHandle?.close();
   zagiRiskTierSweeperHandle?.close();
   tournamentLogoSweeperHandle?.close();
+  customLiabilitySweeperHandle?.close();
   if (pushWorkerHandle) {
     try {
       await pushWorkerHandle.close();

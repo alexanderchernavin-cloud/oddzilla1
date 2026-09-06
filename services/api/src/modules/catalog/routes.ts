@@ -665,6 +665,14 @@ async function loadMatchWinnerOdds(
         // winners live in the FONBET_PMID_BASE namespace and are the only
         // Fonbet markets using outcome ids "1" / "2" / "3", so the id
         // filter selects exactly the match-winner rows for both providers.
+        //
+        // Custom markets (provider_market_id 2 000 000) are above the same
+        // base and so are included on purpose: a 2- or 3-outcome custom
+        // market is given exactly these ids, which is how an operator's
+        // headline market gets an inline price on list cards. Wider custom
+        // markets are given `o1..oN` instead precisely so they fall out
+        // here — the pairing below renders home / away / draw and nothing
+        // else, so a five-way market would show as a slice of itself.
         or(
           eq(markets.providerMarketId, 1),
           and(
@@ -1594,6 +1602,11 @@ export default async function catalogRoutes(app: FastifyInstance) {
           marketId: markets.id,
           providerMarketId: markets.providerMarketId,
           specifiersJson: markets.specifiersJson,
+          // Operator-authored name (custom events). Wins over the
+          // description template when set — custom markets all share one
+          // provider_market_id, so market_descriptions cannot name them
+          // individually.
+          customName: markets.customName,
           status: markets.status,
           lastOddinTs: markets.lastOddinTs,
           outcomeId: marketOutcomes.outcomeId,
@@ -1814,7 +1827,12 @@ export default async function catalogRoutes(app: FastifyInstance) {
       if (!m) {
         const specs = (r.specifiersJson ?? {}) as Record<string, string>;
         const variant = specs.variant ?? "";
+        // An operator-authored name wins outright. It is literal text,
+        // not a template, so it deliberately goes in ahead of the
+        // description lookup rather than into it: there are no
+        // {placeholders} to expand and no per-language row to prefer.
         const template =
+          r.customName ??
           marketDescMap.get(descKey(r.providerMarketId, variant)) ??
           marketDescMap.get(descKey(r.providerMarketId, "")) ??
           `Market #${r.providerMarketId}`;
