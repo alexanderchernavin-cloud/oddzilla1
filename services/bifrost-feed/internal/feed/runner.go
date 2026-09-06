@@ -667,8 +667,14 @@ func (r *Runner) sweepRecentResults(ctx context.Context, window time.Duration) {
 		checked++
 		m, err := r.client.FetchMatch(ctx, ref.ID)
 		if err != nil {
+			// One transient upstream error must not end the whole pass: the
+			// 72 h sweep on activation is hundreds of fetches, and the first
+			// production run of the widened window died at match 36 of ~600
+			// on a single HTTP 502, leaving everything behind it for the next
+			// wide pass half an hour later. Skip this match; it stays open in
+			// our DB and is fetched again next time.
 			r.recordError(fmt.Errorf("sweep fetch %s: %w", urn, err))
-			return
+			continue
 		}
 		if m == nil {
 			continue
