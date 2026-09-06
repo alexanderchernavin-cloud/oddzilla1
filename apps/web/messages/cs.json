@@ -427,7 +427,6 @@
     "copyLink": "Kopírovat odkaz",
     "copied": "Zkopírováno",
     "matchWinner": "Vítěz zápasu",
-    "watching": "{count} sleduje",
     "topTournamentTitle": "Top turnaj"
   },
   "bets": {
@@ -731,41 +730,6 @@
     "fileTooLarge": "{name} překračuje limit {limit}.",
     "fileEmpty": "{name} je prázdný."
   },
-  "matchRoom": {
-    "loading": "Načítám místnost zápasu…",
-    "loadError": "Místnost zápasu se nepodařilo načíst: {message}",
-    "status": {
-      "live": "ŽIVĚ",
-      "fulltime": "KONEC",
-      "halftime": "POLOČAS",
-      "suspended": "PŘERUŠENO"
-    },
-    "watching": "{count, plural, one {# divák} few {# diváci} other {# diváků}}",
-    "yourPick": "Váš tip",
-    "badge": {
-      "won": "Výhra",
-      "lost": "Prohra",
-      "void": "Zrušeno",
-      "cashedOut": "Cash out",
-      "winning": "Vyhrává",
-      "atRisk": "V ohrožení",
-      "level": "Nerozhodně"
-    },
-    "pick": {
-      "home": "Domácí",
-      "draw": "Remíza",
-      "away": "Hosté"
-    },
-    "pickPrompt": "Tipněte si vítěze a uvidíte místnost",
-    "signInPrompt": "Přihlaste se a uvidíte, komu místnost fandí",
-    "crowdPicks": "Tipy místnosti · {count, plural, one {# hlas} few {# hlasy} other {# hlasů}}",
-    "youPicked": "Váš tip: {pick}",
-    "noMessages": "Zatím žádné zprávy. Buďte první, kdo něco napíše.",
-    "newMessages": "{count, plural, one {# nová zpráva} few {# nové zprávy} other {# nových zpráv}} ↓",
-    "reconnecting": "Obnovuji připojení…",
-    "sayPlaceholder": "Napište něco",
-    "send": "Odeslat"
-  },
   "matchWidgets": {
     "lmt": {
       "title": "Živé sledování zápasu",
@@ -803,7 +767,6 @@
       "aria": "Panel zápasu",
       "tabsAria": "Karty panelu zápasu",
       "insights": "Statistiky",
-      "chat": "Chat",
       "analyses": "Analýzy",
       "prematchTitle": "Předzápasové statistiky — {home} vs {away}"
     },

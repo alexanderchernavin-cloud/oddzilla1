@@ -427,7 +427,6 @@
     "copyLink": "Скопировать ссылку",
     "copied": "Скопировано",
     "matchWinner": "Победитель матча",
-    "watching": "{count} смотрят",
     "topTournamentTitle": "Топ-турнир"
   },
   "bets": {
@@ -731,41 +730,6 @@
     "fileTooLarge": "{name} превышает лимит {limit}.",
     "fileEmpty": "Файл {name} пустой."
   },
-  "matchRoom": {
-    "loading": "Загружаем комнату матча…",
-    "loadError": "Не удалось загрузить комнату матча: {message}",
-    "status": {
-      "live": "LIVE",
-      "fulltime": "ЗАВЕРШЁН",
-      "halftime": "ПЕРЕРЫВ",
-      "suspended": "ПАУЗА"
-    },
-    "watching": "{count, plural, one {# смотрит} few {# смотрят} many {# смотрят} other {# смотрят}}",
-    "yourPick": "Ваша ставка",
-    "badge": {
-      "won": "Выигрыш",
-      "lost": "Проигрыш",
-      "void": "Возврат",
-      "cashedOut": "Cash out",
-      "winning": "Выигрывает",
-      "atRisk": "Под угрозой",
-      "level": "Поровну"
-    },
-    "pick": {
-      "home": "Хозяева",
-      "draw": "Ничья",
-      "away": "Гости"
-    },
-    "pickPrompt": "Выберите победителя, чтобы увидеть комнату",
-    "signInPrompt": "Войдите, чтобы увидеть, за кого болеет комната",
-    "crowdPicks": "Выбор комнаты · {count, plural, one {# голос} few {# голоса} many {# голосов} other {# голоса}}",
-    "youPicked": "Ваш выбор: {pick}",
-    "noMessages": "Пока нет сообщений. Напишите первым.",
-    "newMessages": "{count, plural, one {# новое сообщение} few {# новых сообщения} many {# новых сообщений} other {# новых сообщения}} ↓",
-    "reconnecting": "Переподключение…",
-    "sayPlaceholder": "Напишите что-нибудь",
-    "send": "Отправить"
-  },
   "matchWidgets": {
     "lmt": {
       "title": "Трекер матча в реальном времени",
@@ -803,7 +767,6 @@
       "aria": "Панель матча",
       "tabsAria": "Вкладки панели матча",
       "insights": "Статистика",
-      "chat": "Чат",
       "analyses": "Разборы",
       "prematchTitle": "Предматчевая статистика — {home} vs {away}"
     },

@@ -37,7 +37,7 @@ import type {
 // Value imports go through the deep subpath so Next's webpack doesn't
 // have to chase every `export * from './*.js'` re-export in the
 // barrel index — same convention as `@oddzilla/types/money`,
-// `@oddzilla/types/live-chat`, etc. Type-only imports above can ride
+// `@oddzilla/types/odds`, etc. Type-only imports above can ride
 // the barrel because TS strips them before bundling.
 import {
   SUPPORT_ATTACHMENT_MAX_BYTES,

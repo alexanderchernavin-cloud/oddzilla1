@@ -1,8 +1,8 @@
 "use client";
 
-// React hook for live odds + live scores + live chat. Wraps a single
-// shared WebSocket connection so multiple components on one page
-// don't each open their own socket.
+// React hook for live odds + live scores. Wraps a single shared
+// WebSocket connection so multiple components on one page don't each
+// open their own socket.
 //
 // Usage:
 //   const odds   = useLiveOdds(matchId);
@@ -11,18 +11,14 @@
 //   const score  = useLiveScore(matchId);
 //   score?.home  // latest scoreboard from feed-ingester
 //
-//   useLiveChatFrames(matchId, (frame) => { ... })
-//   // chat_message | chat_reaction | chat_picks_update |
-//   // chat_match_update | chat_viewer_count frames from services/api
-//
 // Reconnect logic: exponential backoff on close (1s → 16s cap). On each
-// successful reconnect the hook resubscribes everything (odds + chat).
+// successful reconnect the hook resubscribes everything.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { openSocket } from "./ws-client";
 import type { LiveScore } from "./live-score";
-import type { LiveChatBroadcastFrame, SupportMessageFrame } from "@oddzilla/types";
+import type { SupportMessageFrame } from "@oddzilla/types";
 
 export interface LiveOddsTick {
   marketId: string;
@@ -87,19 +83,12 @@ export interface TicketFrame {
 
 type TicketListener = (frame: TicketFrame) => void;
 
-type ChatFrameListener = (frame: LiveChatBroadcastFrame) => void;
-
 type SupportFrameListener = (frame: SupportMessageFrame) => void;
 
 interface SharedConnection {
   socket: WebSocket | null;
   opening: boolean;
   subscriptionCounts: Map<string, number>;
-  // Chat fan-out runs in its own dimension on the same socket — see
-  // services/ws-gateway/src/server.ts and packages/types/src/ws.ts
-  // (the `chat` flag on subscribe/unsubscribe targets the chat
-  // dimension independently of the odds dimension).
-  chatSubscriptionCounts: Map<string, number>;
   listeners: Map<string, { matchIds: Set<string>; onTick: (tick: LiveOddsTick) => void }>;
   // Per-market status listeners. Same shared connection as odds —
   // server fans out `marketStatus` frames on the same `odds:match:{id}`
@@ -125,10 +114,6 @@ interface SharedConnection {
     string,
     { matchIds: Set<string>; onScore: (matchId: string, score: LiveScore) => void }
   >;
-  chatListeners: Map<
-    string,
-    { matchIds: Set<string>; onFrame: ChatFrameListener }
-  >;
   ticketListeners: Set<TicketListener>;
   // Live support-chat frames pushed on the same user:{id} Redis channel
   // as ticket frames. The floating widget registers one listener; the
@@ -136,13 +121,12 @@ interface SharedConnection {
   supportListeners: Set<SupportFrameListener>;
   reconnectAttempts: number;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
-  // Bumped on every "open" event and decremented on close. UI uses
-  // this so the "Reconnecting…" banner reflects the real socket
-  // state without each component running its own WS instance.
+  // Bumped on every "open" event. Lets a consumer tell one socket
+  // lifetime from the next without running its own WS instance.
   connectionGeneration: number;
   // True between socket open and close (or absence). Components read
   // this through useWsConnected() — it's the single source of truth
-  // for the reconnect banner.
+  // for a reconnect indicator.
   connected: boolean;
   // Listeners notified whenever `connected` flips so React state can
   // catch up without us polling.
@@ -189,12 +173,10 @@ export function getShared(): SharedConnection {
       socket: null,
       opening: false,
       subscriptionCounts: new Map(),
-      chatSubscriptionCounts: new Map(),
       listeners: new Map(),
       marketStatusListeners: new Map(),
       matchStatusListeners: new Map(),
       scoreListeners: new Map(),
-      chatListeners: new Map(),
       ticketListeners: new Set(),
       supportListeners: new Set(),
       reconnectAttempts: 0,
@@ -278,16 +260,10 @@ function ensureConnected(conn: SharedConnection) {
     conn.reconnectAttempts = 0;
     conn.connectionGeneration += 1;
     setConnected(conn, true);
-    // Resubscribe everything we think we want — both dimensions.
+    // Resubscribe everything we think we want.
     const odds = Array.from(conn.subscriptionCounts.keys());
     if (odds.length > 0) {
       ws.send(JSON.stringify({ type: "subscribe", matchIds: odds }));
-    }
-    const chats = Array.from(conn.chatSubscriptionCounts.keys());
-    if (chats.length > 0) {
-      ws.send(
-        JSON.stringify({ type: "subscribe", matchIds: chats, chat: true }),
-      );
     }
   });
 
@@ -413,20 +389,6 @@ function ensureConnected(conn: SharedConnection) {
         for (const listener of conn.supportListeners) listener(frame);
         return;
       }
-      // Chat fan-out frames. The matchId is always present (the
-      // server-side publishers stamp it before publish) so we route
-      // by it directly to interested listeners.
-      if (
-        typeof payload.type === "string" &&
-        payload.type.startsWith("chat_") &&
-        typeof payload.matchId === "string"
-      ) {
-        const chatFrame = payload as unknown as LiveChatBroadcastFrame;
-        for (const { matchIds, onFrame } of conn.chatListeners.values()) {
-          if (matchIds.has(chatFrame.matchId)) onFrame(chatFrame);
-        }
-        return;
-      }
     } catch {
       // ignore malformed frames
     }
@@ -442,7 +404,6 @@ function ensureConnected(conn: SharedConnection) {
     setConnected(conn, false);
     const hasSubscribers =
       conn.subscriptionCounts.size > 0 ||
-      conn.chatSubscriptionCounts.size > 0 ||
       conn.ticketListeners.size > 0 ||
       conn.supportListeners.size > 0;
     if (!hasSubscribers) return;
@@ -477,38 +438,6 @@ function bumpSubscription(conn: SharedConnection, matchId: string, delta: number
     conn.subscriptionCounts.set(matchId, next);
     if (current === 0 && conn.socket && conn.socket.readyState === WebSocket.OPEN) {
       conn.socket.send(JSON.stringify({ type: "subscribe", matchIds: [matchId] }));
-    }
-  }
-}
-
-function bumpChatSubscription(
-  conn: SharedConnection,
-  matchId: string,
-  delta: number,
-) {
-  const current = conn.chatSubscriptionCounts.get(matchId) ?? 0;
-  const next = current + delta;
-  if (next <= 0) {
-    conn.chatSubscriptionCounts.delete(matchId);
-    if (conn.socket && conn.socket.readyState === WebSocket.OPEN) {
-      conn.socket.send(
-        JSON.stringify({
-          type: "unsubscribe",
-          matchIds: [matchId],
-          chat: true,
-        }),
-      );
-    }
-  } else {
-    conn.chatSubscriptionCounts.set(matchId, next);
-    if (current === 0 && conn.socket && conn.socket.readyState === WebSocket.OPEN) {
-      conn.socket.send(
-        JSON.stringify({
-          type: "subscribe",
-          matchIds: [matchId],
-          chat: true,
-        }),
-      );
     }
   }
 }
@@ -782,46 +711,10 @@ export function useLiveScore(matchId: string | null): LiveScore | null {
   return score;
 }
 
-// Subscribe to live chat broadcast frames for one match. The callback
-// receives every chat_* frame the server publishes
-// (LiveChatBroadcastFrame). State management — turning a stream of
-// frames into a coherent room snapshot — lives in
-// use-live-chat-room.ts, NOT here; this hook is the thin transport.
-export function useLiveChatFrames(
-  matchId: string | null,
-  onFrame: ChatFrameListener,
-): void {
-  // Pin the latest callback so listeners we register synchronously
-  // call into the freshest closure without resubscribing on every
-  // render.
-  const cbRef = useRef(onFrame);
-  cbRef.current = onFrame;
-
-  useEffect(() => {
-    if (!matchId) return;
-    const conn = getShared();
-
-    const id = crypto.randomUUID();
-    conn.chatListeners.set(id, {
-      matchIds: new Set([matchId]),
-      onFrame: (frame) => {
-        cbRef.current(frame);
-      },
-    });
-    bumpChatSubscription(conn, matchId, 1);
-    ensureConnected(conn);
-
-    return () => {
-      conn.chatListeners.delete(id);
-      bumpChatSubscription(conn, matchId, -1);
-    };
-  }, [matchId]);
-}
-
-// Boolean view on the shared socket. Drives the "Reconnecting…"
-// banner per Notion Epic 6 — the moment the close handler fires
-// every component using this hook re-renders with `false`, the next
-// open flips it back to `true`.
+// Boolean view on the shared socket, for any surface that wants to
+// show a "reconnecting" state: the moment the close handler fires
+// every component using this hook re-renders with `false`, and the
+// next open flips it back to `true`.
 export function useWsConnected(): boolean {
   const conn = getShared();
   const [connected, setConnectedState] = useState(conn.connected);

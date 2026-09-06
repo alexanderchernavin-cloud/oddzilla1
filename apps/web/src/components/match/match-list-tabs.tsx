@@ -18,7 +18,6 @@ import {
   type LiveMarketStatusTick,
 } from "@/lib/use-live-odds";
 import { useSessionUserId } from "@/lib/session-user";
-import { useViewerCountsForMatches } from "@/lib/use-viewer-counts";
 import type { LiveScore } from "@/lib/live-score";
 import { useTranslations } from "@/lib/i18n";
 
@@ -82,10 +81,6 @@ export function MatchListTabs({
   // suspended"). Same shared socket as the odds / score / lifecycle
   // ticks above.
   const marketStatuses = useLiveMarketStatusForMatches(matchIds);
-  // Match-room viewer counts for the "N watching" pill. REST poll
-  // every 30s; the hook is keyed by the sorted matchIds so navigating
-  // between list pages doesn't re-fetch unnecessarily.
-  const viewerCounts = useViewerCountsForMatches(matchIds);
 
   // Merge live ticks AND scoreboards AND status into the SSR snapshot.
   // Each row's match-winner outcomes inherit the latest publishedOdds
@@ -161,7 +156,6 @@ export function MatchListTabs({
         match={live}
         sportSlug={live._sportSlug}
         sportShort={live._sportShort}
-        viewerCount={viewerCounts[live.id] ?? 0}
       />
     );
   }

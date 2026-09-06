@@ -84,8 +84,6 @@ import bannerGenRoutes from "./modules/boosted-odds/banner-gen.js";
 import adminBoostedOddsRoutes from "./modules/admin/boosted-odds.js";
 import adminZillabuildConfigRoutes from "./modules/admin/zillabuild-config.js";
 import devicesRoutes from "./modules/devices/routes.js";
-import liveChatRoutes from "./modules/live-chat/routes.js";
-import { startMatchWatcher } from "./modules/live-chat/match-watcher.js";
 import riskzillaRoutes from "./modules/admin/riskzilla/routes.js";
 import zillapassUserRoutes from "./modules/zillapass/routes.js";
 import adminZillapassRoutes from "./modules/admin/zillapass.js";
@@ -343,7 +341,6 @@ await app.register(bannerGenRoutes);
 await app.register(adminBoostedOddsRoutes);
 await app.register(adminZillabuildConfigRoutes);
 await app.register(devicesRoutes);
-await app.register(liveChatRoutes);
 await app.register(riskzillaRoutes);
 await app.register(zillapassUserRoutes);
 await app.register(adminZillapassRoutes);
@@ -358,16 +355,6 @@ await app.register(adminAnalyticsRoutes);
 app.get("/", async () => ({ service: "oddzilla-api", status: "ok" }));
 
 // ─── Background workers ─────────────────────────────────────────────────────
-
-// Live-chat match-state watcher. Subscribes to odds:match:* and emits
-// goal / full-time / cancelled system messages into rooms with active
-// viewers. Set LIVE_CHAT_WATCHER_DISABLED=1 to skip — useful for
-// per-instance debugging or future multi-process deployments where
-// only one container should own the emission path.
-let matchWatcherHandle: { close: () => Promise<void> } | null = null;
-if (process.env.LIVE_CHAT_WATCHER_DISABLED !== "1") {
-  matchWatcherHandle = await startMatchWatcher(app, { redisUrl: env.REDIS_URL });
-}
 
 // Push-notification outbox drainer. Subscribes via postgres LISTEN to
 // the `push_outbox` channel (fired by services/settlement on winning
@@ -473,13 +460,6 @@ async function shutdown() {
   sportradarSweeperHandle?.close();
   zagiRiskTierSweeperHandle?.close();
   tournamentLogoSweeperHandle?.close();
-  if (matchWatcherHandle) {
-    try {
-      await matchWatcherHandle.close();
-    } catch (err) {
-      app.log.warn({ err: (err as Error).message }, "watcher shutdown error");
-    }
-  }
   if (pushWorkerHandle) {
     try {
       await pushWorkerHandle.close();

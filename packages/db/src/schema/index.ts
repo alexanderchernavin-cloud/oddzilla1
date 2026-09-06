@@ -25,7 +25,6 @@ export * from "./riskzilla.js";
 export * from "./bettor-odds-adjustment.js";
 export * from "./boosted-odds.js";
 export * from "./bettor-promo-visibility.js";
-export * from "./live-chat.js";
 export * from "./support.js";
 export * from "./zillaflash.js";
 export * from "./zillabuild.js";
