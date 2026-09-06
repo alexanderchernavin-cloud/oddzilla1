@@ -10,8 +10,8 @@ import (
 
 // liveScorePayload mirrors feed-ingester's matches.live_score shape: the
 // storefront list cards read `home` / `away`, the match page reads
-// `periods` + `scoreboard`. `status` uses the Oddin lifecycle codes the
-// chat watcher understands (1 = live).
+// `periods` + `scoreboard`. `status` uses the Oddin lifecycle codes
+// (1 = live).
 type liveScorePayload struct {
 	Home       *int               `json:"home,omitempty"`
 	Away       *int               `json:"away,omitempty"`

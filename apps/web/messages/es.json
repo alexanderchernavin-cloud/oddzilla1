@@ -427,7 +427,6 @@
     "copyLink": "Copiar enlace",
     "copied": "Copiado",
     "matchWinner": "Ganador del partido",
-    "watching": "{count} viendo",
     "topTournamentTitle": "Torneo top"
   },
   "bets": {
@@ -731,41 +730,6 @@
     "fileTooLarge": "{name} supera el límite de {limit}.",
     "fileEmpty": "{name} está vacío."
   },
-  "matchRoom": {
-    "loading": "Cargando la sala del partido…",
-    "loadError": "No se pudo cargar la sala del partido: {message}",
-    "status": {
-      "live": "EN VIVO",
-      "fulltime": "FINAL",
-      "halftime": "DESCANSO",
-      "suspended": "SUSP."
-    },
-    "watching": "{count} viendo",
-    "yourPick": "Tu apuesta",
-    "badge": {
-      "won": "Ganada",
-      "lost": "Perdida",
-      "void": "Anulada",
-      "cashedOut": "Cash out",
-      "winning": "Ganando",
-      "atRisk": "En riesgo",
-      "level": "Igualado"
-    },
-    "pick": {
-      "home": "Local",
-      "draw": "Empate",
-      "away": "Visitante"
-    },
-    "pickPrompt": "Elige al ganador para ver la sala",
-    "signInPrompt": "Inicia sesión para ver a quién apoya la sala",
-    "crowdPicks": "Elección de la sala · {count, plural, one {# voto} other {# votos}}",
-    "youPicked": "Elegiste {pick}",
-    "noMessages": "Aún no hay mensajes. Sé el primero en decir algo.",
-    "newMessages": "{count, plural, one {# mensaje nuevo} other {# mensajes nuevos}} ↓",
-    "reconnecting": "Reconectando…",
-    "sayPlaceholder": "Di algo",
-    "send": "Enviar"
-  },
   "matchWidgets": {
     "lmt": {
       "title": "Seguimiento del partido en vivo",
@@ -803,7 +767,6 @@
       "aria": "Panel del partido",
       "tabsAria": "Pestañas del panel del partido",
       "insights": "Estadísticas",
-      "chat": "Chat",
       "analyses": "Análisis",
       "prematchTitle": "Estadísticas previas — {home} vs {away}"
     },

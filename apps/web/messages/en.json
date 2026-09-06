@@ -427,7 +427,6 @@
     "copyLink": "Copy link",
     "copied": "Copied",
     "matchWinner": "Match winner",
-    "watching": "{count} watching",
     "topTournamentTitle": "Top tournament"
   },
   "bets": {
@@ -731,41 +730,6 @@
     "fileTooLarge": "{name} is over the {limit} limit.",
     "fileEmpty": "{name} is empty."
   },
-  "matchRoom": {
-    "loading": "Loading match room…",
-    "loadError": "Couldn't load match room: {message}",
-    "status": {
-      "live": "LIVE",
-      "fulltime": "FT",
-      "halftime": "HT",
-      "suspended": "SUSP"
-    },
-    "watching": "{count} watching",
-    "yourPick": "Your pick",
-    "badge": {
-      "won": "Won",
-      "lost": "Lost",
-      "void": "Void",
-      "cashedOut": "Cashed out",
-      "winning": "Winning",
-      "atRisk": "At risk",
-      "level": "Level"
-    },
-    "pick": {
-      "home": "Home",
-      "draw": "Draw",
-      "away": "Away"
-    },
-    "pickPrompt": "Pick the winner to see the room",
-    "signInPrompt": "Sign in to see who the room is backing",
-    "crowdPicks": "Crowd picks · {count, plural, one {# vote} other {# votes}}",
-    "youPicked": "You picked {pick}",
-    "noMessages": "No messages yet. Be the first to say something.",
-    "newMessages": "{count, plural, one {# new message} other {# new messages}} ↓",
-    "reconnecting": "Reconnecting…",
-    "sayPlaceholder": "Say something",
-    "send": "Send"
-  },
   "matchWidgets": {
     "lmt": {
       "title": "Live match tracker",
@@ -803,7 +767,6 @@
       "aria": "Match panel",
       "tabsAria": "Match panel tabs",
       "insights": "Insights",
-      "chat": "Chat",
       "analyses": "Analyses",
       "prematchTitle": "Prematch insights — {home} vs {away}"
     },

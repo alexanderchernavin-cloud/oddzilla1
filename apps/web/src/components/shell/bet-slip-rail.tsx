@@ -1585,15 +1585,15 @@ export function BetSlipRail() {
         </>
       )}
       {/*
-        Match panel — Insights / Chat / Analyses tabs, all keyed off
-        the active match-detail page via MatchPageContext. Hidden on
+        Match panel — Insights / Analyses tabs, both keyed off the
+        active match-detail page via MatchPageContext. Hidden on
         the History tab (the user is reviewing past tickets and
         match-specific tools are off-topic) and right after placement
         (the success card / freshly-flipped history view should
-        breathe). Chat and Analyses live here instead of below the
-        markets so they share the bet slip's vertical real estate
-        — bet slip + Place button stay above the fold, match-specific
-        content stacks below where it competes only with itself.
+        breathe). Analyses lives here instead of below the markets
+        so it shares the bet slip's vertical real estate — bet slip
+        + Place button stay above the fold, match-specific content
+        stacks below where it competes only with itself.
       */}
       {activeTab === "slip" && !placedTicket && <RailHeadToHead />}
 

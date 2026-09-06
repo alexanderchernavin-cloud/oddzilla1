@@ -35,11 +35,6 @@ export const withdrawalStatusEnum = pgEnum("withdrawal_status", [
   "cancelled",
 ]);
 
-export const liveChatMessageKindEnum = pgEnum("live_chat_message_kind", [
-  "user",
-  "system",
-]);
-
 export const sportKindEnum = pgEnum("sport_kind", ["esport", "traditional"]);
 export const matchStatusEnum = pgEnum("match_status", [
   "not_started",

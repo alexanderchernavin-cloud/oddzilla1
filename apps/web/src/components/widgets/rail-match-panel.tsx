@@ -1,17 +1,20 @@
 "use client";
 
 // RailMatchPanel — match-detail companion that lives at the bottom of
-// the right rail (below the bet slip), tabbed across three surfaces:
+// the right rail (below the bet slip), tabbed across two surfaces:
 //
 //   Insights  → Oddin Disir prematch widget (the previous default)
-//   Chat      → live match-room chat panel
 //   Analyses  → community pre-match takes
 //
 // Replaces the older RailPrematchPanel which only carried Insights.
-// Sasha's feedback (2026-05-12): chat + analyses had ended up in their
-// own middle column next to markets, which competed with the bet slip
+// Sasha's feedback (2026-05-12): analyses had ended up in its own
+// middle column next to markets, which competed with the bet slip
 // for attention. The rail is the natural home — same vertical real
 // estate, user picks. Bet slip + Place button stay above the fold.
+//
+// A third tab, the live match-room Chat, was removed on 2026-09-06
+// along with the rest of that feature; it will come back as its own
+// build rather than being resumed from what was here.
 //
 // All match-specific state (matchId, sportSlug, matchStatus, viewer
 // auth) is read from MatchPageContext, populated by MatchPageRegistrar
@@ -32,11 +35,10 @@ import {
 } from "@/lib/match-page-context";
 import { DisirWidget, type WidgetAvailability } from "./disir-widget";
 import { supportsPrematchWidget } from "./supported-sports";
-import { MatchRoom } from "@/components/match-room/match-room";
 import { MatchAnalysesSection } from "@/components/community/match-analyses-section";
 import { useTranslations } from "@/lib/i18n";
 
-type Tab = "insights" | "chat" | "analyses";
+type Tab = "insights" | "analyses";
 
 export function RailMatchPanel() {
   const active = useActiveMatchPage();
@@ -60,16 +62,13 @@ function RailMatchPanelInner({ active }: { active: ActiveMatch }) {
   const [insightsAvailability, setInsightsAvailability] =
     useState<WidgetAvailability>("loading");
   // Default-tab logic: Insights leads whenever the sport supports it,
-  // regardless of match status. Falls back to Analyses then Chat for
-  // sports without a Disir prematch widget. Computed once at mount
-  // via the lazy initializer so toggling the Insights tab off later
-  // (e.g. iframe reports unavailable) doesn't yank the user's
-  // selection.
-  const [tab, setTab] = useState<Tab>(() => {
-    if (insightsSupported) return "insights";
-    if (analysesAvailable) return "analyses";
-    return "chat";
-  });
+  // regardless of match status, and falls back to Analyses for sports
+  // without a Disir prematch widget. Computed once at mount via the
+  // lazy initializer so toggling the Insights tab off later (e.g.
+  // iframe reports unavailable) doesn't yank the user's selection.
+  const [tab, setTab] = useState<Tab>(() =>
+    insightsSupported ? "insights" : "analyses",
+  );
 
   // Hide the Insights tab when Disir can't ship data for this sport,
   // OR when the embed itself reports unavailable/error after load.
@@ -81,13 +80,12 @@ function RailMatchPanelInner({ active }: { active: ActiveMatch }) {
 
   const tabs: Tab[] = [];
   if (insightsAvailable) tabs.push("insights");
-  tabs.push("chat");
   if (analysesAvailable) tabs.push("analyses");
 
   // Fall back to the first available tab if the user's selection has
   // since become unavailable (e.g. they were on Insights and the
   // iframe failed to load).
-  const activeTab: Tab = tabs.includes(tab) ? tab : (tabs[0] ?? "chat");
+  const activeTab: Tab = tabs.includes(tab) ? tab : (tabs[0] ?? "insights");
 
   if (tabs.length === 0) return null;
 
@@ -118,10 +116,9 @@ function RailMatchPanelInner({ active }: { active: ActiveMatch }) {
       </div>
 
       {/* Render each tab once so component state survives switching:
-          Disir's iframe handshake, the chat room's WebSocket
-          subscription, and the analyses fetch all reset on unmount.
-          Hidden tabs use CSS `display: none` so they're inert but
-          still mounted. */}
+          Disir's iframe handshake and the analyses fetch both reset
+          on unmount. Hidden tabs use CSS `display: none` so they're
+          inert but still mounted. */}
       <div role="tabpanel">
         {insightsSupported && (
           <div style={{ display: activeTab === "insights" ? "block" : "none" }}>
@@ -139,12 +136,6 @@ function RailMatchPanelInner({ active }: { active: ActiveMatch }) {
             />
           </div>
         )}
-        <div style={{ display: activeTab === "chat" ? "block" : "none" }}>
-          <MatchRoom
-            matchId={active.matchId}
-            viewer={active.viewerId ? { id: active.viewerId } : null}
-          />
-        </div>
         {analysesAvailable && (
           <div style={{ display: activeTab === "analyses" ? "block" : "none" }}>
             <MatchAnalysesSection
