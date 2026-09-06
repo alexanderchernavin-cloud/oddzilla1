@@ -349,3 +349,73 @@ func TestBuildMaxMatchesReportsTotalAndCapped(t *testing.T) {
 		t.Fatalf("skipped[max_matches] = %d", capped.Skipped["max_matches"])
 	}
 }
+
+// buildScore lifts the serve marker off whichever score group carries it.
+// Fonbet puts it on the innermost cell, and that is NOT the same group per
+// sport: tennis marks the current game (group 2), table tennis and
+// volleyball the current set (group 1). Shapes taken verbatim from a live
+// fon.bet snapshot, 2026-09-06.
+func TestBuildScoreServe(t *testing.T) {
+	serve := func(v int) *int { return &v }
+	cases := []struct {
+		name string
+		info fonbet.LiveEventInfo
+		want int
+	}{
+		{
+			name: "tennis marks the current game",
+			info: fonbet.LiveEventInfo{
+				ScoreComment: "(6-7 4-6 4-4)",
+				Scores: [][]fonbet.ScoreCell{
+					{{C1: "0", C2: "2"}},
+					{{C1: "6", C2: "7", Title: "set"}, {C1: "4", C2: "4", Title: "set"}},
+					{{C1: "15", C2: "30", Title: "game", Serve: serve(1)}},
+				},
+			},
+			want: 1,
+		},
+		{
+			name: "table tennis marks the current set",
+			info: fonbet.LiveEventInfo{
+				ScoreComment: "(11-7 14-16 0-0*)",
+				Scores: [][]fonbet.ScoreCell{
+					{{C1: "1", C2: "1"}},
+					{{C1: "0", C2: "0", Title: "set", Serve: serve(2)}},
+				},
+			},
+			want: 2,
+		},
+		{
+			name: "football carries none",
+			info: fonbet.LiveEventInfo{
+				Scores: [][]fonbet.ScoreCell{
+					{{C1: "0", C2: "0"}},
+					{{C1: "0", C2: "0", Title: "half"}},
+				},
+			},
+			want: 0,
+		},
+		{
+			name: "a value that is not a side is dropped",
+			info: fonbet.LiveEventInfo{
+				Scores: [][]fonbet.ScoreCell{
+					{{C1: "0", C2: "0"}},
+					{{C1: "1", C2: "2", Title: "set", Serve: serve(3)}},
+				},
+			},
+			want: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			info := tc.info
+			got := buildScore(nil, &info)
+			if got == nil {
+				t.Fatalf("buildScore returned nil")
+			}
+			if got.Serve != tc.want {
+				t.Fatalf("serve = %d, want %d", got.Serve, tc.want)
+			}
+		})
+	}
+}
