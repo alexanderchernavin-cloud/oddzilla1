@@ -257,7 +257,7 @@ export function Sidebar({
         <Wordmark size={240} priority />
       </Link>
 
-      <Item href="/" icon={<I.Grid size={15} />} active={isActive("/")} label={tShell("lobby")} />
+      <Item href="/" icon={<I.Grid size={15} />} active={isActive("/")} label={tShell("home")} />
       <Item
         href="/live"
         icon={<I.Live size={15} />}

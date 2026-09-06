@@ -548,7 +548,14 @@ async function verifyPair(
     const reply = await zagi.complete({
       system: VERIFY_SYSTEM_PROMPT,
       user: renderPair(item, match.label, match.description),
-      maxTokens: 4_000,
+      // A one-pair yes/no looks like it should be cheap, and 4 000 was
+      // set on that reasoning. It is not how this model spends a budget:
+      // it runs an internal reasoning pass FIRST and only then emits
+      // text, so a tight ceiling returns an empty reply rather than a
+      // short one. That is 9 of the 9 errors in the first production
+      // sweep, each one a real competition left unmarked. The number is
+      // a ceiling, not a cost — the model stops on its own.
+      maxTokens: 16_000,
     });
     return parsePairVerdicts(reply.text, 1).get(0) ?? "unsure";
   } catch (err) {

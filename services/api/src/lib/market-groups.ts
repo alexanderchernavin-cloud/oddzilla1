@@ -4,9 +4,10 @@
 // 0109, the SUB-EVENT it means — (provider_market_id, variant). This is
 // the one place that turns those rows into the markets a tab renders, for
 // every kind of tab: the curated ones (`top`, `custom_<key>`) and, since
-// migration 0111, the feed tabs (`match`, `map_<N>`, `fb_<kinds>`), whose
-// rows can now import a market from another sub-event and — when the tab
-// is set to membership='manual' — define its contents outright.
+// migration 20260906T014417, the feed tabs (`match`, `map_<N>`,
+// `fb_<kinds>`), whose rows can now import a market from another sub-event
+// and — when the tab is set to membership='manual' — define its contents
+// outright.
 //
 // Pure and unit-tested because it decides what a bettor is offered: a
 // wrong reading of a row either hides a market or drags a foreign one in

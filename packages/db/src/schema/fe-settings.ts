@@ -32,9 +32,9 @@
 // Markets with no row fall back to provider_market_id ascending — the
 // legacy default — for `match`, `map_<N>` and `fb_<kinds>` while their
 // group row says membership='auto'. The `top` and `custom_<key>` scopes
-// are opt-in: no rows = no tab content. Since migration 0111 a feed tab
-// can opt into the same explicit membership (membership='manual'), which
-// is what makes every tab editable the way a custom group is: a row may
+// are opt-in: no rows = no tab content. Since migration 20260906T014417 a
+// feed tab can opt into the same explicit membership (membership='manual'),
+// which is what makes every tab editable the way a custom group is: a row may
 // name a market from ANOTHER sub-event, so "corners: Total" can sit on
 // the Match tab, and a market the feed puts on the tab can be left off.
 
@@ -147,9 +147,10 @@ export const feMarketGroups = pgTable(
     scope: text().notNull().$type<FeMarketScope>(),
     label: text(),
     displayOrder: integer().notNull().default(0),
-    // What the tab's fe_market_display_order rows MEAN (migration 0111).
+    // What the tab's fe_market_display_order rows MEAN — migration
+    // 20260906T014417.
     // 'auto'   — listed markets first, the tab's own unlisted feed markets
-    //            after. What every row meant before 0111.
+    //            after. What every row meant before that migration.
     // 'manual' — the tab renders exactly the listed markets, the way `top`
     //            and a custom group always have.
     // Only feed tabs (match / map_<N> / fb_<kinds>) can be 'auto'; curated

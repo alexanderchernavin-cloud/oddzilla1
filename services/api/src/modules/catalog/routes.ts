@@ -1129,6 +1129,32 @@ export default async function catalogRoutes(app: FastifyInstance) {
       if (c) filteredCategory = c;
     }
 
+    // Same for the tournament filter. Resolved here rather than read off a
+    // match row so the chip survives a filter that currently has nothing
+    // on offer — a tournament between rounds would otherwise leave a chip
+    // with no name and no way to tell what it filters. Carries the logo
+    // because the chip renders the mark in place of a kind label.
+    let filteredTournament: {
+      id: number;
+      name: string;
+      logoUrl: string | null;
+    } | null = null;
+    if (q.tournament) {
+      const [tr] = await app.db
+        .select({
+          id: tournaments.id,
+          name: tournaments.name,
+          logoUrl: tournaments.logoUrl,
+        })
+        .from(tournaments)
+        .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+        .where(
+          and(eq(tournaments.id, q.tournament), eq(categories.sportId, sport.id)),
+        )
+        .limit(1);
+      if (tr) filteredTournament = tr;
+    }
+
     // Resolve the team filter (if any) before the matches query so we can
     // surface the team's name back to the storefront for the chip. Scoped
     // by ACTUAL gameplay rather than `competitors.sport_id`: a team's
@@ -1302,6 +1328,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
       topConfigured: (topIdsBySport.get(sport.id) ?? []).length > 0,
       filteredTeam,
       filteredCategory,
+      filteredTournament,
       matches: rows.map((r) => {
         const o = oddsByMatch.get(r.matchId.toString());
         const top = topMarkets.get(r.matchId.toString()) ?? null;
@@ -1921,7 +1948,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
     // Feed tabs: the operator's rows can now do three things — order the
     // tab's own markets (what they always did), IMPORT a market from
     // another sub-event, and, when the tab is set to membership='manual'
-    // (migration 0111), define the tab's contents outright.
+    // (migration 20260906T014417), define the tab's contents outright.
     //
     // 'auto' is the default and stays lossless: the listed markets render
     // first in the operator's order, then everything else the feed puts on

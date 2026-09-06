@@ -21,9 +21,9 @@ export function entryKey(m: MarketEntry): string {
 // One screen, one shape: the list on the left is the tab, the pool on the
 // right is every market this sport offers, and a market moves between
 // them. Feed tabs (Match / Map N / a sub-event) were order-only until
-// migration 0111 — their pool was just their own markets, so there was no
-// way to put the corners total on the Match tab or leave a market off a
-// tab that carries it.
+// migration 20260906T014417 — their pool was just their own markets, so
+// there was no way to put the corners total on the Match tab or leave a
+// market off a tab that carries it.
 //
 // The one thing that still differs is what happens to markets NOT on the
 // list. A feed tab defaults to 'auto': the feed keeps filling it behind

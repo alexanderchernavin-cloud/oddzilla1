@@ -133,8 +133,8 @@ type GroupRow = {
 };
 
 /**
- * What a feed tab's rows mean (migration 0111). No group row — or a row
- * from before 0111 — means 'auto': the list orders, the feed still fills.
+ * What a feed tab's rows mean — migration 20260906T014417. No group row,
+ * or one from before it, means 'auto': the list orders, the feed still fills.
  */
 function membershipOf(rows: GroupRow[], scope: string): FeGroupMembership {
   return rows.find((r) => r.scope === scope)?.membership ?? "auto";

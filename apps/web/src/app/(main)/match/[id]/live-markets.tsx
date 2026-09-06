@@ -125,9 +125,9 @@ type RenderEntry = SingleMarket | LineFamily;
 // "Corners: Total" — because the tab above it already says which
 // sub-event we are in. That stops being true the moment a market is
 // rendered somewhere else: Top and custom tabs mix sub-events by design,
-// and since migration 0111 a feed tab can hold markets imported from
-// another one. There, a bare "Total" is a card the bettor cannot
-// identify, so the sub-event goes back on the title.
+// and since migration 20260906T014417 a feed tab can hold markets
+// imported from another one. There, a bare "Total" is a card the bettor
+// cannot identify, so the sub-event goes back on the title.
 //
 // Only sub-event scopes get the prefix. A map market already carries its
 // map in the name ("Total kills 12.5 - map 2"), so prefixing it would

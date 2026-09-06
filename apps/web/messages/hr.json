@@ -48,7 +48,7 @@
   "shell": {
     "homeLink": "Oddzilla — početna",
     "accountMenu": "Izbornik računa za {name}",
-    "lobby": "Lobby",
+    "home": "Početna",
     "live": "Uživo",
     "upcoming": "Prije meča",
     "sportsNav": "Sportovi",
@@ -341,7 +341,6 @@
     "logout": "Odjavi se"
   },
   "home": {
-    "lobby": "Lobby",
     "upcoming": "Prije meča",
     "empty": "Ništa nije na rasporedu. Cjelokupnu ponudu potražite na stranicama pojedinih sportova.",
     "topSports": "Najbolji sportovi"
@@ -395,9 +394,6 @@
     "live": "Uživo",
     "upcoming": "Prije meča",
     "topTournaments": "Top turniri",
-    "filterKindCategory": "Kategorija",
-    "filterKindTournament": "Turnir",
-    "filterKindTeam": "Momčad",
     "clearFilter": "Ukloni filtar",
     "noMatches": "Trenutačno nema mečeva.",
     "matchCount": "{count, plural, one {# meč} few {# meča} other {# mečeva}}"
