@@ -48,9 +48,15 @@ const (
 	// wideSweepEvery resyncs: after a multi-hour outage of the whole stack
 	// the three-hour pass would miss matches that closed early in the gap.
 	// Bifrost keeps settled markets on the historic match for at least two
-	// weeks (2026-09-03 probe), so 24 h is well inside what it can answer,
-	// and the pass fetches only matches our own DB still holds open.
-	wideSweepWindow   = 24 * time.Hour
+	// weeks (2026-09-03 probe), so 72 h is well inside what it can answer,
+	// and the pass fetches only matches our own DB still holds open — the
+	// cost of a wider window is list pages, not detail fetches. It was 24 h
+	// until 2026-09-06: the unplayed-map cancels (emitUnplayedMapCancels)
+	// ride this pass too, and a day was too short to reach the fixtures
+	// that had closed before the cancel path existed — 940 markets on the
+	// 09-05 matches were still waiting for a snapshot the 24 h window
+	// would never fetch again.
+	wideSweepWindow   = 72 * time.Hour
 	wideSweepEvery    = 6
 	gatePollEvery     = time.Second
 	reconnectMax      = 30 * time.Second

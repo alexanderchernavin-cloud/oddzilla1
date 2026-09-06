@@ -195,6 +195,25 @@ work.
   a push that pins the number, which that rule could not read. Provenance
   lands in the settlements audit row (`extended_specifiers:
   inferred_from=threshold=25.5,threshold=26 (value 26)`). No void path.
+  **First pass with the interval form (2026-09-06 14:01 UTC): 6 671 of
+  7 372 candidates settled**, 0 tickets on any of them; left: 246 families
+  whose siblings contradict each other (worth a look — pre-fix handicap
+  rows settled through the mirror key are the likely source), 225 race
+  markets (1/2 outcomes with a threshold), 208 lines the interval spans,
+  22 rollback desyncs.
+- **1b′. The results sweep window went 24 h → 72 h** the same day: the
+  unplayed-map cancels ride that pass, and 940 markets on 09-05 matches
+  that had closed before the cancel path existed were waiting for a
+  snapshot the 24 h window would never fetch again.
+
+**Where the 09-05 measurement stands after the day's work** (closed > 1 h,
+re-measured 2026-09-06 14:05 UTC): **8 294 of 470 178 markets open —
+1.76%, down from 4.28%**; 1 763 matches affected, down from 4 293. Fonbet
+6 973 (1.88% — the denylisted shapes already created, statistic rows,
+unmatched fixtures), Oddin 1 321 (1.33% — 940 unplayed-map markets
+awaiting the widened sweep, 215 undecided ladder lines, 166 non-line
+markets Bifrost dropped). Unmatched Fonbet fixtures 855 → 448; fixtures
+stuck at not_started 383 → 221.
 - **1d. Hygiene.** On CLOSED, any market still at `1` goes to `-1`. Open.
 
 ### Phase 2 — Fonbet grader coverage
