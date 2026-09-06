@@ -62,6 +62,12 @@ export interface EventDto {
   decisionMeta: unknown;
   selections: EventSelectionDto[];
   createdAt: string;
+  isLive: boolean | null;
+  betType: string | null;
+  legs: number;
+  ticketStatus: string | null;
+  actualPayoutMicro: string | null;
+  settledAt: string | null;
 }
 
 // ── Column metadata ───────────────────────────────────────────────────
@@ -69,15 +75,20 @@ export interface EventDto {
 export type ColumnKey =
   | "decision"
   | "createdAt"
+  | "phase"
   | "user"
+  | "betType"
   | "stake"
   | "potentialPayout"
+  | "actualPayout"
+  | "pnl"
   | "riskTier"
   | "sport"
   | "tournament"
   | "match"
   | "market"
   | "selection"
+  | "reason"
   | "detail";
 
 export type SortKey =
@@ -105,15 +116,20 @@ interface ColumnDef {
 export const COLUMN_DEFS: ColumnDef[] = [
   { key: "decision", label: "Status", defaultWidth: 110, minWidth: 80, sortable: true },
   { key: "createdAt", label: "Time", defaultWidth: 100, minWidth: 80, sortable: true },
-  { key: "user", label: "User", defaultWidth: 130, minWidth: 80 },
+  { key: "phase", label: "Live", defaultWidth: 64, minWidth: 50 },
+  { key: "user", label: "Bettor", defaultWidth: 130, minWidth: 80 },
+  { key: "betType", label: "Type", defaultWidth: 90, minWidth: 60 },
   { key: "stake", label: "Stake", defaultWidth: 100, minWidth: 70, align: "right", sortable: true },
-  { key: "potentialPayout", label: "Payout", defaultWidth: 100, minWidth: 70, align: "right", sortable: true },
-  { key: "riskTier", label: "Tier", defaultWidth: 70, minWidth: 50, align: "right", sortable: true },
+  { key: "potentialPayout", label: "Potential", defaultWidth: 100, minWidth: 70, align: "right", sortable: true },
+  { key: "actualPayout", label: "Paid", defaultWidth: 90, minWidth: 60, align: "right" },
+  { key: "pnl", label: "PnL", settingsLabel: "PnL (company)", defaultWidth: 90, minWidth: 60, align: "right" },
+  { key: "riskTier", label: "Tier", defaultWidth: 60, minWidth: 50, align: "right", sortable: true },
   { key: "sport", label: "Sport", defaultWidth: 90, minWidth: 60 },
-  { key: "tournament", label: "Tournament", defaultWidth: 180, minWidth: 100 },
+  { key: "tournament", label: "Tournament", defaultWidth: 160, minWidth: 100 },
   { key: "match", label: "Match", defaultWidth: 180, minWidth: 100 },
   { key: "market", label: "Market", defaultWidth: 160, minWidth: 100 },
   { key: "selection", label: "Selection", defaultWidth: 160, minWidth: 100 },
+  { key: "reason", label: "Reject reason", defaultWidth: 140, minWidth: 80 },
   { key: "detail", label: "", settingsLabel: "Detail toggle", defaultWidth: 70, minWidth: 60 },
 ];
 
@@ -770,7 +786,89 @@ function EventRow({
     ? `${firstLeg.outcomeName ?? firstLeg.outcomeId} @ ${formatOdds(firstLeg.oddsAtPlacement)}`
     : "—";
 
+  const settled =
+    row.ticketStatus === "settled" ||
+    row.ticketStatus === "cashed_out" ||
+    row.ticketStatus === "voided";
+  const paidMicro =
+    settled && row.actualPayoutMicro !== null ? BigInt(row.actualPayoutMicro) : null;
+  const pnlMicro = paidMicro === null ? null : BigInt(row.stakeMicro) - paidMicro;
+  const legs = row.legs > 0 ? row.legs : row.selections.length;
+  const typeLabel =
+    row.betType === null
+      ? legs > 1
+        ? `combo · ${legs}`
+        : "single"
+      : row.betType === "single"
+        ? "single"
+        : `${row.betType} · ${legs}`;
+
   const cells: Record<ColumnKey, ReactNode> = {
+    phase: (
+      <td style={tdStyle()}>
+        {row.isLive === null ? (
+          <span style={{ color: "var(--color-fg-muted)" }}>—</span>
+        ) : (
+          <span
+            className="mono"
+            style={{
+              fontSize: 10,
+              letterSpacing: "0.08em",
+              padding: "2px 6px",
+              borderRadius: 4,
+              color: row.isLive ? "#7c3aed" : "var(--color-fg-muted)",
+              background: row.isLive
+                ? "color-mix(in oklab, #7c3aed 12%, transparent)"
+                : "var(--color-bg-subtle)",
+            }}
+          >
+            {row.isLive ? "LIVE" : "PRE"}
+          </span>
+        )}
+      </td>
+    ),
+    betType: (
+      <td style={{ ...tdStyle(), color: "var(--color-fg-muted)" }} title={typeLabel}>
+        {typeLabel}
+      </td>
+    ),
+    actualPayout: (
+      <td
+        style={{
+          ...tdStyle("right"),
+          fontVariantNumeric: "tabular-nums",
+          color: paidMicro === null ? "var(--color-fg-muted)" : undefined,
+        }}
+      >
+        {paidMicro === null ? "—" : fromMicro(paidMicro)}
+      </td>
+    ),
+    pnl: (
+      <td
+        style={{
+          ...tdStyle("right"),
+          fontVariantNumeric: "tabular-nums",
+          color:
+            pnlMicro === null
+              ? "var(--color-fg-muted)"
+              : pnlMicro > 0n
+                ? "#16a34a"
+                : pnlMicro < 0n
+                  ? "#dc2626"
+                  : undefined,
+        }}
+      >
+        {pnlMicro === null ? "—" : `${pnlMicro > 0n ? "+" : ""}${fromMicro(pnlMicro)}`}
+      </td>
+    ),
+    reason: (
+      <td
+        style={{ ...tdStyle(), color: row.reasonMessage ? "#dc2626" : "var(--color-fg-muted)" }}
+        title={row.reasonMessage ?? undefined}
+      >
+        {row.reasonMessage ?? "—"}
+      </td>
+    ),
     decision: (
       <td style={{ ...tdStyle(), color, fontWeight: 600 }}>
         <span
@@ -806,7 +904,7 @@ function EventRow({
     user: (
       <td style={tdStyle()}>
         <Link
-          href={`/admin/riskzilla/bettors/${row.userId}`}
+          href={`/admin/users/${row.userId}`}
           style={{
             color: "var(--color-fg)",
             textDecoration: "none",
@@ -1153,6 +1251,127 @@ function ResultBadge({ result }: { result: string | null }) {
     >
       {m.label}
     </span>
+  );
+}
+
+// ── CSV export ────────────────────────────────────────────────────────
+// Exports exactly the rows on screen (after filters), one line per
+// ticket with legs folded into a "selections" column, so the file
+// matches what the operator was looking at.
+
+function csvCell(v: unknown): string {
+  const str = v == null ? "" : String(v);
+  return /[",\n\r]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+}
+
+export function eventsToCsv(rows: EventDto[]): string {
+  const header = [
+    "created_at",
+    "ticket_id",
+    "event_id",
+    "status",
+    "reject_reason",
+    "live",
+    "bet_type",
+    "legs",
+    "bettor_id",
+    "bettor",
+    "currency",
+    "stake",
+    "potential_payout",
+    "actual_payout",
+    "company_pnl",
+    "risk_tier",
+    "sport",
+    "tournament",
+    "match",
+    "selections",
+  ];
+  const lines = [header.join(",")];
+  for (const r of rows) {
+    const settled =
+      r.ticketStatus === "settled" ||
+      r.ticketStatus === "cashed_out" ||
+      r.ticketStatus === "voided";
+    const paid = settled && r.actualPayoutMicro !== null ? BigInt(r.actualPayoutMicro) : null;
+    const pnl = paid === null ? "" : fromMicro(BigInt(r.stakeMicro) - paid);
+    const selections = r.selections
+      .map(
+        (s) =>
+          `${s.matchLabel ?? ""} | ${s.marketName} | ${s.outcomeName ?? s.outcomeId} @ ${formatOdds(s.oddsAtPlacement)}${s.result ? ` (${s.result})` : ""}`,
+      )
+      .join(" ; ");
+    lines.push(
+      [
+        r.createdAt,
+        r.ticketId ?? "",
+        r.id,
+        DECISION_LABEL[r.decision] ?? r.decision,
+        r.reasonMessage ?? "",
+        r.isLive === null ? "" : r.isLive ? "live" : "prematch",
+        r.betType ?? (r.legs > 1 ? "combo" : "single"),
+        r.legs,
+        r.userId,
+        r.userNickname ?? r.userEmail ?? "",
+        r.currency,
+        fromMicro(BigInt(r.stakeMicro)),
+        fromMicro(BigInt(r.potentialPayoutMicro)),
+        paid === null ? "" : fromMicro(paid),
+        pnl,
+        r.riskTier ?? "",
+        r.sportSlug ?? "",
+        r.tournamentName ?? "",
+        r.matchLabel ?? "",
+        selections,
+      ]
+        .map(csvCell)
+        .join(","),
+    );
+  }
+  return lines.join("\r\n");
+}
+
+export function downloadCsv(filename: string, csv: string): void {
+  const blob = new Blob([`\ufeff${csv}`], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export function ExportCsvButton({
+  rows,
+  filenamePrefix,
+}: {
+  rows: EventDto[];
+  filenamePrefix: string;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={rows.length === 0}
+      onClick={() => {
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+        downloadCsv(`${filenamePrefix}-${stamp}.csv`, eventsToCsv(rows));
+      }}
+      title="Download the rows currently on screen as CSV"
+      style={{
+        height: 32,
+        padding: "0 12px",
+        border: "1px solid var(--color-border)",
+        background: "var(--color-bg)",
+        color: rows.length === 0 ? "var(--color-fg-muted)" : "var(--color-fg)",
+        borderRadius: 6,
+        fontSize: 12,
+        cursor: rows.length === 0 ? "default" : "pointer",
+      }}
+    >
+      Export CSV
+    </button>
   );
 }
 

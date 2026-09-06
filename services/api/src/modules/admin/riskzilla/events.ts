@@ -376,6 +376,31 @@ const listQuery = z.object({
     .optional(),
   // accepted | rejected | all  — convenience pill on the betticker UI
   status: z.enum(["accepted", "rejected", "all"]).optional(),
+  // Ticket lifecycle state, finer than `status`: open = accepted or
+  // still in the bet-delay window; won / lost / void / cashed_out read
+  // the settled ticket; rejected = RiskZilla gate OR bet-delay kill.
+  state: z
+    .enum(["open", "won", "lost", "rejected", "void", "cashed_out"])
+    .optional(),
+  // live = at least the header match had started when the bet landed;
+  // prematch = it had not (or the match has no scheduled_at).
+  phase: z.enum(["live", "prematch"]).optional(),
+  // single vs anything multi-leg (combo / system / tiple / tippot /
+  // betbuilder all count as combo for the operator's purposes).
+  betType: z.enum(["single", "combo"]).optional(),
+  // Comma-separated ticket UUIDs — paste a batch from a support thread.
+  ticketIds: z
+    .string()
+    .transform((raw) =>
+      raw
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean),
+    )
+    .pipe(z.array(z.string().uuid()).min(1).max(200))
+    .optional(),
+  // Free-text bettor search (email / nickname, ILIKE).
+  q: z.string().trim().min(1).max(200).optional(),
   userId: z.string().uuid().optional(),
   sportId: z.coerce.number().int().optional(),
   matchId: z.coerce.bigint().optional(),
@@ -425,6 +450,15 @@ interface EventRowDto {
   // ticket_id (no ticket row to JOIN to).
   selections: EventSelectionDto[];
   createdAt: string;
+  // Ticket-level context for the operator table (Corwyn-style ticket
+  // list): was the header match live at placement, how many legs,
+  // what the ticket paid once settled.
+  isLive: boolean | null;
+  betType: string | null;
+  legs: number;
+  ticketStatus: string | null;
+  actualPayoutMicro: string | null;
+  settledAt: string | null;
 }
 
 interface RawRow {
@@ -456,6 +490,12 @@ interface RawRow {
   // "Map 1 winner - twoway" instead of the literal template.
   selections: RawSelection[] | null;
   created_at: Date | string;
+  is_live: boolean | null;
+  bet_type: string | null;
+  legs: number | string | null;
+  ticket_status: string | null;
+  actual_payout_micro: string | null;
+  settled_at: Date | string | null;
 }
 
 function rawToDto(r: RawRow, profiles?: OutcomeProfiles): EventRowDto {
@@ -489,10 +529,39 @@ function rawToDto(r: RawRow, profiles?: OutcomeProfiles): EventRowDto {
       r.created_at instanceof Date
         ? r.created_at.toISOString()
         : String(r.created_at),
+    isLive: r.is_live == null ? null : Boolean(r.is_live),
+    betType: r.bet_type ?? null,
+    legs: Number(r.legs ?? 0),
+    ticketStatus: r.ticket_status ?? null,
+    actualPayoutMicro: r.actual_payout_micro ?? null,
+    settledAt:
+      r.settled_at == null
+        ? null
+        : r.settled_at instanceof Date
+          ? r.settled_at.toISOString()
+          : String(r.settled_at),
   };
 }
 
 type ListQuery = z.infer<typeof listQuery>;
+
+// Bettor free-text search, expressed as EXISTS so the same fragment
+// serves the COUNT(*) query (no users join there) and the page query.
+function bettorSearchSql(userIdColumn: ReturnType<typeof sql>, q: string) {
+  const like = `%${q.replace(/[%_]/g, "")}%`;
+  return sql`EXISTS (
+    SELECT 1 FROM users uq
+     WHERE uq.id = ${userIdColumn}
+       AND (uq.email ILIKE ${like} OR uq.nickname ILIKE ${like})
+  )`;
+}
+
+function ticketIdListSql(ids: string[]) {
+  return sql.join(
+    ids.map((id) => sql`${id}::uuid`),
+    sql`, `,
+  );
+}
 
 interface PathResult {
   entries: EventRowDto[];
@@ -537,6 +606,67 @@ async function queryEventLog(
       sql`(el.decision <> 'accepted'::riskzilla_decision OR ${ticketRejectedSql})`,
     );
   if (q.userId) conditions.push(sql`el.user_id = ${q.userId}::uuid`);
+  if (q.q) conditions.push(bettorSearchSql(sql`el.user_id`, q.q));
+  if (q.ticketIds) {
+    conditions.push(sql`el.ticket_id IN (${ticketIdListSql(q.ticketIds)})`);
+  }
+  // Lifecycle state. Every branch is a correlated subquery on tickets
+  // for the same reason as ticketRejectedSql above (COUNT(*) has no
+  // `t` alias). A RiskZilla rejection has no ticket row at all, so
+  // "rejected" is the only state that can match ticket_id IS NULL.
+  if (q.state) {
+    const tk = (cond: ReturnType<typeof sql>) => sql`EXISTS (
+      SELECT 1 FROM tickets tk WHERE tk.id = el.ticket_id AND ${cond}
+    )`;
+    switch (q.state) {
+      case "open":
+        conditions.push(tk(sql`tk.status IN ('accepted', 'pending_delay')`));
+        break;
+      case "won":
+        conditions.push(
+          tk(sql`tk.status = 'settled' AND COALESCE(tk.actual_payout_micro, 0) > 0`),
+        );
+        break;
+      case "lost":
+        conditions.push(
+          tk(sql`tk.status = 'settled' AND COALESCE(tk.actual_payout_micro, 0) = 0`),
+        );
+        break;
+      case "void":
+        conditions.push(tk(sql`tk.status = 'voided'`));
+        break;
+      case "cashed_out":
+        conditions.push(tk(sql`tk.status = 'cashed_out'`));
+        break;
+      case "rejected":
+        conditions.push(
+          sql`(el.decision <> 'accepted'::riskzilla_decision OR ${ticketRejectedSql})`,
+        );
+        break;
+    }
+  }
+  if (q.phase) {
+    const liveSql = sql`EXISTS (
+      SELECT 1 FROM matches pm
+       WHERE pm.id = el.match_id
+         AND pm.scheduled_at IS NOT NULL
+         AND el.created_at >= pm.scheduled_at
+    )`;
+    conditions.push(q.phase === "live" ? liveSql : sql`NOT ${liveSql}`);
+  }
+  if (q.betType) {
+    // Accepted events carry the ticket's bet_type; a RiskZilla rejection
+    // never wrote a ticket, so fall back to the bucket count the engine
+    // evaluated (one bucket per leg).
+    const kind = sql`COALESCE(
+      (SELECT CASE WHEN tk.bet_type = 'single' THEN 'single' ELSE 'combo' END
+         FROM tickets tk WHERE tk.id = el.ticket_id),
+      CASE WHEN jsonb_typeof(el.decision_meta->'buckets') = 'array'
+                AND jsonb_array_length(el.decision_meta->'buckets') > 1
+           THEN 'combo' ELSE 'single' END
+    )`;
+    conditions.push(sql`${kind} = ${q.betType}`);
+  }
   if (q.sportId !== undefined) conditions.push(sql`el.sport_id = ${q.sportId}`);
   if (q.matchId !== undefined)
     conditions.push(sql`el.match_id = ${q.matchId.toString()}::bigint`);
@@ -603,7 +733,19 @@ async function queryEventLog(
       el.bank_at_decision_micro::text               AS bank_at_decision_micro,
       el.decision_meta                              AS decision_meta,
       COALESCE(sel.selections, '[]'::jsonb)         AS selections,
-      el.created_at                                 AS created_at
+      el.created_at                                 AS created_at,
+      CASE WHEN m.scheduled_at IS NULL THEN NULL
+           ELSE el.created_at >= m.scheduled_at END AS is_live,
+      t.bet_type::text                              AS bet_type,
+      CASE WHEN el.ticket_id IS NULL THEN
+             CASE WHEN jsonb_typeof(el.decision_meta->'buckets') = 'array'
+                  THEN jsonb_array_length(el.decision_meta->'buckets') ELSE 0 END
+           ELSE (SELECT COUNT(*)::int FROM ticket_selections tsc
+                  WHERE tsc.ticket_id = el.ticket_id)
+      END                                           AS legs,
+      t.status::text                                AS ticket_status,
+      t.actual_payout_micro::text                   AS actual_payout_micro,
+      t.settled_at                                  AS settled_at
     FROM riskzilla_event_log el
     LEFT JOIN users       u  ON u.id = el.user_id
     LEFT JOIN tickets     t  ON t.id = el.ticket_id
@@ -700,6 +842,48 @@ async function queryTicketsForOz(
   const conditions: ReturnType<typeof sql>[] = [sql`t.currency = 'OZ'`];
   if (q.status === "accepted") conditions.push(sql`t.status <> 'rejected'`);
   if (q.status === "rejected") conditions.push(sql`t.status = 'rejected'`);
+  if (q.state) {
+    switch (q.state) {
+      case "open":
+        conditions.push(sql`t.status IN ('accepted', 'pending_delay')`);
+        break;
+      case "won":
+        conditions.push(
+          sql`t.status = 'settled' AND COALESCE(t.actual_payout_micro, 0) > 0`,
+        );
+        break;
+      case "lost":
+        conditions.push(
+          sql`t.status = 'settled' AND COALESCE(t.actual_payout_micro, 0) = 0`,
+        );
+        break;
+      case "void":
+        conditions.push(sql`t.status = 'voided'`);
+        break;
+      case "cashed_out":
+        conditions.push(sql`t.status = 'cashed_out'`);
+        break;
+      case "rejected":
+        conditions.push(sql`t.status = 'rejected'`);
+        break;
+    }
+  }
+  if (q.phase) {
+    const liveSql = sql`EXISTS (
+      SELECT 1
+        FROM ticket_selections ps
+        JOIN markets pmk ON pmk.id = ps.market_id
+        JOIN matches pm  ON pm.id  = pmk.match_id
+       WHERE ps.ticket_id = t.id
+         AND pm.scheduled_at IS NOT NULL
+         AND t.placed_at >= pm.scheduled_at
+    )`;
+    conditions.push(q.phase === "live" ? liveSql : sql`NOT ${liveSql}`);
+  }
+  if (q.betType === "single") conditions.push(sql`t.bet_type = 'single'`);
+  if (q.betType === "combo") conditions.push(sql`t.bet_type <> 'single'`);
+  if (q.ticketIds) conditions.push(sql`t.id IN (${ticketIdListSql(q.ticketIds)})`);
+  if (q.q) conditions.push(bettorSearchSql(sql`t.user_id`, q.q));
   if (q.userId) conditions.push(sql`t.user_id = ${q.userId}::uuid`);
   if (q.fromTs)
     conditions.push(sql`t.placed_at >= ${q.fromTs.toISOString()}::timestamptz`);
@@ -795,7 +979,18 @@ async function queryTicketsForOz(
         'legs', (SELECT COUNT(*)::int FROM ticket_selections ts WHERE ts.ticket_id = t.id)
       )                                             AS decision_meta,
       COALESCE(sel.selections, '[]'::jsonb)         AS selections,
-      t.placed_at                                   AS created_at
+      t.placed_at                                   AS created_at,
+      (SELECT BOOL_OR(lm2.scheduled_at IS NOT NULL AND t.placed_at >= lm2.scheduled_at)
+         FROM ticket_selections ts2
+         JOIN markets lmk2 ON lmk2.id = ts2.market_id
+         JOIN matches lm2  ON lm2.id  = lmk2.match_id
+        WHERE ts2.ticket_id = t.id)                 AS is_live,
+      t.bet_type::text                              AS bet_type,
+      (SELECT COUNT(*)::int FROM ticket_selections tsc WHERE tsc.ticket_id = t.id)
+                                                    AS legs,
+      t.status::text                                AS ticket_status,
+      t.actual_payout_micro::text                   AS actual_payout_micro,
+      t.settled_at                                  AS settled_at
     FROM filtered t
     LEFT JOIN users u ON u.id = t.user_id
     LEFT JOIN LATERAL (

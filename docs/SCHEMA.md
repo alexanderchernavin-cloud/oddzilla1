@@ -241,6 +241,21 @@ can set any positive value). `bet_delay_seconds` is 0–300; non-zero enables
 the bet-delay worker for this user's tickets. `status='blocked'` freezes all
 bet placement + deposits + withdrawals. `role` gates admin UI access.
 
+`risk_score NUMERIC(4,3)` (migration 0037) is the per-bettor **risk
+factor** the RiskZilla engine multiplies into the bettor's slice of match
+liability: `1.000` = 100% of the standard allowance, `0.100` = 10%,
+`10.000` = 1000%. The admin bettor card edits it in 0.1 steps between
+0.1 and 10; the CHECK still admits 0.01 for legacy rows.
+
+`labels TEXT[] NOT NULL DEFAULT '{}'` (migration 20260906T230247) carries operator
+labels from a closed vocabulary — `vip`, `sharp`, `regular`, `fraud`,
+`shady`, `suspicious`, `prematch`, `live` — enforced by the
+`users_labels_allowed` CHECK and mirrored in
+`packages/types/src/bettor-labels.ts`. Descriptive only: nothing in the
+placement path reads them. `GET /admin/users?label=` filters with a
+containment query served by the partial GIN index `users_labels_gin_idx`
+(bettor rows only).
+
 **`sessions`** — refresh-token records. We store SHA-256 of the opaque refresh
 token; the raw token only ever lives in the user's httpOnly cookie. Rotation
 on each refresh sets `revoked_at` on the old row and creates a new one. The
@@ -964,6 +979,30 @@ today). `ticket_odds_snapshot`, `probability_snapshot`, and
 > unique partial index is the second backstop on the wallet side.
 
 ### Admin + ops
+
+**`risk_alert_rules`** / **`risk_alerts`** / **`risk_alert_events`** (migration
+20260906T230248) — the alert center. `risk_alert_rules` holds one row per rule kind
+(`enabled`, `severity`, jsonb `params`), seeded with 14 B2C sportsbook
+rules whose SQL lives in `services/api/src/lib/riskzilla/alert-rules.ts`.
+The sweeper (`alert-sweeper.ts`, every 60 s, Redis-lock guarded) runs
+each enabled rule as `INSERT ... SELECT ... ON CONFLICT (dedupe_key) WHERE
+status <> 'resolved' DO UPDATE` into `risk_alerts`: a condition that is
+still open bumps `last_seen_at` (and `occurrences` once per hour, so the
+count reads as distinct hours observed); a key that was resolved
+is filtered out by a `NOT EXISTS` gate and never re-fires, so rules with
+persistent conditions bucket the key by time (`sharp_bettor:<user>:<iso
+week>`, `bank_exposure:<hour>`). Severity is `critical | serious |
+warning`; status is `open -> acknowledged -> resolved` (`reopen` goes
+back to acknowledged). Subject columns (`subject_user_id`, `ticket_id`,
+`match_id`) are nullable FKs with `ON DELETE SET NULL` so an alert
+survives its subject. `risk_alert_events` is the append-only trail
+(`created`, `acknowledged`, `assigned`, `comment`, `resolved`,
+`reopened`); every operator action also writes `admin_audit_log`
+(`riskzilla.alert.*`). Indexes: partial unique `dedupe_key` over
+unresolved rows (the conflict target), `(severity, last_seen_at DESC)`
+partial over unresolved rows for the queue, `subject_user_id` partial
+for the bettor card. Advisory only — nothing in the placement path
+reads these tables.
 
 **`mapping_review_queue`** — auto-created entities (sports, tournaments,
 matches, market types) that didn't have a pre-existing mapping land here with

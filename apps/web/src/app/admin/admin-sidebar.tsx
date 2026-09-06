@@ -25,7 +25,7 @@ interface Item {
   // Key identifying a runtime badge count source. The sidebar polls
   // the matching count and renders a numeric pill on the link.
   // Currently "deposits-alerts" + "emails-unread" are wired.
-  badgeKey?: "deposits-alerts" | "emails-unread" | "support-unread";
+  badgeKey?: "deposits-alerts" | "emails-unread" | "support-unread" | "alerts-active";
 }
 
 interface Section {
@@ -68,6 +68,13 @@ const SECTIONS: Section[] = [
     label: "Risk & limits",
     items: [
       { href: "/admin/riskzilla", label: "RiskZilla", Icon: I.Live, matchPrefix: "/admin/riskzilla" },
+      {
+        href: "/admin/alerts",
+        label: "Alert center",
+        Icon: I.Bell,
+        matchPrefix: "/admin/alerts",
+        badgeKey: "alerts-active",
+      },
       { href: "/admin/margins", label: "Margins", Icon: I.Filter, matchPrefix: "/admin/margins" },
       { href: "/admin/cashout", label: "Cashout", Icon: I.Wallet, matchPrefix: "/admin/cashout" },
       { href: "/admin/bet-products", label: "Products", Icon: I.Ticket, matchPrefix: "/admin/bet-products" },
@@ -246,7 +253,7 @@ export function AdminSidebar() {
     let cancelled = false;
     async function refresh() {
       try {
-        const [deposits, emails, support] = await Promise.all([
+        const [deposits, emails, support, alerts] = await Promise.all([
           clientApi<{ total: number }>("/admin/deposits/alert-counts").catch(
             () => ({ total: 0 }),
           ),
@@ -256,6 +263,9 @@ export function AdminSidebar() {
           clientApi<{ unread: number; threads: number }>(
             "/admin/support/unread-count",
           ).catch(() => ({ unread: 0, threads: 0 })),
+          clientApi<{ active: number }>("/admin/riskzilla/alerts/summary").catch(
+            () => ({ active: 0 }),
+          ),
         ]);
         if (!cancelled) {
           setBadges((prev) => ({
@@ -266,6 +276,8 @@ export function AdminSidebar() {
             // more actionable than a message tally.
             "emails-unread": emails.threads,
             "support-unread": support.threads,
+            // Open + acknowledged alerts — what still needs a resolution.
+            "alerts-active": alerts.active,
           }));
         }
       } catch (e) {

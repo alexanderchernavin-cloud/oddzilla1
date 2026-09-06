@@ -10,6 +10,7 @@ import dashboardRoutes from "./dashboard.js";
 import liveDelayRoutes from "./live-delay.js";
 import botControlsRoutes from "./bot-controls.js";
 import behaviourRoutes from "./behaviour.js";
+import alertsRoutes from "./alerts.js";
 
 export default async function riskzillaRoutes(app: FastifyInstance) {
   await app.register(settingsRoutes);
@@ -20,4 +21,5 @@ export default async function riskzillaRoutes(app: FastifyInstance) {
   await app.register(liveDelayRoutes);
   await app.register(botControlsRoutes);
   await app.register(behaviourRoutes);
+  await app.register(alertsRoutes);
 }
