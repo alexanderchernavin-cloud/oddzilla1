@@ -265,7 +265,18 @@ export async function resolveTournamentLogos(
         ...(opts.sportId ? [eq(categories.sportId, opts.sportId)] : []),
       ),
     )
-    .orderBy(asc(tournaments.logoAttempts), asc(tournaments.id))
+    // Prominence first, not insertion order. Ordering by id meant the
+    // sweep worked through 599 esports tournaments (ids 1-6207) before
+    // reaching a single Fonbet league (ids 6208+) — about half a day of
+    // hourly sweeps before Serie A or the Bundesliga got a look. Risk
+    // tier is our own statement of how big a competition is and now
+    // exists for both halves of the catalogue, so it is the right key;
+    // untiered rows sort last rather than first.
+    .orderBy(
+      asc(tournaments.logoAttempts),
+      sql`${tournaments.riskTier} ASC NULLS LAST`,
+      asc(tournaments.id),
+    )
     .limit(opts.limit);
 
   result.eligible = rows.length;
