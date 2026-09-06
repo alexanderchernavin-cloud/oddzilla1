@@ -70,7 +70,7 @@ export function formatEventTitle(
 }
 
 /**
- * Lowest price that the 0.01 quote ladder can express.
+ * Lowest price the quote ladder can express.
  *
  * Below it the only two-decimal values are 1.00, which is unbettable, and
  * 1.01, which is longer than the model said — so prices under this floor
@@ -79,7 +79,39 @@ export function formatEventTitle(
 export const LADDER_FLOOR = 1.01;
 
 /**
- * Quote an authored price onto the 0.01 ladder.
+ * The quote ladder: how coarse a price gets as it lengthens.
+ *
+ * A fixed 0.01 step is right near evens and absurd in the tail — it
+ * quoted a longshot at **90.90**, a hundredth of precision on a price
+ * nobody reads to the hundredth and no book prints. The step has to grow
+ * with the number.
+ *
+ * Read as "up to `below`, step by `step`", first match wins. The bands
+ * keep every price an operator has already seen: two decimals all the way
+ * to 10 covers the ordinary book, and only the tail coarsens.
+ *
+ * Deliberately gentler than an exchange ladder, which would quantise 7.57
+ * to 7.4. Nothing was wrong with 7.57 — the complaint was about the tail,
+ * so that is what moved.
+ */
+const LADDER_BANDS: ReadonlyArray<{ below: number; step: number }> = [
+  { below: 10, step: 0.01 },
+  { below: 20, step: 0.1 },
+  { below: 50, step: 0.5 },
+  { below: 100, step: 1 },
+  { below: Infinity, step: 5 },
+];
+
+/** The ladder step that applies at a given price. */
+export function ladderStep(odds: number): number {
+  for (const band of LADDER_BANDS) {
+    if (odds < band.below) return band.step;
+  }
+  return LADDER_BANDS[LADDER_BANDS.length - 1]!.step;
+}
+
+/**
+ * Quote an authored price onto the ladder.
  *
  * Feed prices keep four decimals because Oddin genuinely quotes a
  * near-certain favorite at 1.003, and rounding that to 1.00 prints a
@@ -87,24 +119,38 @@ export const LADDER_FLOOR = 1.01;
  * derived from a probability an operator typed, so four decimals is
  * precision nobody entered and no book quotes: a market came out at
  * 4.7619 / 1.1904 on the storefront, which reads as a machine leaking its
- * arithmetic. Two decimals is the same shape `formatBoostedOdds` already
- * quotes ZillaFlash and ZillaBoost in.
+ * arithmetic.
+ *
+ * The step widens with the price — see `LADDER_BANDS`. A flat hundredth
+ * is right near evens and ridiculous in the tail, where it produced
+ * **90.90**.
  *
  * Floor, not round, so a price only ever moves toward the house — the
  * convention every other odds path here follows. The cost is that the
- * delivered book key sits a little above the requested overround, since
- * each price is shortened by up to a hundredth; that is margin taken, not
- * margin lost, and the backoffice shows the real key.
+ * delivered book key sits a little above the requested overround; that is
+ * margin taken, not margin lost, and the backoffice shows the real key.
+ * The cost is bounded in the direction that matters: a coarse step high
+ * up moves a tiny slice of the book (1/90 against 1/90.9 is four
+ * ten-thousandths of key), while the fine step sits exactly where the
+ * probability mass is.
  *
  * Under `LADDER_FLOOR` the ladder cannot represent the value at all, so
- * those keep four decimals. That is the same case `packages/types/src/odds.ts`
- * exists for, and it is reachable here: a 99.5% probability prices at
- * 1.005, which the ladder would either kill (1.00) or lengthen (1.01).
+ * those keep four decimals. That is the same case
+ * `packages/types/src/odds.ts` exists for, and it is reachable here: a
+ * 99.5% probability prices at 1.005, which the ladder would either kill
+ * (1.00) or lengthen (1.01).
  */
 export function quoteOnLadder(n: number): number {
   if (!Number.isFinite(n) || n <= 0) return 0;
   if (n < LADDER_FLOOR) return roundDown(n, ODDS_DP);
-  return roundDown(n, 2);
+  const step = ladderStep(n);
+  // Work in integer multiples of the step to keep binary floating point
+  // from landing a value a hair under its own rung — 7.57 / 0.01 is
+  // 756.9999999999999, which would floor to 7.56.
+  const rungs = Math.floor(n / step + 1e-9);
+  // Back onto the 4dp storage grid: 0.1 and 0.5 steps reintroduce the
+  // usual float dust (73 * 0.1 = 7.300000000000001).
+  return roundDown(rungs * step, ODDS_DP);
 }
 
 export interface CustomOutcomeInput {
