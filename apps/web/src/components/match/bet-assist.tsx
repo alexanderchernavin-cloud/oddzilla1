@@ -26,6 +26,11 @@ import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { I } from "@/components/ui/icons";
 import { useTranslations } from "@/lib/i18n";
+import { useDocumentTheme, type DocumentTheme } from "@/lib/use-theme";
+import {
+  SPORTRADAR_FRAME_BACKGROUND,
+  sportradarThemeHashParts,
+} from "@/components/widgets/sportradar-theme";
 
 const HOST = "https://widgets.sir.sportradar.com";
 
@@ -73,8 +78,15 @@ export function buildBetAssistStandaloneUrl({
   market,
   client = "betradar",
   language = "en",
-}: Pick<Props, "srMatchId" | "market" | "client" | "language">): string {
-  const hash = [`matchId=${srMatchId}`, `market=${market}`].join("&");
+  theme,
+}: Pick<Props, "srMatchId" | "market" | "client" | "language"> & {
+  theme?: DocumentTheme;
+}): string {
+  const hash = [
+    `matchId=${srMatchId}`,
+    `market=${market}`,
+    ...sportradarThemeHashParts(theme),
+  ].join("&");
   return `${HOST}/${encodeURIComponent(client)}/${encodeURIComponent(language)}/standalone/betAssist.standalone#${hash}`;
 }
 
@@ -170,6 +182,9 @@ function BetAssistOverlay({
   const t = useTranslations("matchWidgets");
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
+  // Dark mode rides the hash (sportradar-theme.ts); the `key` on the
+  // iframe remounts it if the theme flips while the panel is open.
+  const theme = useDocumentTheme();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -193,6 +208,7 @@ function BetAssistOverlay({
     market,
     client,
     language,
+    theme,
   });
 
   return createPortal(
@@ -284,6 +300,7 @@ function BetAssistOverlay({
             origins; per market shape because the widget draws a
             different set of blocks for each — see FRAME_HEIGHT_BY_MARKET. */}
         <iframe
+          key={theme}
           src={src}
           title={`${t("betAssist.title")} — ${marketLabel}`}
           style={{
@@ -292,7 +309,7 @@ function BetAssistOverlay({
             maxHeight: "100%",
             border: 0,
             display: "block",
-            background: "var(--surface-2)",
+            background: SPORTRADAR_FRAME_BACKGROUND,
           }}
         />
       </div>

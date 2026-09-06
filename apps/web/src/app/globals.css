@@ -51,6 +51,13 @@
   --border-strong: #cfc9b8;
   --hairline: #ebe7dc;
 
+  /* Backdrop of the Sportradar iframes. Their hosted page has a
+     transparent body, so this is what shows through wherever the widget
+     paints nothing: white here, the light widgets' own body colour; in
+     dark the transparent Sportradar theme paints no base at all and this
+     IS the widget's surface. See components/widgets/sportradar-theme.ts. */
+  --sportradar-frame-bg: #ffffff;
+
   --fg: #0d0d0c;
   --fg-muted: #6a6b6a;
   --fg-dim: #9a9a96;
@@ -78,6 +85,7 @@
   --border: #26262a;
   --border-strong: #3a3a40;
   --hairline: #1f1f22;
+  --sportradar-frame-bg: var(--surface-2);
 
   --fg: #f2f1ec;
   --fg-muted: #9a9a98;

@@ -8,7 +8,9 @@
 // public `betradar` client's list yet, so we frame Sportradar's own hosted
 // standalone page, which runs on a licensed origin and ships without
 // `frame-ancestors`. Props ride in the URL hash and the page re-reads them
-// on `hashchange`.
+// on `hashchange`. The storefront theme rides the hash too (`wl-theme`,
+// see sportradar-theme.ts) — that one the loader reads once, at boot, so
+// a theme toggle remounts the frame rather than changing the hash.
 //
 // `layout=inline` renders the panel in the page flow. The widget's other
 // layout, `overlay`, expects a host button to pop it open — that is the
@@ -29,6 +31,11 @@
 // costs a scrollbar on the tabs a bettor opens on purpose.
 
 import { useTranslations } from "@/lib/i18n";
+import { useDocumentTheme, type DocumentTheme } from "@/lib/use-theme";
+import {
+  SPORTRADAR_FRAME_BACKGROUND,
+  sportradarThemeHashParts,
+} from "./sportradar-theme";
 
 const HOST = "https://widgets.sir.sportradar.com";
 
@@ -47,18 +54,21 @@ export function buildHeadToHeadStandaloneUrl({
   srSportId,
   client = "betradar",
   language = "en",
-}: Omit<Props, "height">): string {
+  theme,
+}: Omit<Props, "height"> & { theme?: DocumentTheme }): string {
   const hash = [
     `matchId=${srMatchId}`,
     `sportId=${srSportId}`,
     "layout=inline",
+    ...sportradarThemeHashParts(theme),
   ].join("&");
   return `${HOST}/${encodeURIComponent(client)}/${encodeURIComponent(language)}/standalone/headToHead.standalone#${hash}`;
 }
 
 export function SportradarHeadToHead({ height = 280, ...rest }: Props) {
   const t = useTranslations("matchWidgets");
-  const src = buildHeadToHeadStandaloneUrl(rest);
+  const theme = useDocumentTheme();
+  const src = buildHeadToHeadStandaloneUrl({ ...rest, theme });
 
   return (
     <section
@@ -86,6 +96,7 @@ export function SportradarHeadToHead({ height = 280, ...rest }: Props) {
         </span>
       </div>
       <iframe
+        key={theme}
         src={src}
         title={t("h2h.title")}
         loading="lazy"
@@ -94,7 +105,7 @@ export function SportradarHeadToHead({ height = 280, ...rest }: Props) {
           height,
           border: "1px solid var(--border)",
           borderRadius: 10,
-          background: "var(--surface-2)",
+          background: SPORTRADAR_FRAME_BACKGROUND,
           display: "block",
         }}
       />
