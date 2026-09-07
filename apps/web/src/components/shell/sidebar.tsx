@@ -1136,7 +1136,6 @@ function CategoryGroup({
         }
         logoUrl={group.logoUrl}
         liveCount={group.liveCount}
-        tournamentCount={group.tournaments.length}
         hiddenFromLists={group.hiddenFromLists}
         active={isActiveCategory}
         expanded={expanded}
@@ -1425,7 +1424,6 @@ function CategoryHeader({
   href,
   logoUrl,
   liveCount,
-  tournamentCount,
   hiddenFromLists,
   active,
   expanded,
@@ -1436,7 +1434,6 @@ function CategoryHeader({
   href: string | null;
   logoUrl: string | null;
   liveCount: number;
-  tournamentCount: number;
   hiddenFromLists: boolean;
   active: boolean;
   expanded: boolean;
@@ -1445,6 +1442,12 @@ function CategoryHeader({
   const tShell = useTranslations("shell");
   const [hover, setHover] = useState(false);
 
+  // Live only. The grey number that used to stand here when nothing was
+  // live was the bucket's TOURNAMENT count — a fact about how the offer
+  // is filed, not about the offer — so it told a bettor nothing while
+  // taking the same slot, and the same weight, as the live badge. A
+  // bucket with nothing live now shows nothing, which makes the red
+  // ones read as the exception they are.
   const count =
     liveCount > 0 ? (
       <span
@@ -1463,19 +1466,7 @@ function CategoryHeader({
         <LiveDot size={5} />
         {liveCount}
       </span>
-    ) : (
-      <span
-        className="mono tnum"
-        style={{
-          fontSize: 10,
-          color: "var(--fg-dim)",
-          fontWeight: 500,
-          flexShrink: 0,
-        }}
-      >
-        {tournamentCount}
-      </span>
-    );
+    ) : null;
 
   const inner = (
     <>
