@@ -418,6 +418,15 @@ function lineFamilyKey(
   return null;
 }
 
+/**
+ * Temporary operator switch. `ZILLAFACTS_DISABLED=1` makes the endpoint
+ * answer an empty fact list. Read per request — see the twin in
+ * services/api/src/modules/zillatips/routes.ts.
+ */
+function zillafactsDisabled(): boolean {
+  return process.env.ZILLAFACTS_DISABLED === "1";
+}
+
 export default async function zillafactsRoutes(app: FastifyInstance) {
   app.get(
     "/catalog/matches/:matchId/zillafacts",
@@ -429,6 +438,15 @@ export default async function zillafactsRoutes(app: FastifyInstance) {
     const { matchId } = z
       .object({ matchId: z.coerce.bigint() })
       .parse(request.params);
+
+    // Operator kill switch (2026-09-07, temporary). Same shape and same
+    // reasoning as the ZillaTips one: answer what the storefront already
+    // reads as "nothing to show", and answer it BEFORE the cache read so
+    // the historical scan stops running while the feature is off.
+    if (zillafactsDisabled()) {
+      return { matchId: matchId.toString(), facts: [] } satisfies ZillaFactsResponse;
+    }
+
     // v12: broad-scope historical lookup now KEEPS `threshold` in
     // the specifier comparison (previously dropped it, which let
     // "stayed Over 22.5 in their last N maps played" cards count

@@ -105,6 +105,20 @@ const LOOKBACK_DAYS = 365;
 
 const CACHE_TTL_SECONDS = 300;
 
+/**
+ * Temporary operator switch. `ZILLATIPS_DISABLED=1` makes the endpoint
+ * answer an empty tip list.
+ *
+ * Read per request rather than memoised at boot so flipping it is a
+ * container recreate and not a code change, and so the value cannot go
+ * stale in a long-lived process. The read is a property lookup on an
+ * object Node already holds — it costs nothing next to the query it
+ * replaces.
+ */
+function zillatipsDisabled(): boolean {
+  return process.env.ZILLATIPS_DISABLED === "1";
+}
+
 export default async function zillatipsRoutes(app: FastifyInstance) {
   app.get(
     "/catalog/matches/:matchId/zillatips",
@@ -116,6 +130,16 @@ export default async function zillatipsRoutes(app: FastifyInstance) {
     const { matchId } = z
       .object({ matchId: z.coerce.bigint() })
       .parse(request.params);
+
+    // Operator kill switch (2026-09-07, temporary). Answers the shape the
+    // storefront already treats as "nothing to show", so the widget hides
+    // itself and no client needs to know the feature is off. Placed BEFORE
+    // the cache read so the per-match CTE never runs while it is set —
+    // turning the feature off should stop the work, not just the render.
+    // Unset it and the feature returns with no deploy of its own.
+    if (zillatipsDisabled()) {
+      return { matchId: matchId.toString(), tips: [] } satisfies ZillaTipsResponse;
+    }
 
     // v5: "{side}"-specifier markets (Team home/away total goals,
     // home/away wins at least one map, …) are now correctly handled.

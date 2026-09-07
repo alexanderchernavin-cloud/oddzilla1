@@ -66,14 +66,29 @@ type PublishedRow struct {
 	SourceTs      int64  // ms
 }
 
+// OutcomeKey identifies one priced cell.
+type OutcomeKey struct {
+	MarketID  int64
+	OutcomeID string
+}
+
 // UpdateOutcomesPublishedBulk writes many rows at once: published_odds is written, probability only when supplied, the
 // timestamp moves forward only, and unchanged rows are a 0-row write.
 //
+// Returns the set of outcomes the statement ACTUALLY changed. The WHERE
+// clause already skipped rows whose price and probability were identical,
+// so RETURNING hands back that answer for free — one extra column on a
+// statement we were running anyway, no second query. The caller uses it to
+// decide what is worth an odds_history row.
+//
 // Callers must pass at most one row per (market_id, outcome_id): with
 // duplicates `UPDATE ... FROM` applies an arbitrary one of them.
-func (s *Store) UpdateOutcomesPublishedBulk(ctx context.Context, rows []PublishedRow) error {
+func (s *Store) UpdateOutcomesPublishedBulk(
+	ctx context.Context,
+	rows []PublishedRow,
+) (map[OutcomeKey]struct{}, error) {
 	if len(rows) == 0 {
-		return nil
+		return nil, nil
 	}
 	marketIDs := make([]int64, len(rows))
 	outcomeIDs := make([]string, len(rows))
@@ -100,16 +115,31 @@ UPDATE market_outcomes mo
  WHERE mo.market_id = t.mid
    AND mo.outcome_id = t.oid
    AND (mo.published_odds IS DISTINCT FROM t.pub::numeric
-        OR (t.prob IS NOT NULL AND mo.probability IS DISTINCT FROM t.prob::numeric))`
-	if _, err := s.pool.Exec(ctx, q, marketIDs, outcomeIDs, published, probs, ts); err != nil {
-		return fmt.Errorf("update published_odds bulk: %w", err)
+        OR (t.prob IS NOT NULL AND mo.probability IS DISTINCT FROM t.prob::numeric))
+RETURNING mo.market_id, mo.outcome_id`
+	rowsRes, err := s.pool.Query(ctx, q, marketIDs, outcomeIDs, published, probs, ts)
+	if err != nil {
+		return nil, fmt.Errorf("update published_odds bulk: %w", err)
 	}
-	return nil
+	defer rowsRes.Close()
+	changed := make(map[OutcomeKey]struct{}, len(rows))
+	for rowsRes.Next() {
+		var k OutcomeKey
+		if err := rowsRes.Scan(&k.MarketID, &k.OutcomeID); err != nil {
+			return nil, fmt.Errorf("scan changed outcome: %w", err)
+		}
+		changed[k] = struct{}{}
+	}
+	if err := rowsRes.Err(); err != nil {
+		return nil, fmt.Errorf("update published_odds bulk: %w", err)
+	}
+	return changed, nil
 }
 
-// AppendOddsHistoryPublishedBulk inserts every tick of a batch in one
-// statement (append-only, duplicates tolerated — same as the single-row
-// path).
+// AppendOddsHistoryPublishedBulk inserts the ticks of a batch in one
+// statement (append-only). The caller filters the batch down to outcomes
+// that actually moved — see the note at the call site in publisher.go;
+// this function itself asserts nothing about repeats.
 func (s *Store) AppendOddsHistoryPublishedBulk(ctx context.Context, rows []PublishedRow) error {
 	if len(rows) == 0 {
 		return nil

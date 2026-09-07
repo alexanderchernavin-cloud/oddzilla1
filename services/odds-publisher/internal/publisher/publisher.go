@@ -199,15 +199,55 @@ func (p *Publisher) Handle(ctx context.Context, events []bus.Event) error {
 	// per event; keep that contract). Rows that still fail are dropped
 	// like a failed single tick used to be — downstream catches up on the
 	// next price move.
-	if err := p.store.UpdateOutcomesPublishedBulk(ctx, rows); err != nil {
+	changed, err := p.store.UpdateOutcomesPublishedBulk(ctx, rows)
+	if err != nil {
 		p.log.Warn().Err(err).Int("rows", len(rows)).Msg("batch publish write failed; retrying per row")
+		changed = make(map[store.OutcomeKey]struct{}, len(rows))
 		for _, r := range rows {
-			if rerr := p.store.UpdateOutcomesPublishedBulk(ctx, []store.PublishedRow{r}); rerr != nil {
+			one, rerr := p.store.UpdateOutcomesPublishedBulk(ctx, []store.PublishedRow{r})
+			if rerr != nil {
 				p.errors.Add(1)
 				p.log.Warn().Err(rerr).Int64("market", r.MarketID).Str("outcome", r.OutcomeID).Msg("publish write failed; tick dropped")
+				continue
+			}
+			for k := range one {
+				changed[k] = struct{}{}
 			}
 		}
 	}
+
+	// Only outcomes whose price or probability actually moved earn a
+	// history row. The feed re-states prices it has already sent — a
+	// state-based source like Bifrost re-emits every tracked match on a
+	// timer, and a snapshot repeats every outcome of the match whether or
+	// not it moved — and each repeat used to append a row identical to the
+	// one before it. Measured on production 2026-09-07: 11.4% of Oddin
+	// rows and 4.1% of Fonbet's were exact repeats of the previous value
+	// for the same outcome.
+	//
+	// The UPDATE above already refuses to write those rows, so this only
+	// stops history disagreeing with the table it describes. Nothing reads
+	// odds_history except the /admin/logs charts (money paths never touch
+	// it — docs/OPERATIONS.md), so a sparser series costs an audit view
+	// nothing; a market that did not move in the window now renders no
+	// points rather than a flat line of identical ones.
+	//
+	// Bounded fidelity note: `rows` carries the LAST tick per outcome in
+	// the batch, so an outcome that moved and came back to its starting
+	// value inside one batch reports unchanged and loses both rows. Batches
+	// are sub-second, so this is a theoretical excursion, not a visible one.
+	if len(changed) > 0 {
+		kept := make([]store.PublishedRow, 0, len(history))
+		for _, h := range history {
+			if _, ok := changed[store.OutcomeKey{MarketID: h.MarketID, OutcomeID: h.OutcomeID}]; ok {
+				kept = append(kept, h)
+			}
+		}
+		history = kept
+	} else {
+		history = nil
+	}
+
 	if err := p.store.AppendOddsHistoryPublishedBulk(ctx, history); err != nil {
 		// Not fatal — history is for audit, not correctness.
 		p.log.Debug().Err(err).Msg("history insert failed")
