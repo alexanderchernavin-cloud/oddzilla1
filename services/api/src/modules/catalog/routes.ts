@@ -75,6 +75,7 @@ import {
   substituteTemplate,
   renderOutcomeLabel,
   deriveMarketScope,
+  outcomeDescKey,
   outcomeSortWeight,
   type OutcomeProfiles,
 } from "../../lib/market-naming.js";
@@ -153,6 +154,33 @@ type LineSpec = (typeof LINE_SPECIFIERS)[number];
 // the only Fonbet markets whose outcome ids are the canonical "1" / "2" /
 // "3" — every other Fonbet outcome id is a numeric factor id >= 100.
 const FONBET_PMID_BASE = 1_000_000;
+
+/**
+ * Fonbet's two "Head to head" tables (399 and 25020), as
+ * provider_market_ids. A head-to-head fixture — a cycling stage duel, an
+ * athletics match-up — has this as its ONE market, and it IS the winner
+ * of that fixture, but its outcome ids are raw factor ids rather than the
+ * canonical "1" / "2": the mapper only rewrites them on tables Fonbet
+ * flags `isMain` whose column captions are literally "1" / "2", and this
+ * one is neither (its captions are the team placeholders "%1" / "%2").
+ * That is a deliberate constraint on the ingester side — outcome ids are
+ * market identity, so widening it there would re-key live markets and
+ * strand any open ticket on them (see twoWayWinner in
+ * services/fonbet-ingester/internal/settle/rules.go, which reads the
+ * shape for the same reason) — so the pairing is widened HERE instead,
+ * where nothing is persisted.
+ *
+ * An allowlist rather than a shape rule, because the shape does not
+ * separate the winner from the sideshow: "To win the toss" (496) and
+ * "Who will start the penalty shootout" (920) are also two-way "%1" /
+ * "%2" tables, and quoting a toss price under a "Match winner" header is
+ * worse than quoting nothing. Measured on production 2026-09-07: 399 is
+ * the only one of the family currently in the offer, on 14 cycling
+ * matches, each with exactly this one market; 25020 is carried because
+ * it is the same market under another number and would otherwise be a
+ * repeat of this bug.
+ */
+const FONBET_HEAD_TO_HEAD_PMIDS = [FONBET_PMID_BASE + 399, FONBET_PMID_BASE + 25_020];
 
 // lineInfo returns the line-specifier present on the market (if any)
 // plus a grouping key that collapses markets that differ only in their
@@ -509,8 +537,21 @@ function matchListOrder(): SQL[] {
 // discoverable. Pairing is scoped to a single market row so home / away
 // / draw prices always come from the same market — a 2-way home price
 // next to a 3-way away price would mismatch overround.
+//
+// One family of markets is paired WITHOUT those ids, as a fallback for
+// matches that have no canonical pair at all: Fonbet's head-to-head
+// tables, whose sides are read from the feed's own outcome templates.
+// See FONBET_HEAD_TO_HEAD_PMIDS and loadHeadToHeadSides.
 interface MatchWinnerPair {
   homeMarketId: string;
+  /**
+   * The chosen market's provider_market_id. Carried because it is no
+   * longer 1 by construction — a Fonbet match winner is
+   * FONBET_PMID_BASE + its table, and a head-to-head fixture is priced
+   * off FONBET_HEAD_TO_HEAD_PMIDS — and ZillaBoost's `team_only`
+   * resolution keys off it.
+   */
+  providerMarketId: number;
   homeOutcomeId: string;
   homePrice: string | null;
   homeProbability: string | null;
@@ -559,11 +600,18 @@ function quoteMatchWinnerBoost(
 ): MatchWinnerBoostQuote | null {
   if (boosts.empty) return null;
   const marketId = BigInt(pair.homeMarketId);
-  // provider_market_id 1 by construction — loadMatchWinnerOdds only
-  // selects the match-winner market. Passing it lets a team_only
-  // competitor rule resolve to this team's own outcome.
+  // The market's REAL provider_market_id, which is what a team_only
+  // competitor rule resolves against (isTeamShapedMarket: Oddin 1 and 4,
+  // where outcome "1" IS the home competitor). This used to pass a
+  // hard-coded 1 on the premise that loadMatchWinnerOdds only ever
+  // selected that market — untrue since the Fonbet line landed, and the
+  // premise fails outright on a head-to-head market, which carries
+  // neither a "1" nor a "2" outcome for such a rule to land on. The real
+  // id is also what placement checks (validateCustomBoostForBet), so a
+  // card can no longer quote a team_only boost the ticket would be
+  // priced without.
   const { marketWide: marketWideRule, selections: selectionRules } =
-    boosts.resolve(ctx, marketId, 1);
+    boosts.resolve(ctx, marketId, pair.providerMarketId);
   const hasSelections = !!selectionRules && selectionRules.size > 0;
   if (!marketWideRule && !hasSelections) return null;
 
@@ -614,6 +662,7 @@ async function loadMatchWinnerOdds(
     .select({
       matchId: markets.matchId,
       marketId: markets.id,
+      providerMarketId: markets.providerMarketId,
       outcomeId: marketOutcomes.outcomeId,
       publishedOdds: marketOutcomes.publishedOdds,
       probability: marketOutcomes.probability,
@@ -643,6 +692,17 @@ async function loadMatchWinnerOdds(
             gte(markets.providerMarketId, FONBET_PMID_BASE),
             inArray(marketOutcomes.outcomeId, ["1", "2", "3"]),
           ),
+          // Fonbet head-to-head, whose outcomes are factor ids rather
+          // than "1" / "2" — see FONBET_HEAD_TO_HEAD_PMIDS. Main event
+          // only ('{}' = no variant, no side, no line), mirroring the
+          // ingester's own rule that a sub-event copy of a winner table
+          // must never be the price on a card; and used below only when
+          // the match has no canonical pair, so it can never displace
+          // one.
+          and(
+            inArray(markets.providerMarketId, FONBET_HEAD_TO_HEAD_PMIDS),
+            sql`${markets.specifiersJson} = '{}'::jsonb`,
+          ),
         ),
       ),
     );
@@ -657,49 +717,140 @@ async function loadMatchWinnerOdds(
     arr.push(r);
     byMatch.set(key, arr);
   }
+  type WinnerRow = (typeof rows)[number];
+  const buildPair = (
+    market: WinnerRow[],
+    home: WinnerRow,
+    away: WinnerRow,
+    draw: WinnerRow | undefined,
+  ): MatchWinnerPair => ({
+    homeMarketId: home.marketId.toString(),
+    providerMarketId: home.providerMarketId,
+    homeOutcomeId: home.outcomeId,
+    homePrice: home.active ? home.publishedOdds : null,
+    // Probability is metadata — keep it independent of `active`.
+    // The bet slip uses it for tiple/tippot preview; a suspended
+    // price shouldn't blank the pricing context.
+    homeProbability: home.probability ?? null,
+    awayMarketId: away.marketId.toString(),
+    awayOutcomeId: away.outcomeId,
+    awayPrice: away.active ? away.publishedOdds : null,
+    awayProbability: away.probability ?? null,
+    drawOutcomeId: draw ? draw.outcomeId : null,
+    drawPrice: draw ? (draw.active ? draw.publishedOdds : null) : null,
+    drawProbability: draw?.probability ?? null,
+    // >= 1 in parity with the client compute and placement: a favorite
+    // at exactly 1.00 stays in the set so a live near-decided market
+    // doesn't lose its boost on every tick.
+    boostOutcomes: market
+      .filter((o) => o.active && o.publishedOdds !== null)
+      .map((o) => ({
+        outcomeId: o.outcomeId,
+        publishedOdds: Number(o.publishedOdds),
+      }))
+      .filter((o) => Number.isFinite(o.publishedOdds) && o.publishedOdds >= 1),
+  });
+
+  // Head-to-head markets, held back until every canonical pairing has had
+  // its chance: which of their two outcomes is the home competitor needs
+  // a second read, and this map is empty on every page without a
+  // head-to-head fixture in its window — so the hot path pays nothing.
+  const pendingHeadToHead = new Map<string, WinnerRow[]>();
+
   for (const [key, outs] of byMatch) {
-    const byMarket = new Map<string, typeof rows>();
+    const byMarket = new Map<string, WinnerRow[]>();
     for (const r of outs) {
       const mk = r.marketId.toString();
       const arr = byMarket.get(mk) ?? [];
       arr.push(r);
       byMarket.set(mk, arr);
     }
-    let best: typeof rows | null = null;
+    let best: WinnerRow[] | null = null;
+    let headToHead: WinnerRow[] | null = null;
     for (const arr of byMarket.values()) {
+      if (FONBET_HEAD_TO_HEAD_PMIDS.includes(arr[0]!.providerMarketId)) {
+        // Exactly two sides is the shape this fallback reads. Anything
+        // else is a table we have not looked at and must not guess about.
+        if (!headToHead && arr.length === 2) headToHead = arr;
+        continue;
+      }
       if (!best || arr.length > best.length) best = arr;
     }
-    if (!best) continue;
-    const home = best.find((o) => o.outcomeId === "1");
-    const away = best.find((o) => o.outcomeId === "2");
-    const draw = best.find((o) => o.outcomeId === "3");
-    if (!home || !away) continue;
-    out.set(key, {
-      homeMarketId: home.marketId.toString(),
-      homeOutcomeId: home.outcomeId,
-      homePrice: home.active ? home.publishedOdds : null,
-      // Probability is metadata — keep it independent of `active`.
-      // The bet slip uses it for tiple/tippot preview; a suspended
-      // price shouldn't blank the pricing context.
-      homeProbability: home.probability ?? null,
-      awayMarketId: away.marketId.toString(),
-      awayOutcomeId: away.outcomeId,
-      awayPrice: away.active ? away.publishedOdds : null,
-      awayProbability: away.probability ?? null,
-      drawOutcomeId: draw ? draw.outcomeId : null,
-      drawPrice: draw ? (draw.active ? draw.publishedOdds : null) : null,
-      drawProbability: draw?.probability ?? null,
-      // >= 1 in parity with the client compute and placement: a favorite
-      // at exactly 1.00 stays in the set so a live near-decided market
-      // doesn't lose its boost on every tick.
-      boostOutcomes: best
-        .filter((o) => o.active && o.publishedOdds !== null)
-        .map((o) => ({
-          outcomeId: o.outcomeId,
-          publishedOdds: Number(o.publishedOdds),
-        }))
-        .filter((o) => Number.isFinite(o.publishedOdds) && o.publishedOdds >= 1),
-    });
+    const home = best?.find((o) => o.outcomeId === "1");
+    const away = best?.find((o) => o.outcomeId === "2");
+    if (best && home && away) {
+      out.set(
+        key,
+        buildPair(best, home, away, best.find((o) => o.outcomeId === "3")),
+      );
+      continue;
+    }
+    if (headToHead) pendingHeadToHead.set(key, headToHead);
+  }
+
+  if (pendingHeadToHead.size > 0) {
+    const sides = await loadHeadToHeadSides(
+      db,
+      uniq(
+        [...pendingHeadToHead.values()].flatMap((outs) =>
+          outs.map((o) => o.providerMarketId),
+        ),
+      ),
+    );
+    for (const [key, outs] of pendingHeadToHead) {
+      const side = (o: WinnerRow) =>
+        sides.get(outcomeDescKey(o.providerMarketId, "", o.outcomeId));
+      const home = outs.find((o) => side(o) === "home");
+      const away = outs.find((o) => side(o) === "away");
+      // No side resolved is a table shaped differently from what the two
+      // we allow look like today. Skip rather than pick: an inverted card
+      // quotes each rider at the other's price.
+      if (!home || !away) continue;
+      out.set(key, buildPair(outs, home, away, undefined));
+    }
+  }
+  return out;
+}
+
+/**
+ * Which side of the fixture each outcome of a head-to-head market is,
+ * read from the feed's own outcome templates: the ingester renders a
+ * "%1" / "%2" team-placeholder caption as the bare word `home` / `away`
+ * (services/fonbet-ingester/internal/mapper/descriptions.go), which is
+ * this codebase's existing statement that an outcome IS a competitor —
+ * the same rows renderOutcomeLabel turns into the rider's name on the
+ * match page. Language-independent by construction, so 'en' answers for
+ * every locale.
+ *
+ * Keyed by outcomeDescKey(providerMarketId, "", outcomeId). Outcomes
+ * whose template is anything else are simply absent from the map.
+ */
+async function loadHeadToHeadSides(
+  db: FastifyInstance["db"],
+  providerMarketIds: number[],
+): Promise<Map<string, "home" | "away">> {
+  const out = new Map<string, "home" | "away">();
+  if (providerMarketIds.length === 0) return out;
+  const rows = await db
+    .select({
+      providerMarketId: outcomeDescriptions.providerMarketId,
+      outcomeId: outcomeDescriptions.outcomeId,
+      nameTemplate: outcomeDescriptions.nameTemplate,
+    })
+    .from(outcomeDescriptions)
+    .where(
+      and(
+        inArray(outcomeDescriptions.providerMarketId, providerMarketIds),
+        eq(outcomeDescriptions.variant, ""),
+        eq(outcomeDescriptions.language, "en"),
+        inArray(outcomeDescriptions.nameTemplate, ["home", "away"]),
+      ),
+    );
+  for (const r of rows) {
+    out.set(
+      outcomeDescKey(r.providerMarketId, "", r.outcomeId),
+      r.nameTemplate === "home" ? "home" : "away",
+    );
   }
   return out;
 }
