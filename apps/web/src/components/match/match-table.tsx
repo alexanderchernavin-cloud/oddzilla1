@@ -269,7 +269,7 @@ interface LadderLabels {
 /** Caption for one cell position, with the width class it must match. */
 interface Caption {
   text: string;
-  variant?: "wide" | "line";
+  variant?: "wide" | "line" | "step";
 }
 
 function ProGroup({
@@ -311,6 +311,12 @@ function ProGroup({
     if (kind === "handicap") {
       return [
         { text: tw("listMarkets.handicapHome"), variant: "wide" },
+        // The ladder stepper sits between the two sides in every row, so
+        // the header has to hold its slot or the group is narrower here
+        // than below and every column to the LEFT of it — the 1 / X / 2
+        // captions included — stops lining up with its own cells. A
+        // spacer, not a label: the control names nothing.
+        { text: "", variant: "step" },
         { text: tw("listMarkets.handicapAway"), variant: "wide" },
       ];
     }
