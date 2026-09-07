@@ -52,11 +52,17 @@ export interface ListMatchEnriched extends ListMatch {
 export function MatchListTabs({
   matches,
   groups,
+  emptyMessage,
 }: {
   matches: ListMatchEnriched[];
   // Optional grouping — render headers between sections (e.g. Live /
   // Upcoming). When omitted we render a single flat list.
   groups?: Array<{ key: string; label: ReactNode; matches: ListMatchEnriched[] }>;
+  // Rendered when every row the server sent has since gone terminal
+  // under an open page. The page's own empty copy can't reach that case
+  // — it's derived from the SSR list — so the caller passes its already
+  // translated string down. See `emptiedByEnding` below.
+  emptyMessage?: ReactNode;
 }) {
   // Subscribe once for every match visible in this list. The shared
   // socket in use-live-odds coalesces all subscriptions, so this is one
@@ -120,6 +126,37 @@ export function MatchListTabs({
     return map;
   }, [merged, matches]);
 
+  // Ids of matches that went TERMINAL while this list was mounted.
+  //
+  // A list page is a one-shot SSR snapshot — nothing re-fetches it (no
+  // revalidate, no poll, no router.refresh) — and the groups are fixed
+  // arrays the server computed. So without this, a tab left open on the
+  // lobby slowly fills its "Live" section with finished games: the
+  // matchStatus frame does arrive and mergeMatchWithLive flips
+  // `match.status`, which drops the LIVE dot and the scoreboard
+  // highlight, but the row itself stayed exactly where the server put
+  // it, under a header that says Live.
+  //
+  // Terminal ONLY — deliberately not `suspended`. Every AMQP reconnect
+  // runs FlushAndSuspendActiveCatalog, which moves every live match to
+  // `suspended` for the seconds until Oddin's replay re-activates it
+  // (invariant: suspend-before-recover). Dropping those rows would
+  // blank the whole visible list on a routine feed blip, and since
+  // nothing re-adds a row, it would stay blank until a reload — far
+  // worse than a row that is marked non-live and priced at an em dash.
+  //
+  // The catalog never serves a terminal match either (`bookableWindow`
+  // gates on status IN ('not_started','live')), so a match in here can
+  // only have closed under an open page.
+  const endedIds = useMemo(() => {
+    if (merged === matches) return null;
+    const ids = new Set<string>();
+    for (const m of merged) {
+      if (m.status === "closed" || m.status === "cancelled") ids.add(m.id);
+    }
+    return ids.size > 0 ? ids : null;
+  }, [merged, matches]);
+
   // Per-bettor column preference. Reading runs in an effect (and
   // re-runs when the signed-in user changes) so a login / logout
   // mid-session swaps the preference to the appropriate bettor's
@@ -160,13 +197,36 @@ export function MatchListTabs({
     );
   }
 
+  // Filter by id, not by object identity: /live passes the same rows to
+  // `matches` and to its single group through two separate
+  // `.map(enrich)` calls, so the two arrays hold different objects for
+  // the same match (which is also why renderRow looks the merged row up
+  // by id rather than reading it off `m`).
+  function shownOf(list: ListMatchEnriched[]): ListMatchEnriched[] {
+    return endedIds ? list.filter((m) => !endedIds.has(m.id)) : list;
+  }
+
   function renderCards(list: ListMatchEnriched[]) {
     return (
       <div className="oz-match-list-grid" data-cols={cols}>
-        {list.map(renderRow)}
+        {shownOf(list).map(renderRow)}
       </div>
     );
   }
+
+  // Every row on the page ended under an open tab. Each page's own
+  // "no matches" copy is computed server-side from the SSR list, so it
+  // can't cover this — without `emptyMessage` the page would render its
+  // section header over a void. Reachable on a narrow list well before
+  // the lobby: one live tennis match on `/live?sport=tennis` finishing
+  // is enough. `endedIds` is non-null only when a row actually went
+  // terminal here, so this can never double up with the server's copy
+  // (that one fires on an empty SSR list, where endedIds stays null).
+  const emptiedByEnding =
+    endedIds != null &&
+    (groups
+      ? groups.every((g) => shownOf(g.matches).length === 0)
+      : shownOf(merged).length === 0);
 
   // First non-null section label hosts the cols toggle in the same row
   // — keeps the wide-viewport cols-toggle from claiming its own line
@@ -201,6 +261,11 @@ export function MatchListTabs({
         <ColsToggle cols={cols} onChange={changeCols} />
       )}
       {body}
+      {emptiedByEnding && emptyMessage != null ? (
+        <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
+          {emptyMessage}
+        </p>
+      ) : null}
     </div>
   );
 }

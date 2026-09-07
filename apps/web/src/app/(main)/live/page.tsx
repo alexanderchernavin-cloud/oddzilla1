@@ -147,6 +147,10 @@ export default async function LivePage({ searchParams }: PageProps) {
         // right via `.oz-match-list-section-head` (justify: space-between).
         <MatchListTabs
           matches={visible.map(enrich)}
+          // Covers the case the branch above can't: every match on this
+          // list finishing while the tab is open. Reachable on a narrow
+          // sport filter — one live tennis match ending is enough.
+          emptyMessage={tSport("noMatches")}
           groups={[
             {
               key: "live",

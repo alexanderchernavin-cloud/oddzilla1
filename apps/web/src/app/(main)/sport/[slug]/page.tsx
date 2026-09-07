@@ -227,6 +227,9 @@ export default async function SportPage({
           strip heads the prematch group instead, as on the lobby. */}
       <MatchListTabs
         matches={enriched}
+        // Mirrors the server-side fallback below for the case it can't
+        // reach: every row on the page going terminal under an open tab.
+        emptyMessage={t("noMatches")}
         groups={[
           ...(featured.length > 0
             ? [

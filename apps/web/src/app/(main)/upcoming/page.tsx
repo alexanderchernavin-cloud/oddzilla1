@@ -143,6 +143,9 @@ export default async function UpcomingPage({ searchParams }: PageProps) {
         // shares a line with the cols toggle (same pattern /live uses).
         <MatchListTabs
           matches={visible.map(enrich)}
+          // See /live — same case: every row here going terminal under
+          // an open tab, which the SSR-derived branch above can't see.
+          emptyMessage={tSport("noMatches")}
           groups={[
             {
               key: "upcoming",
