@@ -1108,7 +1108,12 @@ single-line, ~44px stacked on mobile).
   including the two real Getafe vs Celta ladders. The scale
   normalisation came out of a failing test: a raw probability gap
   favours the LONGER pair, so a rung deep in the tail could have won the
-  column by being far out rather than level.
+  column by being far out rather than level. **Operator decision
+  (2026-09-07): the balanced rung is the product's line, preferred over
+  Fonbet's own `isMain` flag** — persisting that flag for fon.bet parity
+  was offered and refused ("our logic is better than Fonbet"). Measured
+  on production: Cagliari vs Lecce total `2` (1.65/2.17) where fon.bet
+  shows `2.5`; intended.
 - `loadLadderMarketsForMatches` + `serializeLadders` in the catalog
   routes — one query, the only one this feature adds to a list
   response. The loader picks the rung on raw odds; the serializer prices
