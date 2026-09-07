@@ -243,11 +243,27 @@ func TestDescriptions(t *testing.T) {
 	if mw.Name != "Исходы" || mw.Outcomes["1"] != "home" || mw.Outcomes["2"] != "away" || mw.Outcomes["3"] != "Ничья" {
 		t.Fatalf("match-winner description: %+v", mw)
 	}
+	// The factor ids are how a SUB-EVENT market addresses the same cells
+	// (a main-event market carries the canonical 1/2/3 above), so they
+	// have to resolve to the same side word or "1st half: Match result"
+	// reads "1 / X / 2" where the match tab reads the team names.
+	if mw.Outcomes["921"] != "home" || mw.Outcomes["923"] != "away" || mw.Outcomes["922"] != "Ничья" {
+		t.Fatalf("match-winner factor ids: %+v", mw.Outcomes)
+	}
+	// Double-chance cells keep their caption: "1X" is what they mean and
+	// no single team names them.
+	if mw.Outcomes["924"] != "1X" || mw.Outcomes["925"] != "X2" || mw.Outcomes["1571"] != "12" {
+		t.Fatalf("double-chance captions on the base market: %+v", mw.Outcomes)
+	}
 	dc := byPMID[1900120]
 	if dc.Name != "Двойной шанс" || len(dc.Outcomes) != 3 {
 		t.Fatalf("double-chance description: %+v", dc)
 	}
-	if h := byPMID[1000304]; h.Name != "Фора {handicap}" || h.Outcomes["h1"] != "1" || h.Outcomes["h2"] != "2" || h.Outcomes["910"] != "1" {
+	// A line table captions its team columns "1" / "2"; the side ids the
+	// storefront actually renders carry the side word so every locale
+	// shows the team. The factor-id entry is unused for line markets
+	// (they are addressed by side id) and keeps the raw caption.
+	if h := byPMID[1000304]; h.Name != "Фора {handicap}" || h.Outcomes["h1"] != "home" || h.Outcomes["h2"] != "away" || h.Outcomes["910"] != "1" {
 		t.Fatalf("handicap description: %+v", h)
 	}
 	if tt := byPMID[1000305]; tt.Name != "Тотал {threshold}" || tt.Outcomes["over"] != "Больше" || tt.Outcomes["under"] != "Меньше" {
@@ -255,6 +271,34 @@ func TestDescriptions(t *testing.T) {
 	}
 	if got := VariantTemplate("1-й тайм", "Фора {handicap}"); got != "1-й тайм: Фора {handicap}" {
 		t.Fatalf("variant template: %q", got)
+	}
+}
+
+// A line table's team column is named by number, and the side word may
+// only replace that caption when the caption is ALL there is. Fonbet
+// runs a handful of multi-row line tables whose captions carry the row
+// ("1st substitution 1", "Handicap from 1 to 6 min 2"); every row there
+// collapses onto the same side id, so the row text is the outcome's only
+// identity and must survive.
+func TestOutcomeTemplateTeamColumns(t *testing.T) {
+	line := &fonbet.TableMeta{Num: 304, Name: "Handicap", Param: fonbet.ParamHandicap}
+	cases := []struct {
+		name   string
+		factor fonbet.FactorMeta
+		want   string
+	}{
+		{"bare home column", fonbet.FactorMeta{Table: line, Label: "1", SideID: "h1"}, "home"},
+		{"bare away column", fonbet.FactorMeta{Table: line, Label: "2", SideID: "h2"}, "away"},
+		{"row label survives", fonbet.FactorMeta{Table: line, Label: "1st substitution 1", SideID: "h1"}, "1st substitution 1"},
+		{"caption is not the side it sits under", fonbet.FactorMeta{Table: line, Label: "2", SideID: "h1"}, "2"},
+		// A plain (unparameterised) table has no side ids at all, so a
+		// correct-score cell captioned "1" keeps its number.
+		{"no side id", fonbet.FactorMeta{Table: &fonbet.TableMeta{Num: 8, Name: "Correct score"}, Label: "1"}, "1"},
+	}
+	for _, c := range cases {
+		if got := OutcomeTemplate(&c.factor, "en"); got != c.want {
+			t.Errorf("%s: got %q want %q", c.name, got, c.want)
+		}
 	}
 }
 

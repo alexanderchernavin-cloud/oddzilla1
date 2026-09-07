@@ -122,27 +122,33 @@ interface SingleMarket {
 
 type RenderEntry = SingleMarket | LineFamily;
 
-// A ladder card's title is the market's base name — "Total", not
-// "Corners: Total" — because the tab above it already says which
-// sub-event we are in. That stops being true the moment a market is
-// rendered somewhere else: Top and custom tabs mix sub-events by design,
-// and since migration 20260906T014417 a feed tab can hold markets
-// imported from another one. There, a bare "Total" is a card the bettor
-// cannot identify, so the sub-event goes back on the title.
+// A ladder card's title carries its sub-event — "Corners: Total", not a
+// bare "Total" — everywhere, including on that sub-event's OWN tab.
+//
+// It used to drop the prefix there, on the reasoning that the tab above
+// already says which sub-event we are in, and kept it only where a
+// market is rendered somewhere else (Top and custom tabs mix sub-events
+// by design, and since migration 20260906T014417 a feed tab can hold
+// markets imported from another one). Two things were wrong with that.
+// A SINGLE market on the very same tab renders `m.name`, which never
+// dropped the prefix — so one card read "To hit the woodwork 1st half
+// hit the woodwork: Match result" while the ladder directly beneath it
+// read "Handicap", and the two disagreed about what page you were on.
+// And the tab is not the reliable second half of the sentence it was
+// assumed to be: a football fixture carries ~20 sub-event chips that
+// wrap over three rows, and the selected one is easy to lose. The slip
+// had it right all along — `toggle()` records the full `m.name`, so a
+// leg read "…woodwork…: Handicap 0" under a card that said "Handicap".
 //
 // Only sub-event scopes get the prefix. A map market already carries its
 // map in the name ("Total kills 12.5 - map 2"), so prefixing it would
 // just say Map 2 twice.
-function familyTitle(m: MarketSnapshot, groupId: string): string {
-  if (m.scope.id === groupId) return m.baseName;
+function familyTitle(m: MarketSnapshot): string {
   if (!isSubEventScope(m.scope.id)) return m.baseName;
   return `${m.scope.label}: ${m.baseName}`;
 }
 
-function partitionIntoFamilies(
-  markets: MarketSnapshot[],
-  groupId: string,
-): RenderEntry[] {
+function partitionIntoFamilies(markets: MarketSnapshot[]): RenderEntry[] {
   const familiesByKey = new Map<string, LineFamily>();
   const singles: SingleMarket[] = [];
 
@@ -153,7 +159,7 @@ function partitionIntoFamilies(
         fam = {
           kind: "lines",
           key: m.lineKey,
-          baseName: familyTitle(m, groupId),
+          baseName: familyTitle(m),
           lineSpec: m.lineSpec,
           providerMarketId: m.providerMarketId,
           order: m.providerMarketId,
@@ -541,7 +547,7 @@ export function LiveMarkets({
             m.outcomes.some((o) => !builderLocked(m.id, o.outcomeId)),
           );
         }
-        const entries = partitionIntoFamilies(markets, g.id).filter(
+        const entries = partitionIntoFamilies(markets).filter(
           entryShouldRender,
         );
         return { id: g.id, label: g.label, order: g.order, entries };
@@ -1692,9 +1698,16 @@ function formatLineValue(v: string | null, spec: MarketSnapshot["lineSpec"]): st
 // home outside English, so both columns showed the home sign. Key off the
 // stable outcome id instead; fall back to the name only for the rare
 // competitor-URN handicap outcomes, where the rendered name IS the team.
+// Fonbet keys the same two sides `h1` / `h2` (its line tables caption the
+// columns "1" / "2", which the ingester reads as home / away). Neither id
+// matched, and neither did the name fallback while those cells rendered
+// the caption "1" / "2" — so EVERY Fonbet handicap cell was treated as
+// home and both columns printed the home team's line: a -0.5 home line
+// showed as "-0.5" on the away side too, where the feed itself says
+// "+0.5". Read the id, as the Oddin branch does.
 function isAwayHandicapSide(o: MarketOutcome, match: MatchMeta): boolean {
-  if (o.outcomeId === "2") return true;
-  if (o.outcomeId === "1") return false;
+  if (o.outcomeId === "2" || o.outcomeId === "h2") return true;
+  if (o.outcomeId === "1" || o.outcomeId === "h1") return false;
   return o.name === match.awayTeam || o.rawName === match.awayTeam;
 }
 

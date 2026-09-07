@@ -347,6 +347,16 @@ export function deriveScope(specs: Record<string, string>): MarketScope {
 // null for non-numeric ids (URNs, "under"/"over", …) so callers can keep
 // them in insertion order behind the numeric block.
 export function outcomeSortWeight(id: string): number | null {
+  // Fonbet keys a line market's two TEAM columns `h1` / `h2` (see
+  // sideCaptions in the ingester's catalogue reader) rather than with
+  // Oddin's bare 1 / 2, so the numeric parse below returned null for
+  // both and a handicap ladder fell back to Postgres' row order — which
+  // is undefined, the same hazard the callers' comments describe. While
+  // both cells rendered the caption "1" / "2" a swap was merely odd;
+  // now that each carries its TEAM NAME it would put the away side in
+  // the column a bettor reads as home. Same convention, same weights.
+  if (id === "h1") return 1;
+  if (id === "h2") return 2;
   const n = Number.parseInt(id, 10);
   if (!Number.isFinite(n) || String(n) !== id) return null;
   if (n === 3) return 1.5;
