@@ -508,6 +508,20 @@ retry, max 3, so a name the model will not judge stops being re-sent).
 TEXT rather than an enum because adding an enum value has to be its own
 migration file — the rule 0087 and 0101 both hit.
 
+`manual` covers two operator acts that write the same three columns and
+mean different things. **Overriding** picks a different tier, which makes
+any stored `risk_tier_note` describe a number that is no longer there —
+so `PATCH /admin/tournaments/:id` clears the note. **Confirming** (the
+green check in the Risk tier column, which posts the tier already
+stored) leaves the note describing exactly the tier that is still there,
+and that note is the only record anywhere of why the tier is what it is,
+so it survives. The route distinguishes them by comparing the incoming
+tier against the stored one — there is no separate endpoint and no flag,
+because "assign the number that is already there" is the only thing
+confirmation could mean. Either way the row becomes untouchable by both
+automatic writers: feed-ingester skips `risk_tier_locked`, and the
+ZillaAGI sweeper only ever selects rows where `risk_tier IS NULL`.
+
 The state worth separating is not manual-vs-automatic but
 **reviewed-vs-not**: `auto` used to cover both "Oddin supplied this
 number" and "nobody has ever looked", and on production the second kind

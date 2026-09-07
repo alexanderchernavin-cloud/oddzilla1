@@ -548,9 +548,14 @@ export default async function adminTournamentsRoutes(app: FastifyInstance) {
         patch.riskTier = body.riskTier;
         patch.riskTierLocked = true;
         patch.riskTierSource = "manual";
-        // A ZillaAGI justification explains a number the operator has
-        // just replaced; keeping it beside the new one would mislead.
-        patch.riskTierNote = null;
+        // A ZillaAGI justification explains one particular NUMBER.
+        // Replacing the number makes the note a lie, so it goes. But
+        // posting the tier that is already stored is an ENDORSEMENT (the
+        // green check on /admin/tournaments does exactly that), and
+        // there the note still describes the tier that is still there —
+        // and it is the only record anywhere of why that tier is what it
+        // is. Override drops it; confirmation keeps it.
+        if (body.riskTier !== before.riskTier) patch.riskTierNote = null;
       }
     }
     if (body.logoUrl !== undefined) {
