@@ -47,6 +47,7 @@ import {
 } from "@oddzilla/db";
 import { NotFoundError } from "../../lib/errors.js";
 import { reorderPinned, type PinAction } from "../../lib/pin-order.js";
+import { bookableWindow } from "../../lib/catalog-predicates.js";
 
 const writeRateLimit = {
   rateLimit: { max: 30, timeWindow: "1 minute" },
@@ -114,11 +115,7 @@ export default async function adminCategoriesRoutes(app: FastifyInstance) {
         FROM ${tournaments} t
         JOIN ${matches} m ON m.tournament_id = t.id
        WHERE t.category_id = ${categories.id}
-         AND (
-           m.status = 'live'
-           OR (m.status = 'not_started'
-               AND m.scheduled_at > NOW() - INTERVAL '6 hours')
-         )
+         AND ${bookableWindow("m")}
     )`;
 
     const [rows, totalRows, hiddenRows] = await Promise.all([
