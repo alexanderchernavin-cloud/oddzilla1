@@ -114,9 +114,17 @@ type Match struct {
 }
 
 type LiveScore struct {
-	Home    *int
-	Away    *int
-	Timer   string
+	Home  *int
+	Away  *int
+	Timer string
+	// Clock is the match clock as a MODEL rather than a rendering: what
+	// it read, when, and which way it is moving. Nil for the sports
+	// Fonbet does not time (tennis, table tennis, volleyball, cricket,
+	// snooker) and for a live row whose timer fields are absent. The
+	// storefront runs the clock from this between polls; Timer above is
+	// the string Fonbet rendered from the same triple at packet time and
+	// is kept only as a presence check.
+	Clock   *Clock
 	Comment string
 	// Serve is which side is serving right now: 1 = team1 (home),
 	// 2 = team2 (away), 0 = not applicable or not sent. Fonbet marks
@@ -132,6 +140,21 @@ type Period struct {
 	Title  string
 	Home   string
 	Away   string
+}
+
+// Clock is one observation of a match clock: at instant AtMs (unix ms,
+// Fonbet's server time) the clock read Seconds and was moving in
+// Direction (1 = up, 0 = stopped, -1 = down). The reading at any later
+// instant t is Seconds + Direction × (t − AtMs) / 1000.
+//
+// AtMs is 0 when Fonbet sent the value without a timestamp, which it does
+// for a STOPPED clock (the time is irrelevant then) and, in theory, could
+// do for a running one — the ingest layer fills that case with its own
+// receipt time, which lags the truth by at most one poll.
+type Clock struct {
+	Seconds   int
+	Direction int
+	AtMs      int64
 }
 
 type Market struct {
@@ -777,6 +800,7 @@ func buildScore(mi *fonbet.EventMisc, li *fonbet.LiveEventInfo) *LiveScore {
 		s.Home, s.Away = mi.Score1, mi.Score2
 		s.Comment = strings.TrimSpace(mi.Comment)
 	}
+	s.Clock = buildClock(mi, li)
 	if li != nil {
 		s.Timer = li.Timer
 		if s.Comment == "" {
@@ -805,8 +829,42 @@ func buildScore(mi *fonbet.EventMisc, li *fonbet.LiveEventInfo) *LiveScore {
 			}
 		}
 	}
-	if s.Home == nil && s.Away == nil && s.Timer == "" && len(s.Periods) == 0 {
+	if s.Home == nil && s.Away == nil && s.Timer == "" && s.Clock == nil && len(s.Periods) == 0 {
 		return nil
 	}
 	return s
+}
+
+// buildClock lifts Fonbet's timer triple off whichever block carries it.
+// liveEventInfos wins: its reading is restated at every packet, so a
+// clock Fonbet corrected mid-half (a supplier re-sync, an added-time
+// adjustment) reaches us on the next poll, whereas the eventMiscs anchor
+// is the value at the last START of the clock and would keep the stale
+// zero point. The two agree to within the integer second whenever the
+// clock has simply run (measured across ~50 live matches, 2026-09-07).
+//
+// A direction outside {-1, 0, 1} is a shape we have never seen and is
+// dropped rather than guessed at: the storefront multiplies elapsed time
+// by it, so a bad value would run the clock at the wrong speed.
+func buildClock(mi *fonbet.EventMisc, li *fonbet.LiveEventInfo) *Clock {
+	if li != nil && li.TimerSeconds != nil && li.TimerDirection != nil {
+		if c := newClock(*li.TimerSeconds, *li.TimerDirection, li.TimerTimestampMsec); c != nil {
+			return c
+		}
+	}
+	if mi != nil && mi.TimerSeconds != nil && mi.TimerDirection != nil {
+		return newClock(*mi.TimerSeconds, *mi.TimerDirection, mi.TimerUpdateTimestampMsec)
+	}
+	return nil
+}
+
+func newClock(seconds, direction int, atMs *int64) *Clock {
+	if direction < -1 || direction > 1 || seconds < 0 {
+		return nil
+	}
+	c := &Clock{Seconds: seconds, Direction: direction}
+	if atMs != nil && *atMs > 0 {
+		c.AtMs = *atMs
+	}
+	return c
 }

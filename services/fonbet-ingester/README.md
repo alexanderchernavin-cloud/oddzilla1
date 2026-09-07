@@ -75,7 +75,8 @@ internal/
 │                 static sport table (slug + name), slugify, description
 │                 templates; tests on real Fonbet fixtures
 ├─ ingest/        previous-snapshot diff, pg + Redis writes, lifecycle,
-│                 live score payload, staleness suspend
+│                 live score payload (clock anchor normalisation in
+│                 livescore.go), staleness suspend
 ├─ store/         pgx SQL (copies of feed-ingester's, provider='fonbet')
 ├─ bus/           Redis Streams / pub-sub adapter (copy of feed-ingester's)
 └─ specifiers/    MIRROR of packages/types/src/specifiers.ts (golden-tested)
@@ -101,6 +102,13 @@ internal/
    vanished outcomes → deactivated, vanished markets → `status 0` (or `-1`
    while the event is blocked), vanished live matches → `closed`.
 4. `marketStatus` / `matchStatus` / `score` frames on `odds:match:{id}`.
+   A `score` frame is published only when the payload changes, and the
+   match clock inside it is an ANCHOR (`clock: {seconds, direction,
+   atMs}`, a running clock normalised to its zero instant and sticky
+   within 2 s of the previous anchor — `normalizeClock`), so a running
+   clock does not publish: football is one frame per half, basketball
+   one per stoppage, and the storefront runs the clock itself in
+   between. See docs/FONBET.md "Running clock".
 
 Logos ride alongside, refreshed every 10 min and applied right after a
 cycle (only `logo_url IS NULL` rows, so an operator upload always wins).

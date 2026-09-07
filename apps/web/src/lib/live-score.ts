@@ -43,12 +43,38 @@ export interface LiveScoreScoreboard {
   remainingGameTime?: number;
 }
 
+/**
+ * The match clock as an ANCHOR rather than a reading: at unix-ms
+ * instant `atMs` (the feed's server time) the clock read `seconds`, and
+ * it has moved `direction` seconds per second since — 1 counting up
+ * (football, hockey, basketball, esports on the Fonbet line), 0 stopped
+ * (half time, an intermission, "END"), -1 counting down. The reading at
+ * any instant t is `seconds + direction × (t − atMs) / 1000`; see
+ * `clockSecondsAt` in clock-math.ts, and `useRunningClock` for the hook
+ * that ticks it.
+ *
+ * Written by fonbet-ingester, normalised so a RUNNING clock is stored at
+ * its zero instant (`seconds` 0, `atMs` = when it read 0) — a form that
+ * is constant for as long as the clock runs, so the payload does not
+ * change from poll to poll and a single frame carries a whole half. A
+ * stopped clock keeps its reading in `seconds` and has no `atMs`. Absent
+ * on the Oddin esports payload and on untimed sports (tennis, table
+ * tennis, volleyball, cricket, snooker), where `scoreboard.time` — the
+ * feed's own rendered string, static between frames — is the fallback.
+ */
+export interface LiveScoreClock {
+  seconds: number;
+  direction: number;
+  atMs?: number;
+}
+
 export interface LiveScore {
   home?: number;
   away?: number;
   status?: number;
   matchStatusCode?: number;
   currentMap?: number;
+  clock?: LiveScoreClock | null;
   /**
    * Which side holds serve: 1 = home, 2 = away. Written by
    * fonbet-ingester for the sports whose feed carries it (tennis,

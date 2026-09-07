@@ -18,6 +18,7 @@ import { useEffect, useState } from "react";
 
 import { openSocket } from "./ws-client";
 import type { LiveScore } from "./live-score";
+import { observeServerTime } from "./running-clock";
 import type { SupportMessageFrame } from "@oddzilla/types";
 
 export interface LiveOddsTick {
@@ -293,6 +294,20 @@ function ensureConnected(conn: SharedConnection) {
         // socket as, or null for an anonymous upgrade.
         userId?: string | null;
       };
+      // Every stamped frame is an observation of the server's clock
+      // against this device's, feeding the estimate the running match
+      // clocks are read against (see createServerClock). Odds and status
+      // ticks carry `ts` from odds-publisher; score frames carry the
+      // ingester's `updatedAt`. Anything unparseable is simply not an
+      // observation.
+      if (typeof payload.ts === "number") {
+        observeServerTime(payload.ts);
+      } else if (typeof payload.ts === "string") {
+        observeServerTime(Date.parse(payload.ts));
+      }
+      if (typeof payload.liveScore?.updatedAt === "string") {
+        observeServerTime(Date.parse(payload.liveScore.updatedAt));
+      }
       // First frame on every connection. Carries the identity the
       // gateway resolved from the upgrade's cookie; reconcile it
       // against the session the app believes it has.
