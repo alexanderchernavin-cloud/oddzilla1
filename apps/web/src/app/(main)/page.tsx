@@ -198,6 +198,12 @@ export default async function HomePage() {
         return (
           <MatchListTabs
             matches={merged}
+            // Mirrors the server-side fallback below for the case it
+            // can't reach: every row on the page going terminal under an
+            // open tab. Vanishingly unlikely on the lobby's 120 live +
+            // 20 prematch rows, passed for consistency with the other
+            // three list surfaces.
+            emptyMessage={t("empty")}
             groups={[
               ...(hasLive
                 ? [
