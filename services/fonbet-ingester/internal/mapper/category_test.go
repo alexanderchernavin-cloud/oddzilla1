@@ -60,9 +60,26 @@ func TestCategoryKeyIgnoresNonAlphanumerics(t *testing.T) {
 	}
 }
 
-func seg(id int, name string) *fonbet.Sport {
-	parent := 1
+// seg builds a segment under root sport `root`.
+func seg(root, id int, name string) *fonbet.Sport {
+	parent := root
 	return &fonbet.Sport{ID: id, Name: name, ParentID: &parent}
+}
+
+const (
+	football = 1
+	hockey   = 2
+	cricket  = 3
+)
+
+// canon is the test's view of the resolver: what category does a segment
+// with this name, under this root, land in? Mirrors categoryOf in Build.
+func canon(m map[string]string, root int, segmentName string) string {
+	name := categoryFromSegment(segmentName)
+	if c, ok := m[categoryGroupKey(root, name)]; ok {
+		return c
+	}
+	return name
 }
 
 func TestCanonicalCategoriesPicksLowestSegmentID(t *testing.T) {
@@ -71,26 +88,21 @@ func TestCanonicalCategoriesPicksLowestSegmentID(t *testing.T) {
 	// segments, so a "most segments wins" rule ties; the lowest id
 	// (63304) picks the spelling the operator has pinned.
 	sports := map[int]*fonbet.Sport{
-		1:      {ID: 1, Name: "Football"},
-		63304:  seg(63304, "UEFA Champions League. Top scorer"),
-		113724: seg(113724, "UEFA Champions League. League phase"),
-		131103: seg(131103, "UEFA Champions League. League phase. Outrights"),
-		138562: seg(138562, "UEFA Champions League. Special Bets"),
-		146112: seg(146112, "UEFA Champions League. Head-to-head in the tournament"),
-		146113: seg(146113, "UEFA Champions League. Which country's team will be the winner"),
-		142993: seg(142993, "Champions League UEFA. Outrights"),
-		146084: seg(146084, "Champions League UEFA. League phase. Best Spanish team"),
-		146085: seg(146085, "Champions League UEFA. League phase. Best English team"),
-		146086: seg(146086, "Champions League UEFA. League phase. Best Germany team"),
-		146087: seg(146087, "Champions League UEFA. League phase. Best Italian team"),
-		146114: seg(146114, "Champions League UEFA. League phase. Head-to-head"),
+		football: {ID: football, Name: "Football"},
+		63304:    seg(football, 63304, "UEFA Champions League. Top scorer"),
+		113724:   seg(football, 113724, "UEFA Champions League. League phase"),
+		131103:   seg(football, 131103, "UEFA Champions League. League phase. Outrights"),
+		138562:   seg(football, 138562, "UEFA Champions League. Special Bets"),
+		146112:   seg(football, 146112, "UEFA Champions League. Head-to-head in the tournament"),
+		146113:   seg(football, 146113, "UEFA Champions League. Which country's team will be the winner"),
+		142993:   seg(football, 142993, "Champions League UEFA. Outrights"),
+		146084:   seg(football, 146084, "Champions League UEFA. League phase. Best Spanish team"),
+		146085:   seg(football, 146085, "Champions League UEFA. League phase. Best English team"),
+		146086:   seg(football, 146086, "Champions League UEFA. League phase. Best Germany team"),
+		146087:   seg(football, 146087, "Champions League UEFA. League phase. Best Italian team"),
+		146114:   seg(football, 146114, "Champions League UEFA. League phase. Head-to-head"),
 	}
-	canon := canonicalCategories(sports)
-	k := categoryKey("Champions League UEFA")
-	if got, want := canon[k], "UEFA Champions League"; got != want {
-		t.Fatalf("canonical name = %q, want %q", got, want)
-	}
-
+	m := canonicalCategories(sports)
 	// Both spellings resolve to the one bucket — the actual complaint:
 	// "League phase. Head-to-head" was filed apart from "League phase".
 	for _, name := range []string{
@@ -98,7 +110,7 @@ func TestCanonicalCategoriesPicksLowestSegmentID(t *testing.T) {
 		"Champions League UEFA. League phase. Head-to-head",
 		"UEFA Champions League. Head-to-head in the tournament",
 	} {
-		if got := canon[categoryKey(categoryFromSegment(name))]; got != "UEFA Champions League" {
+		if got := canon(m, football, name); got != "UEFA Champions League" {
 			t.Errorf("%q -> category %q, want %q", name, got, "UEFA Champions League")
 		}
 	}
@@ -109,35 +121,103 @@ func TestCanonicalCategoriesIsOrderIndependent(t *testing.T) {
 	// same answer across runs or the category slug — the row's identity —
 	// would flap and mint new rows.
 	sports := map[int]*fonbet.Sport{
-		1:   {ID: 1, Name: "Hockey"},
-		900: seg(900, "Short-hockey. Group A"),
-		901: seg(901, "Short Hockey. Group B"),
-		902: seg(902, "Short Hockey. Group C"),
-		903: seg(903, "Short Hockey. Group D"),
+		hockey: {ID: hockey, Name: "Hockey"},
+		900:    seg(hockey, 900, "Short-hockey. Group A"),
+		901:    seg(hockey, 901, "Short Hockey. Group B"),
+		902:    seg(hockey, 902, "Short Hockey. Group C"),
+		903:    seg(hockey, 903, "Short Hockey. Group D"),
 	}
-	want := canonicalCategories(sports)[categoryKey("Short Hockey")]
+	want := canon(canonicalCategories(sports), hockey, "Short Hockey. Group B")
 	if want != "Short-hockey" {
 		t.Fatalf("canonical = %q, want %q (lowest id 900)", want, "Short-hockey")
 	}
 	for i := 0; i < 50; i++ {
-		if got := canonicalCategories(sports)[categoryKey("Short Hockey")]; got != want {
+		if got := canon(canonicalCategories(sports), hockey, "Short Hockey. Group B"); got != want {
 			t.Fatalf("run %d gave %q, want %q", i, got, want)
 		}
 	}
 }
 
+func TestCanonicalCategoriesAreScopedPerRootSport(t *testing.T) {
+	// "National teams" is a category under several sports on the live
+	// line. A category row is (sport_id, slug), so the spelling is decided
+	// per sport: cricket's oldest segment must not rename football's.
+	sports := map[int]*fonbet.Sport{
+		football: {ID: football, Name: "Football"},
+		cricket:  {ID: cricket, Name: "Cricket"},
+		100:      seg(cricket, 100, "National Teams. ODI"),
+		200:      seg(football, 200, "National teams. Friendlies"),
+		201:      seg(football, 201, "National Teams. Qualifiers"),
+	}
+	m := canonicalCategories(sports)
+	if got := canon(m, cricket, "National Teams. ODI"); got != "National Teams" {
+		t.Errorf("cricket -> %q, want %q", got, "National Teams")
+	}
+	// Football's own lowest id (200) spells it lowercase, and cricket's
+	// older segment (100) must not override that.
+	if got := canon(m, football, "National Teams. Qualifiers"); got != "National teams" {
+		t.Errorf("football -> %q, want %q", got, "National teams")
+	}
+}
+
+func TestCanonicalCategoriesReHomeDroppedSeparator(t *testing.T) {
+	// Real segment, live line 2026-09-07: Fonbet dropped the space after
+	// the country, so the first ". " split lands after "Cup" and the
+	// category came out as "Bolivia.League Cup" — its own flagless bucket
+	// directly under "Bolivia" (production 8293 beside 6645).
+	sports := map[int]*fonbet.Sport{
+		football: {ID: football, Name: "Football"},
+		500:      seg(football, 500, "Bolivia. Primera Division. Season 2026"),
+		95010:    seg(football, 95010, "Bolivia.League Cup. Group stage"),
+		// A period INSIDE a word, with no category to re-home to: stays.
+		600: seg(football, 600, "St.Petersburg Open. Qualifying"),
+	}
+	m := canonicalCategories(sports)
+	if got := canon(m, football, "Bolivia.League Cup. Group stage"); got != "Bolivia" {
+		t.Errorf("Bolivia.League Cup -> %q, want %q", got, "Bolivia")
+	}
+	if got := canon(m, football, "St.Petersburg Open. Qualifying"); got != "St.Petersburg Open" {
+		t.Errorf("St.Petersburg Open -> %q, want unchanged", got)
+	}
+	// The head has to be a category of the SAME sport.
+	sports[hockey] = &fonbet.Sport{ID: hockey, Name: "Hockey"}
+	sports[700] = seg(hockey, 700, "Bolivia.Cup. Final")
+	m = canonicalCategories(sports)
+	if got := canon(m, hockey, "Bolivia.Cup. Final"); got != "Bolivia.Cup" {
+		t.Errorf("hockey Bolivia.Cup -> %q, want unchanged (no Bolivia under hockey)", got)
+	}
+}
+
+func TestCanonicalCategoriesInnerDotOnlyInFirstSegment(t *testing.T) {
+	// The two live look-alikes carry their inner dot in a LATER segment;
+	// the category is the first segment and is untouched.
+	sports := map[int]*fonbet.Sport{
+		hockey: {ID: hockey, Name: "Basketball"},
+		800:    seg(hockey, 800, "Cup of Belov-Kondrashin. St.Petersburg"),
+		801:    seg(hockey, 801, "Russia. Women. Legends Cup named V.I. Savvin"),
+		802:    seg(hockey, 802, "Russia. Superleague"),
+	}
+	m := canonicalCategories(sports)
+	if got := canon(m, hockey, "Cup of Belov-Kondrashin. St.Petersburg"); got != "Cup of Belov-Kondrashin" {
+		t.Errorf("-> %q", got)
+	}
+	if got := canon(m, hockey, "Russia. Women. Legends Cup named V.I. Savvin"); got != "Russia" {
+		t.Errorf("-> %q", got)
+	}
+}
+
 func TestCanonicalCategoriesLeavesSingleSpellingsAlone(t *testing.T) {
 	sports := map[int]*fonbet.Sport{
-		1:   {ID: 1, Name: "Football"},
-		500: seg(500, "England. Premier League. Season 26/27"),
-		501: seg(501, "Spain. Primera Division. Season 26/27"),
-		502: seg(502, "Standalone"), // single-segment -> no category
+		football: {ID: football, Name: "Football"},
+		500:      seg(football, 500, "England. Premier League. Season 26/27"),
+		501:      seg(football, 501, "Spain. Primera Division. Season 26/27"),
+		502:      seg(football, 502, "Standalone"), // single-segment -> no category
 	}
-	canon := canonicalCategories(sports)
-	if got := canon[categoryKey("England")]; got != "England" {
+	m := canonicalCategories(sports)
+	if got := canon(m, football, "England. Premier League. Season 26/27"); got != "England" {
 		t.Errorf("England -> %q", got)
 	}
-	if _, ok := canon[categoryKey(CategoryOther)]; ok {
+	if _, ok := m[categoryGroupKey(football, CategoryOther)]; ok {
 		t.Error("single-segment names must not claim a canonical entry")
 	}
 }

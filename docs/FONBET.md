@@ -206,7 +206,10 @@ operator's pinned one.
 `categoryKey` in [`internal/mapper/mapper.go`](../services/fonbet-ingester/internal/mapper/mapper.go)
 folds all three away — lowercase, punctuation to spaces, tokens sorted —
 and `canonicalCategories` resolves every spelling in a group to the one
-on the **lowest Fonbet segment id**. Stability is the reason for that
+on the **lowest Fonbet segment id**, **per root sport** (a category row is
+`(sport_id, slug)`, and "National teams" exists under cricket, football and
+volleyball at once — the spelling chosen for one must neither depend on
+nor move another's). Stability is the reason for that
 rule and not tidiness: the chosen name is what `Slugify` turns into
 `categories.slug`, the row's identity, so a name that flapped would keep
 minting rows and stranding the operator's pin and hidden flag on the old
@@ -218,8 +221,22 @@ Fonbet's own tree cannot answer this instead: all 12 Champions League
 segments have the ROOT SPORT as their parent (`parentId: 1`), so there is
 no intermediate node to read a category from. The string is all there is.
 
-**The limit.** This folds away case, punctuation and word order, and
-nothing else. A genuine typo, or one competition named in two languages,
+A second pass re-homes a **dropped separator**. `Bolivia.League Cup. Group
+stage` has no `". "` until after "Cup", so its first segment came out as
+`Bolivia.League Cup` — a flagless bucket of its own directly under
+`Bolivia` (production category 8293 beside 6645). Splitting on every `.`
+would be wrong — `Cup of Belov-Kondrashin. St.Petersburg` and `Legends Cup
+named V.I. Savvin` carry a period INSIDE a word — so the inner dot is
+honoured only when the text before it is already a category of the same
+sport: `Bolivia` is, `St` is not, which is exactly the evidence that a
+separator went missing rather than a name having a dot in it. Measured on
+the live line: one segment qualifies, and the two look-alikes have their
+dot in a LATER segment, so they never reach this code. The sidebar's
+`stripCategoryPrefix` already tolerates the missing space, so the row
+renders as `League Cup. Group stage` under Bolivia.
+
+**The limit.** This folds away case, punctuation, word order and a dropped
+separator, and nothing else. A genuine typo, or one competition named in two languages,
 still splits, and there is no operator-facing category merge to fall back
 on. When a merge does happen the losing row is left behind with no
 tournaments; it renders nowhere (the sidebar builds its buckets from

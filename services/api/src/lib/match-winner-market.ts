@@ -33,7 +33,7 @@
 //
 // Extracted from catalog/routes.ts (which had it inline for the list
 // cards) when the ZillaBoost match banner needed the same answer. It had
-// been rankings markets by `provider_market_id` ascending with a tie-break
+// been ranking markets by `provider_market_id` ascending with a tie-break
 // on the market ROW id, i.e. insertion order — so a Fonbet football match
 // quoted whichever copy of table 1000120 happened to be inserted first,
 // and on production 2026-09-07 that was "2nd half: Match result", six
@@ -84,9 +84,6 @@ export const FONBET_HEAD_TO_HEAD_PMIDS = [
  * -event editor both adopt for exactly this reason.
  */
 export const WINNER_OUTCOME_IDS = ["1", "2", "3"] as const;
-
-/** Home / away / draw, in the order a card renders them. */
-export const WINNER_OUTCOME_ORDER = ["1", "3", "2"] as const;
 
 export function isWinnerOutcomeId(outcomeId: string): boolean {
   return (WINNER_OUTCOME_IDS as readonly string[]).includes(outcomeId);

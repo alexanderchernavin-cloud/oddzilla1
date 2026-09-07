@@ -186,9 +186,9 @@ func Build(resp *fonbet.ListResponse, idx *fonbet.Index, opt Options) *Snapshot 
 	// One spelling per competition, decided once over the whole segment
 	// list rather than per match — see canonicalCategories.
 	canonicalCategory := canonicalCategories(sports)
-	categoryOf := func(segmentName string) string {
+	categoryOf := func(rootID int, segmentName string) string {
 		name := categoryFromSegment(segmentName)
-		if c, ok := canonicalCategory[categoryKey(name)]; ok {
+		if c, ok := canonicalCategory[categoryGroupKey(rootID, name)]; ok {
 			return c
 		}
 		return name
@@ -278,7 +278,7 @@ func Build(resp *fonbet.ListResponse, idx *fonbet.Index, opt Options) *Snapshot 
 			Sport:       SportFor(root.ID, root.Name),
 			SegmentID:   e.SportID,
 			SegmentName: segName,
-			Category:    categoryOf(segName),
+			Category:    categoryOf(root.ID, segName),
 			Team1:       strings.TrimSpace(e.Team1),
 			Team2:       strings.TrimSpace(e.Team2),
 			Team1ID:     e.Team1ID,
@@ -649,12 +649,24 @@ func categoryKey(name string) string {
 	return strings.Join(tokens, " ")
 }
 
+// categoryGroupKey scopes a spelling key to its root sport. A category row
+// is `(sport_id, slug)`, so the decision has to be made per sport too:
+// "National teams" exists under cricket, football AND volleyball, and the
+// spelling chosen for one must neither depend on nor move another's.
+func categoryGroupKey(rootID int, name string) string {
+	return strconv.Itoa(rootID) + "|" + categoryKey(name)
+}
+
+// innerDotRe finds a "." glued to the next word — the separator Fonbet
+// dropped in "Bolivia.League Cup. Group stage".
+var innerDotRe = regexp.MustCompile(`\.\pL`)
+
 // canonicalCategories resolves each category spelling in a snapshot to the
-// one spelling its whole group is filed under.
+// one spelling its whole group is filed under, per root sport.
 //
 // The winner is the spelling on the LOWEST Fonbet segment id in the group.
 // The rule has to be stable above all else: the chosen name is what
-// `slugify` turns into `categories.slug`, which is the row's identity, so
+// `Slugify` turns into `categories.slug`, which is the row's identity, so
 // a name that flapped between cycles would keep minting new category rows
 // and stranding the operator's pin and hidden flag on the old one. A
 // segment id is a permanent Fonbet id, so the answer only moves if that
@@ -668,16 +680,46 @@ func categoryKey(name string) string {
 // on production, pinned first in Football's tree — rather than the
 // unpinned "Champions League UEFA" beside it.
 //
-// The limit worth stating: this folds away case, punctuation and word
-// order, and nothing else. A genuine typo, or the same competition named
-// in two languages, still splits, and there is no operator-facing merge
-// to fall back on yet.
+// A second pass re-homes a DROPPED SEPARATOR. "Bolivia.League Cup. Group
+// stage" has no ". " until after "Cup", so the first segment comes out as
+// "Bolivia.League Cup" — a bucket of its own, with no flag, directly under
+// "Bolivia" (production category 8293 beside 6645, 2026-09-07). Splitting on
+// every "." would be wrong: "Cup of Belov-Kondrashin. St.Petersburg" and
+// "Legends Cup named V.I. Savvin" carry a period INSIDE a word. So the
+// inner dot is honoured only when the text before it is already a category
+// of the same sport — "Bolivia" is, "St" is not — which is exactly the
+// evidence that a separator went missing rather than a name having a dot
+// in it. Measured on the live line: one segment qualifies, the two
+// look-alikes have their dot in a LATER segment and never reach this code.
+//
+// The limit worth stating: this folds away case, punctuation, word order
+// and a dropped separator, and nothing else. A genuine typo, or the same
+// competition named in two languages, still splits, and there is no
+// operator-facing merge to fall back on yet.
 func canonicalCategories(sports map[int]*fonbet.Sport) map[string]string {
+	rootOf := func(id int) int {
+		s := sports[id]
+		for hops := 0; s != nil && s.ParentID != nil && hops < 8; hops++ {
+			p := sports[*s.ParentID]
+			if p == nil {
+				break
+			}
+			s = p
+		}
+		if s == nil {
+			return id
+		}
+		return s.ID
+	}
 	type pick struct {
 		name      string
 		segmentID int
 	}
-	best := map[string]pick{}
+	type seg struct {
+		id   int
+		root int
+		name string // first segment, as Fonbet spelled it
+	}
 	// Deterministic iteration: a Go map is randomly ordered, and reading
 	// segments in a different order each cycle would let two spellings
 	// sharing the lowest id trade the group between them.
@@ -686,19 +728,20 @@ func canonicalCategories(sports map[int]*fonbet.Sport) map[string]string {
 		ids = append(ids, id)
 	}
 	sort.Ints(ids)
+	best := map[string]pick{}
+	segs := make([]seg, 0, len(ids))
 	for _, id := range ids {
 		s := sports[id]
 		if s == nil {
 			continue
 		}
 		name := categoryFromSegment(strings.TrimSpace(s.Name))
-		if name == CategoryOther {
+		if name == CategoryOther || categoryKey(name) == "" {
 			continue
 		}
-		k := categoryKey(name)
-		if k == "" {
-			continue
-		}
+		root := rootOf(id)
+		segs = append(segs, seg{id: id, root: root, name: name})
+		k := categoryGroupKey(root, name)
 		if cur, ok := best[k]; !ok || id < cur.segmentID {
 			best[k] = pick{name: name, segmentID: id}
 		}
@@ -706,6 +749,21 @@ func canonicalCategories(sports map[int]*fonbet.Sport) map[string]string {
 	out := make(map[string]string, len(best))
 	for k, p := range best {
 		out[k] = p.name
+	}
+	// Dropped separators, now that every real category of the sport is
+	// known. Left to right, first head that is one wins.
+	for _, sg := range segs {
+		for _, m := range innerDotRe.FindAllStringIndex(sg.name, -1) {
+			head := strings.TrimSpace(sg.name[:m[0]])
+			if head == "" {
+				continue
+			}
+			hk := categoryGroupKey(sg.root, head)
+			if home, ok := best[hk]; ok {
+				out[categoryGroupKey(sg.root, sg.name)] = home.name
+				break
+			}
+		}
 	}
 	return out
 }

@@ -57,7 +57,6 @@ import {
 import {
   isMatchWinnerMarket,
   isWinnerOutcomeId,
-  WINNER_OUTCOME_ORDER,
 } from "../../lib/match-winner-market.js";
 import { NotFoundError } from "../../lib/errors.js";
 
@@ -641,17 +640,9 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
                   priced.find((p) => p.outcomeId === q.outcomeId)?.rawName ?? "",
                 ),
           }));
-          // Home / draw / away, so the client can walk the sides in the
-          // order it renders them.
-          if (teamShaped) {
-            const rank = (id: string) => {
-              const i = WINNER_OUTCOME_ORDER.indexOf(
-                id as (typeof WINNER_OUTCOME_ORDER)[number],
-              );
-              return i === -1 ? WINNER_OUTCOME_ORDER.length : i;
-            };
-            outcomes.sort((a, b) => rank(a.outcomeId) - rank(b.outcomeId));
-          }
+          // Already home / draw / away: sortForDisplay ordered `priced`
+          // that way and quoteMarketBoost walks it in order. The client
+          // looks a side up by id anyway.
           break;
         }
         out.matches.push({

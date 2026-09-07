@@ -6,7 +6,6 @@ import {
   isMatchWinnerMarket,
   isWinnerOutcomeId,
   WINNER_OUTCOME_IDS,
-  WINNER_OUTCOME_ORDER,
 } from "./match-winner-market.js";
 
 describe("isMatchWinnerMarket", () => {
@@ -107,12 +106,5 @@ describe("winner outcome ids", () => {
     // Fonbet's double chance: the three extra columns of the same result
     // table that a match banner must not offer.
     for (const dc of ["924", "925", "1571"]) assert.equal(isWinnerOutcomeId(dc), false);
-  });
-
-  test("orders home / draw / away for rendering", () => {
-    assert.deepEqual([...WINNER_OUTCOME_ORDER], ["1", "3", "2"]);
-    // Same set, different order — the display order must be a permutation
-    // of the identity set or a card can render a cell it never priced.
-    assert.deepEqual([...WINNER_OUTCOME_ORDER].sort(), [...WINNER_OUTCOME_IDS].sort());
   });
 });
