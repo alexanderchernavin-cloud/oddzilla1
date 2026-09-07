@@ -294,6 +294,28 @@ func (in *Ingester) ReconcileExternalSuspend(ctx context.Context) (bool, error) 
 	return true, nil
 }
 
+// PruneEmptyCategories retires Fonbet categories left holding no
+// tournament, which is what a spelling merge produces: the losing row's
+// tournaments are re-homed onto the surviving one and the row itself stays
+// behind, invisible on the storefront but listed forever in the backoffice.
+// See store.DeactivateEmptyCategories for why the predicate cannot flap.
+//
+// Called from the poll loop's own select, so it runs serially with the
+// upsert path. That is load-bearing rather than incidental: the per-match
+// path does EnsureCategory then EnsureTournament as two statements, and a
+// sweep landing between them would retire a category that was about to
+// receive its first tournament.
+func (in *Ingester) PruneEmptyCategories(ctx context.Context) (int64, error) {
+	n, err := store.DeactivateEmptyCategories(ctx, in.st.Pool())
+	if err != nil {
+		return 0, err
+	}
+	if n > 0 {
+		in.log.Info().Int64("categories", n).Msg("retired categories with no tournaments")
+	}
+	return n, nil
+}
+
 func (in *Ingester) SuspendAll(ctx context.Context, nowMs int64) error {
 	in.mu.Lock()
 	defer in.mu.Unlock()

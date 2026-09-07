@@ -238,10 +238,37 @@ renders as `League Cup. Group stage` under Bolivia.
 **The limit.** This folds away case, punctuation, word order and a dropped
 separator, and nothing else. A genuine typo, or one competition named in two languages,
 still splits, and there is no operator-facing category merge to fall back
-on. When a merge does happen the losing row is left behind with no
-tournaments; it renders nowhere (the sidebar builds its buckets from
-`/catalog/sports/:slug/tournaments`, which selects FROM tournaments) but
-does still list on `/admin/categories` at 0 bookable.
+on.
+
+When a merge does happen the losing row is left holding no tournament, and
+`store.DeactivateEmptyCategories` retires it — `active = FALSE`, off the
+`/admin/categories` list, which is `categories.active`'s only reader
+anywhere. It rides the poll loop's once-a-minute reconcile tick, and being
+in that loop's own `select` is load-bearing rather than incidental: the
+per-match path runs `EnsureCategory` then `EnsureTournament` as two
+statements, and a sweep landing between them would retire a category about
+to receive its first tournament.
+
+The predicate cannot flap, which is what makes a sweep safe here rather
+than merely convenient. Nothing in the system ever sets
+`tournaments.active = false` — every writer only sets it TRUE — so it asks
+whether any tournament ROW points at the category, not whether one is
+currently in the offer: a quiet league between seasons keeps its row and
+keeps its category. Emptiness is reached only by a re-home or by an
+operator deleting the last tournament. And it is reversible by
+construction — `EnsureCategory`'s `ON CONFLICT` sets `active = TRUE`, so
+the row returns if Fonbet splits the competition again.
+
+`display_order` is cleared with the flag, because a pin is a POSITION in a
+sequence the operator can see and a retired row is not listed — leaving the
+pin would keep an invisible slot in the dense 1..N renumbering that
+`POST /admin/categories/:id/order` maintains (which is also why that
+endpoint refuses a retired row). `hidden_from_lists` is deliberately KEPT:
+that is a standing decision about content, and it should still hold if the
+row comes back. Measured on production 2026-09-07: 7 Fonbet categories were
+already empty from earlier history (`ATP`, `Super Cup`, `Парагвай`, …), none
+of them pinned or hidden; Oddin has no non-dummy categories at all, so the
+provider scope loses nothing.
 
 ## Operating notes
 

@@ -26,6 +26,13 @@
 // kill switch, and keeping the two apart means an operator can undo one
 // without touching the other.
 //
+// `active` means something narrower and is not an operator control at
+// all: fonbet-ingester retires a category that holds no tournament,
+// which is what a spelling merge leaves behind (see
+// store.DeactivateEmptyCategories). The list filters those out — they
+// render nowhere on the storefront either — and they return on their own
+// if Fonbet splits the competition again.
+//
 // What the ordering does (migration 0103): the sidebar's category
 // buckets have always sorted alphabetically, so Football's tree opens on
 // Albania. A pinned category carries a `display_order` and heads its
@@ -82,7 +89,11 @@ export default async function adminCategoriesRoutes(app: FastifyInstance) {
       .from(sports)
       .innerJoin(
         categories,
-        and(eq(categories.sportId, sports.id), eq(categories.isDummy, false)),
+        and(
+          eq(categories.sportId, sports.id),
+          eq(categories.isDummy, false),
+          eq(categories.active, true),
+        ),
       )
       .orderBy(asc(sports.name));
     return { sports: rows };
@@ -102,6 +113,17 @@ export default async function adminCategoriesRoutes(app: FastifyInstance) {
       // here would only offer a toggle that blanks an entire esport by
       // accident.
       eq(categories.isDummy, false),
+      // Retired rows. `categories.active` had no reader anywhere in the
+      // system until this filter — fonbet-ingester's
+      // DeactivateEmptyCategories is its only writer, and it sets FALSE
+      // only for a category holding no tournament at all, which the
+      // storefront already renders nowhere (the sidebar builds its
+      // buckets from the tournaments endpoint). Without the filter the
+      // sweep would be invisible and the row would keep its line here
+      // forever, which is the whole point of retiring it. EnsureCategory
+      // sets active = TRUE on conflict, so a category Fonbet brings back
+      // returns to this list on the next cycle.
+      eq(categories.active, true),
     ];
     const where = and(...filters.filter(Boolean));
 
@@ -154,7 +176,11 @@ export default async function adminCategoriesRoutes(app: FastifyInstance) {
         .select({ hiddenCount: sql<string>`COUNT(*)::text` })
         .from(categories)
         .where(
-          and(eq(categories.hiddenFromLists, true), eq(categories.isDummy, false)),
+          and(
+            eq(categories.hiddenFromLists, true),
+            eq(categories.isDummy, false),
+            eq(categories.active, true),
+          ),
         ),
     ]);
 
@@ -263,13 +289,19 @@ export default async function adminCategoriesRoutes(app: FastifyInstance) {
         .select({
           sportId: categories.sportId,
           isDummy: categories.isDummy,
+          active: categories.active,
           name: categories.name,
           slug: categories.slug,
         })
         .from(categories)
         .where(eq(categories.id, id))
         .limit(1);
-      if (!scope || scope.isDummy) throw new NotFoundError();
+      // A retired category is not listed above, so this is unreachable
+      // through the UI; refused anyway because a pin is a position in the
+      // dense 1..N sequence this endpoint maintains, and a row nobody can
+      // see holding a slot would put the visible list and the stored
+      // sequence permanently out of step.
+      if (!scope || scope.isDummy || !scope.active) throw new NotFoundError();
       sportId = scope.sportId;
 
       await app.db.transaction(async (tx) => {
