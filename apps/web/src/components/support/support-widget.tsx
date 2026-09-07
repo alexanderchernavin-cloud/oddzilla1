@@ -263,8 +263,16 @@ export function SupportWidget() {
 
   return (
     <>
+      {/* `oz-support-fab` is a styling hook, not a style carrier: the
+          responsive block in globals.css uses it to take the button out
+          of the way of the mobile bet-slip chrome. It is hidden while
+          the slip's bottom sheet is open, where it floated at z-index
+          9000 over the sheet's own Place bet button (operator,
+          2026-09-07); the collapsed peek bar keeps clear of it by
+          reserving room at its right edge instead. */}
       <button
         type="button"
+        className="oz-support-fab"
         onClick={open ? handleClose : handleOpen}
         aria-label={buttonAria}
         aria-expanded={open}
@@ -422,6 +430,7 @@ function SupportPanel({
   return (
     <div
       role="dialog"
+      className="oz-support-panel"
       aria-label={t("dialogAria")}
       style={{
         position: "fixed",
