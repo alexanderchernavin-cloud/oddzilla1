@@ -1433,15 +1433,6 @@ body {
   min-width: 0;
 }
 
-.oz-match-list-cols {
-  display: none;
-  align-self: flex-end;
-  gap: 2px;
-  padding: 3px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm, 8px);
-}
 
 .oz-match-cols-btn {
   display: inline-flex;
@@ -1465,9 +1456,16 @@ body {
   background: var(--accent);
   color: var(--accent-fg);
 }
+/* Base state of the two-column option: hidden. MUST precede the
+   ≥2000px media query below that shows it — same specificity, so
+   source order decides, and the first cut had this rule after the
+   query and the button never appeared at any width. */
+.oz-match-list-opt-2col {
+  display: none;
+}
 
 @media (min-width: 2000px) {
-  .oz-match-list-cols {
+  .oz-match-list-opt-2col {
     display: inline-flex;
   }
   .oz-match-list-grid[data-cols="2"] {
@@ -1479,29 +1477,32 @@ body {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
-   Match-list control cluster — layout switch + column count.
+   Match-list view control — cards / two-column cards / table, one
+   segmented group (match-list-tabs.tsx `ListControls`).
 
-   `.oz-match-list-layout` reuses `.oz-match-cols-btn` for its buttons
-   but keeps its own wrapper because the two groups have different
-   visibility rules: the column toggle is a wide-viewport feature
-   (display:none under 2000px, see above), while the layout switch is
-   offered at every width — the dense table earns the most on a phone,
-   where a card stack costs the most scrolling.
+   The two-column button is a wide-viewport option: hidden below 2000px
+   (the same gate the two-column GRID has, in the media query above), so
+   a bettor never sees a button whose effect the stylesheet would undo.
+   When a saved "two columns" is being shown as one column on a narrow
+   screen, the cards button takes the active state so the control never
+   shows no selection — `:has()` degrades to "no highlight" on a browser
+   without it, which is what the old design showed in that state anyway.
    ───────────────────────────────────────────────────────────────────────── */
-.oz-match-list-controls {
-  display: inline-flex;
-  align-items: center;
-  align-self: flex-end;
-  gap: 6px;
-}
-
 .oz-match-list-layout {
   display: inline-flex;
+  align-self: flex-end;
   gap: 2px;
   padding: 3px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-sm, 8px);
+}
+@media (max-width: 1999px) {
+  .oz-match-list-layout:has(.oz-match-list-opt-2col[data-active="true"])
+    .oz-match-list-opt-1col {
+    background: var(--accent);
+    color: var(--accent-fg);
+  }
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -1662,11 +1663,17 @@ body {
 .oz-pro-team {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
+  min-width: 0;
+  white-space: nowrap;
+}
+/* The name is the only part of a side that shrinks; the crest and the
+   serve mark keep their size, so a long name loses its tail rather than
+   pushing the crest off the row. */
+.oz-pro-teamname {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .oz-pro-vs {
   flex-shrink: 0;
@@ -1689,12 +1696,20 @@ body {
   width: 112px;
   overflow: hidden;
 }
-.oz-pro-clock {
+/* One-line live headline (components/match/live-meta.tsx), shared by the
+   Pro row's meta column and the Default card's header strip. */
+.oz-livemeta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.oz-livemeta-clock {
   flex-shrink: 0;
   font-size: 10.5px;
   color: var(--live);
 }
-.oz-pro-score {
+.oz-livemeta-score {
   flex-shrink: 0;
   padding: 0 2px;
   border-radius: 4px;
@@ -1702,7 +1717,7 @@ body {
   font-weight: 700;
   color: var(--fg);
 }
-.oz-pro-comment {
+.oz-livemeta-comment {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1821,21 +1836,116 @@ body {
 /* A total's line: shared by its two prices, so it is a value and not a
    button. Sized and bordered like a cell so the row still reads as one
    band of boxes. */
-/* Not a button: a total's line is shared by its two prices, so it is a
-   value. Styled as a flat chip rather than a bordered box precisely so
-   it does not invite a click — the two cells beside it do. */
+/* A total's line chip — and, since the line picker landed, the control
+   that opens the match's whole total ladder (fon.bet's ⇅). Flat rather
+   than bordered so it still reads as the LINE and not as a third price;
+   the small glyph is what says it opens. */
 .oz-pro-linecell {
+  position: relative;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 2px;
   width: var(--oz-pro-line-w);
   height: 26px;
+  padding: 0;
+  border: 0;
   border-radius: 6px;
   background: color-mix(in oklab, var(--fg) 5%, transparent);
+  font-family: inherit;
   font-size: 10.5px;
   font-weight: 600;
   letter-spacing: -0.02em;
   color: var(--fg-muted);
+  cursor: pointer;
+}
+.oz-pro-linecell:hover,
+.oz-pro-linecell[data-open="true"] {
+  background: color-mix(in oklab, var(--fg) 10%, transparent);
+  color: var(--fg);
+}
+.oz-pro-linecell:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+/* The handicap stepper between the two sides. Narrow: it is one control
+   for one line, not a third column. */
+.oz-pro-stepper {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.oz-pro-stepper:hover,
+.oz-pro-stepper[data-open="true"] {
+  background: color-mix(in oklab, var(--fg) 8%, transparent);
+  color: var(--fg);
+}
+.oz-pro-stepper:disabled {
+  visibility: hidden;
+}
+/* The ladder popover. Portalled onto <body> because the tournament group
+   clips overflow for its corners; fixed under the trigger. */
+.oz-pro-linepop {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 150px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16);
+}
+.oz-pro-linepop-row {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(34px, auto);
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+}
+.oz-pro-linepop-row:hover {
+  background: color-mix(in oklab, var(--fg) 5%, transparent);
+}
+.oz-pro-linepop-row[data-current="true"] {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+.oz-pro-linepop-line {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  text-align: right;
+}
+.oz-pro-linepop-price {
+  font-weight: 700;
+}
+.oz-pro-linepop-empty {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--fg-dim);
+  text-align: center;
 }
 /* Upward caret marking a ZillaBoost. The cell is too narrow for the
    struck-through original the card shows, so the mark plus the green

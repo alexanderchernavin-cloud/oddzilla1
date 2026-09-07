@@ -10,6 +10,7 @@ import { I } from "@/components/ui/icons";
 import { useBetSlip } from "@/lib/bet-slip";
 import { mapCellValue, servingSide, type LiveScore } from "@/lib/live-score";
 import { ServeMark } from "./serve-mark";
+import { LiveMeta } from "./live-meta";
 import { useSidePanels, type PanelSide } from "@/lib/side-panel";
 import { useOddsFlash, useValueFlash } from "@/lib/use-odds-flash";
 import { useTranslations } from "@/lib/i18n";
@@ -394,9 +395,20 @@ export const MatchRow = memo(function MatchRow({
           <div style={{ flex: 1, minWidth: 4 }} />
 
           {isLive ? (
-            <Pill tone="live">
-              <LiveDot size={6} /> {tCommon("live")}
-            </Pill>
+            <>
+              {/* Clock, score and the feed's detail — the same LiveMeta
+                  the Pro row shows, so the two layouts agree. The
+                  scoreboard below still carries the per-map cells; this
+                  is the one-line headline the card lacked, sitting where
+                  the eye already goes for the LIVE pill. Does not shrink:
+                  the tournament name to its left already truncates. */}
+              <span className="oz-livemeta" style={{ flexShrink: 0 }}>
+                <LiveMeta liveScore={match.liveScore ?? null} />
+              </span>
+              <Pill tone="live">
+                <LiveDot size={6} /> {tCommon("live")}
+              </Pill>
+            </>
           ) : (
             showWhen && (
               <span
@@ -498,7 +510,9 @@ function truncate(name: string, max: number): string {
   return name.slice(0, max).trimEnd() + "..";
 }
 
-function teamTag(name: string): string {
+// Exported for the Pro table's row crests (match-table.tsx), which pass it
+// as TeamMark's alt fallback exactly as the card does.
+export function teamTag(name: string): string {
   return name
     .split(/\s+/)
     .slice(0, 3)

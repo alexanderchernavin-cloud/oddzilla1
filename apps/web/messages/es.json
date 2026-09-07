@@ -808,17 +808,15 @@
       "handicapAway": "H2",
       "totalShort": "Total",
       "overShort": "Más",
-      "underShort": "Menos"
+      "underShort": "Menos",
+      "chooseLine": "Elegir línea",
+      "mainLine": "Línea principal"
     },
     "listLayout": {
       "aria": "Diseño de la lista de partidos",
       "default": "Diseño estándar",
+      "twoCols": "Dos columnas",
       "pro": "Diseño Pro"
-    },
-    "listCols": {
-      "aria": "Columnas de la lista de partidos",
-      "one": "Una columna",
-      "two": "Dos columnas"
     },
     "scoreboard": {
       "score": "Marcador",

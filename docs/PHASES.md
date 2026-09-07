@@ -1136,6 +1136,35 @@ single-line, ~44px stacked on mobile).
   signed-in bettor, exactly like the existing column count. The column
   toggle is dropped (not disabled) in Pro — it splits the card stack
   into two tracks and a table has nothing to split.
+- **One control, three options** (2026-09-07): cards, two-column cards,
+  table, in one segmented group — it was a layout switch beside a
+  separate column toggle for a day. The two-column button keeps its
+  ≥2000px gate, now on the button; its base `display:none` has to
+  precede the media rule that shows it (equal specificity), which the
+  first cut got wrong and the button appeared at no width.
+- **Both layouts show the live headline** (clock, score, the feed's
+  parenthetical) through one shared `live-meta.tsx`; the Default card
+  had none of it while its scoreboard hid Σ until a second map existed.
+- **Pro rows carry the team crests** (16px `TeamMark` before each name;
+  a side with no logo is its name alone; the name is the only part that
+  truncates).
+- **Columns are sized once per page, not per tournament group**: a group
+  whose 1X2 had come back two-way (draw suspended at half time) rendered
+  one cell narrower, sliding its clock 46px off the rows above and below
+  (operator). Measured after the fix on the lobby: 125 rows, 92 groups,
+  one clock x, one track x, three result cells everywhere.
+- **Line picker** — fon.bet's ⇅ on the Pro row's handicap and total:
+  `GET /catalog/matches/:id/ladders` returns every full-match rung of one
+  match priced for the viewer (same `priceLadder` as the list; anonymous
+  cached 3 s); `LinePicker` fetches it on open and lists the rungs,
+  current one marked; the chosen rung is stored in `MatchListTabs` above
+  the live merge so ticks and boosts keep pricing it. Popover portalled
+  onto `<body>` (the group clips overflow), closed by Escape / outside
+  click / scroll / resize. Verified in the browser: total `2` → `2.5`
+  re-priced the row to `2.60 / 1.43`, handicap `-1` → `-2` to
+  `11.50 / 1.01`, both matching the ladder; Escape and outside-click
+  close (the first read said they did not — a synchronous DOM read
+  before React committed).
 - The preference is also mirrored into a host-scoped cookie
   (`oz_list_layout`, [`lib/list-layout-cookie.ts`](../apps/web/src/lib/list-layout-cookie.ts)
   + [`lib/list-layout.tsx`](../apps/web/src/lib/list-layout.tsx)) which

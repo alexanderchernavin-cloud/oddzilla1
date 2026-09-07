@@ -808,17 +808,15 @@
       "handicapAway": "H2",
       "totalShort": "Total",
       "overShort": "Mais",
-      "underShort": "Menos"
+      "underShort": "Menos",
+      "chooseLine": "Escolher linha",
+      "mainLine": "Linha principal"
     },
     "listLayout": {
       "aria": "Layout da lista de partidas",
       "default": "Layout padrão",
+      "twoCols": "Duas colunas",
       "pro": "Layout Pro"
-    },
-    "listCols": {
-      "aria": "Colunas da lista de partidas",
-      "one": "Uma coluna",
-      "two": "Duas colunas"
     },
     "scoreboard": {
       "score": "Placar",

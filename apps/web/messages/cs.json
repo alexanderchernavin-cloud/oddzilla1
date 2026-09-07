@@ -808,17 +808,15 @@
       "handicapAway": "H2",
       "totalShort": "Total",
       "overShort": "Nad",
-      "underShort": "Pod"
+      "underShort": "Pod",
+      "chooseLine": "Zvolit linii",
+      "mainLine": "Hlavní linie"
     },
     "listLayout": {
       "aria": "Rozvržení seznamu zápasů",
       "default": "Standardní rozvržení",
+      "twoCols": "Dva sloupce",
       "pro": "Rozvržení Pro"
-    },
-    "listCols": {
-      "aria": "Sloupce seznamu zápasů",
-      "one": "Jeden sloupec",
-      "two": "Dva sloupce"
     },
     "scoreboard": {
       "score": "Skóre",

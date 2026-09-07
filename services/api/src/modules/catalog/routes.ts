@@ -1114,34 +1114,25 @@ interface PickedLadder {
 type PickedLadders = Partial<Record<LadderKind, PickedLadder>>;
 
 /**
- * Picks the main handicap and total rung for a batch of matches, for the
- * Pro list layout's second and third column groups.
+ * Collects every full-match handicap and total rung for a batch of
+ * matches, raw and unranked — the material both the list's main-line
+ * pick and the per-row line picker are built from.
  *
- * Which market types count and which rung is "main" both live in
- * `@oddzilla/types/list-markets` — a shared table plus a balance rule —
- * so the storefront, this loader and the unit tests cannot disagree
- * about them. See that module for why the market set is a table and the
- * rung is a rule.
+ * Which market types count lives in `@oddzilla/types/list-markets` (a
+ * per-feed table read off the live catalogue; sub-events and per-map
+ * copies excluded by requiring a lone line specifier). This PICKS
+ * nothing and PRICES nothing: `loadLadderMarketsForMatches` chooses the
+ * main rung on top of it, `/catalog/matches/:id/ladders` returns all of
+ * them, and `priceLadder` turns any rung into the viewer's prices —
+ * adjusted or boosted — exactly as the match-winner row is priced.
  *
- * This PICKS; the serializer PRICES. The same split `loadMatchWinnerOdds`
- * has with its serializer, and for the same reason: ZillaBoost is
- * computed from the raw published odds and replaces the per-bettor
- * adjustment outright, so prices have to leave here raw. The balance
- * score is taken on raw odds too — the main line is a property of the
- * book, not of one bettor's adjustment, and every bettor should see the
- * same rung.
- *
- * ONE query, and the only one this feature adds to a list response:
- * `loadTopMarketsForMatches` beside it early-returns when no sport has a
- * curated Top list, which is every sport on production today. Bounded by
- * `markets.match_id` and a four-value id filter, so even a 100-row page
- * reads a couple of thousand outcome rows.
+ * ONE query, bounded by `markets.match_id` and a four-value id filter.
  */
-async function loadLadderMarketsForMatches(
+async function collectLadderRungs(
   db: FastifyInstance["db"],
   matchIds: bigint[],
-): Promise<Map<string, PickedLadders>> {
-  const out = new Map<string, PickedLadders>();
+): Promise<Map<string, Map<LadderKind, PickedLadder[]>>> {
+  const out = new Map<string, Map<LadderKind, PickedLadder[]>>();
   if (matchIds.length === 0) return out;
 
   const rows = await db
@@ -1166,20 +1157,14 @@ async function loadLadderMarketsForMatches(
     );
 
   type Price = { rawPrice: string | null; probability: string | null };
-  type Rung = {
-    marketId: bigint;
-    line: string;
-    /** Every outcome on the rung, so the boost math sees the whole book. */
-    prices: Map<string, Price>;
-  };
+  type Rung = { marketId: bigint; line: string; prices: Map<string, Price> };
   // matchId -> kind -> providerMarketId -> marketId -> rung.
   //
-  // The provider tier is not paranoia about a case that cannot happen —
-  // it is what keeps the outcome-id sets from mixing. Oddin keys a
-  // handicap `1` / `2` and Fonbet keys it `h1` / `h2`; a bucket holding
-  // both would read one feed's rungs through the other's ids and quote
-  // an empty pair. A match has one provider today, so in practice each
-  // tier holds exactly one entry.
+  // The provider tier is what keeps the outcome-id sets from mixing:
+  // Oddin keys a handicap `1` / `2` and Fonbet keys it `h1` / `h2`; a
+  // bucket holding both would read one feed's rungs through the other's
+  // ids and quote an empty pair. A match has one provider today, so in
+  // practice each tier holds exactly one entry and the first is taken.
   const byMatch = new Map<string, Map<LadderKind, Map<number, Map<string, Rung>>>>();
 
   for (const r of rows) {
@@ -1222,51 +1207,84 @@ async function loadLadderMarketsForMatches(
   }
 
   for (const [mkey, perKind] of byMatch) {
-    const ladders: PickedLadders = {};
+    const kinds = new Map<LadderKind, PickedLadder[]>();
     for (const [kind, perProvider] of perKind) {
       for (const [providerMarketId, perMarket] of perProvider) {
         const shape = ladderShapeByProviderMarketId(providerMarketId)?.shape;
         if (!shape) continue;
         const firstId = shape.outcomeIds[0];
         const secondId = shape.outcomeIds[1];
-        const picked = pickMainLine(
-          Array.from(perMarket.values()).map((rung) => {
-            const first = rung.prices.get(firstId) ?? null;
-            const second = rung.prices.get(secondId) ?? null;
-            return {
-              line: rung.line,
-              firstPrice: first?.rawPrice != null ? Number(first.rawPrice) : null,
-              secondPrice: second?.rawPrice != null ? Number(second.rawPrice) : null,
-              payload: { rung, first, second },
-            };
-          }),
+        const rungs: PickedLadder[] = [];
+        for (const rung of perMarket.values()) {
+          const first = rung.prices.get(firstId) ?? null;
+          const second = rung.prices.get(secondId) ?? null;
+          rungs.push({
+            marketId: rung.marketId,
+            providerMarketId,
+            line: rung.line,
+            first: {
+              outcomeId: firstId,
+              rawPrice: first?.rawPrice ?? null,
+              probability: first?.probability ?? null,
+            },
+            second: {
+              outcomeId: secondId,
+              rawPrice: second?.rawPrice ?? null,
+              probability: second?.probability ?? null,
+            },
+            // `>= 1`, not `> 1`, in parity with the match-winner row, the
+            // client compute and placement: a side at exactly 1.00 stays
+            // in the set so the key math sees the whole book.
+            boostOutcomes: Array.from(rung.prices, ([outcomeId, pr]) => ({
+              outcomeId,
+              publishedOdds: pr.rawPrice != null ? Number(pr.rawPrice) : Number.NaN,
+            })).filter((o) => Number.isFinite(o.publishedOdds) && o.publishedOdds >= 1),
+          });
+        }
+        // Numeric line order, so a picker lists -1.5, -1, 0, +1, +1.5 and
+        // a total 0.5, 1, 1.5 … rather than whatever order the rows came
+        // back in.
+        rungs.sort(
+          (a, b) => Number.parseFloat(a.line) - Number.parseFloat(b.line),
         );
-        if (!picked) continue;
-        const { rung, first, second } = picked.payload;
-        ladders[kind] = {
-          marketId: rung.marketId,
-          providerMarketId,
-          line: rung.line,
-          first: {
-            outcomeId: firstId,
-            rawPrice: first?.rawPrice ?? null,
-            probability: first?.probability ?? null,
-          },
-          second: {
-            outcomeId: secondId,
-            rawPrice: second?.rawPrice ?? null,
-            probability: second?.probability ?? null,
-          },
-          // `>= 1`, not `> 1`, in parity with the match-winner row, the
-          // client compute and placement: a side at exactly 1.00 stays in
-          // the set so the key math sees the whole book.
-          boostOutcomes: Array.from(rung.prices, ([outcomeId, pr]) => ({
-            outcomeId,
-            publishedOdds: pr.rawPrice != null ? Number(pr.rawPrice) : Number.NaN,
-          })).filter((o) => Number.isFinite(o.publishedOdds) && o.publishedOdds >= 1),
-        };
+        if (rungs.length > 0) kinds.set(kind, rungs);
         break;
       }
+    }
+    if (kinds.size > 0) out.set(mkey, kinds);
+  }
+  return out;
+}
+
+/**
+ * Picks the main handicap and total rung for a batch of matches, for the
+ * Pro list layout's second and third column groups: the BALANCED rung,
+ * by `pickMainLine` in `@oddzilla/types/list-markets` — the product's
+ * own line, chosen over Fonbet's `isMain` flag (operator decision
+ * 2026-09-07; see CLAUDE.md). Scored on raw odds so every bettor sees
+ * the same rung; `priceLadder` applies the viewer's adjustment or boost
+ * afterwards.
+ */
+async function loadLadderMarketsForMatches(
+  db: FastifyInstance["db"],
+  matchIds: bigint[],
+): Promise<Map<string, PickedLadders>> {
+  const out = new Map<string, PickedLadders>();
+  const collected = await collectLadderRungs(db, matchIds);
+  for (const [mkey, kinds] of collected) {
+    const ladders: PickedLadders = {};
+    for (const [kind, rungs] of kinds) {
+      const picked = pickMainLine(
+        rungs.map((ladder) => ({
+          line: ladder.line,
+          firstPrice:
+            ladder.first.rawPrice != null ? Number(ladder.first.rawPrice) : null,
+          secondPrice:
+            ladder.second.rawPrice != null ? Number(ladder.second.rawPrice) : null,
+          payload: ladder,
+        })),
+      );
+      if (picked) ladders[kind] = picked.payload;
     }
     if (Object.keys(ladders).length > 0) out.set(mkey, ladders);
   }
@@ -1284,10 +1302,10 @@ function ladderMarketIds(picked: Map<string, PickedLadders>): bigint[] {
 }
 
 /**
- * Prices a match's picked rungs for one viewer — the SAME way the
- * inline match-winner row is priced, through the same quoter, so a
- * handicap shows the price on the card that the match page shows for
- * it and that placement will re-derive.
+ * Prices one rung for one viewer — the SAME way the inline match-winner
+ * row is priced, through the same quoter, so a handicap shows the price
+ * on the card that the match page shows for it and that placement will
+ * re-derive.
  *
  * A boosted cell REPLACES the adjusted price outright and the leg
  * carries the rule id into the slip: placement prices a boosted leg from
@@ -1299,6 +1317,45 @@ function ladderMarketIds(picked: Map<string, PickedLadders>): bigint[] {
  * A suspended side (raw null) stays null whatever the rule says — a boost
  * must never resurrect an unbettable outcome.
  */
+function priceLadder(
+  ladder: PickedLadder,
+  ctx: MatchBoostContext | undefined,
+  boosts: BatchedMatchBoosts,
+  bp: number,
+) {
+  const bq = ctx
+    ? quoteCardMarketBoost(
+        ladder.marketId,
+        ladder.providerMarketId,
+        ladder.boostOutcomes,
+        ctx,
+        boosts,
+      )
+    : null;
+  const price = (o: PickedLadder["first"]) => {
+    const cell = bq?.cells.get(o.outcomeId);
+    return {
+      outcomeId: o.outcomeId,
+      price:
+        o.rawPrice !== null && cell
+          ? cell.boostedOdds
+          : applyBettorAdjustment(o.rawPrice, o.probability, bp),
+      probability: o.probability,
+      boost: o.rawPrice !== null ? boostDto(cell) : null,
+    };
+  };
+  return {
+    marketId: ladder.marketId.toString(),
+    providerMarketId: ladder.providerMarketId,
+    line: ladder.line,
+    boostRule: bq?.marketWide ?? null,
+    boostSelections: bq?.selections ?? null,
+    first: price(ladder.first),
+    second: price(ladder.second),
+  };
+}
+
+/** The list payload's `ladders` field: the main rung of each kind, priced. */
 function serializeLadders(
   picked: PickedLadders | undefined,
   ctx: MatchBoostContext | undefined,
@@ -1306,41 +1363,8 @@ function serializeLadders(
   bp: number,
 ) {
   if (!picked) return null;
-  const one = (ladder: PickedLadder | undefined) => {
-    if (!ladder) return null;
-    const bq = ctx
-      ? quoteCardMarketBoost(
-          ladder.marketId,
-          ladder.providerMarketId,
-          ladder.boostOutcomes,
-          ctx,
-          boosts,
-        )
-      : null;
-    const price = (o: PickedLadder["first"]) => {
-      const cell = bq?.cells.get(o.outcomeId);
-      return {
-        outcomeId: o.outcomeId,
-        price:
-          o.rawPrice !== null && cell
-            ? cell.boostedOdds
-            : applyBettorAdjustment(o.rawPrice, o.probability, bp),
-        probability: o.probability,
-        boost: o.rawPrice !== null ? boostDto(cell) : null,
-      };
-    };
-    return {
-      marketId: ladder.marketId.toString(),
-      providerMarketId: ladder.providerMarketId,
-      line: ladder.line,
-      boostRule: bq?.marketWide ?? null,
-      boostSelections: bq?.selections ?? null,
-      first: price(ladder.first),
-      second: price(ladder.second),
-    };
-  };
-  const handicap = one(picked.handicap);
-  const total = one(picked.total);
+  const handicap = picked.handicap ? priceLadder(picked.handicap, ctx, boosts, bp) : null;
+  const total = picked.total ? priceLadder(picked.total, ctx, boosts, bp) : null;
   if (!handicap && !total) return null;
   return { handicap, total };
 }
@@ -2025,6 +2049,100 @@ export default async function catalogRoutes(app: FastifyInstance) {
     }
     return build();
   });
+
+  // ── Every handicap / total rung of one match, priced for the viewer ──
+  //
+  // Backs the Pro layout's line picker: the list carries ONE rung per
+  // kind (the balanced main line), and fon.bet's stepper lets a bettor
+  // choose another. This returns the whole ladder for a match in the
+  // exact shape the list's `ladders.handicap` / `ladders.total` use, so
+  // the client drops the chosen rung straight into the row and the same
+  // tick + boost merge prices it from then on.
+  //
+  // On demand rather than in the list payload: a football fixture
+  // carries ~12 rungs × 2 outcomes, and a 100-row page would ship 2 400
+  // outcome objects for a control most rows never open. One fetch per
+  // opened picker instead, against a single-match query. Anonymous
+  // responses are cached 3 s like the lists (a picker opened by many
+  // viewers on one match hits Redis); signed-in ones are per viewer
+  // (adjustment cascade + boost RS gate) and are not.
+  app.get(
+    "/catalog/matches/:id/ladders",
+    // Per-IP scraper friction, same tier as the other per-match reads.
+    { config: { rateLimit: { max: 300, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      reply.header("cache-control", "no-store");
+      const params = z.object({ id: z.coerce.bigint() }).parse(request.params);
+      const empty = { handicap: [], total: [] };
+
+      const build = async () => {
+        const [match] = await app.db
+          .select({
+            id: matches.id,
+            status: matches.status,
+            tournamentId: matches.tournamentId,
+            sportId: categories.sportId,
+            homeCompetitorId: matches.homeCompetitorId,
+            awayCompetitorId: matches.awayCompetitorId,
+          })
+          .from(matches)
+          .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
+          .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+          .where(eq(matches.id, params.id))
+          .limit(1);
+        if (!match || (match.status !== "not_started" && match.status !== "live")) {
+          return empty;
+        }
+
+        const [collected, cascade, viewerRiskScore] = await Promise.all([
+          collectLadderRungs(app.db, [match.id]),
+          request.user
+            ? loadBettorAdjustmentCascade(app.db, request.user.id)
+            : Promise.resolve(EMPTY_CASCADE),
+          loadViewerRiskScore(app.db, request.user?.id),
+        ]);
+        const kinds = collected.get(match.id.toString());
+        if (!kinds) return empty;
+
+        const ctx: MatchBoostContext = {
+          matchId: match.id,
+          tournamentId: match.tournamentId,
+          sportId: match.sportId,
+          homeCompetitorId: match.homeCompetitorId,
+          awayCompetitorId: match.awayCompetitorId,
+        };
+        const bp = cascade.empty
+          ? 0
+          : resolveBettorAdjustmentBp(cascade, {
+              matchId: match.id,
+              tournamentId: match.tournamentId,
+              sportId: match.sportId,
+            });
+        const allRungIds: bigint[] = [];
+        for (const rungs of kinds.values()) for (const r of rungs) allRungIds.push(r.marketId);
+        const boosts = await loadBoostRulesForMatches(
+          app.db,
+          [ctx],
+          allRungIds,
+          viewerRiskScore,
+        );
+
+        const priceAll = (kind: LadderKind) =>
+          (kinds.get(kind) ?? []).map((r) => priceLadder(r, ctx, boosts, bp));
+        return { handicap: priceAll("handicap"), total: priceAll("total") };
+      };
+
+      if (!request.user) {
+        return cached(
+          app.redis,
+          `catalog:ladders:v1:${params.id}`,
+          ANON_LIST_CACHE_TTL_SECONDS,
+          build,
+        );
+      }
+      return build();
+    },
+  );
 
   // ── One match (+ tournament/sport + active markets + outcomes) ──────
   app.get(
