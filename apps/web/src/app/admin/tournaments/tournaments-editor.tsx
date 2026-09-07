@@ -80,7 +80,15 @@ function TierSourceMark({ row }: { row: TournamentRow }) {
       <span
         className="text-[10px] uppercase tracking-[0.12em]"
         style={{ color: "var(--color-accent)" }}
-        title="Assigned by an operator. Neither the Oddin REST refresh nor ZillaAGI will overwrite it."
+        title={
+          // A note survives on a manual row only when the operator
+          // CONFIRMED the tier rather than changing it, so it still
+          // describes this number — and it is the only record of why the
+          // number is what it is. Overriding clears it server-side.
+          row.riskTierNote
+            ? `Confirmed by an operator. Neither the Oddin REST refresh nor ZillaAGI will change it. Original reasoning: ${row.riskTierNote}`
+            : "Assigned by an operator. Neither the Oddin REST refresh nor ZillaAGI will overwrite it."
+        }
       >
         manual
       </span>
@@ -117,6 +125,125 @@ function TierSourceMark({ row }: { row: TournamentRow }) {
       }
     >
       auto
+    </span>
+  );
+}
+
+/**
+ * Tell the ZillaAGI status strip that a row's provenance moved.
+ *
+ * The strip's counts come from a client fetch of `zagi-status` run once
+ * on mount, and the confirm button lives deep inside the table — so
+ * without this a confirm would leave "reviewed / manual" wrong for the
+ * rest of the session. `router.refresh()` re-renders the server rows but
+ * never re-runs a client effect, and paging to the next page does not
+ * remount the panel either (same component, same position in the tree).
+ * One module-scoped listener set is the smallest thing that keeps the two
+ * halves of the page telling the same story.
+ */
+const tierStatusListeners = new Set<() => void>();
+
+function notifyTierStatusChanged() {
+  for (const listener of tierStatusListeners) listener();
+}
+
+/**
+ * Endorse the tier an automatic source already picked.
+ *
+ * The tier is a liability budget, and both automatic sources are
+ * PROVISIONAL by construction: Oddin's number can be replaced by its own
+ * next REST refresh, and a ZillaAGI verdict carries a standing +1 safety
+ * margin precisely because nobody has looked at it. Saying "that number
+ * is right" used to mean opening the edit form and re-picking the same
+ * tier out of a ten-item dropdown — enough friction that a tier nobody
+ * disagreed with stayed marked unreviewed, and the list gave an operator
+ * no way to work down it.
+ *
+ * This posts the tier that is ALREADY stored, so the value never moves.
+ * What changes is provenance: `risk_tier_source` becomes `manual` and
+ * `risk_tier_locked` goes true, which is what stops the REST refresh
+ * (`UpdateTournamentRiskTier` skips locked rows) and any future ZillaAGI
+ * pass (its selector takes only untiered, unlocked rows) from touching
+ * it. Audit-logged like every other tier write, and reversible from the
+ * edit form's "Auto / ZAGI" option.
+ *
+ * No confirm dialog: the write cannot change the number, so the worst a
+ * stray click does is pin a tier that was already in force.
+ *
+ * Deliberately NOT offered on an untiered row — there is no number to
+ * endorse, and locking NULL would fix the tournament at the strictest
+ * tier while hiding it from the reviewer that would otherwise price it.
+ */
+function ConfirmTierButton({
+  id,
+  tier,
+  label,
+}: {
+  id: number;
+  tier: number;
+  label: string;
+}) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+
+  function confirm() {
+    setError(null);
+    startTransition(async () => {
+      try {
+        await clientApi(`/admin/tournaments/${id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ riskTier: tier }),
+        });
+        router.refresh();
+        notifyTierStatusChanged();
+      } catch (e) {
+        setError(e instanceof ApiFetchError ? e.body.message : "Confirm failed.");
+      }
+    });
+  }
+
+  const title = `Confirm T${tier} for ${label} — keeps this exact tier and marks it operator-assigned, so neither the feed nor ZillaAGI changes it`;
+
+  return (
+    <span className="inline-flex items-center gap-1">
+      <button
+        type="button"
+        onClick={confirm}
+        disabled={pending}
+        title={error ?? title}
+        aria-label={title}
+        className="inline-flex h-[20px] w-[20px] items-center justify-center rounded-[5px]"
+        style={{
+          // Filled rather than outlined: the ZAGI badge sitting right
+          // beside it is already an outlined green pill, and two green
+          // outlines read as one label instead of a label and a control.
+          // The glyph takes the page ground so it inverts correctly —
+          // --positive is a dark green in light mode and a light green in
+          // dark, and there is no --positive-fg to pair with it.
+          background: error ? "var(--color-negative)" : "var(--color-positive)",
+          color: "var(--color-bg)",
+          border: "none",
+          cursor: pending ? "default" : "pointer",
+          opacity: pending ? 0.45 : 1,
+        }}
+      >
+        <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true" focusable="false">
+          <path
+            d="M3 8.5 L6.5 12 L13 4.5"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.25"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
+      {error && (
+        <span className="text-[10px]" style={{ color: "var(--color-negative)" }}>
+          {error}
+        </span>
+      )}
     </span>
   );
 }
@@ -289,6 +416,16 @@ function ZagiTierPanel({ currentSportId }: { currentSportId: string }) {
 
   useEffect(() => {
     void loadStatus();
+  }, [loadStatus]);
+
+  // Confirming a tier down in the table moves a row from `zagi` / `auto`
+  // to `manual`, which is two of the numbers in this strip.
+  useEffect(() => {
+    const listener = () => void loadStatus();
+    tierStatusListeners.add(listener);
+    return () => {
+      tierStatusListeners.delete(listener);
+    };
   }, [loadStatus]);
 
   async function run(dryRun: boolean) {
@@ -974,6 +1111,15 @@ function TournamentEditableRow({
               </span>
             )}
             <TierSourceMark row={row} />
+            {/* Only an automatic tier can be endorsed — a manual row is
+                already the operator's, and an untiered one has no number
+                to agree with. Same "lock wins" reading of the two
+                signals that TierSourceMark uses. */}
+            {row.riskTier != null &&
+            !row.riskTierLocked &&
+            row.riskTierSource !== "manual" ? (
+              <ConfirmTierButton id={row.id} tier={row.riskTier} label={row.name} />
+            ) : null}
           </span>
         )}
       </td>
