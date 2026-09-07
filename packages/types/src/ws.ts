@@ -43,6 +43,13 @@ export interface WsLiveScorePayload {
   status?: number | null;
   matchStatusCode?: number | null;
   currentMap?: number | null;
+  // The match clock as an anchor (fonbet-ingester, 2026-09-07): at
+  // unix-ms `atMs` the clock read `seconds` and has moved `direction`
+  // (1 up / 0 stopped / -1 down) seconds per second since. A running
+  // clock is stored at its zero instant so the payload is constant for
+  // as long as it runs; the storefront derives the reading every second
+  // (apps/web/src/lib/clock-math.ts). Absent on the Oddin payload.
+  clock?: { seconds: number; direction: number; atMs?: number } | null;
   // The full payload may include scoreboard / periods / updatedAt; no
   // consumer depends on those, so we leave them unstructured rather
   // than restating the entire shape.

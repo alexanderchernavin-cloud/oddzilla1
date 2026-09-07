@@ -81,20 +81,45 @@ type EventBlock struct {
 }
 
 // EventMisc carries the compact live score.
+//
+// The three timer fields are Fonbet's clock MODEL, as opposed to the
+// rendered `timer` string on LiveEventInfo: TimerSeconds is what the
+// clock read at TimerUpdateTimestampMsec, and TimerDirection says how it
+// has moved since (1 = counting up, 0 = stopped, -1 = counting down).
+// Measured on a live fon.bet snapshot (2026-09-07): a running football
+// half arrives as {timerSeconds: 0, timerDirection: 1,
+// timerUpdateTimestampMsec: <kick-off>} and stays byte-identical for the
+// whole half; half time is {timerSeconds: 2700, timerDirection: 0} with
+// no timestamp. That is the shape a storefront can run a clock from
+// between polls, which the display string is not.
 type EventMisc struct {
-	ID      int64  `json:"id"`
-	Score1  *int   `json:"score1"`
-	Score2  *int   `json:"score2"`
-	Comment string `json:"comment"`
+	ID                       int64  `json:"id"`
+	Score1                   *int   `json:"score1"`
+	Score2                   *int   `json:"score2"`
+	Comment                  string `json:"comment"`
+	TimerSeconds             *int   `json:"timerSeconds"`
+	TimerDirection           *int   `json:"timerDirection"`
+	TimerUpdateTimestampMsec *int64 `json:"timerUpdateTimestampMsec"`
 }
 
 // LiveEventInfo carries the detailed live scoreboard.
+//
+// Its timer triple is the same model as EventMisc's, restated at the
+// packet's own time: TimerSeconds is the clock reading at
+// TimerTimestampMsec (which is the snapshot generation time, shared by
+// every row in the packet). Preferred over the EventMisc anchor because
+// it is always fresh — a Fonbet-side clock correction shows up here on
+// the next poll — while the two agree to within the integer second
+// whenever the clock has run undisturbed.
 type LiveEventInfo struct {
-	EventID      int64         `json:"eventId"`
-	Finished     bool          `json:"finished"`
-	Timer        string        `json:"timer"`
-	Scores       [][]ScoreCell `json:"scores"`
-	ScoreComment string        `json:"scoreComment"`
+	EventID            int64         `json:"eventId"`
+	Finished           bool          `json:"finished"`
+	Timer              string        `json:"timer"`
+	TimerSeconds       *int          `json:"timerSeconds"`
+	TimerDirection     *int          `json:"timerDirection"`
+	TimerTimestampMsec *int64        `json:"timerTimestampMsec"`
+	Scores             [][]ScoreCell `json:"scores"`
+	ScoreComment       string        `json:"scoreComment"`
 }
 
 type ScoreCell struct {

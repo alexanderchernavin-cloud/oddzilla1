@@ -102,9 +102,28 @@ customFactors[]      {e: eventId, factors: [{f, v, p?, pt?}]}
                      f = factor id, v = decimal odds, p = param×100, pt = param text
                      ("-2.5", "+2.5", "2.5"); factors are the FULL current offer
 eventBlocks[]        {eventId, state: "blocked" | "partial", factors?[]}
-eventMiscs[]         {id, score1, score2, comment, timerSeconds, timerDirection}
-liveEventInfos[]     {eventId, finished, timer, scores[[{c1,c2,title,serve?}]],
+eventMiscs[]         {id, score1, score2, comment, timerSeconds?, timerDirection?,
+                      timerUpdateTimestampMsec?}
+liveEventInfos[]     {eventId, finished, timer, timerSeconds?, timerDirection?,
+                      timerTimestampMsec?, scores[[{c1,c2,title,serve?}]],
                       scoreComment}
+                     The three timer fields are the clock MODEL; `timer` is
+                     the string Fonbet rendered from them. timerDirection:
+                     1 counting up, 0 stopped, -1 counting down (never seen
+                     on the line; MMA's "5:00 bout not started" implies it).
+                     timerSeconds is the reading at the timestamp beside it
+                     — the packet time on liveEventInfos (restated every
+                     packet), the clock's last START on eventMiscs (a
+                     running football half is {0, 1, <kick-off ms>} and
+                     stays byte-identical for 45 minutes). A stopped clock
+                     has no timestamp. Measured 2026-09-07 across ~50 live
+                     matches: the two blocks place the clock's zero within
+                     ±0.6 s of each other, i.e. they describe one clock.
+                     Football, hockey, basketball, handball, esports and
+                     fights are timed; tennis, table tennis, volleyball,
+                     cricket and snooker send no timer fields at all.
+                     See "Running clock" under Storefront for what the
+                     ingester makes of it.
                      scores[0] = overall, scores[1..] = periods (sets, halves,
                      maps), innermost group = what is in play right now.
                      serve (1 = team1, 2 = team2) rides that innermost cell and
@@ -380,6 +399,36 @@ hatch for whatever the rules leave open.
 - Sport icons / team logos: `sports.logo_url`, `competitors.logo_url`,
   `tournaments.logo_url` from Fonbet's CDN; bundled SVGs for the nine
   sports without a Fonbet glyph.
+- **Running clock** (2026-09-07). The list rows' clock used to be Fonbet's
+  rendered `timer` string, written into `live_score.scoreboard.time` on
+  every poll and displayed verbatim — so it moved only when a frame
+  landed (a stutter of fives on the 5 s poll, frozen after a WS drop),
+  and every running match cost a `live_score` write plus a WS frame per
+  poll. The ingester now reads the clock MODEL (the timer triple above)
+  and writes it as an ANCHOR, `live_score.clock = {seconds, direction,
+  atMs}`: "at instant atMs the clock read seconds and moves direction
+  s/s". A running clock is NORMALISED to its zero instant (`seconds` 0,
+  `atMs` = when it read 0), which is constant while the clock runs, and
+  the anchor is STICKY across polls within 2 s (`clockAnchorToleranceMs`
+  in `internal/ingest/livescore.go` — the integer floor of `timerSeconds`
+  plus packet-time jitter moves the implied zero by ±0.6 s per poll, and
+  rewriting for that would be the old churn). So a football half is ONE
+  write at kick-off; half time is a second (direction 0, `seconds` 2700,
+  no instant); the second half a third. Basketball's stop-clock is the
+  same rule seen more often: every stoppage and restart moves the anchor
+  and publishes, which is exactly how often that clock needs syncing.
+  Anything Fonbet corrects by more than 2 s re-anchors on the next poll,
+  so there is no separate "sync every N minutes" — the sync happens
+  precisely when the source moves and never otherwise. The storefront
+  (`apps/web/src/lib/clock-math.ts` + `running-clock.ts`, consumed by
+  `components/match/live-meta.tsx`) derives the reading every second
+  from one page-wide ticker, against a server-time estimate built from
+  the timestamps on the WS frames it already receives (least-latency
+  sample wins; window 120 s; a step of >10 s restarts it) so a device
+  whose clock is a minute off still shows the broadcast's minute.
+  `scoreboard.time` is no longer written for Fonbet rows; the web falls
+  back to it where a payload has no `clock` — the Oddin esports payload
+  and the untimed sports.
 
 ### Tournament marks — coverage, and why half the rows have none
 
