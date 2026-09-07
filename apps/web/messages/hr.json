@@ -808,17 +808,15 @@
       "handicapAway": "H2",
       "totalShort": "Total",
       "overShort": "Više",
-      "underShort": "Manje"
+      "underShort": "Manje",
+      "chooseLine": "Odaberi liniju",
+      "mainLine": "Glavna linija"
     },
     "listLayout": {
       "aria": "Prikaz popisa mečeva",
       "default": "Standardni prikaz",
+      "twoCols": "Dva stupca",
       "pro": "Pro prikaz"
-    },
-    "listCols": {
-      "aria": "Stupci popisa mečeva",
-      "one": "Jedan stupac",
-      "two": "Dva stupca"
     },
     "scoreboard": {
       "score": "Rezultat",

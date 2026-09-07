@@ -1,13 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   MatchRow,
   type ListLadderMarket,
   type ListMatch,
   type ListMatchOutcome,
 } from "./match-row";
-import { MatchTable } from "./match-table";
+import { MatchTable, type ChooseLine, type LadderKind } from "./match-table";
 // Subpath, never the barrel — see packages/types/src/odds.ts.
 import {
   isQuotableOutcomeOdds,
@@ -265,6 +265,50 @@ export function MatchListTabs({
     writeListLayoutCookie(l);
   }
 
+  // Lines a bettor chose from the Pro table's stepper, per match and kind.
+  //
+  // The list ships ONE rung per kind — the balanced main line — and
+  // fon.bet's ⇅ lets a bettor pick another from the match's ladder. The
+  // chosen rung is fetched fresh from /catalog/matches/:id/ladders (see
+  // LinePicker in match-table.tsx) and stored here, ABOVE the merge, so
+  // it goes through `mergeLadder` exactly like the server's pick: live
+  // ticks re-price it, its ZillaBoost re-applies over them, a market
+  // suspension nulls it. Session-only, in memory, as on fon.bet — a
+  // chosen line is a look at this match now, not a preference.
+  //
+  // Cost: an overridden row gets a fresh `match` object per tick, so its
+  // memo does not short-circuit. Bounded by the number of rows the
+  // bettor has actually stepped — a handful — not by the list.
+  type LineOverrides = Partial<Record<LadderKind, ListLadderMarket>>;
+  const [lineOverrides, setLineOverrides] = useState<Map<string, LineOverrides>>(
+    () => new Map(),
+  );
+  const chooseLine = useCallback<ChooseLine>((matchId, kind, rung) => {
+    setLineOverrides((prev) => {
+      const next = new Map(prev);
+      next.set(matchId, { ...(prev.get(matchId) ?? {}), [kind]: rung });
+      return next;
+    });
+  }, []);
+  const withChosenLines = useCallback(
+    (m: ListMatchEnriched): ListMatchEnriched => {
+      const ov = lineOverrides.get(m.id);
+      if (!ov) return m;
+      return {
+        ...m,
+        ladders: {
+          handicap: ov.handicap
+            ? mergeLadder(ov.handicap, ticks, marketStatuses)
+            : m.ladders?.handicap ?? null,
+          total: ov.total
+            ? mergeLadder(ov.total, ticks, marketStatuses)
+            : m.ladders?.total ?? null,
+        },
+      };
+    },
+    [lineOverrides, ticks, marketStatuses],
+  );
+
   function renderRow(m: ListMatchEnriched) {
     const live = mergedById?.get(m.id) ?? m;
     return (
@@ -296,7 +340,10 @@ export function MatchListTabs({
         <MatchTable
           // `shownOf` first: a match that went terminal under this open
           // tab must leave the table exactly as it leaves the cards (#676).
-          matches={shownOf(list).map((m) => mergedById?.get(m.id) ?? m)}
+          matches={shownOf(list).map((m) =>
+            withChosenLines(mergedById?.get(m.id) ?? m),
+          )}
+          onChooseLine={chooseLine}
         />
       );
     }
@@ -373,14 +420,32 @@ export function MatchListTabs({
   );
 }
 
-// The control cluster above every match list: layout first, then the
-// column count.
+// The single control above every match list: how the list is shown.
 //
-// The column toggle is dropped entirely in Pro layout rather than
-// disabled. It splits the CARD stack into two tracks; a dense table
-// already fills the column's width and has nothing to split, so in Pro
-// the control would be present, clickable, and do nothing — which reads
-// as a bug rather than as "not applicable here".
+// Three options in one segmented control — cards, two-column cards, table
+// — over two stored preferences (`layout` and `cols`). They were two
+// controls until 2026-09-07: a layout switch that was always visible and
+// a column toggle beside it that only appeared from 2000px, so on a wide
+// screen a bettor saw two groups for what is one question, and on a
+// narrow one the "two columns" idea was invisible rather than absent.
+// One control makes the question legible: "how do you want the list".
+//
+// The two-column option keeps its ≥2000px gate, now on the BUTTON
+// (`.oz-match-list-opt-2col` in globals.css): below that width two
+// cards per row would each be under ~450px and fight the scoreboard and
+// odds for space, and the grid rule itself is inside the same media
+// query, so a persisted "2" silently renders as one column there. A
+// visible button that did nothing would read as a bug; a hidden one
+// reads as "not available at this width", which is the truth.
+//
+// The stored model is unchanged on purpose — `oz:match-list-cols` and
+// `oz:match-list-layout` (plus the layout cookie) keep their meanings —
+// so nobody's saved choice moves. Picking "two columns" sets layout
+// "default" AND cols 2; picking "table" sets layout "pro" and leaves
+// cols alone, so switching back to cards returns to the column count
+// the bettor had.
+type ListView = "cards" | "cards2" | "table";
+
 function ListControls({
   cols,
   onCols,
@@ -392,95 +457,44 @@ function ListControls({
   layout: LayoutMode;
   onLayout: (l: LayoutMode) => void;
 }) {
-  return (
-    <div className="oz-match-list-controls">
-      <LayoutToggle layout={layout} onChange={onLayout} />
-      {layout === "default" && <ColsToggle cols={cols} onChange={onCols} />}
-    </div>
-  );
-}
-
-// Default / Pro layout switch. Visible at every viewport width, unlike
-// the column toggle beside it — the dense table is most valuable on a
-// phone, where a card stack costs the most scrolling.
-function LayoutToggle({
-  layout,
-  onChange,
-}: {
-  layout: LayoutMode;
-  onChange: (l: LayoutMode) => void;
-}) {
   const t = useTranslations("matchWidgets");
+  const view: ListView =
+    layout === "pro" ? "table" : cols === 2 ? "cards2" : "cards";
+  function pick(v: ListView) {
+    if (v === "table") {
+      onLayout("pro");
+      return;
+    }
+    onLayout("default");
+    onCols(v === "cards2" ? 2 : 1);
+  }
+  const opt = (
+    v: ListView,
+    label: string,
+    icon: ReactNode,
+    className?: string,
+  ) => (
+    <button
+      type="button"
+      className={className ? `oz-match-cols-btn ${className}` : "oz-match-cols-btn"}
+      data-active={view === v ? "true" : "false"}
+      aria-pressed={view === v}
+      aria-label={label}
+      title={label}
+      onClick={() => pick(v)}
+    >
+      {icon}
+    </button>
+  );
   return (
     <div
       className="oz-match-list-layout"
       role="group"
       aria-label={t("listLayout.aria")}
     >
-      <button
-        type="button"
-        className="oz-match-cols-btn"
-        data-active={layout === "default" ? "true" : "false"}
-        aria-pressed={layout === "default"}
-        aria-label={t("listLayout.default")}
-        title={t("listLayout.default")}
-        onClick={() => onChange("default")}
-      >
-        <I.LayoutCards size={14} />
-      </button>
-      <button
-        type="button"
-        className="oz-match-cols-btn"
-        data-active={layout === "pro" ? "true" : "false"}
-        aria-pressed={layout === "pro"}
-        aria-label={t("listLayout.pro")}
-        title={t("listLayout.pro")}
-        onClick={() => onChange("pro")}
-      >
-        <I.LayoutTable size={14} />
-      </button>
-    </div>
-  );
-}
-
-// Single / two-column toggle sitting on the right edge above the match
-// list. Hidden via CSS below 2000px (covers QHD-at-125 %-scaling and
-// up), where two cards per row would each be under ~450px wide and
-// the layout starts to fight the scoreboard + odds buttons for space.
-// The single-column flex stack is the default everywhere; the
-// [data-cols="2"] grid only kicks in above the same breakpoint.
-function ColsToggle({
-  cols,
-  onChange,
-}: {
-  cols: ColCount;
-  onChange: (c: ColCount) => void;
-}) {
-  const t = useTranslations("matchWidgets");
-  return (
-    <div className="oz-match-list-cols" role="group" aria-label={t("listCols.aria")}>
-      <button
-        type="button"
-        className="oz-match-cols-btn"
-        data-active={cols === 1 ? "true" : "false"}
-        aria-pressed={cols === 1}
-        aria-label={t("listCols.one")}
-        title={t("listCols.one")}
-        onClick={() => onChange(1)}
-      >
-        <I.Rows1 size={14} />
-      </button>
-      <button
-        type="button"
-        className="oz-match-cols-btn"
-        data-active={cols === 2 ? "true" : "false"}
-        aria-pressed={cols === 2}
-        aria-label={t("listCols.two")}
-        title={t("listCols.two")}
-        onClick={() => onChange(2)}
-      >
-        <I.Columns2 size={14} />
-      </button>
+      {opt("cards", t("listLayout.default"), <I.LayoutCards size={14} />, "oz-match-list-opt-1col")}
+      {opt("cards2", t("listLayout.twoCols"), <I.Columns2 size={14} />, "oz-match-list-opt-2col")}
+      {opt("table", t("listLayout.pro"), <I.LayoutTable size={14} />)}
     </div>
   );
 }

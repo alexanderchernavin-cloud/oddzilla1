@@ -34,23 +34,26 @@
  */
 
 import Link from "next/link";
-import { memo, useMemo, useRef } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { CSSProperties, MouseEvent } from "react";
+import { clientApi } from "@/lib/api-client";
 import { SportGlyph } from "@/components/ui/sport-glyph";
-import { LiveDot } from "@/components/ui/primitives";
+import { LiveDot, TeamMark } from "@/components/ui/primitives";
 import { TierMark, isFeaturedTier } from "@/components/ui/tier-mark";
 import { I } from "@/components/ui/icons";
 import { useBetSlip } from "@/lib/bet-slip";
-import { servingSide, type LiveScore } from "@/lib/live-score";
-import { useOddsFlash, useValueFlash } from "@/lib/use-odds-flash";
+import { servingSide } from "@/lib/live-score";
+import { useOddsFlash } from "@/lib/use-odds-flash";
 import { useTranslations } from "@/lib/i18n";
 import {
   matchWinnerSelection,
   type MatchWinnerSide,
 } from "@/lib/match-winner-selection";
 import { ServeMark } from "./serve-mark";
+import { LiveMeta } from "./live-meta";
 import { LocalDateTime } from "./local-datetime";
-import type { ListLadderMarket, ListMatch, ListMatchOutcome } from "./match-row";
+import { teamTag, type ListLadderMarket, type ListMatch, type ListMatchOutcome } from "./match-row";
 // Value imports via subpaths, never the barrel — see the note in
 // packages/types/src/odds.ts.
 import { formatOddsDisplay, isBettableOdds } from "@oddzilla/types/odds";
@@ -63,6 +66,15 @@ import type { SlipSelection } from "@oddzilla/types";
 // renders it.
 type TableMatch = ListMatch & { _sportSlug: string; _sportShort: string };
 
+export type LadderKind = "handicap" | "total";
+/** Reports a rung the bettor picked from a row's line stepper. */
+export type ChooseLine = (matchId: string, kind: LadderKind, rung: ListLadderMarket) => void;
+/** Wire shape of GET /catalog/matches/:id/ladders. */
+interface LaddersResponse {
+  handicap: ListLadderMarket[];
+  total: ListLadderMarket[];
+}
+
 // ── Column model ────────────────────────────────────────────────────
 
 type GroupKind = "result" | "handicap" | "total";
@@ -73,14 +85,19 @@ interface ResultColumn {
 }
 
 /**
- * Which result columns a tournament group shows.
+ * Which result columns the LIST shows — computed once over every fixture
+ * on the page, not per tournament group.
  *
- * Driven by the group's own rows so a tennis group never carries a dead
- * "X" column and a football group always does, even for the one fixture
- * in it whose draw is momentarily suspended — a column that appeared
- * and disappeared per row would defeat the alignment this layout exists
- * for. Read off the SSR market STRUCTURE rather than off prices, so a
- * live tick can never add or remove a column mid-session.
+ * It was per group for a day, on the reasoning that a tennis group need
+ * not carry a dead "X". But the clock, score and team names sit to the
+ * LEFT of the odds track, and a track that is one cell narrower on one
+ * group slides all of them right by a cell there: a football match whose
+ * 1X2 came back two-way at half time (draw suspended) put its clock 46px
+ * off the rows above and below it (operator, 2026-09-07). Columns are
+ * the widest any row needs; a row without the market shows `—`, which is
+ * fon.bet's rule as well. Read off the SSR market STRUCTURE rather than
+ * off prices, so a live tick can never add or remove a column
+ * mid-session.
  *
  * The captions are the betting symbols 1 / X / 2, deliberately NOT
  * translated: they are the same three characters on every book in every
@@ -117,14 +134,13 @@ function isQuestion(m: TableMatch): boolean {
 }
 
 /**
- * Which market groups a tournament group renders at all.
- *
- * A group whose every row lacks a handicap (or a total) drops that
- * column entirely rather than printing a column of em dashes — an
- * esports series with no map handicap, a tournament between rounds.
- * The groups that DO appear are then hidden or shown by container width
- * in CSS: this decides "is there anything here", the stylesheet decides
- * "is there room for it".
+ * Which market groups the LIST renders — again over every fixture on the
+ * page, for the same alignment reason as the result columns. A page
+ * where no row quotes a handicap (an esports list) gets no handicap
+ * column; a page where some do gets it on every row, dashed where a
+ * fixture lacks it. The groups that DO appear are then hidden or shown
+ * by container width in CSS: this decides "is there anything here", the
+ * stylesheet decides "is there room for it".
  *
  * Returns one of four module-constant arrays, never a fresh one. The
  * result is a prop on every memoized ProRow, and MatchTable re-renders
@@ -213,12 +229,29 @@ function groupByTournament(matches: TableMatch[]): TournamentGroup[] {
 
 // ── Table ───────────────────────────────────────────────────────────
 
-export function MatchTable({ matches }: { matches: TableMatch[] }) {
+export function MatchTable({
+  matches,
+  onChooseLine,
+}: {
+  matches: TableMatch[];
+  /** Stable callback (memoized by the parent) so row memos hold. */
+  onChooseLine: ChooseLine;
+}) {
   const groups = useMemo(() => groupByTournament(matches), [matches]);
+  // Page-wide, so every group's odds track is the same width and the
+  // clock / score / names column lines up down the whole list.
+  const resultColumns = useMemo(() => resultColumnsFor(matches), [matches]);
+  const marketGroups = useMemo(() => marketGroupsFor(matches), [matches]);
   return (
     <div className="oz-pro-table">
       {groups.map((g) => (
-        <ProGroup key={g.key} group={g} />
+        <ProGroup
+          key={g.key}
+          group={g}
+          resultColumns={resultColumns}
+          marketGroups={marketGroups}
+          onChooseLine={onChooseLine}
+        />
       ))}
     </div>
   );
@@ -229,6 +262,8 @@ interface LadderLabels {
   total: string;
   over: string;
   under: string;
+  chooseLine: string;
+  mainLine: string;
 }
 
 /** Caption for one cell position, with the width class it must match. */
@@ -237,17 +272,25 @@ interface Caption {
   variant?: "wide" | "line";
 }
 
-function ProGroup({ group }: { group: TournamentGroup }) {
+function ProGroup({
+  group,
+  resultColumns,
+  marketGroups: pageGroups,
+  onChooseLine,
+}: {
+  group: TournamentGroup;
+  resultColumns: ResultColumn[];
+  marketGroups: GroupKind[];
+  onChooseLine: ChooseLine;
+}) {
   const tMatch = useTranslations("match");
   const tCommon = useTranslations("common");
   const tw = useTranslations("matchWidgets");
-  const resultColumns = useMemo(
-    () => resultColumnsFor(group.matches),
-    [group.matches],
-  );
+  // A group made only of questions still carries no odds track at all:
+  // its rows have no cells, so captions over them would head nothing.
   const marketGroups = useMemo(
-    () => marketGroupsFor(group.matches),
-    [group.matches],
+    () => (group.matches.every(isQuestion) ? GROUPS_NONE : pageGroups),
+    [group.matches, pageGroups],
   );
   const featured = isFeaturedTier(group.riskTier);
 
@@ -257,6 +300,8 @@ function ProGroup({ group }: { group: TournamentGroup }) {
       total: tw("listMarkets.total"),
       over: tw("listMarkets.over"),
       under: tw("listMarkets.under"),
+      chooseLine: tw("listMarkets.chooseLine"),
+      mainLine: tw("listMarkets.mainLine"),
     }),
     [tw],
   );
@@ -339,6 +384,7 @@ function ProGroup({ group }: { group: TournamentGroup }) {
             marketGroups={marketGroups}
             drawLabel={tCommon("draw")}
             labels={labels}
+            onChooseLine={onChooseLine}
           />
         ))}
       </div>
@@ -358,12 +404,14 @@ const ProRow = memo(function ProRow({
   marketGroups,
   drawLabel,
   labels,
+  onChooseLine,
 }: {
   match: TableMatch;
   resultColumns: ResultColumn[];
   marketGroups: GroupKind[];
   drawLabel: string;
   labels: LadderLabels;
+  onChooseLine: ChooseLine;
 }) {
   const slip = useBetSlip();
   const tMatch = useTranslations("match");
@@ -460,7 +508,7 @@ const ProRow = memo(function ProRow({
   }
 
   function renderHandicap() {
-    return ([false, true] as const).map((isAway) => {
+    const cells = ([false, true] as const).map((isAway) => {
       const o = handicap ? (isAway ? handicap.second : handicap.first) : null;
       const line = handicap ? handicapLineForSide(handicap.line, isAway) : null;
       const team = isAway ? match.awayTeam : match.homeTeam;
@@ -487,13 +535,36 @@ const ProRow = memo(function ProRow({
         />
       );
     });
+    // The stepper sits between the two sides, as fon.bet draws it —
+    // it is one line for both, so it belongs to neither cell.
+    return [
+      cells[0],
+      <LinePicker
+        key="pick"
+        matchId={match.id}
+        kind="handicap"
+        current={handicap}
+        labels={labels}
+        homeTeam={match.homeTeam}
+        awayTeam={match.awayTeam}
+        onChoose={onChooseLine}
+      />,
+      cells[1],
+    ];
   }
 
   function renderTotal() {
     return [
-      <span key="line" className="mono tnum oz-pro-linecell">
-        {total ? total.line : "—"}
-      </span>,
+      <LinePicker
+        key="line"
+        matchId={match.id}
+        kind="total"
+        current={total}
+        labels={labels}
+        homeTeam={match.homeTeam}
+        awayTeam={match.awayTeam}
+        onChoose={onChooseLine}
+      />,
       ...([false, true] as const).map((isUnder) => {
         const o = total ? (isUnder ? total.second : total.first) : null;
         const word = isUnder ? labels.under : labels.over;
@@ -538,15 +609,32 @@ const ProRow = memo(function ProRow({
           </span>
         ) : (
           <span className="oz-pro-teams">
+            {/* Crests as on the card, sized to the 34px row. TeamMark
+                renders nothing without a picture, so a side with no
+                logo is its name alone — no slot, no monogram — and the
+                name sits in its own span so a crest never eats the
+                ellipsis (operator, 2026-09-07). */}
             <span className="oz-pro-team">
-              {match.homeTeam}
+              <TeamMark
+                tag={teamTag(match.homeTeam)}
+                size={16}
+                logoUrl={match.homeLogoUrl ?? null}
+                name={match.homeTeam}
+              />
+              <span className="oz-pro-teamname">{match.homeTeam}</span>
               {serving === "home" ? <ServeMark /> : null}
             </span>
             <span className="oz-pro-vs" aria-hidden="true">
               —
             </span>
             <span className="oz-pro-team">
-              {match.awayTeam}
+              <TeamMark
+                tag={teamTag(match.awayTeam)}
+                size={16}
+                logoUrl={match.awayLogoUrl ?? null}
+                name={match.awayTeam}
+              />
+              <span className="oz-pro-teamname">{match.awayTeam}</span>
               {serving === "away" ? <ServeMark /> : null}
             </span>
           </span>
@@ -586,36 +674,205 @@ const ProRow = memo(function ProRow({
 });
 
 /**
- * The live half of a row: clock, score, and the feed's own parenthetical
- * detail.
+ * fon.bet's ⇅: choose which rung of a match's handicap or total ladder
+ * the row shows.
  *
- * `comment` is what Fonbet puts beside the headline score — games in the
- * current set for tennis ("(6-5)"), the per-period line elsewhere — so
- * it is rendered verbatim rather than reconstructed from `periods`. It
- * is absent on the Oddin esports payload, where the headline score is
- * the map count and there is nothing to qualify it with.
+ * For a total the control IS the line chip (one line shared by two
+ * prices); for a handicap it is a narrow stepper between the two sides.
+ * Opening it fetches the match's whole ladder — every full-match rung,
+ * priced for this viewer, in the row's own wire shape — and lists the
+ * rungs as fon.bet does, current one marked, main line named. Picking
+ * one reports up to MatchListTabs, which stores it above the live merge
+ * so ticks and boosts keep pricing it; the picker itself holds only the
+ * open / loading / fetched state of one popover.
+ *
+ * Portal onto <body>: the tournament group clips overflow to keep its
+ * rounded corners, so a panel drawn inside the row would be cut at the
+ * group's edge. Fixed position under the trigger, closed by Escape,
+ * outside click, scroll or resize — the same discipline Bet Assist's
+ * panel keeps. Inside the popover a row selects; betting stays on the
+ * main row's cells, so there is one place a price is clicked.
+ *
+ * Fetched on open every time rather than cached: one small request, and
+ * a ladder shown even a minute stale on a live match would quote rungs
+ * the book has moved off.
  */
-function LiveMeta({ liveScore }: { liveScore: LiveScore | null }) {
-  const home = liveScore?.home ?? 0;
-  const away = liveScore?.away ?? 0;
-  const time = liveScore?.scoreboard?.time ?? null;
-  const comment = liveScore?.comment ?? null;
-  const ref = useRef<HTMLSpanElement>(null);
-  // One number so a change on either side flashes the pair. Direction
-  // (green/red) is meaningless for a scoreline, but "this just moved"
-  // is exactly the signal a dense list needs, and the alternative —
-  // two independently tinted digits — reads as one side being good.
-  useValueFlash(home * 1000 + away, ref);
+function LinePicker({
+  matchId,
+  kind,
+  current,
+  labels,
+  homeTeam,
+  awayTeam,
+  onChoose,
+}: {
+  matchId: string;
+  kind: LadderKind;
+  current: ListLadderMarket | null;
+  labels: LadderLabels;
+  homeTeam: string;
+  awayTeam: string;
+  onChoose: ChooseLine;
+}) {
+  const [open, setOpen] = useState(false);
+  const [rungs, setRungs] = useState<ListLadderMarket[] | null>(null);
+  const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  const close = useCallback(() => {
+    setOpen(false);
+    setRungs(null);
+  }, []);
+
+  function toggle(e: MouseEvent<HTMLButtonElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (open) {
+      close();
+      return;
+    }
+    const r = triggerRef.current?.getBoundingClientRect();
+    if (r) setAnchor({ top: r.bottom + 4, left: r.left });
+    setOpen(true);
+    clientApi<LaddersResponse>(`/catalog/matches/${matchId}/ladders`)
+      .then((res) => setRungs(res[kind]))
+      .catch(() => setRungs([]));
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Node | null;
+      if (panelRef.current?.contains(t) || triggerRef.current?.contains(t)) return;
+      close();
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [open, close]);
+
+  const isTotal = kind === "total";
+  // Whatever the row currently shows is what is "current" — the server's
+  // main line or a previous pick. Marked by market id, which IS the rung.
+  const currentId = current?.marketId ?? null;
+
+  const panel =
+    open && anchor
+      ? createPortal(
+          <div
+            ref={panelRef}
+            className="oz-pro-linepop"
+            role="listbox"
+            aria-label={labels.chooseLine}
+            style={{ top: anchor.top, left: anchor.left }}
+          >
+            {rungs == null ? (
+              <div className="oz-pro-linepop-empty">…</div>
+            ) : rungs.length === 0 ? (
+              <div className="oz-pro-linepop-empty">—</div>
+            ) : (
+              rungs.map((r) => {
+                const isCurrent = r.marketId === currentId;
+                const p1 = r.first.price != null ? formatOddsDisplay(Number(r.first.price)) : "—";
+                const p2 = r.second.price != null ? formatOddsDisplay(Number(r.second.price)) : "—";
+                return (
+                  <button
+                    key={r.marketId}
+                    type="button"
+                    role="option"
+                    aria-selected={isCurrent}
+                    className="oz-pro-linepop-row mono tnum"
+                    data-current={isCurrent ? "true" : undefined}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onChoose(matchId, kind, r);
+                      close();
+                    }}
+                  >
+                    {isTotal ? (
+                      <>
+                        <span className="oz-pro-linepop-line">{r.line}</span>
+                        <span className="oz-pro-linepop-price">{p1}</span>
+                        <span className="oz-pro-linepop-price">{p2}</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="oz-pro-linepop-line">
+                          {handicapLineForSide(r.line, false)}
+                        </span>
+                        <span className="oz-pro-linepop-price">{p1}</span>
+                        <span className="oz-pro-linepop-line">
+                          {handicapLineForSide(r.line, true)}
+                        </span>
+                        <span className="oz-pro-linepop-price">{p2}</span>
+                      </>
+                    )}
+                  </button>
+                );
+              })
+            )}
+          </div>,
+          document.body,
+        )
+      : null;
+
+  const title = `${labels.chooseLine} — ${homeTeam} — ${awayTeam}`;
+
+  if (isTotal) {
+    return (
+      <>
+        <button
+          ref={triggerRef}
+          type="button"
+          className="mono tnum oz-pro-linecell"
+          data-open={open ? "true" : undefined}
+          disabled={!current}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          aria-label={title}
+          title={labels.chooseLine}
+          onClick={toggle}
+        >
+          <span>{current ? current.line : "—"}</span>
+          <I.UpDown size={9} />
+        </button>
+        {panel}
+      </>
+    );
+  }
   return (
     <>
-      {time ? <span className="mono oz-pro-clock">{time}</span> : null}
-      <span ref={ref} className="mono tnum oz-pro-score">
-        {home}:{away}
-      </span>
-      {comment ? <span className="mono oz-pro-comment">{comment}</span> : null}
+      <button
+        ref={triggerRef}
+        type="button"
+        className="oz-pro-stepper"
+        data-open={open ? "true" : undefined}
+        disabled={!current}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={title}
+        title={labels.chooseLine}
+        onClick={toggle}
+      >
+        <I.UpDown size={10} />
+      </button>
+      {panel}
     </>
   );
 }
+
 
 /**
  * One price cell.

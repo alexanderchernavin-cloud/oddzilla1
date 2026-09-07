@@ -808,17 +808,15 @@
       "handicapAway": "Ф2",
       "totalShort": "Тотал",
       "overShort": "Б",
-      "underShort": "М"
+      "underShort": "М",
+      "chooseLine": "Выбрать линию",
+      "mainLine": "Основная линия"
     },
     "listLayout": {
       "aria": "Вид списка матчей",
       "default": "Обычный вид",
+      "twoCols": "Две колонки",
       "pro": "Pro-вид"
-    },
-    "listCols": {
-      "aria": "Колонки списка матчей",
-      "one": "Одна колонка",
-      "two": "Две колонки"
     },
     "scoreboard": {
       "score": "Счёт",

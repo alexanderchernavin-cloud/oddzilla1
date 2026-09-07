@@ -808,17 +808,15 @@
       "handicapAway": "H2",
       "totalShort": "Total",
       "overShort": "O",
-      "underShort": "U"
+      "underShort": "U",
+      "chooseLine": "Choose line",
+      "mainLine": "Main line"
     },
     "listLayout": {
       "aria": "Match list layout",
       "default": "Default layout",
+      "twoCols": "Two columns",
       "pro": "Pro layout"
-    },
-    "listCols": {
-      "aria": "Match list columns",
-      "one": "Single column",
-      "two": "Two columns"
     },
     "scoreboard": {
       "score": "Score",

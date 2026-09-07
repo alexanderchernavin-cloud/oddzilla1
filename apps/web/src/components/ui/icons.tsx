@@ -166,6 +166,13 @@ export const I = {
       <path d="M3 9h18M3 14.5h18M15 4v16" />
     </Icon>
   ),
+  // Line stepper on the Pro table's handicap / total cells — the ⇅ fon.bet
+  // draws beside a param that has other rungs to choose from.
+  UpDown: (p: IconProps) => (
+    <Icon {...p}>
+      <path d="m8 9 4-4 4 4M8 15l4 4 4-4" />
+    </Icon>
+  ),
   Ticket: (p: IconProps) => (
     <Icon {...p}>
       <path d="M3 9a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4z" />
