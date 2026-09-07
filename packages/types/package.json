@@ -24,6 +24,7 @@
     "./netwinstable": "./src/netwinstable.ts",
     "./boosted-odds": "./src/boosted-odds.ts",
     "./odds": "./src/odds.ts",
+    "./list-markets": "./src/list-markets.ts",
     "./support": "./src/support.ts",
     "./video": "./src/video.ts",
     "./sportradar": "./src/sportradar.ts",

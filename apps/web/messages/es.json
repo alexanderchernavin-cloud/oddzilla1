@@ -799,6 +799,22 @@
       "armed": "Comienza automaticamente cuando el partido empiece",
       "drmUnsupported": "Este navegador no puede reproducir la transmision protegida. Prueba con Chrome, Edge, Firefox o Safari."
     },
+    "listMarkets": {
+      "handicap": "Hándicap",
+      "total": "Total",
+      "over": "Más",
+      "under": "Menos",
+      "handicapHome": "H1",
+      "handicapAway": "H2",
+      "totalShort": "Total",
+      "overShort": "Más",
+      "underShort": "Menos"
+    },
+    "listLayout": {
+      "aria": "Diseño de la lista de partidos",
+      "default": "Diseño estándar",
+      "pro": "Diseño Pro"
+    },
     "listCols": {
       "aria": "Columnas de la lista de partidos",
       "one": "Una columna",

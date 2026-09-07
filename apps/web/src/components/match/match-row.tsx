@@ -42,6 +42,34 @@ export interface ListMatchOutcome {
   } | null;
 }
 
+/**
+ * One main-line market on a list card — a handicap or a total, reduced
+ * to the single rung the card quotes.
+ *
+ * `first` / `second` are [home, away] for a handicap and [over, under]
+ * for a total, already in render order, so the client never has to know
+ * a feed's outcome-id conventions.
+ *
+ * Priced exactly like the match-winner row — through the same server
+ * quoter, ZillaBoost included — so a handicap shows the price on the
+ * card that the match page shows for it. `boostRule` / `boostSelections`
+ * are the resolved rule for the client's per-tick re-price, the same
+ * pair `matchWinner` carries and for the same reason.
+ */
+export interface ListLadderMarket {
+  marketId: string;
+  providerMarketId: number;
+  /** The line as the feed states it: "-1.5", "2.5". */
+  line: string;
+  first: ListMatchOutcome;
+  second: ListMatchOutcome;
+  boostRule?: { ruleId: string; boostPct: number; endsAt: string | null } | null;
+  boostSelections?: Record<
+    string,
+    { ruleId: string; boostPct: number; endsAt: string | null }
+  > | null;
+}
+
 export interface ListMatch {
   id: string;
   homeTeam: string;
@@ -81,6 +109,22 @@ export interface ListMatch {
     }>;
   }> | null;
   tournament: { id: number; name: string; riskTier?: number | null };
+  /**
+   * Main handicap + total line, for the Pro layout's second and third
+   * column groups (`match-table.tsx`). The Default card ignores it.
+   *
+   * The API picks the rung — which market type counts and which rung is
+   * "main" both live in `@oddzilla/types/list-markets`, so the client
+   * never re-derives either. `line` is the feed's own value, stated from
+   * the HOME team's perspective for a handicap; the away column negates
+   * it through `handicapLineForSide`.
+   *
+   * Optional so a payload predating the field still type-checks.
+   */
+  ladders?: {
+    handicap?: ListLadderMarket | null;
+    total?: ListLadderMarket | null;
+  } | null;
   matchWinner: {
     marketId: string;
     home: ListMatchOutcome;

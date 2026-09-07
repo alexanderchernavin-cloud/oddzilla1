@@ -58,6 +58,18 @@ export interface LiveScore {
    * "nobody is marked" instead of marking the home player.
    */
   serve?: number;
+  /**
+   * The feed's own parenthetical qualifier on the headline score —
+   * games in the current set for tennis ("(6-5)"), the period line
+   * elsewhere. Written by fonbet-ingester from Fonbet's `comment` /
+   * `scoreComment`; absent on the Oddin esports payload, where the
+   * headline score IS the map count and there is nothing to qualify.
+   *
+   * Rendered verbatim rather than reconstructed from `periods`: it is
+   * the string Fonbet itself shows, and it already encodes per-sport
+   * conventions we would otherwise have to re-derive per sport.
+   */
+  comment?: string;
   scoreboard?: LiveScoreScoreboard;
   periods?: LiveScorePeriod[];
   updatedAt?: string;
