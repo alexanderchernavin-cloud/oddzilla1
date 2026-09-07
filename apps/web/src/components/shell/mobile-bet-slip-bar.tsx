@@ -35,10 +35,12 @@ export function MobileBetSlipBar() {
       className="oz-mobile-betbar"
       aria-label={`${t("title")} (${t("legs", { count })})`}
     >
+      {/* 26px, down from 32: the bar is 46px tall now (was 56), and a
+          32px disc inside it left almost no breathing room. */}
       <span
         style={{
-          width: 32,
-          height: 32,
+          width: 26,
+          height: 26,
           borderRadius: 999,
           background: "var(--bg)",
           color: "var(--fg)",
@@ -48,35 +50,54 @@ export function MobileBetSlipBar() {
           flexShrink: 0,
         }}
       >
-        <I.Ticket size={14} />
+        <I.Ticket size={13} />
       </span>
       <span
         style={{
           display: "flex",
           flexDirection: "column",
           alignItems: "flex-start",
-          lineHeight: 1.1,
+          lineHeight: 1.05,
           minWidth: 0,
         }}
       >
-        <span style={{ fontSize: 13, fontWeight: 600, letterSpacing: "-0.005em" }}>
+        <span
+          style={{
+            fontSize: 12.5,
+            fontWeight: 600,
+            letterSpacing: "-0.005em",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            maxWidth: "100%",
+          }}
+        >
           {isCombo ? `${t("combo")} · ${t("legs", { count })}` : t("legs", { count })}
         </span>
+        {/* Two lines inside a 46px bar: the leading trims to 1.05 and
+            the odds line loses its top margin, which is what makes the
+            slimmer bar fit without clipping a descender. The label
+            truncates rather than pushing "Open" off the bar — the bar
+            is narrower now that it stops clear of the chat button, and
+            a long localised "Combo · N legs" is the string that would
+            otherwise overflow it. */}
         <span
           className="mono tnum"
-          style={{ fontSize: 11, opacity: 0.75, marginTop: 2 }}
+          style={{ fontSize: 10.5, opacity: 0.75 }}
         >
           @ {combinedOdds.toFixed(2)}
         </span>
       </span>
-      <span style={{ flex: 1 }} />
+      <span style={{ flex: 1, minWidth: 4 }} />
       <span
         style={{
           display: "inline-flex",
           alignItems: "center",
-          gap: 6,
-          fontSize: 12.5,
+          gap: 5,
+          fontSize: 12,
           fontWeight: 600,
+          flexShrink: 0,
+          whiteSpace: "nowrap",
         }}
       >
         {tCommon("open")}
