@@ -39,6 +39,7 @@ import { NotFoundError } from "../../lib/errors.js";
 import { cached, cachedSwr } from "../../lib/cache.js";
 import {
   hasActiveMarket,
+  bookableWindow,
   notHiddenTournament,
   notHiddenCategory,
 } from "../../lib/catalog-predicates.js";
@@ -1020,11 +1021,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
                                   AND t.name NOT IN ('Integration testing')
                 JOIN matches m ON m.tournament_id = t.id
                WHERE c.sport_id = ${sports.id}
-                 AND (
-                   m.status = 'live'
-                   OR (m.status = 'not_started'
-                       AND m.scheduled_at > NOW() - INTERVAL '6 hours')
-                 )
+                 AND ${bookableWindow("m")}
                  AND EXISTS (
                    SELECT 1 FROM markets mk
                     WHERE mk.match_id = m.id
@@ -2799,16 +2796,12 @@ export default async function catalogRoutes(app: FastifyInstance) {
             notHiddenTournament,
             // Empty tournaments (every match closed/phantom-stale) are
             // hidden so search results never lead to a zero-match page.
-            // Same 6 h time gate as `hasActiveMarket` so a tournament
+            // Same lifecycle gate as `hasActiveMarket` (bookableWindow) so a tournament
             // surviving only on wedged not_started matches drops out.
             sql`EXISTS (
               SELECT 1 FROM ${matches} mm
                WHERE mm.tournament_id = ${tournaments.id}
-                 AND (
-                   mm.status = 'live'
-                   OR (mm.status = 'not_started'
-                       AND mm.scheduled_at > NOW() - INTERVAL '6 hours')
-                 )
+                 AND ${bookableWindow("mm")}
                  AND EXISTS (
                    SELECT 1 FROM markets mk
                     WHERE mk.match_id = mm.id
@@ -2829,7 +2822,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
       // match data lets the user navigate to every sport the team is
       // currently playing in, not just the one its competitor row was first
       // pinned to. Filtered to active markets + non-hidden tournaments + the
-      // same 6 h time gate as `hasActiveMarket` so a team only appears for
+      // same lifecycle gate as `hasActiveMarket` so a team only appears for
       // sports where it has something bettable right now.
       app.db
         .select({

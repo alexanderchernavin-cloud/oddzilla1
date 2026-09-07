@@ -58,6 +58,12 @@
      IS the widget's surface. See components/widgets/sportradar-theme.ts. */
   --sportradar-frame-bg: #ffffff;
 
+  /* Serve marker (ServeMark) — a tennis ball, in the ball's own colour.
+     Optic yellow is light, and the page ground is light, so the ring is
+     what makes the mark legible rather than decoration. */
+  --serve-ball: #d8e64a;
+  --serve-ball-ring: rgba(0, 0, 0, 0.32);
+
   --fg: #0d0d0c;
   --fg-muted: #6a6b6a;
   --fg-dim: #9a9a96;
@@ -86,6 +92,13 @@
   --border-strong: #3a3a40;
   --hairline: #1f1f22;
   --sportradar-frame-bg: var(--surface-2);
+
+  /* Brighter ball on a dark ground, where it separates itself and the
+     ring stops doing contrast work — so it goes the other way and gets
+     stronger, reading as the seam drawn ON the ball rather than as an
+     outline holding it off the page. */
+  --serve-ball: #e2f04f;
+  --serve-ball-ring: rgba(0, 0, 0, 0.55);
 
   --fg: #f2f1ec;
   --fg-muted: #9a9a98;
