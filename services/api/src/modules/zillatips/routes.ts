@@ -55,6 +55,13 @@ import {
   type ZillaTipsResponse,
 } from "@oddzilla/types";
 import { cached } from "../../lib/cache.js";
+import {
+  loadInsightCascades,
+  loadInsightMatchContext,
+  loadProviderMarketIds,
+  resolveInsightEnabled,
+  isFullyDisabled,
+} from "../../lib/insight-widgets.js";
 
 // Shape of one row out of the raw aggregation CTE. Quoted aliases so
 // Postgres preserves camelCase; rowsJson stays JSON until we
@@ -117,6 +124,31 @@ export default async function zillatipsRoutes(app: FastifyInstance) {
       .object({ matchId: z.coerce.bigint() })
       .parse(request.params);
 
+    // Operator visibility cascade (/admin/zillatips). An empty tip list is
+    // the shape the storefront already treats as "nothing to show", so the
+    // widget hides itself and no client needs to know the feature is off.
+    //
+    // Two gates, cheapest first, and BOTH before the cache read — turning
+    // the feature off has to stop the work, not just the render, and the
+    // per-match CTE below is the expensive part.
+    //
+    //   1. Off everywhere: answer without touching the catalogue at all.
+    //   2. Off for this match's sport / category / tournament: one indexed
+    //      probe, then answer.
+    //
+    // Market rules are applied AFTER the query, against the tips it
+    // returned — see below. The cascade is read per request rather than
+    // cached with the payload so an operator's change takes effect on the
+    // next call, not after the 5-minute TTL.
+    const cascade = (await loadInsightCascades(app.db)).zillatips;
+    if (isFullyDisabled(cascade)) {
+      return { matchId: matchId.toString(), tips: [] } satisfies ZillaTipsResponse;
+    }
+    const insightCtx = await loadInsightMatchContext(app.db, matchId);
+    if (!resolveInsightEnabled(cascade, insightCtx)) {
+      return { matchId: matchId.toString(), tips: [] } satisfies ZillaTipsResponse;
+    }
+
     // v5: "{side}"-specifier markets (Team home/away total goals,
     // home/away wins at least one map, …) are now correctly handled.
     // They only generate one tip — for the team the side specifier
@@ -139,7 +171,25 @@ export default async function zillatipsRoutes(app: FastifyInstance) {
       CACHE_TTL_SECONDS,
       () => loadTips(app, matchId),
     );
-    return payload;
+
+    // Market rules, applied to what came back. Skipped entirely when the
+    // widget has none, which is the ordinary case — then this costs one
+    // Map.size check and no round trip. The lookup maps our market ids to
+    // the market TYPE the rule is written against.
+    if (cascade.byMarket.size === 0 || payload.tips.length === 0) return payload;
+    const pmids = await loadProviderMarketIds(
+      app.db,
+      payload.tips.map((t) => t.marketId),
+    );
+    return {
+      ...payload,
+      tips: payload.tips.filter((t) =>
+        resolveInsightEnabled(cascade, {
+          ...insightCtx,
+          providerMarketId: pmids.get(t.marketId) ?? null,
+        }),
+      ),
+    };
   });
 }
 

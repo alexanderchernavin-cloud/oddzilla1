@@ -16,6 +16,7 @@ export * from "./cashout.js";
 export * from "./bet-products.js";
 export * from "./combi-boost.js";
 export * from "./combozilla.js";
+export * from "./insight-widgets.js";
 export * from "./settlements.js";
 export * from "./admin.js";
 export * from "./feed.js";
