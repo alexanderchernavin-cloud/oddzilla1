@@ -167,6 +167,14 @@ describe("outcomeSortWeight", () => {
     assert.ok(home < draw && draw < away);
   });
 
+  it("orders Fonbet's h1/h2 line sides like Oddin's 1/2", () => {
+    // Both columns of a handicap ladder now render a TEAM NAME, so the
+    // undefined row order they used to fall back to would put the away
+    // side in the column a bettor reads as home.
+    assert.equal(outcomeSortWeight("h1"), 1);
+    assert.equal(outcomeSortWeight("h2"), 2);
+  });
+
   it("returns null for non-numeric outcome ids", () => {
     assert.equal(outcomeSortWeight("od:player:1"), null);
     assert.equal(outcomeSortWeight("over"), null);

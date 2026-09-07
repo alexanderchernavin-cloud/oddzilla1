@@ -68,7 +68,18 @@ func StaticDescriptions(idx *fonbet.Index, opt Options) []Description {
 		case tpl == "":
 			delete(d.Outcomes, itoa(fm.FactorID)) // per-match name wins (team placeholder)
 		case fm.WinnerOutcome != "":
+			// BOTH ids the cell is addressed by get the side word, not
+			// just the canonical one. The main event carries 1/2/3 and so
+			// read "Ipswich / Draw / Norwich"; a sub-event market ("1st
+			// half", "Corners", "To hit the woodwork") is keyed by the
+			// factor id, whose entry was left holding the raw column
+			// caption — so the SAME market one tab over read "1 / X / 2",
+			// and so did the bet-slip leg it recorded. Double-chance
+			// cells (1X / X2 / 12) never reach here: they carry no
+			// WinnerOutcome and keep their caption, which is what they
+			// mean.
 			d.Outcomes[fm.WinnerOutcome] = tpl
+			d.Outcomes[itoa(fm.FactorID)] = tpl
 		case fm.SideID != "":
 			if _, done := d.Outcomes[fm.SideID]; !done {
 				d.Outcomes[fm.SideID] = tpl
@@ -132,6 +143,28 @@ func OutcomeTemplate(fm *fonbet.FactorMeta, lang string) string {
 	case "%1":
 		return "home" // renderOutcomeLabel maps the bare word to the team name
 	case "%2":
+		return "away"
+	}
+	// A line table (handicap, total) captions its TEAM columns by NUMBER
+	// — literally "1" and "2" — which is exactly how sideCaptions reads
+	// them when it keys the outcome `h1` / `h2`. Rendered verbatim those
+	// captions become the column heads of a handicap ladder on a page
+	// showing Ipswich vs Norwich: a cell nobody can attribute to a team,
+	// and the same string the bet slip stores as the leg's outcome label.
+	// Emit the bare side word instead, exactly as the `%1` / `%2` captions
+	// above do, and every locale renders the team name.
+	//
+	// Guarded on the caption being ONLY the number. A multi-row table
+	// prefixes its row label ("1st substitution 1", "Handicap from 1 to
+	// 6 min 2") and every row collapses onto the same side id, so there
+	// the row IS the outcome's identity — those keep their caption.
+	// Measured on the live catalogue (2026-09-07): 16 of the 18 tables
+	// carrying h1/h2 caption them bare, and both exceptions sit under a
+	// nameless table whose market name is just "{handicap}".
+	switch {
+	case fm.SideID == "h1" && strings.TrimSpace(s) == "1":
+		return "home"
+	case fm.SideID == "h2" && strings.TrimSpace(s) == "2":
 		return "away"
 	}
 	if strings.Contains(s, "%1") || strings.Contains(s, "%2") {
