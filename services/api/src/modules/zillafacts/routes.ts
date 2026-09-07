@@ -56,6 +56,13 @@ import {
 } from "@oddzilla/types";
 import { cached } from "../../lib/cache.js";
 import {
+  loadInsightCascades,
+  loadInsightMatchContext,
+  loadProviderMarketIds,
+  resolveInsightEnabled,
+  isFullyDisabled,
+} from "../../lib/insight-widgets.js";
+import {
   substituteTemplate,
   renderOutcomeLabel,
   isCompetitorUrn,
@@ -418,15 +425,6 @@ function lineFamilyKey(
   return null;
 }
 
-/**
- * Temporary operator switch. `ZILLAFACTS_DISABLED=1` makes the endpoint
- * answer an empty fact list. Read per request — see the twin in
- * services/api/src/modules/zillatips/routes.ts.
- */
-function zillafactsDisabled(): boolean {
-  return process.env.ZILLAFACTS_DISABLED === "1";
-}
-
 export default async function zillafactsRoutes(app: FastifyInstance) {
   app.get(
     "/catalog/matches/:matchId/zillafacts",
@@ -439,11 +437,16 @@ export default async function zillafactsRoutes(app: FastifyInstance) {
       .object({ matchId: z.coerce.bigint() })
       .parse(request.params);
 
-    // Operator kill switch (2026-09-07, temporary). Same shape and same
-    // reasoning as the ZillaTips one: answer what the storefront already
-    // reads as "nothing to show", and answer it BEFORE the cache read so
-    // the historical scan stops running while the feature is off.
-    if (zillafactsDisabled()) {
+    // Operator visibility cascade (/admin/zillafacts). Same two gates and
+    // the same reasoning as the ZillaTips twin: answer what the storefront
+    // already reads as "nothing to show", and answer it BEFORE the cache
+    // read so the historical scan stops running while the widget is off.
+    const cascade = (await loadInsightCascades(app.db)).zillafacts;
+    if (isFullyDisabled(cascade)) {
+      return { matchId: matchId.toString(), facts: [] } satisfies ZillaFactsResponse;
+    }
+    const insightCtx = await loadInsightMatchContext(app.db, matchId);
+    if (!resolveInsightEnabled(cascade, insightCtx)) {
       return { matchId: matchId.toString(), facts: [] } satisfies ZillaFactsResponse;
     }
 
@@ -469,12 +472,30 @@ export default async function zillafactsRoutes(app: FastifyInstance) {
     // specifier values for an od:player:... URN rather than relying
     // on a canonical {player} specifier key.
     const cacheKey = `zillafacts:v12:${matchId.toString()}`;
-    return cached<ZillaFactsResponse>(
+    const payload = await cached<ZillaFactsResponse>(
       app.redis,
       cacheKey,
       CACHE_TTL_SECONDS,
       () => loadFacts(app, matchId),
     );
+
+    // Market rules, applied to what came back — see the twin in
+    // zillatips/routes.ts. Skipped when the widget has no market rules,
+    // which is the ordinary case.
+    if (cascade.byMarket.size === 0 || payload.facts.length === 0) return payload;
+    const pmids = await loadProviderMarketIds(
+      app.db,
+      payload.facts.map((f) => f.marketId),
+    );
+    return {
+      ...payload,
+      facts: payload.facts.filter((f) =>
+        resolveInsightEnabled(cascade, {
+          ...insightCtx,
+          providerMarketId: pmids.get(f.marketId) ?? null,
+        }),
+      ),
+    };
   });
 }
 

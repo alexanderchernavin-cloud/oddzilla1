@@ -155,6 +155,18 @@ const SECTIONS: Section[] = [
         matchPrefix: "/admin/zillabuild",
       },
       {
+        href: "/admin/zillatips",
+        label: "ZillaTips",
+        Icon: I.Sparkles,
+        matchPrefix: "/admin/zillatips",
+      },
+      {
+        href: "/admin/zillafacts",
+        label: "ZillaFacts",
+        Icon: I.Sparkles,
+        matchPrefix: "/admin/zillafacts",
+      },
+      {
         href: "/admin/zillapass",
         label: "ZillaPass",
         Icon: I.Sparkles,
