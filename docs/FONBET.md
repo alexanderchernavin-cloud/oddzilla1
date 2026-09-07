@@ -149,7 +149,7 @@ rows[1..]   cells: {name} text | {kind:"param", factorId} line value |
 | Fonbet              | oddzilla                                                                                                                                   | Rule                                                                                                                                                                |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | root sport          | `sports` (`provider='fonbet'`, `provider_urn='fb:sport:<id>'`)                                                                             | slug + English name from `internal/mapper/sports.go`; unknown roots → `fb-<id>`; `kind='traditional'` (esports root → `esport`)                                     |
-| segment name prefix | `categories` (`(sport_id, slug)`)                                                                                                          | `"Spain. Primera Division. Season 26/27"` → category `Spain`; single-segment names → `Other`                                                                                  |
+| segment name prefix | `categories` (`(sport_id, slug)`)                                                                                                          | `"Spain. Primera Division. Season 26/27"` → category `Spain`; single-segment names → `Other`. **One spelling per competition** — see [Category spelling](#category-spelling)                                                                                  |
 | segment             | `tournaments` (`provider_urn='fb:tournament:<id>'`)                                                                                        | slug = slugified name + `-<id>`                                                                                                                                     |
 | team                | `competitors` (`provider='fonbet'`, `provider_urn='fb:competitor:<teamId>'`)                                                               | slug = slugified name + `-<teamId>`                                                                                                                                 |
 | level-1 event       | `matches` (`provider_urn='fb:match:<eventId>'`)                                                                                            | `place=live` → `live`, `line` → `not_started`; `finished` or a live match that vanished → `closed`; events without two teams (outrights) skipped                    |
@@ -178,6 +178,97 @@ reorders the tabs themselves. It discovers them by re-deriving the same
 scopes over the sport's current offer — nothing stores the tab set — so a
 sub-event Fonbet adds shows up there on its own, and one it drops stops
 being offered (an ordering already saved for it survives).
+
+### Category spelling
+
+Fonbet has no category ids — the category IS a prefix of a league name —
+so the same competition splits into two sidebar buckets whenever Fonbet
+writes that prefix two ways, and it does. Measured across the whole live
+line on 2026-09-07, four competitions were spelled two ways and three
+had bookable matches under both spellings:
+
+| Root     | Spellings                                        | Difference |
+| -------- | ------------------------------------------------ | ---------- |
+| Football | `UEFA Champions League` / `Champions League UEFA` | word order |
+| Cricket  | `National teams` / `National Teams`               | case       |
+| Hockey   | `Short-hockey` / `Short Hockey`                   | hyphen     |
+| Racing   | `Formula-1` / `Formula 1`                         | hyphen     |
+
+`Slugify` already folds case and punctuation, so those three shared a
+`categories` row all along and only their display NAME flapped between
+cycles (`EnsureCategory` overwrites the name, so whichever spelling was
+upserted last won). Word order does NOT fold, which is why football was
+the one case that split into two rows — and it is the one that was
+reported: `Champions League UEFA. League phase. Head-to-head` sat in its
+own bucket while `UEFA Champions League. League phase` sat in the
+operator's pinned one.
+
+`categoryKey` in [`internal/mapper/mapper.go`](../services/fonbet-ingester/internal/mapper/mapper.go)
+folds all three away — lowercase, punctuation to spaces, tokens sorted —
+and `canonicalCategories` resolves every spelling in a group to the one
+on the **lowest Fonbet segment id**, **per root sport** (a category row is
+`(sport_id, slug)`, and "National teams" exists under cricket, football and
+volleyball at once — the spelling chosen for one must neither depend on
+nor move another's). Stability is the reason for that
+rule and not tidiness: the chosen name is what `Slugify` turns into
+`categories.slug`, the row's identity, so a name that flapped would keep
+minting rows and stranding the operator's pin and hidden flag on the old
+one. A segment id is permanent, so the answer only moves if that exact
+segment leaves the line — where "most segments wins" would move whenever
+Fonbet added one, and ties on the football group anyway (6 each).
+
+Fonbet's own tree cannot answer this instead: all 12 Champions League
+segments have the ROOT SPORT as their parent (`parentId: 1`), so there is
+no intermediate node to read a category from. The string is all there is.
+
+A second pass re-homes a **dropped separator**. `Bolivia.League Cup. Group
+stage` has no `". "` until after "Cup", so its first segment came out as
+`Bolivia.League Cup` — a flagless bucket of its own directly under
+`Bolivia` (production category 8293 beside 6645). Splitting on every `.`
+would be wrong — `Cup of Belov-Kondrashin. St.Petersburg` and `Legends Cup
+named V.I. Savvin` carry a period INSIDE a word — so the inner dot is
+honoured only when the text before it is already a category of the same
+sport: `Bolivia` is, `St` is not, which is exactly the evidence that a
+separator went missing rather than a name having a dot in it. Measured on
+the live line: one segment qualifies, and the two look-alikes have their
+dot in a LATER segment, so they never reach this code. The sidebar's
+`stripCategoryPrefix` already tolerates the missing space, so the row
+renders as `League Cup. Group stage` under Bolivia.
+
+**The limit.** This folds away case, punctuation, word order and a dropped
+separator, and nothing else. A genuine typo, or one competition named in two languages,
+still splits, and there is no operator-facing category merge to fall back
+on.
+
+When a merge does happen the losing row is left holding no tournament, and
+`store.DeactivateEmptyCategories` retires it — `active = FALSE`, off the
+`/admin/categories` list, which is `categories.active`'s only reader
+anywhere. It rides the poll loop's once-a-minute reconcile tick, and being
+in that loop's own `select` is load-bearing rather than incidental: the
+per-match path runs `EnsureCategory` then `EnsureTournament` as two
+statements, and a sweep landing between them would retire a category about
+to receive its first tournament.
+
+The predicate cannot flap, which is what makes a sweep safe here rather
+than merely convenient. Nothing in the system ever sets
+`tournaments.active = false` — every writer only sets it TRUE — so it asks
+whether any tournament ROW points at the category, not whether one is
+currently in the offer: a quiet league between seasons keeps its row and
+keeps its category. Emptiness is reached only by a re-home or by an
+operator deleting the last tournament. And it is reversible by
+construction — `EnsureCategory`'s `ON CONFLICT` sets `active = TRUE`, so
+the row returns if Fonbet splits the competition again.
+
+`display_order` is cleared with the flag, because a pin is a POSITION in a
+sequence the operator can see and a retired row is not listed — leaving the
+pin would keep an invisible slot in the dense 1..N renumbering that
+`POST /admin/categories/:id/order` maintains (which is also why that
+endpoint refuses a retired row). `hidden_from_lists` is deliberately KEPT:
+that is a standing decision about content, and it should still hold if the
+row comes back. Measured on production 2026-09-07: 7 Fonbet categories were
+already empty from earlier history (`ATP`, `Super Cup`, `Парагвай`, …), none
+of them pinned or hidden; Oddin has no non-dummy categories at all, so the
+provider scope loses nothing.
 
 ## Operating notes
 

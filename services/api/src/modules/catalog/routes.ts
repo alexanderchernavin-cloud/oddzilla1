@@ -38,6 +38,11 @@ import {
 import { NotFoundError } from "../../lib/errors.js";
 import { cached, cachedSwr } from "../../lib/cache.js";
 import {
+  FONBET_HEAD_TO_HEAD_PMIDS,
+  FONBET_PMID_BASE,
+  WINNER_OUTCOME_IDS,
+} from "../../lib/match-winner-market.js";
+import {
   hasActiveMarket,
   bookableWindow,
   notHiddenTournament,
@@ -155,39 +160,10 @@ const awayCompetitor = alias(competitors, "away_competitor");
 const LINE_SPECIFIERS = ["threshold", "handicap"] as const;
 type LineSpec = (typeof LINE_SPECIFIERS)[number];
 
-// provider_market_id namespace of the Fonbet KZ feed
-// (services/fonbet-ingester, docs/FONBET.md): 1_000_000 + Fonbet table
-// number. Oddin ids stay far below this. Fonbet's match-winner tables are
-// the only Fonbet markets whose outcome ids are the canonical "1" / "2" /
-// "3" — every other Fonbet outcome id is a numeric factor id >= 100.
-const FONBET_PMID_BASE = 1_000_000;
-
-/**
- * Fonbet's two "Head to head" tables (399 and 25020), as
- * provider_market_ids. A head-to-head fixture — a cycling stage duel, an
- * athletics match-up — has this as its ONE market, and it IS the winner
- * of that fixture, but its outcome ids are raw factor ids rather than the
- * canonical "1" / "2": the mapper only rewrites them on tables Fonbet
- * flags `isMain` whose column captions are literally "1" / "2", and this
- * one is neither (its captions are the team placeholders "%1" / "%2").
- * That is a deliberate constraint on the ingester side — outcome ids are
- * market identity, so widening it there would re-key live markets and
- * strand any open ticket on them (see twoWayWinner in
- * services/fonbet-ingester/internal/settle/rules.go, which reads the
- * shape for the same reason) — so the pairing is widened HERE instead,
- * where nothing is persisted.
- *
- * An allowlist rather than a shape rule, because the shape does not
- * separate the winner from the sideshow: "To win the toss" (496) and
- * "Who will start the penalty shootout" (920) are also two-way "%1" /
- * "%2" tables, and quoting a toss price under a "Match winner" header is
- * worse than quoting nothing. Measured on production 2026-09-07: 399 is
- * the only one of the family currently in the offer, on 14 cycling
- * matches, each with exactly this one market; 25020 is carried because
- * it is the same market under another number and would otherwise be a
- * repeat of this bug.
- */
-const FONBET_HEAD_TO_HEAD_PMIDS = [FONBET_PMID_BASE + 399, FONBET_PMID_BASE + 25_020];
+// The cross-provider "which market is the match winner" rule, plus the
+// Fonbet id namespace it needs, live in lib/match-winner-market.ts —
+// the ZillaBoost match banner needs the same answer and a second copy
+// is how the hard-coded `1` in quoteMatchWinnerBoost happened.
 
 // lineInfo returns the line-specifier present on the market (if any)
 // plus a grouping key that collapses markets that differ only in their
@@ -728,7 +704,7 @@ async function loadMatchWinnerOdds(
           eq(markets.providerMarketId, 1),
           and(
             gte(markets.providerMarketId, FONBET_PMID_BASE),
-            inArray(marketOutcomes.outcomeId, ["1", "2", "3"]),
+            inArray(marketOutcomes.outcomeId, [...WINNER_OUTCOME_IDS]),
           ),
           // Fonbet head-to-head, whose outcomes are factor ids rather
           // than "1" / "2" — see FONBET_HEAD_TO_HEAD_PMIDS. Main event

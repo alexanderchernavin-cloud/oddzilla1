@@ -68,6 +68,57 @@ RETURNING id`
 	return id, nil
 }
 
+// DeactivateEmptyCategories retires Fonbet categories that hold no
+// tournament at all, and returns how many it retired.
+//
+// A category derived from a league-name prefix can be emptied by the
+// canonicaliser: when two spellings of one competition merge, the losing
+// row's tournaments are re-homed by EnsureTournament's
+// `category_id = EXCLUDED.category_id`, leaving a row with nothing under
+// it. It renders nowhere on the storefront (the sidebar builds its
+// buckets from the tournaments endpoint, which selects FROM tournaments)
+// but did keep a line on /admin/categories forever.
+//
+// The predicate cannot flap, which is what makes a sweep safe here rather
+// than merely convenient: nothing in the system ever sets
+// `tournaments.active = false` — every writer only sets it TRUE — so this
+// asks whether any tournament ROW points at the category, not whether one
+// is currently in the offer. A quiet league between seasons keeps its row
+// and keeps its category. Emptiness is reached only by a re-home or by an
+// operator deleting the last tournament, and both are deliberate.
+//
+// Reversible by construction: EnsureCategory's ON CONFLICT sets
+// `active = TRUE`, so the row comes straight back if Fonbet ever splits
+// the competition again.
+//
+// `display_order` is cleared with the flag because a pin is a POSITION in
+// the sequence an operator can see, and /admin/categories does not list
+// an inactive row — leaving the pin would keep an invisible slot in the
+// dense 1..N renumbering that POST /admin/categories/:id/order maintains,
+// so the visible list and the stored sequence would disagree.
+// `hidden_from_lists` is deliberately KEPT: that one is a standing
+// decision about the content, and it should still hold if the row returns.
+//
+// Scoped to this provider's own sports, per invariant 10 — Oddin files
+// every esports tournament under one synthetic dummy category, which is
+// excluded anyway, but the scope is what makes that structural rather
+// than incidental.
+func DeactivateEmptyCategories(ctx context.Context, db pgxRunner) (int64, error) {
+	const q = `
+UPDATE categories c
+   SET active = FALSE,
+       display_order = NULL
+ WHERE c.active
+   AND NOT c.is_dummy
+   AND EXISTS (SELECT 1 FROM sports s WHERE s.id = c.sport_id AND s.provider = $1)
+   AND NOT EXISTS (SELECT 1 FROM tournaments t WHERE t.category_id = c.id)`
+	tag, err := db.Exec(ctx, q, Provider)
+	if err != nil {
+		return 0, fmt.Errorf("deactivate empty categories: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // EnsureTournament upserts a tournaments row keyed by provider_urn.
 func EnsureTournament(ctx context.Context, db pgxRunner, categoryID int, providerURN, slug, name string) (int, error) {
 	const q = `

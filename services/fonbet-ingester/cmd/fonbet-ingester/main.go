@@ -395,6 +395,13 @@ func runFeed(ctx context.Context, cfg config.Config, st *store.Store, b *bus.Bus
 			if _, err := ing.ReconcileExternalSuspend(ctx); err != nil {
 				log.Warn().Err(err).Msg("external-suspend reconcile failed")
 			}
+			// Rides the same tick: a spelling merge empties the losing
+			// category, and nothing else would ever clear it. Cheap
+			// (measured 5.6 ms on the production catalogue, index-driven
+			// on tournaments_category_idx) and normally a no-op.
+			if _, err := ing.PruneEmptyCategories(ctx); err != nil {
+				log.Warn().Err(err).Msg("empty-category prune failed")
+			}
 		case <-logoTicker.C:
 			if l, err := client.FetchLogos(ctx); err != nil {
 				log.Warn().Err(err).Msg("logo refresh failed")

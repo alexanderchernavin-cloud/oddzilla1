@@ -54,6 +54,10 @@ import {
   renderOutcomeLabel,
   substituteTemplate,
 } from "../../lib/market-naming.js";
+import {
+  isMatchWinnerMarket,
+  isWinnerOutcomeId,
+} from "../../lib/match-winner-market.js";
 import { NotFoundError } from "../../lib/errors.js";
 
 const homeCompetitor = alias(competitors, "home_competitor");
@@ -68,12 +72,48 @@ const EMPTY = (): ZillaBoostBannersResponse => ({
   serverNow: new Date().toISOString(),
 });
 
-// Priced + active outcome set of one market, in banner display order
-// (1 / draw / 2 first, then everything else by odds ascending).
+type PricedOutcome = { outcomeId: string; rawName: string; publishedOdds: number };
+
+// Banner display order: 1 / draw / 2 first, then everything else by odds
+// ascending.
+function sortForDisplay(priced: PricedOutcome[]): PricedOutcome[] {
+  const weight = (id: string): number => {
+    const n = Number.parseInt(id, 10);
+    if (!Number.isFinite(n) || String(n) !== id) return 1000;
+    return n === 3 ? 1.5 : n;
+  };
+  return priced.sort(
+    (a, b) => weight(a.outcomeId) - weight(b.outcomeId) || a.publishedOdds - b.publishedOdds,
+  );
+}
+
+function toPriced(
+  rows: Array<{
+    outcomeId: string;
+    name: string;
+    publishedOdds: string | null;
+    active: boolean;
+  }>,
+): PricedOutcome[] {
+  return sortForDisplay(
+    rows
+      .filter((r) => r.active && r.publishedOdds !== null)
+      .map((r) => ({
+        outcomeId: r.outcomeId,
+        rawName: r.name,
+        publishedOdds: Number(r.publishedOdds),
+      }))
+      // Shared predicate - parity with the match-page compute + the
+      // placement validator is what keeps the +/-0.01 tolerance honest.
+      .filter((r) => isQuotableOutcomeOdds(r.publishedOdds)),
+  );
+}
+
+// Priced + active outcome set of one market, in banner display order.
 async function loadPricedOutcomes(
   app: FastifyInstance,
   marketId: bigint,
-): Promise<Array<{ outcomeId: string; rawName: string; publishedOdds: number }>> {
+): Promise<PricedOutcome[]> {
   const rows = await app.db
     .select({
       outcomeId: marketOutcomes.outcomeId,
@@ -83,25 +123,39 @@ async function loadPricedOutcomes(
     })
     .from(marketOutcomes)
     .where(eq(marketOutcomes.marketId, marketId));
-  const priced = rows
-    .filter((r) => r.active && r.publishedOdds !== null)
-    .map((r) => ({
-      outcomeId: r.outcomeId,
-      rawName: r.name,
-      publishedOdds: Number(r.publishedOdds),
-    }))
-    // Shared predicate — parity with the match-page compute + the
-    // placement validator is what keeps the ±0.01 tolerance honest.
-    .filter((r) => isQuotableOutcomeOdds(r.publishedOdds));
-  const weight = (id: string): number => {
-    const n = Number.parseInt(id, 10);
-    if (!Number.isFinite(n) || String(n) !== id) return 1000;
-    return n === 3 ? 1.5 : n;
-  };
-  priced.sort(
-    (a, b) => weight(a.outcomeId) - weight(b.outcomeId) || a.publishedOdds - b.publishedOdds,
-  );
-  return priced;
+  return toPriced(rows);
+}
+
+// Same, batched across many markets. The match banner needs each
+// candidate's outcome IDS before it can rank them - on the Fonbet side
+// the canonical "1" / "2" / "3" set is the only thing separating the full
+// match from its own sub-event copies of the same table - so it cannot
+// probe-then-decide, and one query beats one per candidate per match.
+async function loadPricedOutcomesBatch(
+  app: FastifyInstance,
+  marketIds: bigint[],
+): Promise<Map<string, PricedOutcome[]>> {
+  const out = new Map<string, PricedOutcome[]>();
+  if (marketIds.length === 0) return out;
+  const rows = await app.db
+    .select({
+      marketId: marketOutcomes.marketId,
+      outcomeId: marketOutcomes.outcomeId,
+      name: marketOutcomes.name,
+      publishedOdds: marketOutcomes.publishedOdds,
+      active: marketOutcomes.active,
+    })
+    .from(marketOutcomes)
+    .where(inArray(marketOutcomes.marketId, marketIds));
+  const byMarket = new Map<string, typeof rows>();
+  for (const r of rows) {
+    const key = r.marketId.toString();
+    const list = byMarket.get(key);
+    if (list) list.push(r);
+    else byMarket.set(key, [r]);
+  }
+  for (const [key, list] of byMarket) out.set(key, toPriced(list));
+  return out;
 }
 
 // Market + outcome display labels via the same description templates
@@ -437,11 +491,11 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
       const byId = new Map(rows.map((r) => [r.id.toString(), r]));
 
       // Main-market candidates per match. Preference order mirrors what
-      // a bettor calls the main market right now: match winner (1) when
-      // still active, else the CURRENT map winner (4, highest map
-      // number among active), else the first remaining active market.
-      // Deep-live matches often have 1 and 4 settled away entirely —
-      // the banner still shows something bettable.
+      // a bettor calls the main market right now: the MATCH WINNER when
+      // still active, else the CURRENT map winner (Oddin market 4,
+      // highest map number among active), else the first remaining
+      // active market. Deep-live matches often have both settled away
+      // entirely — the banner still shows something bettable.
       const candidateRows = await app.db
         .select({
           id: markets.id,
@@ -472,10 +526,31 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
         const n = Number.parseInt(specs.map ?? "", 10);
         return Number.isFinite(n) ? n : 0;
       };
+      // Outcome ids per candidate, needed to RANK rather than merely to
+      // price: see loadPricedOutcomesBatch.
+      const pricedByMarket = await loadPricedOutcomesBatch(
+        app,
+        candidateRows.map((c) => c.id),
+      );
+      const outcomeIdsOf = (id: bigint): string[] =>
+        (pricedByMarket.get(id.toString()) ?? []).map((o) => o.outcomeId);
+      const isWinner = (c: (typeof candidateRows)[number]): boolean =>
+        isMatchWinnerMarket({
+          providerMarketId: c.providerMarketId,
+          outcomeIds: outcomeIdsOf(c.id),
+        });
       const rankCandidates = (list: typeof candidateRows) =>
         [...list].sort((a, b) => {
+          // Tier 0 is the match winner on EITHER feed, and asking the
+          // shared rule is the whole fix here. Ranking by
+          // provider_market_id ascending treated Oddin's id 1 as the only
+          // winner; a Fonbet football match has no market 1 at all, so
+          // every candidate tied at the bottom tier and the tie-break
+          // fell to the market ROW id — insertion order. Production
+          // 2026-09-07: that quoted "2nd half: Match result" on a card
+          // headed by the two team names.
           const pref = (c: (typeof list)[number]) =>
-            c.providerMarketId === 1 ? 0 : c.providerMarketId === 4 ? 1 : 2;
+            isWinner(c) ? 0 : c.providerMarketId === 4 ? 1 : 2;
           if (pref(a) !== pref(b)) return pref(a) - pref(b);
           if (a.providerMarketId === 4 && b.providerMarketId === 4) {
             // Current map = highest active map number.
@@ -517,11 +592,19 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
         // worth a banner odds column.
         for (const cand of candidates.slice(0, 6)) {
           if (selectionOwned.has(cand.id.toString())) continue;
-          const priced = await loadPricedOutcomes(app, cand.id);
+          const priced = pricedByMarket.get(cand.id.toString()) ?? [];
+          // Quote the market's WHOLE priced book, then narrow what the
+          // card shows. Dropping outcomes before quoting would change the
+          // book key the fair-book clamp is computed from, and the boost
+          // has to come out the same number here, on the match page and
+          // in the placement validator.
           const quote = quoteBoostedMarket(rule, priced);
           if (!quote) continue;
-          teamShaped =
-            cand.providerMarketId === 1 || cand.providerMarketId === 4;
+          const winner = isWinner(cand);
+          // A named row per side is only meaningful when the outcome ids
+          // ARE the sides — the client puts the "1" and "2" prices on the
+          // team rows and the "3" price on a Draw row between them.
+          teamShaped = winner || cand.providerMarketId === 4;
           const labels = await buildMarketLabels(app, {
             providerMarketId: cand.providerMarketId,
             specifiersJson: cand.specifiersJson,
@@ -530,7 +613,14 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
           });
           marketId = cand.id.toString();
           marketLabel = labels.marketLabel;
-          outcomes = quote.map((q) => ({
+          const shown = winner
+            ? // Three-way only. Fonbet ships the double chance (1X / X2 /
+              // 12) as three more columns of the same result table, and a
+              // match card offering six ways to back one fixture is a
+              // market page, not a banner.
+              quote.filter((q) => isWinnerOutcomeId(q.outcomeId))
+            : quote;
+          outcomes = shown.map((q) => ({
             outcomeId: q.outcomeId,
             originalOdds: q.originalOdds,
             boostedOdds: q.boostedOdds,
@@ -550,6 +640,9 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
                   priced.find((p) => p.outcomeId === q.outcomeId)?.rawName ?? "",
                 ),
           }));
+          // Already home / draw / away: sortForDisplay ordered `priced`
+          // that way and quoteMarketBoost walks it in order. The client
+          // looks a side up by id anyway.
           break;
         }
         out.matches.push({
