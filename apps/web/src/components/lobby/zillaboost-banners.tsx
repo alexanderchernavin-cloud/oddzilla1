@@ -659,6 +659,7 @@ function MatchBannerCard({
 }) {
   const slip = useBetSlip();
   const t = useTranslations("zillaboost");
+  const tCommon = useTranslations("common");
   const [artFailed, setArtFailed] = useState(false);
   const art = !artFailed && b.imageUrl ? b.imageUrl : null;
   const live = b.status === "live";
@@ -696,20 +697,37 @@ function MatchBannerCard({
     slip.setOpen(true);
   };
 
-  const rowFor = (team: "home" | "away") => {
-    const name = team === "home" ? b.homeTeam : b.awayTeam;
-    const logo = team === "home" ? b.homeLogoUrl : b.awayLogoUrl;
+  // One row per SIDE of the result: home, draw, away. The draw only
+  // renders when the market actually has one, so a two-way esports
+  // winner still shows exactly two rows. Naming the sides is the point —
+  // a card that prints "1 / X / 2" beside two team logos makes the
+  // reader map the symbols back onto the names themselves.
+  const OUTCOME_FOR_SIDE = { home: "1", draw: "3", away: "2" } as const;
+  const rowFor = (side: "home" | "draw" | "away") => {
+    const name =
+      side === "home" ? b.homeTeam : side === "away" ? b.awayTeam : tCommon("draw");
+    const logo = side === "home" ? b.homeLogoUrl : side === "away" ? b.awayLogoUrl : null;
     const outcome = b.teamShaped
-      ? b.outcomes.find((o) => o.outcomeId === (team === "home" ? "1" : "2"))
+      ? b.outcomes.find((o) => o.outcomeId === OUTCOME_FOR_SIDE[side])
       : undefined;
+    if (side === "draw" && !outcome) return null;
     return (
       <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
         {/* TeamMark renders nothing without a picture. Hold a same-sized
             slot while EITHER side has one so the two names stay flush;
-            with neither, no slot and both sit at the left edge. */}
+            with neither, no slot and both sit at the left edge. The draw
+            has no crest and holds the slot so its label lines up with
+            the two teams above and below it. */}
         {b.homeLogoUrl || b.awayLogoUrl ? (
           <span style={{ display: "inline-flex", width: 20, height: 20, flexShrink: 0 }}>
-            <TeamMark tag={name.slice(0, 2).toUpperCase()} name={name} logoUrl={logo} size={20} />
+            {side === "draw" ? null : (
+              <TeamMark
+                tag={name.slice(0, 2).toUpperCase()}
+                name={name}
+                logoUrl={logo}
+                size={20}
+              />
+            )}
           </span>
         ) : null}
         <span
@@ -717,7 +735,10 @@ function MatchBannerCard({
             flex: 1,
             minWidth: 0,
             fontSize: 13.5,
-            fontWeight: 600,
+            // The draw is not a competitor - lighter weight and dimmed
+            // so the two teams still read as the match-up.
+            fontWeight: side === "draw" ? 500 : 600,
+            color: side === "draw" ? "var(--fg-dim)" : undefined,
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
@@ -838,6 +859,7 @@ function MatchBannerCard({
         <BoostTag endsAt={b.endsAt} nowMs={nowMs} />
       </div>
       {rowFor("home")}
+      {rowFor("draw")}
       {rowFor("away")}
       {!b.teamShaped && b.outcomes.length > 0 && (
         <div

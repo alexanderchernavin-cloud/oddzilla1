@@ -149,7 +149,7 @@ rows[1..]   cells: {name} text | {kind:"param", factorId} line value |
 | Fonbet              | oddzilla                                                                                                                                   | Rule                                                                                                                                                                |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | root sport          | `sports` (`provider='fonbet'`, `provider_urn='fb:sport:<id>'`)                                                                             | slug + English name from `internal/mapper/sports.go`; unknown roots → `fb-<id>`; `kind='traditional'` (esports root → `esport`)                                     |
-| segment name prefix | `categories` (`(sport_id, slug)`)                                                                                                          | `"Spain. Primera Division. Season 26/27"` → category `Spain`; single-segment names → `Other`                                                                                  |
+| segment name prefix | `categories` (`(sport_id, slug)`)                                                                                                          | `"Spain. Primera Division. Season 26/27"` → category `Spain`; single-segment names → `Other`. **One spelling per competition** — see [Category spelling](#category-spelling)                                                                                  |
 | segment             | `tournaments` (`provider_urn='fb:tournament:<id>'`)                                                                                        | slug = slugified name + `-<id>`                                                                                                                                     |
 | team                | `competitors` (`provider='fonbet'`, `provider_urn='fb:competitor:<teamId>'`)                                                               | slug = slugified name + `-<teamId>`                                                                                                                                 |
 | level-1 event       | `matches` (`provider_urn='fb:match:<eventId>'`)                                                                                            | `place=live` → `live`, `line` → `not_started`; `finished` or a live match that vanished → `closed`; events without two teams (outrights) skipped                    |
@@ -178,6 +178,53 @@ reorders the tabs themselves. It discovers them by re-deriving the same
 scopes over the sport's current offer — nothing stores the tab set — so a
 sub-event Fonbet adds shows up there on its own, and one it drops stops
 being offered (an ordering already saved for it survives).
+
+### Category spelling
+
+Fonbet has no category ids — the category IS a prefix of a league name —
+so the same competition splits into two sidebar buckets whenever Fonbet
+writes that prefix two ways, and it does. Measured across the whole live
+line on 2026-09-07, four competitions were spelled two ways and three
+had bookable matches under both spellings:
+
+| Root     | Spellings                                        | Difference |
+| -------- | ------------------------------------------------ | ---------- |
+| Football | `UEFA Champions League` / `Champions League UEFA` | word order |
+| Cricket  | `National teams` / `National Teams`               | case       |
+| Hockey   | `Short-hockey` / `Short Hockey`                   | hyphen     |
+| Racing   | `Formula-1` / `Formula 1`                         | hyphen     |
+
+`Slugify` already folds case and punctuation, so those three shared a
+`categories` row all along and only their display NAME flapped between
+cycles (`EnsureCategory` overwrites the name, so whichever spelling was
+upserted last won). Word order does NOT fold, which is why football was
+the one case that split into two rows — and it is the one that was
+reported: `Champions League UEFA. League phase. Head-to-head` sat in its
+own bucket while `UEFA Champions League. League phase` sat in the
+operator's pinned one.
+
+`categoryKey` in [`internal/mapper/mapper.go`](../services/fonbet-ingester/internal/mapper/mapper.go)
+folds all three away — lowercase, punctuation to spaces, tokens sorted —
+and `canonicalCategories` resolves every spelling in a group to the one
+on the **lowest Fonbet segment id**. Stability is the reason for that
+rule and not tidiness: the chosen name is what `Slugify` turns into
+`categories.slug`, the row's identity, so a name that flapped would keep
+minting rows and stranding the operator's pin and hidden flag on the old
+one. A segment id is permanent, so the answer only moves if that exact
+segment leaves the line — where "most segments wins" would move whenever
+Fonbet added one, and ties on the football group anyway (6 each).
+
+Fonbet's own tree cannot answer this instead: all 12 Champions League
+segments have the ROOT SPORT as their parent (`parentId: 1`), so there is
+no intermediate node to read a category from. The string is all there is.
+
+**The limit.** This folds away case, punctuation and word order, and
+nothing else. A genuine typo, or one competition named in two languages,
+still splits, and there is no operator-facing category merge to fall back
+on. When a merge does happen the losing row is left behind with no
+tournaments; it renders nowhere (the sidebar builds its buckets from
+`/catalog/sports/:slug/tournaments`, which selects FROM tournaments) but
+does still list on `/admin/categories` at 0 bookable.
 
 ## Operating notes
 

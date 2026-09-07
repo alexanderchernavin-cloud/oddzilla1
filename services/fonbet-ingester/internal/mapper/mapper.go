@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/oddzilla/fonbet-ingester/internal/fonbet"
 	"github.com/oddzilla/fonbet-ingester/internal/specifiers"
@@ -182,6 +183,16 @@ func Build(resp *fonbet.ListResponse, idx *fonbet.Index, opt Options) *Snapshot 
 		}
 		return s
 	}
+	// One spelling per competition, decided once over the whole segment
+	// list rather than per match — see canonicalCategories.
+	canonicalCategory := canonicalCategories(sports)
+	categoryOf := func(segmentName string) string {
+		name := categoryFromSegment(segmentName)
+		if c, ok := canonicalCategory[categoryKey(name)]; ok {
+			return c
+		}
+		return name
+	}
 
 	factors := make(map[int64]map[int]fonbet.Factor, len(resp.CustomFactors))
 	for _, cf := range resp.CustomFactors {
@@ -267,7 +278,7 @@ func Build(resp *fonbet.ListResponse, idx *fonbet.Index, opt Options) *Snapshot 
 			Sport:       SportFor(root.ID, root.Name),
 			SegmentID:   e.SportID,
 			SegmentName: segName,
-			Category:    categoryFromSegment(segName),
+			Category:    categoryOf(segName),
 			Team1:       strings.TrimSpace(e.Team1),
 			Team2:       strings.TrimSpace(e.Team2),
 			Team1ID:     e.Team1ID,
@@ -579,14 +590,124 @@ func resolveCaption(label string, f fonbet.Factor, team1, team2 string) string {
 }
 
 // categoryFromSegment derives a category label from a Fonbet league name.
-// Names are dotted paths ("Испания. Примера дивизион. Сезон 26/27"), so the
+// Names are dotted paths ("Spain. Primera Division. Season 26/27"), so the
 // first segment is the country / discipline; a single-segment name has no
 // natural parent and lands under "Other".
 func categoryFromSegment(name string) string {
 	if i := strings.Index(name, ". "); i > 0 {
 		return strings.TrimSpace(name[:i])
 	}
-	return "Other"
+	return CategoryOther
+}
+
+// CategoryOther is where a single-segment league name lands: it names no
+// parent, so there is nothing to group it under.
+const CategoryOther = "Other"
+
+// categoryKey is the identity of a category, as opposed to its spelling.
+//
+// Fonbet has no category ids — the category is a prefix of a league name —
+// so the same competition splits into two buckets whenever Fonbet writes
+// that prefix two ways, and it does. Measured across the whole live line
+// on 2026-09-07, four competitions were spelled two ways and three of
+// them had bookable matches under BOTH spellings:
+//
+//	Football     "UEFA Champions League" / "Champions League UEFA"
+//	Cricket      "National teams"        / "National Teams"
+//	Hockey       "Short-hockey"          / "Short Hockey"
+//	Racing       "Formula-1"             / "Formula 1"
+//
+// Word order, letter case, a hyphen. So the key folds all three away:
+// lowercase, punctuation to spaces, tokens sorted. Every one of those
+// pairs collapses onto one key and every other name in the line keeps a
+// key of its own.
+//
+// Fonbet's tree cannot answer this instead — checked before writing this:
+// all 12 Champions League segments have the ROOT SPORT as their parent
+// (`parentId: 1`), so there is no intermediate node to read a category
+// from. The string is all there is.
+//
+// Sorting tokens is the aggressive part, and its risk is merging two
+// names that are genuine permutations of each other with different
+// meanings ("Cup League" vs "League Cup"). Nothing in the live line does
+// that, and a category name is a country or a competition, where a
+// reordering is the same thing said differently. The narrower rule —
+// case and punctuation only — would leave the Champions League split,
+// which is the case that was reported.
+func categoryKey(name string) string {
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range strings.ToLower(name) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune(' ')
+		}
+	}
+	tokens := strings.Fields(b.String())
+	sort.Strings(tokens)
+	return strings.Join(tokens, " ")
+}
+
+// canonicalCategories resolves each category spelling in a snapshot to the
+// one spelling its whole group is filed under.
+//
+// The winner is the spelling on the LOWEST Fonbet segment id in the group.
+// The rule has to be stable above all else: the chosen name is what
+// `slugify` turns into `categories.slug`, which is the row's identity, so
+// a name that flapped between cycles would keep minting new category rows
+// and stranding the operator's pin and hidden flag on the old one. A
+// segment id is a permanent Fonbet id, so the answer only moves if that
+// exact segment leaves the line — where a "spelling used by the most
+// segments" rule would move whenever Fonbet added one, and ties on the
+// football group anyway (6 segments each).
+//
+// It also happens to pick the name the operator had already pinned:
+// segment 63304 "UEFA Champions League. Top scorer" is the oldest of the
+// twelve, so the merged bucket is "UEFA Champions League" — category 6737
+// on production, pinned first in Football's tree — rather than the
+// unpinned "Champions League UEFA" beside it.
+//
+// The limit worth stating: this folds away case, punctuation and word
+// order, and nothing else. A genuine typo, or the same competition named
+// in two languages, still splits, and there is no operator-facing merge
+// to fall back on yet.
+func canonicalCategories(sports map[int]*fonbet.Sport) map[string]string {
+	type pick struct {
+		name      string
+		segmentID int
+	}
+	best := map[string]pick{}
+	// Deterministic iteration: a Go map is randomly ordered, and reading
+	// segments in a different order each cycle would let two spellings
+	// sharing the lowest id trade the group between them.
+	ids := make([]int, 0, len(sports))
+	for id := range sports {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	for _, id := range ids {
+		s := sports[id]
+		if s == nil {
+			continue
+		}
+		name := categoryFromSegment(strings.TrimSpace(s.Name))
+		if name == CategoryOther {
+			continue
+		}
+		k := categoryKey(name)
+		if k == "" {
+			continue
+		}
+		if cur, ok := best[k]; !ok || id < cur.segmentID {
+			best[k] = pick{name: name, segmentID: id}
+		}
+	}
+	out := make(map[string]string, len(best))
+	for k, p := range best {
+		out[k] = p.name
+	}
+	return out
 }
 
 func buildScore(mi *fonbet.EventMisc, li *fonbet.LiveEventInfo) *LiveScore {
