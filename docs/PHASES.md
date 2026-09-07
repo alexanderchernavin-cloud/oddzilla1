@@ -1066,3 +1066,117 @@ cause of every Oddin gap); statistic sub-event rows (tries, shots, woodwork,
 5 innings, corners, cards); the percentage / date / "closed > N h" filters
 and a persisted per-market grader verdict on the admin page; hygiene
 suspend of `status = 1` markets on CLOSED.
+
+## Storefront: Default / Pro match-list layout (2026-09-07)
+
+A second shape for the match list, selectable per bettor, modelled on
+fon.bet's own list. The card stack is now **Default Layout**; the new
+dense table is **Pro Layout**.
+
+Why: the card gives every fixture a tournament strip, two team rows with
+crests, a per-map scoreboard and a trailing odds column — about 140px
+of page each. That is right for a handful of esports matches and wrong
+for the Fonbet line, where Football alone puts nineteen fixtures in front
+of a bettor. Measured on the same 1500px viewport: Default showed 3
+fixtures, Pro showed 11 across 7 tournament groups (row height 34px
+single-line, ~44px stacked on mobile).
+
+**Delivered:**
+
+- [`match-table.tsx`](../apps/web/src/components/match/match-table.tsx) —
+  tournament-grouped table: a header band per tournament carrying the
+  sport glyph, tier star, live count and the column captions, then one
+  line per fixture (`Home — Away`, clock + score + the feed's own
+  parenthetical, serve mark, price cells, chevron). Three market groups,
+  as fon.bet has them: **Result**, **Handicap**, **Total**.
+- Alignment is structural, not maintained: `--oz-pro-cell-w` and its two
+  siblings are declared on the group and read by BOTH the header
+  captions and the row cells, and the header renders the same group
+  blocks in the same order as a row. Verified by measurement — all
+  eight columns' `x` identical between header and row.
+- Groups appear progressively on the **list's** width via a container
+  query, never the viewport's: the shell spends 240px on the sidebar and
+  380px on the rail, so a 1500px window leaves the list ~836px while a
+  900px tablet with neither leaves ~880. Result below 560px, +Total from
+  560, +Handicap from 700, roomier cells from 920. Same `data-group` on
+  captions and cells, so a group cannot half-appear; no container-query
+  support means Result only, which still works.
+- [`list-markets.ts`](../packages/types/src/list-markets.ts) — which
+  market types count as "the handicap" / "the total" (a per-feed table,
+  read off the live catalogue) and which rung is the main line (the
+  balanced one, scored `|o2 − o1| / (o1 + o2)`). 14 unit tests,
+  including the two real Getafe vs Celta ladders. The scale
+  normalisation came out of a failing test: a raw probability gap
+  favours the LONGER pair, so a rung deep in the tail could have won the
+  column by being far out rather than level.
+- `loadLadderMarketsForMatches` + `serializeLadders` in the catalog
+  routes — one query, the only one this feature adds to a list
+  response. The loader picks the rung on raw odds; the serializer prices
+  it through the SAME quoter as the match-winner row
+  (`quoteCardMarketBoost`), ZillaBoost included, so a handicap shows the
+  price on the card that the match page shows for it. The first cut
+  skipped the boost on these columns as "safe" (placement prices a
+  rule-less leg raw, so quote and charge agreed) — safe, and wrong:
+  the same market must show the same price on every surface, and the
+  match page already boosts every market a rule covers.
+- An operator-authored QUESTION event (`inlineMarkets` set) renders as a
+  title-only row and leads to the match page; a group made only of
+  questions gets no odds captions. Its two "sides" are answers, and a
+  `1 / 2` caption over their prices would tell a bettor which answer is
+  playing at home — the same reason the Default card swaps its
+  match-up for the event's markets.
+- Layout switch in
+  [`match-list-tabs.tsx`](../apps/web/src/components/match/match-list-tabs.tsx),
+  persisted in `localStorage["oz:match-list-layout"]` namespaced per
+  signed-in bettor, exactly like the existing column count. The column
+  toggle is dropped (not disabled) in Pro — it splits the card stack
+  into two tracks and a table has nothing to split.
+- The preference is also mirrored into a host-scoped cookie
+  (`oz_list_layout`, [`lib/list-layout-cookie.ts`](../apps/web/src/lib/list-layout-cookie.ts)
+  + [`lib/list-layout.tsx`](../apps/web/src/lib/list-layout.tsx)) which
+  the `(main)` layout reads server-side, so SSR renders the chosen layout
+  on the first paint instead of flipping cards into rows after
+  hydration. Proven on the raw HTML: with the cookie `/live` ships one
+  `oz-pro-table` and no card grid, without it the reverse, and a garbage
+  value falls back to Default. The first cut called the parser from a
+  `"use client"` module inside the server layout — accepted by
+  typecheck, lint and `next build`, thrown on the first real request
+  (`Attempted to call parseListLayoutCookie() from the server`), every
+  list page empty. Hence the plain-module split.
+- [`match-winner-selection.ts`](../apps/web/src/lib/match-winner-selection.ts)
+  — the slip selection both layouts build, extracted so
+  `customBoostRuleId` cannot drift between them. Without that field
+  placement prices the leg from the raw book, and since a typical
+  ZillaBoost sits inside the 5% drift tolerance the bet is silently
+  accepted at the lower price rather than rejected.
+- `handicapLineForSide` moved into the shared module and the match page's
+  `handicapForSide` now delegates to it. The sign is the part that
+  silently prints a whole column's line wrongly when it drifts — as
+  it did on every Fonbet handicap until 2026-09-07.
+- Reaches all four list surfaces (lobby, `/sport/:slug`, `/live`,
+  `/upcoming`) with no page changes, and rides the same live merge as
+  the cards — odds ticks, market suspension, scores, lifecycle,
+  ZillaBoost re-pricing on every priced cell. The ladder columns re-price
+  from ticks but never re-pick their rung: a row whose line jumped
+  between rungs mid-read would be worse than a stale one, and the other
+  rungs are not subscribed anyway.
+
+**Verified** against production data through the local dev server, with a
+scratchpad proxy feeding the real per-match ladders into the new payload
+field so the review used genuine lines rather than mocks: every column
+aligned to the pixel at 836px, the picked lines matched the
+hand-computed ones (handicap `0` at 1.70/2.17 and total `1.5` at
+1.70/2.15 for Getafe vs Celta), handicap signs opposite across the two
+columns (`-1.5` / `+1.5`), a group with no total dropped that column,
+a row with no priced ladder dashed its cells while its sibling kept
+them, a price click landed in the slip as `HANDICAP 0 / Celta 0 / 2.17`,
+the stretched row link navigated including over the chevron, and the
+same at 390px (Result only, stacked), 606px (Result + Total) and both
+themes. `pnpm -r typecheck` clean across 9 workspaces, `pnpm -r lint`
+0 errors, 113 types tests and 315 api tests passing, `next build`
+compiled and generated all 41 pages.
+
+**Not exercised:** no request has been served by the real API — the
+loader is typechecked and its two decisions are unit-tested, but the
+query itself has not run against a database. Watch the first list
+response after deploy.

@@ -67,6 +67,13 @@ import {
 } from "@oddzilla/types";
 import { quoteOnLadder } from "@oddzilla/types/odds";
 import {
+  LADDER_PROVIDER_MARKET_IDS,
+  isFullMatchLadderMarket,
+  ladderShapeByProviderMarketId,
+  pickMainLine,
+  type LadderKind,
+} from "@oddzilla/types/list-markets";
+import {
   loadPromoVisibilityCascades,
   resolveVisible,
 } from "../../lib/bettor-promo-visibility.js";
@@ -593,13 +600,29 @@ interface MatchWinnerBoostQuote {
   selections: Record<string, BoostQuoteRule> | null;
 }
 
-function quoteMatchWinnerBoost(
-  pair: MatchWinnerPair,
+/**
+ * ZillaBoost ONE market on a list card, whichever market it is.
+ *
+ * Every priced market a card renders goes through here — the inline
+ * match-winner row and, since 2026-09-07, the Pro layout's handicap and
+ * total columns. Sharing it is the point: the match page boosts every
+ * market a rule covers, so a card that boosted only its match winner
+ * would show a different price for the same handicap the match page had
+ * already marked up, and the bettor would be quoted the worse of the
+ * two for no reason they could see.
+ *
+ * `boostOutcomes` must be the market's WHOLE active+priced book at raw
+ * published odds: the key math shaves the market's overround, so a
+ * two-way boost derived from one side would be wrong.
+ */
+function quoteCardMarketBoost(
+  marketId: bigint,
+  providerMarketId: number,
+  boostOutcomes: Array<{ outcomeId: string; publishedOdds: number }>,
   ctx: MatchBoostContext,
   boosts: BatchedMatchBoosts,
 ): MatchWinnerBoostQuote | null {
   if (boosts.empty) return null;
-  const marketId = BigInt(pair.homeMarketId);
   // The market's REAL provider_market_id, which is what a team_only
   // competitor rule resolves against (isTeamShapedMarket: Oddin 1 and 4,
   // where outcome "1" IS the home competitor). This used to pass a
@@ -611,7 +634,7 @@ function quoteMatchWinnerBoost(
   // card can no longer quote a team_only boost the ticket would be
   // priced without.
   const { marketWide: marketWideRule, selections: selectionRules } =
-    boosts.resolve(ctx, marketId, pair.providerMarketId);
+    boosts.resolve(ctx, marketId, providerMarketId);
   const hasSelections = !!selectionRules && selectionRules.size > 0;
   if (!marketWideRule && !hasSelections) return null;
 
@@ -625,9 +648,9 @@ function quoteMatchWinnerBoost(
   // is invisible now can materialise a tick later — withholding the rule
   // would leave the row permanently unboosted until the next SSR load.
   const cells =
-    pair.boostOutcomes.length > 0
+    boostOutcomes.length > 0
       ? quoteMarketBoost({
-          outcomes: pair.boostOutcomes,
+          outcomes: boostOutcomes,
           marketWide,
           selections,
         })
@@ -637,6 +660,21 @@ function quoteMatchWinnerBoost(
     marketWide,
     selections: selections ? Object.fromEntries(selections) : null,
   };
+}
+
+/** The inline match-winner row's call into the shared quoter above. */
+function quoteMatchWinnerBoost(
+  pair: MatchWinnerPair,
+  ctx: MatchBoostContext,
+  boosts: BatchedMatchBoosts,
+): MatchWinnerBoostQuote | null {
+  return quoteCardMarketBoost(
+    BigInt(pair.homeMarketId),
+    pair.providerMarketId,
+    pair.boostOutcomes,
+    ctx,
+    boosts,
+  );
 }
 
 /** Serialised boost attached to one list-card price. */
@@ -1042,6 +1080,269 @@ interface InlineTopMarket {
     publishedOdds: string | null;
     probability: string | null;
   }>;
+}
+
+/**
+ * The main handicap / total rung for a match, before pricing.
+ *
+ * Deliberately RAW: the loader picks the rung, the serializer prices it,
+ * exactly as `loadMatchWinnerOdds` and its serializer already split the
+ * work. ZillaBoost is computed from raw published odds and REPLACES the
+ * per-bettor adjustment, so a loader that had already applied the
+ * adjustment could not be boosted correctly afterwards.
+ *
+ * `line` is the feed's own value, stated from the HOME team's
+ * perspective for a handicap — the client negates it for the away
+ * column (`handicapLineForSide`). `first` / `second` are [home, away]
+ * for a handicap and [over, under] for a total, in that render order.
+ */
+interface PickedLadder {
+  marketId: bigint;
+  providerMarketId: number;
+  line: string;
+  first: { outcomeId: string; rawPrice: string | null; probability: string | null };
+  second: { outcomeId: string; rawPrice: string | null; probability: string | null };
+  /**
+   * The rung's WHOLE active+priced book at raw odds, for the boost key
+   * math. Two entries for every ladder shape we carry, but collected
+   * generically rather than assumed — the key is the market's, not the
+   * pair's.
+   */
+  boostOutcomes: Array<{ outcomeId: string; publishedOdds: number }>;
+}
+
+type PickedLadders = Partial<Record<LadderKind, PickedLadder>>;
+
+/**
+ * Picks the main handicap and total rung for a batch of matches, for the
+ * Pro list layout's second and third column groups.
+ *
+ * Which market types count and which rung is "main" both live in
+ * `@oddzilla/types/list-markets` — a shared table plus a balance rule —
+ * so the storefront, this loader and the unit tests cannot disagree
+ * about them. See that module for why the market set is a table and the
+ * rung is a rule.
+ *
+ * This PICKS; the serializer PRICES. The same split `loadMatchWinnerOdds`
+ * has with its serializer, and for the same reason: ZillaBoost is
+ * computed from the raw published odds and replaces the per-bettor
+ * adjustment outright, so prices have to leave here raw. The balance
+ * score is taken on raw odds too — the main line is a property of the
+ * book, not of one bettor's adjustment, and every bettor should see the
+ * same rung.
+ *
+ * ONE query, and the only one this feature adds to a list response:
+ * `loadTopMarketsForMatches` beside it early-returns when no sport has a
+ * curated Top list, which is every sport on production today. Bounded by
+ * `markets.match_id` and a four-value id filter, so even a 100-row page
+ * reads a couple of thousand outcome rows.
+ */
+async function loadLadderMarketsForMatches(
+  db: FastifyInstance["db"],
+  matchIds: bigint[],
+): Promise<Map<string, PickedLadders>> {
+  const out = new Map<string, PickedLadders>();
+  if (matchIds.length === 0) return out;
+
+  const rows = await db
+    .select({
+      matchId: markets.matchId,
+      marketId: markets.id,
+      providerMarketId: markets.providerMarketId,
+      specifiersJson: markets.specifiersJson,
+      outcomeId: marketOutcomes.outcomeId,
+      publishedOdds: marketOutcomes.publishedOdds,
+      probability: marketOutcomes.probability,
+      active: marketOutcomes.active,
+    })
+    .from(markets)
+    .innerJoin(marketOutcomes, eq(marketOutcomes.marketId, markets.id))
+    .where(
+      and(
+        inArray(markets.matchId, matchIds),
+        inArray(markets.providerMarketId, [...LADDER_PROVIDER_MARKET_IDS]),
+        eq(markets.status, 1),
+      ),
+    );
+
+  type Price = { rawPrice: string | null; probability: string | null };
+  type Rung = {
+    marketId: bigint;
+    line: string;
+    /** Every outcome on the rung, so the boost math sees the whole book. */
+    prices: Map<string, Price>;
+  };
+  // matchId -> kind -> providerMarketId -> marketId -> rung.
+  //
+  // The provider tier is not paranoia about a case that cannot happen —
+  // it is what keeps the outcome-id sets from mixing. Oddin keys a
+  // handicap `1` / `2` and Fonbet keys it `h1` / `h2`; a bucket holding
+  // both would read one feed's rungs through the other's ids and quote
+  // an empty pair. A match has one provider today, so in practice each
+  // tier holds exactly one entry.
+  const byMatch = new Map<string, Map<LadderKind, Map<number, Map<string, Rung>>>>();
+
+  for (const r of rows) {
+    const resolved = ladderShapeByProviderMarketId(r.providerMarketId);
+    if (!resolved) continue;
+    const specs = (r.specifiersJson ?? {}) as Record<string, string>;
+    if (!isFullMatchLadderMarket(specs, resolved.shape)) continue;
+    const line = specs[resolved.shape.lineKey];
+    if (line == null || line === "") continue;
+
+    const mkey = r.matchId.toString();
+    let perKind = byMatch.get(mkey);
+    if (!perKind) {
+      perKind = new Map();
+      byMatch.set(mkey, perKind);
+    }
+    let perProvider = perKind.get(resolved.kind);
+    if (!perProvider) {
+      perProvider = new Map();
+      perKind.set(resolved.kind, perProvider);
+    }
+    let perMarket = perProvider.get(r.providerMarketId);
+    if (!perMarket) {
+      perMarket = new Map();
+      perProvider.set(r.providerMarketId, perMarket);
+    }
+    const rkey = r.marketId.toString();
+    let rung = perMarket.get(rkey);
+    if (!rung) {
+      rung = { marketId: r.marketId, line, prices: new Map() };
+      perMarket.set(rkey, rung);
+    }
+    rung.prices.set(r.outcomeId, {
+      // An inactive outcome carries no price, exactly as the
+      // match-winner row treats one — and `pickMainLine` then skips
+      // the whole rung, so a card never quotes half a suspended pair.
+      rawPrice: r.active ? r.publishedOdds : null,
+      probability: r.probability ?? null,
+    });
+  }
+
+  for (const [mkey, perKind] of byMatch) {
+    const ladders: PickedLadders = {};
+    for (const [kind, perProvider] of perKind) {
+      for (const [providerMarketId, perMarket] of perProvider) {
+        const shape = ladderShapeByProviderMarketId(providerMarketId)?.shape;
+        if (!shape) continue;
+        const firstId = shape.outcomeIds[0];
+        const secondId = shape.outcomeIds[1];
+        const picked = pickMainLine(
+          Array.from(perMarket.values()).map((rung) => {
+            const first = rung.prices.get(firstId) ?? null;
+            const second = rung.prices.get(secondId) ?? null;
+            return {
+              line: rung.line,
+              firstPrice: first?.rawPrice != null ? Number(first.rawPrice) : null,
+              secondPrice: second?.rawPrice != null ? Number(second.rawPrice) : null,
+              payload: { rung, first, second },
+            };
+          }),
+        );
+        if (!picked) continue;
+        const { rung, first, second } = picked.payload;
+        ladders[kind] = {
+          marketId: rung.marketId,
+          providerMarketId,
+          line: rung.line,
+          first: {
+            outcomeId: firstId,
+            rawPrice: first?.rawPrice ?? null,
+            probability: first?.probability ?? null,
+          },
+          second: {
+            outcomeId: secondId,
+            rawPrice: second?.rawPrice ?? null,
+            probability: second?.probability ?? null,
+          },
+          // `>= 1`, not `> 1`, in parity with the match-winner row, the
+          // client compute and placement: a side at exactly 1.00 stays in
+          // the set so the key math sees the whole book.
+          boostOutcomes: Array.from(rung.prices, ([outcomeId, pr]) => ({
+            outcomeId,
+            publishedOdds: pr.rawPrice != null ? Number(pr.rawPrice) : Number.NaN,
+          })).filter((o) => Number.isFinite(o.publishedOdds) && o.publishedOdds >= 1),
+        };
+        break;
+      }
+    }
+    if (Object.keys(ladders).length > 0) out.set(mkey, ladders);
+  }
+  return out;
+}
+
+/** Every picked rung's market id across a batch, for the boost loader. */
+function ladderMarketIds(picked: Map<string, PickedLadders>): bigint[] {
+  const ids: bigint[] = [];
+  for (const ladders of picked.values()) {
+    if (ladders.handicap) ids.push(ladders.handicap.marketId);
+    if (ladders.total) ids.push(ladders.total.marketId);
+  }
+  return ids;
+}
+
+/**
+ * Prices a match's picked rungs for one viewer — the SAME way the
+ * inline match-winner row is priced, through the same quoter, so a
+ * handicap shows the price on the card that the match page shows for
+ * it and that placement will re-derive.
+ *
+ * A boosted cell REPLACES the adjusted price outright and the leg
+ * carries the rule id into the slip: placement prices a boosted leg from
+ * the raw published odds and skips the per-bettor adjustment
+ * (bets/service.ts branches on boostedOddsRuleId before the adjustment
+ * branch). The resolved rule rides along so the client can re-price the
+ * cell from WS ticks instead of reverting to raw on the first one.
+ *
+ * A suspended side (raw null) stays null whatever the rule says — a boost
+ * must never resurrect an unbettable outcome.
+ */
+function serializeLadders(
+  picked: PickedLadders | undefined,
+  ctx: MatchBoostContext | undefined,
+  boosts: BatchedMatchBoosts,
+  bp: number,
+) {
+  if (!picked) return null;
+  const one = (ladder: PickedLadder | undefined) => {
+    if (!ladder) return null;
+    const bq = ctx
+      ? quoteCardMarketBoost(
+          ladder.marketId,
+          ladder.providerMarketId,
+          ladder.boostOutcomes,
+          ctx,
+          boosts,
+        )
+      : null;
+    const price = (o: PickedLadder["first"]) => {
+      const cell = bq?.cells.get(o.outcomeId);
+      return {
+        outcomeId: o.outcomeId,
+        price:
+          o.rawPrice !== null && cell
+            ? cell.boostedOdds
+            : applyBettorAdjustment(o.rawPrice, o.probability, bp),
+        probability: o.probability,
+        boost: o.rawPrice !== null ? boostDto(cell) : null,
+      };
+    };
+    return {
+      marketId: ladder.marketId.toString(),
+      providerMarketId: ladder.providerMarketId,
+      line: ladder.line,
+      boostRule: bq?.marketWide ?? null,
+      boostSelections: bq?.selections ?? null,
+      first: price(ladder.first),
+      second: price(ladder.second),
+    };
+  };
+  const handicap = one(picked.handicap);
+  const total = one(picked.total);
+  if (!handicap && !total) return null;
+  return { handicap, total };
 }
 
 // Sport slug shape is the same lowercase-and-hyphens convention used by
@@ -1554,7 +1855,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
       homeCompetitorId: r.homeCompetitorId,
       awayCompetitorId: r.awayCompetitorId,
     }));
-    const [viewerRiskScore, inlineMarketsByMatch, topMarkets] = await Promise.all([
+    const [viewerRiskScore, inlineMarketsByMatch, topMarkets, ladders] =
+      await Promise.all([
       loadViewerRiskScore(app.db, request.user?.id),
       // Markets rendered ON the card, for operator-authored events that
       // present as a question rather than a fixture. Returns an empty map
@@ -1574,11 +1876,20 @@ export default async function catalogRoutes(app: FastifyInstance) {
         topIdsBySport,
         formatForMatch,
       ),
+      // Pro list layout's Handicap + Total column groups. Picked here,
+      // priced (adjusted or boosted) in the serializer below.
+      loadLadderMarketsForMatches(
+        app.db,
+        rows.map((r) => r.matchId),
+      ),
     ]);
     const boosts = await loadBoostRulesForMatches(
       app.db,
       boostCtxBySport,
-      Array.from(oddsByMatch.values()).map((o) => BigInt(o.homeMarketId)),
+      [
+        ...Array.from(oddsByMatch.values()).map((o) => BigInt(o.homeMarketId)),
+        ...ladderMarketIds(ladders),
+      ],
       viewerRiskScore,
     );
     const boostCtxByMatch = new Map(
@@ -1696,6 +2007,14 @@ export default async function catalogRoutes(app: FastifyInstance) {
               })()
             : null,
           topMarket: top,
+          // Main handicap + total line for the Pro layout's second and
+          // third column groups. Null when the match quotes neither.
+          ladders: serializeLadders(
+            ladders.get(r.matchId.toString()),
+            boostCtxByMatch.get(r.matchId.toString()),
+            boosts,
+            bp,
+          ),
         };
       }),
     };
@@ -2508,7 +2827,8 @@ export default async function catalogRoutes(app: FastifyInstance) {
     // Inline Top markets per card. We fetch the curated id list per
     // sport once (typically a handful of distinct sports in any list
     // response), then resolve the first available Top market per match.
-    const [viewerRiskScore, inlineMarketsByMatch, topMarkets] = await Promise.all([
+    const [viewerRiskScore, inlineMarketsByMatch, topMarkets, ladders] =
+      await Promise.all([
       loadViewerRiskScore(app.db, request.user?.id),
       // See the same call on /catalog/sports/:slug. Empty for a page made
       // of feed matches, which is every lobby / live / upcoming page that
@@ -2524,11 +2844,20 @@ export default async function catalogRoutes(app: FastifyInstance) {
         topIdsBySport,
         formatForMatch,
       ),
+      // Pro list layout's Handicap + Total column groups. Picked here,
+      // priced (adjusted or boosted) in the serializer below.
+      loadLadderMarketsForMatches(
+        app.db,
+        rows.map((r) => r.matchId),
+      ),
     ]);
     const boosts = await loadBoostRulesForMatches(
       app.db,
       boostCtxList,
-      Array.from(oddsByMatch.values()).map((o) => BigInt(o.homeMarketId)),
+      [
+        ...Array.from(oddsByMatch.values()).map((o) => BigInt(o.homeMarketId)),
+        ...ladderMarketIds(ladders),
+      ],
       viewerRiskScore,
     );
     const boostCtxByMatch = new Map(
@@ -2649,6 +2978,14 @@ export default async function catalogRoutes(app: FastifyInstance) {
               })()
             : null,
           topMarket: top,
+          // Main handicap + total line for the Pro layout's second and
+          // third column groups. Null when the match quotes neither.
+          ladders: serializeLadders(
+            ladders.get(r.matchId.toString()),
+            boostCtxByMatch.get(r.matchId.toString()),
+            boosts,
+            bp,
+          ),
         };
       }),
     };

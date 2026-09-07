@@ -1478,6 +1478,427 @@ body {
   }
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+   Match-list control cluster — layout switch + column count.
+
+   `.oz-match-list-layout` reuses `.oz-match-cols-btn` for its buttons
+   but keeps its own wrapper because the two groups have different
+   visibility rules: the column toggle is a wide-viewport feature
+   (display:none under 2000px, see above), while the layout switch is
+   offered at every width — the dense table earns the most on a phone,
+   where a card stack costs the most scrolling.
+   ───────────────────────────────────────────────────────────────────────── */
+.oz-match-list-controls {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-end;
+  gap: 6px;
+}
+
+.oz-match-list-layout {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm, 8px);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Pro Layout — dense tournament-grouped match table (match-table.tsx).
+
+   The load-bearing idea is one shared cell width per group,
+   `--oz-pro-cell-w`, used by BOTH the header captions and every row's
+   price buttons. That is what makes the columns line up down the whole
+   group, which is the entire reason this layout exists — a per-row width
+   would reintroduce the ragged edge the cards already have.
+   ───────────────────────────────────────────────────────────────────────── */
+.oz-pro-table {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  /* Column groups are shown or hidden by the width of the LIST, not of
+     the viewport, because those are very different numbers here: the
+     shell spends 240px on the sidebar and 380px on the bet-slip rail,
+     so a 1500px viewport leaves the list about 830px, while a 900px
+     tablet with neither leaves it about 880. A viewport media query
+     would hide columns on the tablet that fit and show columns on the
+     desktop that do not. If `@container` is unsupported the base rules
+     below apply and the list shows Result only — a functional degrade,
+     not a broken one. */
+  container-type: inline-size;
+  container-name: oz-pro-list;
+}
+
+.oz-pro-group {
+  /* Fixed px, not a vw clamp: `vw` is the VIEWPORT and the thing these
+     have to fit inside is the LIST, which the shell leaves about 806px
+     of at a 1500px window. The container query below widens them once
+     the list can spare it. The first cut clamped against vw and grew
+     every cell to its 54px maximum on a 1500px desktop, which left two
+     team names sharing 124px — measured, and the reason these are
+     numbers rather than a formula.
+     A handicap cell carries its line AND its price, so it needs room
+     for both; a total's line is shared by its two prices and sits in a
+     cell of its own that is not a button. */
+  --oz-pro-cell-w: 42px;
+  --oz-pro-cell-wide: 58px;
+  --oz-pro-line-w: 32px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  overflow: hidden;
+  min-width: 0;
+}
+/* Same gold left edge a featured card gets, for the same reason: the
+   eye should pick a top-tier competition out of a long list. On the
+   table it marks the whole group rather than each row. */
+.oz-pro-group[data-featured="true"] {
+  border-left: 2px solid var(--tier-gold);
+}
+
+.oz-pro-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--hairline);
+  min-width: 0;
+}
+.oz-pro-head-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  text-decoration: none;
+  color: var(--fg-muted);
+}
+.oz-pro-head-name:hover .oz-pro-head-title {
+  color: var(--fg);
+  text-decoration: underline;
+}
+.oz-pro-head-sport {
+  flex-shrink: 0;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+.oz-pro-head-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+.oz-pro-head-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--live);
+}
+
+.oz-pro-rows {
+  display: flex;
+  flex-direction: column;
+}
+.oz-pro-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 10px;
+  border-top: 1px solid var(--hairline);
+}
+.oz-pro-rows > .oz-pro-row:first-child {
+  border-top: 0;
+}
+/* 4% of the foreground over the surface, rather than a fixed token:
+   `--fg` flips with the theme, so this is a subtle darkening in light
+   and a subtle lightening in dark from one declaration. `--surface-2`
+   would have been near-invisible in light (#faf8f3 on #ffffff). */
+.oz-pro-row:hover {
+  background: color-mix(in oklab, var(--fg) 4%, var(--surface));
+}
+
+.oz-pro-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  text-decoration: none;
+  color: inherit;
+}
+/* Stretched link: the anchor holds the team names, and this covers the
+   whole row so the entire strip navigates — without nesting the price
+   buttons inside an <a>, which is what the Default card does and is
+   invalid HTML. The buttons sit above it via z-index below. */
+.oz-pro-link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+.oz-pro-teams {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+}
+.oz-pro-team {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oz-pro-vs {
+  flex-shrink: 0;
+  color: var(--fg-dim);
+}
+
+/* Fixed width and LEFT-aligned, so the clock starts at the same x on
+   every row and the score — the clock is monospaced and always mm:ss —
+   lands in a column behind it. Right-aligning instead gave a clean
+   right edge and a ragged score position, because Fonbet's `comment`
+   varies in length ("(0-0)" against "(0-1) +4 min"). The comment is
+   the only part allowed to shrink, and it truncates rather than
+   pushing into the price columns. */
+.oz-pro-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  flex: 0 0 auto;
+  width: 112px;
+  overflow: hidden;
+}
+.oz-pro-clock {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--live);
+}
+.oz-pro-score {
+  flex-shrink: 0;
+  padding: 0 2px;
+  border-radius: 4px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--fg);
+}
+.oz-pro-comment {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--fg-dim);
+}
+.oz-pro-time {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.oz-pro-odds {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.oz-pro-collabel {
+  width: var(--oz-pro-cell-w);
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: var(--fg-dim);
+}
+/* Caption widths mirror the cell widths one-for-one — that pairing is
+   the whole alignment mechanism, so a new cell variant needs a caption
+   variant in the same commit. */
+.oz-pro-collabel[data-variant="wide"] {
+  width: var(--oz-pro-cell-wide);
+}
+.oz-pro-collabel[data-variant="line"] {
+  width: var(--oz-pro-line-w);
+}
+
+/* Market groups beyond Result are progressive: hidden until the list is
+   wide enough to hold them without squeezing the team names. Header
+   captions and row cells carry the same `data-group`, so a group can
+   never half-appear. Thresholds are the measured cost of each group —
+   Result-only needs ~470px of row, +Total ~615, +Handicap ~760 — plus
+   headroom for the names. */
+.oz-pro-odds[data-group="handicap"],
+.oz-pro-odds[data-group="total"] {
+  display: none;
+}
+@container oz-pro-list (min-width: 560px) {
+  .oz-pro-odds[data-group="total"] {
+    display: flex;
+  }
+}
+@container oz-pro-list (min-width: 700px) {
+  .oz-pro-odds[data-group="handicap"] {
+    display: flex;
+  }
+}
+/* Roomier cells once the names are no longer the constraint. All three
+   groups plus the meta column cost ~566px of row, so past ~920px there
+   is more than 350px left for two team names and the prices can take
+   the slack instead. */
+@container oz-pro-list (min-width: 920px) {
+  .oz-pro-group {
+    --oz-pro-cell-w: 48px;
+    --oz-pro-cell-wide: 66px;
+    --oz-pro-line-w: 38px;
+  }
+  .oz-pro-cell {
+    font-size: 12px;
+  }
+}
+.oz-pro-cell {
+  /* Above the stretched link so a price click reaches the button. */
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: var(--oz-pro-cell-w);
+  height: 26px;
+  padding: 0 2px;
+  border: 1px solid;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  transition:
+    background-color 140ms var(--ease),
+    border-color 140ms var(--ease),
+    color 140ms var(--ease);
+}
+.oz-pro-cell[data-wide="true"] {
+  width: var(--oz-pro-cell-wide);
+  justify-content: space-between;
+  padding: 0 4px;
+}
+/* The handicap this side is playing, beside its price. Dimmed and
+   lighter so the price stays the thing the eye lands on, and allowed to
+   be the first thing to go when the cell is tight — a clipped line is
+   recoverable from the column header, a clipped price is not. */
+.oz-pro-cellline {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 9.5px;
+  font-weight: 500;
+  color: var(--fg-muted);
+}
+.oz-pro-cell[data-wide="true"] > span:last-child {
+  flex-shrink: 0;
+}
+/* A total's line: shared by its two prices, so it is a value and not a
+   button. Sized and bordered like a cell so the row still reads as one
+   band of boxes. */
+/* Not a button: a total's line is shared by its two prices, so it is a
+   value. Styled as a flat chip rather than a bordered box precisely so
+   it does not invite a click — the two cells beside it do. */
+.oz-pro-linecell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--oz-pro-line-w);
+  height: 26px;
+  border-radius: 6px;
+  background: color-mix(in oklab, var(--fg) 5%, transparent);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--fg-muted);
+}
+/* Upward caret marking a ZillaBoost. The cell is too narrow for the
+   struck-through original the card shows, so the mark plus the green
+   tint carry it and the original rides in the button's title. */
+.oz-pro-boost {
+  width: 0;
+  height: 0;
+  border-left: 3px solid transparent;
+  border-right: 3px solid transparent;
+  border-bottom: 4px solid currentColor;
+}
+/* `pointer-events: none` is what keeps the chevron from punching a
+   dead 16px hole in the stretched link: it is `position: relative` and
+   later in DOM order, so it paints above the link's ::after and would
+   otherwise swallow clicks aimed at the row. */
+.oz-pro-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  color: var(--fg-dim);
+  pointer-events: none;
+}
+
+/* Below ~600px the single-line row runs out of room: three 38px cells,
+   a 76px meta column, the chevron and the padding leave under 90px for
+   two team names. Teams and meta stack instead, which keeps the row at
+   two short lines (~38px) — still a fraction of a card. Measured on a
+   375px viewport, where the single-line form left names unreadable. */
+@media (max-width: 599px) {
+  .oz-pro-link {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+  }
+  .oz-pro-meta {
+    width: auto;
+    justify-content: flex-start;
+  }
+  .oz-pro-teams {
+    width: 100%;
+  }
+}
+/* Same stack, keyed off the LIST width rather than the viewport, so a
+   narrow list inside a wide window (the side-panel embed) stacks too.
+   Both rules are wanted: the media query still covers a browser with no
+   container-query support. */
+@container oz-pro-list (max-width: 559px) {
+  .oz-pro-link {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+  }
+  .oz-pro-meta {
+    width: auto;
+    justify-content: flex-start;
+  }
+  .oz-pro-teams {
+    width: 100%;
+  }
+}
+
 /* Embed-route container — shell-less wrapper mounted inside the
    side-panel iframes. The page sets up its own padding + column so
    the iframe's natural width flows through. */

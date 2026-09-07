@@ -29,6 +29,7 @@ import {
 import { isTeamShapedMarket } from "@oddzilla/types/boosted-odds";
 import { resolveBetAssistMarket } from "@oddzilla/types/bet-assist";
 import { isSubEventScope } from "@oddzilla/types/market-scope";
+import { handicapLineForSide } from "@oddzilla/types/list-markets";
 import type { SportradarMatchRef } from "@oddzilla/types/sportradar";
 import type { ZillaFlashOffer } from "@oddzilla/types";
 import { useTranslations } from "@/lib/i18n";
@@ -1715,14 +1716,13 @@ function isAwayHandicapSide(o: MarketOutcome, match: MatchMeta): boolean {
 // perspective (Oddin/UOF `handicap` specifier). The away team's handicap
 // is its negation — a home line of -1.5 means the away side is playing
 // +1.5. Render each team its own value with an explicit sign.
-function handicapForSide(v: string | null, isAway: boolean): string {
-  if (v == null) return "";
-  const n = Number.parseFloat(v);
-  if (!Number.isFinite(n)) return v;
-  const side = isAway ? -n : n;
-  // `-0` prints as "0" via template coercion, so no special case needed.
-  return side > 0 ? `+${side}` : `${side}`;
-}
+//
+// Delegates to the shared implementation, which the Pro list layout's
+// handicap column renders through as well. The sign is the part that
+// silently prints the wrong line for a whole column when it drifts —
+// which it did, on every Fonbet handicap, until 2026-09-07 — so it lives
+// in one place rather than two.
+const handicapForSide = handicapLineForSide;
 
 // Canonical ordering for common outcome slot names. Unknown labels
 // preserve their discovery order after the known slots.

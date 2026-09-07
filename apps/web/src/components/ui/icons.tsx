@@ -147,6 +147,25 @@ export const I = {
       <rect x="13" y="3" width="8" height="18" rx="1" />
     </Icon>
   ),
+  // Default layout: two stacked cards, each with its own inner line —
+  // the shape of a match card (tournament strip over the body).
+  LayoutCards: (p: IconProps) => (
+    <Icon {...p}>
+      <rect x="3" y="3" width="18" height="8" rx="1.5" />
+      <path d="M3 6.5h18" />
+      <rect x="3" y="13" width="18" height="8" rx="1.5" />
+      <path d="M3 16.5h18" />
+    </Icon>
+  ),
+  // Pro layout: dense rows with a column rule down the right — the
+  // shape of the table (fixtures on the left, price columns on the
+  // right).
+  LayoutTable: (p: IconProps) => (
+    <Icon {...p}>
+      <rect x="3" y="4" width="18" height="16" rx="1.5" />
+      <path d="M3 9h18M3 14.5h18M15 4v16" />
+    </Icon>
+  ),
   Ticket: (p: IconProps) => (
     <Icon {...p}>
       <path d="M3 9a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4z" />

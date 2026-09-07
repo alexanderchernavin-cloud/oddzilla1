@@ -799,6 +799,22 @@
       "armed": "Comeca automaticamente quando a partida ficar ao vivo",
       "drmUnsupported": "Este navegador nao consegue reproduzir a transmissao protegida. Tente Chrome, Edge, Firefox ou Safari."
     },
+    "listMarkets": {
+      "handicap": "Hándicap",
+      "total": "Total",
+      "over": "Mais",
+      "under": "Menos",
+      "handicapHome": "H1",
+      "handicapAway": "H2",
+      "totalShort": "Total",
+      "overShort": "Mais",
+      "underShort": "Menos"
+    },
+    "listLayout": {
+      "aria": "Layout da lista de partidas",
+      "default": "Layout padrão",
+      "pro": "Layout Pro"
+    },
     "listCols": {
       "aria": "Colunas da lista de partidas",
       "one": "Uma coluna",

@@ -21,7 +21,14 @@ import { SessionUserProvider } from "@/lib/session-user";
 import { WsSessionSync } from "@/lib/ws-session-sync";
 import { WalletProvider } from "@/lib/wallets";
 import { ZillapassProvider } from "@/lib/zillapass";
+import { cookies } from "next/headers";
 import { getSessionUser } from "@/lib/auth";
+import { ListLayoutProvider } from "@/lib/list-layout";
+// From the PLAIN module, not lib/list-layout.tsx: that file is "use
+// client", and a function imported from it into this server component
+// arrives as a client-reference proxy that throws when called — on the
+// request, not at build. See lib/list-layout-cookie.ts.
+import { LIST_LAYOUT_COOKIE, parseListLayoutCookie } from "@/lib/list-layout-cookie";
 import { serverApi } from "@/lib/server-fetch";
 import {
   COMBI_BOOST_DEFAULT_CONFIG,
@@ -50,12 +57,20 @@ export default async function MainLayout({ children }: { children: React.ReactNo
   // anonymous renders don't fire the request at all and authed renders
   // return to the pool faster. The wallet pill on the top bar shows a
   // brief skeleton before the first client fetch resolves.
-  const [user, sportsRes, liveCountsRes, boostRes] = await Promise.all([
+  const [user, sportsRes, liveCountsRes, boostRes, cookieStore] = await Promise.all([
     getSessionUser(),
     serverApi<SportsResponse>("/catalog/sports"),
     serverApi<Record<string, number>>("/catalog/live-counts"),
     serverApi<CombiBoostConfigLive>("/catalog/combi-boost-config"),
+    cookies(),
   ]);
+  // The match list's Default / Pro preference, so SSR renders the layout
+  // the bettor chose instead of flipping to it after hydration. Read
+  // here rather than in each list page: every list is under this layout,
+  // and this render already reads the request's cookies for the session.
+  const initialListLayout = parseListLayoutCookie(
+    cookieStore.get(LIST_LAYOUT_COOKIE)?.value,
+  );
 
   const sports = sportsRes?.sports ?? [];
   const liveCounts = liveCountsRes ?? {};
@@ -105,7 +120,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
             {user && !user.emailVerifiedAt && (
               <EmailVerificationBanner email={user.email} />
             )}
-            {children}
+            <ListLayoutProvider initial={initialListLayout}>{children}</ListLayoutProvider>
             {/* Absorbs the leftover height on pages shorter than the
                 viewport so the footer stays at the bottom of the page
                 instead of floating up under the content. Collapses to

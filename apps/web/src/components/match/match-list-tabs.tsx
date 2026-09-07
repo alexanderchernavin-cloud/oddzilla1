@@ -1,7 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { MatchRow, type ListMatch, type ListMatchOutcome } from "./match-row";
+import {
+  MatchRow,
+  type ListLadderMarket,
+  type ListMatch,
+  type ListMatchOutcome,
+} from "./match-row";
+import { MatchTable } from "./match-table";
 // Subpath, never the barrel — see packages/types/src/odds.ts.
 import {
   isQuotableOutcomeOdds,
@@ -18,6 +24,11 @@ import {
   type LiveMarketStatusTick,
 } from "@/lib/use-live-odds";
 import { useSessionUserId } from "@/lib/session-user";
+import {
+  useInitialListLayout,
+  writeListLayoutCookie,
+  type ListLayoutMode,
+} from "@/lib/list-layout";
 import type { LiveScore } from "@/lib/live-score";
 import { useTranslations } from "@/lib/i18n";
 
@@ -37,6 +48,35 @@ type ColCount = 1 | 2;
 const COLS_STORAGE_PREFIX = "oz:match-list-cols";
 function colsStorageKey(userId: string | null): string {
   return userId ? `${COLS_STORAGE_PREFIX}:${userId}` : COLS_STORAGE_PREFIX;
+}
+
+/**
+ * Which shape the match list takes.
+ *
+ *   "default" — one card per match (match-row.tsx): tournament strip,
+ *               two team rows with crests, per-map scoreboard, trailing
+ *               odds column. ~140px of page per fixture.
+ *   "pro"     — the dense tournament-grouped table (match-table.tsx),
+ *               modelled on fon.bet: one line per fixture under a
+ *               tournament header carrying the column captions.
+ *
+ * Persisted the same way and for the same reason as the column count:
+ * namespaced per signed-in bettor so two accounts sharing a browser
+ * keep independent preferences, with a shared key for anonymous
+ * viewers. "default" is the fallback for an unreadable / absent value,
+ * so nobody is switched into a layout they never picked.
+ *
+ * Unlike the column count it is ALSO mirrored into a cookie
+ * (lib/list-layout.tsx) so the server renders the chosen layout on the
+ * first paint — a card-to-table flip after hydration is visible on
+ * every screen, where the column toggle's equivalent flip only exists
+ * above 2000px. localStorage stays the per-bettor source of truth; the
+ * cookie is the SSR hint for this browser.
+ */
+type LayoutMode = ListLayoutMode;
+const LAYOUT_STORAGE_PREFIX = "oz:match-list-layout";
+function layoutStorageKey(userId: string | null): string {
+  return userId ? `${LAYOUT_STORAGE_PREFIX}:${userId}` : LAYOUT_STORAGE_PREFIX;
 }
 
 // A list match enriched server-side with the per-row metadata MatchRow
@@ -110,14 +150,34 @@ export function MatchListTabs({
     Object.keys(matchStatuses).length > 0 ||
     Object.keys(marketStatuses).length > 0;
 
+  // `layout` is read below; hoisted here because the merge depends on it.
+  // Seeded from the cookie the server rendered with, so this first client
+  // render matches the SSR markup — no hydration mismatch and no flip.
+  const initialLayout = useInitialListLayout();
+  const [layout, setLayout] = useState<LayoutMode>(initialLayout);
   const merged = useMemo(
     () =>
       hasLiveData
         ? matches.map((m) =>
-            mergeMatchWithLive(m, ticks, scores, matchStatuses, marketStatuses),
+            mergeMatchWithLive(
+              m,
+              ticks,
+              scores,
+              matchStatuses,
+              marketStatuses,
+              // Only the Pro table renders the handicap / total columns,
+              // so only it needs their ticks merged. A live handicap
+              // ladder ticks constantly; merging it under the card
+              // layout would hand every such tick a fresh `match`
+              // object for a row that shows nothing of it, re-rendering
+              // cards the tick did not touch — the exact storm the
+              // row-level memo exists to prevent. Default stays
+              // byte-identical to its pre-Pro render behaviour.
+              layout === "pro",
+            ),
           )
         : matches,
-    [matches, ticks, scores, matchStatuses, marketStatuses, hasLiveData],
+    [matches, ticks, scores, matchStatuses, marketStatuses, hasLiveData, layout],
   );
   const mergedById = useMemo(() => {
     if (merged === matches) return null;
@@ -175,6 +235,16 @@ export function MatchListTabs({
       // through to the single-column default in that case.
       setCols(1);
     }
+    try {
+      // Only a real per-bettor value overrides the cookie-seeded state.
+      // Forcing "default" on an absent value would undo the cookie for
+      // a bettor who toggled under one account and is now viewing under
+      // another (or logged out) — the flip this cookie exists to stop.
+      const saved = window.localStorage.getItem(layoutStorageKey(userId));
+      if (saved === "pro" || saved === "default") setLayout(saved);
+    } catch {
+      // Unreadable storage keeps whatever the cookie said.
+    }
   }, [userId]);
   function changeCols(c: ColCount) {
     setCols(c);
@@ -183,6 +253,16 @@ export function MatchListTabs({
     } catch {
       // see note above
     }
+  }
+  function changeLayout(l: LayoutMode) {
+    setLayout(l);
+    try {
+      window.localStorage.setItem(layoutStorageKey(userId), l);
+    } catch {
+      // see note above
+    }
+    // The SSR hint for the next navigation; see lib/list-layout.tsx.
+    writeListLayoutCookie(l);
   }
 
   function renderRow(m: ListMatchEnriched) {
@@ -206,7 +286,20 @@ export function MatchListTabs({
     return endedIds ? list.filter((m) => !endedIds.has(m.id)) : list;
   }
 
-  function renderCards(list: ListMatchEnriched[]) {
+  function renderList(list: ListMatchEnriched[]) {
+    if (layout === "pro") {
+      // The table needs the merged rows up front (it groups them before
+      // it renders), where the card path resolves each row inside
+      // renderRow. Same source either way — `mergedById` is null when
+      // no live data has arrived, and the fallback is the SSR row.
+      return (
+        <MatchTable
+          // `shownOf` first: a match that went terminal under this open
+          // tab must leave the table exactly as it leaves the cards (#676).
+          matches={shownOf(list).map((m) => mergedById?.get(m.id) ?? m)}
+        />
+      );
+    }
     return (
       <div className="oz-match-list-grid" data-cols={cols}>
         {shownOf(list).map(renderRow)}
@@ -245,20 +338,30 @@ export function MatchListTabs({
           {idx === firstLabelIdx ? (
             <div className="oz-match-list-section-head">
               <div style={{ minWidth: 0, flex: 1 }}>{g.label}</div>
-              <ColsToggle cols={cols} onChange={changeCols} />
+              <ListControls
+                cols={cols}
+                onCols={changeCols}
+                layout={layout}
+                onLayout={changeLayout}
+              />
             </div>
           ) : (
             g.label
           )}
-          {renderCards(g.matches)}
+          {renderList(g.matches)}
         </section>
       ))
-    : renderCards(merged);
+    : renderList(merged);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       {(!groups || firstLabelIdx === -1) && (
-        <ColsToggle cols={cols} onChange={changeCols} />
+        <ListControls
+          cols={cols}
+          onCols={changeCols}
+          layout={layout}
+          onLayout={changeLayout}
+        />
       )}
       {body}
       {emptiedByEnding && emptyMessage != null ? (
@@ -266,6 +369,76 @@ export function MatchListTabs({
           {emptyMessage}
         </p>
       ) : null}
+    </div>
+  );
+}
+
+// The control cluster above every match list: layout first, then the
+// column count.
+//
+// The column toggle is dropped entirely in Pro layout rather than
+// disabled. It splits the CARD stack into two tracks; a dense table
+// already fills the column's width and has nothing to split, so in Pro
+// the control would be present, clickable, and do nothing — which reads
+// as a bug rather than as "not applicable here".
+function ListControls({
+  cols,
+  onCols,
+  layout,
+  onLayout,
+}: {
+  cols: ColCount;
+  onCols: (c: ColCount) => void;
+  layout: LayoutMode;
+  onLayout: (l: LayoutMode) => void;
+}) {
+  return (
+    <div className="oz-match-list-controls">
+      <LayoutToggle layout={layout} onChange={onLayout} />
+      {layout === "default" && <ColsToggle cols={cols} onChange={onCols} />}
+    </div>
+  );
+}
+
+// Default / Pro layout switch. Visible at every viewport width, unlike
+// the column toggle beside it — the dense table is most valuable on a
+// phone, where a card stack costs the most scrolling.
+function LayoutToggle({
+  layout,
+  onChange,
+}: {
+  layout: LayoutMode;
+  onChange: (l: LayoutMode) => void;
+}) {
+  const t = useTranslations("matchWidgets");
+  return (
+    <div
+      className="oz-match-list-layout"
+      role="group"
+      aria-label={t("listLayout.aria")}
+    >
+      <button
+        type="button"
+        className="oz-match-cols-btn"
+        data-active={layout === "default" ? "true" : "false"}
+        aria-pressed={layout === "default"}
+        aria-label={t("listLayout.default")}
+        title={t("listLayout.default")}
+        onClick={() => onChange("default")}
+      >
+        <I.LayoutCards size={14} />
+      </button>
+      <button
+        type="button"
+        className="oz-match-cols-btn"
+        data-active={layout === "pro" ? "true" : "false"}
+        aria-pressed={layout === "pro"}
+        aria-label={t("listLayout.pro")}
+        title={t("listLayout.pro")}
+        onClick={() => onChange("pro")}
+      >
+        <I.LayoutTable size={14} />
+      </button>
     </div>
   );
 }
@@ -326,6 +499,7 @@ function mergeMatchWithLive(
   scores: Record<string, LiveScore>,
   statuses: Record<string, LiveMatchStatusTick>,
   marketStatuses: Record<string, LiveMarketStatusTick>,
+  mergeLadders: boolean,
 ): ListMatchEnriched {
   let next = m;
 
@@ -437,5 +611,113 @@ function mergeMatchWithLive(
     }
   }
 
+  // Pro layout's handicap + total columns: the same tick + boost merge
+  // the match winner gets above, on a two-outcome market.
+  //
+  // What this does NOT do is re-pick the main line as prices move: the
+  // rung is fixed for the life of the SSR payload and only its two
+  // prices update. Re-picking client-side would make a row's line jump
+  // between rungs mid-session while the bettor is reading it, and the
+  // other rungs' prices are not even subscribed — the card only
+  // subscribes to the two outcomes it renders. The next page load picks
+  // the line again.
+  if (mergeLadders && next.ladders) {
+    // Normalised to null before comparing: the API always sends both
+    // keys, but the type admits `undefined`, and `mergeLadder(undefined)`
+    // returns null — so an un-normalised compare would read
+    // `null !== undefined` as a change and mint a new object on every
+    // tick for a match with one ladder missing, breaking the row memo.
+    const prevHandicap = next.ladders.handicap ?? null;
+    const prevTotal = next.ladders.total ?? null;
+    const nextHandicap = mergeLadder(prevHandicap, ticks, marketStatuses);
+    const nextTotal = mergeLadder(prevTotal, ticks, marketStatuses);
+    if (nextHandicap !== prevHandicap || nextTotal !== prevTotal) {
+      next = {
+        ...next,
+        ladders: { handicap: nextHandicap, total: nextTotal },
+      };
+    }
+  }
+
   return next;
+}
+
+// Overlays live prices onto one main-line market and re-applies its
+// ZillaBoost over the ticked book — the match-winner merge above, for a
+// two-outcome market. Returns the input by identity when nothing moved,
+// so the row-level memo still short-circuits. A market-status tick off 1
+// nulls both prices, which MatchTable renders as the same em dash a
+// suspended outcome gets.
+//
+// The no-tick fallback reaches for the pre-boost original, not `price`:
+// the SSR price IS the boosted figure when a boost applied, and feeding
+// it back into the boost math would compound the boost on every tick.
+function mergeLadder(
+  ladder: ListLadderMarket | null | undefined,
+  ticks: Record<string, LiveOddsTick>,
+  marketStatuses: Record<string, LiveMarketStatusTick>,
+): ListLadderMarket | null {
+  if (!ladder) return null;
+  const statusTick = marketStatuses[ladder.marketId];
+  const locked = statusTick != null && statusTick.status !== 1;
+  const firstTick = ticks[`${ladder.marketId}:${ladder.first.outcomeId}`];
+  const secondTick = ticks[`${ladder.marketId}:${ladder.second.outcomeId}`];
+  if (!locked && !firstTick && !secondTick) return ladder;
+
+  const rawOf = (o: ListMatchOutcome, tick: LiveOddsTick | undefined) => {
+    if (locked) return null;
+    if (tick) return tick.active ? tick.publishedOdds : null;
+    return o.boost?.originalPrice ?? o.price;
+  };
+  const firstRaw = rawOf(ladder.first, firstTick);
+  const secondRaw = rawOf(ladder.second, secondTick);
+
+  const hasRule =
+    !!ladder.boostRule ||
+    (!!ladder.boostSelections && Object.keys(ladder.boostSelections).length > 0);
+  const quoteOutcomes = [
+    [ladder.first.outcomeId, firstRaw] as const,
+    [ladder.second.outcomeId, secondRaw] as const,
+  ]
+    .map(([outcomeId, raw]) => ({
+      outcomeId,
+      publishedOdds: raw != null ? Number(raw) : Number.NaN,
+    }))
+    .filter((o) => isQuotableOutcomeOdds(o.publishedOdds));
+  const cells =
+    hasRule && quoteOutcomes.length >= 2
+      ? quoteMarketBoost({
+          outcomes: quoteOutcomes,
+          marketWide: ladder.boostRule ?? null,
+          selections: ladder.boostSelections
+            ? new Map(Object.entries(ladder.boostSelections))
+            : null,
+        })
+      : [];
+
+  const merged = (
+    o: ListMatchOutcome,
+    raw: string | null,
+    tick: LiveOddsTick | undefined,
+  ): ListMatchOutcome => {
+    const cell = raw != null ? cells.find((c) => c.outcomeId === o.outcomeId) : undefined;
+    return {
+      outcomeId: o.outcomeId,
+      price: cell ? cell.boostedOdds : raw,
+      probability: tick?.probability ?? o.probability ?? null,
+      boost: cell
+        ? {
+            ruleId: cell.ruleId,
+            boostPct: cell.boostPct,
+            endsAt: cell.endsAt,
+            originalPrice: cell.originalOdds,
+          }
+        : null,
+    };
+  };
+  return {
+    ...ladder,
+    first: merged(ladder.first, firstRaw, firstTick),
+    second: merged(ladder.second, secondRaw, secondTick),
+  };
 }

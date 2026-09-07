@@ -799,6 +799,22 @@
       "armed": "Запустится автоматически, когда матч начнётся",
       "drmUnsupported": "Этот браузер не может воспроизвести защищённую трансляцию. Попробуйте Chrome, Edge, Firefox или Safari."
     },
+    "listMarkets": {
+      "handicap": "Фора",
+      "total": "Тотал",
+      "over": "Больше",
+      "under": "Меньше",
+      "handicapHome": "Ф1",
+      "handicapAway": "Ф2",
+      "totalShort": "Тотал",
+      "overShort": "Б",
+      "underShort": "М"
+    },
+    "listLayout": {
+      "aria": "Вид списка матчей",
+      "default": "Обычный вид",
+      "pro": "Pro-вид"
+    },
     "listCols": {
       "aria": "Колонки списка матчей",
       "one": "Одна колонка",

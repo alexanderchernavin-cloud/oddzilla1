@@ -799,6 +799,22 @@
       "armed": "Pokrece se automatski kada susret pocne",
       "drmUnsupported": "Ovaj preglednik ne moze reproducirati zasticeni prijenos. Pokusajte s Chromeom, Edgeom, Firefoxom ili Safarijem."
     },
+    "listMarkets": {
+      "handicap": "Hendikep",
+      "total": "Total",
+      "over": "Više",
+      "under": "Manje",
+      "handicapHome": "H1",
+      "handicapAway": "H2",
+      "totalShort": "Total",
+      "overShort": "Više",
+      "underShort": "Manje"
+    },
+    "listLayout": {
+      "aria": "Prikaz popisa mečeva",
+      "default": "Standardni prikaz",
+      "pro": "Pro prikaz"
+    },
     "listCols": {
       "aria": "Stupci popisa mečeva",
       "one": "Jedan stupac",

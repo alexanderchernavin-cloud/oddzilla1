@@ -799,6 +799,22 @@
       "armed": "Spusti se automaticky, az zapas zacne",
       "drmUnsupported": "Tento prohlizec nedokaze prehrat chraneny prenos. Zkuste Chrome, Edge, Firefox nebo Safari."
     },
+    "listMarkets": {
+      "handicap": "Handicap",
+      "total": "Total",
+      "over": "Nad",
+      "under": "Pod",
+      "handicapHome": "H1",
+      "handicapAway": "H2",
+      "totalShort": "Total",
+      "overShort": "Nad",
+      "underShort": "Pod"
+    },
+    "listLayout": {
+      "aria": "Rozvržení seznamu zápasů",
+      "default": "Standardní rozvržení",
+      "pro": "Rozvržení Pro"
+    },
     "listCols": {
       "aria": "Sloupce seznamu zápasů",
       "one": "Jeden sloupec",
