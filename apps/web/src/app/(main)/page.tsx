@@ -16,6 +16,7 @@ import { buildThreeFoldSuggestions } from "@/lib/three-fold-builder";
 import {
   filterSportsForLobbyChips,
   orderMatchesBySport,
+  visibleMatches,
   shortName,
 } from "@/lib/sport-order";
 import { getTranslations } from "@/lib/i18n/server";
@@ -54,8 +55,7 @@ export default async function HomePage() {
   const [
     sportsRes,
     liveCountsRes,
-    liveRes,
-    upcomingRes,
+    matchesRes,
     combiBoostRes,
     comboPoolRes,
     user,
@@ -64,8 +64,16 @@ export default async function HomePage() {
   ] = await Promise.all([
     serverApi<SportsResponse>("/catalog/sports"),
     serverApi<Record<string, number>>("/catalog/live-counts"),
-    serverApi<CrossSportResponse>("/catalog/matches?status=live&limit=120"),
-    serverApi<CrossSportResponse>("/catalog/matches?status=upcoming&limit=60"),
+    // ONE cross-status fetch, because the ordering the API applies is
+    // one region spanning both: everything live plus prematch matches
+    // inside their tier's hoist window, tier-ordered, then a
+    // chronological tail (`matchListOrder`). Two status-scoped requests
+    // cannot express that — neither can see the other's rows — so the
+    // lobby fetched live and prematch separately and lost it. 200 is the
+    // endpoint's cap and comfortable headroom: measured on production
+    // 2026-09-07, 126 matches were in the promoted region (96 live + 30
+    // hoisted) against 2 771 in the tail.
+    serverApi<CrossSportResponse>("/catalog/matches?status=all&limit=200"),
     serverApi<CombiBoostConfigResponse>("/catalog/combi-boost-config"),
     // ComboZilla's candidate pool. The api applies the operator's policy
     // (eligible risk tiers + allow / block rules, /admin/combozilla) and
@@ -90,8 +98,17 @@ export default async function HomePage() {
     (s) => !hiddenSet.has(s.slug),
   );
   const liveCounts = liveCountsRes ?? {};
-  const live = orderMatchesBySport(liveRes?.matches ?? [], userHidden);
-  const upcoming = orderMatchesBySport(upcomingRes?.matches ?? [], userHidden);
+  // Group on the server's `featured` flag, NOT on status, and do not
+  // re-sort by sport — the same two rules the sport page follows, for the
+  // same reason. `visibleMatches` only drops hidden sports; `filter` is
+  // stable, so the API's tier ordering survives the partition untouched.
+  // Sorting by sport here is what broke this: it is a sort on a key the
+  // ordering deliberately ignores, so it buried every promoted fixture
+  // under whichever sport happens to rank first (production 2026-09-07:
+  // Football's live list led with Egypt and Slovenia U19).
+  const allMatches = visibleMatches(matchesRes?.matches ?? [], userHidden);
+  const featured = allMatches.filter((m) => m.featured);
+  const rest = allMatches.filter((m) => !m.featured);
   // Pass the translated "Match winner" label so the SSR-embedded slip
   // leg doesn't carry literal English through to the client (where the
   // bet-slip rail would re-render it on click).
@@ -191,10 +208,13 @@ export default async function HomePage() {
       </div>
 
       {(() => {
-        const liveEnriched = live.map(enrich);
-        const upcomingShown = upcoming.slice(0, 20).map(enrich);
-        const merged = [...liveEnriched, ...upcomingShown];
-        const hasLive = liveEnriched.length > 0;
+        // The promoted region in full, then a short chronological tail —
+        // the lobby is a "what's on" page, not a full prematch browse
+        // (that is /upcoming, one click away on the strip below).
+        const featuredEnriched = featured.map(enrich);
+        const restShown = rest.slice(0, 20).map(enrich);
+        const merged = [...featuredEnriched, ...restShown];
+        const hasFeatured = featuredEnriched.length > 0;
         return (
           <MatchListTabs
             matches={merged}
@@ -205,40 +225,40 @@ export default async function HomePage() {
             // three list surfaces.
             emptyMessage={t("empty")}
             groups={[
-              ...(hasLive
+              ...(hasFeatured
                 ? [
                     {
-                      key: "live",
+                      key: "featured",
                       label: (
                         <SectionTabs
                           liveLabel={tMatch("live")}
                           prematchLabel={tMatch("prematch")}
                         />
                       ),
-                      matches: liveEnriched,
+                      matches: featuredEnriched,
                     },
                   ]
                 : []),
               {
                 key: "upcoming",
-                // When live matches exist the top tabs already label
-                // both sections — render the prematch cards directly
-                // below the live cards with no second header. When the
-                // page is prematch-only, promote the strip to the top
-                // so the user still gets both clickable labels.
-                label: hasLive ? null : (
+                // When the promoted region has rows the top tabs already
+                // label both sections — render the tail directly below it
+                // with no second header. When nothing was promoted,
+                // promote the strip to the top so the user still gets
+                // both clickable labels.
+                label: hasFeatured ? null : (
                   <SectionTabs
                     liveLabel={tMatch("live")}
                     prematchLabel={tMatch("prematch")}
                   />
                 ),
-                matches: upcomingShown,
+                matches: restShown,
               },
             ]}
           />
         );
       })()}
-      {upcoming.length === 0 && live.length === 0 ? (
+      {allMatches.length === 0 ? (
         <p style={{ color: "var(--fg-muted)", fontSize: 14, margin: 0 }}>
           {t("empty")}
         </p>

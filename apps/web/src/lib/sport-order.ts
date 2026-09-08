@@ -218,12 +218,30 @@ export function partitionSportsForEdit<
 export function orderMatchesBySport<
   T extends { sport: { slug: string; name: string } & Pinnable },
 >(items: T[], userHidden: string[] | null = null): T[] {
-  const hidden = hiddenSportsSet(userHidden);
-  const visible = items.filter(
-    (m) => !HIDDEN_SPORT_SLUGS.has(m.sport.slug) && !hidden.has(m.sport.slug),
-  );
   // Same three tiers the rail uses, read off each row's own sport —
   // /catalog/matches carries `sport.displayOrder` per match precisely so
   // these cross-sport lists don't have to fetch the sports tree.
-  return [...visible].sort((a, b) => compareSports(a.sport, b.sport));
+  return [...visibleMatches(items, userHidden)].sort((a, b) =>
+    compareSports(a.sport, b.sport),
+  );
+}
+
+// The filtering half of orderMatchesBySport, without the sport grouping:
+// drops the global bot slugs and the bettor's own hidden_sports and
+// otherwise leaves the order exactly as it arrived.
+//
+// For a list the API has already ordered by prominence, grouping by sport
+// is the wrong second pass — it is a sort on a key the ordering
+// deliberately does not use, so it buries whatever the tier rule
+// promoted. The lobby reads a cross-sport list that way; a page that
+// wants sport-major order (the ComboZilla pool, whose builder assembles
+// same-sport cards) still calls orderMatchesBySport.
+export function visibleMatches<T extends { sport: { slug: string } }>(
+  items: T[],
+  userHidden: string[] | null = null,
+): T[] {
+  const hidden = hiddenSportsSet(userHidden);
+  return items.filter(
+    (m) => !HIDDEN_SPORT_SLUGS.has(m.sport.slug) && !hidden.has(m.sport.slug),
+  );
 }

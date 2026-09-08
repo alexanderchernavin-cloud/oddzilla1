@@ -2799,7 +2799,13 @@ export default async function catalogRoutes(app: FastifyInstance) {
     async (request) => {
     const q = z
       .object({
-        status: z.enum(["live", "upcoming"]).default("live"),
+        // "all" returns live AND prematch in one page, which is what
+        // lets a caller show `matchListOrder`'s tier-ordered region for
+        // what it is. The lobby needs it: two status-scoped fetches
+        // cannot produce one region in which a tier-2 fixture kicking
+        // off in an hour outranks a live tier-5 game, because neither
+        // request can see the other's rows.
+        status: z.enum(["live", "upcoming", "all"]).default("live"),
         limit: z.coerce.number().int().min(1).max(200).default(80),
         // Optional vertical filter: the /sports tab lists traditional
         // sports (Fonbet feed) only; the lobby keeps mixing both.
@@ -2811,9 +2817,11 @@ export default async function catalogRoutes(app: FastifyInstance) {
     const build = async () => {
 
     const cond =
-      q.status === "live"
-        ? eq(matches.status, "live")
-        : eq(matches.status, "not_started");
+      q.status === "all"
+        ? inArray(matches.status, ["live", "not_started"])
+        : q.status === "live"
+          ? eq(matches.status, "live")
+          : eq(matches.status, "not_started");
 
     const rows = await app.db
       .select({
@@ -2841,9 +2849,9 @@ export default async function catalogRoutes(app: FastifyInstance) {
         // rendering them don't fetch /catalog/sports.
         sportDisplayOrder: sports.displayOrder,
         // See the same column on /catalog/sports/:slug. Constant per
-        // request here (this endpoint is filtered to one status), but
-        // returned for shape parity so a client can group either payload
-        // with the same code.
+        // request under `status=live` / `status=upcoming`, and the whole
+        // point under `status=all`: it is the partition the storefront
+        // groups on, so the client never re-derives the hoist rule.
         featured: hoistedPredicate().mapWith(Boolean),
         // Needed for the competitor tier of the ZillaBoost cascade.
         homeCompetitorId: matches.homeCompetitorId,

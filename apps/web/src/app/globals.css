@@ -1604,6 +1604,10 @@ body {
   --oz-pro-cell-w: 42px;
   --oz-pro-cell-wide: 58px;
   --oz-pro-line-w: 32px;
+  /* The handicap ladder stepper, which sits BETWEEN the two sides and so
+     is part of that group's width. Tokenized because the header has to
+     reserve the same slot — see the caption note below. */
+  --oz-pro-step-w: 14px;
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--surface);
@@ -1808,12 +1812,23 @@ body {
 }
 /* Caption widths mirror the cell widths one-for-one — that pairing is
    the whole alignment mechanism, so a new cell variant needs a caption
-   variant in the same commit. */
+   variant in the same commit.
+   That is exactly what the handicap ladder stepper missed when the line
+   picker shipped: the row's handicap group became cell + stepper + cell
+   while the header stayed two captions, so the group measured 138px in
+   the row against 120px in the header and every column to its LEFT —
+   the whole 1 / X / 2 caption row — sat 18px off its own cells
+   (measured on production 2026-09-07). The `step` variant below is that
+   missing slot: a spacer, not a label, since the control it reserves
+   room for names nothing. */
 .oz-pro-collabel[data-variant="wide"] {
   width: var(--oz-pro-cell-wide);
 }
 .oz-pro-collabel[data-variant="line"] {
   width: var(--oz-pro-line-w);
+}
+.oz-pro-collabel[data-variant="step"] {
+  width: var(--oz-pro-step-w);
 }
 
 /* Market groups beyond Result are progressive: hidden until the list is
@@ -1935,7 +1950,7 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
+  width: var(--oz-pro-step-w);
   height: 26px;
   padding: 0;
   border: 0;
