@@ -8,6 +8,7 @@ import {
   betAssistMappedPairs,
   resolveBetAssistMarket,
 } from "./bet-assist.js";
+import { parseMarketKind } from "./market-kind.js";
 
 // The failure this pins: Bet Assist answers a market key it does not know
 // for the sport with an EMPTY panel, not an error. So a typo in the map
@@ -119,5 +120,55 @@ test("an empty variant means the whole match", () => {
       variant: null,
     }),
     "3Way",
+  );
+});
+
+test("every mapped key is a well-formed market kind", () => {
+  // The map was 119 hand-written `<pmid>@<variant>` literals before the
+  // market-kind migration; they were rewritten programmatically for
+  // exactly that reason. This is the guard that a future hand-edit cannot
+  // introduce a key nothing will ever match — an unparseable key is
+  // silently dead, since a miss just renders no Bet Assist button.
+  for (const { srSportId, key } of betAssistMappedPairs()) {
+    assert.notEqual(parseMarketKind(key), null, `sport ${srSportId} key ${key}`);
+  }
+});
+
+test("resolves a Fonbet sub-event to its own Sportradar market", () => {
+  // Soccer table 120 is the match result, and its half copies share the id.
+  const soccer = 1;
+  assert.equal(
+    resolveBetAssistMarket({ srSportId: soccer, providerMarketId: 1_000_120, variant: "" }),
+    "3Way",
+  );
+  assert.equal(
+    resolveBetAssistMarket({
+      srSportId: soccer,
+      providerMarketId: 1_000_120,
+      variant: "fb:100201",
+    }),
+    "1stHalfWin",
+  );
+  assert.equal(
+    resolveBetAssistMarket({
+      srSportId: soccer,
+      providerMarketId: 1_000_120,
+      variant: "fb:100202",
+    }),
+    "2ndHalfWin",
+  );
+  // The double-chance split is its own type.
+  assert.equal(
+    resolveBetAssistMarket({ srSportId: soccer, providerMarketId: 1_900_120, variant: "" }),
+    "doubleChance",
+  );
+  // A sub-event with no Sportradar counterpart renders no button.
+  assert.equal(
+    resolveBetAssistMarket({
+      srSportId: soccer,
+      providerMarketId: 1_000_120,
+      variant: "fb:400300",
+    }),
+    null,
   );
 });
