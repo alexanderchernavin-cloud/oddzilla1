@@ -154,6 +154,11 @@ const LIVE_COUNTS_CACHE_TTL_SECONDS = 5;
 // while collapsing the 3 SSR replicas' render fan-out (plus client
 // refetches) to roughly one DB build per key per window.
 const ANON_LIST_CACHE_TTL_SECONDS = 3;
+// Top-bar search. Its own TTL rather than the list one because the
+// reason for a short list TTL — prices — does not apply here; see the
+// comment on the cache call in /catalog/search for the full argument.
+const SEARCH_CACHE_KEY_PREFIX = "catalog:search:v1:";
+const SEARCH_CACHE_TTL_SECONDS = 5;
 
 // Two aliases of `competitors` so a single match query can pull the home
 // and away team's branding columns (logo_url, brand_color) in one round
@@ -3414,12 +3419,20 @@ export default async function catalogRoutes(app: FastifyInstance) {
     "/catalog/search",
     {
       // Anonymous and reachable directly from the browser (top-bar search).
-      // The query runs leading-wildcard ILIKE scans across sports /
-      // tournaments / teams / matches that cannot use an index, so an
-      // unthrottled scraper could saturate the small (max 10) DB pool and
-      // starve live storefront traffic. Per-IP cap (request.ip resolves to
-      // the real client via Caddy's X-Forwarded-For + Fastify trustProxy).
-      // The debounced search box never approaches 60/min for a real user.
+      // Each facet is a leading-wildcard ILIKE, which no b-tree can serve,
+      // so an unthrottled scraper could saturate the small (max 10) DB
+      // pool and starve live storefront traffic. Per-IP cap (request.ip
+      // resolves to the real client via Caddy's X-Forwarded-For + Fastify
+      // trustProxy). The debounced search box never approaches 60/min for
+      // a real user.
+      //
+      // Two things landed under it on 2026-09-08 and neither replaces it:
+      // pg_trgm GIN indexes on the searched columns (migration
+      // 20260908T173815 — which do serve a leading wildcard, but only for
+      // a needle holding a full trigram, so a 1-2 character query is
+      // still a scan), and the response cache in the handler below, which
+      // only helps once a needle REPEATS. A scraper walking distinct
+      // needles misses both, which is what this cap is for.
       config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
     },
     async (request) => {
@@ -3429,188 +3442,221 @@ export default async function catalogRoutes(app: FastifyInstance) {
         limit: z.coerce.number().int().min(1).max(20).default(6),
       })
       .parse(request.query);
+    // Anonymous response cache. This payload is a pure function of
+    // (q, limit) — no user context, no per-bettor price adjustment, no
+    // boost — so unlike the list endpoints there is no authed path to
+    // fence off: every viewer can share one entry.
+    //
+    // Keyed on the LOWERCASED needle because the query is ILIKE, so
+    // "United" and "united" return byte-identical rows and would
+    // otherwise take two entries and two cold builds.
+    //
+    // Longer than ANON_LIST_CACHE_TTL_SECONDS on purpose: that 3 s is
+    // sized to keep PRICES honest, and this payload carries none — only
+    // names, ids, kickoff and status. Five seconds of staleness in a
+    // dropdown costs nothing, since clicking through re-fetches the
+    // match page fresh.
+    //
+    // What it is really for is the shape of type-ahead traffic. A cold
+    // facet measured up to 1.5 s (see the trigram migration), the box
+    // fires a request per debounced keystroke, and both the prefixes
+    // one person backspaces through and the team names many people
+    // search are repeats. `cached` also singleflights in-process, so a
+    // burst of the same prefix across the three SSR replicas collapses
+    // to one build even on a cold key.
+    //
+    // Key growth is bounded by the 5 s TTL and the 60/min per-IP limit;
+    // entries are a few KB, so a scraper cannot use this to evict the
+    // feed's keys out of the LRU.
+    const facets = await cached(
+      app.redis,
+      `${SEARCH_CACHE_KEY_PREFIX}${q.limit}:${q.q.toLowerCase()}`,
+      SEARCH_CACHE_TTL_SECONDS,
+      async () => {
+        // Escape ILIKE wildcards so a user typing "50%" doesn't match
+        // everything. pg's default escape is "\", reinforced with ESCAPE '\'.
+        const escaped = q.q.replace(/[\\%_]/g, (c) => `\\${c}`);
+        const needle = `%${escaped}%`;
 
-    // Escape ILIKE wildcards so a user typing "50%" doesn't match
-    // everything. pg's default escape is "\", reinforced with ESCAPE '\'.
-    const escaped = q.q.replace(/[\\%_]/g, (c) => `\\${c}`);
-    const needle = `%${escaped}%`;
+        const [sportRows, tournamentRows, teamRows, matchRows] = await Promise.all([
+          app.db
+            .select({ slug: sports.slug, name: sports.name, kind: sports.kind })
+            .from(sports)
+            .where(
+              and(
+                eq(sports.active, true),
+                or(ilike(sports.name, needle), ilike(sports.slug, needle)),
+              ),
+            )
+            .orderBy(sports.name)
+            .limit(q.limit),
 
-    const [sportRows, tournamentRows, teamRows, matchRows] = await Promise.all([
-      app.db
-        .select({ slug: sports.slug, name: sports.name, kind: sports.kind })
-        .from(sports)
-        .where(
-          and(
-            eq(sports.active, true),
-            or(ilike(sports.name, needle), ilike(sports.slug, needle)),
-          ),
-        )
-        .orderBy(sports.name)
-        .limit(q.limit),
+          app.db
+            .select({
+              id: tournaments.id,
+              name: tournaments.name,
+              riskTier: tournaments.riskTier,
+              sportSlug: sports.slug,
+              sportName: sports.name,
+            })
+            .from(tournaments)
+            .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+            .innerJoin(sports, eq(sports.id, categories.sportId))
+            .where(
+              and(
+                eq(tournaments.active, true),
+                eq(sports.active, true),
+                ilike(tournaments.name, needle),
+                notHiddenTournament,
+                // Empty tournaments (every match closed/phantom-stale) are
+                // hidden so search results never lead to a zero-match page.
+                // Same lifecycle gate as `hasActiveMarket` (bookableWindow) so a tournament
+                // surviving only on wedged not_started matches drops out.
+                sql`EXISTS (
+                  SELECT 1 FROM ${matches} mm
+                   WHERE mm.tournament_id = ${tournaments.id}
+                     AND ${bookableWindow("mm")}
+                     AND EXISTS (
+                       SELECT 1 FROM markets mk
+                        WHERE mk.match_id = mm.id
+                          AND mk.status = 1
+                     )
+                )`,
+              ),
+            )
+            .orderBy(tournaments.name)
+            .limit(q.limit),
 
-      app.db
-        .select({
-          id: tournaments.id,
-          name: tournaments.name,
-          riskTier: tournaments.riskTier,
-          sportSlug: sports.slug,
-          sportName: sports.name,
-        })
-        .from(tournaments)
-        .innerJoin(categories, eq(categories.id, tournaments.categoryId))
-        .innerJoin(sports, eq(sports.id, categories.sportId))
-        .where(
-          and(
-            eq(tournaments.active, true),
-            eq(sports.active, true),
-            ilike(tournaments.name, needle),
-            notHiddenTournament,
-            // Empty tournaments (every match closed/phantom-stale) are
-            // hidden so search results never lead to a zero-match page.
-            // Same lifecycle gate as `hasActiveMarket` (bookableWindow) so a tournament
-            // surviving only on wedged not_started matches drops out.
-            sql`EXISTS (
-              SELECT 1 FROM ${matches} mm
-               WHERE mm.tournament_id = ${tournaments.id}
-                 AND ${bookableWindow("mm")}
-                 AND EXISTS (
-                   SELECT 1 FROM markets mk
-                    WHERE mk.match_id = mm.id
-                      AND mk.status = 1
-                 )
-            )`,
-          ),
-        )
-        .orderBy(tournaments.name)
-        .limit(q.limit),
+          // Team search emits one row per (competitor, sport-with-active-matches).
+          // The `competitors` table has a global UNIQUE on (provider, provider_urn),
+          // so a team like "BetBoom Team" lives as a single row whose `sport_id`
+          // is whichever sport saw the URN first — even though that team's
+          // home_competitor_id / away_competitor_id is referenced by matches in
+          // other sports. Surfacing (team, sport) pairs derived from actual
+          // match data lets the user navigate to every sport the team is
+          // currently playing in, not just the one its competitor row was first
+          // pinned to. Filtered to active markets + non-hidden tournaments + the
+          // same lifecycle gate as `hasActiveMarket` so a team only appears for
+          // sports where it has something bettable right now.
+          app.db
+            .select({
+              id: competitors.id,
+              name: competitors.name,
+              abbreviation: competitors.abbreviation,
+              logoUrl: competitors.logoUrl,
+              brandColor: competitors.brandColor,
+              sportSlug: sports.slug,
+              sportName: sports.name,
+            })
+            .from(competitors)
+            .innerJoin(
+              matches,
+              or(
+                eq(matches.homeCompetitorId, competitors.id),
+                eq(matches.awayCompetitorId, competitors.id),
+              ),
+            )
+            .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
+            .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+            .innerJoin(sports, eq(sports.id, categories.sportId))
+            .where(
+              and(
+                eq(competitors.active, true),
+                eq(sports.active, true),
+                or(
+                  ilike(competitors.name, needle),
+                  ilike(competitors.abbreviation, needle),
+                ),
+                inArray(matches.status, ["not_started", "live"]),
+                hasActiveMarket,
+                notHiddenTournament,
+              ),
+            )
+            .groupBy(
+              competitors.id,
+              competitors.name,
+              competitors.abbreviation,
+              competitors.logoUrl,
+              competitors.brandColor,
+              sports.slug,
+              sports.name,
+            )
+            .orderBy(competitors.name, sports.name)
+            .limit(q.limit),
 
-      // Team search emits one row per (competitor, sport-with-active-matches).
-      // The `competitors` table has a global UNIQUE on (provider, provider_urn),
-      // so a team like "BetBoom Team" lives as a single row whose `sport_id`
-      // is whichever sport saw the URN first — even though that team's
-      // home_competitor_id / away_competitor_id is referenced by matches in
-      // other sports. Surfacing (team, sport) pairs derived from actual
-      // match data lets the user navigate to every sport the team is
-      // currently playing in, not just the one its competitor row was first
-      // pinned to. Filtered to active markets + non-hidden tournaments + the
-      // same lifecycle gate as `hasActiveMarket` so a team only appears for
-      // sports where it has something bettable right now.
-      app.db
-        .select({
-          id: competitors.id,
-          name: competitors.name,
-          abbreviation: competitors.abbreviation,
-          logoUrl: competitors.logoUrl,
-          brandColor: competitors.brandColor,
-          sportSlug: sports.slug,
-          sportName: sports.name,
-        })
-        .from(competitors)
-        .innerJoin(
-          matches,
-          or(
-            eq(matches.homeCompetitorId, competitors.id),
-            eq(matches.awayCompetitorId, competitors.id),
-          ),
-        )
-        .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
-        .innerJoin(categories, eq(categories.id, tournaments.categoryId))
-        .innerJoin(sports, eq(sports.id, categories.sportId))
-        .where(
-          and(
-            eq(competitors.active, true),
-            eq(sports.active, true),
-            or(
-              ilike(competitors.name, needle),
-              ilike(competitors.abbreviation, needle),
-            ),
-            inArray(matches.status, ["not_started", "live"]),
-            hasActiveMarket,
-            notHiddenTournament,
-          ),
-        )
-        .groupBy(
-          competitors.id,
-          competitors.name,
-          competitors.abbreviation,
-          competitors.logoUrl,
-          competitors.brandColor,
-          sports.slug,
-          sports.name,
-        )
-        .orderBy(competitors.name, sports.name)
-        .limit(q.limit),
+          app.db
+            .select({
+              id: matches.id,
+              homeTeam: matches.homeTeam,
+              awayTeam: matches.awayTeam,
+              homeLogoUrl: homeCompetitor.logoUrl,
+              awayLogoUrl: awayCompetitor.logoUrl,
+              scheduledAt: matches.scheduledAt,
+              status: matches.status,
+              tournamentId: tournaments.id,
+              tournamentName: tournaments.name,
+              tournamentRiskTier: tournaments.riskTier,
+              sportSlug: sports.slug,
+              sportName: sports.name,
+            })
+            .from(matches)
+            .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
+            .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+            .innerJoin(sports, eq(sports.id, categories.sportId))
+            .leftJoin(homeCompetitor, eq(homeCompetitor.id, matches.homeCompetitorId))
+            .leftJoin(awayCompetitor, eq(awayCompetitor.id, matches.awayCompetitorId))
+            .where(
+              and(
+                eq(sports.active, true),
+                inArray(matches.status, ["not_started", "live"]),
+                or(
+                  ilike(matches.homeTeam, needle),
+                  ilike(matches.awayTeam, needle),
+                ),
+                hasActiveMarket,
+                notHiddenTournament,
+              ),
+            )
+            .orderBy(desc(matches.status), matches.scheduledAt)
+            .limit(q.limit),
+        ]);
 
-      app.db
-        .select({
-          id: matches.id,
-          homeTeam: matches.homeTeam,
-          awayTeam: matches.awayTeam,
-          homeLogoUrl: homeCompetitor.logoUrl,
-          awayLogoUrl: awayCompetitor.logoUrl,
-          scheduledAt: matches.scheduledAt,
-          status: matches.status,
-          tournamentId: tournaments.id,
-          tournamentName: tournaments.name,
-          tournamentRiskTier: tournaments.riskTier,
-          sportSlug: sports.slug,
-          sportName: sports.name,
-        })
-        .from(matches)
-        .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
-        .innerJoin(categories, eq(categories.id, tournaments.categoryId))
-        .innerJoin(sports, eq(sports.id, categories.sportId))
-        .leftJoin(homeCompetitor, eq(homeCompetitor.id, matches.homeCompetitorId))
-        .leftJoin(awayCompetitor, eq(awayCompetitor.id, matches.awayCompetitorId))
-        .where(
-          and(
-            eq(sports.active, true),
-            inArray(matches.status, ["not_started", "live"]),
-            or(
-              ilike(matches.homeTeam, needle),
-              ilike(matches.awayTeam, needle),
-            ),
-            hasActiveMarket,
-            notHiddenTournament,
-          ),
-        )
-        .orderBy(desc(matches.status), matches.scheduledAt)
-        .limit(q.limit),
-    ]);
+        return {
+          sports: sportRows,
+          tournaments: tournamentRows.map((t) => ({
+            id: t.id,
+            name: t.name,
+            riskTier: t.riskTier,
+            sport: { slug: t.sportSlug, name: t.sportName },
+          })),
+          teams: teamRows.map((t) => ({
+            id: t.id,
+            name: t.name,
+            abbreviation: t.abbreviation,
+            logoUrl: t.logoUrl,
+            brandColor: t.brandColor,
+            sport: { slug: t.sportSlug, name: t.sportName },
+          })),
+          matches: matchRows.map((m) => ({
+            id: m.id.toString(),
+            homeTeam: m.homeTeam,
+            awayTeam: m.awayTeam,
+            homeLogoUrl: m.homeLogoUrl,
+            awayLogoUrl: m.awayLogoUrl,
+            scheduledAt: m.scheduledAt?.toISOString() ?? null,
+            status: m.status,
+            tournament: {
+              id: m.tournamentId,
+              name: m.tournamentName,
+              riskTier: m.tournamentRiskTier,
+            },
+            sport: { slug: m.sportSlug, name: m.sportName },
+          })),
+        };
+      },
+    );
 
-    return {
-      query: q.q,
-      sports: sportRows,
-      tournaments: tournamentRows.map((t) => ({
-        id: t.id,
-        name: t.name,
-        riskTier: t.riskTier,
-        sport: { slug: t.sportSlug, name: t.sportName },
-      })),
-      teams: teamRows.map((t) => ({
-        id: t.id,
-        name: t.name,
-        abbreviation: t.abbreviation,
-        logoUrl: t.logoUrl,
-        brandColor: t.brandColor,
-        sport: { slug: t.sportSlug, name: t.sportName },
-      })),
-      matches: matchRows.map((m) => ({
-        id: m.id.toString(),
-        homeTeam: m.homeTeam,
-        awayTeam: m.awayTeam,
-        homeLogoUrl: m.homeLogoUrl,
-        awayLogoUrl: m.awayLogoUrl,
-        scheduledAt: m.scheduledAt?.toISOString() ?? null,
-        status: m.status,
-        tournament: {
-          id: m.tournamentId,
-          name: m.tournamentName,
-          riskTier: m.tournamentRiskTier,
-        },
-        sport: { slug: m.sportSlug, name: m.sportName },
-      })),
-    };
+    return { query: q.q, ...facets };
   });
 
   // ── Counts across sports (for homepage live badges) ────────────────

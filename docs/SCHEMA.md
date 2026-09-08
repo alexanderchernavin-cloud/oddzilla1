@@ -630,6 +630,53 @@ but are not fixtures, have no kickoff or opponents, and have no Sportradar
 counterpart. If outrights become first-class they want their own provider
 label here rather than being folded in as matches.
 
+#### Trigram indexes for the top-bar search (migration 20260908T173815)
+
+`GET /catalog/search` matches with `ILIKE '%needle%'` across four facets,
+and a leading wildcard makes every b-tree on those columns useless, so
+each facet was a full scan of its table. `pg_trgm` GIN indexes on the
+searched columns — `matches.home_team` / `.away_team`,
+`competitors.name` / `.abbreviation`, `tournaments.name` — turn them into
+bitmap index scans. Measured on production 2026-09-08 with the needle
+"united", warm, before → after: the matches facet 331 ms → 11.4 ms, the
+tournaments facet 60 ms → 3.7 ms, the teams facet 158 ms → 107 ms. Cold,
+the teams facet had measured 1497 ms.
+
+Three things about it are decisions rather than mechanics.
+
+**Both columns of each pair are indexed** because those two facets OR
+over them (`name ILIKE n OR abbreviation ILIKE n`), and an OR can only
+use indexes when every side has one — indexing `competitors.name` alone
+would have left the worst facet exactly as slow as it was.
+
+**`sports` is deliberately not indexed.** 69 rows, and its seq scan
+measured 0.03 ms; an index would cost writes to serve a scan that is
+already free, the same reasoning migration 0103 gives for leaving
+`display_order` unindexed.
+
+**The teams facet keeps most of its cost, and that is expected.** The
+index removes its 22 267-row scan, but its real expense is the OR join
+to `matches` (`home_competitor_id = co.id OR away_competitor_id = co.id`)
+fanned out over the 246 competitors "united" genuinely matches, each
+doing a bitmap heap scan that mostly discards rows on the status filter.
+Closing that means widening `matches_home_competitor_idx` / `_away_` to
+carry `status` — two more indexes on the table both ingesters write
+continuously, and a separate decision.
+
+The known limit: `gin_trgm_ops` can only serve a pattern holding at least
+one full trigram, so a one- or two-character query still falls back to a
+scan. Those match early and the `LIMIT 6` stops them fast (a 2-char
+needle measured 9.7 ms), and the endpoint's 5 s anonymous response cache
+covers them repeating, which is what a type-ahead does while somebody
+types the first letters of a team name.
+
+Built non-concurrently, because the migration runner wraps every file in
+one transaction and `CREATE INDEX CONCURRENTLY` cannot run inside one.
+That is affordable at this size and was rehearsed rather than assumed:
+the whole file took 1.57 s on production, the longest single write-
+blocking lock was 683 ms on `matches`, and the five indexes come to
+24 MB.
+
 ### Markets & odds
 
 **`markets`** — parents of outcomes. Unique key
