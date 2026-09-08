@@ -51,6 +51,7 @@ import {
   type BoostRule,
 } from "../../lib/boosted-odds.js";
 import {
+  liftOutcomePrefixIntoName,
   renderOutcomeLabel,
   substituteTemplate,
 } from "../../lib/market-naming.js";
@@ -735,6 +736,28 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
         awayTeam: row.awayTeam,
       });
 
+      const cells = quote.map((q) => ({
+        outcomeId: q.outcomeId,
+        originalOdds: q.originalOdds,
+        boostedOdds: q.boostedOdds,
+        label: labels.labelFor(
+          q.outcomeId,
+          priced.find((p) => p.outcomeId === q.outcomeId)?.rawName ?? "",
+        ),
+      }));
+      // Same nameless-table lift the match page applies, so a boost on
+      // one of those markets is captioned the same way on both surfaces
+      // — see liftOutcomePrefixIntoName.
+      const lift = liftOutcomePrefixIntoName(
+        labels.marketLabel,
+        cells.map((c) => c.label),
+      );
+      if (lift) {
+        cells.forEach((c, i) => {
+          c.label = lift.outcomeNames[i]!;
+        });
+      }
+
       out.markets.push({
         ruleId: r.id,
         boostPct: Number(r.boostPct),
@@ -746,16 +769,8 @@ export default async function zillaboostBannersRoutes(app: FastifyInstance) {
         sportSlug: row.sportSlug,
         status: row.matchStatus,
         marketId: row.id.toString(),
-        marketLabel: labels.marketLabel,
-        outcomes: quote.map((q) => ({
-          outcomeId: q.outcomeId,
-          originalOdds: q.originalOdds,
-          boostedOdds: q.boostedOdds,
-          label: labels.labelFor(
-            q.outcomeId,
-            priced.find((p) => p.outcomeId === q.outcomeId)?.rawName ?? "",
-          ),
-        })),
+        marketLabel: lift ? lift.name : labels.marketLabel,
+        outcomes: cells,
       } satisfies ZillaBoostMarketBanner);
     }
 
