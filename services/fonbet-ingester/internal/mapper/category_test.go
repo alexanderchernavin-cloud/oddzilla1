@@ -221,3 +221,76 @@ func TestCanonicalCategoriesLeavesSingleSpellingsAlone(t *testing.T) {
 		t.Error("single-segment names must not claim a canonical entry")
 	}
 }
+
+func TestCategoryAliasesFoldAbbreviationsAndStaleYears(t *testing.T) {
+	// The reported case: Fonbet writes both prefixes for one country, and
+	// they share no word multiset so categoryKey cannot fold them.
+	if got := aliasedCategory("Czech"); got != "Czech Republic" {
+		t.Errorf("Czech -> %q, want %q", got, "Czech Republic")
+	}
+	// Keyed through categoryKey, so case and punctuation variants of an
+	// alias fold too without a second entry.
+	for _, spelling := range []string{"czech", "CZECH", " Czech "} {
+		if got := aliasedCategory(spelling); got != "Czech Republic" {
+			t.Errorf("%q -> %q, want %q", spelling, got, "Czech Republic")
+		}
+	}
+	// Stale year suffixes drop the year rather than keeping it.
+	if got := aliasedCategory("Tour of Britain 2025"); got != "Tour of Britain" {
+		t.Errorf("-> %q", got)
+	}
+	// Word-order sensitive: categoryKey sorts tokens, so "Mix fights"
+	// keys as "fights mix". Hand-written keys got two of these five wrong
+	// the first time, which is why the index is derived rather than typed.
+	if got := aliasedCategory("Mix fights"); got != "Mix" {
+		t.Errorf("-> %q", got)
+	}
+	if got := aliasedCategory("European Championship 2023"); got != "European Championship" {
+		t.Errorf("-> %q", got)
+	}
+	// Already-canonical names pass through untouched.
+	for _, name := range []string{"Czech Republic", "Tour of Britain", "England", "Spain"} {
+		if got := aliasedCategory(name); got != name {
+			t.Errorf("%q was rewritten to %q", name, got)
+		}
+	}
+}
+
+func TestCategoryAliasesLeaveSimulationsApart(t *testing.T) {
+	// NHL 26 is the SIMULATED game, the same shape as FC 26 under Football
+	// and NBA 2K26 under Basketball. A word-prefix rule would fold it into
+	// the real NHL — which is why this is a list and not a rule. Neither
+	// side may move.
+	for _, name := range []string{"NHL", "NHL 26", "FC 26", "NBA 2K26"} {
+		if got := aliasedCategory(name); got != name {
+			t.Errorf("%q was rewritten to %q; simulations must stay apart", name, got)
+		}
+	}
+}
+
+func TestAliasComposesWithTheSpellingFold(t *testing.T) {
+	// An alias runs BEFORE canonicalCategories, so a sport carrying both
+	// "Czech" and a case variant of the target ends up with one bucket.
+	sports := map[int]*fonbet.Sport{
+		football: {ID: football, Name: "Football"},
+		300:      seg(football, 300, "Czech Republic. League 2"),
+		301:      seg(football, 301, "Czech. Cup. Round 3"),
+		302:      seg(football, 302, "czech republic. League 3"),
+	}
+	m := canonicalCategories(sports)
+	want := "Czech Republic"
+	for _, segment := range []string{
+		"Czech Republic. League 2",
+		"Czech. Cup. Round 3",
+		"czech republic. League 3",
+	} {
+		name := aliasedCategory(categoryFromSegment(segment))
+		got := name
+		if c, ok := m[categoryGroupKey(football, name)]; ok {
+			got = c
+		}
+		if got != want {
+			t.Errorf("%q -> %q, want %q", segment, got, want)
+		}
+	}
+}
