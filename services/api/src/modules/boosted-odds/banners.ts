@@ -57,7 +57,7 @@ import {
 import {
   isMatchWinnerMarket,
   isWinnerOutcomeId,
-} from "../../lib/match-winner-market.js";
+} from "@oddzilla/types/match-winner";
 import { NotFoundError } from "../../lib/errors.js";
 
 const homeCompetitor = alias(competitors, "home_competitor");

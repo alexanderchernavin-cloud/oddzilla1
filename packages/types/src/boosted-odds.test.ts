@@ -4,14 +4,53 @@ import assert from "node:assert/strict";
 import { isTeamShapedMarket, TEAM_SHAPED_PROVIDER_MARKET_IDS } from "./boosted-odds.js";
 import { boostMarketKey, bookKey } from "./netwinstable.js";
 
-test("team-shaped markets are match winner and map winner only", () => {
-  assert.equal(isTeamShapedMarket(1), true); // match winner
-  assert.equal(isTeamShapedMarket(4), true); // map winner
-  // Symmetric / line-shaped: no single outcome "is" a team.
+const HOME_AWAY = ["1", "2"];
+
+test("Oddin team-shaped markets are match winner and map winner only", () => {
+  assert.equal(isTeamShapedMarket(1, HOME_AWAY), true); // match winner
+  assert.equal(isTeamShapedMarket(4, HOME_AWAY), true); // map winner
+  // Decided on the id alone for Oddin, whose ids are market TYPES — so
+  // still true with no outcomes in hand.
+  assert.equal(isTeamShapedMarket(1, []), true);
+  // Symmetric / line-shaped: no single outcome "is" a team. These carry
+  // "1" / "2" too, which is exactly why the Oddin branch is an id
+  // allowlist rather than an outcome-shape test.
   for (const pmid of [2, 3, 7, 10, 11, 6]) {
-    assert.equal(isTeamShapedMarket(pmid), false, `pmid ${pmid}`);
+    assert.equal(isTeamShapedMarket(pmid, HOME_AWAY), false, `pmid ${pmid}`);
   }
   assert.deepEqual([...TEAM_SHAPED_PROVIDER_MARKET_IDS], [1, 4]);
+});
+
+test("a Fonbet winner table is team-shaped, its sub-event copies are not", () => {
+  // The operator's 2026-09-08 report: a team_only boost on Manchester
+  // United did nothing. Its winner markets are these two (measured on
+  // production), and neither is Oddin's 1, so an id-only predicate
+  // matched nothing.
+  assert.equal(isTeamShapedMarket(1_000_120, ["1", "2", "3"]), true);
+  assert.equal(isTeamShapedMarket(1_024_598, ["1", "2"]), true);
+
+  // Fonbet reuses one table across every sub-event, so "2nd half: Match
+  // result" is ALSO 1000120 — told apart only by keeping its raw factor
+  // ids. A team boost must not leak onto the second half.
+  assert.equal(
+    isTeamShapedMarket(1_000_120, ["921", "922", "923", "924", "925", "1571"]),
+    false,
+  );
+  // The split-off double chance of the full match, likewise.
+  assert.equal(isTeamShapedMarket(1_900_120, ["924", "925", "1571"]), false);
+
+  // Both sides are required: the claim is that "1" IS home and "2" IS
+  // away, so a market carrying only one of them has no pair to speak of.
+  assert.equal(isTeamShapedMarket(1_000_120, ["1"]), false);
+  assert.equal(isTeamShapedMarket(1_000_120, ["2", "3"]), false);
+
+  // A Fonbet head-to-head carries factor ids, not canonical ones.
+  assert.equal(isTeamShapedMarket(1_000_399, ["714", "715"]), false);
+
+  // A 2- or 3-way custom (operator-authored) market gets the canonical
+  // ids on purpose; a wider one gets o1..oN precisely so it falls out.
+  assert.equal(isTeamShapedMarket(2_000_000, ["1", "2"]), true);
+  assert.equal(isTeamShapedMarket(2_000_000, ["o1", "o2", "o3"]), false);
 });
 
 // The admin fair-odds warning computes the clamp in SQL as

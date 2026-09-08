@@ -6,7 +6,7 @@ import {
   isMatchWinnerMarket,
   isWinnerOutcomeId,
   WINNER_OUTCOME_IDS,
-} from "./match-winner-market.js";
+} from "./match-winner.js";
 
 describe("isMatchWinnerMarket", () => {
   test("takes Oddin's market 1 on the id alone", () => {

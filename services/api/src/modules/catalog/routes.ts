@@ -41,7 +41,7 @@ import {
   FONBET_HEAD_TO_HEAD_PMIDS,
   FONBET_PMID_BASE,
   WINNER_OUTCOME_IDS,
-} from "../../lib/match-winner-market.js";
+} from "@oddzilla/types/match-winner";
 import {
   hasActiveMarket,
   bookableWindow,
@@ -161,7 +161,7 @@ const LINE_SPECIFIERS = ["threshold", "handicap"] as const;
 type LineSpec = (typeof LINE_SPECIFIERS)[number];
 
 // The cross-provider "which market is the match winner" rule, plus the
-// Fonbet id namespace it needs, live in lib/match-winner-market.ts —
+// Fonbet id namespace it needs, live in @oddzilla/types/match-winner —
 // the ZillaBoost match banner needs the same answer and a second copy
 // is how the hard-coded `1` in quoteMatchWinnerBoost happened.
 
@@ -599,18 +599,24 @@ function quoteCardMarketBoost(
   boosts: BatchedMatchBoosts,
 ): MatchWinnerBoostQuote | null {
   if (boosts.empty) return null;
-  // The market's REAL provider_market_id, which is what a team_only
-  // competitor rule resolves against (isTeamShapedMarket: Oddin 1 and 4,
-  // where outcome "1" IS the home competitor). This used to pass a
-  // hard-coded 1 on the premise that loadMatchWinnerOdds only ever
-  // selected that market — untrue since the Fonbet line landed, and the
-  // premise fails outright on a head-to-head market, which carries
-  // neither a "1" nor a "2" outcome for such a rule to land on. The real
-  // id is also what placement checks (validateCustomBoostForBet), so a
-  // card can no longer quote a team_only boost the ticket would be
-  // priced without.
+  // The market's REAL provider_market_id plus its outcome ids, which is
+  // what a team_only competitor rule resolves against — Oddin's 1 and 4
+  // by id, a Fonbet or custom winner table by carrying both "1" and "2"
+  // (isTeamShapedMarket). This used to pass a hard-coded 1 on the premise
+  // that loadMatchWinnerOdds only ever selected that market — untrue
+  // since the Fonbet line landed, and the premise fails outright on a
+  // head-to-head market, which carries neither a "1" nor a "2" outcome
+  // for such a rule to land on. Both are also what placement checks
+  // (validateCustomBoostForBet), so a card can no longer quote a
+  // team_only boost the ticket would be priced without, nor withhold one
+  // the ticket would honour.
   const { marketWide: marketWideRule, selections: selectionRules } =
-    boosts.resolve(ctx, marketId, providerMarketId);
+    boosts.resolve(
+      ctx,
+      marketId,
+      providerMarketId,
+      boostOutcomes.map((o) => o.outcomeId),
+    );
   const hasSelections = !!selectionRules && selectionRules.size > 0;
   if (!marketWideRule && !hasSelections) return null;
 

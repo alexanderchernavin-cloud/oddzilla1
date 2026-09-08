@@ -21,7 +21,11 @@
 // package is authored for NodeNext, so any relative import here would
 // carry a `.js` suffix that webpack can't resolve to the `.ts` file —
 // green under tsc, fatal at `next build`. The pricing helpers therefore
-// live in netwinstable.ts alongside the math they call.
+// live in netwinstable.ts alongside the math they call. A SELF-REFERENCE
+// through the package name is the sanctioned way in (the same one
+// custom-events.ts uses to reach netwinstable) — it resolves through the
+// exports map in both toolchains.
+import { FONBET_PMID_BASE } from "@oddzilla/types/match-winner";
 
 export type BoostedOddsScope =
   | "sport"
@@ -44,21 +48,51 @@ export type BoostedOddsScope =
 export type CompetitorBoostMarkets = "all" | "team_only";
 
 /**
- * Markets where outcome "1" IS the home competitor and "2" the away one:
- * match winner (1) and map winner (4). This is the existing convention
- * across the codebase — ZillaTips' team-of-interest mapping and the
- * banner endpoint's `teamShaped` flag both key off exactly these two —
- * and a `team_only` team boost needs the same answer, so the predicate
- * lives here once instead of a third copy.
- *
- * Everything else (totals, handicaps, correct score, round winners) is
- * either symmetric or line-shaped: no single outcome "is" a given team,
- * so a team_only boost deliberately does not touch them.
+ * Oddin markets where outcome "1" IS the home competitor and "2" the away
+ * one: match winner (1) and map winner (4). The existing convention
+ * across the codebase — ZillaTips' team-of-interest mapping keys off
+ * exactly these two.
  */
 export const TEAM_SHAPED_PROVIDER_MARKET_IDS: readonly number[] = [1, 4];
 
-export function isTeamShapedMarket(providerMarketId: number): boolean {
-  return TEAM_SHAPED_PROVIDER_MARKET_IDS.includes(providerMarketId);
+/**
+ * Is this market one where a single outcome IS a given team, so a
+ * `team_only` competitor boost has a cell to land on?
+ *
+ * Everything else (totals, handicaps, correct score, round winners) is
+ * either symmetric or line-shaped: no single outcome "is" a team, so a
+ * team_only boost deliberately does not touch them.
+ *
+ * **`outcomeIds` is required because the provider_market_id cannot answer
+ * this on its own for Fonbet.** Oddin's ids are market TYPES, so 1 and 4
+ * settle it. Fonbet's id is the catalogue TABLE and it reuses one table
+ * across every sub-event — "Match result", "2nd half: Match result" and
+ * "Corners: Match result" are all 1000120 — with the full match told
+ * apart only by the ingester rewriting its outcomes to the canonical
+ * "1" / "2" / "3". So the ids ARE the discriminator there.
+ *
+ * This is the bug the operator reported on 2026-09-08: a `team_only`
+ * boost on Manchester United "stopped working". Nothing about team_only
+ * broke — the predicate was `[1, 4]` only, and Manchester United is a
+ * FOOTBALL team, so its winner markets are 1000120 and 1024598 (measured
+ * on production) and never 1. It had appeared to work while the list card
+ * passed a hard-coded `1` into the resolver; when that was corrected to
+ * the market's real id on 2026-09-07 the card stopped showing a boost
+ * that placement had been refusing all along.
+ *
+ * Requires BOTH "1" and "2" on the Fonbet side rather than
+ * `isMatchWinnerMarket`'s looser "at least two canonical ids": this
+ * predicate's whole claim is that "1" is home AND "2" is away, and a
+ * sub-event copy of a winner table keeps raw factor ids (921 / 922 / 923,
+ * plus 924 / 925 / 1571 for the double chance), so it is excluded.
+ */
+export function isTeamShapedMarket(
+  providerMarketId: number,
+  outcomeIds: readonly string[],
+): boolean {
+  if (TEAM_SHAPED_PROVIDER_MARKET_IDS.includes(providerMarketId)) return true;
+  if (providerMarketId < FONBET_PMID_BASE) return false;
+  return outcomeIds.includes("1") && outcomeIds.includes("2");
 }
 
 /**
