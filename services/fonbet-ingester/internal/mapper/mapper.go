@@ -210,7 +210,7 @@ func Build(resp *fonbet.ListResponse, idx *fonbet.Index, opt Options) *Snapshot 
 	// list rather than per match — see canonicalCategories.
 	canonicalCategory := canonicalCategories(sports)
 	categoryOf := func(rootID int, segmentName string) string {
-		name := categoryFromSegment(segmentName)
+		name := aliasedCategory(categoryFromSegment(segmentName))
 		if c, ok := canonicalCategory[categoryGroupKey(rootID, name)]; ok {
 			return c
 		}
@@ -672,6 +672,68 @@ func categoryKey(name string) string {
 	return strings.Join(tokens, " ")
 }
 
+// categoryAliases folds one spelling of a category onto another where the
+// two are the same thing but NOT a case, punctuation or word-order variant
+// of each other — an abbreviation, or a stale year suffix. `categoryKey`
+// cannot reach these: "Czech" and "Czech Republic" share no word multiset.
+//
+// Keys and values are compared through `categoryKey`, so an alias also
+// covers the case and punctuation variants of both sides for free.
+//
+// **A general rule was measured and rejected.** "One name is a word-prefix
+// of the other, within the same sport" catches all six pairs in the live
+// line (2026-09-08) and five of them are genuine:
+//
+//	football     Czech                 -> Czech Republic          (reported)
+//	cycling      Tour of Britain 2025  -> Tour of Britain
+//	ice-hockey   Friendly matches      -> Friendly
+//	volleyball   European Championship 2023 -> European Championship
+//	mma          Mix fights            -> Mix
+//
+// The sixth is ice hockey's "NHL" against "NHL 26", and NHL 26 is the
+// SIMULATED game — the same shape as FC 26 under Football and NBA 2K26
+// under Basketball. Folding those together would file computer-played
+// fixtures under the real league and defeat the `hidden_from_lists`
+// merchandising split that migration 0102 exists for. One harmful merge in
+// six is enough to make this a list rather than a rule: an alias states
+// which pairs are the same competition, and says nothing about any pair it
+// does not name.
+//
+// Direction is deliberate per entry rather than "longest wins": the target
+// is the name the offer should be filed under, which for a country is the
+// full name and for a stale year suffix is the one without it.
+// Written as the names a human reads, NOT as categoryKey output: that key
+// sorts tokens, so "Tour of Britain 2025" keys as "2025 britain of tour",
+// and hand-writing keys in that form is both unreadable and silently wrong
+// when the sort order is misjudged (two of these five were, first time).
+// categoryAliasIndex below re-keys them once at init.
+var categoryAliases = map[string]string{
+	"Czech":                      "Czech Republic",
+	"Tour of Britain 2025":       "Tour of Britain",
+	"Friendly matches":           "Friendly",
+	"European Championship 2023": "European Championship",
+	"Mix fights":                 "Mix",
+}
+
+// categoryAliasIndex is categoryAliases keyed by categoryKey, so an alias
+// also covers the case, punctuation and word-order variants of its own
+// spelling without a second entry.
+var categoryAliasIndex = func() map[string]string {
+	out := make(map[string]string, len(categoryAliases))
+	for from, to := range categoryAliases {
+		out[categoryKey(from)] = to
+	}
+	return out
+}()
+
+// aliasedCategory folds a category spelling onto its canonical name.
+func aliasedCategory(name string) string {
+	if target, ok := categoryAliasIndex[categoryKey(name)]; ok {
+		return target
+	}
+	return name
+}
+
 // categoryGroupKey scopes a spelling key to its root sport. A category row
 // is `(sport_id, slug)`, so the decision has to be made per sport too:
 // "National teams" exists under cricket, football AND volleyball, and the
@@ -758,7 +820,7 @@ func canonicalCategories(sports map[int]*fonbet.Sport) map[string]string {
 		if s == nil {
 			continue
 		}
-		name := categoryFromSegment(strings.TrimSpace(s.Name))
+		name := aliasedCategory(categoryFromSegment(strings.TrimSpace(s.Name)))
 		if name == CategoryOther || categoryKey(name) == "" {
 			continue
 		}

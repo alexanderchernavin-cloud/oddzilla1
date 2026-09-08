@@ -254,10 +254,25 @@ dot in a LATER segment, so they never reach this code. The sidebar's
 `stripCategoryPrefix` already tolerates the missing space, so the row
 renders as `League Cup. Group stage` under Bolivia.
 
-**The limit.** This folds away case, punctuation, word order and a dropped
-separator, and nothing else. A genuine typo, or one competition named in two languages,
-still splits, and there is no operator-facing category merge to fall back
-on.
+**Abbreviations and stale year suffixes need a list, not a rule.**
+`categoryKey` cannot reach them — "Czech" and "Czech Republic" share no word
+multiset — so `categoryAliases` names the pairs explicitly. A general rule
+was measured and rejected: "one name is a word-prefix of the other, within
+the same sport" catches all six pairs in the live line (2026-09-08) and five
+are genuine (Czech / Czech Republic, Tour of Britain 2025, Friendly matches,
+European Championship 2023, Mix fights). The sixth is ice hockey's **NHL**
+against **NHL 26**, and NHL 26 is the SIMULATED game — folding those would
+file computer-played fixtures under the real league and defeat the
+`hidden_from_lists` split migration 0102 exists for. One harmful merge in six
+makes it a list. The map is written as readable names and re-keyed through
+`categoryKey` at init, because that key sorts tokens ("Tour of Britain 2025"
+keys as "2025 britain of tour") and hand-writing keys in that form got two of
+the five silently wrong on the first attempt.
+
+**The limit.** This folds away case, punctuation, word order, a dropped
+separator, and the named aliases — nothing else. A competition named in two
+languages, or an abbreviation nobody has added to the list, still splits, and
+there is no operator-facing category merge to fall back on.
 
 When a merge does happen the losing row is left holding no tournament, and
 `store.DeactivateEmptyCategories` retires it — `active = FALSE`, off the
