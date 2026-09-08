@@ -7,6 +7,7 @@ import { strict as assert } from "node:assert";
 import {
   substituteTemplate,
   renderOutcomeLabel,
+  liftOutcomePrefixIntoName,
   deriveScope,
   outcomeSortWeight,
   isCompetitorUrn,
@@ -291,5 +292,82 @@ describe("team numbers in outcome labels", () => {
   it("still resolves the home / away outcome templates", () => {
     assert.equal(renderOutcomeLabel("home", {}, "Swansea", "Wrexham"), "Swansea");
     assert.equal(renderOutcomeLabel("away", {}, "Swansea", "Wrexham"), "Wrexham");
+  });
+});
+
+describe("liftOutcomePrefixIntoName", () => {
+  // The reported case: Fonbet table 2800 has no name of its own and
+  // states its question in both cells instead.
+  it("lifts the shared phrase out of the cells and into the title", () => {
+    const out = liftOutcomePrefixIntoName("1st half:", [
+      "Both teams to score Yes",
+      "Both teams to score No",
+    ]);
+    assert.deepEqual(out, {
+      name: "1st half: Both teams to score",
+      lifted: "Both teams to score",
+      outcomeNames: ["Yes", "No"],
+    });
+  });
+
+  it("keeps working with no sub-event prefix at all", () => {
+    // The full-match copy of the same table: name is empty, not "1st half:".
+    const out = liftOutcomePrefixIntoName("", [
+      "Both teams to score Yes",
+      "Both teams to score No",
+    ]);
+    assert.equal(out?.name, "Both teams to score");
+    assert.deepEqual(out?.outcomeNames, ["Yes", "No"]);
+  });
+
+  it("handles the billiards frame table (15 open markets on production)", () => {
+    const out = liftOutcomePrefixIntoName("", ["Frame 1 Vafaei H", "Frame 1 Selt M"]);
+    assert.equal(out?.name, "Frame 1");
+    assert.deepEqual(out?.outcomeNames, ["Vafaei H", "Selt M"]);
+  });
+
+  it("leaves a market that has a name of its own alone", () => {
+    // Even when its cells DO share a phrase — the title is the author's
+    // and this must never rewrite it.
+    assert.equal(
+      liftOutcomePrefixIntoName("Total goals", ["Over 2.5", "Under 2.5"]),
+      null,
+    );
+    assert.equal(
+      liftOutcomePrefixIntoName("Corners: Match result", ["Team A win", "Team A lose"]),
+      null,
+    );
+  });
+
+  it("no shared phrase, nothing to lift", () => {
+    assert.equal(liftOutcomePrefixIntoName("", ["Over 2.5", "Under 2.5"]), null);
+    assert.equal(liftOutcomePrefixIntoName("1st half:", ["Yes", "No"]), null);
+  });
+
+  it("refuses to leave a cell blank", () => {
+    // "Both teams to score" would be consumed whole, and an empty cell
+    // is worse than a repetitive one.
+    assert.equal(
+      liftOutcomePrefixIntoName("", ["Both teams to score", "Both teams to score Yes"]),
+      null,
+    );
+  });
+
+  it("word-aligned only, so it cannot cut mid-word", () => {
+    // "Corner" / "Corners" share five letters but no whole word.
+    assert.equal(liftOutcomePrefixIntoName("", ["Corner 1", "Corners 2"]), null);
+  });
+
+  it("needs at least two cells", () => {
+    assert.equal(liftOutcomePrefixIntoName("", ["Both teams to score Yes"]), null);
+    assert.equal(liftOutcomePrefixIntoName("", []), null);
+  });
+
+  it("matches the phrase case-insensitively but keeps the first cell's casing", () => {
+    const out = liftOutcomePrefixIntoName("", [
+      "Both teams to score Yes",
+      "both teams to score No",
+    ]);
+    assert.equal(out?.lifted, "Both teams to score");
   });
 });

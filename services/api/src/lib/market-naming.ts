@@ -305,6 +305,84 @@ export function renderOutcomeLabel(
   return sub;
 }
 
+/**
+ * Some Fonbet catalogue tables have NO name of their own and bake the
+ * question into every one of their outcome captions instead. Table 2800
+ * is the one that matters — 3 152 open markets, measured 2026-09-07 —
+ * and it renders as a market titled "1st half:" (the sub-event prefix
+ * and nothing else) over cells reading "Both teams to score Yes" and
+ * "Both teams to score No". The question is stated twice per row and the
+ * title states none of it, so a slip leg from there read
+ * "1ST HALF: / Both teams to score Yes".
+ *
+ * This lifts the outcomes' shared leading phrase into the market name:
+ * "1st half: Both teams to score" over "Yes" / "No".
+ *
+ * **It has to run per MARKET, not per table, which is why it is here and
+ * not in the ingester.** `market_descriptions` is keyed by
+ * `(provider_market_id, variant)` — one row per table — and table 2800
+ * carries FIVE different questions across its factor set ("Both teams to
+ * score", "Only one team to score", "No goals", "Both teams will score
+ * %P and more", "Both will do run"). Their common prefix is empty, so
+ * there is no per-table name to store; only a market instance, holding
+ * the two factors it actually quotes, knows which question it asks.
+ *
+ * Deliberately narrow, because the alternative is renaming markets that
+ * are already correct:
+ *   - Only when the market has no name of its own. A name that is just a
+ *     sub-event prefix ("1st half:") counts as none, and the prefix is
+ *     kept in front of the lifted phrase.
+ *   - Needs at least two outcomes, and a word-aligned shared prefix of
+ *     at least two characters — "Over 2.5" / "Under 2.5" share nothing
+ *     and are left alone.
+ *   - Every outcome must keep a non-empty remainder. A market whose
+ *     cells are "Both teams to score" and "Both teams to score Yes"
+ *     would otherwise end up with a blank cell, which is worse than a
+ *     repetitive one.
+ */
+export function liftOutcomePrefixIntoName(
+  name: string,
+  outcomeNames: readonly string[],
+): { name: string; lifted: string; outcomeNames: string[] } | null {
+  const unchanged = null;
+  if (outcomeNames.length < 2) return unchanged;
+  // A name of its own? Then it needs no help. Strip a trailing colon so
+  // "1st half:" reads as "prefix, no name".
+  const prefixOnly = /^(.*):\s*$/.exec(name.trim());
+  const subEventPrefix = prefixOnly ? prefixOnly[1]!.trim() : "";
+  if (!prefixOnly && name.trim() !== "") return unchanged;
+
+  const words = (v: string): string[] => v.trim().split(/\s+/).filter(Boolean);
+  const first = words(outcomeNames[0]!);
+  if (first.length === 0) return unchanged;
+  const rest = outcomeNames.slice(1).map(words);
+
+  let shared = 0;
+  outer: for (; shared < first.length; shared++) {
+    for (const other of rest) {
+      if (
+        shared >= other.length ||
+        other[shared]!.toLowerCase() !== first[shared]!.toLowerCase()
+      ) {
+        break outer;
+      }
+    }
+  }
+  if (shared === 0) return unchanged;
+  // Every cell must survive with something to say.
+  if (first.length === shared) return unchanged;
+  for (const other of rest) if (other.length === shared) return unchanged;
+
+  const lifted = first.slice(0, shared).join(" ");
+  if (lifted.length < 2) return unchanged;
+
+  return {
+    name: subEventPrefix ? `${subEventPrefix}: ${lifted}` : lifted,
+    lifted,
+    outcomeNames: outcomeNames.map((o) => words(o).slice(shared).join(" ")),
+  };
+}
+
 export function descKey(providerMarketId: number, variant: string): string {
   return `${providerMarketId}:${variant ?? ""}`;
 }

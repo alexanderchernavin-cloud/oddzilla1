@@ -86,6 +86,7 @@ import { loadInlineMarkets } from "../../lib/custom-events/pricing.js";
 import {
   substituteTemplate,
   renderOutcomeLabel,
+  liftOutcomePrefixIntoName,
   deriveMarketScope,
   outcomeDescKey,
   outcomeSortWeight,
@@ -2607,6 +2608,29 @@ export default async function catalogRoutes(app: FastifyInstance) {
         if (bw != null) return 1;
         return 0;
       });
+      // A nameless catalogue table states its question in every cell
+      // instead of in its title — Fonbet's table 2800 renders as a market
+      // called "1st half:" over "Both teams to score Yes" / "...No". Lift
+      // the shared phrase into the name, so the title says what is being
+      // asked and the cells say only the answer. Runs AFTER the outcome
+      // sort so the phrase is taken in display order, and per market
+      // rather than per table because one table asks five different
+      // questions — see liftOutcomePrefixIntoName.
+      const lift = liftOutcomePrefixIntoName(
+        m.name,
+        m.outcomes.map((o) => o.name),
+      );
+      if (lift) {
+        m.name = lift.name;
+        // baseName is the small market-kind tag and the ladder-card
+        // title; blank for these markets for the same reason the name
+        // was, so it takes the lifted phrase without the sub-event
+        // prefix (the tab already carries that).
+        if (m.baseName.trim() === "") m.baseName = lift.lifted;
+        m.outcomes.forEach((o, i) => {
+          o.name = lift.outcomeNames[i]!;
+        });
+      }
     }
     const scopeMap = new Map<string, { id: string; label: string; order: number; markets: MarketRow[] }>();
     for (const m of marketList) {
