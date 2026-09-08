@@ -57,8 +57,11 @@
 // accented and bare forms are both listed where the bare one is safe.
 //
 // The REPLY itself is one fixed string in English and transliterated
-// Russian, by operator choice, and is not localised. Detection is
-// multilingual; the answer is not.
+// Russian. Detection is multilingual; the answer deliberately is not —
+// a Czech or Spanish bettor gets the same string. That asymmetry was put
+// to the operator explicitly and confirmed as intended (2026-09-08), so
+// it is a decision, not an oversight: do NOT "fix" it by adding
+// per-locale variants of ABUSE_REPLY.
 
 /** The operator-chosen reply. Posted verbatim; nothing generates it. */
 export const ABUSE_REPLY = "Fuck you, suka blyad'";
