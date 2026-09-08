@@ -12,8 +12,8 @@ func TestDenylistDenies(t *testing.T) {
 		label string
 		want  bool
 	}{
-		{7800, "", true},                            // point-winner table, main event
-		{7800, "2nd set", true},                     // ... and under a sub-event
+		{7800, "", true},                           // point-winner table, main event
+		{7800, "2nd set", true},                    // ... and under a sub-event
 		{305, "", false},                           // an ordinary total
 		{305, "Player specials. . Fam A", true},    // player prop under a sub-event label
 		{120, "special bets kick \"50/22\"", true}, // prefix is case-insensitive

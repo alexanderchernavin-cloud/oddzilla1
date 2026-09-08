@@ -72,14 +72,14 @@ type Ingester struct {
 	// staleness watchdog and the shutdown path all touch the same state.
 	mu sync.Mutex
 
-	matches       map[int64]*matchState     // Fonbet event id → state
-	missing       map[int64]int             // event id → consecutive cycles absent
-	closed        map[int64]struct{}        // closed while still present in the feed
-	sportIDs      map[int]int               // Fonbet root id → sports.id
-	categoryIDs   map[string]int            // "<sportDB>:<slug>" → categories.id
-	tournamentIDs map[int]int               // Fonbet segment id → tournaments.id
-	competitorIDs map[int64]int             // Fonbet team id → competitors.id
-	descrDone     map[string]struct{}       // "<pmid>|<variant>" already written
+	matches       map[int64]*matchState // Fonbet event id → state
+	missing       map[int64]int         // event id → consecutive cycles absent
+	closed        map[int64]struct{}    // closed while still present in the feed
+	sportIDs      map[int]int           // Fonbet root id → sports.id
+	categoryIDs   map[string]int        // "<sportDB>:<slug>" → categories.id
+	tournamentIDs map[int]int           // Fonbet segment id → tournaments.id
+	competitorIDs map[int64]int         // Fonbet team id → competitors.id
+	descrDone     map[string]struct{}   // "<pmid>|<variant>" already written
 	// lang → the market type's BASE key (table, no sub-event) → template.
 	//
 	// Keyed on the type rather than a provider_market_id because a
@@ -107,7 +107,14 @@ type matchState struct {
 	Team2     string
 	StartTime int64
 	ScoreJSON string
-	Markets   map[string]*marketState
+	// Clock is the clock anchor the last written live_score carried, so
+	// the next cycle can keep it while Fonbet's reading stays within
+	// tolerance of it (see normalizeClock). Nil until the first write
+	// after boot: the previous snapshot is not seeded with live_score,
+	// so a restart re-anchors every running clock once, by under a
+	// second, and is otherwise quiet.
+	Clock   *clockPayload
+	Markets map[string]*marketState
 }
 
 type marketState struct {
@@ -583,11 +590,16 @@ func (in *Ingester) applyMatch(ctx context.Context, m *mapper.Match, nowMs int64
 		}
 	}
 	if m.Live {
-		if payload := buildLiveScore(m, nowMs); payload != nil && stripUpdatedAt(string(payload)) != stripUpdatedAt(ms.ScoreJSON) {
+		// The clock anchor is normalised against the one we last wrote,
+		// so a running clock does not move the payload from poll to poll
+		// and this diff stays quiet for a whole half — it fires on a
+		// score, a stoppage, a restart, or Fonbet moving the clock.
+		if payload, clock := buildLiveScore(m, nowMs, ms.Clock); payload != nil && stripUpdatedAt(string(payload)) != stripUpdatedAt(ms.ScoreJSON) {
 			if err := store.UpdateMatchLiveScore(ctx, in.st.Pool(), ms.DBID, payload); err != nil {
 				in.log.Warn().Err(err).Int64("match", ms.DBID).Msg("live score write failed")
 			} else {
 				ms.ScoreJSON = string(payload)
+				ms.Clock = clock
 				if err := in.bus.PublishLiveScore(ctx, ms.DBID, payload); err != nil {
 					in.log.Warn().Err(err).Msg("publish score")
 				}

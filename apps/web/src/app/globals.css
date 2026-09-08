@@ -289,16 +289,30 @@ body {
 .oz-shell {
   display: grid;
   grid-template-columns: 240px 1fr 380px;
-  /* 60px top bar carries the theme / bell / wallet / avatar cluster
-     on desktop + tablet. The cluster is 36px tall so 60px gives 12px
-     above + below — tight but not cramped, no big empty band. On
-     mobile (<720px) the @media block bumps the row + the .oz-topbar
-     height back to 90px because the hamburger button is 66px and
-     would otherwise overflow. The earlier experiment that folded the
-     cluster into the bet-slip rail header was reverted because the
-     wallet pill alone is ~200px and a usable rail width can't host
-     the full cluster without overflow. */
-  grid-template-rows: 60px 1fr;
+  /* Top-bar height, and the single source of truth for it: the grid
+     row below, the `.oz-topbar` override in each breakpoint, and every
+     drawer offset measured from under the bar (`.oz-side` top +
+     height, `.oz-rail` sheet height) all read this variable. They were
+     four hard-coded copies of the same number until 2026-09-07, and
+     changing the bar height meant finding all of them.
+
+     60px on desktop + tablet carries the theme / bell / wallet /
+     avatar cluster, which is 36px tall, so 60 gives 12px above and
+     below — tight but not cramped. Mobile (<720px) takes it DOWN to
+     54px: the row there holds a 44px hamburger and a 36px wordmark
+     and nothing else, so 90px (the value while those were 66 and 60)
+     was a seventh of a phone screen spent on chrome. The earlier
+     experiment that folded the cluster into the bet-slip rail header
+     was reverted because the wallet pill alone is ~200px and a usable
+     rail width can't host the full cluster without overflow. */
+  --oz-topbar-h: 60px;
+  /* Mobile bet-slip peek bar: its own height and the inset it floats
+     at. Read by `.oz-mobile-betbar`, by the bottom padding that keeps
+     the last card clear of it, and by the support chat button that has
+     to sit ABOVE it rather than on top of it. */
+  --oz-betbar-h: 46px;
+  --oz-betbar-inset: 12px;
+  grid-template-rows: var(--oz-topbar-h) 1fr;
   grid-template-areas: "top top top" "side main rail";
   /* 240 sidebar + 900 main cap + 380 rail = 1520. The match page
      and the catalog list pages both cap their inner content around
@@ -828,14 +842,29 @@ body {
 .oz-mobile-betbar {
   display: none;
   position: fixed;
-  left: calc(240px + 12px);
-  right: 12px;
-  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  left: calc(240px + var(--oz-betbar-inset));
+  /* The right edge stops clear of the support chat button rather than
+     running under it. Before this the bar spanned the full width and
+     the chat button sat on top of its "Open" affordance — a control a
+     bettor could see and not hit (operator, 2026-09-07). Insetting the
+     bar rather than moving the button also answers the other half of
+     that report, that the bar was too wide.
+
+     68px = the button's 52px + its 20px inset − the bar's own 12px
+     inset, plus an 8px gap so the two read as neighbours instead of
+     one shape that happens to touch. Measured on a 375px viewport: a
+     60px reserve put them flush at exactly 0.0px apart. Worst case, a
+     320px viewport leaves the bar ~228px against ~205px of content. */
+  right: calc(var(--oz-betbar-inset) + 68px);
+  bottom: calc(var(--oz-betbar-inset) + env(safe-area-inset-bottom, 0px));
   z-index: 55;
-  height: 56px;
-  padding: 0 14px;
+  /* 46px, down from 56 (2026-09-07, operator). The row is an icon, two
+     lines of small text and an "Open" label; 56 made it read as a
+     second, heavier bottom chrome next to the system nav bar. */
+  height: var(--oz-betbar-h);
+  padding: 0 12px;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   background: var(--fg);
   color: var(--bg);
   border: 0;
@@ -847,6 +876,23 @@ body {
   transition: transform 140ms var(--ease), opacity 140ms var(--ease);
 }
 .oz-mobile-betbar:active { transform: translateY(1px); }
+
+/* Support chat button (components/support/support-widget.tsx) sits at
+   z-index 9000, far above the bet-slip bottom sheet's 60, so while the
+   sheet is open it floated over the sheet's own footer — which is
+   where Place bet lives. Hidden for as long as the sheet is up: the
+   sheet is modal (its scrim closes it), and a chat button reachable
+   one tap later beats a chat button covering the button that places
+   the bet. The collapsed peek bar handles the same collision the other
+   way, by reserving room at its right edge.
+
+   `.oz-shell` carries `data-rail-open`, and the widget is mounted
+   inside it (see app/(main)/layout.tsx), so this needs no JS and no
+   `:has()`. */
+.oz-shell[data-rail-open="true"] .oz-support-fab,
+.oz-shell[data-rail-open="true"] .oz-support-panel {
+  display: none !important;
+}
 
 /* Mobile bottom-sheet drag handle inside the rail. Decorative — the
    scrim and close button are the real dismissal affordances. Hidden
@@ -964,9 +1010,9 @@ body {
 @media (max-width: 1099px) {
   .oz-shell {
     grid-template-columns: 240px 1fr;
-    /* Tablet (720–1099px) inherits the 60px top-bar row from the
-       default. The mobile @media block below overrides back to 90px
-       because the hamburger button (66px) needs the extra height. */
+    /* Tablet (720–1099px) keeps the default `--oz-topbar-h`; the
+       mobile block below lowers that variable and every offset
+       derived from it follows. */
     grid-template-areas: "top top" "side main";
   }
   /* Below desktop the rail collapses into a bottom-sheet bet-slip; the
@@ -1015,13 +1061,13 @@ body {
      This is far more thumb-friendly than a right-edge drawer. The
      sheet insets from the persistent sidebar at tablet widths.
 
-     `height: calc(100dvh - 60px)` (vs `auto`) keeps the drawer at
+     `height: calc(100dvh - <bar>)` (vs `auto`) keeps the drawer at
      full available height whenever it's open — that gives the
      selections list room to actually claim leftover vertical space
      via flex:1, instead of being pinned to its natural content
-     height which leaves the form to dominate. The 60px matches the
-     tablet top-bar height; mobile (<720px) overrides this further
-     down because its top bar is 90px. */
+     height which leaves the form to dominate. The offset reads
+     `--oz-topbar-h`, so the sheet follows the bar at every
+     breakpoint without a second copy of the number. */
   .oz-rail {
     position: fixed !important;
     left: 240px;
@@ -1029,8 +1075,8 @@ body {
     bottom: 0;
     top: auto !important;
     width: auto !important;
-    height: calc(100dvh - 60px) !important;
-    max-height: calc(100dvh - 60px) !important;
+    height: calc(100dvh - var(--oz-topbar-h)) !important;
+    max-height: calc(100dvh - var(--oz-topbar-h)) !important;
     z-index: 60;
     background: var(--bg);
     border-left: 0 !important;
@@ -1064,9 +1110,14 @@ body {
   }
 
   /* Leave room for the sticky slip bar at the bottom of every page so
-     the last card isn't trapped behind it. 56 bar + 12 gap + safe area. */
+     the last card isn't trapped behind it: the bar, its inset, and a
+     12px gap above it. Derived from the same variables as the bar, so
+     changing its height cannot leave the last card half-covered. */
   .oz-main-inner > * {
-    padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px)) !important;
+    padding-bottom: calc(
+      var(--oz-betbar-h) + var(--oz-betbar-inset) + 12px +
+        env(safe-area-inset-bottom, 0px)
+    ) !important;
   }
 }
 
@@ -1079,11 +1130,17 @@ body {
 @media (max-width: 719px) {
   .oz-shell {
     grid-template-columns: 1fr;
-    grid-template-rows: 90px 1fr;
+    /* 54px, down from 90 (2026-09-07, operator: the bar was eating
+       too much of the phone screen). The row holds a 44px hamburger
+       and a 36px wordmark, so 54 leaves 5px of clearance above and
+       below the tallest child. Everything measured from under the bar
+       reads the same variable. */
+    --oz-topbar-h: 54px;
+    grid-template-rows: var(--oz-topbar-h) 1fr;
     grid-template-areas: "top" "main";
   }
   .oz-topbar {
-    height: 90px !important;
+    height: var(--oz-topbar-h) !important;
     /* The top bar is grid-area: top — without a relaxed min-width its
        min-content (Wordmark + Wallet pill + icon buttons + gaps) would
        force the 1fr column wider than the viewport, pulling every
@@ -1099,10 +1156,10 @@ body {
   }
   .oz-side {
     position: fixed !important;
-    top: 90px !important;
+    top: var(--oz-topbar-h) !important;
     left: 0 !important;
     width: min(280px, 82vw) !important;
-    height: calc(100dvh - 90px) !important;
+    height: calc(100dvh - var(--oz-topbar-h)) !important;
     z-index: 60;
     background: var(--bg);
     transform: translateX(-100%);
@@ -1112,10 +1169,11 @@ body {
   .oz-shell[data-sidebar-open="true"] .oz-side { transform: translateX(0); }
   .oz-rail {
     /* Same 36px breathing room above the bottom-sheet as the tablet
-       block above (60→96 there, 90→126 here) so a sliver of the
-       page peeks above the open slip on a phone. */
-    height: calc(100dvh - 126px) !important;
-    max-height: calc(100dvh - 126px) !important;
+       block above, so a sliver of the page peeks above the open slip
+       on a phone. Derived from the bar height rather than restated:
+       the tablet rule is bar + 0, this one bar + 36. */
+    height: calc(100dvh - var(--oz-topbar-h) - 36px) !important;
+    max-height: calc(100dvh - var(--oz-topbar-h) - 36px) !important;
   }
   .oz-topbar-toggle { display: inline-flex !important; }
   .oz-topbar-logo { display: inline-flex !important; }

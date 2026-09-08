@@ -136,9 +136,17 @@ type Match struct {
 }
 
 type LiveScore struct {
-	Home    *int
-	Away    *int
-	Timer   string
+	Home  *int
+	Away  *int
+	Timer string
+	// Clock is the match clock as a MODEL rather than a rendering: what
+	// it read, when, and which way it is moving. Nil for the sports
+	// Fonbet does not time (tennis, table tennis, volleyball, cricket,
+	// snooker) and for a live row whose timer fields are absent. The
+	// storefront runs the clock from this between polls; Timer above is
+	// the string Fonbet rendered from the same triple at packet time and
+	// is kept only as a presence check.
+	Clock   *Clock
 	Comment string
 	// Serve is which side is serving right now: 1 = team1 (home),
 	// 2 = team2 (away), 0 = not applicable or not sent. Fonbet marks
@@ -154,6 +162,21 @@ type Period struct {
 	Title  string
 	Home   string
 	Away   string
+}
+
+// Clock is one observation of a match clock: at instant AtMs (unix ms,
+// Fonbet's server time) the clock read Seconds and was moving in
+// Direction (1 = up, 0 = stopped, -1 = down). The reading at any later
+// instant t is Seconds + Direction × (t − AtMs) / 1000.
+//
+// AtMs is 0 when Fonbet sent the value without a timestamp, which it does
+// for a STOPPED clock (the time is irrelevant then) and, in theory, could
+// do for a running one — the ingest layer fills that case with its own
+// receipt time, which lags the truth by at most one poll.
+type Clock struct {
+	Seconds   int
+	Direction int
+	AtMs      int64
 }
 
 type Market struct {
@@ -209,7 +232,7 @@ func Build(resp *fonbet.ListResponse, idx *fonbet.Index, opt Options) *Snapshot 
 	// list rather than per match — see canonicalCategories.
 	canonicalCategory := canonicalCategories(sports)
 	categoryOf := func(rootID int, segmentName string) string {
-		name := categoryFromSegment(segmentName)
+		name := aliasedCategory(categoryFromSegment(segmentName))
 		if c, ok := canonicalCategory[categoryGroupKey(rootID, name)]; ok {
 			return c
 		}
@@ -672,6 +695,68 @@ func categoryKey(name string) string {
 	return strings.Join(tokens, " ")
 }
 
+// categoryAliases folds one spelling of a category onto another where the
+// two are the same thing but NOT a case, punctuation or word-order variant
+// of each other — an abbreviation, or a stale year suffix. `categoryKey`
+// cannot reach these: "Czech" and "Czech Republic" share no word multiset.
+//
+// Keys and values are compared through `categoryKey`, so an alias also
+// covers the case and punctuation variants of both sides for free.
+//
+// **A general rule was measured and rejected.** "One name is a word-prefix
+// of the other, within the same sport" catches all six pairs in the live
+// line (2026-09-08) and five of them are genuine:
+//
+//	football     Czech                 -> Czech Republic          (reported)
+//	cycling      Tour of Britain 2025  -> Tour of Britain
+//	ice-hockey   Friendly matches      -> Friendly
+//	volleyball   European Championship 2023 -> European Championship
+//	mma          Mix fights            -> Mix
+//
+// The sixth is ice hockey's "NHL" against "NHL 26", and NHL 26 is the
+// SIMULATED game — the same shape as FC 26 under Football and NBA 2K26
+// under Basketball. Folding those together would file computer-played
+// fixtures under the real league and defeat the `hidden_from_lists`
+// merchandising split that migration 0102 exists for. One harmful merge in
+// six is enough to make this a list rather than a rule: an alias states
+// which pairs are the same competition, and says nothing about any pair it
+// does not name.
+//
+// Direction is deliberate per entry rather than "longest wins": the target
+// is the name the offer should be filed under, which for a country is the
+// full name and for a stale year suffix is the one without it.
+// Written as the names a human reads, NOT as categoryKey output: that key
+// sorts tokens, so "Tour of Britain 2025" keys as "2025 britain of tour",
+// and hand-writing keys in that form is both unreadable and silently wrong
+// when the sort order is misjudged (two of these five were, first time).
+// categoryAliasIndex below re-keys them once at init.
+var categoryAliases = map[string]string{
+	"Czech":                      "Czech Republic",
+	"Tour of Britain 2025":       "Tour of Britain",
+	"Friendly matches":           "Friendly",
+	"European Championship 2023": "European Championship",
+	"Mix fights":                 "Mix",
+}
+
+// categoryAliasIndex is categoryAliases keyed by categoryKey, so an alias
+// also covers the case, punctuation and word-order variants of its own
+// spelling without a second entry.
+var categoryAliasIndex = func() map[string]string {
+	out := make(map[string]string, len(categoryAliases))
+	for from, to := range categoryAliases {
+		out[categoryKey(from)] = to
+	}
+	return out
+}()
+
+// aliasedCategory folds a category spelling onto its canonical name.
+func aliasedCategory(name string) string {
+	if target, ok := categoryAliasIndex[categoryKey(name)]; ok {
+		return target
+	}
+	return name
+}
+
 // categoryGroupKey scopes a spelling key to its root sport. A category row
 // is `(sport_id, slug)`, so the decision has to be made per sport too:
 // "National teams" exists under cricket, football AND volleyball, and the
@@ -758,7 +843,7 @@ func canonicalCategories(sports map[int]*fonbet.Sport) map[string]string {
 		if s == nil {
 			continue
 		}
-		name := categoryFromSegment(strings.TrimSpace(s.Name))
+		name := aliasedCategory(categoryFromSegment(strings.TrimSpace(s.Name)))
 		if name == CategoryOther || categoryKey(name) == "" {
 			continue
 		}
@@ -800,6 +885,7 @@ func buildScore(mi *fonbet.EventMisc, li *fonbet.LiveEventInfo) *LiveScore {
 		s.Home, s.Away = mi.Score1, mi.Score2
 		s.Comment = strings.TrimSpace(mi.Comment)
 	}
+	s.Clock = buildClock(mi, li)
 	if li != nil {
 		s.Timer = li.Timer
 		if s.Comment == "" {
@@ -828,8 +914,42 @@ func buildScore(mi *fonbet.EventMisc, li *fonbet.LiveEventInfo) *LiveScore {
 			}
 		}
 	}
-	if s.Home == nil && s.Away == nil && s.Timer == "" && len(s.Periods) == 0 {
+	if s.Home == nil && s.Away == nil && s.Timer == "" && s.Clock == nil && len(s.Periods) == 0 {
 		return nil
 	}
 	return s
+}
+
+// buildClock lifts Fonbet's timer triple off whichever block carries it.
+// liveEventInfos wins: its reading is restated at every packet, so a
+// clock Fonbet corrected mid-half (a supplier re-sync, an added-time
+// adjustment) reaches us on the next poll, whereas the eventMiscs anchor
+// is the value at the last START of the clock and would keep the stale
+// zero point. The two agree to within the integer second whenever the
+// clock has simply run (measured across ~50 live matches, 2026-09-07).
+//
+// A direction outside {-1, 0, 1} is a shape we have never seen and is
+// dropped rather than guessed at: the storefront multiplies elapsed time
+// by it, so a bad value would run the clock at the wrong speed.
+func buildClock(mi *fonbet.EventMisc, li *fonbet.LiveEventInfo) *Clock {
+	if li != nil && li.TimerSeconds != nil && li.TimerDirection != nil {
+		if c := newClock(*li.TimerSeconds, *li.TimerDirection, li.TimerTimestampMsec); c != nil {
+			return c
+		}
+	}
+	if mi != nil && mi.TimerSeconds != nil && mi.TimerDirection != nil {
+		return newClock(*mi.TimerSeconds, *mi.TimerDirection, mi.TimerUpdateTimestampMsec)
+	}
+	return nil
+}
+
+func newClock(seconds, direction int, atMs *int64) *Clock {
+	if direction < -1 || direction > 1 || seconds < 0 {
+		return nil
+	}
+	c := &Clock{Seconds: seconds, Direction: direction}
+	if atMs != nil && *atMs > 0 {
+		c.AtMs = *atMs
+	}
+	return c
 }

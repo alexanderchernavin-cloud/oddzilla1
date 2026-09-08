@@ -496,3 +496,77 @@ func TestMarketTypeOfInvertsTheIDScheme(t *testing.T) {
 		}
 	}
 }
+
+// buildScore lifts the clock MODEL (reading + instant + direction), not
+// only the rendered string. Values are verbatim from a live fon.bet
+// snapshot, 2026-09-07: the eventMiscs block carries the anchor at the
+// clock's last start, liveEventInfos restates the reading at packet time,
+// and the two describe the same clock to within the integer second.
+func TestBuildScoreClock(t *testing.T) {
+	i := func(v int) *int { return &v }
+	ms := func(v int64) *int64 { return &v }
+	cases := []struct {
+		name string
+		misc *fonbet.EventMisc
+		info *fonbet.LiveEventInfo
+		want *Clock
+	}{
+		{
+			// Asteras Tripolis - Iraklis, 42:16 in the first half.
+			name: "running football half prefers the live info reading",
+			misc: &fonbet.EventMisc{Score1: i(0), Score2: i(1), TimerSeconds: i(0), TimerDirection: i(1), TimerUpdateTimestampMsec: ms(1788793348964)},
+			info: &fonbet.LiveEventInfo{Timer: "42:16", TimerSeconds: i(2536), TimerDirection: i(1), TimerTimestampMsec: ms(1788795885113)},
+			want: &Clock{Seconds: 2536, Direction: 1, AtMs: 1788795885113},
+		},
+		{
+			// Avtomobilist - Traktor at the second intermission.
+			name: "stopped clock keeps its reading and has no instant",
+			misc: &fonbet.EventMisc{Score1: i(1), Score2: i(3), TimerSeconds: i(2400), TimerDirection: i(0)},
+			info: &fonbet.LiveEventInfo{Timer: "40:00", TimerSeconds: i(2400), TimerDirection: i(0)},
+			want: &Clock{Seconds: 2400, Direction: 0, AtMs: 0},
+		},
+		{
+			name: "misc anchor is the fallback when the live info has no timer",
+			misc: &fonbet.EventMisc{Score1: i(0), Score2: i(0), TimerSeconds: i(0), TimerDirection: i(1), TimerUpdateTimestampMsec: ms(1788795001440)},
+			info: &fonbet.LiveEventInfo{Scores: [][]fonbet.ScoreCell{{{C1: "0", C2: "0"}}}},
+			want: &Clock{Seconds: 0, Direction: 1, AtMs: 1788795001440},
+		},
+		{
+			// Andreeva - Potapova: tennis is not timed and sends no
+			// timer fields at all.
+			name: "untimed sport has no clock",
+			misc: &fonbet.EventMisc{Score1: i(0), Score2: i(0), Comment: "(4-4)"},
+			info: &fonbet.LiveEventInfo{ScoreComment: "(4-4)", Scores: [][]fonbet.ScoreCell{{{C1: "0", C2: "0"}}}},
+			want: nil,
+		},
+		{
+			name: "a direction we have never seen is dropped, not extrapolated",
+			misc: nil,
+			info: &fonbet.LiveEventInfo{Timer: "12:00", TimerSeconds: i(720), TimerDirection: i(2), TimerTimestampMsec: ms(1788795885113)},
+			want: nil,
+		},
+		{
+			name: "a bad live info direction falls through to a sound misc anchor",
+			misc: &fonbet.EventMisc{TimerSeconds: i(0), TimerDirection: i(1), TimerUpdateTimestampMsec: ms(1788795001440)},
+			info: &fonbet.LiveEventInfo{Timer: "12:00", TimerSeconds: i(720), TimerDirection: i(7), TimerTimestampMsec: ms(1788795885113)},
+			want: &Clock{Seconds: 0, Direction: 1, AtMs: 1788795001440},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildScore(tc.misc, tc.info)
+			if tc.want == nil {
+				if got != nil && got.Clock != nil {
+					t.Fatalf("clock = %+v, want nil", *got.Clock)
+				}
+				return
+			}
+			if got == nil || got.Clock == nil {
+				t.Fatalf("clock = nil, want %+v", *tc.want)
+			}
+			if *got.Clock != *tc.want {
+				t.Fatalf("clock = %+v, want %+v", *got.Clock, *tc.want)
+			}
+		})
+	}
+}

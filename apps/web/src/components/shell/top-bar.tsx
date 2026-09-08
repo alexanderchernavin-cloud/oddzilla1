@@ -58,21 +58,25 @@ export function TopBar({ signedIn, user }: TopBarProps) {
       }}
     >
       {/*
-        Hamburger — mobile only. 66px hit target (1.5× the prior 44px
-        baseline) so the whole row reads as a dedicated mobile chrome
-        strip; the 33px Grid icon scales with it. The wordmark sits to
-        the right of this button on mobile via `.oz-topbar-logo`
-        (hidden on tablet, where the docked sidebar already carries
-        the brand mark).
+        Hamburger — mobile only. 44px square: the standard comfortable
+        touch target, and the height driver for the whole mobile row.
+        It was 66px until 2026-09-07, which — with the 60px wordmark
+        beside it — is why the mobile bar needed 90px of height and
+        ate a seventh of a phone screen before any content (operator).
+        Both came down together; the bar is 54px now, and 44 keeps the
+        target well clear of WCAG 2.5.8's 24px floor. The wordmark sits
+        to the right of this button on mobile via `.oz-topbar-logo`
+        (hidden on tablet, where the docked sidebar carries the brand
+        mark).
       */}
       <button
         type="button"
         onClick={toggleSidebar}
         className="oz-topbar-toggle"
-        style={{ ...iconBtn, width: 66, height: 66, display: undefined, marginLeft: -10 }}
+        style={{ ...iconBtn, width: 44, height: 44, display: undefined, marginLeft: -6 }}
         aria-label={tCommon("openNavigation")}
       >
-        <I.Grid size={33} />
+        <I.Grid size={22} />
       </button>
 
       <Link
@@ -86,7 +90,11 @@ export function TopBar({ signedIn, user }: TopBarProps) {
           flexShrink: 0,
         }}
       >
-        <Wordmark size={60} priority />
+        {/* 36px tall (was 60): the mascot still reads at this size and
+            it no longer sets the row height. `size` is the HEIGHT — the
+            width follows WORDMARK_ASPECT — so this is the number that
+            decides how much vertical room the brand takes on a phone. */}
+        <Wordmark size={36} priority />
       </Link>
 
       {/*

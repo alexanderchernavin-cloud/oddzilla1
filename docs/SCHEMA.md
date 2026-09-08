@@ -560,7 +560,13 @@ key, so a row can never be stepped twice.
 
 **`matches`** — `BIGSERIAL` id because we'll have a lot of them. `provider_urn`
 like `od:match:1234`. `live_score` is a free-form JSONB (different games have
-different scoring). `best_of` captures BO1/BO3/BO5. `oddin_status_code` keeps
+different scoring). On Fonbet rows it carries the match clock as an ANCHOR,
+`clock: {seconds, direction, atMs}` — "at unix-ms `atMs` the clock read
+`seconds` and moves `direction` (1 / 0 / -1) seconds per second" — with a
+running clock normalised to its zero instant so the column is not rewritten
+while the clock merely runs (2026-09-07; see docs/FONBET.md "Running
+clock"). The storefront derives the reading every second from it; Oddin
+rows keep the static `scoreboard.time` string. `best_of` captures BO1/BO3/BO5. `oddin_status_code` keeps
 the raw Oddin status byte for debugging; our normalized `status` column is
 the one code should branch on. `tv_channels` (jsonb, migration 0022) holds
 the parsed `<tv_channels>` block from Oddin's fixture endpoint —
