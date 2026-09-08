@@ -38,6 +38,27 @@
 // ("БЛЯТЬ!!!"), which is frustration rather than abuse of a person. A
 // false positive here insults a customer who did nothing wrong, so the
 // rule stays conservative in that direction.
+//
+// LANGUAGES. All six the storefront ships (apps/web/messages): en, ru,
+// es, pt, cs, hr. Every language is added to all three lists in the same
+// pass — adding abuse vocabulary for a language WITHOUT its distress
+// markers is the dangerous half, because it makes the veto silently
+// inapplicable to exactly the speakers the veto exists for.
+//
+// Because the lists are pooled rather than selected by locale (we do not
+// know the bettor's language at this point, and people code-switch
+// mid-thread), short tokens have to be checked for cross-language
+// collisions. Two were dropped for that reason: Croatian "si" (2sg
+// auxiliary) collides with Spanish "sí"/"si", which would pair with any
+// nearby swear; and Spanish "os" (2pl clitic) collides with the
+// Portuguese masculine plural article, which is one of the commonest
+// words in the language. Diacritics are NOT folded for the same reason —
+// folding Czech "píča" to "pica" would collide with Spanish "pica" — so
+// accented and bare forms are both listed where the bare one is safe.
+//
+// The REPLY itself is one fixed string in English and transliterated
+// Russian, by operator choice, and is not localised. Detection is
+// multilingual; the answer is not.
 
 /** The operator-chosen reply. Posted verbatim; nothing generates it. */
 export const ABUSE_REPLY = "Fuck you, suka blyad'";
@@ -97,6 +118,58 @@ const DISTRESS_MARKERS = [
   "не хочу жить",
   "долг",
   "помогите бросить",
+  // es
+  "adiccion",
+  "adicción",
+  "ludopat",
+  "no puedo parar",
+  "perdi todo",
+  "perdí todo",
+  "lo perdi todo",
+  "autoexclu",
+  "suicid",
+  "matarme",
+  "quitarme la vida",
+  "problema con el juego",
+  "problema de juego",
+  "deuda",
+  "limite de deposito",
+  "límite de depósito",
+  // pt
+  "vicio",
+  "vício",
+  "viciado",
+  "nao consigo parar",
+  "não consigo parar",
+  "perdi tudo",
+  "jogo compulsivo",
+  "me matar",
+  "tirar a minha vida",
+  "divida",
+  "dívida",
+  // cs
+  "zavislost",
+  "závislost",
+  "zavisly",
+  "závislý",
+  "nemuzu prestat",
+  "nemůžu přestat",
+  "prohral jsem vsechno",
+  "prohrál jsem všechno",
+  "sebevraz",
+  "sebevraž",
+  "sebevylouc",
+  "sebevylouč",
+  "dluhy",
+  // hr
+  "ovisnost",
+  "ovisan",
+  "ne mogu prestati",
+  "izgubio sam sve",
+  "izgubila sam sve",
+  "samoisklju",
+  "samoubojstvo",
+  "dugovi",
 ];
 
 // Aimed at the reader by construction, so these fire on their own.
@@ -128,6 +201,44 @@ const DIRECTED_PHRASES = [
   "заткнись",
   "пошел ты на хуй",
   "нахуй иди",
+  // es
+  "vete a la mierda",
+  "vete al carajo",
+  "vete a la verga",
+  "jodete",
+  "jódete",
+  "que te jodan",
+  "callate",
+  "cállate",
+  "chinga tu madre",
+  "hijo de puta",
+  "hijo de perra",
+  // pt
+  "vai se foder",
+  "vai te foder",
+  "vai tomar no cu",
+  "vai a merda",
+  "vai à merda",
+  "cala a boca",
+  "filho da puta",
+  "foda se",
+  // cs
+  "jdi do prdele",
+  "jdi do hajzlu",
+  "drz hubu",
+  "drž hubu",
+  "polib mi",
+  "trhni si",
+  // hr
+  "jebi se",
+  "odjebi",
+  "idi u kurac",
+  "idi u picku",
+  "idi u pičku",
+  "zacepi",
+  "začepi",
+  "jebem ti",
+  "jebo te",
 ];
 
 // Swear / insult stems. Matched as a token PREFIX so Russian inflection
@@ -191,6 +302,69 @@ const PROFANITY_STEMS = [
   "придурок",
   "тварь",
   "ублюд",
+  // es
+  "mierda",
+  "joder",
+  "jodid",
+  "gilipollas",
+  "cabron",
+  "cabrón",
+  "pendejo",
+  "capullo",
+  "coño",
+  "pinche",
+  "estupid",
+  "estúpid",
+  "imbecil",
+  "imbécil",
+  "payaso",
+  "inutil",
+  "inútil",
+  // pt / es share these
+  "puta",
+  "puto",
+  "porra",
+  "caralho",
+  "foda",
+  "foder",
+  "fodid",
+  "otario",
+  "otário",
+  "babaca",
+  "escroto",
+  "burro",
+  // cs + hr. Both inflect heavily, so these are cut back to the shortest
+  // stem that still cannot collide with a word in any of the six
+  // languages — "budala" missed "budale", which is how this was caught.
+  "kurv",
+  "kurw",
+  "hovn",
+  "srack",
+  "sračk",
+  "prdel",
+  "debil",
+  "kokot",
+  "zmrd",
+  "curak",
+  "čurák",
+  "hajzl",
+  "blb",
+  "kreten",
+  "kretén",
+  "jeb",
+  "kurac",
+  "kurc",
+  "kurč",
+  "picka",
+  "picku",
+  "picke",
+  "pičk",
+  "pizd",
+  "govn",
+  "sranje",
+  "budal",
+  "supak",
+  "šupak",
 ];
 
 // The reader. A swear near one of these is aimed at the assistant.
@@ -219,6 +393,54 @@ const SECOND_PERSON = new Set([
   "ваш",
   "ваша",
   "ваше",
+  // es
+  "tu",
+  "tú",
+  "ti",
+  "usted",
+  "ustedes",
+  "vosotros",
+  "vuestro",
+  "vuestra",
+  "te",
+  "tě",
+  "eres",
+  "sois",
+  "contigo",
+  // pt (te / ti / tu shared with es)
+  "voce",
+  "você",
+  "vc",
+  "voces",
+  "vocês",
+  "seu",
+  "sua",
+  // cs
+  "ty",
+  "tebe",
+  "tobe",
+  "tobě",
+  "vy",
+  "vas",
+  "vás",
+  "vam",
+  "vám",
+  "tvuj",
+  "tvůj",
+  "tvoje",
+  "vas",
+  "váš",
+  "jsi",
+  "ses",
+  "seš",
+  // hr (ti / vas / vam / tebe shared above). Croatian "vi" is left OUT:
+  // it is also "I saw" in Spanish and Portuguese, so "vi que a merda do
+  // site nao funciona" would pair it with a swear three tokens later.
+  // Croatian abuse still lands via ti / ste / the directed phrases.
+  "tebi",
+  "tvoj",
+  "tvoja",
+  "ste",
 ]);
 
 // Modest de-obfuscation: digits and symbols standing in for letters.

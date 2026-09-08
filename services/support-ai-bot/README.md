@@ -82,6 +82,21 @@ look-up tools on demand — none of them can change anything:
   one moment it matters. Unit-tested in
   [`moderation.test.ts`](./src/moderation.test.ts), where most of the cases
   are the ones that must **not** fire.
+
+  **Languages: all six the storefront ships** — en, ru, es, pt, cs, hr. A
+  language is always added to *all three* lists in one pass; adding its
+  abuse vocabulary without its distress markers is the dangerous half,
+  because it makes the veto silently inapplicable to exactly the speakers
+  it exists for. The lists are pooled rather than picked by locale (the
+  bettor's language is not known here, and people code-switch), so short
+  tokens are checked for cross-language collisions before being added —
+  Croatian `vi` is left out because it is "I saw" in Spanish and
+  Portuguese, and Spanish `os` and `si` are out for the same reason.
+  Diacritics are deliberately not folded, since folding Czech `píča` to
+  `pica` would collide with Spanish `pica`.
+
+  The **reply itself is not localised** — it is one fixed string the
+  operator chose. Detection is multilingual; the answer is not.
 - A human **"Take over"** in the backoffice (and any human reply) pauses the
   bot on that thread; "Resume AI" hands it back.
 

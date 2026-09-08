@@ -28,6 +28,53 @@ test("fires on Russian abuse aimed at the assistant", () => {
   abusive("ты тупая сука");
 });
 
+test("fires on abuse in the other storefront languages", () => {
+  // es
+  abusive("vete a la mierda");
+  abusive("eres un gilipollas");
+  abusive("sois unos putos inutiles");
+  // pt
+  abusive("vai se foder");
+  abusive("voce e um otario");
+  abusive("seu babaca");
+  // cs
+  abusive("jdi do prdele");
+  abusive("jsi debil");
+  abusive("vy kokoti");
+  // hr
+  abusive("jebi se");
+  abusive("ti si kreten"); // "ti" + "kreten" within the window
+  abusive("vi ste budale");
+});
+
+test("distress vetoes in every language, not just en/ru", () => {
+  // The half that must not be forgotten when a language is added: these
+  // all carry abuse AND a distress marker, and the veto has to win.
+  clean("soy ludopata y lo perdi todo, sois unos putos");
+  clean("no puedo parar de jugar, vete a la mierda");
+  clean("perdi tudo, voce e um otario");
+  clean("nao consigo parar de jogar, vai se foder");
+  clean("jsem zavisly, jdi do prdele");
+  clean("nemuzu prestat hrat, jsi debil");
+  clean("imam ovisnost, jebi se");
+  clean("izgubio sam sve, vi ste budale");
+});
+
+test("does not fire on ordinary questions in those languages", () => {
+  clean("hola, cuando juega NAVI?");
+  clean("puedes decirme por que perdio mi apuesta?");
+  clean("ola, como faco para sacar?");
+  clean("dobry den, kdy hraje Spirit?");
+  clean("kada igra Vitality?");
+  // The Portuguese article "os" and the Spanish "si" are why those two
+  // were left out of the second-person set.
+  clean("os jogos de hoje estao uma merda");
+  clean("si, esta mierda no funciona");
+  // ...and why Croatian "vi" is out: it is "I saw" in es/pt.
+  clean("vi que a merda do site nao funciona");
+  clean("ayer vi una mierda de cuota en ese partido");
+});
+
 test("does NOT fire on frustration that is not aimed at anyone", () => {
   // The single most common false positive: the words are all there, but
   // the swear is about the situation and is nowhere near the "you".
