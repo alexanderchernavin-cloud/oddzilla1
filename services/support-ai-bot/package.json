@@ -9,7 +9,7 @@
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "echo \"(no tests yet)\" && exit 0"
+    "test": "tsx --test \"src/**/*.test.ts\""
   },
   "dependencies": {
     "@oddzilla/types": "workspace:*",

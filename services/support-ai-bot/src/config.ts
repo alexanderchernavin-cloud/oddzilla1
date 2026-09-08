@@ -23,6 +23,11 @@ export interface BotConfig {
   requestTimeoutMs: number;
   /** Wikipedia Action API endpoint backing the web_search tool. */
   wikipediaApiBase: string;
+  /** Abuse moderation: reply to abuse of Support with the fixed operator
+   * message instead of running the model. On by default (operator
+   * directive 2026-09-08); set BOT_MODERATION_ENABLED=false to turn the
+   * whole layer off and have every message go to the model as before. */
+  moderationEnabled: boolean;
 }
 
 function req(name: string): string {
@@ -38,6 +43,12 @@ function req(name: string): string {
 function opt(name: string, fallback: string): string {
   const v = process.env[name];
   return v && v.trim() !== "" ? v.trim() : fallback;
+}
+
+function bool(name: string, fallback: boolean): boolean {
+  const v = process.env[name]?.trim().toLowerCase();
+  if (v === undefined || v === "") return fallback;
+  return v !== "false" && v !== "0" && v !== "no";
 }
 
 function num(name: string, fallback: number): number {
@@ -75,5 +86,6 @@ export function loadConfig(): BotConfig {
       "WIKIPEDIA_API_BASE",
       "https://en.wikipedia.org/w/api.php",
     ),
+    moderationEnabled: bool("BOT_MODERATION_ENABLED", true),
   };
 }

@@ -49,12 +49,39 @@ look-up tools on demand — none of them can change anything:
 - **Account-aware but read-only**: the server hands it a pre-formatted snapshot
   of the bettor's own wallet / tickets / deposits / withdrawals. The model is
   instructed to use only those figures and never invent numbers.
-- **Escalates** (hands to a human) on withdrawal/deposit problems, bet or
-  settlement disputes, KYC, account/security, complaints, or anything it is
-  unsure about.
-- A **responsible-gambling tripwire** forces a supportive escalation regardless
-  of the model output, and a **post-filter** blocks any reply that promises
-  payouts/refunds or claims an account action.
+- **Escalates** (hands to a human) in exactly two cases: the bettor explicitly
+  asks for one (the model answers `ESCALATE: <note>`), or the model returned
+  nothing at all. It does **not** escalate account questions — per the
+  operator's directive it answers those from the read-only snapshot.
+- **Responsible gambling is handled in the prompt, not by a code tripwire.**
+  There is no forced escalation and no payout/refund post-filter in
+  `guardrails.ts` — both were removed deliberately (see the comment there).
+  The system prompt commits the assistant to answering addiction and
+  loss-of-control messages with real, supportive help and a helpline rather
+  than a one-line referral. Anything added around the model has to preserve
+  that; see the distress veto below.
+- **Abuse moderation** ([`moderation.ts`](./src/moderation.ts), operator
+  directive 2026-09-08, `BOT_MODERATION_ENABLED`, on by default). A bettor
+  message that is abuse *aimed at the assistant* gets one fixed operator-chosen
+  reply instead of a model turn. Deterministic and model-free — the reply is a
+  fixed string, and a safety-trained model asked to produce it would comply
+  inconsistently. It runs **before** the model call, so it also works when no
+  model is loaded.
+
+  The rule is targeting, not vocabulary: a directed phrase ("fuck you", "иди
+  нахуй") fires on its own, and otherwise a swear has to sit within three
+  tokens of a second-person word. That window is the whole reason it is
+  usable — "what the fuck happened to my bet, can you check" contains both
+  words nine tokens apart and must not fire.
+
+  **A distress marker vetoes it outright**, before any targeting rule:
+  addiction, self-exclusion, "lost everything", rent money, self-harm, and
+  the Russian equivalents. Someone swearing while they lose control is
+  precisely who the responsible-gambling path above is written for, and
+  insulting them would be the system doing the opposite of its job at the
+  one moment it matters. Unit-tested in
+  [`moderation.test.ts`](./src/moderation.test.ts), where most of the cases
+  are the ones that must **not** fire.
 - A human **"Take over"** in the backoffice (and any human reply) pauses the
   bot on that thread; "Resume AI" hands it back.
 
@@ -71,6 +98,8 @@ look-up tools on demand — none of them can change anything:
    - `ODDZILLA_API_BASE` — e.g. `https://oddzilla.cc/api`.
    - `LM_STUDIO_BASE_URL` — only if it isn't the default.
    - `LM_STUDIO_MODEL` — leave blank to auto-detect the loaded model.
+   - `BOT_MODERATION_ENABLED` — `false` turns the abuse layer off entirely
+     and sends every message to the model, as before.
 4. Start it:
    ```
    pnpm --filter @oddzilla/support-ai-bot start
