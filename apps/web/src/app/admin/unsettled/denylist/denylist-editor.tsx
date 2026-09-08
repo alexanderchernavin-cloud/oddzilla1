@@ -10,7 +10,7 @@ import { clientApi, ApiFetchError } from "@/lib/api-client";
 export interface DenylistRule {
   id: number;
   kind: "table" | "label_prefix";
-  providerMarketId: number | null;
+  tableNum: number | null;
   labelPrefix: string | null;
   reason: string;
   createdAt: string;
@@ -21,6 +21,7 @@ export interface DenylistRule {
 interface RuleMarket {
   marketId: string;
   matchId: string;
+  // This MARKET's own provider_market_id, not the rule's table number.
   providerMarketId: number;
   marketStatus: number;
   specifiers: string | null;
@@ -95,10 +96,10 @@ function AddRuleForm() {
     if (kind === "table") {
       const n = Number(value);
       if (!Number.isInteger(n) || n <= 0) {
-        setError("A table rule needs the full provider market id, e.g. 1007800.");
+        setError("A table rule needs the Fonbet catalogue table number, e.g. 7800.");
         return;
       }
-      body.providerMarketId = n;
+      body.tableNum = n;
     } else {
       if (value.trim().length < 2) {
         setError("A label prefix needs at least two characters.");
@@ -133,7 +134,7 @@ function AddRuleForm() {
           onChange={(e) => setKind(e.target.value as "table" | "label_prefix")}
           className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-sm"
         >
-          <option value="table">Catalogue table (provider market id)</option>
+          <option value="table">Catalogue table (Fonbet table number)</option>
           <option value="label_prefix">Sub-event label prefix</option>
         </select>
       </label>
@@ -144,7 +145,7 @@ function AddRuleForm() {
         <input
           value={value}
           onChange={(e) => setValue(e.target.value)}
-          placeholder={kind === "table" ? "1007800" : "Player specials"}
+          placeholder={kind === "table" ? "7800" : "Player specials"}
           className="w-56 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 font-mono text-sm"
         />
       </label>
@@ -214,7 +215,7 @@ function RuleRow({ rule }: { rule: DenylistRule }) {
           {rule.kind === "table" ? (
             <div>
               <span className="text-[11px] uppercase tracking-[0.1em] text-[var(--color-fg-subtle)]">table</span>{" "}
-              <span className="font-mono">{rule.providerMarketId}</span>
+              <span className="font-mono">table {rule.tableNum}</span>
             </div>
           ) : (
             <div>

@@ -72,15 +72,28 @@ type Ingester struct {
 	// staleness watchdog and the shutdown path all touch the same state.
 	mu sync.Mutex
 
-	matches       map[int64]*matchState     // Fonbet event id → state
-	missing       map[int64]int             // event id → consecutive cycles absent
-	closed        map[int64]struct{}        // closed while still present in the feed
-	sportIDs      map[int]int               // Fonbet root id → sports.id
-	categoryIDs   map[string]int            // "<sportDB>:<slug>" → categories.id
-	tournamentIDs map[int]int               // Fonbet segment id → tournaments.id
-	competitorIDs map[int64]int             // Fonbet team id → competitors.id
-	descrDone     map[string]struct{}       // "<pmid>|<variant>" already written
-	baseTemplates map[string]map[int]string // lang → pmid → base template
+	matches       map[int64]*matchState // Fonbet event id → state
+	missing       map[int64]int         // event id → consecutive cycles absent
+	closed        map[int64]struct{}    // closed while still present in the feed
+	sportIDs      map[int]int           // Fonbet root id → sports.id
+	categoryIDs   map[string]int        // "<sportDB>:<slug>" → categories.id
+	tournamentIDs map[int]int           // Fonbet segment id → tournaments.id
+	competitorIDs map[int64]int         // Fonbet team id → competitors.id
+	descrDone     map[string]struct{}   // "<pmid>|<variant>" already written
+	// lang → the market type's BASE key (table, no sub-event) → template.
+	//
+	// Keyed on the type rather than a provider_market_id because a
+	// sub-event market now has its OWN id: it used to share the table's,
+	// so a lookup by the market's id happened to find the table's base
+	// template, and after the re-key it would miss every sub-event.
+	baseTemplates map[string]map[store.MarketTypeKey]string
+
+	// Our own provider_market_id per market type (migration
+	// 20260908T115542). The mapper still composes the LEGACY id from the
+	// catalogue table, because it is pure and has no database; retagging
+	// happens once per cycle in retagMarketTypes below, before anything is
+	// written or diffed.
+	marketTypes *store.MarketTypes
 
 	lastApplied   int // match count of the last applied snapshot (shrink guard)
 	shrinkRejects int // consecutive snapshots rejected by the shrink guard
@@ -156,7 +169,7 @@ func New(st *store.Store, b *bus.Bus, log zerolog.Logger) *Ingester {
 		tournamentIDs: map[int]int{},
 		competitorIDs: map[int64]int{},
 		descrDone:     map[string]struct{}{},
-		baseTemplates: map[string]map[int]string{},
+		baseTemplates: map[string]map[store.MarketTypeKey]string{},
 	}
 }
 
@@ -208,13 +221,32 @@ func (in *Ingester) WriteStaticDescriptions(ctx context.Context, descs []mapper.
 	if len(descs) == 0 {
 		return nil
 	}
+	// The mapper composes the LEGACY id (it is pure and has no database),
+	// so decode it back to the market type and write the row under OUR id.
+	// Types absent from the registry are allocated here rather than
+	// skipped: the descriptions pass runs at boot, before any snapshot, so
+	// on a fresh database it is what creates most of the registry.
+	base := make([]store.MarketTypeKey, 0, len(descs))
+	for _, d := range descs {
+		tableNum, dc := mapper.MarketTypeOf(d.PMID)
+		base = append(base, store.MarketTypeKey{TableNum: tableNum, Variant: "", DoubleChance: dc})
+	}
+	if err := in.ensureMarketTypes(ctx, base); err != nil {
+		return err
+	}
 	rows := make([]store.MarketDescription, 0, len(descs))
 	for _, d := range descs {
-		if in.baseTemplates[d.Lang] == nil {
-			in.baseTemplates[d.Lang] = map[int]string{}
+		tableNum, dc := mapper.MarketTypeOf(d.PMID)
+		key := store.MarketTypeKey{TableNum: tableNum, Variant: "", DoubleChance: dc}
+		id, ok := in.marketTypes.ID(key)
+		if !ok {
+			continue // unresolvable: better no description than a wrong one
 		}
-		in.baseTemplates[d.Lang][d.PMID] = d.Name
-		rows = append(rows, store.MarketDescription{ProviderMarketID: d.PMID, Variant: d.Variant, Lang: d.Lang, Name: d.Name, Outcomes: d.Outcomes})
+		if in.baseTemplates[d.Lang] == nil {
+			in.baseTemplates[d.Lang] = map[store.MarketTypeKey]string{}
+		}
+		in.baseTemplates[d.Lang][key] = d.Name
+		rows = append(rows, store.MarketDescription{ProviderMarketID: id, Variant: d.Variant, Lang: d.Lang, Name: d.Name, Outcomes: d.Outcomes})
 	}
 	for i := 0; i < len(rows); i += chunkDescs {
 		end := min(i+chunkDescs, len(rows))
@@ -372,6 +404,15 @@ func (in *Ingester) Apply(ctx context.Context, snap *mapper.Snapshot, nowMs int6
 	in.shrinkRejects = 0
 	in.lastApplied = total
 
+	// Give every market OUR id before it is diffed or written. Must happen
+	// here and not later: Market.Key() is built from the id, so the
+	// in-memory diff, the upsert key and the description rows all have to
+	// agree on which id a market has, and the legacy composed id would
+	// collide every sub-event of a table onto one type.
+	if err := in.retagMarketTypes(ctx, snap); err != nil {
+		return stats, err
+	}
+
 	out := &cycleOut{}
 	seen := make(map[int64]struct{}, len(snap.Matches))
 
@@ -443,6 +484,85 @@ func (in *Ingester) Apply(ctx context.Context, snap *mapper.Snapshot, nowMs int6
 
 // applyMatch runs every write for one match. Any error leaves Postgres
 // possibly ahead of or behind the in-memory state — the caller resets it.
+// ensureMarketTypes loads the registry if needed and allocates ids for any
+// of `keys` it does not already hold.
+func (in *Ingester) ensureMarketTypes(ctx context.Context, keys []store.MarketTypeKey) error {
+	if in.marketTypes == nil {
+		loaded, err := store.LoadMarketTypes(ctx, in.st.Pool(), store.Provider)
+		if err != nil {
+			return err
+		}
+		in.marketTypes = loaded
+		in.log.Info().Int("types", loaded.Len()).Msg("market type registry loaded")
+	}
+	missing := map[store.MarketTypeKey]struct{}{}
+	for _, k := range keys {
+		if _, ok := in.marketTypes.ID(k); !ok {
+			missing[k] = struct{}{}
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	want := make([]store.MarketTypeKey, 0, len(missing))
+	for k := range missing {
+		want = append(want, k)
+	}
+	added, err := store.EnsureMarketTypes(ctx, in.st.Pool(), store.Provider, want)
+	if err != nil {
+		return err
+	}
+	in.marketTypes.Merge(added)
+	in.log.Info().Int("allocated", len(added)).Int("requested", len(want)).
+		Msg("allocated provider_market_ids for new market types")
+	return nil
+}
+
+// retagMarketTypes replaces every market's legacy composed
+// provider_market_id (1 000 000 + catalogue table) with OUR id for its
+// market type, allocating ids for types we have not seen before.
+//
+// Two properties this relies on. The registry is small and bounded — 1 060
+// types over 580 tables measured on production — so it is held in memory
+// for the process rather than joined per market. And a miss is rare once
+// warm: only a sub-event Fonbet has never published before, though the
+// first cycle against a fresh database misses every one of them, which is
+// why the allocation is one batched statement rather than per market.
+//
+// A market whose type cannot be resolved is DROPPED rather than written
+// under a wrong id: writing it would put it in the offer keyed as some
+// other market, which is the exact class of bug this change exists to
+// remove.
+func (in *Ingester) retagMarketTypes(ctx context.Context, snap *mapper.Snapshot) error {
+	keys := make([]store.MarketTypeKey, 0, 256)
+	for _, m := range snap.Matches {
+		for _, mk := range m.Markets {
+			keys = append(keys, store.KeyFor(mk))
+		}
+	}
+	if err := in.ensureMarketTypes(ctx, keys); err != nil {
+		return err
+	}
+
+	dropped := 0
+	for _, m := range snap.Matches {
+		for key, mk := range m.Markets {
+			id, ok := in.marketTypes.ID(store.KeyFor(mk))
+			if !ok {
+				delete(m.Markets, key)
+				dropped++
+				continue
+			}
+			mk.PMID = id
+		}
+	}
+	if dropped > 0 {
+		snap.Skipped["unresolved_market_type"] += dropped
+		in.log.Warn().Int("markets", dropped).Msg("dropped markets with no resolvable market type")
+	}
+	return nil
+}
+
 func (in *Ingester) applyMatch(ctx context.Context, m *mapper.Match, nowMs int64, out *cycleOut, stats *Stats) error {
 	ms, err := in.ensureMatch(ctx, m, stats)
 	if err != nil {
@@ -874,8 +994,16 @@ func (in *Ingester) variantDescriptions(mk *mapper.Market, pending []store.Marke
 		return pending
 	}
 	in.descrDone[key] = struct{}{}
+	// REVERSE lookup, not store.KeyFor: by the time this runs mk.PMID has
+	// already been retagged to our registry id, so decoding it as a legacy
+	// composed id would compute a nonsense table number.
+	baseKey, ok := in.marketTypes.Key(mk.PMID)
+	if !ok {
+		return pending
+	}
+	baseKey.Variant = "" // the table's own template, not the sub-event's
 	for lang, base := range in.baseTemplates {
-		tpl, ok := base[mk.PMID]
+		tpl, ok := base[baseKey]
 		if !ok {
 			continue
 		}

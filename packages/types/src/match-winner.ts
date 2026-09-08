@@ -79,10 +79,13 @@ export const FONBET_PMID_BASE = 1_000_000;
  * it is the same market under another number and would otherwise be a
  * repeat of this bug.
  */
-export const FONBET_HEAD_TO_HEAD_PMIDS = [
-  FONBET_PMID_BASE + 399,
-  FONBET_PMID_BASE + 25_020,
-];
+/**
+ * Written as market KINDS, not ids: since migration 20260908T115542 a
+ * Fonbet provider_market_id is registry-allocated and opaque, so
+ * `FONBET_PMID_BASE + 399` names nothing. A reader resolves these to ids
+ * through provider_market_types.
+ */
+export const FONBET_HEAD_TO_HEAD_KINDS = ["fb:399", "fb:25020"] as const;
 
 /**
  * The outcome ids a match winner is keyed by on every feed: home / away /

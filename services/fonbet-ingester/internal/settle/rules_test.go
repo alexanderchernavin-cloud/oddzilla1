@@ -103,25 +103,25 @@ func TestGradeFootball(t *testing.T) {
 	ss := ScoreSet{Main: fonbet.Score{Home: 2, Away: 1, Periods: [][2]int{{1, 1}, {1, 0}}},
 		Stats: map[string]fonbet.Score{"corners": {Home: 8, Away: 2, Periods: [][2]int{{3, 2}, {5, 0}}}}}
 
-	outs, ok, why := Grade(Market{PMID: 1000120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "3", "2"}}, idx, "", 1, ss)
+	outs, ok, why := Grade(Market{PMID: 1000120, TableNum: 120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "3", "2"}}, idx, "", 1, ss)
 	if !ok || len(outs) != 3 || outs[0] != (Outcome{"1", "1", ""}) || outs[1] != (Outcome{"2", "0", ""}) || outs[2] != (Outcome{"3", "0", ""}) {
 		t.Fatalf("winner: %+v %v %s", outs, ok, why)
 	}
-	outs, ok, _ = Grade(Market{PMID: 1900120, Specs: map[string]string{}, OutcomeIDs: []string{"924", "1571", "925"}}, idx, "", 1, ss)
+	outs, ok, _ = Grade(Market{PMID: 1900120, TableNum: 120, DoubleChance: true, Specs: map[string]string{}, OutcomeIDs: []string{"924", "1571", "925"}}, idx, "", 1, ss)
 	if !ok || outs[0] != (Outcome{"1571", "1", ""}) || outs[1] != (Outcome{"924", "1", ""}) || outs[2] != (Outcome{"925", "0", ""}) {
 		t.Fatalf("double chance: %+v", outs)
 	}
-	outs, ok, _ = Grade(Market{PMID: 1000304, Specs: map[string]string{"handicap": "-0.5"}, OutcomeIDs: []string{"h1", "h2"}}, idx, "", 1, ss)
+	outs, ok, _ = Grade(Market{PMID: 1000304, TableNum: 304, Specs: map[string]string{"handicap": "-0.5"}, OutcomeIDs: []string{"h1", "h2"}}, idx, "", 1, ss)
 	if !ok || outs[0] != (Outcome{"h1", "1", ""}) || outs[1] != (Outcome{"h2", "0", ""}) {
 		t.Fatalf("handicap: %+v", outs)
 	}
 	// 1st half total 2.5 → 2 goals → under
-	outs, ok, _ = Grade(Market{PMID: 1000305, Specs: map[string]string{"threshold": "2.5", "variant": "fb:100201"}, OutcomeIDs: []string{"over", "under"}}, idx, "1st half", 1, ss)
+	outs, ok, _ = Grade(Market{PMID: 1000305, TableNum: 305, Specs: map[string]string{"threshold": "2.5", "variant": "fb:100201"}, OutcomeIDs: []string{"over", "under"}}, idx, "1st half", 1, ss)
 	if !ok || outs[0] != (Outcome{"over", "0", ""}) || outs[1] != (Outcome{"under", "1", ""}) {
 		t.Fatalf("half total: %+v", outs)
 	}
 	// 1st-half winner keeps factor ids and double-chance cells: 1-1 → X, 1X, X2 win
-	outs, ok, why = Grade(Market{PMID: 1000120, Specs: map[string]string{"variant": "fb:100201"}, OutcomeIDs: []string{"921", "922", "923", "924", "1571", "925"}}, idx, "1st half", 1, ss)
+	outs, ok, why = Grade(Market{PMID: 1000120, TableNum: 120, Specs: map[string]string{"variant": "fb:100201"}, OutcomeIDs: []string{"921", "922", "923", "924", "1571", "925"}}, idx, "1st half", 1, ss)
 	if !ok || len(outs) != 6 {
 		t.Fatalf("half winner: %+v %s", outs, why)
 	}
@@ -132,23 +132,23 @@ func TestGradeFootball(t *testing.T) {
 		}
 	}
 	// corners total 9.5 → 10 corners → over
-	outs, ok, _ = Grade(Market{PMID: 1000305, Specs: map[string]string{"threshold": "9.5", "variant": "fb:400100"}, OutcomeIDs: []string{"over", "under"}}, idx, "corners", 1, ss)
+	outs, ok, _ = Grade(Market{PMID: 1000305, TableNum: 305, Specs: map[string]string{"threshold": "9.5", "variant": "fb:400100"}, OutcomeIDs: []string{"over", "under"}}, idx, "corners", 1, ss)
 	if !ok || outs[0] != (Outcome{"over", "1", ""}) {
 		t.Fatalf("corners: %+v", outs)
 	}
 	// home team total (side)
-	outs, ok, _ = Grade(Market{PMID: 1000305, Specs: map[string]string{"threshold": "1.5", "side": "home"}, OutcomeIDs: []string{"over", "under"}}, idx, "", 1, ss)
+	outs, ok, _ = Grade(Market{PMID: 1000305, TableNum: 305, Specs: map[string]string{"threshold": "1.5", "side": "home"}, OutcomeIDs: []string{"over", "under"}}, idx, "", 1, ss)
 	if !ok || outs[0] != (Outcome{"over", "1", ""}) {
 		t.Fatalf("team total: %+v", outs)
 	}
 	// OT table is skipped by name, unknown sport is skipped, missing stat is skipped
-	if _, ok, why = Grade(Market{PMID: 1000400, Specs: map[string]string{}, OutcomeIDs: []string{"5001", "5002"}}, idx, "", 2, ss); ok || why != "table needs manual settlement" {
+	if _, ok, why = Grade(Market{PMID: 1000400, TableNum: 400, Specs: map[string]string{}, OutcomeIDs: []string{"5001", "5002"}}, idx, "", 2, ss); ok || why != "table needs manual settlement" {
 		t.Fatalf("OT table must be skipped: ok=%v why=%q", ok, why)
 	}
-	if _, ok, why = Grade(Market{PMID: 1000120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "3", "2"}}, idx, "", 999999, ss); ok || why != "no score" {
+	if _, ok, why = Grade(Market{PMID: 1000120, TableNum: 120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "3", "2"}}, idx, "", 999999, ss); ok || why != "no score" {
 		t.Fatalf("unknown sport must be skipped: ok=%v why=%q", ok, why)
 	}
-	if _, ok, _ = Grade(Market{PMID: 1000305, Specs: map[string]string{"threshold": "4.5", "variant": "fb:1"}, OutcomeIDs: []string{"over", "under"}}, idx, "yellow cards", 1, ss); ok {
+	if _, ok, _ = Grade(Market{PMID: 1000305, TableNum: 305, Specs: map[string]string{"threshold": "4.5", "variant": "fb:1"}, OutcomeIDs: []string{"over", "under"}}, idx, "yellow cards", 1, ss); ok {
 		t.Fatalf("missing stat row must be skipped")
 	}
 }
@@ -159,7 +159,7 @@ func TestGradeFootball(t *testing.T) {
 func TestGradeBothTeamsToScore(t *testing.T) {
 	idx := fixtureIndex()
 	ss := ScoreSet{Main: fonbet.Score{Home: 2, Away: 1, Periods: [][2]int{{1, 1}, {1, 0}}}}
-	mk := Market{PMID: 1002800, Specs: map[string]string{}, OutcomeIDs: []string{"4241", "4242"}}
+	mk := Market{PMID: 1002800, TableNum: 2800, Specs: map[string]string{}, OutcomeIDs: []string{"4241", "4242"}}
 	outs, ok, why := Grade(mk, idx, "", 1, ss)
 	if !ok || outs[0] != (Outcome{"4241", "1", ""}) || outs[1] != (Outcome{"4242", "0", ""}) {
 		t.Fatalf("btts match: %+v %v %s", outs, ok, why)
@@ -170,7 +170,7 @@ func TestGradeBothTeamsToScore(t *testing.T) {
 		t.Fatalf("btts 2nd half: %+v %v %s", outs, ok, why)
 	}
 	// A nil score (0-0 draw) is "no": both must be positive.
-	outs, ok, _ = Grade(Market{PMID: 1002800, Specs: map[string]string{}, OutcomeIDs: []string{"4241", "4242"}}, idx, "", 1, ScoreSet{Main: fonbet.Score{}})
+	outs, ok, _ = Grade(Market{PMID: 1002800, TableNum: 2800, Specs: map[string]string{}, OutcomeIDs: []string{"4241", "4242"}}, idx, "", 1, ScoreSet{Main: fonbet.Score{}})
 	if !ok || outs[0].Result != "0" || outs[1].Result != "1" {
 		t.Fatalf("btts 0-0: %+v", outs)
 	}
@@ -181,7 +181,7 @@ func TestGradeBothTeamsToScore(t *testing.T) {
 // the existing two-way tie-break path.
 func TestGradeTwoWayWinnerTable(t *testing.T) {
 	idx := fixtureIndex()
-	mk := Market{PMID: 1000491, Specs: map[string]string{}, OutcomeIDs: []string{"7035", "7036"}}
+	mk := Market{PMID: 1000491, TableNum: 491, Specs: map[string]string{}, OutcomeIDs: []string{"7035", "7036"}}
 	// Regulation 3:1 — home.
 	outs, ok, why := Grade(mk, idx, "", 2, ScoreSet{Main: fonbet.Score{Home: 3, Away: 1}})
 	if !ok || outs[0] != (Outcome{"7035", "1", ""}) || outs[1] != (Outcome{"7036", "0", ""}) {
@@ -208,44 +208,44 @@ func TestGradeTennisAndOT(t *testing.T) {
 	idx := fixtureIndex()
 	tennis := ScoreSet{Main: fonbet.Score{Home: 2, Away: 0, Periods: [][2]int{{6, 3}, {7, 5}}}}
 	// games handicap on sum of periods: 13-8 = +5 → -3.5 wins
-	outs, ok, why := Grade(Market{PMID: 1000304, Specs: map[string]string{"handicap": "-3.5"}, OutcomeIDs: []string{"h1", "h2"}}, idx, "", 4, tennis)
+	outs, ok, why := Grade(Market{PMID: 1000304, TableNum: 304, Specs: map[string]string{"handicap": "-3.5"}, OutcomeIDs: []string{"h1", "h2"}}, idx, "", 4, tennis)
 	if !ok || outs[0].Result != "1" {
 		t.Fatalf("tennis games handicap: %+v %s", outs, why)
 	}
 	// games total 21 → 21.5 under
-	outs, ok, _ = Grade(Market{PMID: 1000305, Specs: map[string]string{"threshold": "21.5"}, OutcomeIDs: []string{"over", "under"}}, idx, "", 4, tennis)
+	outs, ok, _ = Grade(Market{PMID: 1000305, TableNum: 305, Specs: map[string]string{"threshold": "21.5"}, OutcomeIDs: []string{"over", "under"}}, idx, "", 4, tennis)
 	if !ok || outs[1].Result != "1" {
 		t.Fatalf("tennis games total: %+v", outs)
 	}
 	// winner by sets
-	outs, ok, _ = Grade(Market{PMID: 1000120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "2"}}, idx, "", 4, tennis)
+	outs, ok, _ = Grade(Market{PMID: 1000120, TableNum: 120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "2"}}, idx, "", 4, tennis)
 	if !ok || outs[0].Result != "1" {
 		t.Fatalf("tennis winner: %+v", outs)
 	}
 	// padel is tennis-shaped: "0:2 (3-6 4-6)" — games total 19, 1st set handicap on games
 	padel := ScoreSet{Main: fonbet.Score{Home: 0, Away: 2, Periods: [][2]int{{3, 6}, {4, 6}}}}
-	outs, ok, why = Grade(Market{PMID: 1000305, Specs: map[string]string{"threshold": "18.5"}, OutcomeIDs: []string{"over", "under"}}, idx, "", 17591, padel)
+	outs, ok, why = Grade(Market{PMID: 1000305, TableNum: 305, Specs: map[string]string{"threshold": "18.5"}, OutcomeIDs: []string{"over", "under"}}, idx, "", 17591, padel)
 	if !ok || outs[0].Result != "1" {
 		t.Fatalf("padel games total: %+v %s", outs, why)
 	}
-	outs, ok, why = Grade(Market{PMID: 1000304, Specs: map[string]string{"handicap": "2.5", "variant": "fb:100501"}, OutcomeIDs: []string{"h1", "h2"}}, idx, "1st set", 17591, padel)
+	outs, ok, why = Grade(Market{PMID: 1000304, TableNum: 304, Specs: map[string]string{"handicap": "2.5", "variant": "fb:100501"}, OutcomeIDs: []string{"h1", "h2"}}, idx, "1st set", 17591, padel)
 	if !ok || outs[0].Result != "0" || outs[1].Result != "1" { // 3-6 +2.5 = -0.5 → away
 		t.Fatalf("padel 1st set handicap: %+v %s", outs, why)
 	}
 
 	// basketball tied in regulation, decided in OT → two-way winner uses OT
 	bb := ScoreSet{Main: fonbet.Score{Home: 80, Away: 80, Periods: [][2]int{{20, 20}, {20, 20}, {20, 20}, {20, 20}}}, OT: &fonbet.Score{Home: 5, Away: 9}}
-	outs, ok, why = Grade(Market{PMID: 1000120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "2"}}, idx, "", 3, bb)
+	outs, ok, why = Grade(Market{PMID: 1000120, TableNum: 120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "2"}}, idx, "", 3, bb)
 	if !ok || outs[0].Result != "0" || outs[1].Result != "1" {
 		t.Fatalf("basketball OT winner: %+v %s", outs, why)
 	}
 	// hockey two-way tie without OT row → left open
 	hk := ScoreSet{Main: fonbet.Score{Home: 2, Away: 2, Periods: [][2]int{{1, 1}, {1, 1}, {0, 0}}}}
-	if _, ok, _ = Grade(Market{PMID: 1000120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "2"}}, idx, "", 2, hk); ok {
+	if _, ok, _ = Grade(Market{PMID: 1000120, TableNum: 120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "2"}}, idx, "", 2, hk); ok {
 		t.Fatalf("tied two-way hockey must stay open")
 	}
 	// ... but a three-way winner settles as a draw
-	outs, ok, _ = Grade(Market{PMID: 1000120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "3", "2"}}, idx, "", 2, hk)
+	outs, ok, _ = Grade(Market{PMID: 1000120, TableNum: 120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "3", "2"}}, idx, "", 2, hk)
 	if !ok || outs[2] != (Outcome{"3", "1", ""}) {
 		t.Fatalf("hockey draw: %+v", outs)
 	}
@@ -261,7 +261,7 @@ func TestGradeBasketballTiedAfterOTStaysOpen(t *testing.T) {
 		Main: fonbet.Score{Home: 100, Away: 102, Periods: [][2]int{{25, 25}, {25, 25}, {25, 26}, {25, 26}}},
 		OT:   &fonbet.Score{Home: 3, Away: 1},
 	}
-	outs, ok, why := Grade(Market{PMID: 1000120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "2"}}, idx, "", 3, bb)
+	outs, ok, why := Grade(Market{PMID: 1000120, TableNum: 120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "2"}}, idx, "", 3, bb)
 	if ok {
 		t.Fatalf("two-way basketball level after OT must stay open, got %+v", outs)
 	}
@@ -270,14 +270,14 @@ func TestGradeBasketballTiedAfterOTStaysOpen(t *testing.T) {
 	}
 	// With a shootout row the tie is broken by it, OT still counted once.
 	bb.Shoot = &fonbet.Score{Home: 0, Away: 1}
-	outs, ok, why = Grade(Market{PMID: 1000120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "2"}}, idx, "", 3, bb)
+	outs, ok, why = Grade(Market{PMID: 1000120, TableNum: 120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "2"}}, idx, "", 3, bb)
 	if !ok || outs[0].Result != "0" || outs[1].Result != "1" {
 		t.Fatalf("shootout after level OT: %+v %s", outs, why)
 	}
 	// Hockey (OT not included in the headline) still adds the OT row once
 	// on the tie-break path.
 	hk := ScoreSet{Main: fonbet.Score{Home: 2, Away: 2}, OT: &fonbet.Score{Home: 1, Away: 0}}
-	outs, ok, why = Grade(Market{PMID: 1000120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "2"}}, idx, "", 2, hk)
+	outs, ok, why = Grade(Market{PMID: 1000120, TableNum: 120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "2"}}, idx, "", 2, hk)
 	if !ok || outs[0].Result != "1" || outs[1].Result != "0" {
 		t.Fatalf("hockey OT winner: %+v %s", outs, why)
 	}
@@ -287,17 +287,17 @@ func TestGradeBasketballTiedAfterOTStaysOpen(t *testing.T) {
 func TestGradeNewSports(t *testing.T) {
 	idx := fixtureIndex()
 	total := func(line string, specs ...string) Market {
-		m := Market{PMID: 1000305, Specs: map[string]string{"threshold": line}, OutcomeIDs: []string{"over", "under"}}
+		m := Market{PMID: 1000305, TableNum: 305, Specs: map[string]string{"threshold": line}, OutcomeIDs: []string{"over", "under"}}
 		for i := 0; i+1 < len(specs); i += 2 {
 			m.Specs[specs[i]] = specs[i+1]
 		}
 		return m
 	}
 	hcp := func(line string) Market {
-		return Market{PMID: 1000304, Specs: map[string]string{"handicap": line}, OutcomeIDs: []string{"h1", "h2"}}
+		return Market{PMID: 1000304, TableNum: 304, Specs: map[string]string{"handicap": line}, OutcomeIDs: []string{"h1", "h2"}}
 	}
-	winner3 := Market{PMID: 1000120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "3", "2"}}
-	winner2 := Market{PMID: 1000120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "2"}}
+	winner3 := Market{PMID: 1000120, TableNum: 120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "3", "2"}}
+	winner2 := Market{PMID: 1000120, TableNum: 120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "2"}}
 
 	// Australian football: "141:88 (42-16 26-22 41-25 32-25)". Quarters are
 	// periods, "1st half" is quarters 1+2 (68-38), regular time only.
@@ -358,10 +358,10 @@ func TestGradeNewSports(t *testing.T) {
 // decision).
 func TestGradeFightSports(t *testing.T) {
 	idx := fixtureIndex()
-	winner3 := Market{PMID: 1000120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "3", "2"}}
-	dc := Market{PMID: 1900120, Specs: map[string]string{}, OutcomeIDs: []string{"924", "1571", "925"}}
+	winner3 := Market{PMID: 1000120, TableNum: 120, Specs: map[string]string{}, OutcomeIDs: []string{"1", "3", "2"}}
+	dc := Market{PMID: 1900120, TableNum: 120, DoubleChance: true, Specs: map[string]string{}, OutcomeIDs: []string{"924", "1571", "925"}}
 	total := func(line string) Market {
-		return Market{PMID: 1000305, Specs: map[string]string{"threshold": line}, OutcomeIDs: []string{"over", "under"}}
+		return Market{PMID: 1000305, TableNum: 305, Specs: map[string]string{"threshold": line}, OutcomeIDs: []string{"over", "under"}}
 	}
 	for _, sport := range []int{37145, 1436} {
 		// Home won in round 2: winner 1, draw lost; DC 1X and 12 win, X2 loses.
@@ -407,13 +407,13 @@ func TestGradeFightSports(t *testing.T) {
 			t.Fatalf("sport %d 0:0 must be refused: ok=%v why=%q", sport, ok, why)
 		}
 		// Handicaps have no scorecards behind them.
-		if _, ok, why := Grade(Market{PMID: 1000304, Specs: map[string]string{"handicap": "-1.5"}, OutcomeIDs: []string{"h1", "h2"}}, idx, "", sport, r2); ok || why != "fight handicap" {
+		if _, ok, why := Grade(Market{PMID: 1000304, TableNum: 304, Specs: map[string]string{"handicap": "-1.5"}, OutcomeIDs: []string{"h1", "h2"}}, idx, "", sport, r2); ok || why != "fight handicap" {
 			t.Fatalf("sport %d handicap must be refused: ok=%v why=%q", sport, ok, why)
 		}
 	}
 	// A statistic row (boxing "knockeddowns: Total") is ordinary arithmetic.
 	box := ScoreSet{Main: fonbet.Score{Home: 0, Away: 12}, Stats: map[string]fonbet.Score{"knockeddowns": {Home: 0, Away: 1}}}
-	outs, ok, why := Grade(Market{PMID: 1000305, Specs: map[string]string{"threshold": "0.5", "variant": "fb:470100"}, OutcomeIDs: []string{"over", "under"}}, idx, "knockeddowns", 1436, box)
+	outs, ok, why := Grade(Market{PMID: 1000305, TableNum: 305, Specs: map[string]string{"threshold": "0.5", "variant": "fb:470100"}, OutcomeIDs: []string{"over", "under"}}, idx, "knockeddowns", 1436, box)
 	if !ok || outs[0].Result != "1" {
 		t.Fatalf("knockdowns total: %+v %v %s", outs, ok, why)
 	}

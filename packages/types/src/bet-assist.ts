@@ -23,6 +23,8 @@
 // so the storefront never offers a button onto a blank overlay.
 
 /** Sportradar sport ids Bet Assist covers at all. */
+import { marketKindOf } from "@oddzilla/types/market-kind";
+
 export const BET_ASSIST_SPORT_IDS: readonly number[] = [1, 2, 3, 4, 5, 6, 16, 29];
 
 /** Market keys Bet Assist accepts, per Sportradar sport id. */
@@ -165,148 +167,148 @@ const BET_ASSIST_MARKET_MAP: Readonly<
 > = {
   // Soccer
   1: {
-    "1000120": "3Way",
-    "1000120@fb:100201": "1stHalfWin",
-    "1000120@fb:100202": "2ndHalfWin",
-    "1900120": "doubleChance",
-    "1900120@fb:100201": "doubleChance1stHalf",
-    "1900120@fb:100202": "doubleChance2ndHalf",
-    "1000305": "totalOverUnder",
-    "1000305@fb:100201": "halfTimeOverUnder",
-    "1000305@fb:400100": "corners",
-    "1003400": "correctScore",
+    "fb:120": "3Way",
+    "fb:120@100201": "1stHalfWin",
+    "fb:120@100202": "2ndHalfWin",
+    "fb:120#dc": "doubleChance",
+    "fb:120@100201#dc": "doubleChance1stHalf",
+    "fb:120@100202#dc": "doubleChance2ndHalf",
+    "fb:305": "totalOverUnder",
+    "fb:305@100201": "halfTimeOverUnder",
+    "fb:305@400100": "corners",
+    "fb:3400": "correctScore",
   },
   // Basketball
   2: {
-    "1000120": "moneyLine",
-    "1000120@fb:100301": "1stHalfWin",
-    "1000120@fb:100401": "winner1stQuarter",
-    "1000120@fb:100402": "winner2ndQuarter",
-    "1000120@fb:100403": "winner3rdQuarter",
-    "1000120@fb:100404": "winner4thQuarter",
-    "1000304": "spread",
-    "1000304@fb:100301": "spread1stHalf",
-    "1000304@fb:100401": "spread1stQuarter",
-    "1000304@fb:100402": "spread2ndQuarter",
-    "1000304@fb:100403": "spread3rdQuarter",
-    "1000304@fb:100404": "spread4thQuarter",
-    "1000305": "totalPoints",
-    "1000305@fb:100301": "total1stHalf",
-    "1000305@fb:100401": "total1stQuarter",
-    "1000305@fb:100402": "total2ndQuarter",
-    "1000305@fb:100403": "total3rdQuarter",
-    "1000305@fb:100404": "total4thQuarter",
-    "1000506": "totalHome",
-    "1000507": "totalAway",
+    "fb:120": "moneyLine",
+    "fb:120@100301": "1stHalfWin",
+    "fb:120@100401": "winner1stQuarter",
+    "fb:120@100402": "winner2ndQuarter",
+    "fb:120@100403": "winner3rdQuarter",
+    "fb:120@100404": "winner4thQuarter",
+    "fb:304": "spread",
+    "fb:304@100301": "spread1stHalf",
+    "fb:304@100401": "spread1stQuarter",
+    "fb:304@100402": "spread2ndQuarter",
+    "fb:304@100403": "spread3rdQuarter",
+    "fb:304@100404": "spread4thQuarter",
+    "fb:305": "totalPoints",
+    "fb:305@100301": "total1stHalf",
+    "fb:305@100401": "total1stQuarter",
+    "fb:305@100402": "total2ndQuarter",
+    "fb:305@100403": "total3rdQuarter",
+    "fb:305@100404": "total4thQuarter",
+    "fb:506": "totalHome",
+    "fb:507": "totalAway",
   },
   // Baseball
   3: {
-    "1000120": "moneyLine",
-    "1000120@fb:100601": "moneyline1stInning",
-    "1000304": "spread",
-    "1000304@fb:101701": "first5InningsRunLine",
-    "1000305": "totalRuns",
-    "1000305@fb:100601": "totalRuns1stInning",
-    "1000305@fb:101701": "totalRuns1st5Innings",
-    "1000506": "totalRunsHome",
-    "1000507": "totalRunsAway",
+    "fb:120": "moneyLine",
+    "fb:120@100601": "moneyline1stInning",
+    "fb:304": "spread",
+    "fb:304@101701": "first5InningsRunLine",
+    "fb:305": "totalRuns",
+    "fb:305@100601": "totalRuns1stInning",
+    "fb:305@101701": "totalRuns1st5Innings",
+    "fb:506": "totalRunsHome",
+    "fb:507": "totalRunsAway",
   },
   // Ice hockey. Fonbet's "Match result" is regular time with a draw, so
   // it is the 3-way moneyline; its "To win the match" (1000491) is the
   // 2-way including overtime, which is what Sportradar calls moneyLine.
   4: {
-    "1000120": "moneyLine3way",
-    "1000120@fb:100101": "moneyline1stPeriod",
-    "1000120@fb:100102": "moneyline2ndPeriod",
-    "1000120@fb:100103": "moneyline3rdPeriod",
-    "1000491": "moneyLine",
-    "1900120": "doubleChance",
-    "1000304": "spread",
-    "1000304@fb:100101": "spread1stPeriod",
-    "1000304@fb:100102": "spread2ndPeriod",
-    "1000304@fb:100103": "spread3rdPeriod",
-    "1000305": "total",
-    "1000305@fb:100101": "total1stPeriod",
-    "1000305@fb:100102": "total2ndPeriod",
-    "1000305@fb:100103": "total3rdPeriod",
-    "1000506": "totalHome",
-    "1000507": "totalAway",
+    "fb:120": "moneyLine3way",
+    "fb:120@100101": "moneyline1stPeriod",
+    "fb:120@100102": "moneyline2ndPeriod",
+    "fb:120@100103": "moneyline3rdPeriod",
+    "fb:491": "moneyLine",
+    "fb:120#dc": "doubleChance",
+    "fb:304": "spread",
+    "fb:304@100101": "spread1stPeriod",
+    "fb:304@100102": "spread2ndPeriod",
+    "fb:304@100103": "spread3rdPeriod",
+    "fb:305": "total",
+    "fb:305@100101": "total1stPeriod",
+    "fb:305@100102": "total2ndPeriod",
+    "fb:305@100103": "total3rdPeriod",
+    "fb:506": "totalHome",
+    "fb:507": "totalAway",
   },
   // Tennis
   5: {
-    "1000120": "2Way",
-    "1000120@fb:100501": "winner1stSet",
-    "1000120@fb:100502": "winner2ndSet",
-    "1000120@fb:100503": "winner3rdSet",
-    "1000120@fb:100504": "winner4thSet",
-    "1000120@fb:100505": "winner5thSet",
-    "1000130": "setHandicap",
-    "1000304": "2WayHandicap",
-    "1000304@fb:100501": "gameHandicap1stSet",
-    "1000304@fb:100502": "gameHandicap2ndSet",
-    "1000304@fb:100503": "gameHandicap3rdSet",
-    "1000304@fb:100504": "gameHandicap4thSet",
-    "1000304@fb:100505": "gameHandicap5thSet",
-    "1000305": "totalGames",
-    "1000305@fb:100501": "totalGames1stSet",
-    "1000305@fb:100502": "totalGames2ndSet",
+    "fb:120": "2Way",
+    "fb:120@100501": "winner1stSet",
+    "fb:120@100502": "winner2ndSet",
+    "fb:120@100503": "winner3rdSet",
+    "fb:120@100504": "winner4thSet",
+    "fb:120@100505": "winner5thSet",
+    "fb:130": "setHandicap",
+    "fb:304": "2WayHandicap",
+    "fb:304@100501": "gameHandicap1stSet",
+    "fb:304@100502": "gameHandicap2ndSet",
+    "fb:304@100503": "gameHandicap3rdSet",
+    "fb:304@100504": "gameHandicap4thSet",
+    "fb:304@100505": "gameHandicap5thSet",
+    "fb:305": "totalGames",
+    "fb:305@100501": "totalGames1stSet",
+    "fb:305@100502": "totalGames2ndSet",
   },
   // Handball
   6: {
-    "1000120": "3Way",
-    "1000120@fb:100201": "3way1stHalf",
-    "1000120@fb:100202": "3way2ndHalf",
-    "1900120": "doubleChance",
-    "1900120@fb:100201": "doubleChance1stHalf",
-    "1000304": "2WayHandicap",
-    "1000304@fb:100201": "2WayHandicap1stHalf",
-    "1000304@fb:100202": "2WayHandicap2ndHalf",
-    "1000305": "total",
-    "1000305@fb:100201": "total1stHalf",
-    "1000305@fb:100202": "total2ndHalf",
-    "1000506": "totalHome",
-    "1000506@fb:100201": "homeTotal1stHalf",
-    "1000507": "totalAway",
-    "1000507@fb:100201": "awayTotal1stHalf",
+    "fb:120": "3Way",
+    "fb:120@100201": "3way1stHalf",
+    "fb:120@100202": "3way2ndHalf",
+    "fb:120#dc": "doubleChance",
+    "fb:120@100201#dc": "doubleChance1stHalf",
+    "fb:304": "2WayHandicap",
+    "fb:304@100201": "2WayHandicap1stHalf",
+    "fb:304@100202": "2WayHandicap2ndHalf",
+    "fb:305": "total",
+    "fb:305@100201": "total1stHalf",
+    "fb:305@100202": "total2ndHalf",
+    "fb:506": "totalHome",
+    "fb:506@100201": "homeTotal1stHalf",
+    "fb:507": "totalAway",
+    "fb:507@100201": "awayTotal1stHalf",
   },
   // American football
   16: {
-    "1000120": "moneyLine",
-    "1000120@fb:100301": "1stHalfWin",
-    "1000120@fb:100401": "winner1stQuarter",
-    "1000120@fb:100402": "winner2ndQuarter",
-    "1000120@fb:100403": "winner3rdQuarter",
-    "1000120@fb:100404": "winner4thQuarter",
-    "1000304": "spread",
-    "1000304@fb:100301": "spread1stHalf",
-    "1000304@fb:100401": "spread1stQuarter",
-    "1000304@fb:100402": "spread2ndQuarter",
-    "1000304@fb:100403": "spread3rdQuarter",
-    "1000304@fb:100404": "spread4thQuarter",
-    "1000305": "totalPoints",
-    "1000305@fb:100301": "total1stHalf",
-    "1000305@fb:100401": "total1stQuarter",
-    "1000305@fb:100402": "total2ndQuarter",
-    "1000305@fb:100403": "total3rdQuarter",
-    "1000305@fb:100404": "total4thQuarter",
-    "1000506": "totalHome",
-    "1000507": "totalAway",
+    "fb:120": "moneyLine",
+    "fb:120@100301": "1stHalfWin",
+    "fb:120@100401": "winner1stQuarter",
+    "fb:120@100402": "winner2ndQuarter",
+    "fb:120@100403": "winner3rdQuarter",
+    "fb:120@100404": "winner4thQuarter",
+    "fb:304": "spread",
+    "fb:304@100301": "spread1stHalf",
+    "fb:304@100401": "spread1stQuarter",
+    "fb:304@100402": "spread2ndQuarter",
+    "fb:304@100403": "spread3rdQuarter",
+    "fb:304@100404": "spread4thQuarter",
+    "fb:305": "totalPoints",
+    "fb:305@100301": "total1stHalf",
+    "fb:305@100401": "total1stQuarter",
+    "fb:305@100402": "total2ndQuarter",
+    "fb:305@100403": "total3rdQuarter",
+    "fb:305@100404": "total4thQuarter",
+    "fb:506": "totalHome",
+    "fb:507": "totalAway",
   },
   // Futsal
   29: {
-    "1000120": "3Way",
-    "1000120@fb:100201": "3way1stHalf",
-    "1000120@fb:100202": "3way2ndHalf",
-    "1900120": "doubleChance",
-    "1900120@fb:100201": "doubleChance1stHalf",
-    "1000304": "spread",
-    "1000304@fb:100201": "spread1stHalf",
-    "1000304@fb:100202": "spread2ndHalf",
-    "1000305": "total",
-    "1000305@fb:100201": "total1stHalf",
-    "1000305@fb:100202": "total2ndHalf",
-    "1000506": "totalHome",
-    "1000507": "totalAway",
+    "fb:120": "3Way",
+    "fb:120@100201": "3way1stHalf",
+    "fb:120@100202": "3way2ndHalf",
+    "fb:120#dc": "doubleChance",
+    "fb:120@100201#dc": "doubleChance1stHalf",
+    "fb:304": "spread",
+    "fb:304@100201": "spread1stHalf",
+    "fb:304@100202": "spread2ndHalf",
+    "fb:305": "total",
+    "fb:305@100201": "total1stHalf",
+    "fb:305@100202": "total2ndHalf",
+    "fb:506": "totalHome",
+    "fb:507": "totalAway",
   },
 };
 
@@ -317,6 +319,14 @@ export interface BetAssistMarketInput {
   providerMarketId: number;
   /** The market's `variant` specifier; absent or "" means the whole match. */
   variant?: string | null;
+  /**
+   * The market kind as the api resolved it ("fb:120@100201"). Preferred
+   * over the two fields above, and REQUIRED for a Fonbet market: its id is
+   * registry-allocated and opaque, so nothing downstream can derive the
+   * kind from it. Optional only so an Oddin or custom market, whose id is
+   * still self-describing, can be resolved without it.
+   */
+  marketKind?: string | null;
 }
 
 /** True when Bet Assist covers this Sportradar sport at all. */
@@ -335,11 +345,21 @@ export function resolveBetAssistMarket(
 ): string | null {
   const table = BET_ASSIST_MARKET_MAP[input.srSportId];
   if (!table) return null;
-  const variant = (input.variant ?? "").trim();
-  const key = variant
-    ? `${input.providerMarketId}@${variant}`
-    : String(input.providerMarketId);
-  const market = table[key];
+  // Keyed by MARKET KIND, not by provider_market_id. The id alone cannot
+  // say which market this is on the Fonbet side — one catalogue table is
+  // reused across every sub-event — so this map used to build its own
+  // `<pmid>@<variant>` key string. That is the market kind, so it now uses
+  // the shared one: same information, one definition, and it survives the
+  // move to synthetic per-sub-event ids (which are opaque, so a reader
+  // could not recover the Fonbet table from them at all).
+  // The kind is taken from the payload where the api resolved it, and
+  // only computed locally as a fallback for ids that are still
+  // self-describing (Oddin, custom). A Fonbet market's id is registry
+  // -allocated and opaque, so there is nothing to compute from.
+  const kind =
+    input.marketKind ?? marketKindOf(input.providerMarketId, input.variant);
+  if (!kind) return null;
+  const market = table[kind];
   if (!market) return null;
   return BET_ASSIST_MARKETS_BY_SPORT[input.srSportId]?.includes(market)
     ? market

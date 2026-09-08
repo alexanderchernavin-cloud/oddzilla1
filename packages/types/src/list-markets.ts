@@ -59,6 +59,14 @@ export interface LadderMarketShape {
    * `isAwayHandicapSide` documents at length.
    */
   outcomeIds: readonly [string, string];
+  /**
+   * The market TYPE as a readable kind ("od:2", "fb:304"). Since
+   * migration 20260908T115542 a Fonbet provider_market_id is
+   * registry-allocated and opaque, so `providerMarketId` below is only
+   * meaningful for Oddin; a reader resolves the Fonbet shapes through
+   * provider_market_types by this key.
+   */
+  marketKind: string;
 }
 
 /**
@@ -71,8 +79,13 @@ export interface LadderMarketShape {
  * so the single-key rule would drop it anyway.
  */
 export const LADDER_HANDICAP_SHAPES: readonly LadderMarketShape[] = [
-  { providerMarketId: 2, lineKey: "handicap", outcomeIds: ["1", "2"] },
-  { providerMarketId: 1_000_304, lineKey: "handicap", outcomeIds: ["h1", "h2"] },
+  { providerMarketId: 2, marketKind: "od:2", lineKey: "handicap", outcomeIds: ["1", "2"] },
+  {
+    providerMarketId: 1_000_304,
+    marketKind: "fb:304",
+    lineKey: "handicap",
+    outcomeIds: ["h1", "h2"],
+  },
 ];
 
 /**
@@ -87,9 +100,10 @@ export const LADDER_HANDICAP_SHAPES: readonly LadderMarketShape[] = [
  * numeric order.
  */
 export const LADDER_TOTAL_SHAPES: readonly LadderMarketShape[] = [
-  { providerMarketId: 3, lineKey: "threshold", outcomeIds: ["5", "4"] },
+  { providerMarketId: 3, marketKind: "od:3", lineKey: "threshold", outcomeIds: ["5", "4"] },
   {
     providerMarketId: 1_000_305,
+    marketKind: "fb:305",
     lineKey: "threshold",
     outcomeIds: ["over", "under"],
   },
@@ -105,21 +119,36 @@ export const LADDER_PROVIDER_MARKET_IDS: readonly number[] = [
   ...LADDER_TOTAL_SHAPES,
 ].map((s) => s.providerMarketId);
 
+/**
+ * Resolve a stored provider_market_id to its ladder shape.
+ *
+ * `kindOf` translates our registry ids, which are opaque (migration
+ * 20260908T115542); the direct id comparison that follows still catches
+ * Oddin's, whose id IS the market type. A caller with no registry to hand
+ * passes nothing and gets the Oddin shapes only.
+ */
 export function ladderShapeByProviderMarketId(
   providerMarketId: number,
+  kindOf?: (providerMarketId: number) => string | null,
 ): { kind: LadderKind; shape: LadderMarketShape } | null {
+  const marketKind = kindOf?.(providerMarketId) ?? null;
+  const hit = (shape: LadderMarketShape) =>
+    shape.providerMarketId === providerMarketId ||
+    (marketKind !== null && shape.marketKind === marketKind);
   for (const shape of LADDER_HANDICAP_SHAPES) {
-    if (shape.providerMarketId === providerMarketId) {
-      return { kind: "handicap", shape };
-    }
+    if (hit(shape)) return { kind: "handicap", shape };
   }
   for (const shape of LADDER_TOTAL_SHAPES) {
-    if (shape.providerMarketId === providerMarketId) {
-      return { kind: "total", shape };
-    }
+    if (hit(shape)) return { kind: "total", shape };
   }
   return null;
 }
+
+/** Every ladder market KIND, for resolving ids through the registry. */
+export const LADDER_MARKET_KINDS: readonly string[] = [
+  ...LADDER_HANDICAP_SHAPES,
+  ...LADDER_TOTAL_SHAPES,
+].map((s) => s.marketKind);
 
 /**
  * Does this market's specifier set qualify it as a full-match ladder

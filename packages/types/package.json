@@ -13,6 +13,7 @@
     "./products": "./src/products.ts",
     "./specifiers": "./src/specifiers.ts",
     "./market-scope": "./src/market-scope.ts",
+    "./market-kind": "./src/market-kind.ts",
     "./community": "./src/community.ts",
     "./combi-boost": "./src/combi-boost.ts",
     "./combozilla": "./src/combozilla.ts",

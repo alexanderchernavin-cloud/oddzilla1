@@ -34,6 +34,22 @@ const (
 	DoubleChancePMIDBase = 1_900_000 // 1X / 12 / X2 cells split off a match-winner table
 )
 
+// MarketTypeOf decodes a Fonbet provider_market_id back to the catalogue
+// table it was built from, and whether it is the double-chance split.
+//
+// The ONE place that inverts the id scheme. The settlement grader used to
+// do this arithmetic inline to reach `idx.Tables[n]` for the table name it
+// grades on, which coupled a money path directly to how the id happens to
+// be composed. It is a function so that when provider_market_id becomes a
+// synthetic per-sub-event number — opaque, resolved through a registry —
+// exactly one body changes and the grader does not.
+func MarketTypeOf(pmid int) (tableNum int, doubleChance bool) {
+	if pmid >= DoubleChancePMIDBase {
+		return pmid - DoubleChancePMIDBase, true
+	}
+	return pmid - PMIDBase, false
+}
+
 type Options struct {
 	BlockedSports    map[int]struct{}
 	AllowedSports    map[int]struct{}
@@ -46,12 +62,18 @@ type Options struct {
 }
 
 // Denylist is the operator's list of market shapes to keep out of the
-// offer: whole catalogue tables by provider_market_id ("winner of point N
-// in a set", 1007800) and sub-event families by the prefix of their label
+// offer: whole catalogue tables by Fonbet TABLE NUMBER ("winner of point N
+// in a set", 7800) and sub-event families by the prefix of their label
 // ("Player specials", "Special bets"). A denied market is never created;
 // one that already exists is treated as gone by the ingest diff and
 // deactivated (status 0), so it leaves the offer without being voided —
 // settling it, if that ever becomes possible, stays the operator's call.
+//
+// Tables holds the TABLE number rather than a provider_market_id, and that
+// is forced rather than cosmetic: a rule means "no grader can settle this
+// table" and has always covered every sub-event of it, which a single
+// provider_market_id cannot express now that each sub-event has its own
+// (migration 20260908T115542).
 type Denylist struct {
 	Tables        map[int]struct{}
 	LabelPrefixes []string
@@ -59,11 +81,11 @@ type Denylist struct {
 
 // Denies reports whether a market of this table with this sub-event label
 // is on the list. Label matching is a case-insensitive prefix test.
-func (d *Denylist) Denies(pmid int, label string) bool {
+func (d *Denylist) Denies(tableNum int, label string) bool {
 	if d == nil {
 		return false
 	}
-	if _, ok := d.Tables[pmid]; ok {
+	if _, ok := d.Tables[tableNum]; ok {
 		return true
 	}
 	if label == "" || len(d.LabelPrefixes) == 0 {
@@ -356,7 +378,8 @@ func Build(resp *fonbet.ListResponse, idx *fonbet.Index, opt Options) *Snapshot 
 		// family is dropped wherever it was nested.
 		if opt.Deny != nil {
 			for key, mk := range m.Markets {
-				if opt.Deny.Denies(mk.PMID, mk.VariantLabel) {
+				tableNum, _ := MarketTypeOf(mk.PMID)
+				if opt.Deny.Denies(tableNum, mk.VariantLabel) {
 					delete(m.Markets, key)
 					snap.Skipped["denylisted_markets"]++
 				}

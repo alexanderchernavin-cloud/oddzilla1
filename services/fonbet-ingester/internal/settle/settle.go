@@ -339,7 +339,7 @@ func (w *Worker) RunOnce(ctx context.Context) (Stats, error) {
 				stats.MarketsOpen++
 				continue
 			}
-			outs, ok, why := Grade(Market{PMID: mk.PMID, Specs: mk.Specs, OutcomeIDs: mk.OutcomeIDs}, idx, label, sport, ss)
+			outs, ok, why := Grade(Market{PMID: mk.PMID, TableNum: mk.TableNum, DoubleChance: mk.DoubleChance, Specs: mk.Specs, OutcomeIDs: mk.OutcomeIDs}, idx, label, sport, ss)
 			if !ok {
 				stats.Skipped[why]++
 				stats.MarketsOpen++

@@ -36,7 +36,6 @@ import (
 	"unicode"
 
 	"github.com/oddzilla/fonbet-ingester/internal/fonbet"
-	"github.com/oddzilla/fonbet-ingester/internal/mapper"
 )
 
 // Outcome is one graded selection.
@@ -304,9 +303,15 @@ func dartsLegsFormat(section string) bool {
 
 // Market is the slice of a stored market the grader needs.
 type Market struct {
-	PMID       int
-	Specs      map[string]string
-	OutcomeIDs []string
+	PMID int
+	// The catalogue table this market's type came from, supplied by the
+	// caller from provider_market_types. NOT derived from PMID: our ids
+	// are opaque, and grading off a wrong table number would settle a
+	// market against the wrong statistic.
+	TableNum     int
+	DoubleChance bool
+	Specs        map[string]string
+	OutcomeIDs   []string
 }
 
 // Grade returns the graded outcomes for one market, or ok=false with a
@@ -315,10 +320,12 @@ func Grade(mk Market, idx *fonbet.Index, label string, sport int, ss ScoreSet) (
 	if _, isMap := mk.Specs["map"]; isMap {
 		return nil, false, "map market"
 	}
-	isDC := mk.PMID >= mapper.DoubleChancePMIDBase
-	tableNum := mk.PMID - mapper.PMIDBase
-	if isDC {
-		tableNum = mk.PMID - mapper.DoubleChancePMIDBase
+	tableNum, isDC := mk.TableNum, mk.DoubleChance
+	if tableNum == 0 {
+		// The registry had no row for this market's id, so we cannot know
+		// which catalogue table it came from. Out of scope rather than
+		// graded on a guess.
+		return nil, false, "unknown market type"
 	}
 	table := idx.Tables[tableNum]
 	if table == nil {

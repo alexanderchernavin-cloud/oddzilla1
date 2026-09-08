@@ -68,7 +68,26 @@ explicitly.
 ssh team@178.104.174.24 "cd /home/team/oddzilla && make deploy"
 ```
 
-That's the whole deploy. The target wraps
+That's the whole deploy.
+
+> **One migration needs the Fonbet feed switched off first.**
+> `20260908T115542_provider_market_type_registry` re-keys every Fonbet
+> market onto our own `provider_market_id`, and fonbet-ingester upserts the
+> same rows every 5 s — rehearsed against production with the feed live and
+> it DEADLOCKED. Batching does not help; each batch races the same writer.
+>
+> So the migration REFUSES to run while the feed is on, with a message
+> saying so, rather than aborting on a lock detail. Before deploying it:
+>
+> 1. Switch the **Fonbet feed** card on `/admin/feed` off (or
+>    `PUT /admin/feed/fonbet {"enabled": false}`). It suspends every Fonbet
+>    market and stops polling within 2 s.
+> 2. `make deploy`.
+> 3. Switch it back on. The offer returns on the next cycle — nothing is
+>    lost, because the ingester re-upserts whatever Fonbet still quotes.
+>
+> A deploy that skips step 1 fails cleanly (the migration is transactional)
+> and can simply be retried after switching the feed off. The target wraps
 [`infra/deploy/deploy.sh`](../infra/deploy/deploy.sh), which does:
 
 1. `flock` `/var/lock/oddzilla-deploy.lock` so two operators can't deploy at once.

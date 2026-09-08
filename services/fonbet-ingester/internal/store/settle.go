@@ -26,10 +26,18 @@ type PendingMatch struct {
 }
 
 type PendingMarket struct {
-	ID         int64
-	PMID       int
-	Specs      map[string]string
-	OutcomeIDs []string
+	ID   int64
+	PMID int
+	// The catalogue table this market's type came from, and whether it is
+	// the double-chance split. Joined from provider_market_types rather
+	// than derived from PMID: our ids are opaque (migration
+	// 20260908T115542), and the grader needs the table to look up the
+	// name it grades on. TableNum 0 means the join found nothing, which is
+	// treated as out of scope rather than graded on table 0.
+	TableNum     int
+	DoubleChance bool
+	Specs        map[string]string
+	OutcomeIDs   []string
 }
 
 // LoadPendingSettlement returns Fonbet matches (scheduled within the last
@@ -76,12 +84,17 @@ SELECT ma.id, ma.provider_urn, ma.home_team, ma.away_team,
 	}
 	mrows, err := db.Query(ctx, `
 SELECT mk.id, mk.match_id, mk.provider_market_id, mk.specifiers_json::text,
-       COALESCE(array_agg(mo.outcome_id ORDER BY mo.outcome_id) FILTER (WHERE mo.outcome_id IS NOT NULL), '{}')
+       COALESCE(array_agg(mo.outcome_id ORDER BY mo.outcome_id) FILTER (WHERE mo.outcome_id IS NOT NULL), '{}'),
+       COALESCE(t.table_num, 0), COALESCE(t.double_chance, false)
   FROM markets mk
   LEFT JOIN market_outcomes mo ON mo.market_id = mk.id
+  LEFT JOIN provider_market_types t
+         ON t.provider_market_id = mk.provider_market_id
+        AND t.provider = $2
  WHERE mk.match_id = ANY($1::bigint[])
    AND mk.status NOT IN (-3, -4)
- GROUP BY mk.id, mk.match_id, mk.provider_market_id, mk.specifiers_json`, ids)
+ GROUP BY mk.id, mk.match_id, mk.provider_market_id, mk.specifiers_json,
+          t.table_num, t.double_chance`, ids, Provider)
 	if err != nil {
 		return nil, fmt.Errorf("load pending markets: %w", err)
 	}
@@ -90,11 +103,14 @@ SELECT mk.id, mk.match_id, mk.provider_market_id, mk.specifiers_json::text,
 		var pm PendingMarket
 		var matchID int64
 		var pmid int32
+		var tableNum int32
 		var specJSON string
-		if err := mrows.Scan(&pm.ID, &matchID, &pmid, &specJSON, &pm.OutcomeIDs); err != nil {
+		if err := mrows.Scan(&pm.ID, &matchID, &pmid, &specJSON, &pm.OutcomeIDs,
+			&tableNum, &pm.DoubleChance); err != nil {
 			return nil, fmt.Errorf("scan pending market: %w", err)
 		}
 		pm.PMID = int(pmid)
+		pm.TableNum = int(tableNum)
 		pm.Specs = map[string]string{}
 		if err := json.Unmarshal([]byte(specJSON), &pm.Specs); err != nil {
 			// A market whose specifiers cannot be read must not be graded as

@@ -1,7 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  FONBET_HEAD_TO_HEAD_PMIDS,
+  FONBET_HEAD_TO_HEAD_KINDS,
   FONBET_PMID_BASE,
   isMatchWinnerMarket,
   isWinnerOutcomeId,
@@ -60,10 +60,16 @@ describe("isMatchWinnerMarket", () => {
 
   test("rejects a Fonbet head-to-head row — its ids are factor ids", () => {
     // It IS the winner of such a fixture, but the readers pair it as an
-    // explicit fallback (see FONBET_HEAD_TO_HEAD_PMIDS); it must not pass
+    // explicit fallback (see FONBET_HEAD_TO_HEAD_KINDS); it must not pass
     // the canonical test and claim the headline slot silently.
-    for (const pmid of FONBET_HEAD_TO_HEAD_PMIDS) {
-      assert.equal(isMatchWinnerMarket({ providerMarketId: pmid, outcomeIds: ["714", "715"] }), 
+    // Named as KINDS now, since their ids are registry-allocated.
+    assert.deepEqual([...FONBET_HEAD_TO_HEAD_KINDS], ["fb:399", "fb:25020"]);
+    for (const table of [399, 25_020]) {
+      assert.equal(
+        isMatchWinnerMarket({
+          providerMarketId: FONBET_PMID_BASE + table,
+          outcomeIds: ["714", "715"],
+        }),
         false,
       );
     }

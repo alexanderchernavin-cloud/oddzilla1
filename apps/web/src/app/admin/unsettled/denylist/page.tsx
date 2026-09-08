@@ -3,7 +3,7 @@
 // (migration 0111, docs/SETTLEMENT_COVERAGE_PLAN.md phase 3a).
 //
 // Two kinds of rule: a whole catalogue table by provider_market_id
-// ("winner of point N in a set", 1007800) and a sub-event family by the
+// ("winner of point N in a set", table 7800) and a sub-event family by the
 // prefix of its label ("Player specials"). fonbet-ingester re-reads the
 // list every minute. The markets already created under a rule stay listed
 // here — the operator asked to keep them visible in case the grading for

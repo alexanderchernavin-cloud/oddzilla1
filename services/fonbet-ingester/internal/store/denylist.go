@@ -15,7 +15,7 @@ import (
 // every minute so a new rule takes effect without a restart.
 func LoadMarketDenylist(ctx context.Context, db pgxRunner) (*mapper.Denylist, error) {
 	rows, err := db.Query(ctx, `
-SELECT kind, provider_market_id, label_prefix
+SELECT kind, table_num, label_prefix
   FROM fonbet_market_denylist`)
 	if err != nil {
 		return nil, fmt.Errorf("load market denylist: %w", err)
@@ -24,16 +24,16 @@ SELECT kind, provider_market_id, label_prefix
 	d := &mapper.Denylist{Tables: map[int]struct{}{}}
 	for rows.Next() {
 		var (
-			kind   string
-			pmid   *int32
-			prefix *string
+			kind     string
+			tableNum *int32
+			prefix   *string
 		)
-		if err := rows.Scan(&kind, &pmid, &prefix); err != nil {
+		if err := rows.Scan(&kind, &tableNum, &prefix); err != nil {
 			return nil, fmt.Errorf("scan denylist row: %w", err)
 		}
 		switch {
-		case kind == "table" && pmid != nil:
-			d.Tables[int(*pmid)] = struct{}{}
+		case kind == "table" && tableNum != nil:
+			d.Tables[int(*tableNum)] = struct{}{}
 		case kind == "label_prefix" && prefix != nil && *prefix != "":
 			d.LabelPrefixes = append(d.LabelPrefixes, *prefix)
 		}

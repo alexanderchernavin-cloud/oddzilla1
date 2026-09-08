@@ -49,15 +49,16 @@ const DENYLIST_SCAN_DAYS = 30;
 const ruleBody = z
   .object({
     kind: z.enum(["table", "label_prefix"]),
-    providerMarketId: z.coerce.number().int().positive().optional(),
+    // The Fonbet catalogue table number (7800), not 1 000 000 + it.
+    tableNum: z.coerce.number().int().positive().optional(),
     labelPrefix: z.string().trim().min(2).max(120).optional(),
     reason: z.string().trim().max(500).default(""),
   })
   .refine(
     (b) =>
-      (b.kind === "table" && b.providerMarketId !== undefined && b.labelPrefix === undefined) ||
-      (b.kind === "label_prefix" && b.labelPrefix !== undefined && b.providerMarketId === undefined),
-    { message: "a table rule takes providerMarketId, a label_prefix rule takes labelPrefix" },
+      (b.kind === "table" && b.tableNum !== undefined && b.labelPrefix === undefined) ||
+      (b.kind === "label_prefix" && b.labelPrefix !== undefined && b.tableNum === undefined),
+    { message: "a table rule takes tableNum, a label_prefix rule takes labelPrefix" },
   );
 
 const voidBody = z.object({
@@ -84,9 +85,18 @@ function iso(v: Date | string | null): string | null {
 
 // The predicate a denylist rule expands to over `markets mk` joined with
 // `market_descriptions md` (en, this market's own variant).
-function ruleMatches(kind: string, providerMarketId: number | null, labelPrefix: string | null) {
+//
+// A table rule matches through provider_market_types: it names a Fonbet
+// catalogue TABLE and covers every sub-event of it, which is what it always
+// meant, and which one provider_market_id can no longer express now that
+// each sub-event has its own (migration 20260908T115542).
+function ruleMatches(kind: string, tableNum: number | null, labelPrefix: string | null) {
   if (kind === "table") {
-    return sql`mk.provider_market_id = ${providerMarketId}`;
+    return sql`EXISTS (
+      SELECT 1 FROM provider_market_types t
+       WHERE t.provider_market_id = mk.provider_market_id
+         AND t.table_num = ${tableNum}
+    )`;
   }
   return sql`md.name_template ILIKE ${(labelPrefix ?? "").replace(/[%_\\]/g, "\\$&") + "%"}`;
 }
@@ -115,12 +125,12 @@ export default async function adminSettlementToolsRoutes(app: FastifyInstance) {
            AND m.status IN ('closed', 'cancelled')
            AND m.scheduled_at > NOW() - (${DENYLIST_SCAN_DAYS} || ' days')::interval
            AND mk.status NOT IN (-3, -4)
-           AND ${ruleMatches(r.kind, r.providerMarketId, r.labelPrefix)}
+           AND ${ruleMatches(r.kind, r.tableNum, r.labelPrefix)}
       `)) as unknown as Array<{ markets: number; matches: number }>;
       out.push({
         id: r.id,
         kind: r.kind,
-        providerMarketId: r.providerMarketId,
+        tableNum: r.tableNum,
         labelPrefix: r.labelPrefix,
         reason: r.reason,
         createdAt: iso(r.createdAt)!,
@@ -140,7 +150,7 @@ export default async function adminSettlementToolsRoutes(app: FastifyInstance) {
         .insert(fonbetMarketDenylist)
         .values({
           kind: body.kind,
-          providerMarketId: body.kind === "table" ? body.providerMarketId! : null,
+          tableNum: body.kind === "table" ? body.tableNum! : null,
           labelPrefix: body.kind === "label_prefix" ? body.labelPrefix! : null,
           reason: body.reason,
           createdByUserId: admin.id,
@@ -157,7 +167,7 @@ export default async function adminSettlementToolsRoutes(app: FastifyInstance) {
         targetId: String(row.id),
         afterJson: {
           kind: row.kind,
-          providerMarketId: row.providerMarketId,
+          tableNum: row.tableNum,
           labelPrefix: row.labelPrefix,
           reason: row.reason,
         },
@@ -183,7 +193,7 @@ export default async function adminSettlementToolsRoutes(app: FastifyInstance) {
         targetId: String(id),
         beforeJson: {
           kind: row.kind,
-          providerMarketId: row.providerMarketId,
+          tableNum: row.tableNum,
           labelPrefix: row.labelPrefix,
           reason: row.reason,
         },
@@ -226,7 +236,7 @@ export default async function adminSettlementToolsRoutes(app: FastifyInstance) {
          AND m.status IN ('closed', 'cancelled')
          AND m.scheduled_at > NOW() - (${DENYLIST_SCAN_DAYS} || ' days')::interval
          AND mk.status NOT IN (-3, -4)
-         AND ${ruleMatches(rule.kind, rule.providerMarketId, rule.labelPrefix)}
+         AND ${ruleMatches(rule.kind, rule.tableNum, rule.labelPrefix)}
        ORDER BY open_tickets DESC, m.scheduled_at DESC, mk.id
        LIMIT 200
     `)) as unknown as Array<{
