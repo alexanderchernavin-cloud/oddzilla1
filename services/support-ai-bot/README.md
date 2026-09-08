@@ -95,8 +95,12 @@ look-up tools on demand — none of them can change anything:
   Diacritics are deliberately not folded, since folding Czech `píča` to
   `pica` would collide with Spanish `pica`.
 
-  The **reply itself is not localised** — it is one fixed string the
-  operator chose. Detection is multilingual; the answer is not.
+  The **reply itself is not localised** — one fixed string, so a Czech or
+  Spanish bettor gets the English/transliterated-Russian text. Detection
+  is multilingual; the answer deliberately is not. This was put to the
+  operator explicitly and confirmed as intended (2026-09-08), so it is a
+  decision rather than an oversight — do not add per-locale variants of
+  `ABUSE_REPLY`.
 - A human **"Take over"** in the backoffice (and any human reply) pauses the
   bot on that thread; "Resume AI" hands it back.
 
