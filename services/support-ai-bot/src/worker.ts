@@ -23,6 +23,7 @@ import { BotApi, BotApiError } from "./api-client.js";
 import { LmStudio, type ChatMessage } from "./lmstudio.js";
 import { buildMessages } from "./prompt.js";
 import { DEFAULT_HOLDING_MESSAGE } from "./guardrails.js";
+import { ABUSE_REPLY, classifyBettorMessage } from "./moderation.js";
 import { TOOLS, executeTool } from "./tools.js";
 import { touchLiveness } from "./liveness.js";
 
@@ -39,7 +40,32 @@ function sleep(ms: number): Promise<void> {
 const MAX_TOOL_ROUNDS = 2;
 const ESCALATE_PREFIX = "ESCALATE:";
 
+/** The bettor message the assistant is answering — a thread is pending
+ * while the newest message is theirs, so it is the last `user` row. */
+function newestBettorMessage(thread: SupportBotPendingThread): string | null {
+  for (let i = thread.messages.length - 1; i >= 0; i -= 1) {
+    const m = thread.messages[i];
+    if (m && m.sender === "user") return m.body;
+  }
+  return null;
+}
+
 async function handleThread(thread: SupportBotPendingThread): Promise<void> {
+  // Moderation runs BEFORE the model, which is the point: the reply is a
+  // fixed string the operator chose, so there is nothing to generate, and
+  // running it here means it still answers when no model is loaded. It
+  // never fires on a distress message — see moderation.ts.
+  if (cfg.moderationEnabled) {
+    const latest = newestBettorMessage(thread);
+    if (latest && classifyBettorMessage(latest) === "abusive") {
+      await api.reply(thread.threadId, ABUSE_REPLY, thread.lastMessageId);
+      // Logged at warn so these threads are findable afterwards; the reply
+      // itself shows in the backoffice like any other assistant message.
+      logger.warn({ event: "moderation_reply", threadId: thread.threadId });
+      return;
+    }
+  }
+
   const model = await lm.discoverModel();
   if (!model) {
     logger.error(
