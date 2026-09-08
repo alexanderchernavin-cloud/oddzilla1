@@ -34,6 +34,22 @@ const (
 	DoubleChancePMIDBase = 1_900_000 // 1X / 12 / X2 cells split off a match-winner table
 )
 
+// MarketTypeOf decodes a Fonbet provider_market_id back to the catalogue
+// table it was built from, and whether it is the double-chance split.
+//
+// The ONE place that inverts the id scheme. The settlement grader used to
+// do this arithmetic inline to reach `idx.Tables[n]` for the table name it
+// grades on, which coupled a money path directly to how the id happens to
+// be composed. It is a function so that when provider_market_id becomes a
+// synthetic per-sub-event number — opaque, resolved through a registry —
+// exactly one body changes and the grader does not.
+func MarketTypeOf(pmid int) (tableNum int, doubleChance bool) {
+	if pmid >= DoubleChancePMIDBase {
+		return pmid - DoubleChancePMIDBase, true
+	}
+	return pmid - PMIDBase, false
+}
+
 type Options struct {
 	BlockedSports    map[int]struct{}
 	AllowedSports    map[int]struct{}

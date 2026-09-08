@@ -315,11 +315,7 @@ func Grade(mk Market, idx *fonbet.Index, label string, sport int, ss ScoreSet) (
 	if _, isMap := mk.Specs["map"]; isMap {
 		return nil, false, "map market"
 	}
-	isDC := mk.PMID >= mapper.DoubleChancePMIDBase
-	tableNum := mk.PMID - mapper.PMIDBase
-	if isDC {
-		tableNum = mk.PMID - mapper.DoubleChancePMIDBase
-	}
+	tableNum, isDC := mapper.MarketTypeOf(mk.PMID)
 	table := idx.Tables[tableNum]
 	if table == nil {
 		return nil, false, "unknown table"

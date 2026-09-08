@@ -463,3 +463,36 @@ func TestBuildScoreServe(t *testing.T) {
 		})
 	}
 }
+
+func TestMarketTypeOfInvertsTheIDScheme(t *testing.T) {
+	// The settlement grader reaches idx.Tables[n] through this, so it is a
+	// money path: a wrong table number grades a market off the wrong
+	// statistic. Both namespaces, and the real table 120 that the
+	// "Match result" family lives on.
+	for _, tc := range []struct {
+		pmid  int
+		table int
+		dc    bool
+	}{
+		{PMIDBase + 120, 120, false},
+		{PMIDBase + 304, 304, false},
+		{PMIDBase + 25020, 25020, false},
+		{DoubleChancePMIDBase + 120, 120, true},
+		{DoubleChancePMIDBase + 1, 1, true},
+	} {
+		table, dc := MarketTypeOf(tc.pmid)
+		if table != tc.table || dc != tc.dc {
+			t.Errorf("MarketTypeOf(%d) = (%d, %v), want (%d, %v)",
+				tc.pmid, table, dc, tc.table, tc.dc)
+		}
+	}
+	// Round-trips against how the ids are built.
+	for _, num := range []int{1, 120, 304, 2800, 25020} {
+		if table, dc := MarketTypeOf(PMIDBase + num); table != num || dc {
+			t.Errorf("plain %d -> (%d, %v)", num, table, dc)
+		}
+		if table, dc := MarketTypeOf(DoubleChancePMIDBase + num); table != num || !dc {
+			t.Errorf("dc %d -> (%d, %v)", num, table, dc)
+		}
+	}
+}
