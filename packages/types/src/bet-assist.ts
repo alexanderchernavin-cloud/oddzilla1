@@ -319,6 +319,14 @@ export interface BetAssistMarketInput {
   providerMarketId: number;
   /** The market's `variant` specifier; absent or "" means the whole match. */
   variant?: string | null;
+  /**
+   * The market kind as the api resolved it ("fb:120@100201"). Preferred
+   * over the two fields above, and REQUIRED for a Fonbet market: its id is
+   * registry-allocated and opaque, so nothing downstream can derive the
+   * kind from it. Optional only so an Oddin or custom market, whose id is
+   * still self-describing, can be resolved without it.
+   */
+  marketKind?: string | null;
 }
 
 /** True when Bet Assist covers this Sportradar sport at all. */
@@ -344,7 +352,14 @@ export function resolveBetAssistMarket(
   // the shared one: same information, one definition, and it survives the
   // move to synthetic per-sub-event ids (which are opaque, so a reader
   // could not recover the Fonbet table from them at all).
-  const market = table[marketKindOf(input.providerMarketId, input.variant)];
+  // The kind is taken from the payload where the api resolved it, and
+  // only computed locally as a fallback for ids that are still
+  // self-describing (Oddin, custom). A Fonbet market's id is registry
+  // -allocated and opaque, so there is nothing to compute from.
+  const kind =
+    input.marketKind ?? marketKindOf(input.providerMarketId, input.variant);
+  if (!kind) return null;
+  const market = table[kind];
   if (!market) return null;
   return BET_ASSIST_MARKETS_BY_SPORT[input.srSportId]?.includes(market)
     ? market

@@ -38,7 +38,12 @@ import {
 import { NotFoundError } from "../../lib/errors.js";
 import { cached, cachedSwr } from "../../lib/cache.js";
 import {
-  FONBET_HEAD_TO_HEAD_PMIDS,
+  loadMarketTypes,
+  type MarketTypeRegistry,
+} from "../../lib/market-types.js";
+import { marketKindOf } from "@oddzilla/types/market-kind";
+import {
+  FONBET_HEAD_TO_HEAD_KINDS,
   FONBET_PMID_BASE,
   WINNER_OUTCOME_IDS,
 } from "@oddzilla/types/match-winner";
@@ -72,7 +77,9 @@ import {
 } from "@oddzilla/types";
 import { quoteOnLadder } from "@oddzilla/types/odds";
 import {
-  LADDER_PROVIDER_MARKET_IDS,
+  LADDER_HANDICAP_SHAPES,
+  LADDER_MARKET_KINDS,
+  LADDER_TOTAL_SHAPES,
   isFullMatchLadderMarket,
   ladderShapeByProviderMarketId,
   pickMainLine,
@@ -675,9 +682,14 @@ function boostDto(cell: BoostQuoteCell | undefined) {
 async function loadMatchWinnerOdds(
   db: FastifyInstance["db"],
   matchIds: bigint[],
+  marketTypes: MarketTypeRegistry,
 ): Promise<Map<string, MatchWinnerPair>> {
   const out = new Map<string, MatchWinnerPair>();
   if (matchIds.length === 0) return out;
+  // The head-to-head tables are named as KINDS and resolved here: a Fonbet
+  // provider_market_id is registry-allocated and opaque, so the literal
+  // `FONBET_PMID_BASE + 399` would match nothing.
+  const headToHeadIds = marketTypes.idsOf(FONBET_HEAD_TO_HEAD_KINDS);
 
   const rows = await db
     .select({
@@ -720,10 +732,12 @@ async function loadMatchWinnerOdds(
           // must never be the price on a card; and used below only when
           // the match has no canonical pair, so it can never displace
           // one.
-          and(
-            inArray(markets.providerMarketId, FONBET_HEAD_TO_HEAD_PMIDS),
-            sql`${markets.specifiersJson} = '{}'::jsonb`,
-          ),
+          headToHeadIds.length > 0
+            ? and(
+                inArray(markets.providerMarketId, headToHeadIds),
+                sql`${markets.specifiersJson} = '{}'::jsonb`,
+              )
+            : undefined,
         ),
       ),
     );
@@ -789,7 +803,7 @@ async function loadMatchWinnerOdds(
     let best: WinnerRow[] | null = null;
     let headToHead: WinnerRow[] | null = null;
     for (const arr of byMarket.values()) {
-      if (FONBET_HEAD_TO_HEAD_PMIDS.includes(arr[0]!.providerMarketId)) {
+      if (headToHeadIds.includes(arr[0]!.providerMarketId)) {
         // Exactly two sides is the shape this fallback reads. Anything
         // else is a table we have not looked at and must not guess about.
         if (!headToHead && arr.length === 2) headToHead = arr;
@@ -1114,9 +1128,21 @@ type PickedLadders = Partial<Record<LadderKind, PickedLadder>>;
 async function collectLadderRungs(
   db: FastifyInstance["db"],
   matchIds: bigint[],
+  marketTypes: MarketTypeRegistry,
 ): Promise<Map<string, Map<LadderKind, PickedLadder[]>>> {
   const out = new Map<string, Map<LadderKind, PickedLadder[]>>();
   if (matchIds.length === 0) return out;
+  // Ladder tables are named as KINDS and resolved through the registry: a
+  // Fonbet provider_market_id is allocated by us and opaque since
+  // migration 20260908T115542, so the literal 1_000_304 matches nothing.
+  // Oddin's ids still resolve directly — its id IS the market type — which
+  // is why both are collected and the shape lookup accepts either.
+  const ladderIds = [
+    ...marketTypes.idsOf(LADDER_MARKET_KINDS),
+    ...LADDER_HANDICAP_SHAPES.map((sh) => sh.providerMarketId),
+    ...LADDER_TOTAL_SHAPES.map((sh) => sh.providerMarketId),
+  ];
+  const kindOf = (pmid: number) => marketTypes.kindOf(pmid);
 
   const rows = await db
     .select({
@@ -1134,7 +1160,7 @@ async function collectLadderRungs(
     .where(
       and(
         inArray(markets.matchId, matchIds),
-        inArray(markets.providerMarketId, [...LADDER_PROVIDER_MARKET_IDS]),
+        inArray(markets.providerMarketId, ladderIds),
         eq(markets.status, 1),
       ),
     );
@@ -1151,7 +1177,7 @@ async function collectLadderRungs(
   const byMatch = new Map<string, Map<LadderKind, Map<number, Map<string, Rung>>>>();
 
   for (const r of rows) {
-    const resolved = ladderShapeByProviderMarketId(r.providerMarketId);
+    const resolved = ladderShapeByProviderMarketId(r.providerMarketId, kindOf);
     if (!resolved) continue;
     const specs = (r.specifiersJson ?? {}) as Record<string, string>;
     if (!isFullMatchLadderMarket(specs, resolved.shape)) continue;
@@ -1193,7 +1219,7 @@ async function collectLadderRungs(
     const kinds = new Map<LadderKind, PickedLadder[]>();
     for (const [kind, perProvider] of perKind) {
       for (const [providerMarketId, perMarket] of perProvider) {
-        const shape = ladderShapeByProviderMarketId(providerMarketId)?.shape;
+        const shape = ladderShapeByProviderMarketId(providerMarketId, kindOf)?.shape;
         if (!shape) continue;
         const firstId = shape.outcomeIds[0];
         const secondId = shape.outcomeIds[1];
@@ -1251,10 +1277,12 @@ async function collectLadderRungs(
 async function loadLadderMarketsForMatches(
   db: FastifyInstance["db"],
   matchIds: bigint[],
+  marketTypes: MarketTypeRegistry,
 ): Promise<Map<string, PickedLadders>> {
   const out = new Map<string, PickedLadders>();
-  const collected = await collectLadderRungs(db, matchIds);
+  const collected = await collectLadderRungs(db, matchIds, marketTypes);
   for (const [mkey, kinds] of collected) {
+
     const ladders: PickedLadders = {};
     for (const [kind, rungs] of kinds) {
       const picked = pickMainLine(
@@ -1584,6 +1612,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
           loadMatchWinnerOdds(
             app.db,
             rows.map((r) => r.matchId),
+            await loadMarketTypes(app),
           ),
           request.user
             ? loadBettorAdjustmentCascade(app.db, request.user.id)
@@ -1823,6 +1852,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
       loadMatchWinnerOdds(
         app.db,
         rows.map((r) => r.matchId),
+        await loadMarketTypes(app),
       ),
       request.user
         ? loadBettorAdjustmentCascade(app.db, request.user.id)
@@ -1888,6 +1918,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
       loadLadderMarketsForMatches(
         app.db,
         rows.map((r) => r.matchId),
+        await loadMarketTypes(app),
       ),
     ]);
     const boosts = await loadBoostRulesForMatches(
@@ -2078,7 +2109,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
         }
 
         const [collected, cascade, viewerRiskScore] = await Promise.all([
-          collectLadderRungs(app.db, [match.id]),
+          collectLadderRungs(app.db, [match.id], await loadMarketTypes(app)),
           request.user
             ? loadBettorAdjustmentCascade(app.db, request.user.id)
             : Promise.resolve(EMPTY_CASCADE),
@@ -2332,7 +2363,10 @@ export default async function catalogRoutes(app: FastifyInstance) {
     // All four lookups are independent — fire in parallel so the
     // match-detail page p99 isn't a sum of four round-trips.
     const distinctMarketIds = Array.from(new Set(rows.map((r) => r.providerMarketId)));
-    const [cps, pps, marketDescs, outcomeDescs] = await Promise.all([
+    // The market-type registry rides this batch: it is Redis-cached for
+    // 5 minutes and only changes when Fonbet publishes a sub-event we
+    // have never seen, so it costs nothing per request in practice.
+    const [cps, pps, marketDescs, outcomeDescs, marketTypes] = await Promise.all([
       competitorUrns.size > 0
         ? app.db
             .select({ urn: competitorProfiles.urn, name: competitorProfiles.name })
@@ -2380,6 +2414,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
               ),
             )
         : Promise.resolve([]),
+      loadMarketTypes(app),
     ]);
     const competitorNameMap = new Map<string, string>();
     for (const c of cps) competitorNameMap.set(c.urn, c.name);
@@ -2433,6 +2468,14 @@ export default async function catalogRoutes(app: FastifyInstance) {
     type MarketRow = {
       id: string;
       providerMarketId: number;
+      /**
+       * The market TYPE as a readable key — "fb:120@100201", "od:1".
+       * Served because `provider_market_id` is registry-allocated and
+       * OPAQUE since migration 20260908T115542, so the browser cannot
+       * derive it: Bet Assist keys off this, and it runs client-side.
+       * Null when the registry has no row for the id yet.
+       */
+      marketKind: string | null;
       specifiers: Record<string, string>;
       variant: string;
       name: string;
@@ -2512,6 +2555,12 @@ export default async function catalogRoutes(app: FastifyInstance) {
         m = {
           id: key,
           providerMarketId: r.providerMarketId,
+          // Registry first (Fonbet ids are opaque), then the local decode
+          // for the ids that are still self-describing: Oddin's, whose id
+          // IS the type, and custom markets.
+          marketKind:
+            marketTypes.kindOf(r.providerMarketId) ??
+            marketKindOf(r.providerMarketId, variant),
           specifiers: specs,
           variant,
           name: substituteTemplate(template, specs, teams, profiles, locale),
@@ -2919,6 +2968,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
       loadMatchWinnerOdds(
         app.db,
         rows.map((r) => r.matchId),
+        await loadMarketTypes(app),
       ),
       request.user
         ? loadBettorAdjustmentCascade(app.db, request.user.id)
@@ -2981,6 +3031,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
       loadLadderMarketsForMatches(
         app.db,
         rows.map((r) => r.matchId),
+        await loadMarketTypes(app),
       ),
     ]);
     const boosts = await loadBoostRulesForMatches(

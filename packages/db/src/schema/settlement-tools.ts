@@ -30,7 +30,10 @@ export const fonbetMarketDenylist = pgTable(
     id: serial().primaryKey(),
     // 'table' | 'label_prefix' — CHECK-constrained in SQL.
     kind: text().notNull(),
-    providerMarketId: integer("provider_market_id"),
+    // Fonbet catalogue TABLE number, not a provider_market_id: a rule
+    // covers every sub-event of the table, which one id cannot express
+    // since each sub-event got its own (migration 20260908T115542).
+    tableNum: integer("table_num"),
     labelPrefix: text("label_prefix"),
     reason: text().notNull().default(""),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -40,7 +43,7 @@ export const fonbetMarketDenylist = pgTable(
   },
   (t) => [
     uniqueIndex("fonbet_market_denylist_table_uniq")
-      .on(t.providerMarketId)
+      .on(t.tableNum)
       .where(sql`${t.kind} = 'table'`),
     uniqueIndex("fonbet_market_denylist_label_uniq")
       .on(sql`lower(${t.labelPrefix})`)

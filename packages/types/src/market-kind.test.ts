@@ -7,6 +7,8 @@ import {
   formatMarketKind,
   marketKindOf,
   parseMarketKind,
+  marketKindPartsOf,
+  PROVIDER_MARKET_TYPE_ID_BASE,
   variantKindChain,
 } from "./market-kind.js";
 
@@ -94,4 +96,15 @@ test("rejects malformed kinds rather than guessing", () => {
   for (const bad of ["", "xx:1", "fb:", "fb:abc", "od:1@100201", "od:1#dc", "fb:120@"]) {
     assert.equal(parseMarketKind(bad), null, bad);
   }
+});
+
+test("a registry-allocated id is opaque and says so", () => {
+  // Our own ids (migration 20260908T115542) carry no table number, so
+  // decoding must refuse rather than compute 3000005 - 1000000 = 2000005
+  // and hand back a market type that does not exist.
+  assert.equal(marketKindOf(PROVIDER_MARKET_TYPE_ID_BASE), null);
+  assert.equal(marketKindOf(PROVIDER_MARKET_TYPE_ID_BASE + 1059, "fb:100201"), null);
+  assert.equal(marketKindPartsOf(PROVIDER_MARKET_TYPE_ID_BASE + 5), null);
+  // The legacy bands still decode, so historical rows keep working.
+  assert.equal(marketKindOf(FONBET_PMID_BASE + 120), "fb:120");
 });

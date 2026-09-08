@@ -68,6 +68,19 @@ export const FONBET_DOUBLE_CHANCE_PMID_BASE = 1_900_000;
 /** Operator-authored markets all share this id — see custom-events.ts. */
 export const CUSTOM_PMID = 2_000_000;
 
+/**
+ * Where `provider_market_types` allocates our own ids from (migration
+ * 20260908T115542).
+ *
+ * These are OPAQUE: they carry no table number, so nothing can decode one
+ * locally and `marketKindPartsOf` returns null rather than computing a
+ * nonsense table from the arithmetic that used to work. A caller that
+ * needs the kind for such an id reads it from the registry — the api
+ * serves it on the market payload as `marketKind` for exactly this reason,
+ * so the browser never needs the registry.
+ */
+export const PROVIDER_MARKET_TYPE_ID_BASE = 3_000_000;
+
 export interface MarketKindParts {
   provider: MarketKindProvider;
   /** The provider's own market-type number: Oddin's id, Fonbet's table. */
@@ -114,14 +127,21 @@ export function variantKindChain(variant: string | null | undefined): string {
  * through the registry instead and calls `formatMarketKind` — the string,
  * and therefore every consumer keyed on it, does not change.
  */
-export function marketKindOf(providerMarketId: number, variant?: string | null): string {
-  return formatMarketKind(marketKindPartsOf(providerMarketId, variant));
+export function marketKindOf(
+  providerMarketId: number,
+  variant?: string | null,
+): string | null {
+  const parts = marketKindPartsOf(providerMarketId, variant);
+  return parts ? formatMarketKind(parts) : null;
 }
 
 export function marketKindPartsOf(
   providerMarketId: number,
   variant?: string | null,
-): MarketKindParts {
+): MarketKindParts | null {
+  // Registry-allocated: opaque by design, so say so instead of decoding
+  // it as though it were still 1 000 000 + table.
+  if (providerMarketId >= PROVIDER_MARKET_TYPE_ID_BASE) return null;
   const chain = variantKindChain(variant);
   if (providerMarketId === CUSTOM_PMID) {
     return { provider: "cu", typeNum: providerMarketId, variant: "", doubleChance: false };

@@ -121,7 +121,7 @@ func TestGradeEnglishHalfAndStat(t *testing.T) {
 	corners, _ := fonbet.ParseScore("9:4 (5-2 4-2)")
 	main, _ := fonbet.ParseScore("2:1 (1-0 1-1)")
 	ss := ScoreSet{Main: main, Stats: map[string]fonbet.Score{"corners": corners}}
-	mk := Market{PMID: 1000001, Specs: map[string]string{"threshold": "6.5"}, OutcomeIDs: []string{"over", "under"}}
+	mk := Market{PMID: 1000001, TableNum: 1, Specs: map[string]string{"threshold": "6.5"}, OutcomeIDs: []string{"over", "under"}}
 
 	// "1st half corners" = 5+2 = 7 corners, over 6.5 wins.
 	outs, ok, why := Grade(mk, idx, "1st half corners", 1, ss)
@@ -147,7 +147,7 @@ func TestGradeEnglishHalfAndStat(t *testing.T) {
 	// Basketball: "1st half" spans two quarters. 20+18 = 38 points.
 	bball, _ := fonbet.ParseScore("80:75 (20-18 18-20 21-19 21-18)")
 	bss := ScoreSet{Main: bball}
-	bmk := Market{PMID: 1000001, Specs: map[string]string{"threshold": "37.5"}, OutcomeIDs: []string{"over", "under"}}
+	bmk := Market{PMID: 1000001, TableNum: 1, Specs: map[string]string{"threshold": "37.5"}, OutcomeIDs: []string{"over", "under"}}
 	outs, ok, why = Grade(bmk, idx, "1st half", 3, bss)
 	if !ok {
 		t.Fatalf("basketball 1st half: %s", why)
@@ -179,7 +179,7 @@ func TestGradeEnglishOvertimeRow(t *testing.T) {
 			Tables:  map[int]*fonbet.TableMeta{1: {Num: 1, Name: "Result", IsMain: true, IsMatchWinner: true}},
 			Factors: map[int]*fonbet.FactorMeta{},
 		}
-		mk := Market{PMID: 1000001, Specs: map[string]string{}, OutcomeIDs: []string{"1", "2"}}
+		mk := Market{PMID: 1000001, TableNum: 1, Specs: map[string]string{}, OutcomeIDs: []string{"1", "2"}}
 		outs, ok, why := Grade(mk, idx, "", 8, ss)
 		if !ok {
 			t.Fatalf("%q: %s", row, why)
