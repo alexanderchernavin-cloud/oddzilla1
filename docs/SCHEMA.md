@@ -638,9 +638,18 @@ each facet was a full scan of its table. `pg_trgm` GIN indexes on the
 searched columns — `matches.home_team` / `.away_team`,
 `competitors.name` / `.abbreviation`, `tournaments.name` — turn them into
 bitmap index scans. Measured on production 2026-09-08 with the needle
-"united", warm, before → after: the matches facet 331 ms → 11.4 ms, the
-tournaments facet 60 ms → 3.7 ms, the teams facet 158 ms → 107 ms. Cold,
-the teams facet had measured 1497 ms.
+"united", warm, before → after: the matches facet 331 ms → 16 ms, the
+tournaments facet 60 ms → 5.6 ms, the teams facet 158 ms → 23 ms. Cold,
+the teams facet had measured 1497 ms; end to end through Caddy the whole
+endpoint now answers a fresh needle in ~120-140 ms and a repeat in
+~21 ms off the response cache.
+
+(The migration file's own comment quotes slightly different "after"
+figures — 11.4 / 3.7 / 107 ms. Those are the pre-merge rehearsal, taken
+inside the transaction that had just built the indexes, so `EXPLAIN
+ANALYZE` overhead and a cold index were in them; the numbers above are
+the live database afterwards. The migration is applied, so its comment
+is left alone rather than edited — see the migration workflow section.)
 
 Three things about it are decisions rather than mechanics.
 
@@ -654,14 +663,18 @@ measured 0.03 ms; an index would cost writes to serve a scan that is
 already free, the same reasoning migration 0103 gives for leaving
 `display_order` unindexed.
 
-**The teams facet keeps most of its cost, and that is expected.** The
-index removes its 22 267-row scan, but its real expense is the OR join
-to `matches` (`home_competitor_id = co.id OR away_competitor_id = co.id`)
-fanned out over the 246 competitors "united" genuinely matches, each
-doing a bitmap heap scan that mostly discards rows on the status filter.
-Closing that means widening `matches_home_competitor_idx` / `_away_` to
-carry `status` — two more indexes on the table both ingesters write
-continuously, and a separate decision.
+**The teams facet is the one that still varies, and it is worth knowing
+why before re-measuring it.** The index removed its 22 267-row scan
+outright, but what remains is the OR join to `matches`
+(`home_competitor_id = co.id OR away_competitor_id = co.id`) fanned out
+over the 246 competitors "united" genuinely matches, each doing a bitmap
+heap scan that mostly discards rows on the status filter. That is heap
+I/O, and `markets` at 7 GB evicts it readily — so this facet measured
+609 ms on a first touch after eviction against 9.5 ms fully warm, where
+the other two are stable. Closing it means widening
+`matches_home_competitor_idx` / `_away_` to carry `status` — two more
+indexes on the table both ingesters write continuously, and a separate
+decision.
 
 The known limit: `gin_trgm_ops` can only serve a pattern holding at least
 one full trigram, so a one- or two-character query still falls back to a
