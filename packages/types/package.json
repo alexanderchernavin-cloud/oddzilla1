@@ -23,6 +23,7 @@
     "./zillabuild": "./src/zillabuild.ts",
     "./netwinstable": "./src/netwinstable.ts",
     "./boosted-odds": "./src/boosted-odds.ts",
+    "./match-winner": "./src/match-winner.ts",
     "./odds": "./src/odds.ts",
     "./list-markets": "./src/list-markets.ts",
     "./support": "./src/support.ts",

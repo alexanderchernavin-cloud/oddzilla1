@@ -441,7 +441,10 @@ export function LiveMarkets({
             !!customBoost.matchWide &&
             !!teamOutcomeId &&
             !marketScoped &&
-            isTeamShapedMarket(m.providerMarketId) &&
+            isTeamShapedMarket(
+              m.providerMarketId,
+              m.outcomes.map((o) => o.outcomeId),
+            ) &&
             !explicitSelections?.has(teamOutcomeId);
 
           const selections =

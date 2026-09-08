@@ -39,6 +39,12 @@
 // and on production 2026-09-07 that was "2nd half: Match result", six
 // outcomes including the double chance, on a card headed by the two team
 // names. Same class of bug as the hard-coded `1` in quoteMatchWinnerBoost.
+//
+// It lives in @oddzilla/types rather than services/api because the MATCH
+// PAGE needs the same answer in the browser — `isTeamShapedMarket` below
+// gates a team_only ZillaBoost client-side, and a second copy of the
+// Fonbet namespace rule is precisely how the hard-coded `1` happened.
+// Import by subpath (`@oddzilla/types/match-winner`), never the barrel.
 
 /**
  * provider_market_id namespace of the Fonbet feed (services/fonbet-ingester,

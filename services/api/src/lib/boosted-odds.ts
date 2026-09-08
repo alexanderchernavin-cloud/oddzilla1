@@ -225,18 +225,23 @@ export interface BatchedMatchBoosts {
   /**
    * Everything quoteMarketBoost needs for one market, resolved together.
    *
-   * `providerMarketId` is REQUIRED because a `team_only` competitor rule
-   * (migration 0093) may only touch team-shaped markets, and must be
-   * applied as a SELECTION on that team's own outcome — never
-   * market-wide, or the opponent's price moves too. Returning the two
-   * halves from one call makes that impossible to get wrong at a call
-   * site; an earlier split `marketWide()` / `selections()` pair let a
-   * caller take the competitor rule as market-wide by accident.
+   * `providerMarketId` AND `outcomeIds` are both REQUIRED because a
+   * `team_only` competitor rule (migration 0093) may only touch
+   * team-shaped markets, and must be applied as a SELECTION on that
+   * team's own outcome — never market-wide, or the opponent's price moves
+   * too. The ids are part of that test rather than a convenience: on the
+   * Fonbet side they are the only thing separating a winner table from
+   * its own sub-event copies, which share a provider_market_id (see
+   * isTeamShapedMarket). Returning the two halves from one call makes the
+   * market-wide mistake impossible at a call site; an earlier split
+   * `marketWide()` / `selections()` pair let a caller take the competitor
+   * rule as market-wide by accident.
    */
   resolve(
     ctx: MatchBoostContext,
     marketId: bigint,
     providerMarketId: number,
+    outcomeIds: readonly string[],
   ): {
     marketWide: BoostRule | null;
     selections: Map<string, BoostRule> | null;
@@ -343,7 +348,7 @@ export async function loadBoostRulesForMatches(
 
   return {
     empty: false,
-    resolve(ctx, marketId, providerMarketId) {
+    resolve(ctx, marketId, providerMarketId, outcomeIds) {
       // Explicit outcome-scope rules first — they always win their cell.
       const explicit = selectionsByMarket.get(marketId.toString()) ?? null;
       const selections = explicit ? new Map(explicit) : null;
@@ -353,7 +358,7 @@ export async function loadBoostRulesForMatches(
       // can be boosted this way at once — each gets its own cell, which
       // the market-wide tie-break below couldn't express.
       let teamOnly: Map<string, BoostRule> | null = null;
-      if (isTeamShapedMarket(providerMarketId)) {
+      if (isTeamShapedMarket(providerMarketId, outcomeIds)) {
         for (const id of [ctx.homeCompetitorId, ctx.awayCompetitorId]) {
           if (id === null) continue;
           const r = byCompetitor.get(id);
@@ -673,6 +678,13 @@ export async function validateCustomBoostForBet(
     (rule.scope === "sport" && rule.sportId === market.sportId);
   if (!covers) return { ok: false, reason: "boosted_odds_not_applicable" };
 
+  // Loaded before the team_only gate below, which needs this market's
+  // outcome IDS: on the Fonbet side they are the only thing that
+  // separates a winner table from its own sub-event copies, which share a
+  // provider_market_id (see isTeamShapedMarket). The pricing path a few
+  // lines down wants the same rows, so this is a hoist, not a new query.
+  const priced = await loadQuotableOutcomes(app.db, marketIdBig);
+
   // A team_only competitor rule prices ONE cell — this team's own
   // outcome, and only in a team-shaped market (migration 0093). Anything
   // else it might have covered under 'all' mode is not boosted, so a leg
@@ -680,7 +692,10 @@ export async function validateCustomBoostForBet(
   const teamOnlyOutcomeId = teamOutcomeForRule(rule, market);
   if (isTeamOnlyRule(rule)) {
     if (
-      !isTeamShapedMarket(market.providerMarketId) ||
+      !isTeamShapedMarket(
+        market.providerMarketId,
+        priced.map((o) => o.outcomeId),
+      ) ||
       teamOnlyOutcomeId === null ||
       teamOnlyOutcomeId !== args.outcomeId
     ) {
@@ -709,7 +724,6 @@ export async function validateCustomBoostForBet(
     return { ok: false, reason: "boosted_odds_not_applicable" };
   }
 
-  const priced = await loadQuotableOutcomes(app.db, marketIdBig);
   // team_only is quoted through the selection path with a synthesized
   // single-cell map, so the delta comes out of that outcome's own
   // probability and the opponent's price is untouched — byte-identical
