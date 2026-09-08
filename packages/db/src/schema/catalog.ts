@@ -149,6 +149,10 @@ export const tournaments = pgTable(
   (t) => [
     index("tournaments_category_idx").on(t.categoryId),
     index("tournaments_active_idx").on(t.active, t.startAt),
+    // Trigram indexes for /catalog/search (migration 20260908T173815).
+    // Its facets are leading-wildcard ILIKE, which no b-tree can serve;
+    // `sports` is deliberately left out at 69 rows.
+    index("tournaments_name_trgm_idx").using("gin", t.name.op("gin_trgm_ops")),
   ],
 );
 
@@ -182,6 +186,16 @@ export const competitors = pgTable(
   (t) => [
     unique("competitors_sport_slug").on(t.sportId, t.slug),
     index("competitors_sport_idx").on(t.sportId),
+    // Trigram indexes for /catalog/search (migration 20260908T173815).
+    // Its facets are leading-wildcard ILIKE, which no b-tree can serve;
+    // `sports` is deliberately left out at 69 rows.
+    // Both columns, because the facet ORs over them and an OR can only
+    // use indexes when every side has one.
+    index("competitors_name_trgm_idx").using("gin", t.name.op("gin_trgm_ops")),
+    index("competitors_abbreviation_trgm_idx").using(
+      "gin",
+      t.abbreviation.op("gin_trgm_ops"),
+    ),
   ],
 );
 
@@ -232,6 +246,17 @@ export const matches = pgTable(
     index("matches_away_team_recency_idx")
       .on(t.awayCompetitorId, t.status, t.liveStartedAt.desc())
       .where(sql`${t.liveStartedAt} IS NOT NULL`),
+    // Trigram indexes for /catalog/search (migration 20260908T173815).
+    // Its facets are leading-wildcard ILIKE, which no b-tree can serve;
+    // `sports` is deliberately left out at 69 rows.
+    index("matches_home_team_trgm_idx").using(
+      "gin",
+      t.homeTeam.op("gin_trgm_ops"),
+    ),
+    index("matches_away_team_trgm_idx").using(
+      "gin",
+      t.awayTeam.op("gin_trgm_ops"),
+    ),
   ],
 );
 
