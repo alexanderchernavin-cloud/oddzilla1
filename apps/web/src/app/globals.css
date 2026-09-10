@@ -2333,6 +2333,91 @@ body {
   vertical-align: middle;
 }
 
+/* ── The win ────────────────────────────────────────────────────────
+   The band that plays over the reels when a spin pays. It is positioned
+   OVER the reel row rather than inserted above it: a layout shift at the
+   moment a bettor is reading their payout is the worst possible time for
+   one, and the reels underneath are the thing being celebrated — hiding
+   them would throw away the result. */
+.oz-slz-reels { position: relative; }
+
+.oz-slz-win {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border-radius: var(--r-md);
+  overflow: hidden;
+  pointer-events: none;
+  /* Enough to read against, sheer enough that the winning symbols stay
+     visible behind it. */
+  background: color-mix(in srgb, var(--surface-1) 78%, transparent);
+  box-shadow: inset 0 0 0 1.5px var(--positive);
+  animation: oz-slz-win-in 0.34s cubic-bezier(0.2, 1.1, 0.35, 1) both;
+}
+@keyframes oz-slz-win-in {
+  from { opacity: 0; transform: scale(0.94); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.oz-slz-win-mult {
+  font-size: 30px;
+  line-height: 1;
+  color: var(--positive);
+  animation: oz-slz-win-pop 0.5s cubic-bezier(0.2, 1.4, 0.35, 1) both;
+}
+@keyframes oz-slz-win-pop {
+  from { transform: scale(0.6); opacity: 0; }
+  60%  { transform: scale(1.12); opacity: 1; }
+  to   { transform: scale(1); opacity: 1; }
+}
+.oz-slz-win-amount {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+/* One pass of light across the band, which is the slot grammar for
+   "this one paid". Transform-only, so it composites. */
+.oz-slz-win-sheen {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 45%;
+  background: linear-gradient(
+    100deg,
+    transparent,
+    color-mix(in srgb, var(--positive) 26%, transparent),
+    transparent
+  );
+  animation: oz-slz-sheen 0.85s ease-out 0.12s both;
+}
+@keyframes oz-slz-sheen {
+  from { transform: translate3d(-160%, 0, 0); }
+  to   { transform: translate3d(320%, 0, 0); }
+}
+
+/* The reels that formed the line pulse under the band, so it is obvious
+   WHICH symbols paid rather than just that something did. */
+.oz-slz-reel[data-paying="true"] {
+  animation: oz-slz-reel-pay 0.7s ease-out 2;
+}
+@keyframes oz-slz-reel-pay {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  50% { box-shadow: 0 0 0 2px var(--positive); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oz-slz-win,
+  .oz-slz-win-mult,
+  .oz-slz-win-sheen,
+  .oz-slz-reel[data-paying="true"] { animation: none; }
+  .oz-slz-win-sheen { display: none; }
+}
+
 /* ── Spinning reel ──────────────────────────────────────────────────
    A reel with no symbol yet spins, because this is a slot machine and a
    dashed circle reading "Waiting" is a form field. The strip is the
