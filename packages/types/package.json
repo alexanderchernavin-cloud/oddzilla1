@@ -31,7 +31,8 @@
     "./video": "./src/video.ts",
     "./sportradar": "./src/sportradar.ts",
     "./bet-assist": "./src/bet-assist.ts",
-    "./custom-events": "./src/custom-events.ts"
+    "./custom-events": "./src/custom-events.ts",
+    "./slotzilla": "./src/slotzilla.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

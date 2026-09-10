@@ -1,0 +1,79 @@
+{
+    "queryUrl":  "sport_matches/2/2026-09-07",
+    "doc":  [
+                {
+                    "event":  "sport_matches",
+                    "_dob":  1788984495,
+                    "_maxage":  10800,
+                    "data":  {
+                                 "sport":  {
+                                               "_doc":  "sport",
+                                               "_id":  2,
+                                               "realcategories":  [
+                                                                      {
+                                                                          "_doc":  "realcategory",
+                                                                          "_id":  103,
+                                                                          "tournaments":  [
+                                                                                              {
+                                                                                                  "_doc":  "tournament",
+                                                                                                  "_id":  4807,
+                                                                                                  "name":  "FIBA World Cup, Women, Group A",
+                                                                                                  "matches":  [
+                                                                                                                  {
+                                                                                                                      "_doc":  "match",
+                                                                                                                      "_id":  71036226,
+                                                                                                                      "_sid":  2,
+                                                                                                                      "_dt":  {
+                                                                                                                                  "uts":  1788796200
+                                                                                                                              },
+                                                                                                                      "teams":  {
+                                                                                                                                    "home":  {
+                                                                                                                                                 "name":  "Germany"
+                                                                                                                                             },
+                                                                                                                                    "away":  {
+                                                                                                                                                 "name":  "Mali"
+                                                                                                                                             }
+                                                                                                                                },
+                                                                                                                      "result":  {
+                                                                                                                                     "home":  83,
+                                                                                                                                     "away":  58
+                                                                                                                                 },
+                                                                                                                      "status":  {
+                                                                                                                                     "name":  "Ended"
+                                                                                                                                 },
+                                                                                                                      "ended_uts":  1788802444
+                                                                                                                  },
+                                                                                                                  {
+                                                                                                                      "_doc":  "match",
+                                                                                                                      "_id":  71036222,
+                                                                                                                      "_sid":  2,
+                                                                                                                      "_dt":  {
+                                                                                                                                  "uts":  4102444800
+                                                                                                                              },
+                                                                                                                      "teams":  {
+                                                                                                                                    "home":  {
+                                                                                                                                                 "name":  "Japan"
+                                                                                                                                             },
+                                                                                                                                    "away":  {
+                                                                                                                                                 "name":  "Spain"
+                                                                                                                                             }
+                                                                                                                                },
+                                                                                                                      "result":  {
+                                                                                                                                     "home":  null,
+                                                                                                                                     "away":  null
+                                                                                                                                 },
+                                                                                                                      "status":  {
+                                                                                                                                     "name":  "Not started"
+                                                                                                                                 },
+                                                                                                                      "ended_uts":  false
+                                                                                                                  }
+                                                                                                              ]
+                                                                                              }
+                                                                                          ]
+                                                                      }
+                                                                  ]
+                                           }
+                             }
+                }
+            ]
+}

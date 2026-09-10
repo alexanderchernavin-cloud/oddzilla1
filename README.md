@@ -65,6 +65,7 @@ Each service has its own local README:
 - [services/settlement](services/settlement/README.md)
 - [services/bet-delay](services/bet-delay/README.md)
 - [services/wallet-watcher](services/wallet-watcher/README.md)
+- [services/slotzilla](services/slotzilla/README.md) — the 15-second live-basketball slot game
 - [services/support-ai-bot](services/support-ai-bot/README.md) — operator-PC worker (local LLM), not in the docker stack
 - [services/zillaboost-banner-gen](services/zillaboost-banner-gen/README.md) — operator-PC worker (local image models), not in the docker stack
 - [apps/web](apps/web/README.md)
@@ -88,6 +89,7 @@ services/
   settlement/        Go — settle/cancel/rollback with apply-once semantics
   bet-delay/         Go — finalizes pending_delay tickets
   wallet-watcher/    Go — Tron + Ethereum USDT deposits
+  slotzilla/         Go — SlotZilla live-basketball slot (Sportradar play-by-play)
 packages/
   db/                Drizzle schema + SQL migrations
   types/             Shared API + WS + money + currency + specifier helpers

@@ -34,6 +34,8 @@ import {
   isCustomScope,
   combiBoostConfig,
   matchSportradarIds,
+  slotzillaConfig,
+  slotzillaGames,
 } from "@oddzilla/db";
 import { NotFoundError } from "../../lib/errors.js";
 import { cached, cachedSwr } from "../../lib/cache.js";
@@ -2265,7 +2267,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
     //
     // market_descriptions is joined later (per distinct market id) to expand
     // {specifier} placeholders; missing ones fall back to "Market #N".
-    const [rows, cascade, orderRows, groupConfigRows, srMapping] = await Promise.all([
+    const [rows, cascade, orderRows, groupConfigRows, srMapping, slotGame, slotCfg] = await Promise.all([
       app.db
         .select({
           marketId: markets.id,
@@ -2332,6 +2334,19 @@ export default async function catalogRoutes(app: FastifyInstance) {
             eq(matchSportradarIds.status, "confirmed"),
           ),
         )
+        .limit(1),
+      // SlotZilla (docs/SLOTZILLA.md): the storefront mounts the slot
+      // panel when a game row exists for this match AND the game is
+      // switched on; both reads are one indexed probe each.
+      app.db
+        .select({ status: slotzillaGames.status })
+        .from(slotzillaGames)
+        .where(eq(slotzillaGames.matchId, match.id))
+        .limit(1),
+      app.db
+        .select({ enabled: slotzillaConfig.enabled })
+        .from(slotzillaConfig)
+        .where(eq(slotzillaConfig.id, "default"))
         .limit(1),
     ]);
     // Per-bettor adjustment for this match. Used by the full markets render
@@ -2856,6 +2871,12 @@ export default async function catalogRoutes(app: FastifyInstance) {
                 srMatchId: Number(srMapping[0].srMatchId),
                 srSportId: srMapping[0].srSportId,
               },
+        // Set only when the match carries a SlotZilla game and the game
+        // is enabled; the storefront mounts the slot panel on it.
+        slotzilla:
+          slotGame[0] === undefined || slotCfg[0]?.enabled !== true
+            ? null
+            : { status: slotGame[0].status },
       },
       markets: marketList,
       marketGroups: groups,

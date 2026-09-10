@@ -95,5 +95,13 @@ services:
       - ./services/wallet-watcher:/app
       - go-mod-cache:/go/pkg/mod
 
+  slotzilla:
+    command: ["go", "run", "./cmd/slotzilla"]
+    ports:
+      - "127.0.0.1:${SLOTZILLA_HEALTH_PORT:-8088}:${SLOTZILLA_HEALTH_PORT:-8088}"
+    volumes:
+      - ./services/slotzilla:/app
+      - go-mod-cache:/go/pkg/mod
+
 volumes:
   go-mod-cache:

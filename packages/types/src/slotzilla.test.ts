@@ -1,0 +1,186 @@
+import { describe, test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+import {
+  DEFAULT_PAYTABLE_LINES,
+  evaluateLine,
+  expectedReturnBp,
+  exposureMicro,
+  firstWindowFor,
+  fitLinesToTarget,
+  formatMultiplier,
+  formatWindowLabel,
+  lineFrequencies,
+  LINE_KEYS,
+  payoutMicro,
+  reelForWindow,
+  reelsForRound,
+  slidingRounds,
+  symbolForEvent,
+  windowStartOf,
+  type LineKey,
+  type PaytableLines,
+  type ReelEvent,
+  type RoundReels,
+  type SlotSymbol,
+} from "./slotzilla.js";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const fixture = JSON.parse(
+  readFileSync(join(here, "../../../docs/fixtures/slotzilla-rules.json"), "utf8"),
+) as {
+  symbols: Array<{ type: string; points: number | null; symbol: string | null }>;
+  firstWindow: Array<{ clock: number; lead: number; first: number }>;
+  reels: Array<{
+    name: string;
+    windowFrom: number;
+    events: ReelEvent[];
+    expect: { symbol: SlotSymbol; team: string | null; eventId: string | null };
+  }>;
+  lines: Array<{ reels: [SlotSymbol, SlotSymbol, SlotSymbol]; line: LineKey | null }>;
+  payouts: Array<{ stakeMicro: string; multiplierX100: number; payoutMicro: string }>;
+  defaultPaytable: PaytableLines;
+};
+
+describe("golden fixture — the Go port reads the same file", () => {
+  test("symbols", () => {
+    for (const c of fixture.symbols) {
+      assert.equal(symbolForEvent({ type: c.type, points: c.points }), c.symbol, `${c.type}/${c.points}`);
+    }
+  });
+
+  test("first window rounds UP to the next 5-second mark past the lead", () => {
+    for (const c of fixture.firstWindow) {
+      assert.equal(firstWindowFor(c.clock, c.lead), c.first, `clock ${c.clock} lead ${c.lead}`);
+    }
+  });
+
+  test("reels", () => {
+    for (const c of fixture.reels) {
+      const r = reelForWindow(c.events, c.windowFrom);
+      assert.deepEqual(
+        { symbol: r.symbol, team: r.team, eventId: r.eventId },
+        c.expect,
+        c.name,
+      );
+    }
+  });
+
+  test("lines", () => {
+    for (const c of fixture.lines) {
+      assert.equal(evaluateLine(c.reels), c.line, c.reels.join(","));
+    }
+  });
+
+  test("payouts are exact bigint arithmetic, floored", () => {
+    for (const c of fixture.payouts) {
+      assert.equal(payoutMicro(BigInt(c.stakeMicro), c.multiplierX100).toString(), c.payoutMicro);
+    }
+  });
+
+  test("the default paytable is the fixture's", () => {
+    assert.deepEqual({ ...DEFAULT_PAYTABLE_LINES }, fixture.defaultPaytable);
+  });
+});
+
+describe("windows", () => {
+  test("windowStartOf floors to the grid", () => {
+    assert.equal(windowStartOf(0), 0);
+    assert.equal(windowStartOf(4), 0);
+    assert.equal(windowStartOf(5), 5);
+    assert.equal(windowStartOf(2141), 2140);
+  });
+
+  test("labels are inclusive scoreboard ranges", () => {
+    // Betby's 38:33–38:37 becomes 38:35–38:39 on the grid.
+    assert.equal(formatWindowLabel(2315), "38:35–38:39");
+    assert.equal(formatWindowLabel(0), "0:00–0:04");
+  });
+
+  test("reelsForRound covers three consecutive windows", () => {
+    const events: ReelEvent[] = [
+      { symbol: "P2", seconds: 101, eventId: "1", team: "home" },
+      { symbol: "P3", seconds: 107, eventId: "2", team: "away" },
+    ];
+    const [a, b, c] = reelsForRound(events, 100);
+    assert.equal(a.symbol, "P2");
+    assert.equal(b.symbol, "P3");
+    assert.equal(c.symbol, "NONE");
+  });
+});
+
+describe("paytable maths", () => {
+  test("every line key is enumerated exactly once", () => {
+    assert.equal(LINE_KEYS.length, 12);
+    assert.equal(new Set(LINE_KEYS).size, 12);
+  });
+
+  test("exposure is stake × top line, capped", () => {
+    // Top line ×500; 1 unit staked → 500 units, capped at 300.
+    assert.equal(exposureMicro(1_000_000n, DEFAULT_PAYTABLE_LINES, 300_000_000n), 300_000_000n);
+    assert.equal(exposureMicro(100_000n, DEFAULT_PAYTABLE_LINES, 300_000_000n), 50_000_000n);
+  });
+
+  test("formatMultiplier prints hundredths without trailing zeros", () => {
+    assert.equal(formatMultiplier(50), "0.5");
+    assert.equal(formatMultiplier(100), "1");
+    assert.equal(formatMultiplier(3500), "35");
+    assert.equal(formatMultiplier(125), "1.25");
+  });
+
+  test("payoutMicro refuses a fractional multiplier", () => {
+    assert.throws(() => payoutMicro(1n, 1.5));
+  });
+});
+
+describe("calibrator", () => {
+  // A toy corpus with the shape of the real one: mostly NONE, a few misses.
+  const rounds: RoundReels[] = [
+    ["NONE", "NONE", "NONE"],
+    ["NONE", "NONE", "NONE"],
+    ["NONE", "MISS", "NONE"],
+    ["NONE", "NONE", "P2"],
+    ["MISS", "MISS", "NONE"],
+    ["P2", "NONE", "NONE"],
+    ["P3", "MISS", "P2"],
+    ["NONE", "NONE", "FOUL"],
+  ];
+
+  test("lineFrequencies sums to the share of rounds with a line", () => {
+    const f = lineFrequencies(rounds);
+    assert.equal(f["all3:NONE"], 2 / 8);
+    assert.equal(f["any2:NONE"], 4 / 8);
+    assert.equal(f["any2:MISS"], 1 / 8);
+    assert.equal(f["any2:P3"], 0);
+  });
+
+  test("slidingRounds anchors a round at every window", () => {
+    const r = slidingRounds(["NONE", "P2", "NONE", "MISS"]);
+    assert.deepEqual(r, [
+      ["NONE", "P2", "NONE"],
+      ["P2", "NONE", "MISS"],
+    ]);
+    assert.deepEqual(slidingRounds(["NONE", "P2"]), []);
+  });
+
+  test("fitLinesToTarget holds the NONE rows and scales the rest to the target", () => {
+    const f = lineFrequencies(rounds);
+    const fit = fitLinesToTarget(DEFAULT_PAYTABLE_LINES, f, 9700);
+    assert.equal(fit.lines["any2:NONE"], 50);
+    assert.equal(fit.lines["all3:NONE"], 100);
+    // Fixed lines return 0.5×0.5 + 1×0.25 = 0.5 here; the rest must supply 0.47.
+    assert.ok(Math.abs(fit.fittedBp - 9700) <= 60, `fitted ${fit.fittedBp}`);
+    assert.ok(fit.factor > 0);
+    assert.equal(expectedReturnBp(fit.lines, f), fit.fittedBp);
+  });
+
+  test("a target below the fixed rows' own return floors the play rows at zero", () => {
+    const f = lineFrequencies(rounds);
+    const fit = fitLinesToTarget(DEFAULT_PAYTABLE_LINES, f, 1000);
+    assert.equal(fit.factor, 0);
+    assert.equal(fit.lines["any2:MISS"], 0);
+    assert.equal(fit.lines["all3:NONE"], 100);
+  });
+});

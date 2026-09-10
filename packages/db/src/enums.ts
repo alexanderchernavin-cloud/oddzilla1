@@ -12,6 +12,12 @@ export const walletTxTypeEnum = pgEnum("wallet_tx_type", [
   "bet_refund",
   "adjustment",
   "cashout",
+  // SlotZilla (migration 20260909T211311): a spin's stake, its payout,
+  // and the refund of a voided spin. Own migration file for the enum
+  // values, per the enum-in-same-transaction rule (0087 / 0096).
+  "slot_stake",
+  "slot_payout",
+  "slot_refund",
 ]);
 export const chainNetworkEnum = pgEnum("chain_network", ["TRC20", "ERC20"]);
 // Legacy deposits table status. Kept for the dormant `deposits` table —

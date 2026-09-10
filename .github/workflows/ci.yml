@@ -90,9 +90,9 @@ jobs:
 
           match() { echo "$files" | grep -qE "$1"; }
 
-          # Go: the seven service modules only. packages/ and apps/ are
+          # Go: the eight service modules only. packages/ and apps/ are
           # TypeScript and cannot affect a Go build.
-          if match '^services/(feed-ingester|fonbet-ingester|odds-publisher|settlement|bet-delay|wallet-watcher|signer)/'; then
+          if match '^services/(feed-ingester|fonbet-ingester|odds-publisher|settlement|bet-delay|wallet-watcher|signer|slotzilla)/'; then
             echo "go=true" >> "$GITHUB_OUTPUT"
           else
             echo "go=false" >> "$GITHUB_OUTPUT"
@@ -169,10 +169,10 @@ jobs:
           set -uo pipefail
           failed=""
           for svc in feed-ingester fonbet-ingester odds-publisher settlement \
-                     bet-delay wallet-watcher signer; do
+                     bet-delay wallet-watcher signer slotzilla; do
             echo "::group::$svc"
             # Collected rather than short-circuited, so one broken service
-            # does not hide the state of the other six — the behaviour the
+            # does not hide the state of the other seven — the behaviour the
             # matrix got from `fail-fast: false`.
             if ! ( cd "services/$svc" \
                    && go mod tidy \

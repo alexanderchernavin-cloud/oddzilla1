@@ -2099,3 +2099,603 @@ body {
   flex-direction: column;
   gap: 14px;
 }
+
+/* ── SlotZilla ── */
+/* The 15-second live slot on the match page (components/match/
+   slotzilla-panel.tsx) and its lobby strip (components/lobby/
+   slotzilla-live.tsx). Symbols are text + CSS, tinted per `data-sym`;
+   the lit reel is the window the match clock is inside right now. On a
+   phone the panel is a one-line strip until tapped (`data-expanded`). */
+.oz-slz {
+  display: flex;
+  flex-direction: column;
+  padding: clamp(14px, 3vw, 20px);
+  border-radius: var(--r-lg);
+  gap: 14px;
+}
+.oz-slz-strip { display: none; }
+.oz-slz-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.oz-slz-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.oz-slz-head-title {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.1;
+}
+.oz-slz-head-spacer { flex: 1; }
+.oz-slz-kicker {
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--tier-gold);
+}
+.oz-slz-title {
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+.oz-slz-tagline {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+.oz-slz-clock {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.oz-slz-period {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  letter-spacing: 0.08em;
+}
+
+/* Reels */
+.oz-slz-reels {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.oz-slz-reel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+  min-width: 0;
+  transition: border-color 200ms var(--ease), background 200ms var(--ease), box-shadow 200ms var(--ease);
+}
+.oz-slz-reel[data-lit="true"] {
+  border-color: var(--live);
+  background: color-mix(in oklab, var(--live) 7%, var(--bg-sunken));
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--live) 18%, transparent);
+  animation: oz-slz-lit 1.6s var(--ease) infinite;
+}
+.oz-slz-reel[data-final="false"][data-empty="false"] .oz-slz-reel-face { opacity: 0.72; }
+.oz-slz-reel[data-paying="true"] {
+  border-color: var(--positive);
+  background: color-mix(in oklab, var(--positive) 9%, var(--bg-sunken));
+}
+@keyframes oz-slz-lit {
+  0%, 100% { box-shadow: 0 0 0 3px color-mix(in oklab, var(--live) 18%, transparent); }
+  50% { box-shadow: 0 0 0 5px color-mix(in oklab, var(--live) 8%, transparent); }
+}
+.oz-slz-reel-label {
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.oz-slz-reel-face {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 56px;
+  transition: opacity 200ms var(--ease);
+}
+.oz-slz-reel-blank {
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  border: 1.5px dashed var(--border-strong);
+}
+.oz-slz-reel-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  min-width: 0;
+  max-width: 100%;
+  text-align: center;
+}
+.oz-slz-reel-name {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--fg);
+}
+.oz-slz-reel-team {
+  font-size: 10.5px;
+  color: var(--fg-muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Symbol glyphs: a digit for the scoring plays, a cross for a miss, a
+   stylised F for a foul, a dot for an empty window. One tint each so the
+   six read apart at a glance in either theme. */
+.oz-slz-sym {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--sym);
+  background: color-mix(in oklab, var(--sym) 12%, transparent);
+  border: 1.5px solid color-mix(in oklab, var(--sym) 55%, transparent);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.oz-slz-sym[data-sym="P3"] { --sym: var(--tier-gold); }
+.oz-slz-sym[data-sym="P2"] { --sym: var(--positive); }
+.oz-slz-sym[data-sym="FT"] { --sym: var(--fg); }
+.oz-slz-sym[data-sym="MISS"] { --sym: var(--negative); }
+.oz-slz-sym[data-sym="FOUL"] { --sym: color-mix(in oklab, var(--tier-gold) 55%, var(--negative)); }
+.oz-slz-sym[data-sym="NONE"] { --sym: var(--fg-dim); }
+.oz-slz-sym[data-sym="FOUL"] { font-family: var(--font-mono, ui-monospace, monospace); font-weight: 700; letter-spacing: -0.04em; }
+.oz-slz-cross {
+  position: relative;
+  width: 45%;
+  height: 45%;
+}
+.oz-slz-cross::before,
+.oz-slz-cross::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 2px;
+  height: 100%;
+  margin-left: -1px;
+  border-radius: 2px;
+  background: currentColor;
+  transform: rotate(45deg);
+}
+.oz-slz-cross::after { transform: rotate(-45deg); }
+.oz-slz-dot {
+  width: 22%;
+  height: 22%;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+/* Result line */
+.oz-slz-result {
+  margin: 0;
+  min-height: 18px;
+  font-size: 13px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.oz-slz-result[data-tone="win"] { color: var(--positive); font-weight: 500; }
+.oz-slz-result[data-tone="loss"] { color: var(--fg-muted); }
+.oz-slz-result[data-tone="void"] { color: var(--fg-dim); }
+
+/* Notes (waiting for live play, paused, sign in) */
+.oz-slz-note {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+.oz-slz-note strong {
+  font-weight: 500;
+  color: var(--fg);
+}
+.oz-slz-note-signin {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.oz-slz-note-signin > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Stake + actions */
+.oz-slz-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.oz-slz-stake {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.oz-slz-stake-label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+.oz-slz-presets {
+  display: inline-flex;
+  gap: 4px;
+}
+.oz-slz-preset,
+.oz-slz-step,
+.oz-slz-currency {
+  height: 28px;
+  min-width: 34px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 120ms var(--ease), border-color 120ms var(--ease), color 120ms var(--ease);
+}
+.oz-slz-preset[data-active="true"],
+.oz-slz-currency[data-active="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+.oz-slz-step:disabled { opacity: 0.4; cursor: not-allowed; }
+.oz-slz-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.oz-slz-stake-value {
+  min-width: 52px;
+  text-align: center;
+  font-size: 13.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.oz-slz-currencies {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 6px;
+}
+.oz-slz-currency { cursor: default; }
+.oz-slz-currencies .oz-slz-currency { cursor: pointer; }
+.oz-slz-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.oz-slz-spin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 40px;
+  padding: 0 22px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  transition: opacity 160ms var(--ease), transform 80ms var(--ease);
+}
+.oz-slz-spin:active:not(:disabled) { transform: translateY(1px); }
+.oz-slz-spin:disabled { opacity: 0.45; cursor: not-allowed; }
+.oz-slz-spin[data-busy="true"] { opacity: 0.7; }
+.oz-slz-spin-sm { height: 32px; padding: 0 14px; font-size: 12.5px; }
+.oz-slz-auto {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.oz-slz-auto:disabled { opacity: 0.45; cursor: not-allowed; }
+.oz-slz-auto-stop {
+  border-color: color-mix(in oklab, var(--live) 40%, transparent);
+  color: var(--live);
+}
+.oz-slz-auto-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--live);
+  animation: oz-pulse 1.6s var(--ease-out) infinite;
+}
+.oz-slz-spend {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+.oz-slz-error {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--negative);
+}
+
+/* Last spins */
+.oz-slz-recent {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.oz-slz-recent-label {
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.oz-slz-recent-strip {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 2px 0;
+}
+.oz-slz-recent-strip::-webkit-scrollbar { display: none; }
+.oz-slz-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  flex-shrink: 0;
+}
+.oz-slz-chip[data-status="won"] { border-color: color-mix(in oklab, var(--positive) 50%, transparent); }
+.oz-slz-chip[data-status="lost"] { opacity: 0.6; }
+.oz-slz-chip[data-status="void"] { opacity: 0.45; }
+.oz-slz-chip-none {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--fg-dim);
+}
+
+/* Paytable drawer */
+.oz-slz-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.oz-slz-linkbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.oz-slz-foot-note {
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+.oz-slz-paytable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.oz-slz-paytable th,
+.oz-slz-paytable td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.oz-slz-paytable thead th {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+.oz-slz-paytable tbody th {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  font-weight: 500;
+  color: var(--fg);
+}
+.oz-slz-paytable tbody tr:last-child th,
+.oz-slz-paytable tbody tr:last-child td { border-bottom: 0; }
+
+/* Lobby strip */
+.oz-slz-lobby {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.oz-slz-lobby-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.oz-slz-lobby-row {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+.oz-slz-lobby-row::-webkit-scrollbar { display: none; }
+.oz-slz-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 0 0 260px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--fg);
+  text-decoration: none;
+  transition: border-color 160ms var(--ease);
+}
+.oz-slz-card:hover { border-color: var(--border-strong); }
+.oz-slz-card-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  min-width: 0;
+}
+.oz-slz-card-tournament {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oz-slz-card-clock {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.oz-slz-card-teams {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.oz-slz-card-team {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oz-slz-card-team:last-child { text-align: right; }
+.oz-slz-card-score {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.oz-slz-card-cta {
+  align-self: flex-start;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+/* Phone: a one-line strip until tapped. The Spin button inside the
+   strip places without expanding (its click does not bubble). */
+@media (max-width: 1099px) {
+  .oz-slz { padding: 10px 12px; gap: 10px; }
+  .oz-slz-strip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .oz-slz-strip-title { font-size: 16px; font-weight: 500; white-space: nowrap; }
+  .oz-slz-strip-clock {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12.5px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .oz-slz-strip-result {
+    flex: 1;
+    min-width: 0;
+    font-size: 11.5px;
+    color: var(--fg-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .oz-slz-strip-chev {
+    display: inline-flex;
+    color: var(--fg-muted);
+    transition: transform 140ms var(--ease);
+  }
+  .oz-slz[data-expanded="true"] .oz-slz-strip-chev { transform: rotate(180deg); }
+  .oz-slz[data-expanded="false"] .oz-slz-body { display: none; }
+  .oz-slz-head-title .oz-slz-title { font-size: 18px; }
+  .oz-slz-tagline { display: none; }
+  .oz-slz-reels { gap: 6px; }
+  .oz-slz-reel { padding: 8px 4px 8px; }
+  .oz-slz-reel-face { height: 46px; }
+  .oz-slz-spend { margin-left: 0; width: 100%; }
+}
+@media (max-width: 719px) {
+  .oz-slz-note-signin { flex-direction: column; align-items: flex-start; }
+  .oz-slz-spin { flex: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oz-slz-reel[data-lit="true"],
+  .oz-slz-auto-dot { animation: none; }
+  .oz-slz-reel,
+  .oz-slz-reel-face,
+  .oz-slz-spin,
+  .oz-slz-strip-chev { transition: none; }
+}

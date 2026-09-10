@@ -1,0 +1,474 @@
+{
+    "queryUrl":  "match_timeline/71036316",
+    "doc":  [
+                {
+                    "event":  "match_timeline",
+                    "_dob":  1788988941,
+                    "_maxage":  60,
+                    "data":  {
+                                 "match":  {
+                                               "_doc":  "match",
+                                               "_id":  71036316,
+                                               "_sid":  2,
+                                               "_dt":  {
+                                                           "uts":  1788979500
+                                                       },
+                                               "teams":  {
+                                                             "home":  {
+                                                                          "name":  "Italy",
+                                                                          "mediumname":  "Italy"
+                                                                      },
+                                                             "away":  {
+                                                                          "name":  "Australia",
+                                                                          "mediumname":  "Australia"
+                                                                      }
+                                                         },
+                                               "coverage":  {
+                                                                "live":  {
+                                                                             "level":  {
+                                                                                           "name":  "Level 3",
+                                                                                           "value":  3
+                                                                                       }
+                                                                         }
+                                                            },
+                                               "result":  {
+                                                              "home":  80,
+                                                              "away":  82
+                                                          },
+                                               "p":  "0",
+                                               "timeinfo":  {
+                                                                "injurytime":  null,
+                                                                "ended":  "1788986451",
+                                                                "started":  "1788979543",
+                                                                "played":  "2100",
+                                                                "remaining":  "0",
+                                                                "running":  true
+                                                            },
+                                               "status":  {
+                                                              "name":  "Ended"
+                                                          },
+                                               "ended_uts":  1788986451
+                                           },
+                                 "events":  [
+                                                {
+                                                    "_id":  2458477586,
+                                                    "type":  "periodstart",
+                                                    "uts":  1788979544,
+                                                    "updated_uts":  1788979544,
+                                                    "seconds":  -1,
+                                                    "time":  -1,
+                                                    "team":  "",
+                                                    "name":  "1st quarter",
+                                                    "points":  null,
+                                                    "disabled":  0,
+                                                    "period":  1,
+                                                    "scorer":  null,
+                                                    "result":  null
+                                                },
+                                                {
+                                                    "_id":  2458477588,
+                                                    "type":  "timerunning",
+                                                    "uts":  1788979544,
+                                                    "updated_uts":  1788979544,
+                                                    "seconds":  -1,
+                                                    "time":  -1,
+                                                    "team":  "",
+                                                    "name":  "Time start/stop",
+                                                    "points":  null,
+                                                    "disabled":  0,
+                                                    "period":  null,
+                                                    "scorer":  null,
+                                                    "result":  null
+                                                },
+                                                {
+                                                    "_id":  2458477790,
+                                                    "type":  "goal",
+                                                    "uts":  1788979558,
+                                                    "updated_uts":  1788979558,
+                                                    "seconds":  14,
+                                                    "time":  1,
+                                                    "team":  "away",
+                                                    "name":  "2 pt scored",
+                                                    "points":  2,
+                                                    "disabled":  0,
+                                                    "period":  null,
+                                                    "scorer":  null,
+                                                    "result":  {
+                                                                   "home":  0,
+                                                                   "away":  2
+                                                               }
+                                                },
+                                                {
+                                                    "_id":  2458478122,
+                                                    "type":  "attempt_missed",
+                                                    "uts":  1788979581,
+                                                    "updated_uts":  1788979581,
+                                                    "seconds":  37,
+                                                    "time":  1,
+                                                    "team":  "home",
+                                                    "name":  "Attempt missed",
+                                                    "points":  2,
+                                                    "disabled":  0,
+                                                    "period":  null,
+                                                    "scorer":  null,
+                                                    "result":  null
+                                                },
+                                                {
+                                                    "_id":  2458478124,
+                                                    "type":  "rebound",
+                                                    "uts":  1788979581,
+                                                    "updated_uts":  1788979581,
+                                                    "seconds":  37,
+                                                    "time":  1,
+                                                    "team":  "home",
+                                                    "name":  "Rebound",
+                                                    "points":  null,
+                                                    "disabled":  0,
+                                                    "period":  null,
+                                                    "scorer":  null,
+                                                    "result":  null
+                                                },
+                                                {
+                                                    "_id":  2458478230,
+                                                    "type":  "foul",
+                                                    "uts":  1788979588,
+                                                    "updated_uts":  1788979589,
+                                                    "seconds":  44,
+                                                    "time":  1,
+                                                    "team":  "away",
+                                                    "name":  "Foul",
+                                                    "points":  null,
+                                                    "disabled":  0,
+                                                    "period":  null,
+                                                    "scorer":  null,
+                                                    "result":  null
+                                                },
+                                                {
+                                                    "_id":  2458478232,
+                                                    "type":  "timerunning",
+                                                    "uts":  1788979588,
+                                                    "updated_uts":  1788979588,
+                                                    "seconds":  44,
+                                                    "time":  1,
+                                                    "team":  "",
+                                                    "name":  "Time start/stop",
+                                                    "points":  null,
+                                                    "disabled":  0,
+                                                    "period":  null,
+                                                    "scorer":  null,
+                                                    "result":  null
+                                                },
+                                                {
+                                                    "_id":  2458478256,
+                                                    "type":  "free_throws_awarded",
+                                                    "uts":  1788979590,
+                                                    "updated_uts":  1788979590,
+                                                    "seconds":  44,
+                                                    "time":  1,
+                                                    "team":  "home",
+                                                    "name":  "Free throws awarded",
+                                                    "points":  null,
+                                                    "disabled":  0,
+                                                    "period":  null,
+                                                    "scorer":  null,
+                                                    "result":  null
+                                                },
+                                                {
+                                                    "_id":  2458478538,
+                                                    "type":  "goal",
+                                                    "uts":  1788979610,
+                                                    "updated_uts":  1788979610,
+                                                    "seconds":  44,
+                                                    "time":  1,
+                                                    "team":  "home",
+                                                    "name":  "1 pt scored",
+                                                    "points":  1,
+                                                    "disabled":  0,
+                                                    "period":  null,
+                                                    "scorer":  null,
+                                                    "result":  {
+                                                                   "home":  1,
+                                                                   "away":  2
+                                                               }
+                                                },
+                                                {
+                                                    "_id":  2458478790,
+                                                    "type":  "goal",
+                                                    "uts":  1788979625,
+                                                    "updated_uts":  1788979625,
+                                                    "seconds":  44,
+                                                    "time":  1,
+                                                    "team":  "home",
+                                                    "name":  "1 pt scored",
+                                                    "points":  1,
+                                                    "disabled":  0,
+                                                    "period":  null,
+                                                    "scorer":  null,
+                                                    "result":  {
+                                                                   "home":  2,
+                                                                   "away":  2
+                                                               }
+                                                },
+                                                {
+                                                    "_id":  2458479108,
+                                                    "type":  "goal",
+                                                    "uts":  1788979650,
+                                                    "updated_uts":  1788979650,
+                                                    "seconds":  50,
+                                                    "time":  1,
+                                                    "team":  "home",
+                                                    "name":  "3 pt scored",
+                                                    "points":  3,
+                                                    "disabled":  0,
+                                                    "period":  null,
+                                                    "scorer":  null,
+                                                    "result":  {
+                                                                   "home":  5,
+                                                                   "away":  2
+                                                               }
+                                                },
+                                                {
+                                                    "_id":  2458479378,
+                                                    "type":  "goal",
+                                                    "uts":  1788979669,
+                                                    "updated_uts":  1788979669,
+                                                    "seconds":  69,
+                                                    "time":  2,
+                                                    "team":  "away",
+                                                    "name":  "2 pt scored",
+                                                    "points":  2,
+                                                    "disabled":  0,
+                                                    "period":  null,
+                                                    "scorer":  null,
+                                                    "result":  {
+                                                                   "home":  5,
+                                                                   "away":  4
+                                                               }
+                                                },
+                                                {
+                                                    "_id":  2458479742,
+                                                    "type":  "attempt_missed",
+                                                    "uts":  1788979695,
+                                                    "updated_uts":  1788979695,
+                                                    "seconds":  94,
+                                                    "time":  2,
+                                                    "team":  "home",
+                                                    "name":  "Attempt missed",
+                                                    "points":  2,
+                                                    "disabled":  0,
+                                                    "period":  null,
+                                                    "scorer":  null,
+                                                    "result":  null
+                                                },
+                                                {
+                                                    "_id":  2458479746,
+                                                    "type":  "rebound",
+                                                    "uts":  1788979695,
+                                                    "updated_uts":  1788979695,
+                                                    "seconds":  94,
+                                                    "time":  2,
+                                                    "team":  "away",
+                                                    "name":  "Rebound",
+                                                    "points":  null,
+                                                    "disabled":  0,
+                                                    "period":  null,
+                                                    "scorer":  null,
+                                                    "result":  null
+                                                },
+                                                {
+                                                    "_id":  2458480476,
+                                                    "type":  "foul",
+                                                    "uts":  1788979756,
+                                                    "updated_uts":  1788979757,
+                                                    "seconds":  128,
+                                                    "time":  3,
+                                                    "team":  "away",
+                                                    "name":  "Foul",
+                                                    "points":  null,
+                                                    "disabled":  0,
+                                                    "period":  null,
+                                                    "scorer":  null,
+                                                    "result":  null
+                                                },
+                                                {
+                                                    "_id":  2458480622,
+                                                    "type":  "attempt_missed",
+                                                    "uts":  1788979770,
+                                                    "updated_uts":  1788979770,
+                                                    "seconds":  140,
+                                                    "time":  3,
+                                                    "team":  "home",
+                                                    "name":  "Attempt missed",
+                                                    "points":  2,
+                                                    "disabled":  0,
+                                                    "period":  null,
+                                                    "scorer":  null,
+                                                    "result":  null
+                                                },
+                                                {
+                                                    "_id":  2458481214,
+                                                    "type":  "free_throws_awarded",
+                                                    "uts":  1788979814,
+                                                    "updated_uts":  1788979814,
+                                                    "seconds":  160,
+                                                    "time":  3,
+                                                    "team":  "away",
+                                                    "name":  "Free throws awarded",
+                                                    "points":  null,
+                                                    "disabled":  0,
+                                                    "period":  null,
+                                                    "scorer":  null,
+                                                    "result":  null
+                                                },
+                                                {
+                                                    "_id":  2458481468,
+                                                    "type":  "foul",
+                                                    "uts":  1788979834,
+                                                    "updated_uts":  1788979835,
+                                                    "seconds":  178,
+                                                    "time":  3,
+                                                    "team":  "home",
+                                                    "name":  "Foul",
+                                                    "points":  null,
+                                                    "disabled":  0,
+                                                    "period":  null,
+                                                    "scorer":  null,
+                                                    "result":  null
+                                                },
+                                                {
+                                                    "_id":  2458481494,
+                                                    "type":  "attempt_missed",
+                                                    "uts":  1788979836,
+                                                    "updated_uts":  1788979836,
+                                                    "seconds":  178,
+                                                    "time":  3,
+                                                    "team":  "away",
+                                                    "name":  "Attempt missed",
+                                                    "points":  1,
+                                                    "disabled":  0,
+                                                    "period":  null,
+                                                    "scorer":  null,
+                                                    "result":  null
+                                                },
+                                                {
+                                                    "_id":  2458481800,
+                                                    "type":  "foul",
+                                                    "uts":  1788979860,
+                                                    "updated_uts":  1788979861,
+                                                    "seconds":  201,
+                                                    "time":  4,
+                                                    "team":  "home",
+                                                    "name":  "Foul",
+                                                    "points":  null,
+                                                    "disabled":  0,
+                                                    "period":  null,
+                                                    "scorer":  null,
+                                                    "result":  null
+                                                },
+                                                {
+                                                    "_id":  2458482340,
+                                                    "type":  "attempt_missed",
+                                                    "uts":  1788979904,
+                                                    "updated_uts":  1788979904,
+                                                    "seconds":  201,
+                                                    "time":  4,
+                                                    "team":  "away",
+                                                    "name":  "Attempt missed",
+                                                    "points":  1,
+                                                    "disabled":  0,
+                                                    "period":  null,
+                                                    "scorer":  null,
+                                                    "result":  null
+                                                },
+                                                {
+                                                    "_id":  2458482742,
+                                                    "type":  "foul",
+                                                    "uts":  1788979937,
+                                                    "updated_uts":  1788979938,
+                                                    "seconds":  230,
+                                                    "time":  4,
+                                                    "team":  "home",
+                                                    "name":  "Foul",
+                                                    "points":  null,
+                                                    "disabled":  0,
+                                                    "period":  null,
+                                                    "scorer":  null,
+                                                    "result":  null
+                                                },
+                                                {
+                                                    "_id":  2458495232,
+                                                    "type":  "periodscore",
+                                                    "uts":  1788980926,
+                                                    "updated_uts":  1788980926,
+                                                    "seconds":  -1,
+                                                    "time":  -1,
+                                                    "team":  "",
+                                                    "name":  "1st quarter",
+                                                    "points":  null,
+                                                    "disabled":  0,
+                                                    "period":  1,
+                                                    "scorer":  null,
+                                                    "result":  {
+                                                                   "home":  80,
+                                                                   "away":  82,
+                                                                   "winner":  "away"
+                                                               }
+                                                },
+                                                {
+                                                    "_id":  2458495234,
+                                                    "type":  "periodstart",
+                                                    "uts":  1788980926,
+                                                    "updated_uts":  1788980926,
+                                                    "seconds":  -1,
+                                                    "time":  -1,
+                                                    "team":  "",
+                                                    "name":  "Break",
+                                                    "points":  null,
+                                                    "disabled":  0,
+                                                    "period":  31,
+                                                    "scorer":  null,
+                                                    "result":  null
+                                                },
+                                                {
+                                                    "_id":  2458515386,
+                                                    "type":  "periodscore",
+                                                    "uts":  1788982462,
+                                                    "updated_uts":  1788982462,
+                                                    "seconds":  -1,
+                                                    "time":  -1,
+                                                    "team":  "",
+                                                    "name":  "2nd quarter",
+                                                    "points":  null,
+                                                    "disabled":  0,
+                                                    "period":  2,
+                                                    "scorer":  null,
+                                                    "result":  {
+                                                                   "home":  80,
+                                                                   "away":  82,
+                                                                   "winner":  "away"
+                                                               }
+                                                },
+                                                {
+                                                    "_id":  2458561210,
+                                                    "type":  "match_ended",
+                                                    "uts":  1788986451,
+                                                    "updated_uts":  1788986451,
+                                                    "seconds":  2400,
+                                                    "time":  -1,
+                                                    "team":  "",
+                                                    "name":  "Match end",
+                                                    "points":  null,
+                                                    "disabled":  0,
+                                                    "period":  null,
+                                                    "scorer":  null,
+                                                    "result":  {
+                                                                   "home":  80,
+                                                                   "away":  82,
+                                                                   "winner":  "away"
+                                                               }
+                                                }
+                                            ]
+                             }
+                }
+            ]
+}
