@@ -109,6 +109,97 @@ export function formatWindowLabel(windowFrom: number): string {
   return `${formatMatchClock(windowFrom)}–${formatMatchClock(windowFrom + WINDOW_SECONDS - 1)}`;
 }
 
+// ── Countdown display ───────────────────────────────────────────────────
+//
+// Everything the game is BUILT on is cumulative match-clock seconds: a
+// window's identity is `window_from`, settlement compares against it, and
+// the events carry the scout's own cumulative reading. None of that
+// changes here. This is presentation only — basketball is played to a
+// clock that counts DOWN inside a period, and showing a bettor "26:34"
+// beside a tracker reading "3rd | 3:26" asks them to do arithmetic to
+// know when their spin lands (operator's call, 2026-09-10).
+
+/**
+ * Length of a regulation period, in seconds.
+ *
+ * FIBA plays 4 x 10 minutes, which covers every competition SlotZilla
+ * currently carries — the World Cup, the European and Mexican leagues,
+ * the Asian and Australian clubs. The NBA's 12-minute quarters would need
+ * this per competition, so if NBA coverage is ever added this constant is
+ * the thing that has to become a lookup; the period LABEL comes from the
+ * feed either way, so a wrong length here would misstate the time
+ * remaining but never the quarter.
+ */
+export const PERIOD_SECONDS = 600;
+/** FIBA overtime is five minutes. */
+export const OVERTIME_SECONDS = 300;
+
+export interface PeriodClock {
+  /** 1-4 in regulation, 5+ for overtime. */
+  period: number;
+  /** Seconds left in that period, counting down. */
+  remaining: number;
+  /** True once past regulation. */
+  overtime: boolean;
+}
+
+/**
+ * Turn a cumulative match-clock reading into the period and the time
+ * remaining in it.
+ *
+ * `feedPeriod` wins when supplied: the feed knows which quarter is being
+ * played, and trusting arithmetic over it would relabel the whole strip
+ * the moment a competition ran a different period length. The remaining
+ * time is then clamped into the period, so a mismatch between the feed's
+ * period and PERIOD_SECONDS degrades to a slightly wrong countdown rather
+ * than a negative one.
+ */
+export function periodClock(cumulativeSeconds: number, feedPeriod?: number | null): PeriodClock {
+  const s = Math.max(0, Math.floor(cumulativeSeconds));
+  const regulation = 4 * PERIOD_SECONDS;
+
+  if (s >= regulation) {
+    const intoOt = s - regulation;
+    const otIndex = Math.floor(intoOt / OVERTIME_SECONDS);
+    const elapsed = intoOt - otIndex * OVERTIME_SECONDS;
+    return {
+      period: feedPeriod && feedPeriod > 4 ? feedPeriod : 5 + otIndex,
+      remaining: Math.max(0, OVERTIME_SECONDS - elapsed),
+      overtime: true,
+    };
+  }
+
+  const derived = Math.floor(s / PERIOD_SECONDS) + 1;
+  const period = feedPeriod && feedPeriod >= 1 && feedPeriod <= 4 ? feedPeriod : derived;
+  const elapsed = s - (period - 1) * PERIOD_SECONDS;
+  return {
+    period,
+    // Clamped both ways: the feed's period and our period length can
+    // disagree, and neither a negative countdown nor one above the
+    // period length is a thing a bettor should ever be shown.
+    remaining: Math.min(PERIOD_SECONDS, Math.max(0, PERIOD_SECONDS - elapsed)),
+    overtime: false,
+  };
+}
+
+/** "4:02" — the time remaining in the period the reading falls in. */
+export function formatCountdown(cumulativeSeconds: number, feedPeriod?: number | null): string {
+  return formatMatchClock(periodClock(cumulativeSeconds, feedPeriod).remaining);
+}
+
+/**
+ * A reel's label as a countdown: "4:25–4:21".
+ *
+ * Counting down means the END of the window has the SMALLER number, so
+ * the range reads high-to-low. Writing it low-to-high would be tidier and
+ * would say the window runs backwards.
+ */
+export function formatWindowCountdown(windowFrom: number, feedPeriod?: number | null): string {
+  const start = formatCountdown(windowFrom, feedPeriod);
+  const end = formatCountdown(windowFrom + WINDOW_SECONDS - 1, feedPeriod);
+  return `${start}–${end}`;
+}
+
 // ── Reels ───────────────────────────────────────────────────────────────
 
 export type SlotTeam = "home" | "away";

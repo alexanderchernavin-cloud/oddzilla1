@@ -8,7 +8,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { formatMatchClock } from "@oddzilla/types/slotzilla";
+import { formatCountdown } from "@oddzilla/types/slotzilla";
 import type { SlotzillaLiveGame } from "@oddzilla/types/slotzilla";
 import { clientApi } from "@/lib/api-client";
 import { useTranslations } from "@/lib/i18n";
@@ -64,7 +64,7 @@ export function SlotzillaLive() {
                 <span className="oz-slz-card-tournament">{g.tournament ?? ""}</span>
                 <span className="oz-slz-card-clock mono">
                   {!paused && g.clock.running ? <LiveDot size={6} /> : null}
-                  {g.clock.seconds == null ? "—" : formatMatchClock(g.clock.seconds)}
+                  {g.clock.seconds == null ? "—" : formatCountdown(g.clock.seconds, g.clock.period)}
                 </span>
               </span>
               <span className="oz-slz-card-teams">

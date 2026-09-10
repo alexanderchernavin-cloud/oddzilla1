@@ -13,7 +13,7 @@
 import type { ReactNode } from "react";
 import {
   formatMultiplier,
-  formatWindowLabel,
+  formatWindowCountdown,
   SLOT_SYMBOLS,
 } from "@oddzilla/types/slotzilla";
 import type {
@@ -69,6 +69,8 @@ export interface ReelProps {
   homeTeam: string;
   awayTeam: string;
   t: Translate;
+  /** Feed period, so the label counts down inside it. */
+  period?: number | null;
   /** Reel already settled into a paying line (tints the frame). */
   paying?: boolean;
 }
@@ -86,7 +88,7 @@ export interface ReelProps {
 const SPIN_FACE: readonly SlotSymbol[] = ["P2", "MISS", "P3", "FOUL", "FT", "MISS"];
 const SPIN_STRIP: readonly SlotSymbol[] = [...SPIN_FACE, ...SPIN_FACE];
 
-export function Reel({ from, symbol, team, lit, final, homeTeam, awayTeam, t, paying }: ReelProps) {
+export function Reel({ from, symbol, team, lit, final, homeTeam, awayTeam, t, paying, period }: ReelProps) {
   const teamName = team === "home" ? homeTeam : team === "away" ? awayTeam : null;
   const stateLabel = lit ? t("reelLive") : t("reelPending");
   // A symbol the service may still revise (its window is not final):
@@ -101,7 +103,7 @@ export function Reel({ from, symbol, team, lit, final, homeTeam, awayTeam, t, pa
       data-paying={paying ? "true" : "false"}
       data-empty={symbol == null ? "true" : "false"}
     >
-      <span className="oz-slz-reel-label mono">{formatWindowLabel(from)}</span>
+      <span className="oz-slz-reel-label mono">{formatWindowCountdown(from, period)}</span>
       {/*
         A reel with no symbol yet SPINS, like the machine it is meant to
         be: the strip below is the symbol set repeated, translated on a

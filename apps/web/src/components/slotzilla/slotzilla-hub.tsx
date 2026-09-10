@@ -13,7 +13,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { formatMatchClock } from "@oddzilla/types/slotzilla";
+import { formatCountdown } from "@oddzilla/types/slotzilla";
 import type { SlotzillaLiveGame } from "@oddzilla/types/slotzilla";
 import { clientApi } from "@/lib/api-client";
 import { useTranslations } from "@/lib/i18n";
@@ -180,7 +180,7 @@ function GameCard({
           {on
             ? game.clock.seconds == null
               ? "—"
-              : formatMatchClock(game.clock.seconds)
+              : formatCountdown(game.clock.seconds, game.clock.period)
             : kickoff
               ? t("hub.startsAt", { time: kickoff })
               : "—"}
