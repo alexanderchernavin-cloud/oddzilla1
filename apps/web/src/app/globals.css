@@ -2244,8 +2244,24 @@ body {
   line-height: 1;
   color: var(--fg-muted);
   cursor: default;
-  transition: left 1s linear;
   z-index: 1;
+}
+
+/* The conveyor. Marks are pinned to a quantised anchor and never move on
+   their own; THIS is what slides, and it slides by transform — which is
+   compositor work, and the reason the strip actually animates.
+   Transitioning `left` on each mark instead was measured on production
+   moving the inline style (35.56% -> 30%) while the rendered position
+   never changed at all: `left` is a layout property and nine of them
+   animating at once simply did not run. */
+.oz-slz-tl-layer {
+  position: absolute;
+  inset: 0;
+  /* Two spans wide: one behind the anchor, one ahead, so there is always
+     something to scroll in from the right. */
+  width: 200%;
+  transition: transform 1s linear;
+  will-change: transform;
 }
 /* An event that makes no symbol is texture, not news: it keeps the icon
    but sits quieter and behind the scoring marks where they overlap. */
@@ -2274,7 +2290,7 @@ body {
 /* Motion is decoration here: a reader who asked for less of it still
    gets every mark in the right place, just without the drift. */
 @media (prefers-reduced-motion: reduce) {
-  .oz-slz-tl-mark { transition: none; }
+  .oz-slz-tl-layer { transition: none; }
 }
 
 /* Now: the right edge of the strip is the clock, not an event. */
