@@ -542,13 +542,22 @@ export async function buildGameState(
 }
 
 /**
- * How much match clock the timeline strip covers. Five minutes matches
- * what the reference design shows and, at the measured event density of
- * a real game (one slot-relevant event per ~10 s), puts roughly thirty
- * marks on the strip — busy enough to read as a match, sparse enough to
- * tell two marks apart.
+ * How much match clock the timeline strip covers.
+ *
+ * Sized from the TRACK WIDTH, not from the reference design. The strip
+ * lives in the panel's column, which measures ~400px on a desktop
+ * viewport, and a mark is 16px — so about 22 marks fit without them
+ * merging into a band. Measured on production 2026-09-10: a real game
+ * runs ~0.13 drawable events per second of match clock, so 150 s lands
+ * near 20 marks.
+ *
+ * Five minutes was the first cut, copying the reference's own window,
+ * and it put 38 marks in that 400px with a 6.5px gap between neighbours
+ * — legible only because they were nudged apart, and still reading as a
+ * clump. The reference draws its five minutes across a full-width bar,
+ * which is the part that does not transfer.
  */
-export const TIMELINE_LOOKBACK_SECONDS = 300;
+export const TIMELINE_LOOKBACK_SECONDS = 150;
 
 /**
  * Event types the strip does NOT draw: the clock's own machinery and the
