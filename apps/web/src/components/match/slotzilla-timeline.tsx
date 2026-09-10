@@ -20,6 +20,7 @@
 
 import { useMemo } from "react";
 import type { SlotzillaTimelineEvent } from "@oddzilla/types/slotzilla";
+import { SlotzillaEventIcon, type SlotzillaIconKind } from "./slotzilla-icons";
 
 type Translate = (key: string, values?: Record<string, string | number>) => string;
 
@@ -39,33 +40,11 @@ function clockLabel(seconds: number): string {
 }
 
 /**
- * The glyph for one event. Scoring events carry their point value, which
- * is the same vocabulary the reels use (3 / 2 / 1), so the strip and the
- * reels are legible as one system rather than two icon sets.
- */
-function glyphFor(e: SlotzillaTimelineEvent): string {
-  switch (e.symbol) {
-    case "P3":
-      return "3";
-    case "P2":
-      return "2";
-    case "FT":
-      return "1";
-    case "FOUL":
-      return "F";
-    case "MISS":
-      return "×";
-    default:
-      return "";
-  }
-}
-
-/**
  * The kind drives the tint. Symbol first, because that is what the game
  * is about; otherwise a couple of shapes worth seeing in the run of play
  * (a rebound, a timeout) and a neutral mark for everything else.
  */
-function kindOf(e: SlotzillaTimelineEvent): string {
+function kindOf(e: SlotzillaTimelineEvent): SlotzillaIconKind {
   if (e.symbol) return e.symbol;
   if (e.type === "rebound") return "rebound";
   if (e.type === "timeout") return "timeout";
@@ -106,34 +85,34 @@ export function SlotzillaTimeline({
       .filter((e) => e.seconds >= from && e.seconds <= to)
       .map((e) => ({
         event: e,
-        // Clamped because an event exactly at `from` lands on 0 and one
-        // at `to` on 100; a mark is centred on its position, so the two
-        // extremes would otherwise be half outside the strip.
-        pct: Math.min(98, Math.max(2, ((e.seconds - from) / span) * 100)),
+        // Position is a pure function of the event's own clock second
+        // against the moving window. Because the window slides at a
+        // constant rate, every mark's percentage decreases at a constant
+        // rate too — which, with a linear CSS transition on `left`, IS
+        // the conveyor: the marks drift left continuously instead of
+        // jumping a poll's worth every 15 s.
+        pct: ((e.seconds - from) / span) * 100,
       }));
 
     // Basketball clusters: a foul, its free throws and the rebound can
-    // share a second, and at ~1.3px per second two of those land on the
-    // same pixel — measured on production, the closest pair of marks was
-    // 0px apart, i.e. one completely hidden behind the other. Nudge each
-    // mark to at least MIN_GAP_PCT past its predecessor so every event
-    // stays individually visible and hoverable.
+    // share a second, and at this scale those land on the same pixel —
+    // measured on production, the closest pair was 0px apart, one mark
+    // completely hidden behind the other. Nudge them apart to a minimum
+    // spacing.
     //
-    // This trades exact position for legibility, which is the right way
-    // round here: the strip is a picture of the run of play, and the
-    // windows — not the strip — are what anything is settled on. The
-    // nudge is bounded (it only ever pushes right, and only within a
-    // cluster) and the tooltip still reports the true clock reading.
-    let prev = -Infinity;
-    for (const m of placed) {
-      if (m.pct < prev + MIN_GAP_PCT) m.pct = prev + MIN_GAP_PCT;
-      prev = m.pct;
+    // The chain is walked NEWEST-FIRST and pushes older marks LEFT, which
+    // is what keeps the conveyor smooth. Anchoring at the old end instead
+    // (the obvious direction) re-anchors the whole chain the moment the
+    // oldest mark scrolls off the left edge, and every remaining mark
+    // jumps sideways. Anchored at the newest, a mark leaving at the left
+    // affects nothing, and the mark the eye is actually on — the one just
+    // added at the right — never moves off its true position.
+    for (let i = placed.length - 2; i >= 0; i--) {
+      const right = placed[i + 1];
+      const cur = placed[i];
+      if (!right || !cur) continue;
+      if (cur.pct > right.pct - MIN_GAP_PCT) cur.pct = right.pct - MIN_GAP_PCT;
     }
-    // A long cluster can push the last mark past the right edge; slide
-    // the whole run back rather than let it escape the track.
-    const last = placed[placed.length - 1];
-    const overflow = last ? last.pct - 98 : 0;
-    if (overflow > 0) for (const m of placed) m.pct -= overflow;
     return placed;
   }, [events, clockSeconds, spanSeconds]);
 
@@ -153,7 +132,7 @@ export function SlotzillaTimeline({
         {marks.map(({ event, pct }) => {
           const teamName =
             event.team === "home" ? homeTeam : event.team === "away" ? awayTeam : null;
-          const glyph = glyphFor(event);
+          const kind = kindOf(event);
           // The title is the accessible description of the mark: what
           // happened, to whom, and when on the match clock.
           const title = [
@@ -168,14 +147,13 @@ export function SlotzillaTimeline({
             <span
               key={event.id}
               className="oz-slz-tl-mark"
-              data-kind={kindOf(event)}
+              data-kind={kind}
               data-team={event.team ?? "none"}
               data-disabled={event.disabled ? "true" : undefined}
-              data-plain={glyph === "" ? "true" : undefined}
               style={{ left: `${pct}%` }}
               title={title}
             >
-              <span aria-hidden>{glyph}</span>
+              <SlotzillaEventIcon kind={kind} />
               <span className="oz-sr-only">{title}</span>
             </span>
           );

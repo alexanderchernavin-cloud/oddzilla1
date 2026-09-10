@@ -2209,8 +2209,11 @@ body {
 .oz-slz-tl-track {
   position: relative;
   flex: 1;
-  height: 26px;
+  height: 30px;
   min-width: 0;
+  /* The conveyor moves marks past the ends of the track; clip them there
+     rather than letting one hang over the time labels. */
+  overflow: hidden;
 }
 .oz-slz-tl-rule {
   position: absolute;
@@ -2221,7 +2224,11 @@ body {
   background: var(--border);
 }
 /* `left` is a percentage of the track; the translate re-centres the mark
-   on its own position rather than hanging it off the left edge. */
+   on its own position rather than hanging it off the left edge.
+   The linear `left` transition IS the conveyor: the window slides at a
+   constant rate, so every mark's percentage falls at a constant rate and
+   the strip drifts continuously instead of jumping once per clock tick.
+   1s matches the clock ticker, so motion is unbroken between ticks. */
 .oz-slz-tl-mark {
   position: absolute;
   top: 50%;
@@ -2229,37 +2236,46 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   border: 1.5px solid var(--fg-muted);
   background: var(--surface-2);
-  font-size: 10px;
-  font-weight: 600;
   line-height: 1;
-  color: var(--fg);
+  color: var(--fg-muted);
   cursor: default;
+  transition: left 1s linear;
+  z-index: 1;
 }
-/* An event that makes no symbol is texture, not news: smaller, quieter,
-   and behind the scoring marks when they overlap. */
-.oz-slz-tl-mark[data-plain="true"] {
-  width: 7px;
-  height: 7px;
-  border-width: 1px;
+/* An event that makes no symbol is texture, not news: it keeps the icon
+   but sits quieter and behind the scoring marks where they overlap. */
+.oz-slz-tl-mark[data-kind="rebound"],
+.oz-slz-tl-mark[data-kind="timeout"],
+.oz-slz-tl-mark[data-kind="period"],
+.oz-slz-tl-mark[data-kind="other"] {
+  width: 15px;
+  height: 15px;
+  opacity: 0.75;
   z-index: 0;
 }
-.oz-slz-tl-mark:not([data-plain="true"]) { z-index: 1; }
 .oz-slz-tl-mark[data-disabled="true"] { opacity: 0.35; }
 
-/* Tints reuse the reel symbol palette so the strip and the reels read as
-   one system. Team colour is carried by the ring, symbol by the glyph. */
-.oz-slz-tl-mark[data-kind="P3"] { border-color: var(--positive); color: var(--positive); }
-.oz-slz-tl-mark[data-kind="P2"] { border-color: var(--accent); color: var(--accent); }
-.oz-slz-tl-mark[data-kind="FT"] { border-color: var(--fg-muted); }
-.oz-slz-tl-mark[data-kind="MISS"] { border-color: var(--border-strong, var(--border)); color: var(--fg-muted); }
-.oz-slz-tl-mark[data-kind="FOUL"] { border-color: var(--live); color: var(--live); }
-.oz-slz-tl-mark[data-kind="timeout"],
-.oz-slz-tl-mark[data-kind="period"] { border-style: dashed; }
+/* A scoring mark is tinted by what it was worth, so the strip and the
+   reels read as one system; the RING carries the team, the way the
+   reference does, so a run by one side is visible as a colour run. */
+.oz-slz-tl-mark[data-kind="P3"] { color: var(--positive); border-color: var(--positive); }
+.oz-slz-tl-mark[data-kind="P2"] { color: var(--accent); border-color: var(--accent); }
+.oz-slz-tl-mark[data-kind="FT"] { color: var(--fg); border-color: var(--fg-muted); }
+.oz-slz-tl-mark[data-kind="MISS"] { color: var(--fg-muted); border-color: var(--border); }
+.oz-slz-tl-mark[data-kind="FOUL"] { color: var(--live); border-color: var(--live); }
+.oz-slz-tl-mark[data-team="home"] { box-shadow: 0 0 0 1.5px var(--surface-2), 0 0 0 3px var(--accent); }
+.oz-slz-tl-mark[data-team="away"] { box-shadow: 0 0 0 1.5px var(--surface-2), 0 0 0 3px var(--live); }
+
+/* Motion is decoration here: a reader who asked for less of it still
+   gets every mark in the right place, just without the drift. */
+@media (prefers-reduced-motion: reduce) {
+  .oz-slz-tl-mark { transition: none; }
+}
 
 /* Now: the right edge of the strip is the clock, not an event. */
 .oz-slz-tl-now {
