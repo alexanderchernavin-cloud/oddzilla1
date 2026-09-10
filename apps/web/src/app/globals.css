@@ -261,6 +261,26 @@ body {
 .mono { font-family: var(--font-mono); font-feature-settings: "tnum", "ss01"; }
 .display { font-family: var(--font-display); letter-spacing: -0.01em; }
 
+/* Visually hidden, still read aloud. The standard clip-rect pattern
+   rather than display:none or visibility:hidden, both of which remove
+   the text from the accessibility tree as well as the page.
+   Added 2026-09-10: the SlotZilla timeline strip referenced this class
+   before it existed, so every mark's description rendered VISIBLY inside
+   a 16px circle and smeared the whole strip into unreadable text. If you
+   add a class here, check it exists — an undefined class fails silently
+   and looks like a layout bug, not a missing rule. */
+.oz-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* Theme-aware brand logo. Both variants are mounted in the DOM by
    <Logo> so the pre-hydration theme-boot script (in app/layout.tsx)
    can pick the right one before paint without any JS round-trip. */
