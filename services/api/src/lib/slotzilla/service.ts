@@ -551,13 +551,43 @@ export async function buildGameState(
 export const TIMELINE_LOOKBACK_SECONDS = 300;
 
 /**
+ * Event types the strip does NOT draw: the clock's own machinery and the
+ * feed's bookkeeping, which are not things the match did.
+ *
+ * `timerunning` is the one that matters — the scout logs a start/stop on
+ * every whistle, and on a real fixture it was 19 of the 46 marks in a
+ * five-minute window, crowding the plays it sits between while telling a
+ * bettor nothing. Measured on production 2026-09-10: dropping this set
+ * takes a typical window from 46 marks to ~27, which is the density the
+ * reference design shows.
+ *
+ * Kept deliberately as a DENY list rather than an allow list of plays: a
+ * type we have not seen yet is far more likely to be a play worth
+ * drawing than a new kind of bookkeeping, and an unknown play drawn as a
+ * neutral mark is a much smaller error than a play silently missing.
+ */
+const TIMELINE_EXCLUDED_TYPES = new Set([
+  "timerunning",
+  "timeinfo",
+  "possession",
+  "ballcoordinates",
+  "players_on_pitch",
+  "players_warming_up",
+  "match_about_to_start",
+  "match_started",
+  "periodscore",
+  "videoreview",
+]);
+
+/**
  * The events behind the strip, oldest first.
  *
- * Every clocked event is returned, not only the ones that make a symbol:
- * a rebound or a timeout is part of what the match looks like, and the
- * strip is the one surface that shows the match rather than the reels.
- * The reel derivation is unaffected — it reads symbols, and an event
- * with none contributes nothing to a window.
+ * Everything the match DID is returned, not only the events that make a
+ * symbol: a rebound or a timeout is part of what the match looks like,
+ * and the strip is the one surface that shows the match rather than the
+ * reels. Clock machinery is excluded (see above). The reel derivation is
+ * unaffected either way — it reads symbols, and an event with none
+ * contributes nothing to a window.
  */
 async function loadTimeline(
   db: DbClient,
@@ -589,19 +619,21 @@ async function loadTimeline(
     )
     .orderBy(srLiveEvents.seconds, srLiveEvents.srEventId);
 
-  return rows.map((r) => ({
-    id: r.srEventId.toString(),
-    // The column's CHECK never stores NONE — an event that makes no
-    // symbol stores NULL — but isSlotSymbol admits it, so narrow here
-    // rather than widen the wire type to a value it cannot carry.
-    symbol: isSlotSymbol(r.symbol) && r.symbol !== "NONE" ? r.symbol : null,
-    type: r.type,
-    team: asTeam(r.team),
-    seconds: r.seconds,
-    period: r.period,
-    playerName: r.playerName,
-    disabled: r.disabled,
-  }));
+  return rows
+    .filter((r) => !TIMELINE_EXCLUDED_TYPES.has(r.type))
+    .map((r) => ({
+      id: r.srEventId.toString(),
+      // The column's CHECK never stores NONE — an event that makes no
+      // symbol stores NULL — but isSlotSymbol admits it, so narrow here
+      // rather than widen the wire type to a value it cannot carry.
+      symbol: isSlotSymbol(r.symbol) && r.symbol !== "NONE" ? r.symbol : null,
+      type: r.type,
+      team: asTeam(r.team),
+      seconds: r.seconds,
+      period: r.period,
+      playerName: r.playerName,
+      disabled: r.disabled,
+    }));
 }
 
 /** Sportradar's sport id for basketball — the only sport the game covers. */

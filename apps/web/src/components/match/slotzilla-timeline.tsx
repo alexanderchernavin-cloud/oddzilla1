@@ -23,6 +23,14 @@ import type { SlotzillaTimelineEvent } from "@oddzilla/types/slotzilla";
 
 type Translate = (key: string, values?: Record<string, string | number>) => string;
 
+/**
+ * Minimum separation between two marks, as a percentage of the track.
+ * An 18px mark on a ~400px track is ~4.5%, so 3% leaves adjacent marks
+ * overlapping slightly — which reads as a cluster, correctly — while
+ * keeping each one's centre and its hover target distinct.
+ */
+const MIN_GAP_PCT = 3;
+
 /** mm:ss of a cumulative match-clock reading. */
 function clockLabel(seconds: number): string {
   const s = Math.max(0, Math.round(seconds));
@@ -94,7 +102,7 @@ export function SlotzillaTimeline({
     // A zero span would divide by zero on the very first seconds of a
     // match, when `to` is still inside the span.
     const span = Math.max(1, to - from);
-    return events
+    const placed = events
       .filter((e) => e.seconds >= from && e.seconds <= to)
       .map((e) => ({
         event: e,
@@ -103,6 +111,30 @@ export function SlotzillaTimeline({
         // extremes would otherwise be half outside the strip.
         pct: Math.min(98, Math.max(2, ((e.seconds - from) / span) * 100)),
       }));
+
+    // Basketball clusters: a foul, its free throws and the rebound can
+    // share a second, and at ~1.3px per second two of those land on the
+    // same pixel — measured on production, the closest pair of marks was
+    // 0px apart, i.e. one completely hidden behind the other. Nudge each
+    // mark to at least MIN_GAP_PCT past its predecessor so every event
+    // stays individually visible and hoverable.
+    //
+    // This trades exact position for legibility, which is the right way
+    // round here: the strip is a picture of the run of play, and the
+    // windows — not the strip — are what anything is settled on. The
+    // nudge is bounded (it only ever pushes right, and only within a
+    // cluster) and the tooltip still reports the true clock reading.
+    let prev = -Infinity;
+    for (const m of placed) {
+      if (m.pct < prev + MIN_GAP_PCT) m.pct = prev + MIN_GAP_PCT;
+      prev = m.pct;
+    }
+    // A long cluster can push the last mark past the right edge; slide
+    // the whole run back rather than let it escape the track.
+    const last = placed[placed.length - 1];
+    const overflow = last ? last.pct - 98 : 0;
+    if (overflow > 0) for (const m of placed) m.pct -= overflow;
+    return placed;
   }, [events, clockSeconds, spanSeconds]);
 
   if (clockSeconds === null) return null;
