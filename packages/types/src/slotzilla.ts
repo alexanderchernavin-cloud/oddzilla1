@@ -441,6 +441,40 @@ export interface SlotzillaGameState {
   spinBlock: SlotzillaSpinBlock | null;
   /** Kickoff, ISO-8601; what a `scheduled` game shows in place of a clock. */
   scheduledAt?: string | null;
+  /**
+   * A looping recording of a finished fixture rather than a live game.
+   * The storefront MUST mark these, and placement refuses anything but OZ
+   * on them: a loop is perfectly predictable once seen, so a real-money
+   * spin would be a guaranteed-profit exploit rather than a bet.
+   */
+  demo: boolean;
+  /**
+   * The play-by-play the reels are derived from, oldest first, over the
+   * window the panel draws. Present on the state so the timeline strip
+   * needs no second request per poll.
+   */
+  timeline: SlotzillaTimelineEvent[];
+}
+
+/**
+ * One event on the match timeline strip. `seconds` is the scout's own
+ * cumulative match-clock reading — the same axis the windows are ranges
+ * of — so the strip and the reels can never disagree about when
+ * something happened.
+ */
+export interface SlotzillaTimelineEvent {
+  id: string;
+  /** The reel symbol, or null for an event that makes none (a rebound). */
+  symbol: Exclude<SlotSymbol, "NONE"> | null;
+  /** Sportradar's own event type, for the icon and the tooltip. */
+  type: string;
+  team: SlotTeam | null;
+  seconds: number;
+  period: number | null;
+  /** Level-2 coverage only. */
+  playerName: string | null;
+  /** A correction disabled it; drawn faded rather than removed. */
+  disabled: boolean;
 }
 
 /**
@@ -462,6 +496,8 @@ export interface SlotzillaLiveGame {
   playerMode: boolean;
   /** Kickoff, ISO-8601. */
   scheduledAt: string | null;
+  /** A looping recording — see the note on SlotzillaGameState.demo. */
+  demo: boolean;
 }
 
 export interface SlotzillaSpinRequest {

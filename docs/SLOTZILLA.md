@@ -257,6 +257,109 @@ Both read the same coverage predicate (`match_sportradar_ids.status =
 'confirmed' AND sr_sport_id = 2 AND matches.status IN ('not_started',
 'live')`), so the section can never offer a match the page would refuse.
 
+## Demo games (looping recordings)
+
+Three finished FIBA Women's World Cup 2026 fixtures replay on a permanent
+loop, so the section always has something playable whether or not real
+basketball is on (operator's call, 2026-09-10). Migration
+`20260910T082030_slotzilla_demo_games`.
+
+**They are recordings, not simulations.** The whole game is a claim about
+a real play-by-play feed — the reels ARE the match, and the measured
+symbol distribution above comes from real games — so a synthetic
+generator would demo a different product from the one that ships, with
+whatever distribution we invented. These are real Sportradar timelines:
+
+| Sportradar id | Fixture | Slot-relevant events |
+| --- | --- | --- |
+| 71036316 | Italy 80–82 Australia (knockout) | 230 |
+| 71036334 | Puerto Rico 72–75 China (knockout) | 191 |
+| 71036308 | USA 105–64 Czechia (group) | 258 |
+
+Each is 2400 seconds of match clock, measured 2026-09-10.
+
+**OZ only, enforced in code.** A loop is perfectly predictable: after one
+cycle a bettor knows every future window's symbols exactly and can spin
+only on the ones that pay, which is a guaranteed profit rather than a
+bet. `placeSpin` refuses any non-OZ currency on a game with `is_demo`,
+and that check is deliberately NOT expressed through
+`slotzilla_config.currencies` — no operator setting should be able to
+point real money at a known outcome. The storefront also narrows the
+currency picker on a demo game, but that is convenience; the gate that
+has to hold is the one inside the placement transaction.
+
+**How the loop runs.** `services/slotzilla/internal/engine/demo.go`
+replaces exactly one thing: where the events and the clock come from.
+Everything below — window derivation, the paytable, the `final`
+predicate, settlement, the state frame — is the same code a live game
+runs, which is also what makes the demo worth having: it exercises the
+real engine against a real feed's shape.
+
+- The recording is an ordinary corpus row. `sr_live_events` is keyed by
+  Sportradar's own event id and the engine loads a game's events by
+  `sr_match_id`, so pointing a demo game at a finished match's id is the
+  whole of the storage story — the service fetches that one timeline
+  once (it is immutable; there is no delta to track) and replays from
+  Postgres forever after. Nothing is seeded as SQL.
+- The virtual clock is `(now − demo_epoch) mod (duration + cooldown)`,
+  advancing 1:1 with wall time. The cycle length is derived from the
+  recording rather than stored, so a column can never disagree with the
+  events it describes. Each game gets a different `demo_epoch` so the
+  three sit ~14 minutes apart rather than all tipping off together.
+- The **cooldown** (90 s) is load-bearing, not padding: the clock stops
+  and reports `Ended`, which drops `WindowFinal`'s `clock_past`
+  allowance so every window the recording reached becomes final and open
+  spins settle through the ordinary path. Without it the clock would
+  jump from 2400 back to 0 with spins still open against windows that no
+  longer exist. Anything somehow still open at the wrap is voided
+  (`demo_cycle_ended`).
+- A demo game never sets `ending`, so it never calls `finishGame` — it
+  must not end.
+
+**They are invisible to the betting product.** The fixtures carry no
+markets, and every list, the sidebar tournament tree, live counts and
+search all gate on `hasActiveMarket`, so a market-less match reaches none
+of them; their category is additionally flagged `hidden_from_lists`
+(migration 0102) as a second layer. `demo:` URNs keep them outside both
+ingesters' catalog-wide flushes (invariant 10 scopes those to
+`od:match:%` / `fb:match:%`), the same reason custom events use `cu:`.
+Verified against production before shipping: 0 bookable demo matches.
+
+**Ordering.** Real fixtures sort ahead of demo ones on both
+`/slotzilla/live` and `/slotzilla/games` — a demo game is permanently
+live and its clock is written every tick, so on the shared live-first
+ordering it would otherwise outrank an actual match that has just tipped
+off.
+
+**They still need the master switch.** `slotzilla_config.enabled = false`
+idles the engine entirely, demo games included. That is deliberate: a
+game that runs while the feature is switched off would be a surprise, and
+the switch is the operator's one place to stop everything.
+
+## The match timeline strip
+
+The strip above the reels draws the last five minutes of play-by-play on
+the match clock, newest at the right edge. It is the one SlotZilla
+surface that shows the MATCH rather than the reels: the reels say what
+three five-second windows produced, the strip says what the game did to
+produce them, so a bettor sees the run of play their next spin is riding
+instead of three symbols appearing from nowhere.
+
+Positions come from the scout's own cumulative match-clock second — the
+same axis the windows are ranges of — so a mark and the reel it fed can
+never disagree about when something happened. The payload rides on the
+game state (`SlotzillaGameState.timeline`) rather than a second endpoint,
+so the strip costs no extra request per poll, and it is clamped to
+`seconds <= clock`: on a demo game the whole recording is stored from the
+first tick, so without that the strip would show the rest of the match
+before it is played.
+
+Every clocked event is drawn, not only the ones that make a symbol — a
+rebound or a timeout is part of the shape of a match. Events with no
+symbol render small and unfilled so they read as texture rather than
+competing with the scoring marks, and a disabled event (a correction)
+renders faded rather than disappearing.
+
 ## Where things live
 
 | Concern | Path |

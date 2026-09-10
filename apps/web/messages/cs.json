@@ -1188,7 +1188,8 @@
       "upcomingTag": "Otevře se při rozskoku",
       "playersTag": "Hráči",
       "empty": "Právě neběží žádný basketbalový zápas s živým průběhem. Vraťte se blíže k začátku.",
-      "trackerNote": "Tracker níže vykresluje akce, ze kterých se skládají vaše válce."
+      "trackerNote": "Tracker níže vykresluje akce, ze kterých se skládají vaše válce.",
+      "demoTag": "Demo"
     },
     "errors": {
       "clock_stopped": "Čas zápasu stojí. Zkuste to znovu, až hra pokračuje.",
@@ -1202,7 +1203,11 @@
       "open_spin": "Jedno roztočení už běží.",
       "sign_in": "Pro roztočení se přihlaste.",
       "network": "Server je nedostupný.",
-      "generic": "Roztočení se nepodařilo zadat."
-    }
+      "generic": "Roztočení se nepodařilo zadat.",
+      "demo_game_oz_only": "Demo hry prijimaji pouze herni penize."
+    },
+    "timelineLabel": "Casova osa zapasu",
+    "demoBadge": "DEMO",
+    "demoNote": "Demo hra - nahrany zapas ve smycce. Pouze herni penize."
   }
 }

@@ -1188,7 +1188,8 @@
       "upcomingTag": "Abre na bola ao alto",
       "playersTag": "Jogadores",
       "empty": "Nenhuma partida de basquete com lance a lance ao vivo está rolando agora. Volte perto do início.",
-      "trackerNote": "O tracker abaixo desenha as jogadas que formam os seus rolos."
+      "trackerNote": "O tracker abaixo desenha as jogadas que formam os seus rolos.",
+      "demoTag": "Demo"
     },
     "errors": {
       "clock_stopped": "O relógio da partida está parado. Tente de novo quando o jogo recomeçar.",
@@ -1202,7 +1203,11 @@
       "open_spin": "Você já tem um giro em andamento.",
       "sign_in": "Entre para girar.",
       "network": "Não foi possível conectar ao servidor.",
-      "generic": "Não foi possível fazer o giro."
-    }
+      "generic": "Não foi possível fazer o giro.",
+      "demo_game_oz_only": "Os jogos de demonstracao aceitam apenas dinheiro de teste."
+    },
+    "timelineLabel": "Linha do tempo do jogo",
+    "demoBadge": "DEMO",
+    "demoNote": "Jogo de demonstracao: uma partida gravada em loop. Apenas dinheiro de teste."
   }
 }
