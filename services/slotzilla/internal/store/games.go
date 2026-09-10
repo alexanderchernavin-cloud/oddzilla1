@@ -99,9 +99,25 @@ SELECT g.match_id, g.sr_match_id, g.status, g.paytable_id, g.coverage_level,
   FROM slotzilla_games g
   JOIN matches m ON m.id = g.match_id
  WHERE g.status IN ('scheduled', 'live', 'paused')
+    -- A demo game must never stay ended: it is a loop, and 'ended' can
+    -- only have come from machinery, not from an operator saying stop
+    -- (that is 'voided', which is deliberately NOT revived here).
+    -- Reached for real on 2026-09-10: the deploy applies migrations
+    -- BEFORE it recreates services, so the demo rows existed for two
+    -- minutes while the PREVIOUS binary was still running, and that
+    -- binary had no demo path — it polled them as ordinary games, saw
+    -- the archived timeline report the match ended, and ended them.
+    -- Without this the demo was dead permanently and silently.
+    --
+    -- Precedence note: AND binds tighter than OR, so this reads as
+    -- (status IN (...)) OR (is_demo AND status = 'ended'), which is what
+    -- is meant — no parentheses needed around the IN list.
+    OR (g.is_demo AND g.status = 'ended')
  ORDER BY g.match_id`
 
-// SelectActiveGames returns every game that is not yet ended or voided.
+// SelectActiveGames returns every game the engine should still poll:
+// anything not yet ended or voided, plus a demo game that was ended
+// (see the note in the query — a loop has to be revivable).
 func (s *Store) SelectActiveGames(ctx context.Context) ([]Game, error) {
 	rows, err := s.pool.Query(ctx, sqlSelectActiveGames)
 	if err != nil {
@@ -164,6 +180,23 @@ func (s *Store) MarkGameLive(ctx context.Context, matchID int64) (bool, error) {
 	tag, err := s.pool.Exec(ctx, sqlMarkGameLive, matchID)
 	if err != nil {
 		return false, fmt.Errorf("mark game live %d: %w", matchID, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+const sqlReviveDemoGame = `
+UPDATE slotzilla_games
+   SET status = 'live', note = NULL, updated_at = now()
+ WHERE match_id = $1 AND is_demo AND status IN ('scheduled', 'ended')`
+
+// ReviveDemoGame puts a demo game back on the loop. Scoped to `is_demo`
+// so it can never resurrect a real fixture that has finished, and it
+// leaves 'paused' and 'voided' alone: those are the operator's word, and
+// the whole point of the pause and void controls is that they hold.
+func (s *Store) ReviveDemoGame(ctx context.Context, matchID int64) (bool, error) {
+	tag, err := s.pool.Exec(ctx, sqlReviveDemoGame, matchID)
+	if err != nil {
+		return false, fmt.Errorf("revive demo game %d: %w", matchID, err)
 	}
 	return tag.RowsAffected() == 1, nil
 }

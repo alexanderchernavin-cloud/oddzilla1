@@ -197,16 +197,21 @@ func (e *Engine) pollDemo(ctx context.Context, g *game, row store.Game, cfg stor
 		return
 	}
 
-	if g.row.Status == "scheduled" {
-		ok, err := e.st.MarkGameLive(ctx, g.matchID)
+	// A demo game is a loop, so 'scheduled' and 'ended' are both states it
+	// should not be in — the second is reachable (see the note on
+	// SelectActiveGames) and would otherwise be permanent. 'paused' and
+	// 'voided' are the operator's word and are left alone.
+	if g.row.Status == "scheduled" || g.row.Status == "ended" {
+		ok, err := e.st.ReviveDemoGame(ctx, g.matchID)
 		if err != nil {
 			e.recordError(err)
-			log.Error().Err(err).Msg("demo mark live failed")
+			log.Error().Err(err).Msg("demo revive failed")
 			return
 		}
 		if ok {
+			was := g.row.Status
 			g.row.Status = "live"
-			log.Info().Msg("demo game live")
+			log.Info().Str("was", was).Msg("demo game live")
 		}
 	}
 
