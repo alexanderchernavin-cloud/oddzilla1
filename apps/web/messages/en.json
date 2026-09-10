@@ -1208,6 +1208,7 @@
     },
     "timelineLabel": "Match timeline",
     "demoBadge": "DEMO",
-    "demoNote": "Demo game — a recorded match on a loop. Play money only."
+    "demoNote": "Demo game — a recorded match on a loop. Play money only.",
+    "reconnecting": "Reconnecting…"
   }
 }

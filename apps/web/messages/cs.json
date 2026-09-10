@@ -1208,6 +1208,7 @@
     },
     "timelineLabel": "Casova osa zapasu",
     "demoBadge": "DEMO",
-    "demoNote": "Demo hra - nahrany zapas ve smycce. Pouze herni penize."
+    "demoNote": "Demo hra - nahrany zapas ve smycce. Pouze herni penize.",
+    "reconnecting": "Znovu se pripojuji…"
   }
 }

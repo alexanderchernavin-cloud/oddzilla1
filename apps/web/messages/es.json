@@ -1208,6 +1208,7 @@
     },
     "timelineLabel": "Cronologia del partido",
     "demoBadge": "DEMO",
-    "demoNote": "Partida de demostracion: un partido grabado en bucle. Solo dinero de juego."
+    "demoNote": "Partida de demostracion: un partido grabado en bucle. Solo dinero de juego.",
+    "reconnecting": "Reconectando…"
   }
 }
