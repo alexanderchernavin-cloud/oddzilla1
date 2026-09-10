@@ -167,9 +167,21 @@ export function SlotzillaPanel({
   // production 2026-09-10. A placeholder that keeps the card's shape
   // costs nothing and cannot be mistaken for a failure.
   if (game.missing) return null;
-  if (!game.loaded || !state) {
+  if (!state) {
+    // Two different situations that must not look the same.
+    //
+    // `!loaded` is a genuine first load: show reel-shaped placeholders,
+    // which is over in well under a second.
+    //
+    // `loaded && !state` means a fetch COMPLETED and failed — during a
+    // deploy the web tier cycles and the api briefly 502s. The poll
+    // retries every 15 s and recovers on its own, but the bare skeleton
+    // sat there in the meantime looking like a permanently broken game
+    // rather than a blip. Reported from production 2026-09-10, during
+    // one of my own rolling deploys. Say what is happening instead.
+    const failed = game.loaded;
     return (
-      <section className="oz-slz" data-expanded={expanded ? "true" : "false"} aria-busy="true">
+      <section className="oz-slz" data-expanded={expanded ? "true" : "false"} aria-busy={!failed}>
         <div className="oz-slz-body">
           <header className="oz-slz-head">
             <div className="oz-slz-head-title">
@@ -182,6 +194,11 @@ export function SlotzillaPanel({
             <span className="oz-slz-reel-skeleton" />
             <span className="oz-slz-reel-skeleton" />
           </div>
+          {failed ? (
+            <p className="oz-slz-note" role="status">
+              {t("reconnecting")}
+            </p>
+          ) : null}
         </div>
       </section>
     );

@@ -1208,6 +1208,7 @@
     },
     "timelineLabel": "Linha do tempo do jogo",
     "demoBadge": "DEMO",
-    "demoNote": "Jogo de demonstracao: uma partida gravada em loop. Apenas dinheiro de teste."
+    "demoNote": "Jogo de demonstracao: uma partida gravada em loop. Apenas dinheiro de teste.",
+    "reconnecting": "Reconectando…"
   }
 }

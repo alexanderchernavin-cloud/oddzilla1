@@ -1208,6 +1208,7 @@
     },
     "timelineLabel": "Vremenska crta utakmice",
     "demoBadge": "DEMO",
-    "demoNote": "Demo igra - snimljena utakmica u petlji. Samo igracki novac."
+    "demoNote": "Demo igra - snimljena utakmica u petlji. Samo igracki novac.",
+    "reconnecting": "Ponovno povezivanje…"
   }
 }

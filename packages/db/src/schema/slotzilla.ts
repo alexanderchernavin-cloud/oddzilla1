@@ -223,7 +223,19 @@ export const slotzillaSpins = pgTable(
     reelTeams: text().array(),
     reelEventIds: bigint({ mode: "bigint" }).array(),
     lineKey: text(),
-    multiplierX100: integer(),
+    // The column name is pinned because Drizzle's snake_case conversion
+    // does NOT round-trip this one: `multiplierX100` becomes
+    // `multiplier_x_100` (it breaks before the digits) while the
+    // migration created `multiplier_x100`. The two never matched, so
+    // every read of this table through Drizzle was a 500 — and only on
+    // the SIGNED-IN path, since loadBettorSpinsForMatch is the only
+    // reader and an anonymous viewer skips it. That is why SlotZilla
+    // looked fine anonymously and was broken for every bettor from the
+    // day it shipped until 2026-09-10.
+    //
+    // It is the only column in the schema with a digit in its name; any
+    // future one needs the same explicit pin, or the same silent break.
+    multiplierX100: integer("multiplier_x100"),
     payoutMicro: bigint({ mode: "bigint" }).notNull().default(0n),
     status: text().$type<SlotzillaSpinStatusRow>().notNull().default("open"),
     voidReason: text(),
