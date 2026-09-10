@@ -18,7 +18,7 @@
 // symbol are drawn small and unfilled so they read as texture rather
 // than competing with the scoring marks.
 
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import type { SlotzillaTimelineEvent } from "@oddzilla/types/slotzilla";
 import { SlotzillaEventIcon, type SlotzillaIconKind } from "./slotzilla-icons";
 
@@ -91,6 +91,16 @@ export function SlotzillaTimeline({
   // design exists to avoid.
   const anchor = clockSeconds === null ? 0 : Math.floor(clockSeconds / ANCHOR_STEP) * ANCHOR_STEP;
 
+  // When the anchor steps, every mark is re-laid out one step to the left
+  // and the layer's transform resets by exactly the same amount — the two
+  // cancel, so the strip does not actually move. But the MARKS jump
+  // instantly while the TRANSFORM would animate, so for one second twice
+  // a minute the whole strip would slide backwards. Suppress the
+  // transition on the render that re-anchors; it comes back on the next.
+  const prevAnchor = useRef(anchor);
+  const reAnchored = prevAnchor.current !== anchor;
+  prevAnchor.current = anchor;
+
   const marks = useMemo(() => {
     if (clockSeconds === null) return [];
     const span = Math.max(1, spanSeconds);
@@ -128,6 +138,7 @@ export function SlotzillaTimeline({
           className="oz-slz-tl-layer"
           style={{
             transform: `translate3d(${-((to - anchor) / Math.max(1, spanSeconds)) * 100}%, 0, 0)`,
+            ...(reAnchored ? { transition: "none" } : {}),
           }}
         >
         {marks.map(({ event, pct }) => {
