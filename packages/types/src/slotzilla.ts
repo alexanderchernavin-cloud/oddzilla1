@@ -406,6 +406,35 @@ export interface SlotzillaLimits {
   maxPayoutMicro: string;
   leadSeconds: number;
   autoplayEnabled: boolean;
+  /**
+   * How stale a clock reading may be before a spin is refused. Carried to
+   * the client so its local block mirror can apply the SAME rule the api
+   * does — a stopped clock is placeable, a stale one is not — instead of
+   * blocking on `running` and offering a spin the server would reject.
+   */
+  feedDarkVoidSeconds: number;
+}
+
+/**
+ * Is a clock reading recent enough to place against?
+ *
+ * A STOPPED clock is fine — the match is telling us where it is, and a
+ * spin's windows simply begin when play resumes. A STALE one is not: we
+ * have lost track of the match, and the settler voids open spins for
+ * exactly that reason.
+ *
+ * Shared so the api's authoritative gate and the storefront's local
+ * mirror cannot drift; a mirror that blocks on something the server
+ * allows hides a spin the bettor could have had, and one that allows
+ * what the server blocks offers a spin that will be refused.
+ */
+export function clockIsFresh(
+  clockReadAtMs: number | null,
+  nowMs: number,
+  feedDarkVoidSeconds: number,
+): boolean {
+  if (clockReadAtMs === null) return false;
+  return nowMs - clockReadAtMs < feedDarkVoidSeconds * 1000;
 }
 
 export interface SlotzillaPaytableView {

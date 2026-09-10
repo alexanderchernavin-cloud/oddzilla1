@@ -48,13 +48,31 @@ describe("spinBlockFor", () => {
     assert.equal(spinBlockFor(block({ gameStatus: "paused", clockRunning: false })), "game_paused");
     assert.equal(spinBlockFor(block({ gameStatus: "scheduled" })), "game_not_live");
     assert.equal(spinBlockFor(block({ gameStatus: "ended" })), "game_not_live");
-    assert.equal(spinBlockFor(block({ clockRunning: false, hasOpenSpin: true })), "clock_stopped");
+    assert.equal(
+      spinBlockFor(block({ clockReadAtMs: null, hasOpenSpin: true })),
+      "clock_stopped",
+    );
     assert.equal(spinBlockFor(block({ hasOpenSpin: true })), "open_spin");
   });
 
-  it("treats a stale clock reading as a stopped clock", () => {
+  // Operator's call 2026-09-10, matching Betby: basketball stops
+  // constantly, and refusing a spin through every timeout, foul and dead
+  // ball is refusing through most of the game. The windows are computed
+  // from the frozen reading, so they begin when play resumes.
+  it("allows a spin while the clock is STOPPED, as long as the reading is fresh", () => {
+    assert.equal(spinBlockFor(block({ clockRunning: false })), null);
+    assert.equal(spinBlockFor(block({ clockRunning: false, clockReadAtMs: NOW - 2_000 })), null);
+  });
+
+  // The distinction the rule turns on: a stopped clock is the match
+  // telling us where it is, a stale one is us having lost track of it.
+  it("still blocks on a STALE reading, running or not", () => {
     assert.equal(spinBlockFor(block({ clockReadAtMs: NOW - 181_000 })), "clock_stopped");
     assert.equal(spinBlockFor(block({ clockReadAtMs: null })), "clock_stopped");
+    assert.equal(
+      spinBlockFor(block({ clockRunning: false, clockReadAtMs: NOW - 181_000 })),
+      "clock_stopped",
+    );
     assert.equal(spinBlockFor(block({ clockReadAtMs: NOW - 179_000 })), null);
   });
 });

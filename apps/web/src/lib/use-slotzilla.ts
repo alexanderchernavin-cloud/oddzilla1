@@ -24,7 +24,7 @@
 // know — `disabled` and `sign_in` — are kept as the server said them.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { roundEnd } from "@oddzilla/types/slotzilla";
+import { clockIsFresh, roundEnd } from "@oddzilla/types/slotzilla";
 import type {
   SlotzillaGameState,
   SlotzillaSpinBlock,
@@ -81,8 +81,14 @@ function withDerivedBlock(s: SlotzillaGameState): SlotzillaGameState {
   let block: SlotzillaSpinBlock | null = null;
   if (s.status === "paused") block = "game_paused";
   else if (s.status !== "live") block = "game_not_live";
-  else if (!s.clock.running) block = "clock_stopped";
-  else if (s.openSpin) block = "open_spin";
+  // Mirrors the api exactly: a STOPPED clock is placeable (the spin's
+  // windows just begin when play resumes), a STALE one is not. Blocking
+  // on `running` here would offer nothing during every timeout and dead
+  // ball — most of a basketball game — and blocking on neither would
+  // offer a spin the server refuses.
+  else if (!clockIsFresh(s.clock.atMs, Date.now(), s.limits.feedDarkVoidSeconds)) {
+    block = "clock_stopped";
+  } else if (s.openSpin) block = "open_spin";
   if (block === s.spinBlock && s.canSpin === (block === null)) return s;
   return { ...s, spinBlock: block, canSpin: block === null };
 }
