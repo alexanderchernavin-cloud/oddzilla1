@@ -2209,8 +2209,8 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   border: 1.5px solid var(--fg-muted);
   background: var(--surface-2);
