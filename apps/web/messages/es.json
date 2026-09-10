@@ -1188,7 +1188,8 @@
       "upcomingTag": "Abre al salto inicial",
       "playersTag": "Jugadores",
       "empty": "Ahora mismo no hay ningún partido de baloncesto con jugada a jugada en vivo. Vuelve cerca del inicio.",
-      "trackerNote": "El tracker de abajo dibuja las jugadas de las que se componen tus rodillos."
+      "trackerNote": "El tracker de abajo dibuja las jugadas de las que se componen tus rodillos.",
+      "demoTag": "Demo"
     },
     "errors": {
       "clock_stopped": "El reloj del partido está parado. Inténtalo de nuevo cuando se reanude el juego.",
@@ -1202,7 +1203,11 @@
       "open_spin": "Ya tienes un giro en curso.",
       "sign_in": "Inicia sesión para girar.",
       "network": "No se pudo conectar con el servidor.",
-      "generic": "No se pudo realizar el giro."
-    }
+      "generic": "No se pudo realizar el giro.",
+      "demo_game_oz_only": "Las partidas de demostracion solo aceptan dinero de juego."
+    },
+    "timelineLabel": "Cronologia del partido",
+    "demoBadge": "DEMO",
+    "demoNote": "Partida de demostracion: un partido grabado en bucle. Solo dinero de juego."
   }
 }

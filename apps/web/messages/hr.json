@@ -1188,7 +1188,8 @@
       "upcomingTag": "Otvara se na početku",
       "playersTag": "Igrači",
       "empty": "Trenutno nema košarkaške utakmice s tijekom uživo. Vratite se bliže početku.",
-      "trackerNote": "Tracker ispod crta akcije od kojih su sastavljeni vaši valjci."
+      "trackerNote": "Tracker ispod crta akcije od kojih su sastavljeni vaši valjci.",
+      "demoTag": "Demo"
     },
     "errors": {
       "clock_stopped": "Vrijeme utakmice je zaustavljeno. Pokušajte ponovno kad se igra nastavi.",
@@ -1202,7 +1203,11 @@
       "open_spin": "Već imate spin u tijeku.",
       "sign_in": "Prijavite se za spin.",
       "network": "Nije moguće doći do poslužitelja.",
-      "generic": "Spin nije uspio."
-    }
+      "generic": "Spin nije uspio.",
+      "demo_game_oz_only": "Demo igre primaju samo igracki novac."
+    },
+    "timelineLabel": "Vremenska crta utakmice",
+    "demoBadge": "DEMO",
+    "demoNote": "Demo igra - snimljena utakmica u petlji. Samo igracki novac."
   }
 }

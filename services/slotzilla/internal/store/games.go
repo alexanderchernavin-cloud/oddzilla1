@@ -80,12 +80,22 @@ type Game struct {
 	Note          *string
 	MatchStatus   string
 	ScheduledAt   time.Time
+	// IsDemo marks a looping recorded fixture (see engine/demo.go). Such a
+	// game never polls Sportradar after its one archival fetch and never
+	// ends, so most of the live path's lifecycle handling does not apply
+	// to it.
+	IsDemo bool
+	// DemoEpoch anchors cycle 0 of the loop. NULL is tolerated (the driver
+	// falls back to "now", i.e. the loop starts on first sight) so a row
+	// hand-inserted without one still works.
+	DemoEpoch *time.Time
 }
 
 const sqlSelectActiveGames = `
 SELECT g.match_id, g.sr_match_id, g.status, g.paytable_id, g.coverage_level,
        g.clock_seconds, g.clock_running, g.clock_period, g.clock_read_at,
-       g.paused_by::text, g.note, m.status, m.scheduled_at
+       g.paused_by::text, g.note, m.status, m.scheduled_at,
+       g.is_demo, g.demo_epoch
   FROM slotzilla_games g
   JOIN matches m ON m.id = g.match_id
  WHERE g.status IN ('scheduled', 'live', 'paused')
@@ -103,7 +113,8 @@ func (s *Store) SelectActiveGames(ctx context.Context) ([]Game, error) {
 		var g Game
 		if err := rows.Scan(&g.MatchID, &g.SrMatchID, &g.Status, &g.PaytableID, &g.CoverageLevel,
 			&g.ClockSeconds, &g.ClockRunning, &g.ClockPeriod, &g.ClockReadAt,
-			&g.PausedBy, &g.Note, &g.MatchStatus, &g.ScheduledAt); err != nil {
+			&g.PausedBy, &g.Note, &g.MatchStatus, &g.ScheduledAt,
+			&g.IsDemo, &g.DemoEpoch); err != nil {
 			return nil, fmt.Errorf("scan game: %w", err)
 		}
 		out = append(out, g)

@@ -40,6 +40,16 @@ import { useSlotzilla } from "@/lib/use-slotzilla";
 import { LiveDot } from "@/components/ui/primitives";
 import { I } from "@/components/ui/icons";
 import { describeLine, lineSymbol, Paytable, Reel, SymbolGlyph } from "./slotzilla-reel";
+import { SlotzillaTimeline } from "./slotzilla-timeline";
+
+/**
+ * How much match clock the timeline strip spans. Matches the api's
+ * TIMELINE_LOOKBACK_SECONDS — the api decides what to SEND, this decides
+ * what to DRAW, and a strip wider than the payload would render a stretch
+ * of empty axis that looks like a lull in the match rather than the edge
+ * of the data.
+ */
+const TIMELINE_SPAN_SECONDS = 300;
 
 const MICRO = 1_000_000n;
 const STAKE_PRESETS = [0.1, 0.3, 0.5, 1, 5] as const;
@@ -122,7 +132,12 @@ export function SlotzillaPanel({
   // The slip's currency when the game takes it, else the first the
   // operator allows — one place decides, so the Spin label and the
   // request agree.
-  const currencies = limits?.currencies ?? [];
+  // A demo game is a looping recording, so placement refuses anything but
+  // OZ (services/api/src/lib/slotzilla/service.ts). Narrowing the offer
+  // here keeps an honest client from ever reaching that error — the gate
+  // stays server-side because it is the one that has to hold.
+  const allCurrencies = limits?.currencies ?? [];
+  const currencies = state?.demo ? allCurrencies.filter((c) => c === "OZ") : allCurrencies;
   const currency = currencies.includes(slip.currency) ? slip.currency : (currencies[0] ?? slip.currency);
 
   // Fold the stake into the operator's bounds once they are known.
@@ -278,6 +293,20 @@ export function SlotzillaPanel({
           </span>
           <span className="oz-slz-tagline">{t("tagline")}</span>
         </header>
+
+        {/* The run of play the next spin rides. Above the reels because
+            it reads left-to-right into them: what the match just did,
+            then what the windows made of it. */}
+        <SlotzillaTimeline
+          events={state.timeline}
+          clockSeconds={clockSeconds}
+          spanSeconds={TIMELINE_SPAN_SECONDS}
+          homeTeam={homeTeam}
+          awayTeam={awayTeam}
+          demo={state.demo}
+          t={t}
+        />
+        {state.demo ? <p className="oz-slz-demo-note">{t("demoNote")}</p> : null}
 
         <div className="oz-slz-reels" aria-live="polite">
           {reels.map((r) => (

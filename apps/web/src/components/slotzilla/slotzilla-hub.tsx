@@ -152,7 +152,12 @@ function GameCard({
     >
       <span className="oz-slz-hub-card-top">
         <SportGlyph sport={game.sportSlug} size={13} />
-        <span className="oz-slz-hub-card-tournament">{game.tournament ?? ""}</span>
+        <span className="oz-slz-hub-card-tournament">
+          {game.tournament ?? ""}
+          {/* A looping recording must say so wherever it is offered, not
+              only once it is opened. */}
+          {game.demo ? <span className="oz-slz-hub-demo mono">{t("hub.demoTag")}</span> : null}
+        </span>
         <span className="oz-slz-hub-card-clock mono">
           {on && game.status !== "paused" && game.clock.running ? <LiveDot size={6} /> : null}
           {on

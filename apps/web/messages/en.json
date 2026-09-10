@@ -1188,7 +1188,8 @@
       "upcomingTag": "Opens at tip-off",
       "playersTag": "Players",
       "empty": "No basketball match with live play-by-play is on right now. Check back closer to tip-off.",
-      "trackerNote": "The tracker below draws the plays your reels are made of."
+      "trackerNote": "The tracker below draws the plays your reels are made of.",
+      "demoTag": "Demo"
     },
     "errors": {
       "clock_stopped": "The match clock is stopped. Try again when play resumes.",
@@ -1202,7 +1203,11 @@
       "open_spin": "You already have a spin running.",
       "sign_in": "Sign in to spin.",
       "network": "Could not reach the server.",
-      "generic": "Could not place the spin."
-    }
+      "generic": "Could not place the spin.",
+      "demo_game_oz_only": "Demo games take play money only."
+    },
+    "timelineLabel": "Match timeline",
+    "demoBadge": "DEMO",
+    "demoNote": "Demo game — a recorded match on a loop. Play money only."
   }
 }

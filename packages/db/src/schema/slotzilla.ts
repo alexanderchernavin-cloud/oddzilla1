@@ -176,6 +176,14 @@ export const slotzillaGames = pgTable(
     pausedBy: uuid().references(() => users.id, { onDelete: "set null" }),
     pausedAt: timestamp({ withTimezone: true }),
     note: text(),
+    // A looping recorded fixture (migration 20260910T082030). The loop is
+    // perfectly predictable once seen, so placement hard-gates these to OZ
+    // in code — never real money, and never a config flag that could open
+    // it. `demoEpoch` anchors cycle 0; the cycle LENGTH is derived from the
+    // recording at runtime rather than stored, so it cannot disagree with
+    // the events it describes.
+    isDemo: boolean().notNull().default(false),
+    demoEpoch: timestamp({ withTimezone: true }),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },

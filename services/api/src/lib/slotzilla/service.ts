@@ -56,6 +56,7 @@ import {
   type SlotzillaSpinBlock,
   type SlotzillaSpinRequest,
   type SlotzillaSpinView,
+  type SlotzillaTimelineEvent,
   type SlotzillaWindow,
   type WsSlotzillaSpin,
   type WsSlotzillaState,
@@ -491,6 +492,21 @@ export async function buildGameState(
     windows = [];
   }
 
+  // The strip beside the reels. Read from the same events the windows are
+  // derived from, on the same match-clock axis, so the two can never
+  // disagree about when something happened.
+  const clockForStrip =
+    game.clockSeconds === null
+      ? null
+      : (estimatedClockSeconds(
+          game.clockSeconds,
+          game.clockRunning,
+          game.clockReadAt?.getTime() ?? null,
+          nowMs,
+        ) ?? game.clockSeconds);
+  const timeline =
+    clockForStrip === null ? [] : await loadTimeline(app.db, game.srMatchId, clockForStrip);
+
   const block = spinBlockFor({
     enabled: cfg.enabled,
     hasUser: userId !== null,
@@ -520,7 +536,72 @@ export async function buildGameState(
     canSpin: block === null,
     spinBlock: block,
     scheduledAt: fixture[0]?.scheduledAt?.toISOString() ?? null,
+    demo: game.isDemo,
+    timeline,
   };
+}
+
+/**
+ * How much match clock the timeline strip covers. Five minutes matches
+ * what the reference design shows and, at the measured event density of
+ * a real game (one slot-relevant event per ~10 s), puts roughly thirty
+ * marks on the strip — busy enough to read as a match, sparse enough to
+ * tell two marks apart.
+ */
+export const TIMELINE_LOOKBACK_SECONDS = 300;
+
+/**
+ * The events behind the strip, oldest first.
+ *
+ * Every clocked event is returned, not only the ones that make a symbol:
+ * a rebound or a timeout is part of what the match looks like, and the
+ * strip is the one surface that shows the match rather than the reels.
+ * The reel derivation is unaffected — it reads symbols, and an event
+ * with none contributes nothing to a window.
+ */
+async function loadTimeline(
+  db: DbClient,
+  srMatchId: bigint,
+  clockSeconds: number,
+): Promise<SlotzillaTimelineEvent[]> {
+  const since = Math.max(0, clockSeconds - TIMELINE_LOOKBACK_SECONDS);
+  const rows = await db
+    .select({
+      srEventId: srLiveEvents.srEventId,
+      symbol: srLiveEvents.symbol,
+      type: srLiveEvents.type,
+      team: srLiveEvents.team,
+      seconds: srLiveEvents.seconds,
+      period: srLiveEvents.period,
+      playerName: srLiveEvents.playerName,
+      disabled: srLiveEvents.disabled,
+    })
+    .from(srLiveEvents)
+    .where(
+      and(
+        eq(srLiveEvents.srMatchId, srMatchId),
+        sql`${srLiveEvents.seconds} >= ${since}`,
+        // Never draw ahead of the clock. On a demo game the whole
+        // recording is stored from the first tick, so without this the
+        // strip would show the rest of the match before it is played.
+        sql`${srLiveEvents.seconds} <= ${clockSeconds}`,
+      ),
+    )
+    .orderBy(srLiveEvents.seconds, srLiveEvents.srEventId);
+
+  return rows.map((r) => ({
+    id: r.srEventId.toString(),
+    // The column's CHECK never stores NONE — an event that makes no
+    // symbol stores NULL — but isSlotSymbol admits it, so narrow here
+    // rather than widen the wire type to a value it cannot carry.
+    symbol: isSlotSymbol(r.symbol) && r.symbol !== "NONE" ? r.symbol : null,
+    type: r.type,
+    team: asTeam(r.team),
+    seconds: r.seconds,
+    period: r.period,
+    playerName: r.playerName,
+    disabled: r.disabled,
+  }));
 }
 
 /** Sportradar's sport id for basketball — the only sport the game covers. */
@@ -594,6 +675,11 @@ async function buildCoveredState(
     canSpin: false,
     spinBlock: block,
     scheduledAt: covered.scheduledAt?.toISOString() ?? null,
+    // A covered fixture the service has not opened has no game row, and a
+    // demo game always has one — so this branch is never a demo, and
+    // there is no play-by-play to draw yet.
+    demo: false,
+    timeline: [],
   };
 }
 
@@ -717,6 +803,23 @@ export async function placeSpin(
         .for("update")
         .limit(1);
       if (!game) throw new NotFoundError("slotzilla_game_not_found", "slotzilla_game_not_found");
+
+      // A demo game is a LOOPING RECORDING, so it takes play money only.
+      //
+      // This is not a policy preference, it is the one thing that makes
+      // the demo safe to run permanently: the loop repeats a finished
+      // match, so after a single cycle a bettor knows every future
+      // window's symbols exactly and can spin only on the ones that pay.
+      // That is a guaranteed profit, not a bet.
+      //
+      // Deliberately NOT expressed through slotzilla_config.currencies —
+      // that is an operator setting, and no operator setting should be
+      // able to point real money at a known outcome. The check sits here,
+      // inside the placement transaction and after the row lock, because
+      // this is the last point before the wallet is debited.
+      if (game.isDemo && currency !== "OZ") {
+        throw new BadRequestError("demo_game_oz_only", "demo_game_oz_only");
+      }
 
       const [openSpin] = await tx
         .select({ id: slotzillaSpins.id })

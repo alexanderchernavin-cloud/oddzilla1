@@ -90,6 +90,7 @@ export default async function slotzillaRoutes(app: FastifyInstance) {
             scheduledAt: matches.scheduledAt,
             tournament: tournaments.name,
             sportSlug: sports.slug,
+            isDemo: slotzillaGames.isDemo,
           })
           .from(slotzillaGames)
           .innerJoin(matches, eq(matches.id, slotzillaGames.matchId))
@@ -97,7 +98,11 @@ export default async function slotzillaRoutes(app: FastifyInstance) {
           .innerJoin(categories, eq(categories.id, tournaments.categoryId))
           .innerJoin(sports, eq(sports.id, categories.sportId))
           .where(inArray(slotzillaGames.status, ["live", "paused"]))
-          .orderBy(desc(slotzillaGames.clockReadAt))
+          // Real fixtures first (false sorts before true), then the most
+          // recently read clock. A demo game is permanently live and its
+          // clock is written every tick, so on clock alone it would
+          // always outrank an actual match that has just tipped off.
+          .orderBy(asc(slotzillaGames.isDemo), desc(slotzillaGames.clockReadAt))
           .limit(100);
         return {
           games: rows.map((r) => ({
@@ -112,6 +117,7 @@ export default async function slotzillaRoutes(app: FastifyInstance) {
             score: scoreOf(r.liveScore),
             playerMode: r.coverageLevel === 2,
             scheduledAt: r.scheduledAt?.toISOString() ?? null,
+            demo: r.isDemo,
           })),
         };
       };
@@ -172,25 +178,73 @@ export default async function slotzillaRoutes(app: FastifyInstance) {
             asc(matches.scheduledAt),
           )
           .limit(100);
+        // The looping recordings (migration 20260910T082030). They carry
+        // no `match_sportradar_ids` row — their Sportradar id points at a
+        // FINISHED fixture, and a confirmed mapping there would both
+        // claim that id against the real match table and put the live
+        // tracker on a game whose clock we are simulating — so they are
+        // read straight off slotzilla_games instead of through the
+        // coverage join above. Always listed: they are always playable,
+        // which is the point of having them.
+        const demoRows = await app.db
+          .select({
+            matchId: matches.id,
+            srMatchId: slotzillaGames.srMatchId,
+            status: slotzillaGames.status,
+            coverageLevel: slotzillaGames.coverageLevel,
+            clockSeconds: slotzillaGames.clockSeconds,
+            clockRunning: slotzillaGames.clockRunning,
+            clockPeriod: slotzillaGames.clockPeriod,
+            clockReadAt: slotzillaGames.clockReadAt,
+            homeTeam: matches.homeTeam,
+            awayTeam: matches.awayTeam,
+            liveScore: matches.liveScore,
+            scheduledAt: matches.scheduledAt,
+            tournament: tournaments.name,
+            sportSlug: sports.slug,
+          })
+          .from(slotzillaGames)
+          .innerJoin(matches, eq(matches.id, slotzillaGames.matchId))
+          .innerJoin(tournaments, eq(tournaments.id, matches.tournamentId))
+          .innerJoin(categories, eq(categories.id, tournaments.categoryId))
+          .innerJoin(sports, eq(sports.id, categories.sportId))
+          .where(
+            and(
+              eq(slotzillaGames.isDemo, true),
+              inArray(slotzillaGames.status, ["scheduled", "live", "paused"]),
+            ),
+          )
+          .orderBy(asc(slotzillaGames.matchId))
+          .limit(20);
+
+        const view = (r: (typeof rows)[number], demo: boolean) => ({
+          matchId: r.matchId.toString(),
+          srMatchId: r.srMatchId.toString(),
+          status: r.status ?? "scheduled",
+          homeTeam: r.homeTeam,
+          awayTeam: r.awayTeam,
+          tournament: r.tournament,
+          sportSlug: r.sportSlug,
+          clock: clockView({
+            clockSeconds: r.clockSeconds ?? null,
+            clockRunning: r.clockRunning ?? false,
+            clockPeriod: r.clockPeriod ?? null,
+            clockReadAt: r.clockReadAt ?? null,
+          }),
+          score: scoreOf(r.liveScore),
+          playerMode: r.coverageLevel === 2,
+          scheduledAt: r.scheduledAt?.toISOString() ?? null,
+          demo,
+        });
+
+        // Real fixtures first, demo after. A demo game is permanently
+        // live, so on the shared live-first ordering it would otherwise
+        // outrank an actual match that has just tipped off.
         return {
-          games: rows.map((r) => ({
-            matchId: r.matchId.toString(),
-            srMatchId: r.srMatchId.toString(),
-            status: r.status ?? "scheduled",
-            homeTeam: r.homeTeam,
-            awayTeam: r.awayTeam,
-            tournament: r.tournament,
-            sportSlug: r.sportSlug,
-            clock: clockView({
-              clockSeconds: r.clockSeconds ?? null,
-              clockRunning: r.clockRunning ?? false,
-              clockPeriod: r.clockPeriod ?? null,
-              clockReadAt: r.clockReadAt ?? null,
-            }),
-            score: scoreOf(r.liveScore),
-            playerMode: r.coverageLevel === 2,
-            scheduledAt: r.scheduledAt?.toISOString() ?? null,
-          })),
+          games: [
+            ...rows.map((r) => view(r, false)),
+            ...demoRows.map((r) => view(r, true)),
+          ],
         };
       };
       return cached(app.redis, GAMES_CACHE_KEY, GAMES_CACHE_TTL_SECONDS, load);

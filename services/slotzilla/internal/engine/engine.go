@@ -102,6 +102,9 @@ type game struct {
 	clockAt  time.Time
 	coverage *int
 
+	// demo is non-nil only for a looping recorded fixture; see demo.go.
+	demo *demoState
+
 	// ending: the fixture is over (feed or our matches row); the game ends
 	// once every open spin has settled or been voided.
 	ending bool
@@ -210,6 +213,13 @@ func (e *Engine) Tick(ctx context.Context) {
 		go func(g *game, row store.Game) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			// A demo game replays a stored recording against a virtual
+			// clock and never polls the feed; everything below the clock
+			// is the same code (see demo.go).
+			if row.IsDemo {
+				e.pollDemo(ctx, g, row, cfg)
+				return
+			}
 			e.pollGame(ctx, g, row, cfg)
 		}(g, row)
 	}

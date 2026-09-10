@@ -2164,6 +2164,123 @@ body {
   letter-spacing: 0.08em;
 }
 
+/* Match timeline strip — the run of play the reels are made of.
+   Positions are the scout's own match-clock second, so a mark and the
+   reel it fed sit on the same axis. Marks are absolutely positioned
+   inside the track, which is why the track needs a height of its own:
+   nothing in it participates in flow. */
+.oz-slz-tl {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+}
+.oz-slz-tl-time {
+  flex: none;
+  font-size: 10px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.oz-slz-tl-track {
+  position: relative;
+  flex: 1;
+  height: 26px;
+  min-width: 0;
+}
+.oz-slz-tl-rule {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: var(--border);
+}
+/* `left` is a percentage of the track; the translate re-centres the mark
+   on its own position rather than hanging it off the left edge. */
+.oz-slz-tl-mark {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1.5px solid var(--fg-muted);
+  background: var(--surface-2);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--fg);
+  cursor: default;
+}
+/* An event that makes no symbol is texture, not news: smaller, quieter,
+   and behind the scoring marks when they overlap. */
+.oz-slz-tl-mark[data-plain="true"] {
+  width: 7px;
+  height: 7px;
+  border-width: 1px;
+  z-index: 0;
+}
+.oz-slz-tl-mark:not([data-plain="true"]) { z-index: 1; }
+.oz-slz-tl-mark[data-disabled="true"] { opacity: 0.35; }
+
+/* Tints reuse the reel symbol palette so the strip and the reels read as
+   one system. Team colour is carried by the ring, symbol by the glyph. */
+.oz-slz-tl-mark[data-kind="P3"] { border-color: var(--positive); color: var(--positive); }
+.oz-slz-tl-mark[data-kind="P2"] { border-color: var(--accent); color: var(--accent); }
+.oz-slz-tl-mark[data-kind="FT"] { border-color: var(--fg-muted); }
+.oz-slz-tl-mark[data-kind="MISS"] { border-color: var(--border-strong, var(--border)); color: var(--fg-muted); }
+.oz-slz-tl-mark[data-kind="FOUL"] { border-color: var(--live); color: var(--live); }
+.oz-slz-tl-mark[data-kind="timeout"],
+.oz-slz-tl-mark[data-kind="period"] { border-style: dashed; }
+
+/* Now: the right edge of the strip is the clock, not an event. */
+.oz-slz-tl-now {
+  position: absolute;
+  right: 0;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--live);
+}
+.oz-slz-tl-demo {
+  position: absolute;
+  top: -7px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-fg, #fff);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+.oz-slz-demo-note {
+  margin: -6px 0 10px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.oz-slz-hub-demo {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-fg, #fff);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  vertical-align: middle;
+}
+
 /* Reels */
 .oz-slz-reels {
   display: grid;
