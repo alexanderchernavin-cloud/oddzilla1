@@ -69,6 +69,14 @@ type demoState struct {
 	// backwards.
 	cycleIndex int64
 	loaded     bool
+	// The recorded competition's period format, read off the archived
+	// timeline when it is fetched. A demo game's clock is synthetic but
+	// the MATCH is real, so its periods are whatever that competition
+	// plays — the countdown should read the recording's own format, not
+	// a guess.
+	periodSecs *int
+	otSecs     *int
+	regPeriods *int
 }
 
 // demoPhase is where one instant falls in the loop.
@@ -188,9 +196,12 @@ func (e *Engine) pollDemo(ctx context.Context, g *game, row store.Game, cfg stor
 		Running:       g.clock.Running,
 		Period:        g.clock.Period,
 		ReadAt:        now,
-		FeedLagMs:     0,
-		CoverageLevel: g.coverage,
-		LastEventAt:   nil,
+		FeedLagMs:         0,
+		CoverageLevel:     g.coverage,
+		LastEventAt:       nil,
+		PeriodSeconds:     g.demo.periodSecs,
+		OvertimeSeconds:   g.demo.otSecs,
+		RegulationPeriods: g.demo.regPeriods,
 	}); err != nil {
 		e.recordError(err)
 		log.Error().Err(err).Msg("demo clock update failed")
@@ -257,6 +268,18 @@ func (e *Engine) loadDemoRecording(ctx context.Context, g *game, log zerolog.Log
 		// not the demo stand-in our catalog carries for it.
 		if _, err := e.st.UpsertEvents(ctx, nil, tl.Rows()); err != nil {
 			return fmt.Errorf("store demo timeline: %w", err)
+		}
+		if f, ok := tl.Match.Format(); ok {
+			ps := f.PeriodSeconds
+			g.demo.periodSecs = &ps
+			if f.OvertimeSeconds > 0 {
+				os := f.OvertimeSeconds
+				g.demo.otSecs = &os
+			}
+			if f.Periods > 0 {
+				rp := f.Periods
+				g.demo.regPeriods = &rp
+			}
 		}
 		rows, err = e.st.LoadEvents(ctx, g.srMatchID)
 		if err != nil {

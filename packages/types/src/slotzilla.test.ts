@@ -251,3 +251,42 @@ describe("countdown formatting", () => {
     assert.equal(formatWindowLabel(935), "15:35–15:39");
   });
 });
+
+// Both formats. Sportradar states the competition's own period structure
+// per match (`periodlength` / `overtimelength` / `numberofperiods` on the
+// match block), so the countdown reads it instead of assuming FIBA.
+describe("period format", () => {
+  const NBA = { periodSeconds: 720, overtimeSeconds: 300, regulationPeriods: 4 };
+
+  test("FIBA 4x10 is the fallback when the feed says nothing", () => {
+    assert.deepEqual(periodClock(939), { period: 2, remaining: 261, overtime: false });
+    assert.deepEqual(periodClock(939, null, null), { period: 2, remaining: 261, overtime: false });
+  });
+
+  // The same cumulative reading is a different quarter and a different
+  // countdown under 12-minute quarters — which is exactly the error a
+  // hard-coded 600 made silently, since the quarter LABEL comes from the
+  // feed and would have stayed right.
+  test("NBA 4x12 reads its own length", () => {
+    assert.deepEqual(periodClock(939, null, NBA), { period: 2, remaining: 501, overtime: false });
+    assert.equal(formatCountdown(939, null, NBA), "8:21");
+    assert.equal(formatCountdown(939), "4:21");
+  });
+
+  test("regulation ends where the format says it does", () => {
+    // FIBA: 2400 is overtime. NBA: 2400 is still the fourth quarter.
+    assert.equal(periodClock(2400).overtime, true);
+    assert.equal(periodClock(2400, null, NBA).overtime, false);
+    assert.deepEqual(periodClock(2880, null, NBA), { period: 5, remaining: 300, overtime: true });
+  });
+
+  test("a malformed format falls back rather than dividing by it", () => {
+    const bad = { periodSeconds: 0, overtimeSeconds: -1, regulationPeriods: 0 };
+    assert.deepEqual(periodClock(939, null, bad), { period: 2, remaining: 261, overtime: false });
+  });
+
+  test("window labels follow the format too", () => {
+    assert.equal(formatWindowCountdown(935, null, NBA), "8:25–8:21");
+    assert.equal(formatWindowCountdown(935), "4:25–4:21");
+  });
+});

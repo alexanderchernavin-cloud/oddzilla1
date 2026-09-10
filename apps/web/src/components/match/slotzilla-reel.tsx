@@ -20,6 +20,7 @@ import type {
   LineKey,
   PaytableLines,
   SlotSymbol,
+  SlotzillaPeriodFormat,
   SlotTeam,
 } from "@oddzilla/types/slotzilla";
 
@@ -71,6 +72,8 @@ export interface ReelProps {
   t: Translate;
   /** Feed period, so the label counts down inside it. */
   period?: number | null;
+  /** The competition's period format, so the countdown uses its real length. */
+  format?: SlotzillaPeriodFormat | null;
   /** Reel already settled into a paying line (tints the frame). */
   paying?: boolean;
 }
@@ -88,7 +91,7 @@ export interface ReelProps {
 const SPIN_FACE: readonly SlotSymbol[] = ["P2", "MISS", "P3", "FOUL", "FT", "MISS"];
 const SPIN_STRIP: readonly SlotSymbol[] = [...SPIN_FACE, ...SPIN_FACE];
 
-export function Reel({ from, symbol, team, lit, final, homeTeam, awayTeam, t, paying, period }: ReelProps) {
+export function Reel({ from, symbol, team, lit, final, homeTeam, awayTeam, t, paying, period, format }: ReelProps) {
   const teamName = team === "home" ? homeTeam : team === "away" ? awayTeam : null;
   const stateLabel = lit ? t("reelLive") : t("reelPending");
   // A symbol the service may still revise (its window is not final):
@@ -103,7 +106,7 @@ export function Reel({ from, symbol, team, lit, final, homeTeam, awayTeam, t, pa
       data-paying={paying ? "true" : "false"}
       data-empty={symbol == null ? "true" : "false"}
     >
-      <span className="oz-slz-reel-label mono">{formatWindowCountdown(from, period)}</span>
+      <span className="oz-slz-reel-label mono">{formatWindowCountdown(from, period, format)}</span>
       {/*
         A reel with no symbol yet SPINS, like the machine it is meant to
         be: the strip below is the symbol set repeated, translated on a

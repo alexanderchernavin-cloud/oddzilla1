@@ -180,7 +180,7 @@ function GameCard({
           {on
             ? game.clock.seconds == null
               ? "—"
-              : formatCountdown(game.clock.seconds, game.clock.period)
+              : formatCountdown(game.clock.seconds, game.clock.period, game.clock)
             : kickoff
               ? t("hub.startsAt", { time: kickoff })
               : "—"}

@@ -148,6 +148,13 @@ type ClockUpdate struct {
 	FeedLagMs     int
 	CoverageLevel *int
 	LastEventAt   *time.Time
+	// The competition's period format, in seconds, when the feed states
+	// it. Nil leaves whatever is stored alone — the format cannot change
+	// mid-match, so one good reading is worth keeping over a later
+	// document that happens to omit it.
+	PeriodSeconds     *int
+	OvertimeSeconds   *int
+	RegulationPeriods *int
 }
 
 const sqlUpdateGameClock = `
@@ -159,11 +166,15 @@ UPDATE slotzilla_games
        feed_lag_ms = $6,
        coverage_level = COALESCE($7, coverage_level),
        last_event_at = GREATEST(last_event_at, $8),
+       period_seconds = COALESCE($9, period_seconds),
+       overtime_seconds = COALESCE($10, overtime_seconds),
+       regulation_periods = COALESCE($11, regulation_periods),
        updated_at = now()
  WHERE match_id = $1`
 
 func (s *Store) UpdateGameClock(ctx context.Context, u ClockUpdate) error {
-	if _, err := s.pool.Exec(ctx, sqlUpdateGameClock, u.MatchID, u.Seconds, u.Running, u.Period, u.ReadAt, u.FeedLagMs, u.CoverageLevel, u.LastEventAt); err != nil {
+	if _, err := s.pool.Exec(ctx, sqlUpdateGameClock, u.MatchID, u.Seconds, u.Running, u.Period, u.ReadAt, u.FeedLagMs, u.CoverageLevel, u.LastEventAt,
+		u.PeriodSeconds, u.OvertimeSeconds, u.RegulationPeriods); err != nil {
 		return fmt.Errorf("update game clock %d: %w", u.MatchID, err)
 	}
 	return nil

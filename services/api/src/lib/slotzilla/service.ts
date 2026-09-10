@@ -252,12 +252,24 @@ export function clockView(game: {
   clockRunning: boolean;
   clockPeriod: number | null;
   clockReadAt: Date | null;
+  // The competition's period format, as Sportradar stated it. Rides on
+  // the clock because that is where the reading it qualifies lives — a
+  // countdown is meaningless without knowing how long a period is.
+  // Optional so every caller that builds a clock from a partial row
+  // (the lists, the covered-fixture state) keeps compiling; absent means
+  // the client falls back to FIBA.
+  periodSeconds?: number | null;
+  overtimeSeconds?: number | null;
+  regulationPeriods?: number | null;
 }): SlotzillaClock {
   return {
     seconds: game.clockSeconds,
     running: game.clockRunning,
     atMs: game.clockReadAt ? game.clockReadAt.getTime() : 0,
     period: game.clockPeriod,
+    periodSeconds: game.periodSeconds ?? null,
+    overtimeSeconds: game.overtimeSeconds ?? null,
+    regulationPeriods: game.regulationPeriods ?? null,
   };
 }
 

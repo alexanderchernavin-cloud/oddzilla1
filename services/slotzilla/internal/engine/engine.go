@@ -470,15 +470,35 @@ func (e *Engine) applyClock(ctx context.Context, g *game, tl *sportradar.Timelin
 		t := time.Unix(maxUTS, 0)
 		lastEventAt = &t
 	}
+	// The competition's period format, when the feed states it. Stored
+	// so the storefront's countdown reads the real format (FIBA 4 x 10,
+	// NBA 4 x 12) instead of assuming one.
+	var periodSecs, otSecs, regPeriods *int
+	if f, ok := tl.Match.Format(); ok {
+		ps := f.PeriodSeconds
+		periodSecs = &ps
+		if f.OvertimeSeconds > 0 {
+			os := f.OvertimeSeconds
+			otSecs = &os
+		}
+		if f.Periods > 0 {
+			rp := f.Periods
+			regPeriods = &rp
+		}
+	}
+
 	if err := e.st.UpdateGameClock(ctx, store.ClockUpdate{
-		MatchID:       g.matchID,
-		Seconds:       clock.Seconds,
-		Running:       clock.Running,
-		Period:        clock.Period,
-		ReadAt:        now,
-		FeedLagMs:     int(tl.FeedLag(now) / time.Millisecond),
-		CoverageLevel: g.coverage,
-		LastEventAt:   lastEventAt,
+		MatchID:           g.matchID,
+		Seconds:           clock.Seconds,
+		Running:           clock.Running,
+		Period:            clock.Period,
+		ReadAt:            now,
+		FeedLagMs:         int(tl.FeedLag(now) / time.Millisecond),
+		CoverageLevel:     g.coverage,
+		LastEventAt:       lastEventAt,
+		PeriodSeconds:     periodSecs,
+		OvertimeSeconds:   otSecs,
+		RegulationPeriods: regPeriods,
 	}); err != nil {
 		return err
 	}

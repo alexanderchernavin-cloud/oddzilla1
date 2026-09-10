@@ -64,7 +64,7 @@ export function SlotzillaLive() {
                 <span className="oz-slz-card-tournament">{g.tournament ?? ""}</span>
                 <span className="oz-slz-card-clock mono">
                   {!paused && g.clock.running ? <LiveDot size={6} /> : null}
-                  {g.clock.seconds == null ? "—" : formatCountdown(g.clock.seconds, g.clock.period)}
+                  {g.clock.seconds == null ? "—" : formatCountdown(g.clock.seconds, g.clock.period, g.clock)}
                 </span>
               </span>
               <span className="oz-slz-card-teams">

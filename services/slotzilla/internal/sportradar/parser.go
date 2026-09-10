@@ -161,6 +161,13 @@ type Match struct {
 	} `json:"result"`
 	Period   FlexInt  `json:"p"`
 	TimeInfo TimeInfo `json:"timeinfo"`
+	// The competition's own format, in MINUTES. FIBA plays 4 x 10 with
+	// 5-minute overtimes; the NBA plays 4 x 12. Sportradar states it per
+	// match, so the storefront's countdown reads the real format instead
+	// of assuming one — see PeriodFormat.
+	PeriodLength    FlexInt `json:"periodlength"`
+	OvertimeLength  FlexInt `json:"overtimelength"`
+	NumberOfPeriods FlexInt `json:"numberofperiods"`
 	Coverage struct {
 		Live struct {
 			Level struct {
@@ -203,6 +210,32 @@ func (m *Match) Clock() Clock {
 		c.Period = &p
 	}
 	return c
+}
+
+// PeriodFormat is the competition's period structure, in SECONDS.
+type PeriodFormat struct {
+	PeriodSeconds   int
+	OvertimeSeconds int
+	Periods         int
+}
+
+// Format reads the competition's period structure off the match, or
+// reports ok=false when the feed did not state it. Deliberately no
+// default here: a caller that silently substituted FIBA's 4 x 10 would
+// misstate an NBA clock by two minutes a quarter and never say so, so
+// the decision of what to do without it belongs to the caller.
+func (m *Match) Format() (PeriodFormat, bool) {
+	if !m.PeriodLength.Valid || m.PeriodLength.Value <= 0 {
+		return PeriodFormat{}, false
+	}
+	f := PeriodFormat{PeriodSeconds: int(m.PeriodLength.Value) * 60}
+	if m.OvertimeLength.Valid && m.OvertimeLength.Value > 0 {
+		f.OvertimeSeconds = int(m.OvertimeLength.Value) * 60
+	}
+	if m.NumberOfPeriods.Valid && m.NumberOfPeriods.Value > 0 {
+		f.Periods = int(m.NumberOfPeriods.Value)
+	}
+	return f, true
 }
 
 // HasStarted reports whether the match has tipped off: timeinfo.started

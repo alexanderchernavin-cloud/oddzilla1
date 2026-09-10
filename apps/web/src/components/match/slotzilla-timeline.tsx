@@ -20,7 +20,7 @@
 
 import { useMemo, useRef } from "react";
 import { formatCountdown } from "@oddzilla/types/slotzilla";
-import type { SlotzillaTimelineEvent } from "@oddzilla/types/slotzilla";
+import type { SlotzillaPeriodFormat, SlotzillaTimelineEvent } from "@oddzilla/types/slotzilla";
 import { SlotzillaEventIcon, type SlotzillaIconKind } from "./slotzilla-icons";
 
 type Translate = (key: string, values?: Record<string, string | number>) => string;
@@ -37,8 +37,12 @@ const ANCHOR_STEP = 30;
  * time REMAINING in the period, counting down. The event's own position
  * is still its cumulative second — only the label is converted.
  */
-function clockLabel(seconds: number, period: number | null): string {
-  return formatCountdown(seconds, period);
+function clockLabel(
+  seconds: number,
+  period: number | null,
+  format: SlotzillaPeriodFormat | null,
+): string {
+  return formatCountdown(seconds, period, format);
 }
 
 /**
@@ -64,6 +68,8 @@ export interface SlotzillaTimelineProps {
   awayTeam: string;
   /** Feed period, so the labels count down inside it. */
   period?: number | null;
+  /** The competition's period format. */
+  format?: SlotzillaPeriodFormat | null;
   /** Renders the DEMO marker above the strip. */
   demo?: boolean;
   t: Translate;
@@ -76,6 +82,7 @@ export function SlotzillaTimeline({
   homeTeam,
   awayTeam,
   period = null,
+  format = null,
   demo,
   t,
 }: SlotzillaTimelineProps) {
@@ -132,7 +139,7 @@ export function SlotzillaTimeline({
     <div className="oz-slz-tl" aria-label={t("timelineLabel")}>
       {demo ? <span className="oz-slz-tl-demo mono">{t("demoBadge")}</span> : null}
       <span className="oz-slz-tl-time mono" aria-hidden>
-        {clockLabel(from, period)}
+        {clockLabel(from, period, format)}
       </span>
       <div className="oz-slz-tl-track">
         <span className="oz-slz-tl-rule" aria-hidden />
@@ -157,7 +164,7 @@ export function SlotzillaTimeline({
             event.symbol ? t(`symbol.${event.symbol}`) : event.type.replace(/_/gu, " "),
             teamName,
             event.playerName,
-            clockLabel(event.seconds, period),
+            clockLabel(event.seconds, period, format),
           ]
             .filter(Boolean)
             .join(" · ");
@@ -183,7 +190,7 @@ export function SlotzillaTimeline({
         <span className="oz-slz-tl-now" aria-hidden />
       </div>
       <span className="oz-slz-tl-time mono" aria-hidden>
-        {clockLabel(to, period)}
+        {clockLabel(to, period, format)}
       </span>
     </div>
   );

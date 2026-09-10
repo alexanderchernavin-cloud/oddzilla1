@@ -159,6 +159,11 @@ export function SlotzillaPanel({
   // in Q3, would come out as "10:00". Every other reading derives its own
   // period from its own cumulative second.
   const feedPeriod = state?.clock.period ?? null;
+  // The competition's own period format, from Sportradar via the game
+  // row. Absent means the feed did not state it and periodClock falls
+  // back to FIBA — which is right for everything SlotZilla carries and
+  // would be two minutes a quarter out for the NBA, hence reading it.
+  const periodFormat = state?.clock ?? null;
   const displaySpin = state?.openSpin ?? game.lastSpin;
   const reels: DisplayReel[] = useMemo(() => {
     if (!state) return [];
@@ -247,11 +252,11 @@ export function SlotzillaPanel({
   if (displaySpin && displaySpin.status === "open") {
     const from = displaySpin.windowFrom;
     if (clockSeconds != null && clockSeconds < from) {
-      resultLine = t("startsAt", { at: formatCountdown(from), seconds: from - clockSeconds });
+      resultLine = t("startsAt", { at: formatCountdown(from, null, periodFormat), seconds: from - clockSeconds });
     } else {
       resultLine = t("inProgress", {
-        from: formatCountdown(from),
-        to: formatCountdown(displaySpin.windows[2] + 4),
+        from: formatCountdown(from, null, periodFormat),
+        to: formatCountdown(displaySpin.windows[2] + 4, null, periodFormat),
       });
     }
   } else if (displaySpin && displaySpin.status === "won") {
@@ -269,14 +274,14 @@ export function SlotzillaPanel({
     resultLine = t("void");
   } else if (state.canSpin && reels.length === 3) {
     resultLine = t("upcoming", {
-      from: formatCountdown(reels[0]!.from),
-      to: formatCountdown(reels[2]!.from + 4),
+      from: formatCountdown(reels[0]!.from, null, periodFormat),
+      to: formatCountdown(reels[2]!.from + 4, null, periodFormat),
     });
   } else {
     resultLine = "";
   }
 
-  const clockText = clockSeconds == null ? "—" : formatCountdown(clockSeconds, feedPeriod);
+  const clockText = clockSeconds == null ? "—" : formatCountdown(clockSeconds, feedPeriod, periodFormat);
   const periodText = state.clock.period != null ? `Q${state.clock.period}` : "";
   const errorText = game.error
     ? t(KNOWN_ERRORS.has(game.error) ? `errors.${game.error}` : "errors.generic")
@@ -357,6 +362,7 @@ export function SlotzillaPanel({
           events={state.timeline}
           clockSeconds={clockSeconds}
           spanSeconds={TIMELINE_SPAN_SECONDS}
+          format={periodFormat}
           homeTeam={homeTeam}
           awayTeam={awayTeam}
           demo={state.demo}
@@ -381,6 +387,7 @@ export function SlotzillaPanel({
               paying={Boolean(paying && r.symbol && r.symbol === lineSymbol(displaySpin?.lineKey ?? null))}
               homeTeam={homeTeam}
               awayTeam={awayTeam}
+              format={periodFormat}
               t={t}
             />
           ))}
@@ -539,7 +546,7 @@ export function SlotzillaPanel({
                     key={s.id}
                     className="oz-slz-chip"
                     data-status={s.status}
-                    title={`${formatWindowCountdown(s.windowFrom)} · ${title}`}
+                    title={`${formatWindowCountdown(s.windowFrom, null, periodFormat)} · ${title}`}
                   >
                     {sym ? <SymbolGlyph symbol={sym} size={18} /> : <span className="oz-slz-chip-none" aria-hidden />}
                   </span>

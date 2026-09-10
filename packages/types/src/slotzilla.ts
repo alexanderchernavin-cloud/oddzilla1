@@ -133,6 +133,21 @@ export function formatWindowLabel(windowFrom: number): string {
 export const PERIOD_SECONDS = 600;
 /** FIBA overtime is five minutes. */
 export const OVERTIME_SECONDS = 300;
+/** FIBA and the NBA both play four regulation periods. */
+export const REGULATION_PERIODS = 4;
+
+/**
+ * A competition's period structure, as Sportradar states it per match.
+ * Every field optional: the feed does not always say, and a caller that
+ * silently substituted FIBA's 4 x 10 for the NBA's 4 x 12 would misstate
+ * every countdown by two minutes a quarter without anything looking
+ * wrong — the quarter LABEL comes from the feed and would stay right.
+ */
+export interface SlotzillaPeriodFormat {
+  periodSeconds?: number | null;
+  overtimeSeconds?: number | null;
+  regulationPeriods?: number | null;
+}
 
 export interface PeriodClock {
   /** 1-4 in regulation, 5+ for overtime. */
@@ -154,37 +169,58 @@ export interface PeriodClock {
  * period and PERIOD_SECONDS degrades to a slightly wrong countdown rather
  * than a negative one.
  */
-export function periodClock(cumulativeSeconds: number, feedPeriod?: number | null): PeriodClock {
+export function periodClock(
+  cumulativeSeconds: number,
+  feedPeriod?: number | null,
+  format?: SlotzillaPeriodFormat | null,
+): PeriodClock {
   const s = Math.max(0, Math.floor(cumulativeSeconds));
-  const regulation = 4 * PERIOD_SECONDS;
+  // The feed's own format when it stated one, FIBA otherwise. Guarded
+  // rather than trusted: a zero or negative length from a malformed
+  // document would divide the whole clock into nothing.
+  const periodLen =
+    format?.periodSeconds && format.periodSeconds > 0 ? format.periodSeconds : PERIOD_SECONDS;
+  const otLen =
+    format?.overtimeSeconds && format.overtimeSeconds > 0
+      ? format.overtimeSeconds
+      : OVERTIME_SECONDS;
+  const periods =
+    format?.regulationPeriods && format.regulationPeriods > 0
+      ? format.regulationPeriods
+      : REGULATION_PERIODS;
+  const regulation = periods * periodLen;
 
   if (s >= regulation) {
     const intoOt = s - regulation;
-    const otIndex = Math.floor(intoOt / OVERTIME_SECONDS);
-    const elapsed = intoOt - otIndex * OVERTIME_SECONDS;
+    const otIndex = Math.floor(intoOt / otLen);
+    const elapsed = intoOt - otIndex * otLen;
     return {
-      period: feedPeriod && feedPeriod > 4 ? feedPeriod : 5 + otIndex,
-      remaining: Math.max(0, OVERTIME_SECONDS - elapsed),
+      period: feedPeriod && feedPeriod > periods ? feedPeriod : periods + 1 + otIndex,
+      remaining: Math.max(0, otLen - elapsed),
       overtime: true,
     };
   }
 
-  const derived = Math.floor(s / PERIOD_SECONDS) + 1;
-  const period = feedPeriod && feedPeriod >= 1 && feedPeriod <= 4 ? feedPeriod : derived;
-  const elapsed = s - (period - 1) * PERIOD_SECONDS;
+  const derived = Math.floor(s / periodLen) + 1;
+  const period = feedPeriod && feedPeriod >= 1 && feedPeriod <= periods ? feedPeriod : derived;
+  const elapsed = s - (period - 1) * periodLen;
   return {
     period,
     // Clamped both ways: the feed's period and our period length can
     // disagree, and neither a negative countdown nor one above the
     // period length is a thing a bettor should ever be shown.
-    remaining: Math.min(PERIOD_SECONDS, Math.max(0, PERIOD_SECONDS - elapsed)),
+    remaining: Math.min(periodLen, Math.max(0, periodLen - elapsed)),
     overtime: false,
   };
 }
 
 /** "4:02" — the time remaining in the period the reading falls in. */
-export function formatCountdown(cumulativeSeconds: number, feedPeriod?: number | null): string {
-  return formatMatchClock(periodClock(cumulativeSeconds, feedPeriod).remaining);
+export function formatCountdown(
+  cumulativeSeconds: number,
+  feedPeriod?: number | null,
+  format?: SlotzillaPeriodFormat | null,
+): string {
+  return formatMatchClock(periodClock(cumulativeSeconds, feedPeriod, format).remaining);
 }
 
 /**
@@ -194,9 +230,13 @@ export function formatCountdown(cumulativeSeconds: number, feedPeriod?: number |
  * the range reads high-to-low. Writing it low-to-high would be tidier and
  * would say the window runs backwards.
  */
-export function formatWindowCountdown(windowFrom: number, feedPeriod?: number | null): string {
-  const start = formatCountdown(windowFrom, feedPeriod);
-  const end = formatCountdown(windowFrom + WINDOW_SECONDS - 1, feedPeriod);
+export function formatWindowCountdown(
+  windowFrom: number,
+  feedPeriod?: number | null,
+  format?: SlotzillaPeriodFormat | null,
+): string {
+  const start = formatCountdown(windowFrom, feedPeriod, format);
+  const end = formatCountdown(windowFrom + WINDOW_SECONDS - 1, feedPeriod, format);
   return `${start}–${end}`;
 }
 
@@ -452,7 +492,7 @@ export type SlotzillaGameStatus = "scheduled" | "live" | "paused" | "ended" | "v
 export type SlotzillaSpinStatus = "open" | "won" | "lost" | "void";
 
 /** The match clock as the service last read it; the browser advances it locally while `running`. */
-export interface SlotzillaClock {
+export interface SlotzillaClock extends SlotzillaPeriodFormat {
   /** Cumulative match-clock seconds, null before tip-off. */
   seconds: number | null;
   running: boolean;
