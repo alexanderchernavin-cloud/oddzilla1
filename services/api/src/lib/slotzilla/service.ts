@@ -565,7 +565,7 @@ export async function buildGameState(
  * clump. The reference draws its five minutes across a full-width bar,
  * which is the part that does not transfer.
  */
-export const TIMELINE_LOOKBACK_SECONDS = 150;
+export const TIMELINE_LOOKBACK_SECONDS = 90;
 
 /**
  * Event types the strip does NOT draw: the clock's own machinery and the

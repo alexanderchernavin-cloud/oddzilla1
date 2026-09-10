@@ -49,7 +49,7 @@ import { SlotzillaTimeline } from "./slotzilla-timeline";
  * of empty axis that looks like a lull in the match rather than the edge
  * of the data.
  */
-const TIMELINE_SPAN_SECONDS = 150;
+const TIMELINE_SPAN_SECONDS = 90;
 
 const MICRO = 1_000_000n;
 const STAKE_PRESETS = [0.1, 0.3, 0.5, 1, 5] as const;

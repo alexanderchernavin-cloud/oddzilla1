@@ -73,6 +73,19 @@ export interface ReelProps {
   paying?: boolean;
 }
 
+/**
+ * The strip a spinning reel shows. The paying symbols twice over so the
+ * loop has something to repeat, and the animation translates it by
+ * exactly half its height — which is why the first half must equal the
+ * second: the wrap point then lands on an identical frame and the loop
+ * is seamless.
+ *
+ * NONE is left out. It is the commonest real outcome, but a blank
+ * tumbling past reads as a gap in the reel rather than a symbol.
+ */
+const SPIN_FACE: readonly SlotSymbol[] = ["P2", "MISS", "P3", "FOUL", "FT", "MISS"];
+const SPIN_STRIP: readonly SlotSymbol[] = [...SPIN_FACE, ...SPIN_FACE];
+
 export function Reel({ from, symbol, team, lit, final, homeTeam, awayTeam, t, paying }: ReelProps) {
   const teamName = team === "home" ? homeTeam : team === "away" ? awayTeam : null;
   const stateLabel = lit ? t("reelLive") : t("reelPending");
@@ -89,8 +102,29 @@ export function Reel({ from, symbol, team, lit, final, homeTeam, awayTeam, t, pa
       data-empty={symbol == null ? "true" : "false"}
     >
       <span className="oz-slz-reel-label mono">{formatWindowLabel(from)}</span>
+      {/*
+        A reel with no symbol yet SPINS, like the machine it is meant to
+        be: the strip below is the symbol set repeated, translated on a
+        loop inside a clipped window, so what a bettor sees is symbols
+        flying past until the window resolves. A dashed circle and the
+        word "Waiting" said the same thing and looked like a form field.
+
+        The strip is `aria-hidden` and the state is announced in the foot
+        instead — a screen reader wants "waiting", not the eight symbols
+        currently flickering past.
+      */}
       <span className="oz-slz-reel-face">
-        {symbol ? <SymbolGlyph symbol={symbol} /> : <span className="oz-slz-reel-blank" aria-hidden />}
+        {symbol ? (
+          <SymbolGlyph symbol={symbol} />
+        ) : (
+          <span className="oz-slz-reel-spinner" aria-hidden>
+            <span className="oz-slz-reel-strip">
+              {SPIN_STRIP.map((s, i) => (
+                <SymbolGlyph key={`${s}-${i}`} symbol={s} />
+              ))}
+            </span>
+          </span>
+        )}
       </span>
       <span className="oz-slz-reel-foot">
         {symbol ? (

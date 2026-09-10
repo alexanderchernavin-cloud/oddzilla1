@@ -2236,10 +2236,10 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 13px;
+  height: 13px;
   border-radius: 50%;
-  border: 1.5px solid var(--fg-muted);
+  border: 1.2px solid var(--fg-muted);
   background: var(--surface-2);
   line-height: 1;
   color: var(--fg-muted);
@@ -2253,9 +2253,9 @@ body {
 .oz-slz-tl-mark[data-kind="timeout"],
 .oz-slz-tl-mark[data-kind="period"],
 .oz-slz-tl-mark[data-kind="other"] {
-  width: 15px;
-  height: 15px;
-  opacity: 0.75;
+  width: 9px;
+  height: 9px;
+  opacity: 0.7;
   z-index: 0;
 }
 .oz-slz-tl-mark[data-disabled="true"] { opacity: 0.35; }
@@ -2315,6 +2315,61 @@ body {
   font-weight: 700;
   letter-spacing: 0.08em;
   vertical-align: middle;
+}
+
+/* ── Spinning reel ──────────────────────────────────────────────────
+   A reel with no symbol yet spins, because this is a slot machine and a
+   dashed circle reading "Waiting" is a form field. The strip is the
+   symbol set twice over inside a clipped window; the animation shifts it
+   by exactly half its height, so the wrap lands on an identical frame
+   and the loop has no seam.
+
+   Motion is on `transform`, which the compositor can run without laying
+   out or painting — this animates continuously on every open reel, on a
+   page that also carries a running clock and a conveyor, so it must cost
+   nothing on the main thread. */
+.oz-slz-reel-spinner {
+  display: block;
+  height: 36px;
+  width: 36px;
+  overflow: hidden;
+  /* Fades the symbols out at the top and bottom edges rather than
+     cutting them dead, which is what sells it as a wheel turning behind
+     a window instead of a list scrolling. */
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 28%, #000 72%, transparent);
+  mask-image: linear-gradient(to bottom, transparent, #000 28%, #000 72%, transparent);
+}
+.oz-slz-reel-strip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  animation: oz-slz-spin 0.62s linear infinite;
+  will-change: transform;
+}
+@keyframes oz-slz-spin {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(0, -50%, 0); }
+}
+/* The reel the clock is inside spins faster — the one about to resolve
+   is the one worth watching. */
+.oz-slz-reel[data-lit="true"] .oz-slz-reel-strip { animation-duration: 0.34s; }
+
+/* A symbol that has just landed drops in and settles, so resolving reads
+   as the reel STOPPING rather than the picture simply changing. */
+.oz-slz-reel[data-empty="false"] .oz-slz-reel-face .oz-slz-sym {
+  animation: oz-slz-land 0.36s cubic-bezier(0.22, 1.2, 0.36, 1) both;
+}
+@keyframes oz-slz-land {
+  from { transform: translate3d(0, -70%, 0); opacity: 0; }
+  60%  { transform: translate3d(0, 8%, 0); opacity: 1; }
+  to   { transform: translate3d(0, 0, 0); opacity: 1; }
+}
+
+/* Motion here is decoration: the symbol, the label and the result are
+   all still there without it. */
+@media (prefers-reduced-motion: reduce) {
+  .oz-slz-reel-strip { animation: none; }
+  .oz-slz-reel[data-empty="false"] .oz-slz-reel-face .oz-slz-sym { animation: none; }
 }
 
 /* Reel placeholder while the state fetch is in flight. Same footprint as
