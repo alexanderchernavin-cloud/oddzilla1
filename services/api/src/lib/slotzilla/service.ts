@@ -36,6 +36,7 @@ import {
 } from "@oddzilla/db";
 import { isCurrency } from "@oddzilla/types/currencies";
 import {
+  clockIsFresh,
   exposureMicro,
   firstWindowFor,
   isLineKey,
@@ -101,15 +102,11 @@ export function estimatedClockSeconds(
   return clockSeconds + elapsed;
 }
 
-/** A reading older than the feed-dark threshold is not a reading. */
-export function clockIsFresh(
-  clockReadAtMs: number | null,
-  nowMs: number,
-  feedDarkVoidSeconds: number,
-): boolean {
-  if (clockReadAtMs === null) return false;
-  return nowMs - clockReadAtMs < feedDarkVoidSeconds * 1000;
-}
+// A reading older than the feed-dark threshold is not a reading. Lives in
+// @oddzilla/types now so the storefront's block mirror applies the same
+// rule; re-exported here because callers already import it from this
+// module.
+export { clockIsFresh };
 
 // ── Pure: block reasons ─────────────────────────────────────────────────
 
@@ -135,10 +132,20 @@ export function spinBlockFor(input: BlockInput): SlotzillaSpinBlock | null {
   if (!input.hasUser) return "sign_in";
   if (input.gameStatus === "paused") return "game_paused";
   if (input.gameStatus !== "live") return "game_not_live";
-  if (
-    !input.clockRunning ||
-    !clockIsFresh(input.clockReadAtMs, input.nowMs, input.feedDarkVoidSeconds)
-  ) {
+  // A STOPPED clock no longer blocks a spin (operator's call, 2026-09-10,
+  // matching Betby): basketball stops constantly, and refusing during
+  // every timeout, foul and dead ball is most of the game. The spin's
+  // windows are computed from the clock READING, which is frozen while
+  // play is stopped, so they simply begin when the clock resumes — the
+  // arithmetic needs no special case.
+  //
+  // A STALE reading still blocks, and that distinction is the whole
+  // point: a stopped clock is the match telling us where it is, a stale
+  // one is us not knowing. Placing against a reading we have not heard
+  // confirmed in feed_dark_void_seconds would be betting on a match
+  // whose state we have lost — and the settler voids open spins for
+  // exactly that reason.
+  if (!clockIsFresh(input.clockReadAtMs, input.nowMs, input.feedDarkVoidSeconds)) {
     return "clock_stopped";
   }
   if (input.hasOpenSpin) return "open_spin";
@@ -236,6 +243,7 @@ export function limitsFromConfig(cfg: SlotzillaConfig): SlotzillaLimits {
     maxPayoutMicro: cfg.maxPayoutMicro.toString(),
     leadSeconds: cfg.leadSeconds,
     autoplayEnabled: cfg.autoplayEnabled,
+    feedDarkVoidSeconds: cfg.feedDarkVoidSeconds,
   };
 }
 

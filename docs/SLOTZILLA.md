@@ -39,10 +39,22 @@ game, and a settled spin can be replayed from the stored events
   38:33–38:37, ours read 38:35–38:39, and because every window is on the
   same grid its symbol is derived once per match and shared by every spin
   that covers it.
-- **No spins while the clock is stopped.** Timeouts, period breaks, reviews
-  and free throws stop the clock; the panel shows "Waiting for live play"
-  and auto-play waits with it. A round already open keeps counting when the
-  clock resumes.
+- **Spins ARE placeable while the clock is stopped** (operator's call,
+  2026-09-10, matching Betby). Timeouts, period breaks, reviews and free
+  throws stop the clock constantly — refusing through all of them is
+  refusing through most of the game. A spin placed during a stoppage has
+  its windows computed from the frozen reading, so they simply begin when
+  play resumes; the arithmetic needs no special case, and a round already
+  open keeps counting the same way.
+
+  What still blocks is a STALE reading, and the distinction is the point:
+  a stopped clock is the match telling us where it is, a stale one is us
+  having lost track of it. Placing against a reading unconfirmed for
+  `feed_dark_void_seconds` would be betting on a match whose state we no
+  longer know — which is why the settler voids open spins on exactly that
+  condition. The rule (`clockIsFresh`) lives in `@oddzilla/types` so the
+  api's authoritative gate and the storefront's local mirror cannot
+  drift.
 - **Settlement on the scout's clock.** Every event carries `seconds`, the
   cumulative match-clock reading when the scout logged it. Windows are
   ranges of that number, never of arrival time, so a late-arriving event
