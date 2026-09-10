@@ -24,14 +24,6 @@ import { SlotzillaEventIcon, type SlotzillaIconKind } from "./slotzilla-icons";
 
 type Translate = (key: string, values?: Record<string, string | number>) => string;
 
-/**
- * Minimum separation between two marks, as a percentage of the track.
- * An 18px mark on a ~400px track is ~4.5%, so 3% leaves adjacent marks
- * overlapping slightly — which reads as a cluster, correctly — while
- * keeping each one's centre and its hover target distinct.
- */
-const MIN_GAP_PCT = 3;
-
 /** mm:ss of a cumulative match-clock reading. */
 function clockLabel(seconds: number): string {
   const s = Math.max(0, Math.round(seconds));
@@ -94,25 +86,24 @@ export function SlotzillaTimeline({
         pct: ((e.seconds - from) / span) * 100,
       }));
 
-    // Basketball clusters: a foul, its free throws and the rebound can
-    // share a second, and at this scale those land on the same pixel —
-    // measured on production, the closest pair was 0px apart, one mark
-    // completely hidden behind the other. Nudge them apart to a minimum
-    // spacing.
+    // No de-collision. A mark's position is its own clock second and
+    // NOTHING else, which is what makes the conveyor work: every mark
+    // moves at exactly the same constant rate, so a linear transition
+    // carries them smoothly and no arrival disturbs a neighbour.
     //
-    // The chain is walked NEWEST-FIRST and pushes older marks LEFT, which
-    // is what keeps the conveyor smooth. Anchoring at the old end instead
-    // (the obvious direction) re-anchors the whole chain the moment the
-    // oldest mark scrolls off the left edge, and every remaining mark
-    // jumps sideways. Anchored at the newest, a mark leaving at the left
-    // affects nothing, and the mark the eye is actually on — the one just
-    // added at the right — never moves off its true position.
-    for (let i = placed.length - 2; i >= 0; i--) {
-      const right = placed[i + 1];
-      const cur = placed[i];
-      if (!right || !cur) continue;
-      if (cur.pct > right.pct - MIN_GAP_PCT) cur.pct = right.pct - MIN_GAP_PCT;
-    }
+    // Two attempts at spacing clusters apart both failed, and the reason
+    // is worth keeping. Chaining from the OLD end re-anchors every mark
+    // when the oldest scrolls off. Chaining from the NEW end — which
+    // looked like the fix — makes every mark's position depend on the
+    // newest event, so each arrival shifts the whole strip; with a 1 s
+    // transition the marks then chase a target that keeps moving and
+    // visibly never arrive (measured on production: inline style said
+    // 4.3% while the rendered position was still at 78%).
+    //
+    // Overlap in a cluster is the honest picture anyway — a foul, its
+    // free throws and the rebound DID happen within a second of each
+    // other — and the reference design overlaps them too. Reading is
+    // handled by z-order instead: scoring marks sit above texture.
     return placed;
   }, [events, clockSeconds, spanSeconds]);
 
