@@ -37,6 +37,7 @@ import { isCurrency } from "@oddzilla/types/currencies";
 import { ApiFetchError, clientApi } from "./api-client";
 import { serverClock } from "./running-clock";
 import { useSlotzillaStream } from "./use-live-odds";
+import { useSessionUserId } from "./session-user";
 import { useWallets } from "./wallets";
 
 const POLL_MS = 15_000;
@@ -128,6 +129,10 @@ export function useSlotzilla(matchId: string): UseSlotzilla {
   const [autoplay, setAutoplay] = useState(false);
   const [sessionSpend, setSessionSpend] = useState<Record<string, bigint>>({});
   const wallets = useWallets();
+  // The session as SSR resolved it. Compared against what the api says
+  // per poll, so an access cookie that expired while the bettor sat on
+  // this page is recovered rather than shown as "sign in".
+  const sessionUserId = useSessionUserId();
 
   const spinningRef = useRef(false);
   const autoplayRef = useRef<{ on: boolean; stakeMicro: bigint; currency: string }>({
@@ -138,10 +143,42 @@ export function useSlotzilla(matchId: string): UseSlotzilla {
   // Spin ids whose settle fallback has already fired, so a slow settle
   // costs one extra fetch rather than one per second.
   const fallbackFiredRef = useRef<string | null>(null);
+  // One session-recovery attempt per expiry; see fetchState.
+  const refreshTriedRef = useRef(false);
 
   const fetchState = useCallback(async () => {
     try {
-      const fresh = await clientApi<SlotzillaGameState>(`/slotzilla/matches/${matchId}`);
+      let fresh = await clientApi<SlotzillaGameState>(`/slotzilla/matches/${matchId}`);
+
+      // The access cookie lives 15 minutes and ONLY a page navigation
+      // refreshes it (the Next.js middleware is the sole caller of
+      // /auth/refresh). This section is a page a bettor sits on —
+      // watching a match and spinning IS the activity — so it routinely
+      // passes that mark without navigating. Every poll after it then
+      // comes back anonymous and the panel says "Sign in to spin" to
+      // someone whose balance is on screen in the top bar, which was
+      // server-rendered while the cookie was still good. Reported from
+      // production 2026-09-10.
+      //
+      // So when the server says anonymous but the SSR-resolved session
+      // says otherwise, rotate the cookie and re-read once. Bounded by
+      // a ref: an expired REFRESH cookie must not turn the poll loop
+      // into a refresh loop, and the same bound is why ws-session-sync
+      // caps its reconnects.
+      if (fresh.spinBlock === "sign_in" && sessionUserId !== null && !refreshTriedRef.current) {
+        refreshTriedRef.current = true;
+        try {
+          await clientApi("/auth/refresh", { method: "POST" });
+          fresh = await clientApi<SlotzillaGameState>(`/slotzilla/matches/${matchId}`);
+        } catch {
+          // Refresh cookie is gone too: the bettor really is signed out.
+          // Keep the sign-in block, which is now the truth.
+        }
+      } else if (fresh.spinBlock !== "sign_in") {
+        // A good read re-arms the recovery for the next expiry.
+        refreshTriedRef.current = false;
+      }
+
       setMissing(false);
       setState((prev) => {
         // Keep a newer clock we already hold from a frame; the snapshot's
@@ -160,7 +197,7 @@ export function useSlotzilla(matchId: string): UseSlotzilla {
     } finally {
       setLoaded(true);
     }
-  }, [matchId]);
+  }, [matchId, sessionUserId]);
 
   // Snapshot on mount + poll.
   useEffect(() => {
