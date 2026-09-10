@@ -2281,6 +2281,17 @@ body {
   vertical-align: middle;
 }
 
+/* Reel placeholder while the state fetch is in flight. Same footprint as
+   a real reel so the card does not jump when the data lands. */
+.oz-slz-reel-skeleton {
+  display: block;
+  height: 96px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+  opacity: 0.6;
+}
+
 /* Reels */
 .oz-slz-reels {
   display: grid;

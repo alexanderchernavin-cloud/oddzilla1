@@ -159,7 +159,33 @@ export function SlotzillaPanel({
     }));
   }, [state, displaySpin, clockSeconds]);
 
-  if (game.missing || !game.loaded || !state) return null;
+  // `missing` is a real answer — this fixture has no game — so render
+  // nothing. Not-yet-loaded is NOT: the state is fetched client-side, so
+  // returning null there leaves the SlotZilla section showing its intro
+  // and the tracker with a hole where the game should be, which reads as
+  // "the game is broken" rather than "one moment". Reported from
+  // production 2026-09-10. A placeholder that keeps the card's shape
+  // costs nothing and cannot be mistaken for a failure.
+  if (game.missing) return null;
+  if (!game.loaded || !state) {
+    return (
+      <section className="oz-slz" data-expanded={expanded ? "true" : "false"} aria-busy="true">
+        <div className="oz-slz-body">
+          <header className="oz-slz-head">
+            <div className="oz-slz-head-title">
+              <span className="oz-slz-kicker mono">{t("kicker")}</span>
+              <span className="oz-slz-title display">{t("title")}</span>
+            </div>
+          </header>
+          <div className="oz-slz-reels" aria-hidden>
+            <span className="oz-slz-reel-skeleton" />
+            <span className="oz-slz-reel-skeleton" />
+            <span className="oz-slz-reel-skeleton" />
+          </div>
+        </div>
+      </section>
+    );
+  }
   const over = state.status === "ended" || state.status === "voided";
   if (over && !state.openSpin && !game.lastSpin && state.recentSpins.length === 0) return null;
 

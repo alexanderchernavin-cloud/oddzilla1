@@ -118,8 +118,25 @@ export function SlotzillaHub({
             awayTeam={selected.awayTeam}
             defaultExpanded
           />
-          <p className="oz-slz-hub-note">{t("hub.trackerNote")}</p>
-          <SportradarLmt srMatchId={Number(selected.srMatchId)} sportId={SR_BASKETBALL} />
+          {/*
+            No tracker on a demo game. The LMT is Sportradar's hosted
+            widget rendering THEIR feed for a real match id, and a demo
+            game's id is a fixture that finished — so it draws a final
+            score under an "ENDED" banner beside a game whose clock is
+            visibly running, which is worse than showing nothing.
+            It cannot be made to replay: we hand the widget an id in a
+            URL hash and it renders its own data on its own timeline;
+            nothing lets us drive its clock from our virtual one, and
+            the loader carries no replay / playback / seek capability at
+            all (checked 2026-09-10). The panel's own timeline strip is
+            what covers this for demo games.
+          */}
+          {selected.demo ? null : (
+            <>
+              <p className="oz-slz-hub-note">{t("hub.trackerNote")}</p>
+              <SportradarLmt srMatchId={Number(selected.srMatchId)} sportId={SR_BASKETBALL} />
+            </>
+          )}
         </div>
       ) : null}
     </div>
