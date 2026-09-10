@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 # One-shot deploy: fetch → diff → backup-if-migrations → migrate →
-# build-changed → recreate → smoke. Records the SHA + service set in
-# the deploy log on success.
+# build-changed → recreate → verify → smoke. Records the SHA + service
+# set in the deploy log on success.
 #
 # Steps are explicit so a partial failure leaves clean state:
 #   • git reset --hard happens AFTER the diff is computed (so a failed
 #     migrate can `git reset` back manually if needed).
+#   • the service list is computed from the TARGET commit's copy of
+#     detect-services.sh, not the working tree's — see the note at the
+#     detection step for the two half-deployed commits that cost.
+#   • verify-containers.sh runs BEFORE last-sha is written: a compose
+#     service with no container means the deploy did not happen, so the
+#     previous SHA has to stand.
 #   • last-sha is only updated after every recreate succeeded — a
 #     failed deploy preserves the previous SHA so `status.sh` still
 #     shows the right delta on the retry.
@@ -43,7 +49,34 @@ log "deploying ${CURRENT_SHA} → ${TARGET_SHA}"
 # `a` is no longer reachable from HEAD as long as the object exists,
 # but we want to be safe.
 CHANGED_FILES="$(git -C "${REPO_ROOT}" diff --name-only "${CURRENT_SHA}..${TARGET_SHA}")"
-SERVICES="$(printf '%s\n' "${CHANGED_FILES}" | bash "${SCRIPT_DIR}/detect-services.sh")"
+
+# detect-services.sh is read out of the TARGET commit, NOT run from the
+# working tree. HEAD is still at CURRENT_SHA here (the reset is below),
+# so the checked-out copy is the OLD mapping — and a commit introducing
+# a NEW compose service is precisely the case the old mapping cannot
+# get right: that service's `services/<name>/*` case arm and its entry
+# in mark_all_built_services exist only in the version being deployed.
+# The new service was therefore dropped from the build + recreate list
+# and never got a container at all, while every other service on the
+# same commit went live — a half-deployed commit that reports success.
+#
+# Cost three commits before the cause was fixed: support-ai-bot
+# (2026-09-01), bifrost-feed (2026-09-03) and slotzilla (2026-09-10,
+# where the storefront shipped a nav entry for a section whose backing
+# service did not exist). Note that adding the name to
+# detect-services.sh is NOT the fix — that edit lives in the commit
+# being deployed, so it only takes effect on the deploy AFTER the one
+# that needs it. That is why it was "fixed" twice and recurred twice.
+#
+# Fails closed. An empty script yields an empty service list, which
+# reads as "nothing to rebuild" and would otherwise sail through the
+# rest of the deploy as a silent no-op.
+DETECT_SRC="$(git -C "${REPO_ROOT}" show "${TARGET_SHA}:infra/deploy/detect-services.sh" 2>/dev/null || true)"
+if [ -z "${DETECT_SRC}" ]; then
+  err "cannot read infra/deploy/detect-services.sh from ${TARGET_SHA:0:12}"
+  exit 1
+fi
+SERVICES="$(printf '%s\n' "${CHANGED_FILES}" | bash -c "${DETECT_SRC}")"
 
 # Migration detection: any new file under packages/db/migrations/
 # matching the standard 4-digit prefix. Renames / deletes also touch
@@ -150,7 +183,16 @@ if [ "${NEED_CADDY_RELOAD}" -eq 1 ]; then
   deploy_run "${COMPOSE[@]}" restart caddy
 fi
 
-# ── 9. Record success BEFORE smoke ──────────────────────────────────
+# ── 9. Verify every compose service actually has a container ────────
+# Runs BEFORE last-sha is recorded, unlike smoke: a missing container
+# means the deploy did not happen, so the previous SHA must stand and
+# the retry must redo the work. (Smoke is recorded-then-checked because
+# a smoke failure means the deploy DID happen and rollback needs to
+# find it in the log.)
+log "verifying every compose service has a container"
+bash "${SCRIPT_DIR}/verify-containers.sh"
+
+# ── 10. Record success BEFORE smoke ─────────────────────────────────
 # Rationale: if smoke fails, we want `rollback.sh` to be able to read
 # this deploy out of the log and revert it. Marking success here also
 # means a subsequent re-run computes diff from the new SHA, not from
@@ -158,7 +200,7 @@ fi
 printf '%s\n' "${TARGET_SHA}" | deploy_write_atomic "${DEPLOY_LAST_SHA_FILE}"
 deploy_log_event deploy "${TARGET_SHA}" "${SERVICES:--}" "migrations=${MIGRATIONS_PENDING}"
 
-# ── 10. Smoke ───────────────────────────────────────────────────────
+# ── 11. Smoke ───────────────────────────────────────────────────────
 if bash "${SCRIPT_DIR}/smoke.sh"; then
   log "deploy ${TARGET_SHA:0:12} complete"
 else

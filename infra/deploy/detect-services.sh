@@ -42,9 +42,20 @@ mark() {
 # change rebuilds. It is hardcoded rather than derived from ORDER because
 # ORDER also carries `caddy`, which is config-reloaded rather than built.
 # Adding a service to ORDER and forgetting this function means compose
-# changes silently skip it: that happened to support-ai-bot on 2026-09-01,
-# where the deploy rebuilt all ten siblings and never created the new
-# container at all.
+# changes silently skip it.
+#
+# A NEW service needs an entry here AND a case arm below. Note what that
+# does and does not buy you: until 2026-09-10 deploy.sh ran the
+# CHECKED-OUT copy of this file, which during a deploy is still the OLD
+# one, so neither edit could possibly be seen by the deploy that
+# introduced the service. support-ai-bot (2026-09-01) hit that and the
+# response was to add the name here — which reads like a fix and is not,
+# because the edit only takes effect one deploy later. bifrost-feed
+# (2026-09-03) and slotzilla (2026-09-10) then hit the identical wall.
+# deploy.sh now reads this file out of the
+# target commit, so these two lists are finally load-bearing on the
+# deploy that adds the service; verify-containers.sh is the backstop if
+# they are ever wrong anyway.
 mark_all_built_services() {
   mark api ws-gateway web1 signer feed-ingester fonbet-ingester odds-publisher settlement bifrost-feed bet-delay wallet-watcher slotzilla metrics-collector mail-receiver support-ai-bot
 }
