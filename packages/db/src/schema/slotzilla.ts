@@ -166,6 +166,13 @@ export const slotzillaGames = pgTable(
     clockRunning: boolean().notNull().default(false),
     clockPeriod: smallint(),
     clockReadAt: timestamp({ withTimezone: true }),
+    // The competition's period format, from Sportradar (migration
+    // 20260910T113215). NULL = the feed did not state it; the client
+    // falls back to FIBA rather than the column being defaulted, so
+    // "known" and "assumed" stay distinguishable.
+    periodSeconds: integer(),
+    overtimeSeconds: integer(),
+    regulationPeriods: smallint(),
     feedLagMs: integer(),
     lastEventAt: timestamp({ withTimezone: true }),
     spinsCount: integer().notNull().default(0),
