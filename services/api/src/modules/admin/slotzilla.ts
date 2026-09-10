@@ -486,7 +486,10 @@ export default async function adminSlotzillaRoutes(app: FastifyInstance) {
         userId: r.userId,
         exposureMicro: r.exposureMicro.toString(),
         paytableId: r.paytableId.toString(),
-        reelEventIds: (r.reelEventIds ?? []).map((id) => id.toString()),
+        // A NONE reel has no event, so its slot is NULL. Positions are
+        // meaningful (element i is reel i), so an empty string keeps the
+        // alignment rather than collapsing the array.
+        reelEventIds: (r.reelEventIds ?? []).map((id) => (id == null ? "" : String(id))),
         autoplay: r.autoplay,
       })),
       nextCursor: page.nextCursor,

@@ -221,7 +221,18 @@ export const slotzillaSpins = pgTable(
     windowFrom: integer().notNull(),
     reels: text().array(),
     reelTeams: text().array(),
-    reelEventIds: bigint({ mode: "bigint" }).array(),
+    // bigint[] in the database, read as text here on purpose. A reel with
+    // no event — a NONE window — stores a NULL ELEMENT, and Drizzle's
+    // bigint array mapper calls BigInt() on every element, which throws
+    // `Cannot convert NULL to a BigInt` on the whole row. Since ~69% of
+    // windows are NONE by design (docs/SLOTZILLA.md), that meant the
+    // FIRST settled spin with a blank reel permanently broke every
+    // subsequent read of the bettor's spins, and with it the whole panel.
+    // The text mapper passes elements through untouched, nulls included.
+    //
+    // Only ever read (the Go settler writes this column in raw SQL), and
+    // its one consumer stringifies for display, so text costs nothing.
+    reelEventIds: text().array(),
     lineKey: text(),
     // The column name is pinned because Drizzle's snake_case conversion
     // does NOT round-trip this one: `multiplierX100` becomes
