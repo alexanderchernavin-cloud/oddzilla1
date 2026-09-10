@@ -95,14 +95,22 @@ That's the whole deploy.
 3. Compute the file diff between the last-deployed SHA (stored at
    `.deploy/last-sha`) and `origin/main`.
 4. Map changed files → affected services via
-   [`infra/deploy/detect-services.sh`](../infra/deploy/detect-services.sh).
-   **This runs from the checkout as it is BEFORE the fast-forward**, so the
-   deploy that first adds a compose service uses a `detect-services.sh` that
-   has never heard of it: the new container is neither built nor created,
-   even though every sibling is rebuilt (support-ai-bot 2026-09-01,
-   bifrost-feed 2026-09-03). After such a deploy finishes, run
-   `make build SVC=<new> && make recreate SVC=<new>` once; from the next
-   deploy on the script knows the service.
+   [`infra/deploy/detect-services.sh`](../infra/deploy/detect-services.sh),
+   **read out of the target commit** (`git show <target>:…`) rather than run
+   from the working tree. The tree is still at the old SHA at this point
+   (the fast-forward is step 5), so the checked-out copy is the previous
+   mapping — and the deploy that FIRST adds a compose service is exactly
+   the case that mapping cannot get right, since the service's case arm
+   only exists in the commit being deployed. The new container was then
+   neither built nor created while every sibling was rebuilt, and the
+   deploy still reported success. That cost three commits —
+   support-ai-bot (2026-09-01), bifrost-feed (2026-09-03) and slotzilla
+   (2026-09-10, which shipped a storefront nav entry for a section whose
+   backing service did not exist) — and the response each time was to add
+   the name to `detect-services.sh`, which is not a fix: that edit lives in
+   the commit being deployed, so it only takes effect one deploy later.
+   Fixed 2026-09-10; the manual `make build SVC=<new> && make recreate
+   SVC=<new>` follow-up is no longer needed.
 5. `git reset --hard origin/main`.
 6. If the diff includes any `packages/db/migrations/*.sql`: take a pre-deploy
    `pg_dump` to `.deploy/backups/<sha>.sql.gz` (keep only the most recent —
@@ -124,9 +132,31 @@ That's the whole deploy.
     healthcheck before the next.
 12. If `Caddyfile` changed: `caddy reload` inside the running container (no
     rebuild needed — caddy is an upstream image).
-13. Write the new SHA to `.deploy/last-sha` and log the event to `.deploy/log`.
-14. Run the smoke test: 4 endpoints across web SSR + api via Caddy, plus a
+13. Assert every compose service has a running container via
+    [`infra/deploy/verify-containers.sh`](../infra/deploy/verify-containers.sh).
+    Compared against `docker compose config --services` — the compose file
+    itself — **not** against the service list computed in step 4: if that
+    detection is ever wrong again, the missing service is by definition
+    absent from the computed list, so checking it against itself would
+    agree with the mistake. This runs BEFORE step 14 writes `last-sha`,
+    because a missing container means the deploy did not happen and the
+    previous SHA must stand. Smoke (step 15) is the other way round —
+    it records first so `make rollback` can find the deploy in the log.
+    Note that smoke alone cannot catch this: it probes HTTP surfaces
+    behind Caddy, so a Go worker with no public endpoint can be missing
+    entirely while every check passes.
+14. Write the new SHA to `.deploy/last-sha` and log the event to `.deploy/log`.
+15. Run the smoke test: 4 endpoints across web SSR + api via Caddy, plus a
     `401` check on `/api/auth/me` to catch auth-plugin breakage.
+
+> **Changes to the deploy scripts themselves land one deploy late.**
+> `make deploy` runs `infra/deploy/deploy.sh` out of the working tree, which
+> during a deploy is still the PREVIOUS checkout — the same one-deploy lag
+> that produced the step-4 bug. So a commit that edits anything under
+> `infra/deploy/` is carried out by the OLD copy of these scripts; the new
+> behaviour starts with the following deploy. Harmless as long as you expect
+> it, and worth remembering when a deploy-tooling fix appears not to have
+> taken effect.
 
 Dry-run + rollback:
 
