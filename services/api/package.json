@@ -9,7 +9,8 @@
     "start": "tsx src/server.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "tsx --test \"src/**/*.test.ts\""
+    "test": "tsx --test \"src/**/*.test.ts\"",
+    "slotzilla:corpus": "tsx src/scripts/slotzilla-corpus.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.1",

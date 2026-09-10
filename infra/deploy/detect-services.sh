@@ -30,7 +30,7 @@ declare -A SEEN
 
 # Order all services see in compose so the output is stable + tests
 # can do exact-string assertions.
-ORDER=(api ws-gateway web1 signer feed-ingester fonbet-ingester odds-publisher settlement bifrost-feed bet-delay wallet-watcher metrics-collector mail-receiver support-ai-bot caddy)
+ORDER=(api ws-gateway web1 signer feed-ingester fonbet-ingester odds-publisher settlement bifrost-feed bet-delay wallet-watcher slotzilla metrics-collector mail-receiver support-ai-bot caddy)
 
 mark() {
   for s in "$@"; do
@@ -46,7 +46,7 @@ mark() {
 # where the deploy rebuilt all ten siblings and never created the new
 # container at all.
 mark_all_built_services() {
-  mark api ws-gateway web1 signer feed-ingester fonbet-ingester odds-publisher settlement bifrost-feed bet-delay wallet-watcher metrics-collector mail-receiver support-ai-bot
+  mark api ws-gateway web1 signer feed-ingester fonbet-ingester odds-publisher settlement bifrost-feed bet-delay wallet-watcher slotzilla metrics-collector mail-receiver support-ai-bot
 }
 
 while IFS= read -r path; do
@@ -72,6 +72,8 @@ while IFS= read -r path; do
       mark bet-delay ;;
     services/wallet-watcher/*)
       mark wallet-watcher ;;
+    services/slotzilla/*)
+      mark slotzilla ;;
     services/signer/*)
       mark signer ;;
     services/metrics-collector/*)

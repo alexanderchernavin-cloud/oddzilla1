@@ -36,5 +36,6 @@ export * from "./analytics.js";
 export * from "./sportradar.js";
 export * from "./settlement-tools.js";
 export * from "./custom-events.js";
+export * from "./slotzilla.js";
 export * from "../enums.js";
 export * from "./risk-alerts.js";

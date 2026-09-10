@@ -1492,6 +1492,59 @@ flip back on, otherwise the table grows.
 — `~15 minutes of work after a Firebase project exists`. Server side
 keeps draining (graceful-idle) until then.
 
+## SlotZilla runbook
+
+The 15-second live-basketball slot (design and measurements:
+[SLOTZILLA.md](./SLOTZILLA.md)). Backoffice at `/admin/slotzilla` under
+Storefront; the Go service is `services/slotzilla` (health on
+`SLOTZILLA_HEALTH_PORT`, 8088).
+
+**Switching it on.** `slotzilla_config.enabled` ships OFF. Order of
+operations for a first launch: (1) Corpus tab → fetch 200+ finished
+basketball games (a few weeks of dates; the fetch takes minutes); (2)
+Paytables tab → Fit to target, read the fitted return and the corpus
+counts, Apply, Save, Activate; (3) Settings tab → currencies `OZ` only,
+then Enabled. USDC is added to `currencies` after the OZ soak (50 live
+games, zero settlement discrepancies against a replay of the stored
+events, realised return within 3 points of target).
+
+**Where the games come from.** The service selects every basketball
+fixture with a CONFIRMED row in `match_sportradar_ids` (sport 2) that is
+live or within an hour of kickoff. No mapping, no game — the Sportradar
+mapping runbook above is the lever when a fixture is missing.
+
+**Pause / Resume / Void.** Pause stops new spins and lets open ones
+settle; Resume reopens; Void refunds every open spin (`slot_refund`) and
+ends the game, audit-logged as `slotzilla.game.void`. The service itself
+voids open spins after `feed_dark_void_seconds` (180) of feed silence, on
+a cancelled match, and on a match that ends with spins the clock never
+reached.
+
+**Return monitor.** The Games tab shows realised return per currency
+against `rtp_target_bp`; a red chip means the game is over the target by
+more than `return_alarm_margin_bp` after at least `return_alarm_min_spins`
+spins. A single hot game is expected noise; several at once on one
+paytable means the paytable is mis-priced — pause them, re-fit against a
+bigger corpus, activate the new table (spins pin the table they were
+placed under, so open spins settle on the old one).
+
+**Feed health.** The status card reads the Redis hash
+`slotzilla:feed:status` the service refreshes every poll. "Offline" with
+`slotzilla_config.enabled = true` means the container is down or
+`SLOTZILLA_DISABLED=true`; a rising `last_error` with the container up
+means Sportradar is refusing (they 403 a non-browser User-Agent; the
+client sends one) or the host is unreachable from the box.
+
+**RiskZilla bank.** USDC spins add their capped exposure to
+`riskzilla_bank_state.open_liability_micro` at placement and release it
+at settlement or void. `/admin/riskzilla/bank/recompute` does not yet sum
+open USDC spins — run it only while none are open, or the counter
+undercounts until they settle.
+
+**Disputes.** A settled spin's row holds the three Sportradar event ids
+behind its reels; `sr_live_events` holds the events with the scout's
+clock reading. Replay the reels from those rows, never from a log.
+
 ## ZillaBoost runbook
 
 Operator-curated odds boosts, at `/admin/boosted-odds`. Rules attach to

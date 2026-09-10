@@ -10,7 +10,7 @@ classify() {
     echo "true true true"; return
   fi
   match() { echo "$files" | grep -qE "$1"; }
-  if match '^services/(feed-ingester|fonbet-ingester|odds-publisher|settlement|bet-delay|wallet-watcher|signer)/'; then go=true; else go=false; fi
+  if match '^services/(feed-ingester|fonbet-ingester|odds-publisher|settlement|bet-delay|wallet-watcher|signer|slotzilla)/'; then go=true; else go=false; fi
   if match '^(apps/|packages/|services/(api|ws-gateway|support-ai-bot|zillaboost-banner-gen)/|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|tsconfig)'; then ts=true; else ts=false; fi
   if match '^packages/db/(migrations/|src/schema/|src/migrate)'; then db=true; else db=false; fi
   echo "$go $ts $db"
@@ -74,5 +74,9 @@ check "db package but not schema/migrations" "false true false" \
 
 check "another workflow file" "false false false" \
 '.github/workflows/android.yml'
+
+check "the slotzilla service" "true false false" \
+'services/slotzilla/internal/engine/engine.go
+services/slotzilla/go.sum'
 
 exit $fail

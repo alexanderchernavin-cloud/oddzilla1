@@ -585,6 +585,27 @@ services:
       <<: *hc
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${WALLET_WATCHER_HEALTH_PORT:-8085}/healthz"]
 
+  # SlotZilla: the 15-second live-basketball slot. Polls Sportradar's open
+  # statistics host per live game, derives the reels, settles / voids spins
+  # through the same apply-once wallet + ledger path settlement uses. Idles
+  # (health + status hash only) while slotzilla_config.enabled is false —
+  # the runtime switch on /admin/slotzilla — or SLOTZILLA_DISABLED=true.
+  # See docs/SLOTZILLA.md and the runbook in docs/OPERATIONS.md.
+  slotzilla:
+    <<: *go-service
+    build:
+      context: ./services/slotzilla
+      dockerfile: Dockerfile
+    # A few dozen games' events in memory at most; the anchor's 320m is
+    # far more than it needs.
+    mem_limit: 128m
+    environment:
+      SERVICE_NAME: slotzilla
+      HEALTH_PORT: ${SLOTZILLA_HEALTH_PORT:-8088}
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${SLOTZILLA_HEALTH_PORT:-8088}/healthz"]
+
   metrics-collector:
     # Read-only host-metrics service. Holds the three sensitive bind
     # mounts (host /proc, host /, docker.sock) so the api container

@@ -1,0 +1,98 @@
+{
+  "_comment": "Golden table for the SlotZilla rules. Two implementations read it — packages/types/src/slotzilla.ts (TypeScript, tested in slotzilla.test.ts) and services/slotzilla/internal/rules (Go, tested in rules_test.go) — and both must produce exactly these answers. Symbols: P3 > P2 > FT > MISS > FOUL > NONE. Multipliers are in hundredths.",
+  "symbols": [
+    { "type": "goal", "points": 3, "symbol": "P3" },
+    { "type": "goal", "points": 2, "symbol": "P2" },
+    { "type": "goal", "points": 1, "symbol": "FT" },
+    { "type": "goal", "points": null, "symbol": null },
+    { "type": "goal", "points": 4, "symbol": null },
+    { "type": "attempt_missed", "points": 3, "symbol": "MISS" },
+    { "type": "attempt_missed", "points": null, "symbol": "MISS" },
+    { "type": "foul", "points": null, "symbol": "FOUL" },
+    { "type": "rebound", "points": null, "symbol": null },
+    { "type": "turnover_basket", "points": null, "symbol": null },
+    { "type": "timeout", "points": null, "symbol": null },
+    { "type": "timerunning", "points": null, "symbol": null },
+    { "type": "free_throws_awarded", "points": null, "symbol": null }
+  ],
+  "firstWindow": [
+    { "clock": 2305, "lead": 10, "first": 2315 },
+    { "clock": 2307, "lead": 10, "first": 2320 },
+    { "clock": 2300, "lead": 10, "first": 2310 },
+    { "clock": 0, "lead": 10, "first": 10 },
+    { "clock": 2309, "lead": 8, "first": 2320 },
+    { "clock": 2311, "lead": 8, "first": 2320 }
+  ],
+  "reels": [
+    {
+      "name": "highest symbol wins the window",
+      "windowFrom": 100,
+      "events": [
+        { "symbol": "MISS", "seconds": 101, "team": "away", "eventId": "1" },
+        { "symbol": "P2", "seconds": 103, "team": "home", "eventId": "2" },
+        { "symbol": "FOUL", "seconds": 104, "team": "away", "eventId": "3" }
+      ],
+      "expect": { "symbol": "P2", "team": "home", "eventId": "2" }
+    },
+    {
+      "name": "window bounds are [from, from+5)",
+      "windowFrom": 100,
+      "events": [
+        { "symbol": "P3", "seconds": 99, "team": "home", "eventId": "1" },
+        { "symbol": "P3", "seconds": 105, "team": "home", "eventId": "2" },
+        { "symbol": "FT", "seconds": 104, "team": "away", "eventId": "3" }
+      ],
+      "expect": { "symbol": "FT", "team": "away", "eventId": "3" }
+    },
+    {
+      "name": "disabled events never count",
+      "windowFrom": 100,
+      "events": [
+        { "symbol": "P3", "seconds": 102, "team": "home", "eventId": "1", "disabled": true },
+        { "symbol": "MISS", "seconds": 103, "team": "away", "eventId": "2" }
+      ],
+      "expect": { "symbol": "MISS", "team": "away", "eventId": "2" }
+    },
+    {
+      "name": "empty window is NONE",
+      "windowFrom": 100,
+      "events": [{ "symbol": null, "seconds": 102, "team": "home", "eventId": "1" }],
+      "expect": { "symbol": "NONE", "team": null, "eventId": null }
+    },
+    {
+      "name": "tie on rank breaks to the earlier event, then the lower id",
+      "windowFrom": 100,
+      "events": [
+        { "symbol": "P2", "seconds": 103, "team": "away", "eventId": "9" },
+        { "symbol": "P2", "seconds": 103, "team": "home", "eventId": "10" },
+        { "symbol": "P2", "seconds": 104, "team": "away", "eventId": "1" }
+      ],
+      "expect": { "symbol": "P2", "team": "away", "eventId": "9" }
+    }
+  ],
+  "lines": [
+    { "reels": ["P2", "P2", "MISS"], "line": "any2:P2" },
+    { "reels": ["MISS", "P2", "P2"], "line": "any2:P2" },
+    { "reels": ["P2", "MISS", "P2"], "line": "any2:P2" },
+    { "reels": ["P3", "P3", "P3"], "line": "all3:P3" },
+    { "reels": ["NONE", "NONE", "NONE"], "line": "all3:NONE" },
+    { "reels": ["NONE", "MISS", "NONE"], "line": "any2:NONE" },
+    { "reels": ["P3", "P2", "FT"], "line": null },
+    { "reels": ["FOUL", "FT", "MISS"], "line": null }
+  ],
+  "payouts": [
+    { "stakeMicro": "1000000", "multiplierX100": 50, "payoutMicro": "500000" },
+    { "stakeMicro": "1000000", "multiplierX100": 100, "payoutMicro": "1000000" },
+    { "stakeMicro": "1000000", "multiplierX100": 3500, "payoutMicro": "35000000" },
+    { "stakeMicro": "333333", "multiplierX100": 50, "payoutMicro": "166666" },
+    { "stakeMicro": "100000", "multiplierX100": 0, "payoutMicro": "0" }
+  ],
+  "defaultPaytable": {
+    "any2:P3": 3500, "all3:P3": 50000,
+    "any2:P2": 1800, "all3:P2": 20000,
+    "any2:FT": 2200, "all3:FT": 25000,
+    "any2:MISS": 900, "all3:MISS": 5500,
+    "any2:FOUL": 500, "all3:FOUL": 1800,
+    "any2:NONE": 50, "all3:NONE": 100
+  }
+}

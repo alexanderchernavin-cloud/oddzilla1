@@ -12,6 +12,7 @@ import { MatchHeaderStatusPill } from "@/components/match/header-status-pill";
 import { MatchLiveMedia } from "@/components/widgets/match-live-media";
 import { MatchPrematchMobile } from "@/components/widgets/match-prematch-mobile";
 import { SportradarLmt } from "@/components/widgets/sportradar-lmt";
+import { SlotzillaPanel } from "@/components/match/slotzilla-panel";
 import { ZillaFactsCards } from "@/components/match/zillafacts-cards";
 import { ZillaBuildCards } from "@/components/match/zillabuild-cards";
 import { MatchPageRegistrar } from "@/lib/match-page-context";
@@ -38,6 +39,9 @@ interface MatchResponse {
     // this fixture has no confirmed SR id — which is most of them, and
     // always will be for sports the tracker does not cover.
     sportradar?: { srMatchId: number; srSportId: number } | null;
+    // SlotZilla game on this match (basketball with a confirmed mapping
+    // and the feature enabled). Null for every other fixture.
+    slotzilla?: { status: string } | null;
   };
   markets: MarketSnapshot[];
   marketGroups: MarketGroup[];
@@ -203,6 +207,17 @@ export default async function MatchPage({
           mapping, no tracker, no gap in the layout. It also stands in for
           our own scoreboard (hasLmt above) — the tracker draws both teams
           and the score itself, so keeping ours would stack two. */}
+      {/* SlotZilla — the 15-second live slot. Only when the api reports
+          a game for this match; the panel hides itself again once the
+          game is over and the bettor has no spins on it. */}
+      {match.slotzilla ? (
+        <SlotzillaPanel
+          matchId={String(match.id)}
+          homeTeam={match.homeTeam}
+          awayTeam={match.awayTeam}
+        />
+      ) : null}
+
       {match.sportradar ? (
         <SportradarLmt
           srMatchId={match.sportradar.srMatchId}

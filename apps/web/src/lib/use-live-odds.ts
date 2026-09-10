@@ -14,12 +14,13 @@
 // Reconnect logic: exponential backoff on close (1s → 16s cap). On each
 // successful reconnect the hook resubscribes everything.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { openSocket } from "./ws-client";
 import type { LiveScore } from "./live-score";
 import { observeServerTime } from "./running-clock";
 import type { SupportMessageFrame } from "@oddzilla/types";
+import type { WsSlotzillaSpin, WsSlotzillaState } from "@oddzilla/types/slotzilla";
 
 export interface LiveOddsTick {
   marketId: string;
@@ -120,6 +121,15 @@ interface SharedConnection {
   // as ticket frames. The floating widget registers one listener; the
   // gateway forwards the JSON verbatim, we route by `type` field below.
   supportListeners: Set<SupportFrameListener>;
+  // SlotZilla. The public frame (clock + shared windows) rides the same
+  // `odds:match:{id}` channel as odds ticks, so it is match-scoped and
+  // counts toward the subscription like a score listener; the per-bettor
+  // spin frame rides `user:{id}` like ticket frames.
+  slotzillaStateListeners: Map<
+    string,
+    { matchIds: Set<string>; onState: (frame: WsSlotzillaState) => void }
+  >;
+  slotzillaSpinListeners: Set<(frame: WsSlotzillaSpin) => void>;
   reconnectAttempts: number;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   // Bumped on every "open" event. Lets a consumer tell one socket
@@ -180,6 +190,8 @@ export function getShared(): SharedConnection {
       scoreListeners: new Map(),
       ticketListeners: new Set(),
       supportListeners: new Set(),
+      slotzillaStateListeners: new Map(),
+      slotzillaSpinListeners: new Set(),
       reconnectAttempts: 0,
       reconnectTimer: null,
       connectionGeneration: 0,
@@ -404,6 +416,25 @@ function ensureConnected(conn: SharedConnection) {
         for (const listener of conn.supportListeners) listener(frame);
         return;
       }
+      // SlotZilla public state: the service publishes the match clock
+      // and the shared 5-second windows on `odds:match:{id}`. Routed by
+      // matchId like every other match-scoped frame.
+      if (payload.type === "slotzilla_state") {
+        const frame = payload as unknown as WsSlotzillaState;
+        if (!frame.matchId || !frame.clock || !Array.isArray(frame.windows)) return;
+        for (const { matchIds, onState } of conn.slotzillaStateListeners.values()) {
+          if (matchIds.has(frame.matchId)) onState(frame);
+        }
+        return;
+      }
+      // SlotZilla spin lifecycle for the signed-in bettor (placed,
+      // reels filled, settled, voided) on `user:{id}`.
+      if (payload.type === "slotzilla_spin") {
+        const frame = payload as unknown as WsSlotzillaSpin;
+        if (!frame.spin || !frame.spin.id) return;
+        for (const listener of conn.slotzillaSpinListeners) listener(frame);
+        return;
+      }
     } catch {
       // ignore malformed frames
     }
@@ -420,7 +451,8 @@ function ensureConnected(conn: SharedConnection) {
     const hasSubscribers =
       conn.subscriptionCounts.size > 0 ||
       conn.ticketListeners.size > 0 ||
-      conn.supportListeners.size > 0;
+      conn.supportListeners.size > 0 ||
+      conn.slotzillaSpinListeners.size > 0;
     if (!hasSubscribers) return;
 
     // Exponential backoff with full jitter so a synchronised reconnect
@@ -780,4 +812,40 @@ export function useLiveScoresForMatches(
   }, [key]);
 
   return scores;
+}
+
+// SlotZilla: one subscription for both frame kinds. `slotzilla_state` is
+// match-scoped (subscribes the match on the gateway, like a score
+// listener); `slotzilla_spin` is per-bettor and needs no subscription —
+// the gateway joins the socket to `user:{id}` at upgrade. Callbacks go
+// through a `latest` ref (the use-support-stream idiom) so a re-render
+// that hands in a new closure never re-subscribes the socket.
+export function useSlotzillaStream(
+  matchId: string | null,
+  onState: (frame: WsSlotzillaState) => void,
+  onSpin: (frame: WsSlotzillaSpin) => void,
+): void {
+  const latestState = useRef(onState);
+  latestState.current = onState;
+  const latestSpin = useRef(onSpin);
+  latestSpin.current = onSpin;
+
+  useEffect(() => {
+    if (!matchId) return;
+    const conn = getShared();
+    const id = crypto.randomUUID();
+    conn.slotzillaStateListeners.set(id, {
+      matchIds: new Set([matchId]),
+      onState: (frame) => latestState.current(frame),
+    });
+    const spinListener = (frame: WsSlotzillaSpin) => latestSpin.current(frame);
+    conn.slotzillaSpinListeners.add(spinListener);
+    bumpSubscription(conn, matchId, 1);
+    ensureConnected(conn);
+    return () => {
+      conn.slotzillaStateListeners.delete(id);
+      conn.slotzillaSpinListeners.delete(spinListener);
+      bumpSubscription(conn, matchId, -1);
+    };
+  }, [matchId]);
 }

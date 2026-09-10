@@ -149,6 +149,12 @@ const SECTIONS: Section[] = [
         matchPrefix: "/admin/combozilla",
       },
       {
+        href: "/admin/slotzilla",
+        label: "SlotZilla",
+        Icon: I.Ticket,
+        matchPrefix: "/admin/slotzilla",
+      },
+      {
         href: "/admin/zillabuild",
         label: "ZillaBuild",
         Icon: I.Ticket,

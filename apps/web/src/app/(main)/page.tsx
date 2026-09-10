@@ -11,6 +11,7 @@ import { SectionTabs } from "@/components/lobby/section-tabs";
 import { ThreeFoldCards } from "@/components/lobby/three-fold-cards";
 import { ZillaFlashRow } from "@/components/lobby/zillaflash-row";
 import { ZillaBoostBanners } from "@/components/lobby/zillaboost-banners";
+import { SlotzillaLive } from "@/components/lobby/slotzilla-live";
 import { TodayLabel } from "@/components/lobby/today-label";
 import { buildThreeFoldSuggestions } from "@/lib/three-fold-builder";
 import {
@@ -156,6 +157,8 @@ export default async function HomePage() {
       <ThreeFoldCards suggestions={threeFoldSuggestions} />
 
       <ZillaBoostBanners />
+
+      <SlotzillaLive />
 
       <ZillaFlashRow />
 

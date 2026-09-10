@@ -34,6 +34,8 @@ import {
   isCustomScope,
   combiBoostConfig,
   matchSportradarIds,
+  slotzillaConfig,
+  slotzillaGames,
 } from "@oddzilla/db";
 import { NotFoundError } from "../../lib/errors.js";
 import { cached, cachedSwr } from "../../lib/cache.js";
@@ -2265,7 +2267,7 @@ export default async function catalogRoutes(app: FastifyInstance) {
     //
     // market_descriptions is joined later (per distinct market id) to expand
     // {specifier} placeholders; missing ones fall back to "Market #N".
-    const [rows, cascade, orderRows, groupConfigRows, srMapping] = await Promise.all([
+    const [rows, cascade, orderRows, groupConfigRows, srMapping, slotGame, slotCfg] = await Promise.all([
       app.db
         .select({
           marketId: markets.id,
@@ -2332,6 +2334,21 @@ export default async function catalogRoutes(app: FastifyInstance) {
             eq(matchSportradarIds.status, "confirmed"),
           ),
         )
+        .limit(1),
+      // SlotZilla (docs/SLOTZILLA.md): the storefront mounts the slot
+      // panel on COVERAGE — the confirmed basketball mapping fetched
+      // above — whenever the game is switched on; the game row, when
+      // the service has opened one, only refines the status. Both reads
+      // are one indexed probe each.
+      app.db
+        .select({ status: slotzillaGames.status })
+        .from(slotzillaGames)
+        .where(eq(slotzillaGames.matchId, match.id))
+        .limit(1),
+      app.db
+        .select({ enabled: slotzillaConfig.enabled })
+        .from(slotzillaConfig)
+        .where(eq(slotzillaConfig.id, "default"))
         .limit(1),
     ]);
     // Per-bettor adjustment for this match. Used by the full markets render
@@ -2856,6 +2873,17 @@ export default async function catalogRoutes(app: FastifyInstance) {
                 srMatchId: Number(srMapping[0].srMatchId),
                 srSportId: srMapping[0].srSportId,
               },
+        // Set when the match is COVERED by SlotZilla — a confirmed
+        // Sportradar basketball mapping on a fixture that has not
+        // finished — and the game is enabled; the storefront mounts the
+        // slot panel on it. A covered fixture the service has not opened
+        // yet reads `scheduled`, which is what the panel shows.
+        slotzilla:
+          slotCfg[0]?.enabled !== true ||
+          srMapping[0]?.srSportId !== 2 ||
+          (match.status !== "not_started" && match.status !== "live")
+            ? null
+            : { status: slotGame[0]?.status ?? "scheduled" },
       },
       markets: marketList,
       marketGroups: groups,

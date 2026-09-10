@@ -182,6 +182,17 @@ Canonical SQL lives in [`../packages/db/migrations/`](../packages/db/migrations/
   builder had hard-coded) + `combozilla_scope_rules` (allow / block on a
   sport, category or tournament; most specific wins). See "ComboZilla" under
   Table groups.
+- `20260909T211311_slotzilla_wallet_tx_types.sql` + `20260909T211312_slotzilla.sql`
+  — SlotZilla, the 15-second live-basketball slot game. The first adds
+  `slot_stake` / `slot_payout` / `slot_refund` to `wallet_tx_type` (its own
+  file per the enum-in-same-transaction rule); the second adds
+  `sr_live_events` (Sportradar play-by-play, keyed on their event id),
+  `slotzilla_config` (singleton: switch, currencies, return target, stake
+  bounds, caps, lead / grace seconds), `slotzilla_paytables` (one active;
+  multipliers in hundredths), `slotzilla_games` (one row per fixture the game
+  runs on, clock + return-monitor totals) and `slotzilla_spins` (a bet and a
+  round in one row). See "SlotZilla" under Table groups and
+  [SLOTZILLA.md](./SLOTZILLA.md).
 
 Drizzle mirror is [`../packages/db/src/schema/`](../packages/db/src/schema/).
 
@@ -1264,6 +1275,70 @@ the admin panel. `alert` follows the threshold with 0.1 of hysteresis;
 raised alert clears `acknowledged_at` / `acknowledged_by` so a fresh spike
 needs a fresh review. Partial index on `alert = TRUE` for the alerts
 list, plain index on `score DESC NULLS LAST` for the bettors sort.
+
+### SlotZilla (15-second live-basketball slot)
+
+Migrations `20260909T211311_slotzilla_wallet_tx_types` +
+`20260909T211312_slotzilla` (2026-09-09). Design and every measurement
+behind the defaults: [SLOTZILLA.md](./SLOTZILLA.md). A spin covers 15 s of
+match clock in three 5-second windows; each window becomes a reel showing
+the highest-value Sportradar event inside it (P3 > P2 > FT > MISS > FOUL >
+NONE); two or three reels on one symbol pay from the paytable.
+
+**`sr_live_events`** — Sportradar's play-by-play, one row per event keyed on
+THEIR `sr_event_id`. `symbol` is derived once at insert by the rule both the
+engine and the calibrator share (`docs/fixtures/slotzilla-rules.json`),
+`seconds` is the cumulative match-clock reading the windows are ranges of,
+`updated_uts` + `disabled` track scout corrections, `raw` keeps the event.
+`match_id` is nullable (FK `ON DELETE SET NULL`) because archived corpus
+games have no fixture of ours. Index `(sr_match_id, seconds)` is the
+engine's window rebuild; `(created_at)` the retention sweep.
+
+**`slotzilla_config`** — singleton (`id = 'default'`). `enabled` (ships
+OFF), `currencies text[]` (`{OZ}` until the soak is done; USDC is switched
+on here, not in code), `rtp_target_bp` (9700; CHECK 5000..9900),
+`lead_seconds` (10), `clock_past_seconds` (5), `grace_seconds` (10),
+`feed_dark_void_seconds` (180), `min_stake_micro` / `max_stake_micro` /
+`max_payout_micro` / `match_liability_cap_micro` (0.10 / 50 / 500 / 5 000
+units), `return_alarm_margin_bp` + `return_alarm_min_spins`,
+`autoplay_enabled`. Every number the operator asked to control is a column
+here and a field on `/admin/slotzilla`. Audit-logged on PUT.
+
+**`slotzilla_paytables`** — `lines jsonb` maps line key (`any2:P2`,
+`all3:NONE`, …) to a multiplier in HUNDREDTHS, integers so a payout is exact
+bigint arithmetic on the micro stake. `fitted_rtp_bp` + `corpus_note`
+record what the calibrator measured. A partial unique index on `(true)
+WHERE active` makes exactly one table active. Seeded with the v1
+indicative table so a fresh database can run the game.
+
+**`slotzilla_games`** — PK `match_id → matches` (`ON DELETE CASCADE`), the
+fixture's `sr_match_id`, `status` (`scheduled` / `live` / `paused` / `ended`
+/ `voided`), `coverage_level` (Sportradar's `coverage.live.level`; 2 = players
+on events, which gates player mode), the clock as last read
+(`clock_seconds`, `clock_running`, `clock_period`, `clock_read_at`,
+`feed_lag_ms`), and the return monitor's inputs (`spins_count`, stake and
+payout totals per currency). `paused_by` / `paused_at` / `note` for the
+operator pause.
+
+**`slotzilla_spins`** — a spin is a bet AND a round in one row, because
+rounds anchor at the bettor's spin. `window_from` is the first window's
+match-clock second (CHECK: a multiple of 5); the reels, teams, event ids,
+`line_key`, `multiplier_x100` and `payout_micro` are frozen at settlement;
+`exposure_micro` (stake × top line, capped by `max_payout_micro`) is what
+the per-match cap sums and what RiskZilla's open liability carries for
+USDC; `paytable_id` pins the table the spin was placed under. `status`
+`open` / `won` / `lost` / `void` with a CHECK tying `settled_at` and `reels`
+to it. Partial unique `(user_id, match_id) WHERE status = 'open'` is what
+makes "one open spin per bettor per match" true under a double-click;
+`(user_id, idempotency_key)` returns the same spin on a retried placement;
+`(match_id, window_from) WHERE open` is the settler's work list.
+
+Money flow: the api LOCKS the stake (`wallets.locked_micro`) with a
+`wallet_ledger` row `slot_stake` (`ref_type = 'slotzilla_spin'`, `ref_id` =
+spin uuid); `services/slotzilla` settles in one transaction — release the
+lock, move the balance by `payout − stake`, `slot_payout` row when positive
+— or voids with `slot_refund`. The existing partial unique index on
+`(type, ref_type, ref_id)` makes any replay a no-op (invariant 4).
 
 ## Common queries
 

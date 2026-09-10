@@ -1,5 +1,7 @@
 // WebSocket message types exchanged between ws-gateway and browsers.
 
+import type { WsSlotzillaSpin, WsSlotzillaState } from "./slotzilla.js";
+
 export interface WsOddsUpdate {
   type: "odds";
   matchId: string; // bigint as string
@@ -91,7 +93,9 @@ export type WsServerMessage =
   | WsMatchStatus
   | WsLiveScore
   | WsTicketUpdate
-  | WsMarketStatus;
+  | WsMarketStatus
+  | WsSlotzillaState
+  | WsSlotzillaSpin;
 
 export interface WsSubscribeRequest {
   type: "subscribe";
