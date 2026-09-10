@@ -51,6 +51,7 @@
     "home": "Početna",
     "live": "Uživo",
     "upcoming": "Prije meča",
+    "slotzilla": "SlotZilla",
     "sportsNav": "Sportovi",
     "community": "Zajednica",
     "sports": "Sportovi",
@@ -1176,6 +1177,19 @@
     "paytableNote": "Množitelji na vaš ulog · {name}",
     "lobbyCta": "Vrti",
     "lobbyPaused": "Pauzirano",
+    "hub": {
+      "kicker": "Košarkaški slot uživo",
+      "title": "SlotZilla",
+      "intro": "Odaberite utakmicu. Svaki spin je 15 sekundi njezina tijeka uživo: tri valjka, po jedan za svaki prozor od 5 sekundi, isplaćeni prema tablici isplata.",
+      "selectorAria": "Odaberite utakmicu",
+      "liveNow": "Sada uživo",
+      "comingUp": "Uskoro",
+      "startsAt": "Počinje {time}",
+      "upcomingTag": "Otvara se na početku",
+      "playersTag": "Igrači",
+      "empty": "Trenutno nema košarkaške utakmice s tijekom uživo. Vratite se bliže početku.",
+      "trackerNote": "Tracker ispod crta akcije od kojih su sastavljeni vaši valjci."
+    },
     "errors": {
       "clock_stopped": "Vrijeme utakmice je zaustavljeno. Pokušajte ponovno kad se igra nastavi.",
       "game_not_live": "Ova utakmica ne prima spinove.",

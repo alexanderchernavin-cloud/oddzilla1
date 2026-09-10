@@ -272,6 +272,18 @@ export function Sidebar({
         label={tShell("upcoming")}
       />
       {/*
+        SlotZilla — the 15-second live-basketball slot — has its own
+        section: a match selector over every covered basketball fixture
+        and the game itself (docs/SLOTZILLA.md). Sits between Pre-match
+        and Community per the operator's placement, 2026-09-10.
+      */}
+      <Item
+        href="/slotzilla"
+        icon={<I.Sparkles size={15} />}
+        active={isActive("/slotzilla")}
+        label={tShell("slotzilla")}
+      />
+      {/*
         No "Sports" nav item. It existed to give the Fonbet traditional
         line one obvious entry point back when the sport rail was a
         single esports-first list. The rail now opens on a Sports /

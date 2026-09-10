@@ -15,9 +15,11 @@
 // for USDC only, in both directions, with the currency TRIMMED before the
 // comparison because the column is CHAR(4).
 
-import { and, desc, eq, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import {
+  matchSportradarIds,
+  matches,
   slotzillaConfig,
   slotzillaGames,
   slotzillaPaytables,
@@ -434,15 +436,20 @@ export async function buildGameState(
     .from(slotzillaGames)
     .where(eq(slotzillaGames.matchId, matchId))
     .limit(1);
-  if (!game) throw new NotFoundError("slotzilla_game_not_found", "slotzilla_game_not_found");
+  if (!game) return buildCoveredState(app, matchId, userId, nowMs);
 
-  const [cfg, paytable, frameRaw, bettor] = await Promise.all([
+  const [cfg, paytable, frameRaw, bettor, fixture] = await Promise.all([
     loadConfig(app.db),
     paytableForGame(app.db, game.paytableId),
     app.redis.get(stateKey(matchId)).catch(() => null),
     userId
       ? loadBettorSpinsForMatch(app.db, userId, matchId)
       : Promise.resolve({ openSpin: null, recentSpins: [] }),
+    app.db
+      .select({ scheduledAt: matches.scheduledAt })
+      .from(matches)
+      .where(eq(matches.id, matchId))
+      .limit(1),
   ]);
 
   const frame = parseStateFrame(frameRaw);
@@ -512,6 +519,81 @@ export async function buildGameState(
     recentSpins: bettor.recentSpins,
     canSpin: block === null,
     spinBlock: block,
+    scheduledAt: fixture[0]?.scheduledAt?.toISOString() ?? null,
+  };
+}
+
+/** Sportradar's sport id for basketball — the only sport the game covers. */
+export const SR_BASKETBALL_SPORT_ID = 2;
+
+/**
+ * The state of a COVERED fixture the service has not opened yet.
+ *
+ * `services/slotzilla` creates the game row about an hour before
+ * tip-off, but the panel mounts on coverage — a confirmed Sportradar
+ * basketball mapping on a match that has not finished — so a bettor who
+ * lands on the page earlier sees the game as scheduled rather than
+ * nothing (operator's call, 2026-09-10). No clock, no windows, no spin:
+ * the block is `game_not_live` (or `disabled` / `sign_in`, in the api's
+ * usual order), and the kickoff rides `scheduledAt` for the copy.
+ */
+async function buildCoveredState(
+  app: FastifyInstance,
+  matchId: bigint,
+  userId: string | null,
+  nowMs: number,
+): Promise<SlotzillaGameState> {
+  const [covered] = await app.db
+    .select({
+      srMatchId: matchSportradarIds.srMatchId,
+      scheduledAt: matches.scheduledAt,
+    })
+    .from(matchSportradarIds)
+    .innerJoin(matches, eq(matches.id, matchSportradarIds.matchId))
+    .where(
+      and(
+        eq(matchSportradarIds.matchId, matchId),
+        eq(matchSportradarIds.status, "confirmed"),
+        eq(matchSportradarIds.srSportId, SR_BASKETBALL_SPORT_ID),
+        inArray(matches.status, ["not_started", "live"]),
+      ),
+    )
+    .limit(1);
+  if (!covered) throw new NotFoundError("slotzilla_game_not_found", "slotzilla_game_not_found");
+
+  const [cfg, paytable, bettor] = await Promise.all([
+    loadConfig(app.db),
+    loadActivePaytable(app.db),
+    userId
+      ? loadBettorSpinsForMatch(app.db, userId, matchId)
+      : Promise.resolve({ openSpin: null, recentSpins: [] }),
+  ]);
+  const block = spinBlockFor({
+    enabled: cfg.enabled,
+    hasUser: userId !== null,
+    gameStatus: "scheduled",
+    clockRunning: false,
+    clockReadAtMs: null,
+    nowMs,
+    feedDarkVoidSeconds: cfg.feedDarkVoidSeconds,
+    hasOpenSpin: bettor.openSpin !== null,
+  });
+  return {
+    matchId: matchId.toString(),
+    srMatchId: covered.srMatchId.toString(),
+    status: "scheduled",
+    coverageLevel: null,
+    playerMode: false,
+    clock: { seconds: null, running: false, atMs: nowMs, period: null },
+    windowSeconds: WINDOW_SECONDS,
+    windows: [],
+    paytable: paytable ? paytableView(paytable) : { id: "0", name: "none", lines: {} },
+    limits: limitsFromConfig(cfg),
+    openSpin: bettor.openSpin,
+    recentSpins: bettor.recentSpins,
+    canSpin: false,
+    spinBlock: block,
+    scheduledAt: covered.scheduledAt?.toISOString() ?? null,
   };
 }
 

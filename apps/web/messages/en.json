@@ -51,6 +51,7 @@
     "home": "Home",
     "live": "Live",
     "upcoming": "Pre-match",
+    "slotzilla": "SlotZilla",
     "sportsNav": "Sports",
     "community": "Community",
     "sports": "Sports",
@@ -1176,6 +1177,19 @@
     "paytableNote": "Multipliers on your stake · {name}",
     "lobbyCta": "Spin",
     "lobbyPaused": "Paused",
+    "hub": {
+      "kicker": "Live basketball slot",
+      "title": "SlotZilla",
+      "intro": "Pick a match. Every spin is 15 seconds of its live play-by-play: three reels, one per 5-second window, paid from the paytable.",
+      "selectorAria": "Choose a match",
+      "liveNow": "Live now",
+      "comingUp": "Coming up",
+      "startsAt": "Starts {time}",
+      "upcomingTag": "Opens at tip-off",
+      "playersTag": "Players",
+      "empty": "No basketball match with live play-by-play is on right now. Check back closer to tip-off.",
+      "trackerNote": "The tracker below draws the plays your reels are made of."
+    },
     "errors": {
       "clock_stopped": "The match clock is stopped. Try again when play resumes.",
       "game_not_live": "This match is not taking spins.",

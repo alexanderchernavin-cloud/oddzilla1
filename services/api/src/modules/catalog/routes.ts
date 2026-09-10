@@ -2336,8 +2336,10 @@ export default async function catalogRoutes(app: FastifyInstance) {
         )
         .limit(1),
       // SlotZilla (docs/SLOTZILLA.md): the storefront mounts the slot
-      // panel when a game row exists for this match AND the game is
-      // switched on; both reads are one indexed probe each.
+      // panel on COVERAGE — the confirmed basketball mapping fetched
+      // above — whenever the game is switched on; the game row, when
+      // the service has opened one, only refines the status. Both reads
+      // are one indexed probe each.
       app.db
         .select({ status: slotzillaGames.status })
         .from(slotzillaGames)
@@ -2871,12 +2873,17 @@ export default async function catalogRoutes(app: FastifyInstance) {
                 srMatchId: Number(srMapping[0].srMatchId),
                 srSportId: srMapping[0].srSportId,
               },
-        // Set only when the match carries a SlotZilla game and the game
-        // is enabled; the storefront mounts the slot panel on it.
+        // Set when the match is COVERED by SlotZilla — a confirmed
+        // Sportradar basketball mapping on a fixture that has not
+        // finished — and the game is enabled; the storefront mounts the
+        // slot panel on it. A covered fixture the service has not opened
+        // yet reads `scheduled`, which is what the panel shows.
         slotzilla:
-          slotGame[0] === undefined || slotCfg[0]?.enabled !== true
+          slotCfg[0]?.enabled !== true ||
+          srMapping[0]?.srSportId !== 2 ||
+          (match.status !== "not_started" && match.status !== "live")
             ? null
-            : { status: slotGame[0].status },
+            : { status: slotGame[0]?.status ?? "scheduled" },
       },
       markets: marketList,
       marketGroups: groups,

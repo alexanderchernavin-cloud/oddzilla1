@@ -234,6 +234,29 @@ Sportradar's day feed listed 7 basketball matches. The game runs on marquee
 fixtures — accepted by the operator — and the NBA (Level 2, from late
 October 2026) is the content it is built for.
 
+## Where it appears
+
+Two surfaces, one coverage rule (operator's placement, 2026-09-10):
+
+- **The match page** mounts the panel above the tracker on every
+  basketball fixture with a confirmed Sportradar mapping that has not
+  finished — coverage, not the game row. The service opens the row about
+  an hour before tip-off; until then `GET /slotzilla/matches/:id` answers
+  a `scheduled` state (no clock, no windows, spin block `game_not_live`,
+  kickoff in `scheduledAt`), so a bettor landing early sees the game with
+  a "not taking spins yet" note rather than nothing.
+- **The SlotZilla section**, `/slotzilla`, in the primary navigation
+  between Pre-match and Community: a selector over every covered fixture
+  (`GET /slotzilla/games` — live and paused games first, then the next
+  36 hours of kickoffs), the same panel opened expanded, and the tracker
+  under it, since the tracker draws the plays the reels are made of. The
+  selection rides `?match=<id>`, which is where the lobby strip's cards
+  link.
+
+Both read the same coverage predicate (`match_sportradar_ids.status =
+'confirmed' AND sr_sport_id = 2 AND matches.status IN ('not_started',
+'live')`), so the section can never offer a match the page would refuse.
+
 ## Where things live
 
 | Concern | Path |
@@ -244,5 +267,6 @@ October 2026) is the content it is built for.
 | Feed poller, spin engine, settler | `services/slotzilla` |
 | Spin intake, game state, admin, calibrator, corpus | `services/api/src/modules/slotzilla/`, `services/api/src/modules/admin/slotzilla.ts`, `services/api/src/lib/slotzilla/` |
 | Storefront panel | `apps/web/src/components/match/slotzilla-panel.tsx`, hook `apps/web/src/lib/use-slotzilla.ts` |
+| SlotZilla section (`/slotzilla`) | `apps/web/src/app/(main)/slotzilla/page.tsx`, `apps/web/src/components/slotzilla/slotzilla-hub.tsx` |
 | Backoffice | `apps/web/src/app/admin/slotzilla/` |
 | Schema | `packages/db/src/schema/slotzilla.ts`, migrations `20260909T211311` + `20260909T211312` |

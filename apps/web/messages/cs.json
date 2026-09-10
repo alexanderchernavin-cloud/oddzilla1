@@ -51,6 +51,7 @@
     "home": "Domů",
     "live": "Živě",
     "upcoming": "Předzápas",
+    "slotzilla": "SlotZilla",
     "sportsNav": "Sporty",
     "community": "Komunita",
     "sports": "Sporty",
@@ -1176,6 +1177,19 @@
     "paytableNote": "Násobky vašeho vkladu · {name}",
     "lobbyCta": "Točit",
     "lobbyPaused": "Pozastaveno",
+    "hub": {
+      "kicker": "Živý basketbalový slot",
+      "title": "SlotZilla",
+      "intro": "Vyberte zápas. Každé roztočení je 15 sekund jeho živého průběhu: tři válce, jeden na každé 5sekundové okno, vyplácené podle výplatní tabulky.",
+      "selectorAria": "Vyberte zápas",
+      "liveNow": "Právě živě",
+      "comingUp": "Brzy začíná",
+      "startsAt": "Začíná {time}",
+      "upcomingTag": "Otevře se při rozskoku",
+      "playersTag": "Hráči",
+      "empty": "Právě neběží žádný basketbalový zápas s živým průběhem. Vraťte se blíže k začátku.",
+      "trackerNote": "Tracker níže vykresluje akce, ze kterých se skládají vaše válce."
+    },
     "errors": {
       "clock_stopped": "Čas zápasu stojí. Zkuste to znovu, až hra pokračuje.",
       "game_not_live": "Tento zápas roztočení nepřijímá.",

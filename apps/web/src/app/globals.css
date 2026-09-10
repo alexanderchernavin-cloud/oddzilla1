@@ -2699,3 +2699,37 @@ body {
   .oz-slz-spin,
   .oz-slz-strip-chev { transition: none; }
 }
+
+/* The SlotZilla section (/slotzilla): selector column + the game.
+   The selector is a column of cards on desktop and a horizontal strip
+   under the header on a phone, where the game takes the full width. */
+.oz-slz-hub-head { display: flex; flex-direction: column; gap: 6px; }
+.oz-slz-hub-title { font-size: 34px; line-height: 1.05; margin: 0; letter-spacing: -0.01em; }
+.oz-slz-hub-intro { margin: 0; color: var(--fg-muted); font-size: 14px; max-width: 60ch; }
+.oz-slz-hub { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 24px; align-items: start; }
+.oz-slz-hub-list { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.oz-slz-hub-section { font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--fg-muted); margin: 6px 0 0; }
+.oz-slz-hub-card {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 10px 12px; text-align: left;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md);
+  color: var(--fg); font: inherit; cursor: pointer;
+  transition: border-color 140ms var(--ease), background 140ms var(--ease);
+}
+.oz-slz-hub-card:hover { background: var(--surface-2); }
+.oz-slz-hub-card[data-selected="true"] { border-color: var(--fg); }
+.oz-slz-hub-card:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+.oz-slz-hub-card-top { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--fg-muted); min-width: 0; }
+.oz-slz-hub-card-tournament { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oz-slz-hub-card-clock { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--fg); white-space: nowrap; }
+.oz-slz-hub-card-teams { display: flex; flex-direction: column; gap: 2px; font-size: 13.5px; line-height: 1.25; }
+.oz-slz-hub-card-team { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oz-slz-hub-card-foot { font-size: 11px; color: var(--fg-muted); }
+.oz-slz-hub-game { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.oz-slz-hub-note { margin: 0; font-size: 12.5px; color: var(--fg-muted); }
+@media (max-width: 1099px) {
+  .oz-slz-hub { grid-template-columns: 1fr; gap: 16px; }
+  .oz-slz-hub-list { flex-direction: row; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; scroll-snap-type: x proximity; }
+  .oz-slz-hub-section { flex: 0 0 auto; align-self: center; writing-mode: vertical-rl; transform: rotate(180deg); margin: 0; }
+  .oz-slz-hub-card { flex: 0 0 220px; scroll-snap-align: start; }
+}

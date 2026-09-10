@@ -439,11 +439,19 @@ export interface SlotzillaGameState {
   recentSpins: SlotzillaSpinView[];
   canSpin: boolean;
   spinBlock: SlotzillaSpinBlock | null;
+  /** Kickoff, ISO-8601; what a `scheduled` game shows in place of a clock. */
+  scheduledAt?: string | null;
 }
 
-/** A game on the live list. */
+/**
+ * A game on the list: every basketball fixture the game COVERS (a
+ * confirmed Sportradar mapping), live ones first. A fixture the service
+ * has not opened yet is `scheduled` with a null clock and its kickoff.
+ */
 export interface SlotzillaLiveGame {
   matchId: string;
+  /** Sportradar's match id, for the tracker beside the game. */
+  srMatchId: string;
   status: SlotzillaGameStatus;
   homeTeam: string;
   awayTeam: string;
@@ -452,6 +460,8 @@ export interface SlotzillaLiveGame {
   clock: SlotzillaClock;
   score: { home: number | null; away: number | null };
   playerMode: boolean;
+  /** Kickoff, ISO-8601. */
+  scheduledAt: string | null;
 }
 
 export interface SlotzillaSpinRequest {

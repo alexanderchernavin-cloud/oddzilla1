@@ -1,10 +1,10 @@
 "use client";
 
 // SlotZilla on the home page: one card per basketball match that is
-// taking spins right now, linking to the match page where the panel
-// lives. Polls GET /slotzilla/live every 30 s and renders nothing
-// while the list is empty, so the lobby is byte-identical to before
-// whenever no game is on.
+// taking spins right now, linking into the SlotZilla section with that
+// match selected. Polls GET /slotzilla/live every 30 s and renders
+// nothing while the list is empty, so the lobby is byte-identical to
+// before whenever no game is on.
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
@@ -58,7 +58,7 @@ export function SlotzillaLive() {
           const score =
             g.score.home != null && g.score.away != null ? `${g.score.home}:${g.score.away}` : null;
           return (
-            <Link key={g.matchId} href={`/match/${g.matchId}`} className="oz-slz-card">
+            <Link key={g.matchId} href={`/slotzilla?match=${g.matchId}`} className="oz-slz-card">
               <span className="oz-slz-card-top">
                 <SportGlyph sport={g.sportSlug} size={13} />
                 <span className="oz-slz-card-tournament">{g.tournament ?? ""}</span>

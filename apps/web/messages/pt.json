@@ -51,6 +51,7 @@
     "home": "Início",
     "live": "Ao vivo",
     "upcoming": "Pré-jogo",
+    "slotzilla": "SlotZilla",
     "sportsNav": "Esportes",
     "community": "Comunidade",
     "sports": "Esportes",
@@ -1176,6 +1177,19 @@
     "paytableNote": "Multiplicadores sobre a sua aposta · {name}",
     "lobbyCta": "Girar",
     "lobbyPaused": "Pausado",
+    "hub": {
+      "kicker": "Slot de basquete ao vivo",
+      "title": "SlotZilla",
+      "intro": "Escolha uma partida. Cada giro são 15 segundos do seu lance a lance ao vivo: três rolos, um por janela de 5 segundos, pagos pela tabela de pagamentos.",
+      "selectorAria": "Escolha uma partida",
+      "liveNow": "Ao vivo agora",
+      "comingUp": "Em breve",
+      "startsAt": "Começa {time}",
+      "upcomingTag": "Abre na bola ao alto",
+      "playersTag": "Jogadores",
+      "empty": "Nenhuma partida de basquete com lance a lance ao vivo está rolando agora. Volte perto do início.",
+      "trackerNote": "O tracker abaixo desenha as jogadas que formam os seus rolos."
+    },
     "errors": {
       "clock_stopped": "O relógio da partida está parado. Tente de novo quando o jogo recomeçar.",
       "game_not_live": "Esta partida não está aceitando giros.",

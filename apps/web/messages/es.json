@@ -51,6 +51,7 @@
     "home": "Inicio",
     "live": "En vivo",
     "upcoming": "Previa",
+    "slotzilla": "SlotZilla",
     "sportsNav": "Deportes",
     "community": "Comunidad",
     "sports": "Deportes",
@@ -1176,6 +1177,19 @@
     "paytableNote": "Multiplicadores sobre tu apuesta · {name}",
     "lobbyCta": "Girar",
     "lobbyPaused": "En pausa",
+    "hub": {
+      "kicker": "Slot de baloncesto en vivo",
+      "title": "SlotZilla",
+      "intro": "Elige un partido. Cada giro son 15 segundos de su jugada a jugada en vivo: tres rodillos, uno por cada ventana de 5 segundos, pagados según la tabla de pagos.",
+      "selectorAria": "Elige un partido",
+      "liveNow": "En vivo ahora",
+      "comingUp": "Próximamente",
+      "startsAt": "Empieza {time}",
+      "upcomingTag": "Abre al salto inicial",
+      "playersTag": "Jugadores",
+      "empty": "Ahora mismo no hay ningún partido de baloncesto con jugada a jugada en vivo. Vuelve cerca del inicio.",
+      "trackerNote": "El tracker de abajo dibuja las jugadas de las que se componen tus rodillos."
+    },
     "errors": {
       "clock_stopped": "El reloj del partido está parado. Inténtalo de nuevo cuando se reanude el juego.",
       "game_not_live": "Este partido no acepta giros.",

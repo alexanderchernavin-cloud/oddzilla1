@@ -94,10 +94,17 @@ export function SlotzillaPanel({
   matchId,
   homeTeam,
   awayTeam,
+  defaultExpanded = false,
 }: {
   matchId: string;
   homeTeam: string;
   awayTeam: string;
+  /**
+   * Open the full panel on mobile from the first paint. The match page
+   * keeps the collapsed strip (the game shares the page with the
+   * markets); the SlotZilla section is the game, so it opens expanded.
+   */
+  defaultExpanded?: boolean;
 }) {
   const t = useTranslations("slotzilla");
   const pathname = usePathname();
@@ -105,7 +112,7 @@ export function SlotzillaPanel({
   const game = useSlotzilla(matchId);
   const { state, clockSeconds } = game;
 
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [showPaytable, setShowPaytable] = useState(false);
   const [stakeMicro, setStakeMicro] = useState<bigint>(DEFAULT_STAKE);
 
