@@ -41,6 +41,7 @@ import { LiveDot } from "@/components/ui/primitives";
 import { I } from "@/components/ui/icons";
 import { describeLine, lineSymbol, Paytable, Reel, SymbolGlyph } from "./slotzilla-reel";
 import { SlotzillaTimeline } from "./slotzilla-timeline";
+import { SlotzillaWin } from "./slotzilla-win";
 
 /**
  * How much match clock the timeline strip spans. Matches the api's
@@ -351,7 +352,12 @@ export function SlotzillaPanel({
         />
         {state.demo ? <p className="oz-slz-demo-note">{t("demoNote")}</p> : null}
 
-        <div className="oz-slz-reels" aria-live="polite">
+        {/* The reel row is the positioning context for the win band, so
+            the celebration sits OVER the reels rather than pushing the
+            controls down — a layout shift at the moment a bettor is
+            reading their payout is the worst possible time for one. */}
+        <div className="oz-slz-reels" aria-live="polite" data-paying={paying ? "true" : "false"}>
+          <SlotzillaWin spin={displaySpin ?? null} t={t} />
           {reels.map((r) => (
             <Reel
               key={r.from}
