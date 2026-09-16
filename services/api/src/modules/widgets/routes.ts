@@ -10,9 +10,10 @@
 //   GET /widgets/match/:matchId/live
 //        ?theme=&language=
 //
-// Each one returns `{ url, source }` — `url` is the value the iframe
-// `src` should take; `source` is "issued" when api-disir handed it to
-// us and "local" when we built it ourselves (below). The storefront
+// Each one returns `{ url, source, token }` — `url` is the value the
+// iframe `src` should take; `source` is "issued" when api-disir handed it
+// to us and "local" when we built it ourselves (below); `token` is the
+// brand-token slot that served it, "primary" or "backup". The storefront
 // reads only `url`.
 //
 // What this proxy is and is not protecting. The `x-brand-token` header
@@ -24,7 +25,7 @@
 // earns its place for: rotating the token without a storefront rebuild,
 // the REST's 404 "entity not found" (the only signal that Disir has no
 // data for a match, which lets the storefront render nothing instead of
-// an empty widget), and — since 2026-09-16 — the local fallback.
+// an empty widget), the local fallback and the token failover.
 //
 // Local fallback (DISIR_LOCAL_URL_FALLBACK, default on): api-disir mints
 // no token; it returns a deterministic URL whose every parameter we
@@ -36,6 +37,14 @@
 // absence, not an outage. Verified from a real browser framed by
 // oddzilla.cc that hand-built match, scoreboard and tournament URLs
 // render identically to issued ones.
+//
+// Token failover (DISIR_BACKUP_BRAND_TOKEN, see token-health.ts): the
+// fallback above cannot help when the TOKEN is refused, because that
+// check runs on Oddin's widget host as the iframe loads. A second token
+// can. The slot in use is read per request from Redis, written by a
+// periodic probe of the widget host and by a 401 from api-disir seen
+// here, and is part of every cache key below so a switch never serves a
+// URL of the dead token from cache.
 //
 // Caching: `cachedSwr`, 120 s fresh then up to 6 h stale. Widget URLs
 // do not expire — nothing in them is time-bound except a cache-buster —
@@ -75,6 +84,14 @@ import {
   type DisirSportParams,
   type IssuerFailureReason,
 } from "./disir-url.js";
+import {
+  credentialsFor,
+  readSlot,
+  runProbeRound,
+  writeSlot,
+  type TokenConfig,
+  type TokenCredentials,
+} from "./token-health.js";
 
 // Match the doc table for prematch — esports vs eSims accept different
 // timeframes/tabs. The proxy passes whatever the client sends; Disir
@@ -133,10 +150,14 @@ const FRESH_SECONDS = 120;
 const STALE_SECONDS = 6 * 3600;
 // Learned per-sport constants (see disir-url.ts `inspectIssuedUrl`).
 const LEARNED_SPORT_TTL_SECONDS = 30 * 24 * 3600;
+// The token probe waits this long after boot so a restart under load does
+// not spend its first seconds on a diagnostic.
+const PROBE_BOOT_DELAY_MS = 15_000;
 
 interface ResolvedWidgetUrl {
   url: string;
   source: "issued" | "local";
+  token: TokenCredentials["slot"];
 }
 
 type IssueResult =
@@ -240,7 +261,10 @@ function issueFailureToError(failure: Extract<IssueResult, { ok: false }>): Erro
   }
 }
 
-interface ResolveArgs {
+// What a route knows how to do with a given set of credentials. Built
+// per (request, credentials) because the cache key, the upstream path
+// and the local builder all depend on the token and its environment.
+interface WidgetPlan {
   cacheKey: string;
   // The REST call.
   issue: () => Promise<IssueResult>;
@@ -250,44 +274,80 @@ interface ResolveArgs {
   fallback: (() => Promise<string | null>) | null;
   // Runs after a successful issue; used to learn per-sport constants.
   onIssued?: (url: string) => Promise<void>;
+}
+
+interface ResolveContext {
+  tokens: TokenConfig;
   log: Record<string, string>;
 }
 
 async function resolveWidgetUrl(
   app: FastifyInstance,
-  args: ResolveArgs,
+  ctx: ResolveContext,
+  creds: TokenCredentials,
+  plan: (creds: TokenCredentials) => WidgetPlan,
 ): Promise<ResolvedWidgetUrl> {
+  const first = plan(creds);
   return cachedSwr<ResolvedWidgetUrl>(
     app.redis,
-    args.cacheKey,
+    first.cacheKey,
     FRESH_SECONDS,
     STALE_SECONDS,
     async () => {
-      const issued = await args.issue();
+      let active = creds;
+      let p = first;
+      let issued = await p.issue();
+
+      // api-disir refusing the PRIMARY token is one of the two signals the
+      // failover reads (token-health.ts). Retry at once with the backup
+      // rather than waiting for the next probe; a success moves the slot.
+      if (
+        !issued.ok &&
+        issued.reason === "unauthorized" &&
+        active.slot === "primary" &&
+        ctx.tokens.backup
+      ) {
+        app.log.error({ ...ctx.log }, "disir brand token rejected by api-disir");
+        const backup = credentialsFor(ctx.tokens, "backup");
+        const p2 = plan(backup);
+        const retry = await p2.issue();
+        if (retry.ok) {
+          await writeSlot(app.redis, {
+            slot: "backup",
+            since: Date.now(),
+            reason: "api-disir 401 on primary, backup issued",
+          });
+          app.log.warn({ ...ctx.log }, "disir token failover: switched to backup token after 401");
+          active = backup;
+          p = p2;
+          issued = retry;
+        }
+      }
+
       if (issued.ok) {
-        if (args.onIssued) {
-          await args
+        if (p.onIssued) {
+          await p
             .onIssued(issued.url)
             .catch((err: unknown) => app.log.debug({ err }, "disir learn step failed"));
         }
-        return { url: issued.url, source: "issued" };
+        return { url: issued.url, source: "issued", token: active.slot };
       }
       if (issued.reason === "unauthorized") {
-        app.log.error({ ...args.log }, "disir brand token rejected");
+        app.log.error({ ...ctx.log, token: active.slot }, "disir brand token rejected");
       }
-      if (args.fallback && reasonAllowsLocalFallback(issued.reason)) {
+      if (p.fallback && reasonAllowsLocalFallback(issued.reason)) {
         let local: string | null = null;
         try {
-          local = await args.fallback();
+          local = await p.fallback();
         } catch (err) {
-          app.log.warn({ err, ...args.log }, "disir local url fallback threw");
+          app.log.warn({ err, ...ctx.log }, "disir local url fallback threw");
         }
         if (local) {
           app.log.warn(
-            { reason: issued.reason, status: issued.status, ...args.log },
+            { reason: issued.reason, status: issued.status, token: active.slot, ...ctx.log },
             "disir issuer unavailable, serving locally built widget url",
           );
-          return { url: local, source: "local" };
+          return { url: local, source: "local", token: active.slot };
         }
       }
       throw issueFailureToError(issued);
@@ -460,17 +520,87 @@ const widgetReadRateLimit = {
 export default async function widgetsRoutes(app: FastifyInstance) {
   const env = loadEnv();
   const baseUrl = env.DISIR_BASE_URL.replace(/\/$/, "");
-  const disirEnv: DisirEnv = env.DISIR_ENV;
   const fallbackEnabled = env.DISIR_LOCAL_URL_FALLBACK === "true";
 
-  function requireToken(): string {
-    if (!env.DISIR_BRAND_TOKEN) {
+  const tokens: TokenConfig | null = env.DISIR_BRAND_TOKEN
+    ? {
+        primary: { brandToken: env.DISIR_BRAND_TOKEN, env: env.DISIR_ENV },
+        backup: env.DISIR_BACKUP_BRAND_TOKEN
+          ? {
+              brandToken: env.DISIR_BACKUP_BRAND_TOKEN,
+              env: env.DISIR_BACKUP_ENV ?? env.DISIR_ENV,
+            }
+          : null,
+      }
+    : null;
+
+  function requireTokens(): TokenConfig {
+    if (!tokens) {
       throw new ServiceUnavailableError(
         "Widgets are not configured for this environment",
         "widget_disabled",
       );
     }
-    return env.DISIR_BRAND_TOKEN;
+    return tokens;
+  }
+
+  // Which token serves this request: the slot the probe (or a 401) last
+  // wrote, primary on a lost or absent key.
+  async function currentCredentials(cfg: TokenConfig): Promise<TokenCredentials> {
+    if (!cfg.backup) return credentialsFor(cfg, "primary");
+    const state = await readSlot(app.redis);
+    return credentialsFor(cfg, state.slot);
+  }
+
+  // ── Token probe ─────────────────────────────────────────────────────
+  // Only worth running with a backup to move to. The storefront origin
+  // is what the widget host has (or has not) registered for each token.
+  if (tokens?.backup && env.DISIR_TOKEN_PROBE_SECONDS > 0) {
+    const cfg = tokens;
+    const intervalMs = env.DISIR_TOKEN_PROBE_SECONDS * 1000;
+    const refererOrigin = `https://${env.FRONTEND_HOST}`;
+    let inFlight = false;
+    const probe = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        // NX lock so a second api process would not double-probe; the
+        // lock lives shorter than the interval so a crashed holder frees it.
+        const locked = await app.redis
+          .set("disir:token:probe:lock", "1", "EX", Math.max(10, env.DISIR_TOKEN_PROBE_SECONDS - 5), "NX")
+          .catch(() => null);
+        if (!locked) return;
+        const r = await runProbeRound(app.redis, cfg, refererOrigin);
+        const fields = {
+          slot: r.after.slot,
+          primary: r.primary.verdict,
+          primaryStatus: r.primary.status,
+          backup: r.backup?.verdict ?? null,
+          backupStatus: r.backup?.status ?? null,
+        };
+        if (r.after.slot !== r.before.slot) {
+          if (r.after.slot === "backup") {
+            app.log.warn(fields, "disir token failover: switched to backup token");
+          } else {
+            app.log.info(fields, "disir token failover: primary accepted again, switched back");
+          }
+        } else if (r.primary.verdict !== "ok") {
+          app.log.warn(fields, "disir token probe: primary not accepted");
+        } else {
+          app.log.debug(fields, "disir token probe ok");
+        }
+      } catch (err) {
+        app.log.warn({ err }, "disir token probe failed");
+      } finally {
+        inFlight = false;
+      }
+    };
+    const boot = setTimeout(() => void probe(), PROBE_BOOT_DELAY_MS);
+    const timer = setInterval(() => void probe(), intervalMs);
+    app.addHook("onClose", async () => {
+      clearTimeout(boot);
+      clearInterval(timer);
+    });
   }
 
   // ── Prematch: match-level (Team / Player / Tournament tabs) ────────────
@@ -481,7 +611,7 @@ export default async function widgetsRoutes(app: FastifyInstance) {
     "/widgets/match/:matchId/prematch",
     { config: widgetReadRateLimit },
     async (req) => {
-      const token = requireToken();
+      const cfg = requireTokens();
       // Resolve the bare numeric/uuid form to the `od:match:N` URN Disir
       // expects. We accept both shapes so the frontend can pass either
       // the numeric matches.id row or the provider URN directly.
@@ -502,42 +632,46 @@ export default async function widgetsRoutes(app: FastifyInstance) {
         requestHadTimeframe: q.timeframe !== undefined,
       };
 
-      return resolveWidgetUrl(app, {
-        cacheKey: `disir:url:v2:prematch:match:${disirEnv}:${urn}:${query}`,
-        issue: () =>
-          issueFromDisir(
-            app,
-            `${baseUrl}/statistics/${disirEnv}/match/${urn}${query ? `?${query}` : ""}`,
-            token,
-          ),
-        onIssued: async (url) => {
-          const c = await ctx();
-          if (c) await learnFromIssuedUrl(app, disirEnv, c.sportSlug, url, learnOpts);
-        },
-        fallback: fallbackEnabled
-          ? async () => {
-              const c = await ctx();
-              if (!c || !c.homeTeamUrn || !c.awayTeamUrn) return null;
-              const sport = await resolveSportParams(app, disirEnv, c.sportSlug);
-              if (!sport) return null;
-              return buildMatchWidgetUrl({
-                env: disirEnv,
-                brandToken: token,
-                sport,
-                matchUrn: c.matchUrn,
-                homeTeamUrn: c.homeTeamUrn,
-                awayTeamUrn: c.awayTeamUrn,
-                tournamentUrn: c.tournamentUrn,
-                theme: q.theme,
-                language: q.language,
-                allowClose: q.allowClose,
-                tab: q.tab,
-                timeframe: q.timeframe,
-              });
-            }
-          : null,
-        log: { widget: "prematch-match", urn },
-      });
+      return resolveWidgetUrl(
+        app,
+        { tokens: cfg, log: { widget: "prematch-match", urn } },
+        await currentCredentials(cfg),
+        (creds) => ({
+          cacheKey: `disir:url:v2:${creds.slot}:prematch:match:${creds.env}:${urn}:${query}`,
+          issue: () =>
+            issueFromDisir(
+              app,
+              `${baseUrl}/statistics/${creds.env}/match/${urn}${query ? `?${query}` : ""}`,
+              creds.brandToken,
+            ),
+          onIssued: async (url) => {
+            const c = await ctx();
+            if (c) await learnFromIssuedUrl(app, creds.env, c.sportSlug, url, learnOpts);
+          },
+          fallback: fallbackEnabled
+            ? async () => {
+                const c = await ctx();
+                if (!c || !c.homeTeamUrn || !c.awayTeamUrn) return null;
+                const sport = await resolveSportParams(app, creds.env, c.sportSlug);
+                if (!sport) return null;
+                return buildMatchWidgetUrl({
+                  env: creds.env,
+                  brandToken: creds.brandToken,
+                  sport,
+                  matchUrn: c.matchUrn,
+                  homeTeamUrn: c.homeTeamUrn,
+                  awayTeamUrn: c.awayTeamUrn,
+                  tournamentUrn: c.tournamentUrn,
+                  theme: q.theme,
+                  language: q.language,
+                  allowClose: q.allowClose,
+                  tab: q.tab,
+                  timeframe: q.timeframe,
+                });
+              }
+            : null,
+        }),
+      );
     },
   );
 
@@ -549,7 +683,7 @@ export default async function widgetsRoutes(app: FastifyInstance) {
     "/widgets/tournament/:tournamentId/prematch",
     { config: widgetReadRateLimit },
     async (req) => {
-      const token = requireToken();
+      const cfg = requireTokens();
       const urn = await resolveTournamentUrn(app, req.params.tournamentId);
       const q = prematchTournamentQuery.parse(req.query);
 
@@ -560,37 +694,41 @@ export default async function widgetsRoutes(app: FastifyInstance) {
       const query = qs.toString();
       const sportSlug = once(() => loadTournamentSportSlug(app, urn));
 
-      return resolveWidgetUrl(app, {
-        cacheKey: `disir:url:v2:prematch:tour:${disirEnv}:${urn}:${query}`,
-        issue: () =>
-          issueFromDisir(
-            app,
-            `${baseUrl}/statistics/${disirEnv}/tournament/${urn}${query ? `?${query}` : ""}`,
-            token,
-          ),
-        onIssued: async (url) => {
-          const slug = await sportSlug();
-          if (slug) await learnFromIssuedUrl(app, disirEnv, slug, url, NO_OVERRIDES);
-        },
-        fallback: fallbackEnabled
-          ? async () => {
-              const slug = await sportSlug();
-              if (!slug) return null;
-              const segment = await resolveSegment(app, disirEnv, slug);
-              if (!segment) return null;
-              return buildTournamentWidgetUrl({
-                env: disirEnv,
-                brandToken: token,
-                segment,
-                tournamentUrn: urn,
-                theme: q.theme,
-                language: q.language,
-                allowClose: q.allowClose,
-              });
-            }
-          : null,
-        log: { widget: "prematch-tournament", urn },
-      });
+      return resolveWidgetUrl(
+        app,
+        { tokens: cfg, log: { widget: "prematch-tournament", urn } },
+        await currentCredentials(cfg),
+        (creds) => ({
+          cacheKey: `disir:url:v2:${creds.slot}:prematch:tour:${creds.env}:${urn}:${query}`,
+          issue: () =>
+            issueFromDisir(
+              app,
+              `${baseUrl}/statistics/${creds.env}/tournament/${urn}${query ? `?${query}` : ""}`,
+              creds.brandToken,
+            ),
+          onIssued: async (url) => {
+            const slug = await sportSlug();
+            if (slug) await learnFromIssuedUrl(app, creds.env, slug, url, NO_OVERRIDES);
+          },
+          fallback: fallbackEnabled
+            ? async () => {
+                const slug = await sportSlug();
+                if (!slug) return null;
+                const segment = await resolveSegment(app, creds.env, slug);
+                if (!segment) return null;
+                return buildTournamentWidgetUrl({
+                  env: creds.env,
+                  brandToken: creds.brandToken,
+                  segment,
+                  tournamentUrn: urn,
+                  theme: q.theme,
+                  language: q.language,
+                  allowClose: q.allowClose,
+                });
+              }
+            : null,
+        }),
+      );
     },
   );
 
@@ -602,7 +740,7 @@ export default async function widgetsRoutes(app: FastifyInstance) {
     "/widgets/match/:matchId/live",
     { config: widgetReadRateLimit },
     async (req) => {
-      const token = requireToken();
+      const cfg = requireTokens();
       const urn = await resolveMatchUrn(app, req.params.matchId);
       const q = liveMatchQuery.parse(req.query);
 
@@ -612,36 +750,40 @@ export default async function widgetsRoutes(app: FastifyInstance) {
       const query = qs.toString();
       const ctx = once(() => loadMatchWidgetContext(app, urn));
 
-      return resolveWidgetUrl(app, {
-        cacheKey: `disir:url:v2:live:match:${disirEnv}:${urn}:${query}`,
-        issue: () =>
-          issueFromDisir(
-            app,
-            `${baseUrl}/live/${disirEnv}/scoreboard/${urn}${query ? `?${query}` : ""}`,
-            token,
-          ),
-        onIssued: async (url) => {
-          const c = await ctx();
-          if (c) await learnFromIssuedUrl(app, disirEnv, c.sportSlug, url, NO_OVERRIDES);
-        },
-        fallback: fallbackEnabled
-          ? async () => {
-              const c = await ctx();
-              if (!c) return null;
-              const segment = await resolveSegment(app, disirEnv, c.sportSlug);
-              if (!segment) return null;
-              return buildScoreboardWidgetUrl({
-                env: disirEnv,
-                brandToken: token,
-                segment,
-                matchUrn: c.matchUrn,
-                theme: q.theme,
-                language: q.language,
-              });
-            }
-          : null,
-        log: { widget: "live-scoreboard", urn },
-      });
+      return resolveWidgetUrl(
+        app,
+        { tokens: cfg, log: { widget: "live-scoreboard", urn } },
+        await currentCredentials(cfg),
+        (creds) => ({
+          cacheKey: `disir:url:v2:${creds.slot}:live:match:${creds.env}:${urn}:${query}`,
+          issue: () =>
+            issueFromDisir(
+              app,
+              `${baseUrl}/live/${creds.env}/scoreboard/${urn}${query ? `?${query}` : ""}`,
+              creds.brandToken,
+            ),
+          onIssued: async (url) => {
+            const c = await ctx();
+            if (c) await learnFromIssuedUrl(app, creds.env, c.sportSlug, url, NO_OVERRIDES);
+          },
+          fallback: fallbackEnabled
+            ? async () => {
+                const c = await ctx();
+                if (!c) return null;
+                const segment = await resolveSegment(app, creds.env, c.sportSlug);
+                if (!segment) return null;
+                return buildScoreboardWidgetUrl({
+                  env: creds.env,
+                  brandToken: creds.brandToken,
+                  segment,
+                  matchUrn: c.matchUrn,
+                  theme: q.theme,
+                  language: q.language,
+                });
+              }
+            : null,
+        }),
+      );
     },
   );
 }

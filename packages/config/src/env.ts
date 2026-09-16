@@ -53,6 +53,25 @@ const EnvSchema = z.object({
   DISIR_LOCAL_URL_FALLBACK: z
     .preprocess((v) => (typeof v === "string" ? v.toLowerCase() : v), z.enum(["true", "false"]))
     .default("true"),
+  // Second brand token for when the primary is REFUSED (widget host 403
+  // for our domain, or api-disir 401). The widget host checks the token
+  // against a per-token domain registry, so this is useful only once
+  // Oddin has registered our domain on the backup token — on whichever
+  // environment DISIR_BACKUP_ENV names (defaults to DISIR_ENV). Empty =
+  // no failover; the proxy uses the primary regardless of its health.
+  DISIR_BACKUP_BRAND_TOKEN: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.string().min(8).optional(),
+  ),
+  DISIR_BACKUP_ENV: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.enum(["integration", "main"]).optional(),
+  ),
+  // How often the api asks the widget host whether the primary token is
+  // still accepted for our domain (services/api/src/modules/widgets/
+  // token-health.ts). 0 disables the probe; a 401 from api-disir still
+  // triggers the switch on demand.
+  DISIR_TOKEN_PROBE_SECONDS: z.coerce.number().int().min(0).default(60),
 
   // Oddin BetBuilder (OBB) gRPC client (services/api). Same graceful-idle
   // pattern as Disir: when host is empty, /betbuilder/* returns 503

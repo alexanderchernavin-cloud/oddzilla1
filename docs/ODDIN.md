@@ -692,20 +692,116 @@ vanish, which only costs falling back to the table).
 
 ### What the widget host checks
 
+Measured with a FRESH `t` per request and `Accept-Encoding: gzip` — see
+the note below on why both matter:
+
 | Host | Token | Referer | Result |
 | --- | --- | --- | --- |
-| `disir.integration.oddin.gg` | valid | any, or none | 200 |
+| `disir.integration.oddin.gg` | ours | `oddzilla.cc` (any path, `www.`, `http://` all pass) | 200 |
+| `disir.integration.oddin.gg` | ours | `example.com`, `maxbet.rs`, or none | 403 |
 | `disir.integration.oddin.gg` | missing or garbage | any | 403 |
+| `disir.integration.oddin.gg` | MaxBet's Disir token | `maxbet.rs` | 200 |
+| `disir.integration.oddin.gg` | MaxBet's Disir token | `oddzilla.cc` | 403 |
 | `disir.oddin.gg` (production) | ours | `oddzilla.cc` | 403 "not authorized for oddzilla.cc" |
-| `disir.oddin.gg` | MaxBet's | `oddzilla.cc`, or `no-referrer` | 403 |
-| `disir.oddin.gg` | MaxBet's | `bifrost.oddin.gg` | 403 |
+| `disir.oddin.gg` | MaxBet's Disir token | `maxbet.rs`, `bifrost.oddin.gg` | 200 |
+| `disir.oddin.gg` | MaxBet's Disir token | `oddzilla.cc`, or none | 403 |
+| either Oddin host | Betboom's token (`bf5d9dba-…`) | `betboom.ru` | 200 |
+| either Oddin host | Betboom's token | `oddzilla.cc` | 403 |
+| `oddin-widgets-cdn.sporthub.bet` | Betboom's token | `betboom.ru` | 200 |
+| `oddin-widgets-cdn.sporthub.bet` | Betboom's, MaxBet's, ours | any other domain, or none | 403 |
 
-So the integration host validates the token only, and the production host
-validates the token against a per-token registry of embedding domains and
-refuses a missing Referer. Our token is authorised for `oddzilla.cc` on
+So EVERY widget host validates the token against one per-token registry
+of embedding domains, read off the Referer's registrable domain, and
+refuses a missing Referer. There are three hosts — the integration and
+production ones on `oddin.gg`, and `oddin-widgets-cdn.sporthub.bet`
+(nginx behind CloudFront), which is what api-disir issues for Betboom's
+token and which serves MaxBet's token from maxbet.rs just the same. The
+registry is global to the token, not to the host: a partner's token
+works from that partner's domains on every host and from nothing else.
+Betboom was checked because Oddin offered it as a second option: its
+match page mounts a plain Disir iframe (no Bifrost) whose `brandToken`
+is registered for `betboom.ru` only. Our token is registered for `oddzilla.cc` on
 integration only, which is what production runs (`DISIR_ENV=integration`).
 **Switching `DISIR_ENV` to `main` needs Oddin to register `oddzilla.cc`
 there first**, or every widget 403s inside its iframe.
+
+**Measuring this correctly.** The first pass concluded the integration
+host accepted any referer, and that was wrong: the widget page is served
+through CloudFront, which caches a 200 keyed on the URL and the
+`Accept-Encoding` but NOT the Referer, and `Cache-Control: no-store` is
+set only on the 403. So one request with an authorised referer makes the
+same URL answer 200 to every referer until the object expires — and curl
+sends no `Accept-Encoding`, so it kept hitting an uncompressed variant a
+browser never asks for. A probe must therefore carry a fresh cache-buster
+(`t`) and `Accept-Encoding: gzip`. The `t` parameter itself is not a nonce
+and not a signature; any value works.
+
+Omitting `availableData` and the team ids yields a widget that loads and
+shows "Something went wrong", so the builder refuses to build a match
+widget unless every id is present.
+
+### A second token (failover)
+
+The local fallback cannot cover the token being refused, because that
+check runs on the widget host when the iframe loads and a hand-built URL
+carries the same token an issued one would. The only remedy is a second
+token, and `token-health.ts` switches to it:
+
+- `DISIR_BACKUP_BRAND_TOKEN` + `DISIR_BACKUP_ENV` name the backup (the env
+  picks the widget host it is registered on; defaults to `DISIR_ENV`).
+- Every `DISIR_TOKEN_PROBE_SECONDS` (60) the api GETs a tournament widget
+  page on the primary's host with the primary token, our Referer, a fresh
+  `t` and gzip. 200 = accepted; 403 / 401 = refused; anything else says
+  nothing about the token (the host is unwell) and changes nothing.
+- The pure `decideSlot` moves to the backup only when the primary is
+  refused AND the backup was seen working, moves back the moment the
+  primary is accepted again, and otherwise stays put. A 401 from api-disir
+  during an ordinary request retries with the backup at once.
+- The slot lives in Redis (`disir:token:slot`, a lost key reads as
+  primary) and is part of every URL cache key, so a switch never serves
+  stale URLs of the dead token. The response carries `token: primary |
+  backup` beside `source`.
+
+Oddin's suggested backup is MaxBet's Disir token — `e28ce023-…`, which
+is NOT the `0c29c137-…` on MaxBet's page (that is their Bifrost key, and
+Disir does not know it: 401 from api-disir and the widget data API, 403 on
+both hosts from maxbet.rs itself). Read off the widget iframe Bifrost
+opens, it is accepted by api-disir for both environments, by the widget
+data API, and by both widget hosts for `maxbet.rs` and `bifrost.oddin.gg`
+— not for `oddzilla.cc`. Until Oddin adds our domain to it, the failover
+is a mechanism without a working backup. It was verified on production by
+giving the api a bogus primary and our own token as the backup.
+
+### How MaxBet's token DOES work on our page: through Bifrost
+
+Oddin's statement that "it works with MaxBet's token" is true in one
+specific shape, measured 2026-09-16. Bifrost — Oddin's white-label front
+end, `bifrost.oddin.gg` — loads inside an iframe on `oddzilla.cc` with
+MaxBet's BIFROST key (`0c29c137-…`; its API calls carry Bifrost's own
+origin, so the embedding page does not matter), and when Bifrost opens a
+Disir widget from inside that frame the widget host sees `Referer:
+bifrost.oddin.gg`, which IS registered for MaxBet's Disir token. A live
+CS2 match opened this way on our page showed Oddin's scoreboard widget.
+
+The embed grammar, read off Bifrost's bundle (v1.28.0): the iframe URL is
+`https://bifrost.oddin.gg/?route=<base64 JSON>&brandToken=<Bifrost key>&lang=en&theme=dark&…`,
+and the route link is a discriminated union on `route` —
+`{"route":"/timeline","type":"upcoming"}`,
+`{"route":"/match","matchId":"<base64 of match/od:match:N>"}`,
+`{"route":"/outrights","id":…}`, `/topPicks`, `/ghost`, `/penalty-arena`,
+`/historicMatch` — each with an optional `config`. `nonBetting` is a
+config flag that prefixes every route with `/non-betting` (the bundle
+carries `nonBettingMatch` / `nonBettingAllMatch` queries and
+`/non-betting/match` + `/non-betting/timeline` pages); passed as a query
+parameter it did not take effect in the one test made, so the exact
+carrier is still to be found.
+
+What that gives us is Oddin's match page, not our widgets: their layout,
+their markets, their stream embed, inside a frame we cannot style. As a
+backup for the statistics widgets it is the wrong shape for this
+storefront; the right shape is Oddin registering `oddzilla.cc` on the
+MaxBet Disir token (or issuing a second token of ours), after which the
+failover above carries it with no further change.
 
 Omitting `availableData` and the team ids yields a widget that loads and
 shows "Something went wrong", so the builder refuses to build a match
@@ -728,12 +824,14 @@ ingress being down, because the widget's own data calls go through it.
 
 Bifrost's GraphQL exposes `matchStatistics`, `scoreboardWidget` and
 `tournamentStatistics`, and on the MaxBet page they return exactly this
-URL grammar with MaxBet's brand token on the production host. That token
+URL grammar with MaxBet's DISIR token on the production host. That token
 is refused on `oddzilla.cc` (see the gate table), our Disir token is 401
 on Bifrost (a separate entitlement), and `api-bifrost` shares the ELB with
 `api-disir`. It does confirm there is no hidden token exchange anywhere —
 Oddin's own front end just receives the URL. Availability matched too:
-Bifrost returned `null` for the matches our REST 404'd.
+Bifrost returned `null` for the matches our REST 404'd. What Bifrost CAN
+give us is the token value itself, which is how the failover's intended
+backup was obtained.
 
 ### The local fallback
 
