@@ -627,6 +627,146 @@ the ETH scanner use. Once Oddin enables OBB for our IP range, set
 `api-obb.oddin.gg:443` (prod), restart the api container, and the
 toggle starts surfacing.
 
+## Disir widgets
+
+Disir is Oddin's iframe widget product: a prematch match widget (team /
+player / tournament statistics), a prematch tournament widget (standings
+and roster) and a live scoreboard. The storefront embeds them through our
+own `/widgets/*` proxy ([`services/api/src/modules/widgets/routes.ts`](../services/api/src/modules/widgets/routes.ts));
+the storefront side is `DisirWidget`. Everything below was measured on
+2026-09-16 while evaluating a backup for what Oddin calls their token
+service, from a real browser framed by `oddzilla.cc` and with curl.
+
+### What the REST actually does
+
+`GET https://api-disir.oddin.gg/statistics/{env}/match/{urn}` with the
+`x-brand-token` header does not mint, sign or expire anything. It answers
+`{ "url": ... }` with a **deterministic URL** on the widget host:
+
+| Parameter | Value | Where we hold it |
+| --- | --- | --- |
+| host + path | `https://disir[.integration].oddin.gg/<segment>/match` | segment is a per-sport constant (table below) |
+| `id` | base64 of `match/od:match:N` | `matches.provider_urn` |
+| `homeTeamId` / `awayTeamId` | base64 of `team/od:competitor:N` | `matches.home_team_urn` / `away_team_urn`, else `competitors.provider_urn` |
+| `tournamentId` | base64 of `tournament/od:tournament:N` | `tournaments.provider_urn` |
+| `brandToken` | **our `DISIR_BRAND_TOKEN`, byte-identical** | env |
+| `availableData` (repeated), `timeframe`, `type` | per-sport constants (`type` = the initial tab, echoes the caller's `tab`) | table below, learned from issued URLs |
+| `darkMode`, `theme`, `lang`, `layout=default` | from the request | request |
+| `t` | random uint32 cache-buster | generated |
+
+Tournament: `/<segment>/tournament?availableData=tournament&brandToken&darkMode&id&lang&layout=default&t&theme`.
+Live scoreboard: `/<segment>/scoreboard?brandToken&darkMode&id&lang&layout=&t&theme`
+(the empty `layout=` is what the REST issues and is kept).
+
+The ids are the same grammar Bifrost uses for its ids. Query keys come
+out in code-unit order. `disir-url.ts` reproduces every captured URL byte
+for byte except `t`; `disir-url.test.ts` pins that.
+
+Two consequences follow. **The brand token is a publishable client key**,
+not a secret the proxy protects: it is in every visitor's iframe `src`,
+and the widget's own GraphQL data API (`https://external-production.oddin.gg/{env}/disir/query`,
+HTTP and WSS) accepts it as `X-Api-Key`. It stays out of the web bundle
+only so it rotates without a rebuild. And **the REST contributes exactly
+two things a local builder cannot**: a 404 `entity not found` when Disir
+has no data for a match, and knowledge of the per-sport constants.
+
+### Per-sport constants
+
+| our slug | segment | prematch tabs (`availableData`) | `timeframe` | `type` | live scoreboard |
+| --- | --- | --- | --- | --- | --- |
+| cs2 | `csgo` | tournament, teams, players | THREE_MONTHS | teams | yes (observed) |
+| dota2 | `dota2` | tournament, teams, players | THREE_MONTHS | teams | same segment (not observed live that day) |
+| lol | `lol` | tournament, teams, players | THREE_MONTHS | teams | same segment (not observed live that day) |
+| valorant | `valorant` | tournament, teams, players | THREE_MONTHS | teams | same segment (not observed live that day) |
+| efootball | `rush_soccer` | stats, ranking | TWO_MONTHS | stats | yes (observed) |
+| ebasketball | `rush_basketball` | stats, ranking | TWO_MONTHS | stats | yes (observed) |
+| ecricket | `rush_cricket` | none — prematch answers 404 | | | yes (observed) — **live-only** |
+
+crossfire, etouchdown, kog, ml, r6 and rocketleague answered 404 on both
+endpoints for every match tried: nothing to build. The table is a floor:
+the proxy learns the segment from every URL the REST issues (any kind)
+and the prematch constants from every match issue whose request passed
+neither `tab` nor `timeframe`, into Redis (`disir:segment:v1:{env}:{slug}`
+and `disir:prematch:v1:{env}:{slug}`, 30 days, allkeys-lru so they may
+vanish, which only costs falling back to the table).
+
+### What the widget host checks
+
+| Host | Token | Referer | Result |
+| --- | --- | --- | --- |
+| `disir.integration.oddin.gg` | valid | any, or none | 200 |
+| `disir.integration.oddin.gg` | missing or garbage | any | 403 |
+| `disir.oddin.gg` (production) | ours | `oddzilla.cc` | 403 "not authorized for oddzilla.cc" |
+| `disir.oddin.gg` | MaxBet's | `oddzilla.cc`, or `no-referrer` | 403 |
+| `disir.oddin.gg` | MaxBet's | `bifrost.oddin.gg` | 403 |
+
+So the integration host validates the token only, and the production host
+validates the token against a per-token registry of embedding domains and
+refuses a missing Referer. Our token is authorised for `oddzilla.cc` on
+integration only, which is what production runs (`DISIR_ENV=integration`).
+**Switching `DISIR_ENV` to `main` needs Oddin to register `oddzilla.cc`
+there first**, or every widget 403s inside its iframe.
+
+Omitting `availableData` and the team ids yields a widget that loads and
+shows "Something went wrong", so the builder refuses to build a match
+widget unless every id is present.
+
+### Where the dependencies really are
+
+| Component | Host | Infrastructure |
+| --- | --- | --- |
+| URL-issuing REST | `api-disir.oddin.gg` | one shared ELB in eu-west-1 |
+| Bifrost GraphQL | `api-bifrost.oddin.gg` | the same ELB |
+| Widget data GraphQL (HTTP + WSS) | `external-production.oddin.gg/{env}/disir/query` | the same ELB |
+| Widget static app | `disir.oddin.gg`, `disir.integration.oddin.gg` | CloudFront + S3 (Next.js export) |
+
+A hand-built URL therefore survives the URL-issuing layer being down —
+including whatever brand-token lookup it performs — but not the shared
+ingress being down, because the widget's own data calls go through it.
+
+### Why Bifrost is not a widget backup
+
+Bifrost's GraphQL exposes `matchStatistics`, `scoreboardWidget` and
+`tournamentStatistics`, and on the MaxBet page they return exactly this
+URL grammar with MaxBet's brand token on the production host. That token
+is refused on `oddzilla.cc` (see the gate table), our Disir token is 401
+on Bifrost (a separate entitlement), and `api-bifrost` shares the ELB with
+`api-disir`. It does confirm there is no hidden token exchange anywhere —
+Oddin's own front end just receives the URL. Availability matched too:
+Bifrost returned `null` for the matches our REST 404'd.
+
+### The local fallback
+
+`DISIR_LOCAL_URL_FALLBACK=true` (default). The proxy resolves every URL
+through `cachedSwr` (120 s fresh, 6 h stale — issued URLs ride out an
+outage on their own), and on a cold load:
+
+1. calls the REST; on success learns the sport constants and returns
+   `{url, source: "issued"}`;
+2. on `not_found` or `invalid_params`, surfaces the same 404 / 400 as
+   before — a 404 is data absence, and the storefront must keep rendering
+   nothing rather than an empty widget;
+3. on network error, timeout, 5xx, 401, malformed body or missing `url`,
+   builds the URL from `provider_urn` columns plus the learned or static
+   sport constants and returns `{url, source: "local"}` with a warning in
+   the api log (`disir issuer unavailable, serving locally built widget
+   url`). If a competitor URN or the sport is unknown it surfaces the
+   upstream failure exactly as before.
+
+401 is deliberately included: a token store that cannot answer looks like
+a 401 from outside, and a token that was genuinely revoked costs only a
+widget that never loads, which `DisirWidget` now collapses after 20 s
+(the widget host's 403 renders inside the iframe and posts no message).
+
+Verified by framing hand-built URLs from `oddzilla.cc` in a real browser:
+a CS2 match widget, an eFootball match widget, a Dota 2 live scoreboard, a
+CS2 tournament widget and a light-theme players tab all reported `LOADED`
+and `DATA: true` and rendered indistinguishably from issued ones.
+
+Open with Oddin: whether hand-built URLs are a supported contract
+(parameter names, `t`), what exactly "the token service" covers, and the
+`oddzilla.cc` registration on the production widget host.
+
 ## Video (Havik player)
 
 Oddin's live video is a **separate product from the AMQP feed and from
