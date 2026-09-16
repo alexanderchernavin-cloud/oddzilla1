@@ -705,10 +705,22 @@ the note below on why both matter:
 | `disir.oddin.gg` (production) | ours | `oddzilla.cc` | 403 "not authorized for oddzilla.cc" |
 | `disir.oddin.gg` | MaxBet's Disir token | `maxbet.rs`, `bifrost.oddin.gg` | 200 |
 | `disir.oddin.gg` | MaxBet's Disir token | `oddzilla.cc`, or none | 403 |
+| either Oddin host | Betboom's token (`bf5d9dba-…`) | `betboom.ru` | 200 |
+| either Oddin host | Betboom's token | `oddzilla.cc` | 403 |
+| `oddin-widgets-cdn.sporthub.bet` | Betboom's token | `betboom.ru` | 200 |
+| `oddin-widgets-cdn.sporthub.bet` | Betboom's, MaxBet's, ours | any other domain, or none | 403 |
 
-So BOTH hosts validate the token against a per-token registry of
-embedding domains, read off the Referer's registrable domain, and refuse
-a missing Referer. Our token is registered for `oddzilla.cc` on
+So EVERY widget host validates the token against one per-token registry
+of embedding domains, read off the Referer's registrable domain, and
+refuses a missing Referer. There are three hosts — the integration and
+production ones on `oddin.gg`, and `oddin-widgets-cdn.sporthub.bet`
+(nginx behind CloudFront), which is what api-disir issues for Betboom's
+token and which serves MaxBet's token from maxbet.rs just the same. The
+registry is global to the token, not to the host: a partner's token
+works from that partner's domains on every host and from nothing else.
+Betboom was checked because Oddin offered it as a second option: its
+match page mounts a plain Disir iframe (no Bifrost) whose `brandToken`
+is registered for `betboom.ru` only. Our token is registered for `oddzilla.cc` on
 integration only, which is what production runs (`DISIR_ENV=integration`).
 **Switching `DISIR_ENV` to `main` needs Oddin to register `oddzilla.cc`
 there first**, or every widget 403s inside its iframe.
