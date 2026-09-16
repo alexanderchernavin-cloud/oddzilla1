@@ -1339,11 +1339,19 @@ check, in order:
    builder refuses without them and surfaces the upstream error as before.
 3. **Widget shows a skeleton that collapses after 20 s?** The widget host
    answered 403 INSIDE the iframe: token refused, or the embedding domain
-   is not registered for it. Reproduce with the URL from step 1:
-   `curl -s -o /dev/null -w '%{http_code}' -A 'Mozilla/5.0' -e https://oddzilla.cc/ '<url>'`.
-   Note the production host `disir.oddin.gg` refuses `oddzilla.cc` for
-   our token; only `disir.integration.oddin.gg` accepts it. That is
-   Oddin's registry, not ours — `support@oddin.gg`.
+   is not registered for it. Reproduce with the URL from step 1, **after
+   changing its `t=` value to something new and adding gzip** — CloudFront
+   caches a 200 for minutes keyed on URL + encoding, not on Referer, so an
+   unmodified URL can answer 200 to anyone while the browser gets 403:
+   `curl -s -o /dev/null -w '%{http_code}' -A 'Mozilla/5.0' -H 'Accept-Encoding: gzip' -e https://oddzilla.cc/ '<url with a fresh t>'`.
+   Both hosts check the Referer domain against the token's registry; the
+   production host `disir.oddin.gg` refuses `oddzilla.cc` for our token
+   and only `disir.integration.oddin.gg` accepts it. That is Oddin's
+   registry, not ours — `support@oddin.gg`. If a backup token is
+   configured (`DISIR_BACKUP_BRAND_TOKEN`), the api probes the primary
+   every minute and switches by itself; `grep 'disir token' <api log>`
+   shows the probe verdicts and any switch, and the response's `token`
+   field says which slot served it.
 4. **Widget loads but shows its own error state?** Its data API
    (`external-production.oddin.gg`) is on the same ELB as api-disir and
    api-bifrost. If that ingress is down, no URL trick helps; the Bifrost

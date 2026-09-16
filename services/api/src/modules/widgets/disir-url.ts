@@ -123,9 +123,13 @@ export function staticSportParams(sportSlug: string): DisirSportParams | null {
 
 const SEGMENT_RE = /^[a-z0-9_]+$/;
 
-// The two widget hosts. Our token is authorised on the integration host
-// only (prod runs DISIR_ENV=integration); the production host enforces a
-// token-to-domain registry and refuses oddzilla.cc for our token today.
+// The two widget hosts. BOTH check the Referer's registrable domain
+// against a per-token registry and refuse a missing Referer (measured
+// with a fresh cache-buster per request — CloudFront caches a 200 and
+// will serve it to any referer for minutes, which is what made the
+// integration host look open on first measurement). Our token is
+// registered for oddzilla.cc on the integration host only, and prod runs
+// DISIR_ENV=integration.
 export function disirWidgetHost(env: DisirEnv): string {
   return env === "main"
     ? "https://disir.oddin.gg"
