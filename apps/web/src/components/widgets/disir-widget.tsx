@@ -1,17 +1,26 @@
 "use client";
 
 // Generic Oddin Disir widget. Fetches the iframe URL from our /widgets
-// API proxy (which talks to api-disir.oddin.gg with the brand token),
-// renders the iframe, and adapts to its postMessage events:
+// API proxy (which asks api-disir.oddin.gg for it, or builds the same
+// URL itself when api-disir is down — see
+// services/api/src/modules/widgets/disir-url.ts), renders the iframe,
+// and adapts to its postMessage events:
 //
 //   LOADED  → mark loaded, hide the skeleton
 //   RESIZE  → resize the iframe to the height the widget reports
 //   DATA    → live widgets only — toggle visibility based on data.available
 //   CLOSE   → bubble to parent via onClose (when allowClose=true upstream)
 //
-// The widget URL is short-lived for live, stable for prematch; we still
-// re-fetch on remount because the API proxy caches with a 2-minute TTL
-// and a stale URL during a token rotation would be hard to debug.
+// Nothing in a widget URL expires — it is a deterministic URL whose only
+// time-bound part is a cache-buster. We still re-fetch on remount
+// because the theme and tab are part of the URL, and the proxy's cache
+// makes the refetch cheap.
+//
+// A widget that never reports LOADED is collapsed after LOAD_TIMEOUT_MS.
+// The widget host answers a 403 page INSIDE the iframe when it refuses
+// the brand token or the embedding domain, and that page sends no
+// postMessage at all — without the timeout the skeleton would sit there
+// for as long as the match page is open.
 
 import {
   useEffect,
@@ -25,6 +34,12 @@ import { useDocumentTheme } from "@/lib/use-theme";
 import { useTranslations } from "@/lib/i18n";
 
 type Variant = "prematch-match" | "prematch-tournament" | "live-scoreboard";
+
+// Generous on purpose: a healthy widget reports LOADED within a few
+// seconds, but a phone on a slow link must not have a working widget
+// hidden from under it. Too short hides; too long only delays the
+// collapse of a widget that was never going to load.
+const LOAD_TIMEOUT_MS = 20_000;
 
 interface DisirWidgetProps {
   variant: Variant;
@@ -189,6 +204,20 @@ export function DisirWidget(props: DisirWidgetProps) {
     };
   }, [variant, id, querySig, hideUntilData, onAvailabilityChange]);
 
+  // Collapse a widget that never reports LOADED (see the header comment:
+  // a widget-host 403 renders inside the iframe and says nothing). The
+  // parent hides its section exactly as it does for `widget_not_available`.
+  // The timer restarts on every new URL and is cancelled the moment
+  // LOADED arrives.
+  useEffect(() => {
+    if (!url || loaded) return;
+    const timer = setTimeout(() => {
+      setError("timeout");
+      onAvailabilityChange?.("unavailable");
+    }, LOAD_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [url, loaded, onAvailabilityChange]);
+
   // Subscribe to the widget's postMessage events. Filter to messages
   // sourced from the rendered iframe so other iframes on the page
   // (e.g. the Twitch player) don't bleed events in.
@@ -237,9 +266,9 @@ export function DisirWidget(props: DisirWidgetProps) {
     return () => window.removeEventListener("message", handler);
   }, [minHeight, hideUntilData, onClose, onAvailabilityChange]);
 
-  // Disabled or broken — render nothing. Parent decides whether to show
-  // an empty state via the onAvailabilityChange callback.
-  if (error === "disabled" || error === "not_available") return null;
+  // Disabled, no data, or never loaded — render nothing. Parent decides
+  // whether to show an empty state via the onAvailabilityChange callback.
+  if (error === "disabled" || error === "not_available" || error === "timeout") return null;
 
   if (!url && error) {
     return (

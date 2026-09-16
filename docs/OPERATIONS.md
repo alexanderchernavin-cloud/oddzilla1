@@ -1316,6 +1316,44 @@ Hit twice so far: `/catalog/zillaboost-banners/*/image` (2026-08-28) and
 `/catalog/flags/*` (2026-09-06 — ~105 flags re-fetched on every sidebar
 render, which is most of why expanding Football felt slow on mobile).
 
+### Disir widgets dark, or api-disir unavailable
+
+Since 2026-09-16 the `/widgets/*` proxy no longer needs api-disir to be
+up: it builds the same widget URL itself when the REST is unreachable,
+times out, answers 5xx / 401 or returns a body that is not `{url}` (see
+[`docs/ODDIN.md`](./ODDIN.md) "Disir widgets" for why that is safe). What to
+check, in order:
+
+1. **Is the fallback doing its job?** `grep 'disir' <api log>` — a healthy
+   outage looks like `disir upstream fetch failed` (or `timed out`)
+   followed by `disir issuer unavailable, serving locally built widget
+   url` per cold load. Confirm from outside:
+   `curl -s https://oddzilla.cc/api/widgets/match/<numeric id>/prematch?theme=dark`
+   answers `{"url": ..., "source": "local"}` (`"issued"` when the REST is
+   back). URLs cached before the outage keep serving for up to 6 h on
+   their own (`cachedSwr`), so the log may be quiet for a while.
+2. **Widgets gone entirely?** A 404 from the REST never falls back (that
+   is "no data for this match" and the storefront renders nothing on
+   purpose). Otherwise check `DISIR_LOCAL_URL_FALLBACK` is not `false`,
+   and that the match has both competitor URNs and a known sport — the
+   builder refuses without them and surfaces the upstream error as before.
+3. **Widget shows a skeleton that collapses after 20 s?** The widget host
+   answered 403 INSIDE the iframe: token refused, or the embedding domain
+   is not registered for it. Reproduce with the URL from step 1:
+   `curl -s -o /dev/null -w '%{http_code}' -A 'Mozilla/5.0' -e https://oddzilla.cc/ '<url>'`.
+   Note the production host `disir.oddin.gg` refuses `oddzilla.cc` for
+   our token; only `disir.integration.oddin.gg` accepts it. That is
+   Oddin's registry, not ours — `support@oddin.gg`.
+4. **Widget loads but shows its own error state?** Its data API
+   (`external-production.oddin.gg`) is on the same ELB as api-disir and
+   api-bifrost. If that ingress is down, no URL trick helps; the Bifrost
+   backup feed is affected at the same time, so check `/admin/feed`.
+
+Kill switch: `DISIR_LOCAL_URL_FALLBACK=false` in `.env` + `make recreate
+api`. Learned per-sport constants live in Redis under `disir:segment:v1:*`
+and `disir:prematch:v1:*` (30 d); deleting them falls back to the static
+table in `disir-url.ts`.
+
 ## Backup feed (Bifrost) failover
 
 `services/bifrost-feed` is the standby source for odds, scores, fixtures

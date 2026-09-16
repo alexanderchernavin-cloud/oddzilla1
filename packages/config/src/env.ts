@@ -45,6 +45,14 @@ const EnvSchema = z.object({
     z.string().min(8).optional(),
   ),
   DISIR_ENV: z.enum(["integration", "main"]).default("integration"),
+  // When api-disir (the URL-issuing REST) is unreachable, answers 5xx,
+  // 401 or malformed, the proxy builds the same widget URL itself from
+  // the URNs in Postgres (services/api/src/modules/widgets/disir-url.ts).
+  // "false" restores the pre-2026-09-16 behaviour: a dark api-disir means
+  // dark widgets. Operator kill switch, no credential involved.
+  DISIR_LOCAL_URL_FALLBACK: z
+    .preprocess((v) => (typeof v === "string" ? v.toLowerCase() : v), z.enum(["true", "false"]))
+    .default("true"),
 
   // Oddin BetBuilder (OBB) gRPC client (services/api). Same graceful-idle
   // pattern as Disir: when host is empty, /betbuilder/* returns 503
