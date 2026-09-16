@@ -763,9 +763,14 @@ a CS2 match widget, an eFootball match widget, a Dota 2 live scoreboard, a
 CS2 tournament widget and a light-theme players tab all reported `LOADED`
 and `DATA: true` and rendered indistinguishably from issued ones.
 
-Open with Oddin: whether hand-built URLs are a supported contract
-(parameter names, `t`), what exactly "the token service" covers, and the
-`oddzilla.cc` registration on the production widget host.
+**Oddin confirmed on 2026-09-16 that building the URL ourselves is a
+supported contract** (relayed by the operator) — it is the workaround they
+had in mind for their token service being down, not something they may
+break without notice. A change to the parameter grammar on their side is
+therefore a coordinated change; `disir-url.test.ts` pins the current one.
+Still open: what exactly "the token service" covers (this fallback assumes
+the URL-issuing REST layer), and the `oddzilla.cc` registration on the
+production widget host.
 
 ## Video (Havik player)
 
