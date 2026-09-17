@@ -1320,7 +1320,7 @@ render, which is most of why expanding Football felt slow on mobile).
 
 Since 2026-09-16 the `/widgets/*` proxy no longer needs api-disir to be
 up: it builds the same widget URL itself when the REST is unreachable,
-times out, answers 5xx / 401 or returns a body that is not `{url}` (see
+times out, answers 5xx or returns a body that is not `{url}` (see
 [`docs/ODDIN.md`](./ODDIN.md) "Disir widgets" for why that is safe). What to
 check, in order:
 
@@ -1347,20 +1347,34 @@ check, in order:
    Both hosts check the Referer domain against the token's registry; the
    production host `disir.oddin.gg` refuses `oddzilla.cc` for our token
    and only `disir.integration.oddin.gg` accepts it. That is Oddin's
-   registry, not ours — `support@oddin.gg`. If a backup token is
-   configured (`DISIR_BACKUP_BRAND_TOKEN`), the api probes the primary
-   every minute and switches by itself; `grep 'disir token' <api log>`
-   shows the probe verdicts and any switch, and the response's `token`
-   field says which slot served it. With no working token at all, the
-   storefront's match widgets swap to Oddin's Bifrost non-betting match
-   frame instead of collapsing (`BIFROST_API_KEY` is on the box; the
-   frame loads from `GET /api/widgets/match/<id>/bifrost`) — Oddin's
-   page in Oddin's layout, so it is a sign that the token needs fixing,
-   not a state to leave the site in.
-4. **Widget loads but shows its own error state?** Its data API
-   (`external-production.oddin.gg`) is on the same ELB as api-disir and
-   api-bifrost. If that ingress is down, no URL trick helps; the Bifrost
-   backup feed is affected at the same time, so check `/admin/feed`.
+   registry, not ours — `support@oddin.gg`. The api probes the primary
+   every minute (`grep 'disir token' <api log>` shows the verdicts) and,
+   with a backup token configured (`DISIR_BACKUP_BRAND_TOKEN`), switches
+   by itself; the response's `token` field says which slot served it.
+   With no working token at all, the storefront's match widgets swap to
+   Oddin's Bifrost non-betting match frame instead of collapsing
+   (`BIFROST_API_KEY` is on the box; the frame loads from
+   `GET /api/widgets/match/<id>/bifrost`) — Oddin's page in Oddin's
+   layout, so it is a sign that the token needs fixing, not a state to
+   leave the site in.
+4. **Widget loads but shows its own "Something went wrong"?** That is the
+   TOKEN refused by Oddin's auth layer while the widget host still serves
+   the page (it happened on 2026-09-17). Confirm with the widget's own
+   data API — the same call the widget makes:
+   `curl -s -o /dev/null -w '%{http_code}' -X POST -H 'X-Api-Key: <DISIR_BRAND_TOKEN>' -H 'Content-Type: application/json' -d '{"query":"{ __typename }"}' https://external-production.oddin.gg/integration/disir/query`
+   — 401 is the token refused, and `.../match/<id>/prematch` then answers
+   503 `widget_provider_unauthorized` rather than a URL (since 2026-09-17
+   the api probes this endpoint every minute, keeps the verdict in Redis
+   `disir:token:health`, and answers 401 from it so the storefront goes
+   straight to the Bifrost frame; a stale "Something went wrong" means
+   the api is older than that). If MaxBet's token (`e28ce023-…`) answers
+   200 on the same call, the service is up and it is OUR token that was
+   rotated or revoked: `support@oddin.gg`, and until they answer the
+   Bifrost frame carries the match pages. If EVERY token is refused or the
+   host is unreachable, the ingress itself is down —
+   `external-production.oddin.gg` is on the same ELB as api-disir and
+   api-bifrost, no URL trick helps, and the Bifrost backup feed is
+   affected at the same time, so check `/admin/feed`.
 
 Kill switch: `DISIR_LOCAL_URL_FALLBACK=false` in `.env` + `make recreate
 api`. Learned per-sport constants live in Redis under `disir:segment:v1:*`
