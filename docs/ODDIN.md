@@ -749,10 +749,28 @@ token, and `token-health.ts` switches to it:
 
 - `DISIR_BACKUP_BRAND_TOKEN` + `DISIR_BACKUP_ENV` name the backup (the env
   picks the widget host it is registered on; defaults to `DISIR_ENV`).
-- Every `DISIR_TOKEN_PROBE_SECONDS` (60) the api GETs a tournament widget
-  page on the primary's host with the primary token, our Referer, a fresh
-  `t` and gzip. 200 = accepted; 403 / 401 = refused; anything else says
-  nothing about the token (the host is unwell) and changes nothing.
+- Every `DISIR_TOKEN_PROBE_SECONDS` (60) the api probes the primary token
+  twice (`probeToken`): a GET of a tournament widget page on its host with
+  our Referer, a fresh `t` and gzip (200 = the host accepts our domain for
+  it; 403 / 401 = refused), then a POST to the widget's data API
+  `external-production.oddin.gg/{env}/disir/query` with the token as
+  `X-Api-Key` and the query `{ __typename }` (200 = the auth layer accepts
+  it; 401 / 403 = refused). A refusal from either is a refusal; a token is
+  healthy only when both accept it; anything else says nothing about the
+  token (the host or the API is unwell) and changes nothing. The second
+  check exists because of 2026-09-17: our token was refused by the auth
+  layer while the host still served the page, and the page probe alone
+  reported it healthy.
+- The verdicts go to Redis as well (`disir:token:health`, TTL three probe
+  intervals). While the token a route would use is `refused`, the route
+  answers 401 `widget_provider_unauthorized` before reading the cache —
+  a cached or locally built URL carrying a refused token would load a
+  widget that then fails, and the storefront's Bifrost frame is triggered
+  by the 401, not by that. A request that meets a 401 from api-disir writes
+  the same record, so the second request does not repeat the trip; the
+  record lapses on its own if the probe stops, and the probe clears it the
+  round the token is accepted again. The probe runs whether or not a
+  backup is configured, since this record is useful either way.
 - The pure `decideSlot` moves to the backup only when the primary is
   refused AND the backup was seen working, moves back the moment the
   primary is accepted again, and otherwise stays put. A 401 from api-disir
@@ -771,6 +789,15 @@ data API, and by both widget hosts for `maxbet.rs` and `bifrost.oddin.gg`
 — not for `oddzilla.cc`. Until Oddin adds our domain to it, the failover
 is a mechanism without a working backup. It was verified on production by
 giving the api a bogus primary and our own token as the backup.
+
+**2026-09-17, measured on production**: our token was refused by Oddin's
+auth layer — 401 from api-disir on both environments, 401 from the widget
+data API on both — while MaxBet's Disir token was 200 on all four at the
+same minute, and the integration widget host still served the page for
+our token with our Referer (200; 403 for MaxBet's, as its registry says).
+So a refused token can leave the host happy and the widget broken, which
+is what the data-API probe and the health record above are for. Whether
+the token was rotated or revoked is open with Oddin.
 
 ### How MaxBet's token DOES work on our page: through Bifrost
 
@@ -862,17 +889,24 @@ outage on their own), and on a cold load:
 2. on `not_found` or `invalid_params`, surfaces the same 404 / 400 as
    before — a 404 is data absence, and the storefront must keep rendering
    nothing rather than an empty widget;
-3. on network error, timeout, 5xx, 401, malformed body or missing `url`,
+3. on network error, timeout, 5xx, malformed body or missing `url`,
    builds the URL from `provider_urn` columns plus the learned or static
    sport constants and returns `{url, source: "local"}` with a warning in
    the api log (`disir issuer unavailable, serving locally built widget
    url`). If a competitor URN or the sport is unknown it surfaces the
    upstream failure exactly as before.
 
-401 is deliberately included: a token store that cannot answer looks like
-a 401 from outside, and a token that was genuinely revoked costs only a
-widget that never loads, which `DisirWidget` now collapses after 20 s
-(the widget host's 403 renders inside the iframe and posts no message).
+A 401 was included until 2026-09-17, on the reasoning that a token store
+that cannot answer looks like a 401 from outside and a revoked token would
+cost only a widget that never loads. Measured that morning, the opposite
+is what happens: the auth verdict is shared by api-disir and the widget's
+data API (both 401 for our token, both 200 for MaxBet's), while the widget
+HOST serves the page regardless — so a hand-built URL with a refused token
+loads a widget that posts `LOADED` and then renders "Something went
+wrong", which neither the 20 s timeout nor the storefront's Bifrost
+fallback can see. A 401 is now surfaced as `widget_provider_unauthorized`
+(the Bifrost trigger), and the failover section below explains how a
+refused token is kept away from browsers between probes.
 
 Verified by framing hand-built URLs from `oddzilla.cc` in a real browser:
 a CS2 match widget, an eFootball match widget, a Dota 2 live scoreboard, a

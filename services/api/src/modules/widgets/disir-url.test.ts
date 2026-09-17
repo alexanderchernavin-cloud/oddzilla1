@@ -228,7 +228,9 @@ test("parseSportParams accepts a learned record and rejects junk", () => {
 test("only issuer-down failures may fall back; a 404 or our own bad params never do", () => {
   assert.equal(reasonAllowsLocalFallback("network"), true);
   assert.equal(reasonAllowsLocalFallback("timeout"), true);
-  assert.equal(reasonAllowsLocalFallback("unauthorized"), true);
+  // A refused token cannot be rescued by a URL: the widget would load and
+  // then fail on its data API (2026-09-17), blocking the Bifrost fallback.
+  assert.equal(reasonAllowsLocalFallback("unauthorized"), false);
   assert.equal(reasonAllowsLocalFallback("upstream_error"), true);
   assert.equal(reasonAllowsLocalFallback("malformed"), true);
   assert.equal(reasonAllowsLocalFallback("missing_url"), true);

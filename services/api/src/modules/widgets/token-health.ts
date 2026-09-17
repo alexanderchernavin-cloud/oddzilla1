@@ -27,11 +27,29 @@
 // 2. A 401 from api-disir on the primary during an ordinary request,
 //    which the route reports here so the switch does not wait for the
 //    next probe.
+// 3. (2026-09-17) The token being refused by Oddin's AUTH layer while the
+//    widget host still serves the app shell. Measured that morning on
+//    production: our token answered 401 from api-disir AND 401 from the
+//    widget's own data API (`external-production.oddin.gg/{env}/disir/query`,
+//    which takes the token as `X-Api-Key`), while the host page was 200 —
+//    the host's check is the domain registry, not the auth verdict — so
+//    the widget booted, posted LOADED and rendered "Something went wrong",
+//    which the storefront's 20 s timeout never sees. MaxBet's token was
+//    200 on all three at the same minute, so this was OUR token being
+//    refused, not the service being down. The probe therefore also POSTs
+//    the data API (`probeToken`); a 401 / 403 there is the definitive
+//    refusal, independent of CloudFront and of the referer registry.
 //
 // The decision is the pure `decideSlot`; the state lives in Redis
 // (`disir:token:slot`) so every api process — there is one today — reads
 // the same answer, and it self-heals: a probe that finds the primary
-// healthy again moves the slot back.
+// healthy again moves the slot back. The verdicts themselves are kept
+// too (`disir:token:health`): while the token a route would use is
+// refused, the route answers `widget_provider_unauthorized` at once —
+// no cache read, no issue, no local build — because a URL carrying a
+// refused token is worse than no URL: it blocks the storefront's Bifrost
+// fallback behind a widget that loads and then fails. A request-side 401
+// writes the same record so the next request does not repeat the trip.
 
 import type { Redis } from "ioredis";
 import { disirWidgetHost, encodeDisirId, randomCacheBuster, type DisirEnv } from "./disir-url.js";
@@ -77,8 +95,21 @@ export function probeUrl(env: DisirEnv, brandToken: string): string {
 
 export type FetchLike = (
   url: string,
-  init: { method: string; headers: Record<string, string>; signal: AbortSignal; redirect: "manual" },
+  init: {
+    method: string;
+    headers: Record<string, string>;
+    signal: AbortSignal;
+    redirect: "manual";
+    body?: string;
+  },
 ) => Promise<{ status: number }>;
+
+// The widget's own data API — the GraphQL endpoint the widget app calls
+// with the brand token as `X-Api-Key`. One host for both environments;
+// the environment is the path.
+export function dataApiUrl(env: DisirEnv): string {
+  return `https://external-production.oddin.gg/${env}/disir/query`;
+}
 
 // Asks the widget host whether it would serve a widget to our storefront
 // with this token. `refererOrigin` is the storefront origin the host has
@@ -120,6 +151,71 @@ export async function probeWidgetHost(
   } finally {
     clearTimeout(timer);
   }
+}
+
+// Asks the widget's data API whether it would answer the widget with
+// this token. This is the check that catches a token refused by Oddin's
+// auth layer while the host still serves the page: `{ __typename }` costs
+// nothing and needs no ids, and the answer is the same 401 the widget
+// itself gets, so it is definitive where the page GET is not.
+export async function probeDataApi(
+  env: DisirEnv,
+  brandToken: string,
+  fetchImpl: FetchLike = fetch as unknown as FetchLike,
+): Promise<ProbeResult> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+  try {
+    const res = await fetchImpl(dataApiUrl(env), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        "x-api-key": brandToken,
+        // What the widget app sends: its own origin. Not a gate today
+        // (measured), but it keeps the probe shaped like the real call.
+        origin: disirWidgetHost(env),
+      },
+      body: JSON.stringify({ query: "{ __typename }" }),
+      signal: controller.signal,
+      redirect: "manual",
+    });
+    if (res.status === 200) return { verdict: "ok", status: 200 };
+    if (res.status === 401 || res.status === 403) {
+      return { verdict: "refused", status: res.status };
+    }
+    return { verdict: "unknown", status: res.status };
+  } catch (err) {
+    return {
+      verdict: "unknown",
+      status: null,
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// The two checks together. A refusal from EITHER is a refusal — the host
+// refusing our domain and the auth layer refusing the token both leave
+// the widget unusable; a token is healthy only when both accept it; and
+// anything else (a host or an API that is unwell) says nothing about
+// the token, exactly as before.
+export async function probeToken(
+  env: DisirEnv,
+  brandToken: string,
+  refererOrigin: string,
+  fetchImpl: FetchLike = fetch as unknown as FetchLike,
+): Promise<ProbeResult> {
+  const page = await probeWidgetHost(env, brandToken, refererOrigin, fetchImpl);
+  if (page.verdict === "refused") {
+    return { verdict: "refused", status: page.status, detail: `page ${page.status}` };
+  }
+  const data = await probeDataApi(env, brandToken, fetchImpl);
+  const detail = `page ${page.status ?? page.detail ?? "n/a"}, data ${data.status ?? data.detail ?? "n/a"}`;
+  if (data.verdict === "refused") return { verdict: "refused", status: data.status, detail };
+  if (page.verdict === "ok" && data.verdict === "ok") return { verdict: "ok", status: 200, detail };
+  return { verdict: "unknown", status: page.verdict === "ok" ? data.status : page.status, detail };
 }
 
 // The whole policy, kept pure so it is testable without a network:
@@ -176,6 +272,65 @@ export async function writeSlot(redis: Redis, state: SlotState): Promise<void> {
   await redis.set(SLOT_KEY, JSON.stringify(state), "EX", SLOT_TTL_SECONDS).catch(() => null);
 }
 
+// ── Redis-held health record ───────────────────────────────────────────
+//
+// The last verdict per slot. Read by every widget request (one GET), so
+// a refused token is never sent to a browser; written by the probe every
+// round and by a request that meets a 401. The TTL is a few probe
+// intervals: if the probe stops, the record lapses and the routes go back
+// to trying — a stale "refused" must not pin the site to its fallback.
+
+const HEALTH_KEY = "disir:token:health";
+export const DEFAULT_HEALTH_TTL_SECONDS = 300;
+
+export interface TokenHealth {
+  primary: ProbeVerdict;
+  backup: ProbeVerdict | null;
+  at: number;
+}
+
+function isVerdict(v: unknown): v is ProbeVerdict {
+  return v === "ok" || v === "refused" || v === "unknown";
+}
+
+export async function readHealth(redis: Redis): Promise<TokenHealth | null> {
+  const raw = await redis.get(HEALTH_KEY).catch(() => null);
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw) as Partial<TokenHealth>;
+    if (isVerdict(v.primary) && (v.backup === null || isVerdict(v.backup)) && typeof v.at === "number") {
+      return { primary: v.primary, backup: v.backup ?? null, at: v.at };
+    }
+  } catch {
+    // corrupt → no record
+  }
+  return null;
+}
+
+export async function writeHealth(redis: Redis, health: TokenHealth, ttlSeconds: number): Promise<void> {
+  await redis.set(HEALTH_KEY, JSON.stringify(health), "EX", Math.max(60, ttlSeconds)).catch(() => null);
+}
+
+// What the record says about one slot; no record, or no verdict for the
+// slot, is "unknown" — which the routes treat as "try".
+export function verdictFor(health: TokenHealth | null, slot: TokenSlot): ProbeVerdict {
+  if (!health) return "unknown";
+  if (slot === "backup") return health.backup ?? "unknown";
+  return health.primary;
+}
+
+// A request met a 401 with this slot's token: record it so the next
+// request answers from the record instead of repeating the round trip
+// (and instead of serving a cached URL that carries the refused token).
+export async function markRefused(redis: Redis, slot: TokenSlot, ttlSeconds: number): Promise<void> {
+  const current = (await readHealth(redis)) ?? { primary: "unknown" as ProbeVerdict, backup: null, at: 0 };
+  const next: TokenHealth =
+    slot === "backup"
+      ? { ...current, backup: "refused", at: Date.now() }
+      : { ...current, primary: "refused", at: Date.now() };
+  await writeHealth(redis, next, ttlSeconds);
+}
+
 export interface TokenConfig {
   primary: { brandToken: string; env: DisirEnv };
   backup: { brandToken: string; env: DisirEnv } | null;
@@ -195,7 +350,8 @@ export async function runProbeRound(
   redis: Redis,
   cfg: TokenConfig,
   refererOrigin: string,
-  probe: (env: DisirEnv, token: string, referer: string) => Promise<ProbeResult> = probeWidgetHost,
+  probe: (env: DisirEnv, token: string, referer: string) => Promise<ProbeResult> = probeToken,
+  healthTtlSeconds: number = DEFAULT_HEALTH_TTL_SECONDS,
 ): Promise<{ before: SlotState; after: SlotState; primary: ProbeResult; backup: ProbeResult | null }> {
   const before = await readSlot(redis);
   const primary = await probe(cfg.primary.env, cfg.primary.brandToken, refererOrigin);
@@ -205,6 +361,11 @@ export async function runProbeRound(
   if (cfg.backup && primary.verdict === "refused") {
     backup = await probe(cfg.backup.env, cfg.backup.brandToken, refererOrigin);
   }
+  await writeHealth(
+    redis,
+    { primary: primary.verdict, backup: backup?.verdict ?? null, at: Date.now() },
+    healthTtlSeconds,
+  );
   const slot = decideSlot(before.slot, cfg.backup !== null, primary.verdict, backup?.verdict ?? null);
   const after: SlotState =
     slot === before.slot

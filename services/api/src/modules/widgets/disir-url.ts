@@ -343,10 +343,17 @@ export function parseSportParams(raw: string | null): DisirSportParams | null {
 // bug, not their outage. Everything else — the socket refused, the 8 s
 // budget spent, a 5xx, a body that is not the documented `{url}` — is
 // the issuer being unavailable, which is exactly the case the fallback
-// exists for. `unauthorized` is included on purpose: a token store that
-// cannot answer looks like a 401 from the outside, and a token that was
-// genuinely revoked costs only a widget that never loads, which the
-// storefront now collapses after 20 s.
+// exists for. `unauthorized` was covered too until 2026-09-17, on the
+// reasoning that a token store that cannot answer looks like a 401 from
+// the outside. Measured that morning, the opposite case is what happens:
+// api-disir and the widget's own data API share one auth verdict (both
+// 401 for our token, both 200 for MaxBet's at the same minute), the
+// widget host serves the app shell on the domain registry alone, and a
+// hand-built URL carrying a refused token therefore renders "Something
+// went wrong" AFTER posting LOADED — which defeats the storefront's 20 s
+// timeout and keeps it from its Bifrost fallback. A 401 is now surfaced
+// as `widget_provider_unauthorized`, which is what the storefront falls
+// back on (token-health.ts explains the record that short-circuits it).
 export type IssuerFailureReason =
   | "network"
   | "timeout"
@@ -358,7 +365,7 @@ export type IssuerFailureReason =
   | "missing_url";
 
 export function reasonAllowsLocalFallback(reason: IssuerFailureReason): boolean {
-  return reason !== "not_found" && reason !== "invalid_params";
+  return reason !== "not_found" && reason !== "invalid_params" && reason !== "unauthorized";
 }
 
 // URN shapes the builder accepts. Every value is interpolated into a URL

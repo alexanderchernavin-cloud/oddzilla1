@@ -30,13 +30,17 @@
 // Local fallback (DISIR_LOCAL_URL_FALLBACK, default on): api-disir mints
 // no token; it returns a deterministic URL whose every parameter we
 // already hold (see disir-url.ts). When the REST is unreachable, times
-// out, answers 5xx / 401 or returns a body that is not `{url}`, the same
-// URL is built here from `matches` / `competitors` / `tournaments`
+// out, answers 5xx or returns a body that is not `{url}`, the same URL
+// is built here from `matches` / `competitors` / `tournaments`
 // `provider_urn` plus a per-sport table that the REST's own issued URLs
 // keep teaching while it is up. A 404 never falls back: that is data
-// absence, not an outage. Verified from a real browser framed by
-// oddzilla.cc that hand-built match, scoreboard and tournament URLs
-// render identically to issued ones.
+// absence, not an outage. Neither does a 401 (since 2026-09-17): that
+// is the TOKEN being refused, and a URL carrying a refused token loads
+// a widget that then fails on its data API — see token-health.ts for
+// the record that turns a refusal into a 401 the storefront can act on.
+// Verified from a real browser framed by oddzilla.cc that hand-built
+// match, scoreboard and tournament URLs render identically to issued
+// ones.
 //
 // Token failover (DISIR_BACKUP_BRAND_TOKEN, see token-health.ts): the
 // fallback above cannot help when the TOKEN is refused, because that
@@ -86,8 +90,11 @@ import {
 } from "./disir-url.js";
 import {
   credentialsFor,
+  markRefused,
+  readHealth,
   readSlot,
   runProbeRound,
+  verdictFor,
   writeSlot,
   type TokenConfig,
   type TokenCredentials,
@@ -279,6 +286,8 @@ interface WidgetPlan {
 
 interface ResolveContext {
   tokens: TokenConfig;
+  // TTL of the "this token is refused" record a request-side 401 writes.
+  healthTtlSeconds: number;
   log: Record<string, string>;
 }
 
@@ -288,6 +297,24 @@ async function resolveWidgetUrl(
   creds: TokenCredentials,
   plan: (creds: TokenCredentials) => WidgetPlan,
 ): Promise<ResolvedWidgetUrl> {
+  // A token the probe (or an earlier request's 401) found refused by
+  // Oddin's auth layer is not handed to a browser in any form — not from
+  // the cache, not freshly issued, not built locally. The widget host
+  // serves the app shell for it regardless (its check is the domain
+  // registry), so a URL carrying it renders the widget's own "Something
+  // went wrong" AFTER posting LOADED, and the storefront never reaches
+  // its Bifrost fallback (measured 2026-09-17). Answering 401 here is
+  // what gets it there. The record lapses on its own (token-health.ts),
+  // and the probe clears it the round the token is accepted again.
+  const health = await readHealth(app.redis);
+  if (verdictFor(health, creds.slot) === "refused") {
+    app.log.debug({ ...ctx.log, token: creds.slot }, "disir token known refused, not issuing");
+    throw new ServiceUnavailableError(
+      "Widget provider rejected our credentials",
+      "widget_provider_unauthorized",
+    );
+  }
+
   const first = plan(creds);
   return cachedSwr<ResolvedWidgetUrl>(
     app.redis,
@@ -335,6 +362,9 @@ async function resolveWidgetUrl(
       }
       if (issued.reason === "unauthorized") {
         app.log.error({ ...ctx.log, token: active.slot }, "disir brand token rejected");
+        // Remember it, so the next request (and a cached URL carrying
+        // this token) does not reach a browser before the probe runs.
+        await markRefused(app.redis, active.slot, ctx.healthTtlSeconds);
       }
       if (p.fallback && reasonAllowsLocalFallback(issued.reason)) {
         let local: string | null = null;
@@ -545,6 +575,12 @@ export default async function widgetsRoutes(app: FastifyInstance) {
     return tokens;
   }
 
+  // How long a request-side "refused" record stands on its own: a few
+  // probe rounds, so a probe that has stopped cannot pin the site to its
+  // fallback, and never under five minutes so a burst of requests during
+  // a refusal does not each pay the upstream round trip.
+  const healthTtlSeconds = Math.max(300, env.DISIR_TOKEN_PROBE_SECONDS * 3);
+
   // Which token serves this request: the slot the probe (or a 401) last
   // wrote, primary on a lost or absent key.
   async function currentCredentials(cfg: TokenConfig): Promise<TokenCredentials> {
@@ -554,9 +590,12 @@ export default async function widgetsRoutes(app: FastifyInstance) {
   }
 
   // ── Token probe ─────────────────────────────────────────────────────
-  // Only worth running with a backup to move to. The storefront origin
-  // is what the widget host has (or has not) registered for each token.
-  if (tokens?.backup && env.DISIR_TOKEN_PROBE_SECONDS > 0) {
+  // Runs whenever widgets are configured, backup or not: with a backup it
+  // decides the slot, and either way it keeps the health record that
+  // makes a refused token answer 401 (and so reach the Bifrost fallback)
+  // instead of a URL the widget cannot use. The storefront origin is
+  // what the widget host has (or has not) registered for each token.
+  if (tokens && env.DISIR_TOKEN_PROBE_SECONDS > 0) {
     const cfg = tokens;
     const intervalMs = env.DISIR_TOKEN_PROBE_SECONDS * 1000;
     const refererOrigin = `https://${env.FRONTEND_HOST}`;
@@ -571,11 +610,12 @@ export default async function widgetsRoutes(app: FastifyInstance) {
           .set("disir:token:probe:lock", "1", "EX", Math.max(10, env.DISIR_TOKEN_PROBE_SECONDS - 5), "NX")
           .catch(() => null);
         if (!locked) return;
-        const r = await runProbeRound(app.redis, cfg, refererOrigin);
+        const r = await runProbeRound(app.redis, cfg, refererOrigin, undefined, healthTtlSeconds);
         const fields = {
           slot: r.after.slot,
           primary: r.primary.verdict,
           primaryStatus: r.primary.status,
+          primaryDetail: r.primary.detail ?? null,
           backup: r.backup?.verdict ?? null,
           backupStatus: r.backup?.status ?? null,
         };
@@ -674,7 +714,7 @@ export default async function widgetsRoutes(app: FastifyInstance) {
 
       return resolveWidgetUrl(
         app,
-        { tokens: cfg, log: { widget: "prematch-match", urn } },
+        { tokens: cfg, healthTtlSeconds, log: { widget: "prematch-match", urn } },
         await currentCredentials(cfg),
         (creds) => ({
           cacheKey: `disir:url:v2:${creds.slot}:prematch:match:${creds.env}:${urn}:${query}`,
@@ -736,7 +776,7 @@ export default async function widgetsRoutes(app: FastifyInstance) {
 
       return resolveWidgetUrl(
         app,
-        { tokens: cfg, log: { widget: "prematch-tournament", urn } },
+        { tokens: cfg, healthTtlSeconds, log: { widget: "prematch-tournament", urn } },
         await currentCredentials(cfg),
         (creds) => ({
           cacheKey: `disir:url:v2:${creds.slot}:prematch:tour:${creds.env}:${urn}:${query}`,
@@ -792,7 +832,7 @@ export default async function widgetsRoutes(app: FastifyInstance) {
 
       return resolveWidgetUrl(
         app,
-        { tokens: cfg, log: { widget: "live-scoreboard", urn } },
+        { tokens: cfg, healthTtlSeconds, log: { widget: "live-scoreboard", urn } },
         await currentCredentials(cfg),
         (creds) => ({
           cacheKey: `disir:url:v2:${creds.slot}:live:match:${creds.env}:${urn}:${query}`,
