@@ -32,6 +32,7 @@ import {
 import { clientApi, ApiFetchError } from "@/lib/api-client";
 import { useDocumentTheme } from "@/lib/use-theme";
 import { useTranslations } from "@/lib/i18n";
+import { BifrostMatchFrame } from "./bifrost-match-frame";
 
 type Variant = "prematch-match" | "prematch-tournament" | "live-scoreboard";
 
@@ -68,6 +69,12 @@ interface DisirWidgetProps {
   // "Live stats not available" empty state when data is missing,
   // which is more discoverable than an invisible widget.
   hideUntilData?: boolean;
+  // Last resort: when the widget host refuses our brand token (no LOADED
+  // within LOAD_TIMEOUT_MS, or api-disir answers 401 with no backup token),
+  // render Oddin's own Bifrost match frame in this widget's place instead
+  // of nothing — see bifrost-match-frame.tsx. Match variants only; the
+  // tournament widget has no Bifrost counterpart.
+  bifrostFallback?: boolean;
   // Container className/style for layout integration (e.g. fixed-aspect
   // wrapper around the iframe).
   className?: string;
@@ -126,9 +133,11 @@ export function DisirWidget(props: DisirWidgetProps) {
     onAvailabilityChange,
     onClose,
     hideUntilData = false,
+    bifrostFallback = false,
     className,
     style,
   } = props;
+  const canFallBackToBifrost = bifrostFallback && variant !== "prematch-tournament";
 
   const t = useTranslations("matchWidgets");
   // Follow the storefront theme unless the caller pinned one explicitly.
@@ -213,10 +222,12 @@ export function DisirWidget(props: DisirWidgetProps) {
     if (!url || loaded) return;
     const timer = setTimeout(() => {
       setError("timeout");
-      onAvailabilityChange?.("unavailable");
+      // With the Bifrost fallback the panel is about to be filled again,
+      // and the frame reports its own availability.
+      if (!canFallBackToBifrost) onAvailabilityChange?.("unavailable");
     }, LOAD_TIMEOUT_MS);
     return () => clearTimeout(timer);
-  }, [url, loaded, onAvailabilityChange]);
+  }, [url, loaded, onAvailabilityChange, canFallBackToBifrost]);
 
   // Subscribe to the widget's postMessage events. Filter to messages
   // sourced from the rendered iframe so other iframes on the page
@@ -265,6 +276,27 @@ export function DisirWidget(props: DisirWidgetProps) {
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
   }, [minHeight, hideUntilData, onClose, onAvailabilityChange]);
+
+  // The widget host refused our token (a 403 page inside the iframe posts
+  // nothing, so it shows up as the LOADED timeout) or api-disir did with no
+  // backup to fall over to: hand the panel to Bifrost's frame.
+  if (
+    canFallBackToBifrost &&
+    (error === "timeout" || error === "widget_provider_unauthorized")
+  ) {
+    return (
+      <BifrostMatchFrame
+        matchId={id}
+        theme={props.theme}
+        language={props.language}
+        height={variant === "live-scoreboard" ? 560 : 640}
+        title={title}
+        className={className}
+        style={style}
+        onAvailabilityChange={onAvailabilityChange}
+      />
+    );
+  }
 
   // Disabled, no data, or never loaded — render nothing. Parent decides
   // whether to show an empty state via the onAvailabilityChange callback.

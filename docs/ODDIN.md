@@ -789,19 +789,37 @@ and the route link is a discriminated union on `route` —
 `{"route":"/timeline","type":"upcoming"}`,
 `{"route":"/match","matchId":"<base64 of match/od:match:N>"}`,
 `{"route":"/outrights","id":…}`, `/topPicks`, `/ghost`, `/penalty-arena`,
-`/historicMatch` — each with an optional `config`. `nonBetting` is a
-config flag that prefixes every route with `/non-betting` (the bundle
-carries `nonBettingMatch` / `nonBettingAllMatch` queries and
-`/non-betting/match` + `/non-betting/timeline` pages); passed as a query
-parameter it did not take effect in the one test made, so the exact
-carrier is still to be found.
+`/historicMatch` — each with an optional `config`.
 
-What that gives us is Oddin's match page, not our widgets: their layout,
-their markets, their stream embed, inside a frame we cannot style. As a
-backup for the statistics widgets it is the wrong shape for this
-storefront; the right shape is Oddin registering `oddzilla.cc` on the
-MaxBet Disir token (or issuing a second token of ours), after which the
-failover above carries it with no further change.
+**Non-betting mode.** `nonBetting` prefixes every route with
+`/non-betting` (the bundle carries `nonBettingMatch` /
+`nonBettingAllMatch` queries and `/non-betting/match` +
+`/non-betting/timeline` pages). It is NOT reachable from the URL: the app
+validates it with a zod `boolean()`, and a query parameter is always a
+string, so `nonBetting=true` is silently dropped. It IS reachable over
+the loader's own channel — the app listens for a postMessage
+`{type:"CONFIG", data:{…}}` (the loader's `updateConfig` posts exactly
+that), applies `nonBetting`, redirects to the timeline when it changed,
+and if `data.route` carries a route link navigates there. One message,
+`{type:"CONFIG", data:{nonBetting:true, route:<link to /match>}}`, posted
+after the frame reports `LOADED`, lands on the non-betting match page:
+team header with the per-map score, the Team / Players / Tournament
+statistics widget inline, a Stream tab and a Live stats tab, no markets,
+no bet slip. Measured on oddzilla.cc with a live CS2 match.
+
+**That is the storefront's last resort.** `GET /widgets/match/:id/bifrost`
+([`bifrost-embed.ts`](../services/api/src/modules/widgets/bifrost-embed.ts))
+composes the frame URL (`BIFROST_API_KEY`, the route link, our referer,
+theme, language) and the config message; [`bifrost-match-frame.tsx`](../apps/web/src/components/widgets/bifrost-match-frame.tsx)
+frames it, posts the message on `LOADED`, and keeps the frame invisible
+until Bifrost reports the route change so the betting page it boots on
+never shows; `DisirWidget` swaps to it (`bifrostFallback`) when the
+widget host refuses our token — no `LOADED` within 20 s — or api-disir
+answers 401 with no backup. Oddin's page in Oddin's layout, so it sits
+third behind an issued URL and a backup token; the tournament widget has
+no counterpart and still collapses. The right long-term shape is Oddin
+registering `oddzilla.cc` on a token we may use, after which the token
+failover carries it with no further change.
 
 Omitting `availableData` and the team ids yields a widget that loads and
 shows "Something went wrong", so the builder refuses to build a match

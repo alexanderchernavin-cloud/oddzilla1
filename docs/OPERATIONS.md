@@ -1351,7 +1351,12 @@ check, in order:
    configured (`DISIR_BACKUP_BRAND_TOKEN`), the api probes the primary
    every minute and switches by itself; `grep 'disir token' <api log>`
    shows the probe verdicts and any switch, and the response's `token`
-   field says which slot served it.
+   field says which slot served it. With no working token at all, the
+   storefront's match widgets swap to Oddin's Bifrost non-betting match
+   frame instead of collapsing (`BIFROST_API_KEY` is on the box; the
+   frame loads from `GET /api/widgets/match/<id>/bifrost`) — Oddin's
+   page in Oddin's layout, so it is a sign that the token needs fixing,
+   not a state to leave the site in.
 4. **Widget loads but shows its own error state?** Its data API
    (`external-production.oddin.gg`) is on the same ELB as api-disir and
    api-bifrost. If that ingress is down, no URL trick helps; the Bifrost

@@ -125,6 +125,7 @@ function RailMatchPanelInner({ active }: { active: ActiveMatch }) {
             <DisirWidget
               variant="prematch-match"
               id={active.matchId}
+              bifrostFallback
               title={t("railPanel.prematchTitle", {
                 home: active.homeTeam,
                 away: active.awayTeam,
