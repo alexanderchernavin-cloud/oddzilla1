@@ -799,6 +799,78 @@ So a refused token can leave the host happy and the widget broken, which
 is what the data-API probe and the health record above are for. Whether
 the token was rotated or revoked is open with Oddin.
 
+### A whitelisting-independent proxy (option 3)
+
+The two fallbacks above each still lean on Oddin's per-token domain
+registry: the local builder puts our own token in the URL, and the backup
+token needs our domain registered on it. When the whitelisting itself is
+what is down — the registry unreachable, or simply not carrying our domain
+on any token we hold — neither can help, and the storefront would drop
+straight to the Bifrost frame.
+
+The proxy removes that dependency. It serves the whole widget from
+oddzilla.cc as a **same-origin mirror**, exploiting the surface Oddin's
+gating actually covers (measured 2026-09-17):
+
+- the widget's app-shell **document** is referer-gated — 200 with
+  `Referer: bifrost.oddin.gg` (a host Oddin authorised us to present), 403
+  with ours;
+- its **static assets** (`/<buildid>/_next/…`, `/<buildid>/static/…`) are
+  NOT referer-gated;
+- its **data API** (`external-production.oddin.gg/{env}/disir/query`, HTTP
+  + WSS) answers `Access-Control-Allow-Origin: *` and accepts MaxBet's
+  Disir token from any origin.
+
+So the api fetches the document AND every asset server-side with the
+authorised Referer, and rewrites the document so the browser loads
+everything from us. This is a MIRROR, not just an absolute-URL rewrite:
+the widget is a turbopack app whose runtime `fetch()`es its dynamic
+chunks, and a cross-origin chunk fetch fails with no CORS (measured — the
+app hangs on the loading skeleton). Only the open-CORS data API stays
+cross-origin, called by the browser directly.
+
+Helpers in [`disir-proxy.ts`](../services/api/src/modules/widgets/disir-proxy.ts)
+(pure/fetch, unit-tested in `disir-proxy.test.ts`); the routes and byte
+cache are in [`routes.ts`](../services/api/src/modules/widgets/routes.ts):
+
+- `serveProxiedDocument` → `GET /widgets/disir-app/:env/:seg/:kind`: fetches
+  the document (`fetchWidgetDocument`), rewrites its build-prefixed refs to
+  `/api/widgets/disir-asset/:env/…` (`rewriteWidgetDocument`, which returns
+  `null` on a body carrying no 32-hex build prefix — an error page must not
+  be served as the shell), serves it with `proxyContentSecurityPolicy()`
+  (the route's own header overrides helmet's global `default-src 'none'`;
+  `frame-ancestors 'self'`, assets `'self'`, data API + WSS in
+  `connect-src`) and `cache-control: private, max-age=60`. Guarded so it is
+  not an open relay: env / seg / kind are shape-checked and the query's
+  `brandToken` must equal the proxy token.
+- `GET /widgets/disir-asset/:env/*`: streams one static chunk
+  (`fetchWidgetAsset`, `assetUpstreamUrl`) with a 32 MB in-process LRU byte
+  cache and `cache-control: public, max-age=31536000, immutable`. The path
+  is `ASSET_REST_RE`-guarded (`<32hex>/(_next|static)/…`) against traversal
+  and host-swap. Caddy exempts `/widgets/disir-asset/*` from its blanket
+  `no-store` so the immutable header survives.
+- The JSON endpoints `/widgets/match/:id/disir-proxy` and
+  `/widgets/tournament/:id/disir-proxy` reuse the same URN → widget-URL
+  builders the issued/local paths use, with the proxy creds, and return
+  `{ url: /api/widgets/disir-app/… }` for the storefront iframe `src`.
+
+Storefront: [`disir-widget.tsx`](../apps/web/src/components/widgets/disir-widget.tsx)
+takes a `proxyFallback` prop (set on the rail Insights panel, the mobile
+prematch panel and the live-stats block, alongside `bifrostFallback`).
+When the primary widget fails — a 20 s `LOADED` timeout or a
+`widget_provider_unauthorized` — it fetches the proxy JSON and reloads the
+iframe from our origin BEFORE falling through to Bifrost, so the fallback
+order is **issued URL → local URL → backup token → same-origin proxy →
+Bifrost frame**.
+
+Config: `DISIR_PROXY_BRAND_TOKEN` (MaxBet's `e28ce023-…` on prod),
+`DISIR_PROXY_ENV` (defaults to `DISIR_ENV`), `DISIR_PROXY_REFERER`
+(defaults to `https://bifrost.oddin.gg`). Empty token = the proxy routes
+503 and the chain stops at the Bifrost frame. **Oddin confirmed option 3
+as a supported integration path** (relayed by the operator, 2026-09-17) —
+same standing as the URL-building contract, not a reverse-engineered
+bypass a widget change may silently break.
+
 ### How MaxBet's token DOES work on our page: through Bifrost
 
 Oddin's statement that "it works with MaxBet's token" is true in one

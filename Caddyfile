@@ -136,8 +136,15 @@
 		# re-download of every country flag on every render: 105 requests
 		# and ~500 KB each time a bettor expanded Football, which is most
 		# of why expanding a big sport felt slow on mobile.
+		# /widgets/disir-asset/* proxies the Disir widget app's static
+		# chunks (whitelisting-independent proxy, disir-proxy.ts); the
+		# names are content-hashed so the api's `immutable` header is
+		# correct and the blanket no-store must not defeat it — a failed
+		# token would otherwise re-pull ~20 chunks through us on every
+		# match-page load. The disir-app DOCUMENT is left on no-store
+		# (cheap, and it carries a token in its query).
 		@api_nocache {
-			not path /sports/*/logo /competitors/*/logo /tournaments/*/logo /catalog/zillaboost-banners/*/image /catalog/flags/*
+			not path /sports/*/logo /competitors/*/logo /tournaments/*/logo /catalog/zillaboost-banners/*/image /catalog/flags/* /widgets/disir-asset/*
 		}
 		header @api_nocache Cache-Control "no-store"
 		# Strip Fastify's X-Powered-By if any handler ever forgets to

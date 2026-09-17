@@ -149,6 +149,7 @@ export function MatchLiveMedia({
           <DisirWidget
             variant="live-scoreboard"
             id={matchId}
+            proxyFallback
             bifrostFallback
             title={t("liveMedia.liveStatsTitle", {
               home: homeTeam,

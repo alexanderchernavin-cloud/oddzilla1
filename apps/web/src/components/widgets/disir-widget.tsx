@@ -29,7 +29,7 @@ import {
   useState,
   type CSSProperties,
 } from "react";
-import { clientApi, ApiFetchError } from "@/lib/api-client";
+import { clientApi, ApiFetchError, apiAssetBase } from "@/lib/api-client";
 import { useDocumentTheme } from "@/lib/use-theme";
 import { useTranslations } from "@/lib/i18n";
 import { BifrostMatchFrame } from "./bifrost-match-frame";
@@ -69,6 +69,15 @@ interface DisirWidgetProps {
   // "Live stats not available" empty state when data is missing,
   // which is more discoverable than an invisible widget.
   hideUntilData?: boolean;
+  // When our brand token is refused (no LOADED within LOAD_TIMEOUT_MS, or
+  // api-disir answers 401), try the whitelisting-independent proxy before
+  // giving up: the api serves the REAL Disir widget from our own origin
+  // with MaxBet's token (see services/api/src/modules/widgets/disir-proxy.ts).
+  // It renders the same widget as the primary path — same postMessage
+  // events, all variants including the tournament — so it is preferred
+  // over the Bifrost frame. Only if the proxy ALSO fails do we fall to
+  // Bifrost (match) or collapse.
+  proxyFallback?: boolean;
   // Last resort: when the widget host refuses our brand token (no LOADED
   // within LOAD_TIMEOUT_MS, or api-disir answers 401 with no backup token),
   // render Oddin's own Bifrost match frame in this widget's place instead
@@ -133,6 +142,7 @@ export function DisirWidget(props: DisirWidgetProps) {
     onAvailabilityChange,
     onClose,
     hideUntilData = false,
+    proxyFallback = false,
     bifrostFallback = false,
     className,
     style,
@@ -154,6 +164,9 @@ export function DisirWidget(props: DisirWidgetProps) {
   // For live widgets we hide the iframe until DATA: true. Prematch
   // widgets are visible from the start.
   const [dataAvailable, setDataAvailable] = useState<boolean>(!hideUntilData);
+  // "primary" = the widget URL from /widgets/*; "proxy" = the same-origin
+  // proxy document (MaxBet's token) we switch to when the primary fails.
+  const [phase, setPhase] = useState<"primary" | "proxy">("primary");
 
   // Stable query string so the URL fetch effect only refires on real
   // dependency changes.
@@ -175,6 +188,7 @@ export function DisirWidget(props: DisirWidgetProps) {
     setUrl(null);
     setError(null);
     setLoaded(false);
+    setPhase("primary");
     setDataAvailable(!hideUntilData);
     onAvailabilityChange?.("loading");
 
@@ -224,10 +238,55 @@ export function DisirWidget(props: DisirWidgetProps) {
       setError("timeout");
       // With the Bifrost fallback the panel is about to be filled again,
       // and the frame reports its own availability.
-      if (!canFallBackToBifrost) onAvailabilityChange?.("unavailable");
+      if (!canFallBackToBifrost && !proxyFallback) onAvailabilityChange?.("unavailable");
     }, LOAD_TIMEOUT_MS);
     return () => clearTimeout(timer);
-  }, [url, loaded, onAvailabilityChange, canFallBackToBifrost]);
+  }, [url, loaded, onAvailabilityChange, canFallBackToBifrost, proxyFallback]);
+
+  // The primary widget failed in a way the proxy can rescue (token
+  // refused → api-disir 401, or a widget-host 403 that shows up as the
+  // LOADED timeout). Fetch the same-origin proxy document and hand the
+  // iframe to it. If the proxy is not configured or is itself down, mark
+  // the phase exhausted so the Bifrost / collapse branch takes over.
+  const proxyPending =
+    proxyFallback &&
+    phase === "primary" &&
+    (error === "timeout" || error === "widget_provider_unauthorized");
+  useEffect(() => {
+    if (!proxyPending) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const qp = new URLSearchParams(querySig.startsWith("?") ? querySig.slice(1) : querySig);
+        if (variant === "live-scoreboard") qp.set("kind", "live");
+        const suffix = qp.toString();
+        const base =
+          variant === "prematch-tournament"
+            ? `/widgets/tournament/${encodeURIComponent(id)}/disir-proxy`
+            : `/widgets/match/${encodeURIComponent(id)}/disir-proxy`;
+        const res = await clientApi<{ url: string }>(
+          `${base}${suffix ? `?${suffix}` : ""}`,
+        );
+        if (cancelled) return;
+        setPhase("proxy");
+        setLoaded(false);
+        setError(null);
+        setDataAvailable(!hideUntilData);
+        // res.url is a same-origin path (`/widgets/disir-app/...`); the api
+        // base turns it into the URL the iframe loads.
+        setUrl(`${apiAssetBase}${res.url}`);
+      } catch {
+        if (cancelled) return;
+        // Proxy unavailable too — leave the terminal error, moved to the
+        // proxy phase so the render no longer treats it as pending.
+        setPhase("proxy");
+        setError("timeout");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [proxyPending, variant, id, querySig, hideUntilData]);
 
   // Subscribe to the widget's postMessage events. Filter to messages
   // sourced from the rendered iframe so other iframes on the page
@@ -278,10 +337,13 @@ export function DisirWidget(props: DisirWidgetProps) {
   }, [minHeight, hideUntilData, onClose, onAvailabilityChange]);
 
   // The widget host refused our token (a 403 page inside the iframe posts
-  // nothing, so it shows up as the LOADED timeout) or api-disir did with no
-  // backup to fall over to: hand the panel to Bifrost's frame.
+  // nothing, so it shows up as the LOADED timeout) or api-disir did — and
+  // the proxy (if enabled) has already been tried and failed. Hand the
+  // panel to Bifrost's frame. While a proxy switch is pending we keep the
+  // skeleton up instead, so this waits until the proxy phase is exhausted.
   if (
     canFallBackToBifrost &&
+    !proxyPending &&
     (error === "timeout" || error === "widget_provider_unauthorized")
   ) {
     return (
@@ -300,9 +362,12 @@ export function DisirWidget(props: DisirWidgetProps) {
 
   // Disabled, no data, or never loaded — render nothing. Parent decides
   // whether to show an empty state via the onAvailabilityChange callback.
-  if (error === "disabled" || error === "not_available" || error === "timeout") return null;
+  // A timeout with a proxy switch still pending is NOT terminal — keep the
+  // skeleton (below) while the proxy document loads.
+  if (error === "disabled" || error === "not_available") return null;
+  if (error === "timeout" && !proxyPending) return null;
 
-  if (!url && error) {
+  if (!url && error && !proxyPending) {
     return (
       <div
         role="alert"
