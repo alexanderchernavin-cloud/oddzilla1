@@ -1351,8 +1351,9 @@ check, in order:
    every minute (`grep 'disir token' <api log>` shows the verdicts) and,
    with a backup token configured (`DISIR_BACKUP_BRAND_TOKEN`), switches
    by itself; the response's `token` field says which slot served it.
-   With no working token at all, the storefront's match widgets swap to
-   Oddin's Bifrost non-betting match frame instead of collapsing
+   With no working token at all, the storefront's match widgets fall
+   through the remaining tiers: first the same-origin proxy if it is
+   configured (step 5), then Oddin's Bifrost non-betting match frame
    (`BIFROST_API_KEY` is on the box; the frame loads from
    `GET /api/widgets/match/<id>/bifrost`) — Oddin's page in Oddin's
    layout, so it is a sign that the token needs fixing, not a state to
@@ -1375,11 +1376,33 @@ check, in order:
    `external-production.oddin.gg` is on the same ELB as api-disir and
    api-bifrost, no URL trick helps, and the Bifrost backup feed is
    affected at the same time, so check `/admin/feed`.
+5. **Whitelisting itself down, or our domain on no token?** The
+   same-origin proxy is the tier below the token failover and above the
+   Bifrost frame — it needs neither api-disir nor our domain being
+   registered, because it presents `Referer: bifrost.oddin.gg` (which
+   Oddin authorised) and MaxBet's token, mirroring the widget through
+   oddzilla.cc. It is live only when `DISIR_PROXY_BRAND_TOKEN` is set;
+   check `curl -s https://oddzilla.cc/api/widgets/match/<numeric id>/disir-proxy?theme=dark`
+   answers `{"url":"/widgets/disir-app/..."}` (the storefront prepends
+   `/api`; 503 `disir_proxy_disabled` = token not set, 503
+   `disir_proxy_unavailable` = the referer-gated document fetch failed).
+   The document then serves from
+   `/api/widgets/disir-app/*` and its chunks from `/api/widgets/disir-asset/*`
+   (both same-origin) — if the widget frame is blank, look for those two
+   paths in the api log and in the browser network tab. The proxy token is
+   MaxBet's `e28ce023-…`; if IT is refused too, the proxy falls through to
+   the Bifrost frame like everything else.
 
-Kill switch: `DISIR_LOCAL_URL_FALLBACK=false` in `.env` + `make recreate
-api`. Learned per-sport constants live in Redis under `disir:segment:v1:*`
-and `disir:prematch:v1:*` (30 d); deleting them falls back to the static
-table in `disir-url.ts`.
+Kill switch: `DISIR_LOCAL_URL_FALLBACK=false` in `.env` disables the local
+URL builder; clearing `DISIR_PROXY_BRAND_TOKEN` disables the proxy tier;
+both take effect on `make recreate api`. Learned per-sport constants live
+in Redis under `disir:segment:v1:*` and `disir:prematch:v1:*` (30 d);
+deleting them falls back to the static table in `disir-url.ts`. To turn the
+proxy ON: set `DISIR_PROXY_BRAND_TOKEN` to MaxBet's Disir token (`e28ce023-…`,
+read off the widget iframe Bifrost opens — same value the token failover's
+intended backup uses) in `.env` — with `DISIR_PROXY_REFERER` and
+`DISIR_PROXY_ENV` defaulting to `bifrost.oddin.gg` / `DISIR_ENV` — then
+`make recreate SVC=api`.
 
 ## Backup feed (Bifrost) failover
 

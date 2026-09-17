@@ -72,6 +72,39 @@ const EnvSchema = z.object({
   // token-health.ts). 0 disables the probe; a 401 from api-disir still
   // triggers the switch on demand.
   DISIR_TOKEN_PROBE_SECONDS: z.coerce.number().int().min(0).default(60),
+  // ── Disir widget proxy (2026-09-17, Oddin-sanctioned) ────────────────
+  // The whitelisting-INDEPENDENT widget backup. When our own brand token
+  // is refused by Oddin's auth layer, OR the widget host's per-token
+  // domain registry is down / does not carry our domain, the storefront
+  // cannot load a Disir widget from Oddin's host directly. The proxy
+  // renders it anyway, as a SAME-ORIGIN MIRROR: the api fetches the
+  // widget's app-shell document AND every static asset server-side,
+  // presenting `Referer: <DISIR_PROXY_REFERER>` (a host Oddin authorised
+  // us to present) plus MaxBet's Disir token in the document URL, and
+  // rewrites the document's build-prefixed asset refs to our own
+  // asset-proxy route so the widget's turbopack runtime loads its dynamic
+  // chunks from oddzilla.cc (a cross-origin chunk fetch fails with no
+  // CORS — measured). Only the widget's open-CORS data API stays
+  // cross-origin, called by the browser directly. Oddin confirmed this
+  // integration path on 2026-09-17; it is not a reverse-engineered
+  // bypass. Empty token = the proxy route 503s and the storefront falls
+  // back to the Bifrost frame as before.
+  DISIR_PROXY_BRAND_TOKEN: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.string().min(8).optional(),
+  ),
+  // Widget host the proxy token is registered on (defaults to DISIR_ENV).
+  DISIR_PROXY_ENV: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.enum(["integration", "main"]).optional(),
+  ),
+  // The Referer the api presents when fetching the widget document. Must
+  // be a host Oddin has registered for DISIR_PROXY_BRAND_TOKEN; MaxBet's
+  // Disir token is registered for bifrost.oddin.gg, which is the default.
+  DISIR_PROXY_REFERER: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.string().url().default("https://bifrost.oddin.gg"),
+  ),
   // Oddin Bifrost brand key (client 101, authorised for Oddzilla on
   // 2026-09-03). Read by the Go bifrost-feed and feed-ingester straight
   // from the environment; the api reads it here for ONE thing — the
