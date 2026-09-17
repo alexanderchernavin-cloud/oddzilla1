@@ -92,6 +92,7 @@ import {
   type TokenConfig,
   type TokenCredentials,
 } from "./token-health.js";
+import { buildBifrostEmbed } from "./bifrost-embed.js";
 
 // Match the doc table for prematch — esports vs eSims accept different
 // timeframes/tabs. The proxy passes whatever the client sends; Disir
@@ -602,6 +603,45 @@ export default async function widgetsRoutes(app: FastifyInstance) {
       clearInterval(timer);
     });
   }
+
+  // ── Last resort: Bifrost's non-betting match page ──────────────────────
+  // Served regardless of the Disir token's health; the STOREFRONT decides
+  // when to use it (DisirWidget swaps to it when the widget host refuses
+  // our token — no LOADED within 20 s — or api-disir answers 401 with no
+  // backup). See bifrost-embed.ts for what it renders and why it works.
+  app.get<{
+    Params: { matchId: string };
+    Querystring: z.input<typeof liveMatchQuery>;
+  }>(
+    "/widgets/match/:matchId/bifrost",
+    { config: widgetReadRateLimit },
+    async (req) => {
+      // Both halves are needed: the key to load Bifrost at all, and the
+      // storefront host because Bifrost only trusts postMessages from the
+      // `customDomain` it was given — the CONFIG message that switches it
+      // to non-betting mode would be ignored without it.
+      const storefrontHost = env.FRONTEND_HOST;
+      if (!env.BIFROST_API_KEY || !storefrontHost) {
+        throw new ServiceUnavailableError(
+          "Bifrost embed is not configured for this environment",
+          "bifrost_embed_disabled",
+        );
+      }
+      const urn = await resolveMatchUrn(app, req.params.matchId);
+      const q = liveMatchQuery.parse(req.query);
+      // Numeric id or URN, whichever the caller sent, becomes the referer
+      // Bifrost builds its outbound links from; it is informational.
+      const refererUrl = `https://${storefrontHost}/match/${encodeURIComponent(req.params.matchId)}`;
+      return buildBifrostEmbed({
+        apiKey: env.BIFROST_API_KEY,
+        matchUrn: urn,
+        refererUrl,
+        storefrontHost,
+        language: q.language,
+        theme: q.theme,
+      });
+    },
+  );
 
   // ── Prematch: match-level (Team / Player / Tournament tabs) ────────────
   app.get<{

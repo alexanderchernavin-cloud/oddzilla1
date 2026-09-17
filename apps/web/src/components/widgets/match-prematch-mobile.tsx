@@ -83,6 +83,7 @@ export function MatchPrematchMobile({ matchId, sportSlug, homeTeam, awayTeam }: 
           <DisirWidget
             variant="prematch-match"
             id={matchId}
+            bifrostFallback
             title={t("railPanel.prematchTitle", { home: homeTeam, away: awayTeam })}
             onAvailabilityChange={setAvailability}
             minHeight={420}

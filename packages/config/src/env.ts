@@ -72,6 +72,17 @@ const EnvSchema = z.object({
   // token-health.ts). 0 disables the probe; a 401 from api-disir still
   // triggers the switch on demand.
   DISIR_TOKEN_PROBE_SECONDS: z.coerce.number().int().min(0).default(60),
+  // Oddin Bifrost brand key (client 101, authorised for Oddzilla on
+  // 2026-09-03). Read by the Go bifrost-feed and feed-ingester straight
+  // from the environment; the api reads it here for ONE thing — the
+  // Bifrost match frame the storefront falls back to when the Disir
+  // widget host refuses our brand token (services/api/src/modules/
+  // widgets/bifrost-embed.ts). Empty = that route 503s and the storefront
+  // collapses the widget as before.
+  BIFROST_API_KEY: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.string().min(8).optional(),
+  ),
 
   // Oddin BetBuilder (OBB) gRPC client (services/api). Same graceful-idle
   // pattern as Disir: when host is empty, /betbuilder/* returns 503
