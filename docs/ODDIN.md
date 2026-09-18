@@ -840,9 +840,25 @@ cache are in [`routes.ts`](../services/api/src/modules/widgets/routes.ts):
   be served as the shell), serves it with `proxyContentSecurityPolicy()`
   (the route's own header overrides helmet's global `default-src 'none'`;
   `frame-ancestors 'self'`, assets `'self'`, data API + WSS in
-  `connect-src`) and `cache-control: private, max-age=60`. Guarded so it is
-  not an open relay: env / seg / kind are shape-checked and the query's
+  `connect-src`, and **`worker-src blob:` + `child-src blob:`**) and
+  `cache-control: private, max-age=60`. The `blob:` worker directive is
+  load-bearing, not optional: turbopack's runtime spawns a Web Worker from a
+  `blob:` URL to load its chunks, and without it the worker is blocked
+  (worker-src falls back to `default-src 'none'`), the runtime never
+  finishes, React never hydrates, and the widget renders a dead SSR shell
+  with no i18n, no data and no `LOADED` — so the storefront times out to
+  Bifrost even though every asset served 200. Same class as the Havik video
+  player's `worker-src blob:` (measured 2026-09-18 on production). Guarded so
+  it is not an open relay: env / seg / kind are shape-checked and the query's
   `brandToken` must equal the proxy token.
+- Even with hydration unblocked, the widget's i18next backend fetches its
+  translations at RUNTIME from a loadPath hardcoded in a chunk
+  (`/<buildId>/static/locales/{{lng}}/{{ns}}.json`), which the document
+  rewrite cannot reach — so `rewriteWidgetDocument` also injects a tiny shim
+  at the top of `<head>` (`injectRuntimeAssetShim`) that patches `fetch` +
+  `XMLHttpRequest.open` to route any `/<buildId>/…` request through the asset
+  proxy. It builds its build-prefix constant by concatenation so the document
+  never carries a `"/<buildId>` literal.
 - `GET /widgets/disir-asset/:env/*`: streams one static chunk
   (`fetchWidgetAsset`, `assetUpstreamUrl`) with a 32 MB in-process LRU byte
   cache and `cache-control: public, max-age=31536000, immutable`. The path

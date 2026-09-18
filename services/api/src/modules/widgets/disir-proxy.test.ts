@@ -129,6 +129,9 @@ test("proxyContentSecurityPolicy keeps scripts same-origin and allows the data A
   assert.match(csp, /script-src 'self' 'unsafe-inline' 'unsafe-eval'/);
   assert.match(csp, /connect-src 'self' https:\/\/external-production\.oddin\.gg wss:\/\/external-production\.oddin\.gg/);
   assert.match(csp, /frame-ancestors 'self'/);
+  // turbopack's runtime needs a blob: Web Worker or React never hydrates.
+  assert.match(csp, /worker-src blob:/);
+  assert.match(csp, /child-src blob:/);
 });
 
 function fakeFetch(
