@@ -55,7 +55,9 @@ function resolveRequestId(req: NextRequest): string {
 // boot script in app/layout.tsx. `frame-src` whitelists Twitch / YouTube /
 // Kick / Gjirafa so the live-stream embed on match-detail can load, and
 // the Oddin Disir widget hosts (prematch + live-scoreboard iframes
-// returned by /widgets/*). `img-src https:` accommodates Oddin's CDN
+// returned by /widgets/*) plus the disir-proxy subdomain (the
+// whitelisting-independent widget backup — see docs/ODDIN.md).
+// `img-src https:` accommodates Oddin's CDN
 // for team logos. `style-src 'unsafe-inline'` stays — JSX `style={…}`
 // props throughout the codebase rely on it.
 function buildCsp(nonce: string, frameAncestors: "none" | "self"): string {
@@ -125,7 +127,7 @@ function buildCsp(nonce: string, frameAncestors: "none" | "self"): string {
     // standalone page (components/widgets/sportradar-lmt.tsx) — an iframe,
     // because the widgetloader licenses per embedding origin and Oddzilla
     // has no Client ID yet.
-    "frame-src 'self' https://player.twitch.tv https://www.twitch.tv https://www.youtube.com https://www.youtube-nocookie.com https://player.kick.com https://video.gjirafa.com https://host.vpplayer.tech https://*.oddin.gg https://widgets.sir.sportradar.com",
+    "frame-src 'self' https://player.twitch.tv https://www.twitch.tv https://www.youtube.com https://www.youtube-nocookie.com https://player.kick.com https://video.gjirafa.com https://host.vpplayer.tech https://*.oddin.gg https://widgets.sir.sportradar.com https://disir-proxy.oddzilla.cc",
     `frame-ancestors '${frameAncestors}'`,
     "base-uri 'self'",
     "form-action 'self'",

@@ -78,7 +78,6 @@ import {
   buildMatchWidgetUrl,
   buildScoreboardWidgetUrl,
   buildTournamentWidgetUrl,
-  disirWidgetHost,
   inspectIssuedUrl,
   parseLearnedSegment,
   parseSportParams,
@@ -101,13 +100,6 @@ import {
   type TokenCredentials,
 } from "./token-health.js";
 import { buildBifrostEmbed } from "./bifrost-embed.js";
-import {
-  assetUpstreamUrl,
-  fetchWidgetAsset,
-  fetchWidgetDocument,
-  proxyContentSecurityPolicy,
-  rewriteWidgetDocument,
-} from "./disir-proxy.js";
 
 // Match the doc table for prematch — esports vs eSims accept different
 // timeframes/tabs. The proxy passes whatever the client sends; Disir
@@ -561,93 +553,26 @@ export default async function widgetsRoutes(app: FastifyInstance) {
   const baseUrl = env.DISIR_BASE_URL.replace(/\/$/, "");
   const fallbackEnabled = env.DISIR_LOCAL_URL_FALLBACK === "true";
 
-  // Whitelisting-independent proxy (disir-proxy.ts): MaxBet's Disir token,
-  // fetched with the Oddin-authorised bifrost.oddin.gg referer, on the
-  // widget host the token is registered on (defaults to DISIR_ENV).
-  const proxyCfg = env.DISIR_PROXY_BRAND_TOKEN
-    ? {
-        token: env.DISIR_PROXY_BRAND_TOKEN,
-        env: env.DISIR_PROXY_ENV ?? env.DISIR_ENV,
-        referer: env.DISIR_PROXY_REFERER,
-      }
-    : null;
-
-  // The browser reaches the api under /api (Caddy mount; the storefront's
-  // apiAssetBase falls back to the same), so the proxied document's assets
-  // must resolve to an absolute path under /api. Dev with a direct
-  // NEXT_PUBLIC_API_URL is the one setup this constant does not fit; the
-  // proxy is a production path, so that is acceptable.
-  const PUBLIC_API_PREFIX = "/api";
-  const assetBaseFor = (upstreamEnv: DisirEnv): string =>
-    `${PUBLIC_API_PREFIX}/widgets/disir-asset/${upstreamEnv}`;
-
-  // Turn an upstream widget URL into the same-origin document HTML the
-  // storefront iframes: fetch it with the authorised referer, rewrite its
-  // build-prefixed asset refs to our asset-proxy, and cache the result
-  // like every other widget URL. Throws a typed 503 the storefront reads
-  // as "no widget" (it then collapses / uses Bifrost).
-  async function serveProxiedDocument(
-    cacheKey: string,
-    upstreamEnv: DisirEnv,
-    upstreamUrl: string,
-  ): Promise<string> {
-    if (!proxyCfg) {
-      throw new ServiceUnavailableError(
-        "Disir widget proxy is not configured for this environment",
-        "disir_proxy_disabled",
-      );
-    }
-    return cachedSwr<string>(
-      app.redis,
-      cacheKey,
-      FRESH_SECONDS,
-      STALE_SECONDS,
-      async () => {
-        const res = await fetchWidgetDocument(upstreamUrl, proxyCfg.referer);
-        const rewritten = res.html
-          ? rewriteWidgetDocument(res.html, assetBaseFor(upstreamEnv))
-          : null;
-        if (!rewritten) {
-          app.log.warn(
-            { status: res.status, url: upstreamUrl.split("?")[0] },
-            "disir proxy: upstream document unavailable",
-          );
-          throw new ServiceUnavailableError(
-            "Widget provider document unavailable",
-            "disir_proxy_unavailable",
-          );
+  // Whitelisting-independent proxy (subdomain, 2026-09-18): the widget is
+  // served from a DEDICATED SUBDOMAIN (`DISIR_PROXY_HOST`, e.g.
+  // disir-proxy.oddzilla.cc) that Caddy reverse-proxies wholesale to the
+  // widget host, injecting the Oddin-authorised `Referer: bifrost.oddin.gg`
+  // at the edge. The subdomain preserves the widget's own origin + path, so
+  // its turbopack runtime — which builds chunk URLs from `location.origin`
+  // and resolves relative asset paths against the document — boots normally,
+  // which the earlier same-origin-subpath MIRROR could not achieve (the app
+  // never hydrated, no error). We only build the URL here; the edge does the
+  // fetch + referer, and the widget's open-CORS data API is called by the
+  // browser directly. Needs both the subdomain host AND MaxBet's Disir token
+  // (which rides in the URL, read from window.location by the app).
+  const proxyCfg =
+    env.DISIR_PROXY_BRAND_TOKEN && env.DISIR_PROXY_HOST
+      ? {
+          token: env.DISIR_PROXY_BRAND_TOKEN,
+          env: env.DISIR_PROXY_ENV ?? env.DISIR_ENV,
+          host: env.DISIR_PROXY_HOST.replace(/^https?:\/\//, "").replace(/\/$/, ""),
         }
-        return rewritten.html;
-      },
-    );
-  }
-
-  // Bounded in-process cache for proxied asset bytes. Chunk names are
-  // content-hashed, so an entry never goes stale; the cap keeps one build
-  // (~2 MB across ~20 chunks) resident without competing with Redis for
-  // the 256 MB hot set. A deploy clears it, which just re-fetches.
-  const ASSET_CACHE_MAX_BYTES = 32 * 1024 * 1024;
-  const assetCache = new Map<string, { body: Uint8Array; contentType: string }>();
-  let assetCacheBytes = 0;
-  function assetCacheGet(key: string): { body: Uint8Array; contentType: string } | undefined {
-    const v = assetCache.get(key);
-    if (v) {
-      assetCache.delete(key);
-      assetCache.set(key, v);
-    }
-    return v;
-  }
-  function assetCachePut(key: string, body: Uint8Array, contentType: string): void {
-    if (body.byteLength > ASSET_CACHE_MAX_BYTES) return;
-    while (assetCacheBytes + body.byteLength > ASSET_CACHE_MAX_BYTES && assetCache.size > 0) {
-      const oldest = assetCache.keys().next().value as string;
-      const ev = assetCache.get(oldest);
-      assetCache.delete(oldest);
-      if (ev) assetCacheBytes -= ev.body.byteLength;
-    }
-    assetCache.set(key, { body, contentType });
-    assetCacheBytes += body.byteLength;
-  }
+      : null;
 
   const tokens: TokenConfig | null = env.DISIR_BRAND_TOKEN
     ? {
@@ -779,116 +704,23 @@ export default async function widgetsRoutes(app: FastifyInstance) {
     },
   );
 
-  // ── Whitelisting-independent widget proxy (2026-09-17) ─────────────────
-  // Two halves. A JSON endpoint (like the normal widget endpoints) returns
-  // a SAME-ORIGIN document URL carrying the full widget query — including
-  // MaxBet's Disir token and the ids — because the widget app reads those
-  // from window.location.search at hydration, so they must sit on the URL
-  // the browser actually loads. The document route then fetches that
-  // widget document from Oddin with the authorised referer, rewrites its
-  // asset refs to absolute upstream, and serves it from our origin. See
-  // disir-proxy.ts for why each piece is where it is.
+  // ── Whitelisting-independent widget proxy (subdomain, 2026-09-18) ──────
+  // A JSON endpoint (like the normal widget endpoints) returns the widget
+  // URL pointed at the proxy SUBDOMAIN instead of Oddin's host — same path
+  // and query (MaxBet's Disir token + the ids ride in the query, because
+  // the widget app reads them from window.location at hydration). The
+  // browser loads it from the subdomain, which Caddy reverse-proxies to the
+  // widget host with the authorised `Referer: bifrost.oddin.gg` injected at
+  // the edge. Nothing is fetched or rewritten here: preserving the widget's
+  // own origin + path is exactly what lets its turbopack runtime boot.
 
-  const KIND_SEG_RE = /^[a-z_]+$/;
-
-  // Turn a built upstream widget URL (`${host}/${seg}/${kind}?${q}`) into
-  // the same-origin path the storefront iframes. The client prefixes it
-  // with the api base; the token + ids ride in the query so the app has
-  // them at hydration.
-  function toProxyDocUrl(upstreamEnv: DisirEnv, upstreamUrl: string): string {
+  // Swap a built upstream widget URL (`https://<oddin host>/<seg>/<kind>?q`)
+  // onto the proxy subdomain, keeping the path + query verbatim.
+  function toProxyDocUrl(upstreamUrl: string): string {
+    if (!proxyCfg) return upstreamUrl;
     const u = new URL(upstreamUrl);
-    // u.pathname is `/<seg>/<kind>`.
-    return `/widgets/disir-app/${upstreamEnv}${u.pathname}${u.search}`;
+    return `https://${proxyCfg.host}${u.pathname}${u.search}`;
   }
-
-  // The asset route: same-origin proxy for the widget app's static
-  // chunks/styles so turbopack's runtime, which fetches its dynamic chunks
-  // and would fail cross-origin (no CORS), loads them from us. `rest` is
-  // everything after the env — `<buildid>/_next/...` or `<buildid>/static/
-  // ...`. Guarded to the hashed build path so it cannot be steered to an
-  // arbitrary upstream file; bytes are content-hashed, hence immutable.
-  const ASSET_REST_RE = /^[0-9a-f]{32}\/(?:_next\/|static\/)[A-Za-z0-9._/-]+$/;
-  app.get<{
-    Params: { env: string; "*": string };
-  }>("/widgets/disir-asset/:env/*", { config: { rateLimit: { max: 600, timeWindow: "1 minute" } } }, async (req, reply) => {
-    if (!proxyCfg) {
-      throw new ServiceUnavailableError(
-        "Disir widget proxy is not configured for this environment",
-        "disir_proxy_disabled",
-      );
-    }
-    const pEnv = req.params.env;
-    const rest = req.params["*"];
-    if ((pEnv !== "integration" && pEnv !== "main") || !ASSET_REST_RE.test(rest)) {
-      throw new BadRequestError("Invalid widget asset reference", "disir_proxy_bad_asset");
-    }
-    const upstreamEnv = pEnv as DisirEnv;
-    const cacheKey = `${upstreamEnv}/${rest}`;
-    const cached = assetCacheGet(cacheKey);
-    const asset =
-      cached ??
-      (await (async () => {
-        const res = await fetchWidgetAsset(assetUpstreamUrl(upstreamEnv, rest), proxyCfg.referer);
-        if (!res.body) return null;
-        assetCachePut(cacheKey, res.body, res.contentType);
-        return { body: res.body, contentType: res.contentType };
-      })());
-    if (!asset) {
-      throw new ServiceUnavailableError(
-        "Widget provider asset unavailable",
-        "disir_proxy_asset_unavailable",
-      );
-    }
-    return reply
-      .header("content-type", asset.contentType)
-      .header("cache-control", "public, max-age=31536000, immutable")
-      .header("x-content-type-options", "nosniff")
-      .send(Buffer.from(asset.body));
-  });
-
-  // The document route. `env/seg/kind` name the upstream widget page and
-  // the query carries everything the app needs. Guards keep this from
-  // being a general fetch-with-our-referer relay: env/seg/kind are shape
-  // checked and the brandToken MUST be the proxy token we would have put
-  // there ourselves, so a caller cannot make us fetch an arbitrary page.
-  app.get<{
-    Params: { env: string; seg: string; kind: string };
-  }>("/widgets/disir-app/:env/:seg/:kind", { config: widgetReadRateLimit }, async (req, reply) => {
-    if (!proxyCfg) {
-      throw new ServiceUnavailableError(
-        "Disir widget proxy is not configured for this environment",
-        "disir_proxy_disabled",
-      );
-    }
-    const { env: pEnv, seg, kind } = req.params;
-    if (
-      (pEnv !== "integration" && pEnv !== "main") ||
-      !KIND_SEG_RE.test(seg) ||
-      (kind !== "match" && kind !== "scoreboard" && kind !== "tournament")
-    ) {
-      throw new BadRequestError("Invalid widget document reference", "disir_proxy_bad_ref");
-    }
-    const q = (req.query ?? {}) as Record<string, unknown>;
-    if (q.brandToken !== proxyCfg.token) {
-      // Only a URL we minted (via the JSON endpoint) carries our token;
-      // anything else is an attempt to steer the proxy fetch.
-      throw new BadRequestError("Invalid widget document token", "disir_proxy_bad_token");
-    }
-    const upstreamEnv = pEnv as DisirEnv;
-    const rawQuery = (req.raw.url ?? "").split("?")[1] ?? "";
-    const upstreamUrl = `${disirWidgetHost(upstreamEnv)}/${seg}/${kind}?${rawQuery}`;
-    const cacheKey = `disir:proxy:v1:${upstreamEnv}:${seg}:${kind}:${rawQuery}`;
-    const html = await serveProxiedDocument(cacheKey, upstreamEnv, upstreamUrl);
-    return reply
-      .header("content-security-policy", proxyContentSecurityPolicy())
-      // The document embeds MaxBet's publishable token in its asset-less
-      // query only; it is per-viewer nothing and safe to cache briefly in
-      // the browser, but keep it private (not shared caches) to be tidy.
-      .header("cache-control", "private, max-age=60")
-      .header("x-content-type-options", "nosniff")
-      .type("text/html; charset=utf-8")
-      .send(html);
-  });
 
   // JSON: the storefront's entry point for a proxied MATCH widget
   // (prematch by default, or the live scoreboard with ?kind=live).
@@ -946,7 +778,7 @@ export default async function widgetsRoutes(app: FastifyInstance) {
         timeframe: q.timeframe,
       });
     }
-    return { url: toProxyDocUrl(proxyCfg.env, upstreamUrl) };
+    return { url: toProxyDocUrl(upstreamUrl) };
   });
 
   // JSON: the storefront's entry point for a proxied TOURNAMENT widget.
@@ -979,7 +811,7 @@ export default async function widgetsRoutes(app: FastifyInstance) {
       language: q.language,
       allowClose: q.allowClose,
     });
-    return { url: toProxyDocUrl(proxyCfg.env, upstreamUrl) };
+    return { url: toProxyDocUrl(upstreamUrl) };
   });
 
   // ── Prematch: match-level (Team / Player / Tournament tabs) ────────────
