@@ -191,13 +191,6 @@ export function injectRuntimeAssetShim(
 ): string {
   const shim =
     `<script>(function(){` +
-    // TEMP DIAGNOSTIC (2026-09-18): capture why the widget never hydrates.
-    `window.__disirDiag=[];function D(s){try{window.__disirDiag.push(s)}catch(_){ }}` +
-    `if(window.addEventListener){` +
-    `window.addEventListener("error",function(e){D("ERR "+(e.message||"")+" @"+((e.filename||"").split("/").pop())+":"+(e.lineno||0)+(e.error&&e.error.stack?" | "+String(e.error.stack).split("\\n").slice(0,3).join(" / ").slice(0,300):""))});` +
-    `window.addEventListener("unhandledrejection",function(e){var r=e.reason;D("REJ "+String((r&&r.stack)||(r&&r.message)||r||"").slice(0,300))});` +
-    `window.addEventListener("securitypolicyviolation",function(e){D("CSP "+e.violatedDirective+" blocked="+String(e.blockedURI||"").slice(0,60))});` +
-    `}` +
     // Build P by concatenation rather than a `"/<buildId>` literal so the
     // document never carries that byte sequence — `rewriteWidgetDocument`
     // and its test assert no root-relative build-prefixed ref survives.
