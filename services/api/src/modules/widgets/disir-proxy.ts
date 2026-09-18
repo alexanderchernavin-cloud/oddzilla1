@@ -239,6 +239,15 @@ export function proxyContentSecurityPolicy(): string {
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: https:",
     "font-src 'self' data:",
+    // turbopack's runtime spawns a Web Worker from a `blob:` URL to load
+    // its chunks; without this the worker is blocked (worker-src falls back
+    // to default-src 'none'), the runtime never finishes, React never
+    // hydrates, and the widget renders a dead SSR shell — no i18n, no data,
+    // no LOADED, so the storefront times out to Bifrost. `child-src` is the
+    // fallback older engines read worker policy from. Same class as the
+    // Havik video player's `worker-src blob:`.
+    "worker-src blob:",
+    "child-src blob:",
     // 'self' covers turbopack's same-origin dynamic chunk fetch; the
     // named hosts are the data API + live socket.
     `connect-src 'self' ${data} ${ws}`,
