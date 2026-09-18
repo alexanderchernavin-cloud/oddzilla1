@@ -150,7 +150,14 @@ export function MatchLiveMedia({
             variant="live-scoreboard"
             id={matchId}
             proxyFallback
-            bifrostFallback
+            // No bifrostFallback here on purpose: this slot sits directly
+            // under the video, and Oddin's Bifrost non-betting page carries
+            // its OWN stream tab — falling back to it renders a SECOND
+            // stream under the first (operator report 2026-09-18). The live
+            // scoreboard is stats-only, so when neither the issued widget
+            // nor the proxy can render it, this slot collapses to nothing
+            // rather than duplicate the video. The prematch Insights panels
+            // keep bifrostFallback — their Bifrost page carries no video.
             title={t("liveMedia.liveStatsTitle", {
               home: homeTeam,
               away: awayTeam,
