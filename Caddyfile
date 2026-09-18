@@ -136,15 +136,8 @@
 		# re-download of every country flag on every render: 105 requests
 		# and ~500 KB each time a bettor expanded Football, which is most
 		# of why expanding a big sport felt slow on mobile.
-		# /widgets/disir-asset/* proxies the Disir widget app's static
-		# chunks (whitelisting-independent proxy, disir-proxy.ts); the
-		# names are content-hashed so the api's `immutable` header is
-		# correct and the blanket no-store must not defeat it — a failed
-		# token would otherwise re-pull ~20 chunks through us on every
-		# match-page load. The disir-app DOCUMENT is left on no-store
-		# (cheap, and it carries a token in its query).
 		@api_nocache {
-			not path /sports/*/logo /competitors/*/logo /tournaments/*/logo /catalog/zillaboost-banners/*/image /catalog/flags/* /widgets/disir-asset/*
+			not path /sports/*/logo /competitors/*/logo /tournaments/*/logo /catalog/zillaboost-banners/*/image /catalog/flags/*
 		}
 		header @api_nocache Cache-Control "no-store"
 		# Strip Fastify's X-Powered-By if any handler ever forgets to
@@ -236,5 +229,35 @@ s.oddzilla.cc {
 
 	handle {
 		import web_upstream
+	}
+}
+
+# ── Disir widget proxy subdomain (whitelisting-independent widget backup) ──────
+# Reverse-proxies the Oddin Disir widget host WHOLESALE, injecting the
+# Oddin-authorised `Referer: bifrost.oddin.gg` at the edge so the widget host's
+# per-token domain registry admits MaxBet's Disir token (carried in the widget
+# URL). Serving the widget under its OWN origin + path — a subdomain, not a
+# subpath of oddzilla.cc — is what lets its turbopack runtime boot: a subpath
+# asset-mirror served every asset 200 but the app never hydrated (it builds
+# chunk URLs from location.origin and resolves relative paths against the
+# document). The api's /widgets/*/disir-proxy endpoints point the iframe here;
+# the widget's open-CORS data API is called by the browser directly. See
+# docs/ODDIN.md "Disir widgets".
+#
+# DISIR_PROXY_HOST unset ⇒ a dormant `.localhost` address (Caddy internal CA,
+# no public ACME) so the block is a harmless no-op until the real subdomain's
+# DNS A record points at this box; then set DISIR_PROXY_HOST and recreate caddy.
+# No security_headers import: that sets X-Frame-Options DENY, which would block
+# oddzilla.cc from framing the widget (frame-src already allows this host).
+{$DISIR_PROXY_HOST:disir-proxy.localhost} {
+	encode zstd gzip
+	reverse_proxy https://{$DISIR_PROXY_UPSTREAM:disir.integration.oddin.gg} {
+		header_up Host {$DISIR_PROXY_UPSTREAM:disir.integration.oddin.gg}
+		header_up Referer {$DISIR_PROXY_REFERER:https://bifrost.oddin.gg}/
+		header_up -Origin
+		# The widget host is built to be embedded; strip any anti-framing or
+		# CSP headers it might send so oddzilla.cc can iframe this subdomain.
+		header_down -X-Frame-Options
+		header_down -Content-Security-Policy
 	}
 }

@@ -228,6 +228,17 @@ services:
       FRONTEND_HOST: ${FRONTEND_HOST:-localhost}
       ADMIN_HOST: ${ADMIN_HOST:-admin.localhost}
       ACME_EMAIL: ${ACME_EMAIL:-admin@localhost}
+      # Disir widget proxy subdomain (whitelisting-independent widget
+      # backup). Unset ⇒ the Caddyfile's dormant `.localhost` default (no
+      # public ACME) until the real subdomain's DNS is in place. Upstream is
+      # the widget host Caddy reverse-proxies to; referer is injected at the
+      # edge. See the Caddyfile disir-proxy block + docs/ODDIN.md. The
+      # default is the dormant `.localhost` sentinel (not empty — Caddy reads
+      # an empty env var as a set-but-blank site address and errors); set the
+      # real subdomain in .env once its DNS points here.
+      DISIR_PROXY_HOST: ${DISIR_PROXY_HOST:-disir-proxy.localhost}
+      DISIR_PROXY_UPSTREAM: ${DISIR_PROXY_UPSTREAM:-disir.integration.oddin.gg}
+      DISIR_PROXY_REFERER: ${DISIR_PROXY_REFERER:-https://bifrost.oddin.gg}
     depends_on:
       # web1 always runs; web2 + web3 join under the `scaled` profile in
       # production. Caddy's active health checks ride out their startup

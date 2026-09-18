@@ -799,7 +799,7 @@ So a refused token can leave the host happy and the widget broken, which
 is what the data-API probe and the health record above are for. Whether
 the token was rotated or revoked is open with Oddin.
 
-### A whitelisting-independent proxy (option 3)
+### A whitelisting-independent proxy (option 3, subdomain)
 
 The two fallbacks above each still lean on Oddin's per-token domain
 registry: the local builder puts our own token in the URL, and the backup
@@ -808,8 +808,10 @@ what is down — the registry unreachable, or simply not carrying our domain
 on any token we hold — neither can help, and the storefront would drop
 straight to the Bifrost frame.
 
-The proxy removes that dependency. It serves the whole widget from
-oddzilla.cc as a **same-origin mirror**, exploiting the surface Oddin's
+The proxy removes that dependency by serving the widget from a **dedicated
+subdomain** (`DISIR_PROXY_HOST`, e.g. `disir-proxy.oddzilla.cc`) that Caddy
+reverse-proxies WHOLESALE to the widget host, injecting the Oddin-authorised
+`Referer: bifrost.oddin.gg` at the edge. It exploits the surface Oddin's
 gating actually covers (measured 2026-09-17):
 
 - the widget's app-shell **document** is referer-gated — 200 with
@@ -821,71 +823,59 @@ gating actually covers (measured 2026-09-17):
   + WSS) answers `Access-Control-Allow-Origin: *` and accepts MaxBet's
   Disir token from any origin.
 
-So the api fetches the document AND every asset server-side with the
-authorised Referer, and rewrites the document so the browser loads
-everything from us. This is a MIRROR, not just an absolute-URL rewrite:
-the widget is a turbopack app whose runtime `fetch()`es its dynamic
-chunks, and a cross-origin chunk fetch fails with no CORS (measured — the
-app hangs on the loading skeleton). Only the open-CORS data API stays
-cross-origin, called by the browser directly.
+**Why a subdomain and not a same-origin subpath.** The first cut mirrored
+the widget under `oddzilla.cc/api/widgets/disir-app/…`, fetching the
+document + every chunk server-side and rewriting asset refs. Every asset
+served 200, the chunks executed, but the **turbopack app never hydrated**
+(no `window.next`, no React root, `body.i18n-not-loaded`, raw i18n keys),
+with **no error and no CSP violation** — measured on production 2026-09-18.
+Turbopack's runtime builds chunk URLs from `location.origin` and resolves
+paths against the document, and it instantiates the app entry only when the
+chunk paths it expects match what loaded; served under a foreign subpath,
+that reconciliation silently never completes. No document/asset rewrite (nor
+`worker-src blob:`, nor an i18next-loadPath shim — both tried) fixed it. The
+subdomain preserves the widget's OWN origin + path, so its runtime boots
+exactly as on Oddin's host. The only cross-origin call left is the open-CORS
+data API, which the browser makes directly.
 
-Helpers in [`disir-proxy.ts`](../services/api/src/modules/widgets/disir-proxy.ts)
-(pure/fetch, unit-tested in `disir-proxy.test.ts`); the routes and byte
-cache are in [`routes.ts`](../services/api/src/modules/widgets/routes.ts):
+Edge (Caddy `disir-proxy` block): a site block on `{$DISIR_PROXY_HOST}`
+`reverse_proxy https://{$DISIR_PROXY_UPSTREAM}` with `header_up Host` +
+`header_up Referer bifrost.oddin.gg/`, `header_up -Origin`, and
+`header_down -X-Frame-Options -Content-Security-Policy` so oddzilla.cc can
+iframe it (its `frame-src` allows the subdomain). No `security_headers`
+import (that sets `X-Frame-Options: DENY`). `DISIR_PROXY_HOST` unset ⇒ a
+dormant `.localhost` default (Caddy internal CA, no public ACME) until the
+subdomain's DNS A record points at the box.
 
-- `serveProxiedDocument` → `GET /widgets/disir-app/:env/:seg/:kind`: fetches
-  the document (`fetchWidgetDocument`), rewrites its build-prefixed refs to
-  `/api/widgets/disir-asset/:env/…` (`rewriteWidgetDocument`, which returns
-  `null` on a body carrying no 32-hex build prefix — an error page must not
-  be served as the shell), serves it with `proxyContentSecurityPolicy()`
-  (the route's own header overrides helmet's global `default-src 'none'`;
-  `frame-ancestors 'self'`, assets `'self'`, data API + WSS in
-  `connect-src`, and **`worker-src blob:` + `child-src blob:`**) and
-  `cache-control: private, max-age=60`. The `blob:` worker directive is
-  load-bearing, not optional: turbopack's runtime spawns a Web Worker from a
-  `blob:` URL to load its chunks, and without it the worker is blocked
-  (worker-src falls back to `default-src 'none'`), the runtime never
-  finishes, React never hydrates, and the widget renders a dead SSR shell
-  with no i18n, no data and no `LOADED` — so the storefront times out to
-  Bifrost even though every asset served 200. Same class as the Havik video
-  player's `worker-src blob:` (measured 2026-09-18 on production). Guarded so
-  it is not an open relay: env / seg / kind are shape-checked and the query's
-  `brandToken` must equal the proxy token.
-- Even with hydration unblocked, the widget's i18next backend fetches its
-  translations at RUNTIME from a loadPath hardcoded in a chunk
-  (`/<buildId>/static/locales/{{lng}}/{{ns}}.json`), which the document
-  rewrite cannot reach — so `rewriteWidgetDocument` also injects a tiny shim
-  at the top of `<head>` (`injectRuntimeAssetShim`) that patches `fetch` +
-  `XMLHttpRequest.open` to route any `/<buildId>/…` request through the asset
-  proxy. It builds its build-prefix constant by concatenation so the document
-  never carries a `"/<buildId>` literal.
-- `GET /widgets/disir-asset/:env/*`: streams one static chunk
-  (`fetchWidgetAsset`, `assetUpstreamUrl`) with a 32 MB in-process LRU byte
-  cache and `cache-control: public, max-age=31536000, immutable`. The path
-  is `ASSET_REST_RE`-guarded (`<32hex>/(_next|static)/…`) against traversal
-  and host-swap. Caddy exempts `/widgets/disir-asset/*` from its blanket
-  `no-store` so the immutable header survives.
-- The JSON endpoints `/widgets/match/:id/disir-proxy` and
-  `/widgets/tournament/:id/disir-proxy` reuse the same URN → widget-URL
-  builders the issued/local paths use, with the proxy creds, and return
-  `{ url: /api/widgets/disir-app/… }` for the storefront iframe `src`.
+Api (JSON only — no fetch, no rewrite, no cache): the two endpoints
+`/widgets/match/:id/disir-proxy` and `/widgets/tournament/:id/disir-proxy`
+reuse the same URN → widget-URL builders the issued/local paths use (with
+the proxy creds), then `toProxyDocUrl` swaps the built URL's host to
+`DISIR_PROXY_HOST`, keeping the path + query (MaxBet's token + the ids ride
+in the query, which the app reads from `window.location` at hydration), and
+return `{ url: https://disir-proxy.…/<seg>/<kind>?… }`. Gated on both the
+token AND the host; either empty ⇒ the endpoints 503.
 
 Storefront: [`disir-widget.tsx`](../apps/web/src/components/widgets/disir-widget.tsx)
-takes a `proxyFallback` prop (set on the rail Insights panel, the mobile
-prematch panel and the live-stats block, alongside `bifrostFallback`).
-When the primary widget fails — a 20 s `LOADED` timeout or a
-`widget_provider_unauthorized` — it fetches the proxy JSON and reloads the
-iframe from our origin BEFORE falling through to Bifrost, so the fallback
-order is **issued URL → local URL → backup token → same-origin proxy →
-Bifrost frame**.
+takes a `proxyFallback` prop (set on the rail Insights panel and the mobile
+prematch panel alongside `bifrostFallback`; on the live-stats block WITHOUT
+`bifrostFallback`, so that slot collapses rather than showing Bifrost's
+second stream under the video). When the primary widget fails — a 20 s
+`LOADED` timeout or a `widget_provider_unauthorized` — it fetches the proxy
+JSON and loads the iframe from the subdomain BEFORE falling through to
+Bifrost, so the fallback order is **issued URL → local URL → backup token →
+subdomain proxy → Bifrost frame**.
 
-Config: `DISIR_PROXY_BRAND_TOKEN` (MaxBet's `e28ce023-…` on prod),
-`DISIR_PROXY_ENV` (defaults to `DISIR_ENV`), `DISIR_PROXY_REFERER`
-(defaults to `https://bifrost.oddin.gg`). Empty token = the proxy routes
-503 and the chain stops at the Bifrost frame. **Oddin confirmed option 3
-as a supported integration path** (relayed by the operator, 2026-09-17) —
-same standing as the URL-building contract, not a reverse-engineered
-bypass a widget change may silently break.
+Config: `DISIR_PROXY_HOST` (the subdomain, needs DNS), `DISIR_PROXY_UPSTREAM`
+(the widget host Caddy proxies to; read by Caddy), `DISIR_PROXY_BRAND_TOKEN`
+(MaxBet's `e28ce023-…`), `DISIR_PROXY_REFERER` (Caddy edge referer, default
+`https://bifrost.oddin.gg`), `DISIR_PROXY_ENV` (which oddin host the URL is
+built against before the host swap; the Caddy upstream is the real target).
+Activation is a runbook step in docs/OPERATIONS.md (add DNS, set env,
+recreate api + caddy). **Oddin confirmed option 3 as a supported integration
+path** (relayed by the operator, 2026-09-17) — same standing as the
+URL-building contract, not a reverse-engineered bypass a widget change may
+silently break.
 
 ### How MaxBet's token DOES work on our page: through Bifrost
 

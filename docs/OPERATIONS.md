@@ -1352,7 +1352,7 @@ check, in order:
    with a backup token configured (`DISIR_BACKUP_BRAND_TOKEN`), switches
    by itself; the response's `token` field says which slot served it.
    With no working token at all, the storefront's match widgets fall
-   through the remaining tiers: first the same-origin proxy if it is
+   through the remaining tiers: first the subdomain proxy if it is
    configured (step 5), then Oddin's Bifrost non-betting match frame
    (`BIFROST_API_KEY` is on the box; the frame loads from
    `GET /api/widgets/match/<id>/bifrost`) — Oddin's page in Oddin's
@@ -1376,33 +1376,49 @@ check, in order:
    `external-production.oddin.gg` is on the same ELB as api-disir and
    api-bifrost, no URL trick helps, and the Bifrost backup feed is
    affected at the same time, so check `/admin/feed`.
-5. **Whitelisting itself down, or our domain on no token?** The
-   same-origin proxy is the tier below the token failover and above the
-   Bifrost frame — it needs neither api-disir nor our domain being
-   registered, because it presents `Referer: bifrost.oddin.gg` (which
-   Oddin authorised) and MaxBet's token, mirroring the widget through
-   oddzilla.cc. It is live only when `DISIR_PROXY_BRAND_TOKEN` is set;
-   check `curl -s https://oddzilla.cc/api/widgets/match/<numeric id>/disir-proxy?theme=dark`
-   answers `{"url":"/widgets/disir-app/..."}` (the storefront prepends
-   `/api`; 503 `disir_proxy_disabled` = token not set, 503
-   `disir_proxy_unavailable` = the referer-gated document fetch failed).
-   The document then serves from
-   `/api/widgets/disir-app/*` and its chunks from `/api/widgets/disir-asset/*`
-   (both same-origin) — if the widget frame is blank, look for those two
-   paths in the api log and in the browser network tab. The proxy token is
-   MaxBet's `e28ce023-…`; if IT is refused too, the proxy falls through to
-   the Bifrost frame like everything else.
+5. **Whitelisting itself down, or our domain on no token?** The subdomain
+   proxy is the tier below the token failover and above the Bifrost frame —
+   it needs neither api-disir nor our domain being registered, because the
+   Caddy `disir-proxy` block reverse-proxies the widget host wholesale from
+   a dedicated subdomain (`DISIR_PROXY_HOST`, e.g. disir-proxy.oddzilla.cc),
+   injecting `Referer: bifrost.oddin.gg` (which Oddin authorised) at the
+   edge; MaxBet's token rides in the widget URL. It is live only when BOTH
+   `DISIR_PROXY_HOST` and `DISIR_PROXY_BRAND_TOKEN` are set AND the
+   subdomain's DNS points at the box. Check
+   `curl -s https://oddzilla.cc/api/widgets/match/<numeric id>/disir-proxy?theme=dark`
+   answers `{"url":"https://disir-proxy.oddzilla.cc/..."}` (503
+   `disir_proxy_disabled` = host or token not set). Then confirm the
+   subdomain itself serves the widget:
+   `curl -s -o /dev/null -w '%{http_code}' https://disir-proxy.oddzilla.cc/csgo/match` → 200
+   (403 = the edge referer isn't being injected / the token isn't registered
+   for bifrost.oddin.gg; a TLS or DNS error = the A record or cert isn't in
+   place yet). If the widget frame is blank, load that subdomain URL top
+   level in a browser and check it hydrates — this proxy is a dumb edge
+   pass-through, so a blank widget means an upstream/referer problem, not our
+   code. The proxy token is MaxBet's `e28ce023-…`; if IT is refused, the
+   proxy falls through to the Bifrost frame like everything else.
 
 Kill switch: `DISIR_LOCAL_URL_FALLBACK=false` in `.env` disables the local
-URL builder; clearing `DISIR_PROXY_BRAND_TOKEN` disables the proxy tier;
-both take effect on `make recreate api`. Learned per-sport constants live
-in Redis under `disir:segment:v1:*` and `disir:prematch:v1:*` (30 d);
-deleting them falls back to the static table in `disir-url.ts`. To turn the
-proxy ON: set `DISIR_PROXY_BRAND_TOKEN` to MaxBet's Disir token (`e28ce023-…`,
-read off the widget iframe Bifrost opens — same value the token failover's
-intended backup uses) in `.env` — with `DISIR_PROXY_REFERER` and
-`DISIR_PROXY_ENV` defaulting to `bifrost.oddin.gg` / `DISIR_ENV` — then
-`make recreate SVC=api`.
+URL builder; clearing `DISIR_PROXY_HOST` (or the token) disables the proxy
+tier. Learned per-sport constants live in Redis under `disir:segment:v1:*`
+and `disir:prematch:v1:*` (30 d); deleting them falls back to the static
+table in `disir-url.ts`.
+
+**To turn the subdomain proxy ON:**
+1. Add a DNS **A record** `disir-proxy.oddzilla.cc → 178.104.174.24` (Sasha).
+   Caddy provisions the Let's Encrypt cert automatically once it resolves.
+2. In `/home/team/oddzilla/.env` set (via `sed`, never `cat` the file):
+   `DISIR_PROXY_HOST=disir-proxy.oddzilla.cc`,
+   `DISIR_PROXY_BRAND_TOKEN=<MaxBet's Disir token>` (read off the widget
+   iframe Bifrost opens; same value the token failover's intended backup
+   uses). `DISIR_PROXY_UPSTREAM` (defaults `disir.integration.oddin.gg`) and
+   `DISIR_PROXY_REFERER` (defaults `https://bifrost.oddin.gg`) only need
+   changing to move environments.
+3. `make recreate SVC=api` **and** `make recreate SVC=caddy` — caddy needs a
+   RECREATE (not the deploy's `restart`) to pick up the new compose env vars
+   and provision the cert. Verify with the two curls above.
+When switching the whole stack to `DISIR_ENV=main`, also point
+`DISIR_PROXY_UPSTREAM` at `disir.oddin.gg`.
 
 ## Backup feed (Bifrost) failover
 

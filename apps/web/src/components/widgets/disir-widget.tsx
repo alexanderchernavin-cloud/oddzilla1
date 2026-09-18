@@ -71,12 +71,13 @@ interface DisirWidgetProps {
   hideUntilData?: boolean;
   // When our brand token is refused (no LOADED within LOAD_TIMEOUT_MS, or
   // api-disir answers 401), try the whitelisting-independent proxy before
-  // giving up: the api serves the REAL Disir widget from our own origin
-  // with MaxBet's token (see services/api/src/modules/widgets/disir-proxy.ts).
-  // It renders the same widget as the primary path — same postMessage
-  // events, all variants including the tournament — so it is preferred
-  // over the Bifrost frame. Only if the proxy ALSO fails do we fall to
-  // Bifrost (match) or collapse.
+  // giving up: the REAL Disir widget served from a dedicated subdomain
+  // (DISIR_PROXY_HOST) that Caddy reverse-proxies to the widget host with
+  // MaxBet's token + the authorised Referer (see the disir-proxy routes in
+  // services/api/src/modules/widgets/routes.ts). It renders the same widget
+  // as the primary path — same postMessage events, all variants including
+  // the tournament — so it is preferred over the Bifrost frame. Only if the
+  // proxy ALSO fails do we fall to Bifrost (match) or collapse.
   proxyFallback?: boolean;
   // Last resort: when the widget host refuses our brand token (no LOADED
   // within LOAD_TIMEOUT_MS, or api-disir answers 401 with no backup token),
@@ -164,8 +165,8 @@ export function DisirWidget(props: DisirWidgetProps) {
   // For live widgets we hide the iframe until DATA: true. Prematch
   // widgets are visible from the start.
   const [dataAvailable, setDataAvailable] = useState<boolean>(!hideUntilData);
-  // "primary" = the widget URL from /widgets/*; "proxy" = the same-origin
-  // proxy document (MaxBet's token) we switch to when the primary fails.
+  // "primary" = the widget URL from /widgets/*; "proxy" = the subdomain-proxy
+  // URL (MaxBet's token) we switch to when the primary fails.
   const [phase, setPhase] = useState<"primary" | "proxy">("primary");
 
   // Stable query string so the URL fetch effect only refires on real
@@ -245,7 +246,7 @@ export function DisirWidget(props: DisirWidgetProps) {
 
   // The primary widget failed in a way the proxy can rescue (token
   // refused → api-disir 401, or a widget-host 403 that shows up as the
-  // LOADED timeout). Fetch the same-origin proxy document and hand the
+  // LOADED timeout). Ask the api for the subdomain-proxy URL and hand the
   // iframe to it. If the proxy is not configured or is itself down, mark
   // the phase exhausted so the Bifrost / collapse branch takes over.
   const proxyPending =
@@ -272,9 +273,11 @@ export function DisirWidget(props: DisirWidgetProps) {
         setLoaded(false);
         setError(null);
         setDataAvailable(!hideUntilData);
-        // res.url is a same-origin path (`/widgets/disir-app/...`); the api
-        // base turns it into the URL the iframe loads.
-        setUrl(`${apiAssetBase}${res.url}`);
+        // res.url is the absolute proxy-subdomain URL the iframe loads
+        // directly (https://disir-proxy.…/<seg>/<kind>?…); Caddy forwards it
+        // to the widget host with the authorised referer. Guard against an
+        // older api that returned a same-origin path just in case.
+        setUrl(res.url.startsWith("http") ? res.url : `${apiAssetBase}${res.url}`);
       } catch {
         if (cancelled) return;
         // Proxy unavailable too — leave the terminal error, moved to the
