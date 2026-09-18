@@ -53,6 +53,58 @@ test("rewriteWidgetDocument tolerates a trailing slash on the base", () => {
   assert.ok(!out.html.includes(`disir-asset/integration//`));
 });
 
+test("rewriteWidgetDocument injects a shim that redirects runtime build-prefixed fetch + XHR", () => {
+  // The load-bearing case: the widget's i18next backend fetches
+  // `/<buildId>/static/locales/{{lng}}/{{ns}}.json` at RUNTIME (the path is
+  // hardcoded in a chunk, not in the HTML), so the document rewrite never
+  // touches it and it would resolve against our own origin. The injected
+  // shim must send it through the asset proxy. Run the shim in a fake env
+  // and prove both transports get rewritten.
+  const out = rewriteWidgetDocument(DOC, ASSET_BASE);
+  assert.ok(out);
+  const m = out.html.match(/<script>([\s\S]*?)<\/script>/);
+  const shim = m?.[1] ?? "";
+  assert.ok(shim, "a shim <script> is injected");
+
+  const locales = `/${BUILD}/static/locales/en/core.json`;
+  const expected = `${ASSET_BASE}${locales}`;
+
+  const fetchCalls: string[] = [];
+  const fakeWindow: { fetch: (u: unknown) => Promise<void> } = {
+    fetch: (u: unknown) => {
+      fetchCalls.push(String(u));
+      return Promise.resolve();
+    },
+  };
+  const fakeLocation = { origin: "https://oddzilla.cc" };
+  const xhrOpens: unknown[][] = [];
+  class FakeXHR {
+    open(...args: unknown[]) {
+      xhrOpens.push(args);
+    }
+  }
+
+  new Function("window", "location", "XMLHttpRequest", shim)(
+    fakeWindow,
+    fakeLocation,
+    FakeXHR,
+  );
+
+  // fetch: root-relative build-prefixed request is redirected...
+  void fakeWindow.fetch(locales);
+  // ...an absolute same-origin one too...
+  void fakeWindow.fetch(`${fakeLocation.origin}${locales}`);
+  // ...and the cross-origin data API is left alone.
+  const dataApi = "https://external-production.oddin.gg/integration/disir/query";
+  void fakeWindow.fetch(dataApi);
+  assert.deepEqual(fetchCalls, [expected, expected, dataApi]);
+
+  // XHR open rewrites its url argument in place.
+  const xhr = new FakeXHR();
+  (xhr as unknown as { open: (m: string, u: string) => void }).open("GET", locales);
+  assert.equal(xhrOpens[0]?.[1], expected);
+});
+
 test("rewriteWidgetDocument refuses a document with no build prefix", () => {
   // A 403 / error page or a redirect body carries no 32-hex prefix, so it
   // is not the widget shell and must not be served as one.
