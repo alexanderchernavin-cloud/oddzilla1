@@ -165,7 +165,55 @@ export function rewriteWidgetDocument(
   if (!buildId) return null;
   const base = assetBase.replace(/\/$/, "");
   const rewritten = html.split(`"/${buildId}`).join(`"${base}/${buildId}`);
-  return { html: rewritten, buildId };
+  return { html: injectRuntimeAssetShim(rewritten, buildId, base), buildId };
+}
+
+// The document rewrite only touches refs written into the HTML. But the
+// widget's JS chunks ALSO hardcode root-relative `/<buildId>/…` paths that
+// they fetch at RUNTIME — the load-bearing one is the i18next backend's
+// `loadPath: "/<buildId>/static/locales/{{lng}}/{{ns}}.json"`. Without its
+// translations the widget renders an un-i18n'd shell and NEVER posts the
+// LOADED handshake, so the storefront times out and falls to the Bifrost
+// frame — which is exactly the bug the whole proxy exists to avoid. Those
+// runtime fetches resolve against OUR origin (`oddzilla.cc/<buildId>/…`,
+// a storefront 404), not the asset proxy, and rewriting the refs in
+// minified JS by hand is fragile. Instead inject a tiny shim that patches
+// fetch + XHR to send any `/<buildId>/…` request through the same-origin
+// asset route, exactly as the document refs were rewritten. It runs first
+// (top of <head>) so the widget's chunks capture the patched fetch, and
+// leaves everything else — the already-rewritten assetPrefix chunk loads,
+// the cross-origin open-CORS data API — untouched. `'unsafe-inline'` in
+// the proxy CSP (which turbopack's own bootstrap needs too) permits it.
+export function injectRuntimeAssetShim(
+  html: string,
+  buildId: string,
+  base: string,
+): string {
+  const shim =
+    `<script>(function(){` +
+    // Build P by concatenation rather than a `"/<buildId>` literal so the
+    // document never carries that byte sequence — `rewriteWidgetDocument`
+    // and its test assert no root-relative build-prefixed ref survives.
+    `var P="/"+${JSON.stringify(buildId)}+"/",A=${JSON.stringify(base)},O=location.origin;` +
+    `function fix(u){` +
+    `if(typeof u!=="string")return u;` +
+    `if(u.indexOf(P)===0)return A+u;` +
+    `if(u.indexOf(O+P)===0)return A+u.slice(O.length);` +
+    `return u;}` +
+    `var of=window.fetch;` +
+    `window.fetch=function(i,n){try{` +
+    `if(typeof i==="string"){var f=fix(i);if(f!==i)return of.call(this,f,n);}` +
+    `else if(i&&typeof i.url==="string"){var g=fix(i.url);if(g!==i.url)return of.call(this,new Request(g,i),n);}` +
+    `}catch(e){}return of.call(this,i,n);};` +
+    `var oo=XMLHttpRequest.prototype.open;` +
+    `XMLHttpRequest.prototype.open=function(){try{if(arguments.length>1)arguments[1]=fix(arguments[1]);}catch(e){}return oo.apply(this,arguments);};` +
+    `})();</script>`;
+  const head = /<head[^>]*>/i.exec(html);
+  if (head) {
+    const at = head.index + head[0].length;
+    return html.slice(0, at) + shim + html.slice(at);
+  }
+  return shim + html;
 }
 
 // The upstream URL for one proxied asset path. `rest` is everything the
